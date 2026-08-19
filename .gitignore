@@ -1,2 +1,3 @@
 # The pinned mruby checkout the Rakefile makes; never committed.
 /mruby/
+bench/results/
