@@ -6,7 +6,8 @@
 #
 #   THREADS=4 CONNS=400 bench/floor.sh            # AF_UNIX (default)
 #   THREADS=4 CONNS=400 TRANSPORT=tcp bench/floor.sh
-#   WM_BUNDLE=0 ... for the A/B on a kernel under suspicion
+#   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
+#   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
 [ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
   echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
@@ -15,7 +16,12 @@ set -u
 DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
-BIN=mruby/build/host/bin/webmachine-server
+IMPL="${IMPL:-uring}"
+case "$IMPL" in
+  uring) BIN=mruby/build/host/bin/webmachine-server ;;
+  epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
+  *) echo "IMPL must be uring or epoll" >&2; exit 2 ;;
+esac
 cd "$(dirname "$0")/.." || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
@@ -48,7 +54,8 @@ while True:
 else
   "$BIN" --port "$PORT" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
-trap 'kill $SRV $DUMMY 2>/dev/null' EXIT
+# wait: back-to-back runs must not race the dying listener for the port.
+trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
 
@@ -62,7 +69,7 @@ MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
 OUT=$(mktemp)
 {
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"

@@ -1,6 +1,7 @@
 // The server binary. Today it is the floor: accept, read, answer a
 // fixed 200 (or echo, for the byte-proof bintest). Every later layer
 // grows inside Ring; this file stays the CLI.
+#include <sys/signalfd.h>
 #include <unistd.h>
 
 #include <csignal>
@@ -9,13 +10,6 @@
 #include <cstring>
 
 #include "../../src/ring.hpp"
-
-namespace {
-// Process lifecycle, not reactor state: the one word a signal handler
-// may legally write, read by Ring::run's loop condition.
-volatile std::sig_atomic_t g_stop = 0;
-void on_stop(int) { g_stop = 1; }
-}  // namespace
 
 int main(int argc, char** argv) {
   webmachine::RingConfig cfg;
@@ -36,21 +30,24 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // TERM/INT are blocked and land in a signalfd the ring polls: the
+  // stop arrives as a CQE, so it cannot race the ring wait the way a
+  // handler flag would (flag checked, signal lands, wait blocks forever).
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGTERM);
+  sigaddset(&mask, SIGINT);
+  sigprocmask(SIG_BLOCK, &mask, nullptr);
+  cfg.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
+
   webmachine::Ring ring;
   char err[256];
   if (!ring.init(cfg, err, sizeof(err))) {
     std::fprintf(stderr, "webmachine: %s\n", err);
     return 1;
   }
-  // No SA_RESTART: the signal must interrupt the ring wait, or the
-  // loop never reads the flag and the socket path outlives the process.
-  struct sigaction sa {};
-  sa.sa_handler = on_stop;
-  sigaction(SIGTERM, &sa, nullptr);
-  sigaction(SIGINT, &sa, nullptr);
-
   std::fprintf(stderr, "webmachine: floor up, pid %d, %s%s\n", getpid(),
                cfg.unix_path ? cfg.unix_path : "tcp", cfg.echo ? ", echo" : "");
-  ring.run(&g_stop);
+  ring.run();
   return 0;
 }
