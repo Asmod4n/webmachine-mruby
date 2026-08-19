@@ -116,6 +116,21 @@ assert('floor: the ring-built TCP listener answers like the unix one') do
   end
 end
 
+assert('floor: TERM removes the unix socket path') do
+  # Seen on the Pi: the path outlived the process because nothing ever
+  # left the run loop. The signal now interrupts the ring wait and the
+  # destructor unlinks - through the ring, like everything else.
+  sock = "/tmp/wm-floor-#{$$}-term.sock"
+  File.unlink(sock) if File.exist?(sock)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--unix', sock,
+              out: File::NULL, err: File::NULL)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  assert_true File.socket?(sock)
+  Process.kill('TERM', pid)
+  Process.wait(pid)
+  assert_false File.exist?(sock)
+end
+
 if ENV['WM_TEST_BUNDLES'] == '1'
   assert('floor: the same bytes survive with recv bundles on (density check)') do
     floor_echo_assertions(true)

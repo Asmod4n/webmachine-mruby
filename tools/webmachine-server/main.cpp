@@ -3,11 +3,19 @@
 // grows inside Ring; this file stays the CLI.
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include "../../src/ring.hpp"
+
+namespace {
+// Process lifecycle, not reactor state: the one word a signal handler
+// may legally write, read by Ring::run's loop condition.
+volatile std::sig_atomic_t g_stop = 0;
+void on_stop(int) { g_stop = 1; }
+}  // namespace
 
 int main(int argc, char** argv) {
   webmachine::RingConfig cfg;
@@ -34,7 +42,15 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "webmachine: %s\n", err);
     return 1;
   }
+  // No SA_RESTART: the signal must interrupt the ring wait, or the
+  // loop never reads the flag and the socket path outlives the process.
+  struct sigaction sa {};
+  sa.sa_handler = on_stop;
+  sigaction(SIGTERM, &sa, nullptr);
+  sigaction(SIGINT, &sa, nullptr);
+
   std::fprintf(stderr, "webmachine: floor up, pid %d, %s%s\n", getpid(),
                cfg.unix_path ? cfg.unix_path : "tcp", cfg.echo ? ", echo" : "");
-  ring.run();
+  ring.run(&g_stop);
+  return 0;
 }
