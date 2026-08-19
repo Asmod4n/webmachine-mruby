@@ -1,0 +1,10 @@
+==== 2026-08-19T19:44Z repo=4d94a97 mruby=524586c ====
+harness: wrk -t2 -c64 -d8s transport=tcp WM_BUNDLE=default 6.18.5-fc-v20 x86_64
+     50%  437.00us
+     99%  819.00us
+Requests/sec: 138945.92
+==== 2026-08-19T19:44Z repo=4d94a97 mruby=524586c ====
+harness: wrk -t2 -c64 -d8s transport=tcp WM_BUNDLE=default 6.18.5-fc-v20 x86_64
+     50%  307.00us
+     99%    0.88ms
+Requests/sec: 190378.79

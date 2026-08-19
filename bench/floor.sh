@@ -21,10 +21,12 @@ cd "$(dirname "$0")/.." || exit 1
 
 WRK="${WRK:-$HOME/wrk/wrk}"
 [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
-if [ "${TRANSPORT:-unix}" = unix ] && ! strings "$WRK" | grep -q WRK_UNIX; then
+if [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
   # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
   # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
-  # run. Refused here, with the fix named.
+  # run. Refused here, with the fix named. grep -a, not strings(1):
+  # strings is binutils, absent on a stock Pi, and a missing checker
+  # once rejected a correctly patched wrk.
   echo "$WRK is not the WRK_UNIX-patched build - apply bench/wrk-af-unix.patch (see its header)" >&2
   exit 1
 fi
