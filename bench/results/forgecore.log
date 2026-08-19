@@ -19,3 +19,8 @@ harness: wrk -t4 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default 7.1.8-1
      50%  128.00us
      99%  181.00us
 Requests/sec: 930572.94
+==== 2026-08-19T21:16Z repo=4ac39a0 mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default 7.1.8-1-default x86_64
+     50%  128.00us
+     99%  149.00us
+Requests/sec: 933535.74
