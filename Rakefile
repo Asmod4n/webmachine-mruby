@@ -10,7 +10,7 @@ end
 
 desc 'build'
 task compile: MRUBY_DIR do
-  sh "git -C #{MRUBY_DIR} log -1 --format='mruby %h %ad' --date=short"
+  sh "git -C #{MRUBY_DIR} --no-pager log -1 --format='mruby %h %ad' --date=short"
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake"
 end
 
