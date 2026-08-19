@@ -1,15 +1,22 @@
 // HTTP/1.1 framing as a Ring App: ONE framer (phr on the wire bytes,
 // carry only when a head splits across receives), ONE writer (prebuilt
-// response strings, the running second PATCHES 29 date bytes in place -
-// a response is a single append). Every branch names its RFC clause.
-// The Ring knows none of this; it hands bytes in and drains the sink.
+// response strings for every status the flow can speak, the running
+// second PATCHES 29 date bytes in place - a response is a single
+// append), ONE flow (the webmachine graph decides every status; the
+// framer only ever decides wire validity). Every branch names its RFC
+// clause. The Ring knows none of this; it hands bytes in and drains
+// the sink.
 #ifndef WEBMACHINE_HTTP1_HPP
 #define WEBMACHINE_HTTP1_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <string>
+#include <vector>
+
+#include "flow_walk.hpp"
 
 namespace webmachine {
 
@@ -34,7 +41,7 @@ class Http1 {
     }
   };
 
-  // Builds the prebuilt responses once and stamps the current date.
+  // Builds every response the flow can speak, once, and stamps the date.
   Http1();
 
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
@@ -43,7 +50,7 @@ class Http1 {
 
   // Feed wire bytes; responses land in sink (the connection's out/next,
   // whichever accumulates). False: the connection ends once everything
-  // queued has drained - error paths and Connection: close alike.
+  // queued has drained - wire-invalidity paths and Connection: close.
   bool feed(Conn& st, const char* data, size_t len, std::string& sink);
 
  private:
@@ -52,15 +59,26 @@ class Http1 {
     std::string bytes;
     size_t date_off = 0;
   };
+  // Connection semantics per RFC 9112 §9.3: a persistent 1.1 response
+  // carries NO Connection header, a persistent 1.0 response echoes
+  // keep-alive, anything closing spells close.
+  struct Variants {
+    Resp plain, keep, close;
+  };
 
-  bool fail(Conn& st, const Resp& resp, std::string& sink);
+  void build_status(uint16_t status, const char* extra, const char* body);
+  const Variants& variants(uint16_t status) const {
+    return store_[index_[status]];  // every status here came from the tables
+  }
+  bool fail(Conn& st, uint16_t status, std::string& sink);
 
   time_t sec_ = 0;
-  // 200 variants by connection semantics (RFC 9112 §9.3): a persistent
-  // 1.1 response carries NO Connection header, a persistent 1.0
-  // response echoes keep-alive, anything closing spells close.
-  Resp ok_plain_, ok_keep_, ok_close_;
-  Resp r400_, r411_, r413_, r431_;
+  std::vector<Variants> store_;
+  std::array<uint8_t, 600> index_ {};  // status -> store_ slot
+  Variants ok_head_;  // 200 for HEAD: the same head, no body bytes
+  // One konst vector per method: webmachine-ruby's Resource defaults
+  // with the method folded in (B12/B10 are answered at build time).
+  flow::KonstAnswers konst_[7];
 };
 
 }  // namespace webmachine

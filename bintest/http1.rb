@@ -98,13 +98,15 @@ assert('h1: a head trickled byte by byte still parses (carry across receives)') 
 end
 
 assert('h1: a Content-Length body is skipped and framing holds') do
+  # The flow answers POST with 405 (default allowed_methods is GET/HEAD,
+  # B10) - but the body must STILL be consumed or keep-alive would parse
+  # body bytes as the next head.
   h1_server do |sock, _|
     UNIXSocket.open(sock) do |s|
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world")
       head, = h1_read_response(s)
-      assert_true head.start_with?('HTTP/1.1 200 OK')
-      # The next request must parse cleanly: the body was consumed, not
-      # mistaken for a head.
+      assert_true head.start_with?('HTTP/1.1 405')
+      assert_true head.match?(/^Allow: GET, HEAD\r$/i)
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head2, = h1_read_response(s)
       assert_true head2.start_with?('HTTP/1.1 200 OK')
@@ -115,10 +117,49 @@ assert('h1: a Content-Length body is skipped and framing holds') do
       sleep 0.02
       s.write('o worl')
       head, = h1_read_response(s)
-      assert_true head.start_with?('HTTP/1.1 200 OK')
+      assert_true head.start_with?('HTTP/1.1 405')
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head2, = h1_read_response(s)
       assert_true head2.start_with?('HTTP/1.1 200 OK')
+    end
+  end
+end
+
+assert('h1: the flow speaks on the wire - 405/304/HEAD from the graph') do
+  h1_server do |sock, _|
+    UNIXSocket.open(sock) do |s|
+      # OPTIONS is not in the default allowed_methods: B10 says 405
+      # before B3 is ever reached - keep-alive holds, it is no error.
+      s.write("OPTIONS / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = h1_read_response(s)
+      assert_true head.start_with?('HTTP/1.1 405')
+      assert_true head.match?(/^Allow: GET, HEAD\r$/i)
+      # If-None-Match: * on an existing resource: I13 -> J18 -> 304,
+      # bodyless by definition (RFC 9110 15.4.5).
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: *\r\n\r\n")
+      head304 = +''
+      head304 << s.readpartial(1) until head304.end_with?("\r\n\r\n")
+      assert_true head304.start_with?('HTTP/1.1 304')
+      assert_false head304.match?(/^Content-Length:/i)
+      # HEAD: 200's head, Content-Length announced, NO body bytes - the
+      # pipelined GET's response must begin immediately after.
+      s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      hh = +''
+      hh << s.readpartial(1) until hh.end_with?("\r\n\r\n")
+      assert_true hh.start_with?('HTTP/1.1 200 OK')
+      assert_true hh.match?(/^Content-Length: 2\r$/i)
+      nxt = +''
+      nxt << s.readpartial(1) until nxt.end_with?("\r\n\r\n")
+      assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
+      body = +''
+      body << s.readpartial(2 - body.bytesize) while body.bytesize < 2
+      assert_equal 'OK', body
+      # A browser-shaped GET negotiates through C4/D5/E6/F7 to 200.
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: */*\r\nAccept-Language: de\r\n" \
+              "Accept-Encoding: gzip\r\nAccept-Charset: utf-8\r\n\r\n")
+      headn, bodyn = h1_read_response(s)
+      assert_true headn.start_with?('HTTP/1.1 200 OK')
+      assert_equal 'OK', bodyn
     end
   end
 end

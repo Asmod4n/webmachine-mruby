@@ -133,7 +133,7 @@ constexpr KonstAnswers default_konst(Method m) {
   KonstAnswers k{};
   const auto set = [&](Node n, bool v) { k.ans[static_cast<size_t>(n)] = v; };
   set(Node::kB13, true);   // service_available? -> true
-  set(Node::kB12, true);   // known_methods covers the standard set
+  set(Node::kB12, m != Method::kOther);  // known_methods covers the standard set
   set(Node::kB11, false);  // uri_too_long? -> false
   set(Node::kB10, m == Method::kGet || m == Method::kHead);  // allowed_methods
   set(Node::kB9a, true);   // validate_content_checksum -> valid
@@ -144,6 +144,13 @@ constexpr KonstAnswers default_konst(Method m) {
   set(Node::kB5, true);    // known_content_type? -> true
   set(Node::kB4, true);    // valid_entity_length? -> true
   set(Node::kG7, true);    // resource_exists? -> true
+  // The default resource's provided lists negotiate every request;
+  // value-dependent conneg (a narrow Accept against a narrow list) is
+  // a later tier, not a konst bit.
+  set(Node::kC4, true);
+  set(Node::kD5, true);
+  set(Node::kE6, true);
+  set(Node::kF7, true);
   set(Node::kL17, true);   // last_modified nil reads as modified (flow.rb l17)
   set(Node::kM20b, true);  // delete_completed? -> true
   set(Node::kO18, true);   // body render passes through (both edges agree)
@@ -158,6 +165,15 @@ namespace proof {
 constexpr ReqFacts get_plain{};
 static_assert(walk(get_plain, default_konst(Method::kGet)) == 200,
               "plain GET on the default resource is 200");
+constexpr ReqFacts get_negotiated{.has_accept = true,
+                                  .has_accept_language = true,
+                                  .has_accept_charset = true,
+                                  .has_accept_encoding = true};
+static_assert(walk(get_negotiated, default_konst(Method::kGet)) == 200,
+              "a browser GET negotiates through C4/D5/E6/F7 to 200");
+constexpr ReqFacts unknown{.method = Method::kOther};
+static_assert(walk(unknown, default_konst(Method::kOther)) == 501,
+              "an unknown method dies at B12 with 501");
 constexpr ReqFacts options{.method = Method::kOptions};
 static_assert(walk(options, default_konst(Method::kOptions)) == 405,
               "OPTIONS not in default allowed_methods dies at B10 like anything else");
