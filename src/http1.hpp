@@ -41,8 +41,10 @@ class Http1 {
     }
   };
 
-  // Builds every response the flow can speak, once, and stamps the date.
-  Http1();
+  // Builds every response the flow can speak, once, and stamps the
+  // date. The KonstSet is the bound resource - webmachine-ruby's
+  // defaults when none was bound, the mruby bridge's product otherwise.
+  explicit Http1(const flow::KonstSet& ks = {});
 
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
   // second changed. Never runs per request.
@@ -76,9 +78,9 @@ class Http1 {
   std::vector<Variants> store_;
   std::array<uint8_t, 600> index_ {};  // status -> store_ slot
   Variants ok_head_;  // 200 for HEAD: the same head, no body bytes
-  // One konst vector per method: webmachine-ruby's Resource defaults
-  // with the method folded in (B12/B10 are answered at build time).
-  flow::KonstAnswers konst_[7];
+  // One konst vector per method, the method folded in at bind time
+  // (B12/B10 never re-compare method strings per request).
+  flow::KonstSet konst_;
 };
 
 }  // namespace webmachine

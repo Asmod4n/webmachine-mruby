@@ -9,6 +9,8 @@
 #ifndef WEBMACHINE_FLOW_WALK_HPP
 #define WEBMACHINE_FLOW_WALK_HPP
 
+#include <string>
+
 #include "flow.hpp"
 
 namespace webmachine::flow {
@@ -158,6 +160,18 @@ constexpr KonstAnswers default_konst(Method m) {
   // moved_*/previously_existed?/conflict?/etag/post hooks default false.
   return k;
 }
+
+// Everything a bound resource compiles down to: one konst vector per
+// method, plus the Allow line B10's 405 speaks. Defaults are
+// webmachine-ruby's Resource defaults; the mruby bridge overwrites
+// them from a loaded resource class at setup - never per request.
+struct KonstSet {
+  KonstAnswers per_method[7];
+  std::string allow = "GET, HEAD";
+  KonstSet() {
+    for (uint8_t m = 0; m < 7; m++) per_method[m] = default_konst(static_cast<Method>(m));
+  }
+};
 
 // The golden paths, proven when this header compiles - the walker and
 // the table cannot drift from flow.rb's semantics without failing here.

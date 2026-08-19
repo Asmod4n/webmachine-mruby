@@ -124,21 +124,21 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   store_.push_back(std::move(v));
 }
 
-Http1::Http1() {
+Http1::Http1(const flow::KonstSet& ks) : konst_(ks) {
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
   store_.reserve(32);
+  const std::string allow = "Allow: " + konst_.allow + "\r\n";
   bool have[600] = {};
   const auto add = [&](uint16_t s) {
     if (have[s]) return;
     have[s] = true;
     // 204/304 are defined bodyless (RFC 9110 15.3.5/15.4.5): no
     // Content-Length, no body. 405 names what IS allowed (10.2.1),
-    // from the default resource until resources exist. 200 carries the
-    // floor body.
+    // from the bound resource's list. 200 carries the floor body.
     if (s == 204 || s == 304) build_status(s, "", "\r\n");
-    else if (s == 405) build_status(s, "Allow: GET, HEAD\r\n", "Content-Length: 0\r\n\r\n");
+    else if (s == 405) build_status(s, allow.c_str(), "Content-Length: 0\r\n\r\n");
     else if (s == 200) build_status(s, "", "Content-Length: 2\r\n\r\nOK");
     else build_status(s, "", "Content-Length: 0\r\n\r\n");
   };
@@ -161,13 +161,6 @@ Http1::Http1() {
     strip(ok.plain, ok_head_.plain);
     strip(ok.keep, ok_head_.keep);
     strip(ok.close, ok_head_.close);
-  }
-
-  // The konst vectors: webmachine-ruby's Resource defaults, the method
-  // folded in at build time - no request re-compares method strings at
-  // decision points.
-  for (uint8_t m = 0; m < 7; m++) {
-    konst_[m] = flow::default_konst(static_cast<flow::Method>(m));
   }
 
   sec_ = 0;
@@ -370,7 +363,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     // konst vector for this method already folded the resource's
     // constant answers - the VM sees nothing.
     const uint16_t status =
-        flow::walk(facts, konst_[static_cast<size_t>(facts.method)]);
+        flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
