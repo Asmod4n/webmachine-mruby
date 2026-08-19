@@ -1,12 +1,14 @@
-# The mruby bridge, proven on the wire: a Ruby resource class decides
-# the flow's konst answers at setup, and the requests that follow never
-# enter the VM. Refusals are named at startup, never silent.
+# The mruby bridge, proven on the wire: a Ruby resource class registers
+# itself via Webmachine.resource=, decides the flow's konst answers at
+# setup, and the requests that follow never enter the VM. Refusals are
+# named at startup, never silent.
 
 require 'socket'
 require 'tempfile'
 
 BRIDGE_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(BRIDGE_BIN)
 
+# Runs a server bound to the given app source; raises if it never comes up.
 def bridge_server(app_source)
   app = Tempfile.new(['wm-app', '.rb'])
   app.write(app_source)
@@ -17,11 +19,7 @@ def bridge_server(app_source)
   pid = spawn({ 'WM_BUNDLE' => '0' }, BRIDGE_BIN, '--unix', sock, '--app', app.path,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
-  unless File.socket?(sock)
-    Process.wait(pid) rescue nil
-    app.unlink
-    return [nil, File.read(err)]
-  end
+  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
     yield sock
   ensure
@@ -30,7 +28,21 @@ def bridge_server(app_source)
     File.unlink(sock) rescue nil
     app.unlink
   end
-  [pid, nil]
+end
+
+# Starts a server that MUST refuse; returns its stderr for the reason.
+def bridge_refused(app_source)
+  app = Tempfile.new(['wm-app', '.rb'])
+  app.write(app_source)
+  app.close
+  err = "/tmp/wm-bridge-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, BRIDGE_BIN, '--unix', "/tmp/wm-bridge-#{$$}.sock",
+              '--app', app.path, out: File::NULL, err: err)
+  Process.wait(pid)
+  raise 'server came up but must have refused' if $?.exitstatus == 0
+  File.read(err)
+ensure
+  app.unlink
 end
 
 def bridge_read(s)
@@ -55,7 +67,7 @@ assert('bridge: a Ruby resource widens allowed_methods and the flow obeys') do
         true
       end
     end
-    WideResource
+    Webmachine.resource = WideResource
   RUBY
   bridge_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
@@ -83,7 +95,7 @@ assert('bridge: service_available? false turns every request into 503 (B13)') do
         false
       end
     end
-    DownResource
+    Webmachine.resource = DownResource
   RUBY
   bridge_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
@@ -101,7 +113,7 @@ assert('bridge: a missing resource speaks 404/412 like the graph says') do
         false
       end
     end
-    GhostResource
+    Webmachine.resource = GhostResource
   RUBY
   bridge_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
@@ -122,15 +134,15 @@ assert('bridge: tier-1-only callbacks refuse the start by name') do
         'v1'
       end
     end
-    EtagResource
+    Webmachine.resource = EtagResource
   RUBY
-  pid, stderr_text = bridge_server(src) { |_| raise 'must not come up' }
-  assert_nil pid
-  assert_true stderr_text.include?('generate_etag'), stderr_text
+  assert_true bridge_refused(src).include?('generate_etag')
 end
 
 assert('bridge: an app that raises at load refuses the start with the error') do
-  pid, stderr_text = bridge_server("raise 'kaputt'") { |_| raise 'must not come up' }
-  assert_nil pid
-  assert_true stderr_text.include?('kaputt'), stderr_text
+  assert_true bridge_refused("raise 'kaputt'").include?('kaputt')
+end
+
+assert('bridge: an app that never registers is refused with the missing call named') do
+  assert_true bridge_refused("class Quiet; end").include?('Webmachine.resource')
 end

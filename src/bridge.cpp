@@ -4,6 +4,7 @@
 #include <mruby/class.h>
 #include <mruby/compile.h>
 #include <mruby/string.h>
+#include <mruby/variable.h>
 
 #include <cstdio>
 #include <cstring>
@@ -109,15 +110,19 @@ bool bind_resource(mrb_state* mrb, const char* path, KonstSet& out, char* err, s
     std::snprintf(err, errlen, "cannot open %s", path);
     return false;
   }
-  const mrb_value klass = mrb_load_file(mrb, f);
+  mrb_load_file(mrb, f);
   std::fclose(f);
   if (mrb->exc != nullptr) {
     exc_into(mrb, "app raised while loading", err, errlen);
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
+  // The app registered itself: Webmachine.resource = TheClass.
+  struct RClass* wm = mrb_module_get(mrb, "Webmachine");
+  const mrb_value klass =
+      mrb_iv_get(mrb, mrb_obj_value(wm), mrb_intern_lit(mrb, "@resource"));
   if (mrb_type(klass) != MRB_TT_CLASS) {
-    std::snprintf(err, errlen, "the app file must end with its resource class");
+    std::snprintf(err, errlen, "the app must set Webmachine.resource = <its resource class>");
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
