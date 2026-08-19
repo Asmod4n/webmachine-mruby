@@ -69,7 +69,10 @@ MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
 OUT=$(mktemp)
 {
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
+  # The compiler flags are part of every number since they became a
+  # variable (O2 -> O3+native landed mid-archive).
+  CFLAGS_LINE=$(grep -o "'-O[^']*'.*" build_config.rb | head -1 | tr -d "'" | tr '<' ' ' | tr -s ' ')
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
