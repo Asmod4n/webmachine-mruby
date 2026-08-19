@@ -1,6 +1,12 @@
 // The reactor: one thread, one io_uring, and every piece of state hung
 // off one instance - no globals, so N instances could exist someday,
 // though no line here knows about threads.
+//
+// EVERYTHING goes through the ring. The listener is born as a direct
+// descriptor (io_uring_prep_socket_direct), bound and set listening by
+// ring ops (IORING_OP_BIND/LISTEN, kernel 6.11+ - probed at init, named
+// error if absent, no POSIX fallback: one implementation, one path).
+// The only classic syscall left is mmap, which is memory, not IO.
 #ifndef WEBMACHINE_RING_HPP
 #define WEBMACHINE_RING_HPP
 
@@ -11,16 +17,28 @@
 #include <string>
 #include <vector>
 
+// Prediction hints ONLY where the taken side is terminal - an exit, a
+// raise, a connection's death, an invariant violation. A branch that
+// swings naturally at runtime (workload-dependent) carries NO hint: a
+// static hint on a swinging branch is a systematic mispredict.
+#define WM_LIKELY(x) __builtin_expect(!!(x), 1)
+#define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 namespace webmachine {
 
 // Slot count == the sparse direct-descriptor table size: a connection's
-// id IS its direct descriptor index, so lookup is an array index.
+// id IS its direct descriptor index, so lookup is an array index. One
+// extra slot, kListenerSlot, holds the listener itself.
 inline constexpr uint32_t kMaxConns = 4096;
+inline constexpr uint32_t kListenerSlot = kMaxConns;
 // Pool geometry measured in the old tree as not moving the profile
 // (2048 x 4096 vs ladders: null result), so the simple shape stays.
-inline constexpr uint32_t kBufCount = 2048;  // power of two: ring mask
+inline constexpr uint32_t kBufCount = 2048;
 inline constexpr uint32_t kBufSize = 4096;
 inline constexpr uint16_t kBufGroup = 0;
+static_assert((kBufCount & (kBufCount - 1)) == 0, "buffer walk wraps by mask");
+static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
+              "pool size arithmetic must not overflow");
 
 struct Conn {
   // Read on every event before anything else.
@@ -54,16 +72,14 @@ class Ring {
   Ring& operator=(const Ring&) = delete;
   ~Ring();
 
-  // False leaves the reason in err. Reads WM_BUNDLE (debug knob, only
-  // ever narrowing): recv bundles default to the kernel's feature bit;
-  // one known-broken kernel (container 6.18.5-fc) violates the
-  // dense-fill contract and sets WM_BUNDLE=0.
+  // False leaves the reason - naming the failed setup stage - in err.
+  // Reads WM_BUNDLE (debug knob, only ever narrowing): recv bundles
+  // default to the kernel's feature bit; one known-broken kernel
+  // (container 6.18.5-fc) violates the dense-fill contract and sets
+  // WM_BUNDLE=0.
   bool init(const RingConfig& cfg, char* err, size_t errlen);
 
   [[noreturn]] void run();
-
-  // Requests answered, for the counter line a bench run prints.
-  uint64_t served() const { return served_; }
 
  private:
   void tick();
@@ -84,7 +100,6 @@ class Ring {
   bool ring_up_ = false;
   bool bundles_ = false;
   bool echo_ = false;
-  int listen_fd_ = -1;
   char* pool_ = nullptr;  // kBufCount * kBufSize, mmap'd once
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   // Buffers consumed this tick, handed back (advance-only: the ring
@@ -95,7 +110,6 @@ class Ring {
   // Connections whose multishot recv ended this tick and must be
   // re-armed after the batch (their prep would race the buffer advance).
   std::vector<uint32_t> rearm_;
-  uint64_t served_ = 0;
 };
 
 }  // namespace webmachine

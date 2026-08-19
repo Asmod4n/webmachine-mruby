@@ -43,11 +43,21 @@ trap 'kill $SRV $DUMMY 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
 
-echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
-if [ "$TRANSPORT" = unix ]; then
-  WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-    "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
-else
-  "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-    "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
-fi
+# Results outlive the terminal: every run appends to a per-host log in
+# the repo (committable, never gitignored - the numbers are the
+# archive). 16+ forgecore runs once died in scrollback; never again.
+RESULTS="bench/results/$(hostname).log"
+mkdir -p bench/results
+REPO_REV=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
+MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
+{
+  echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
+  if [ "$TRANSPORT" = unix ]; then
+    WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
+  else
+    "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
+  fi
+} | tee -a "$RESULTS"

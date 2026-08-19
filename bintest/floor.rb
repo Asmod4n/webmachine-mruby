@@ -87,6 +87,35 @@ assert('floor: a receive is answered 200, keep-alive holds') do
   end
 end
 
+assert('floor: the ring-built TCP listener answers like the unix one') do
+  # bind/listen/setsockopt all ran as ring ops; this proves them on the
+  # wire. A pid-derived port keeps parallel suites apart.
+  port = 20000 + ($$ % 20000)
+  err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--port', port.to_s,
+              out: File::NULL, err: err)
+  begin
+    s = nil
+    100.times do
+      begin
+        s = TCPSocket.new('127.0.0.1', port)
+        break
+      rescue Errno::ECONNREFUSED
+        sleep 0.05
+      end
+    end
+    raise "tcp floor never came up\n#{File.read(err) rescue ''}" unless s
+    s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    head = +''
+    head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+    assert_true head.start_with?('HTTP/1.1 200 OK')
+    s.close
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+  end
+end
+
 if ENV['WM_TEST_BUNDLES'] == '1'
   assert('floor: the same bytes survive with recv bundles on (density check)') do
     floor_echo_assertions(true)

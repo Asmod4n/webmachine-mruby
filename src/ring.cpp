@@ -5,7 +5,6 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -21,70 +20,45 @@ constexpr size_t kResponseLen = sizeof(kResponse) - 1;
 
 // user_data: kind(8) | gen(16) | idx(32). gen guards a reused slot
 // against CQEs of the connection that owned it before.
-enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4 };
+enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5 };
 
 uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
 }
 
-int make_listener(const RingConfig& cfg, char* err, size_t errlen) {
-  int fd = -1;
-  if (cfg.unix_path != nullptr) {
-    struct sockaddr_un sa {};
-    sa.sun_family = AF_UNIX;
-    const size_t plen = std::strlen(cfg.unix_path);
-    if (plen >= sizeof(sa.sun_path)) {
-      std::snprintf(err, errlen, "unix path too long (%zu)", plen);
-      return -1;
-    }
-    std::memcpy(sa.sun_path, cfg.unix_path, plen + 1);
-    ::unlink(cfg.unix_path);
-    fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0 || ::bind(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0) {
-      std::snprintf(err, errlen, "unix bind %s: %s", cfg.unix_path, std::strerror(errno));
-      if (fd >= 0) ::close(fd);
-      return -1;
-    }
-  } else {
-    fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-      std::snprintf(err, errlen, "socket: %s", std::strerror(errno));
-      return -1;
-    }
-    const int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct sockaddr_in sa {};
-    sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = htonl(INADDR_ANY);
-    sa.sin_port = htons(static_cast<uint16_t>(cfg.port));
-    if (::bind(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0) {
-      std::snprintf(err, errlen, "bind port %d: %s", cfg.port, std::strerror(errno));
-      ::close(fd);
-      return -1;
-    }
+// The setup chain's stages, carried in the idx half of the tag so a
+// failing CQE can name what failed.
+enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4 };
+
+const char* stage_name(uint32_t st) {
+  switch (st) {
+    case kStSocket: return "socket";
+    case kStSockopt: return "setsockopt";
+    case kStBind: return "bind";
+    case kStListen: return "listen";
   }
-  if (::listen(fd, 511) != 0) {
-    std::snprintf(err, errlen, "listen: %s", std::strerror(errno));
-    ::close(fd);
-    return -1;
-  }
-  return fd;
+  return "?";
 }
 
 }  // namespace
 
 Ring::~Ring() {
+  if (ring_up_) {
+    // The listener leaves through the ring like everything else did.
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s != nullptr) {
+      io_uring_prep_close_direct(s, kListenerSlot);
+      io_uring_sqe_set_data64(s, tag(kClose, 0, kListenerSlot));
+      io_uring_submit(&ring_);
+    }
+  }
   if (buf_ring_ != nullptr) io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
   if (pool_ != nullptr) ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
   if (ring_up_) io_uring_queue_exit(&ring_);
-  if (listen_fd_ >= 0) ::close(listen_fd_);
 }
 
 bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
   echo_ = cfg.echo;
-
-  listen_fd_ = make_listener(cfg, err, errlen);
-  if (listen_fd_ < 0) return false;
 
   struct io_uring_params p {};
   p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
@@ -97,13 +71,26 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
   // One fewer fd-table lookup per enter(2); nothing else shares this fd.
   io_uring_register_ring_fd(&ring_);
 
-  rc = io_uring_register_files_sparse(&ring_, kMaxConns);
+  // IORING_OP_BIND/LISTEN are 6.11; the setup below has exactly one
+  // path, so their absence is a named refusal, not a fallback.
+  {
+    struct io_uring_probe* probe = io_uring_get_probe_ring(&ring_);
+    const bool ok = probe != nullptr && io_uring_opcode_supported(probe, IORING_OP_BIND) &&
+                    io_uring_opcode_supported(probe, IORING_OP_LISTEN);
+    if (probe != nullptr) io_uring_free_probe(probe);
+    if (!ok) {
+      std::snprintf(err, errlen, "kernel lacks IORING_OP_BIND/LISTEN (needs 6.11+)");
+      return false;
+    }
+  }
+
+  rc = io_uring_register_files_sparse(&ring_, kMaxConns + 1);  // +1: the listener's slot
   if (rc != 0) {
     std::snprintf(err, errlen, "register_files_sparse: %s", std::strerror(-rc));
     return false;
   }
 
-  const size_t pool_bytes = static_cast<size_t>(kBufCount) * kBufSize;
+  const size_t pool_bytes = static_cast<size_t>(kBufCount) * kBufSize;  // static_assert-bounded
   void* mem = ::mmap(nullptr, pool_bytes, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
@@ -136,6 +123,117 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
     if (e[0] == '0') bundles_ = false;
   }
 
+  // --- the listener, made entirely of ring ops -----------------------
+  //
+  // A stale unix path goes first and UNLINKED from the chain: a linked
+  // op that fails (ENOENT is normal here) would cancel everything
+  // behind it.
+  const bool is_unix = cfg.unix_path != nullptr;
+  struct sockaddr_un sun {};
+  struct sockaddr_in sin {};
+  struct sockaddr* sa = nullptr;
+  socklen_t salen = 0;
+  if (is_unix) {
+    sun.sun_family = AF_UNIX;
+    const size_t plen = std::strlen(cfg.unix_path);
+    if (plen >= sizeof(sun.sun_path)) {
+      std::snprintf(err, errlen, "unix path too long (%zu)", plen);
+      return false;
+    }
+    std::memcpy(sun.sun_path, cfg.unix_path, plen + 1);
+    sa = reinterpret_cast<struct sockaddr*>(&sun);
+    salen = sizeof(sun);
+
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) {
+      std::snprintf(err, errlen, "SQ empty at setup");
+      return false;
+    }
+    io_uring_prep_unlink(s, cfg.unix_path, 0);
+    io_uring_sqe_set_data64(s, tag(kSetup, 0, 0));
+    io_uring_submit_and_wait(&ring_, 1);
+    struct io_uring_cqe* cqe = nullptr;
+    if (io_uring_peek_cqe(&ring_, &cqe) == 0) {
+      // Only ENOENT is ordinary; anything else on the path is a refusal.
+      if (cqe->res < 0 && cqe->res != -ENOENT) {
+        std::snprintf(err, errlen, "unlink %s: %s", cfg.unix_path, std::strerror(-cqe->res));
+        return false;
+      }
+      io_uring_cqe_seen(&ring_, cqe);
+    }
+  } else {
+    if (cfg.port <= 0 || cfg.port > 65535) {
+      std::snprintf(err, errlen, "port %d out of range", cfg.port);
+      return false;
+    }
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(INADDR_ANY);
+    sin.sin_port = htons(static_cast<uint16_t>(cfg.port));
+    sa = reinterpret_cast<struct sockaddr*>(&sin);
+    salen = sizeof(sin);
+  }
+
+  // socket -> (setsockopt) -> bind -> listen, one linked chain, one
+  // submit. The addresses live on this frame; init blocks until the
+  // chain's CQEs, so the borrow ends before the frame does.
+  static const int kOne = 1;  // static: SO_REUSEADDR optval, borrowed by the ring op
+  unsigned chain = 0;
+  {
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+    io_uring_prep_socket_direct(s, is_unix ? AF_UNIX : AF_INET, SOCK_STREAM, 0, kListenerSlot, 0);
+    s->flags |= IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, tag(kSetup, 0, kStSocket));
+    chain++;
+
+    if (!is_unix) {
+      s = io_uring_get_sqe(&ring_);
+      if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+      io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, kListenerSlot, SOL_SOCKET,
+                             SO_REUSEADDR, const_cast<int*>(&kOne), sizeof(kOne));
+      s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+      io_uring_sqe_set_data64(s, tag(kSetup, 0, kStSockopt));
+      chain++;
+    }
+
+    s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+    io_uring_prep_bind(s, kListenerSlot, sa, salen);
+    s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, tag(kSetup, 0, kStBind));
+    chain++;
+
+    s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+    io_uring_prep_listen(s, kListenerSlot, 511);
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, tag(kSetup, 0, kStListen));
+    chain++;
+  }
+  io_uring_submit_and_wait(&ring_, chain);
+  {
+    bool failed = false;
+    struct io_uring_cqe* cqe = nullptr;
+    unsigned head = 0;
+    unsigned seen = 0;
+    io_uring_for_each_cqe(&ring_, head, cqe) {
+      seen++;
+      if (cqe->res < 0 && !failed) {
+        // -ECANCELED names the victim of an earlier failure, not a cause.
+        if (cqe->res != -ECANCELED) {
+          const uint32_t st = static_cast<uint32_t>(io_uring_cqe_get_data64(cqe));
+          std::snprintf(err, errlen, "%s: %s", stage_name(st), std::strerror(-cqe->res));
+          failed = true;
+        } else if (err[0] == '\0') {
+          std::snprintf(err, errlen, "setup chain canceled");
+          failed = true;
+        }
+      }
+    }
+    io_uring_cq_advance(&ring_, seen);
+    if (failed) return false;
+  }
+
   conns_.resize(kMaxConns);
   rearm_.reserve(64);
 
@@ -145,10 +243,10 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
 
 struct io_uring_sqe* Ring::sqe() {
   struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-  if (s != nullptr) return s;
+  if (WM_LIKELY(s != nullptr)) return s;
   io_uring_submit(&ring_);
   s = io_uring_get_sqe(&ring_);
-  if (s == nullptr) {
+  if (WM_UNLIKELY(s == nullptr)) {
     std::fprintf(stderr, "webmachine: SQ stuck after submit; ring is broken\n");
     std::exit(1);
   }
@@ -157,7 +255,8 @@ struct io_uring_sqe* Ring::sqe() {
 
 void Ring::arm_accept() {
   struct io_uring_sqe* s = sqe();
-  io_uring_prep_multishot_accept_direct(s, listen_fd_, nullptr, nullptr, 0);
+  io_uring_prep_multishot_accept_direct(s, kListenerSlot, nullptr, nullptr, 0);
+  s->flags |= IOSQE_FIXED_FILE;
   io_uring_sqe_set_data64(s, tag(kAccept, 0, 0));
 }
 
@@ -199,9 +298,9 @@ void Ring::begin_close(uint32_t idx) {
 
 void Ring::on_accept(struct io_uring_cqe* cqe) {
   if (!(cqe->flags & IORING_CQE_F_MORE)) arm_accept();
-  if (cqe->res < 0) return;  // transient (EMFILE and friends); multishot carries on
+  if (cqe->res < 0) return;  // transient (EMFILE and friends); multishot may carry on  // transient (EMFILE and friends); multishot carries on
   const uint32_t idx = static_cast<uint32_t>(cqe->res);
-  if (idx >= kMaxConns) return;  // the kernel named a slot we never registered
+  if (WM_UNLIKELY(idx >= kMaxConns)) return;  // the kernel named a slot we never registered
   Conn& c = conns_[idx];
   c.gen++;
   c.live = true;
@@ -214,14 +313,20 @@ void Ring::on_accept(struct io_uring_cqe* cqe) {
 }
 
 void Ring::on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-  if (idx >= kMaxConns) return;
+  if (WM_UNLIKELY(idx >= kMaxConns)) return;
   Conn& c = conns_[idx];
   if (!c.live || c.gen != gen) return;  // a previous tenant's completion
 
-  if (cqe->res <= 0) {
+  if (WM_UNLIKELY(cqe->res <= 0)) {
     if (cqe->res == -ENOBUFS) {
-      // Pool ran dry mid-tick; buffers come back at the next tick's
-      // advance, so the re-arm waits behind it.
+      // Reachable by arithmetic: kMaxConns (4096) > kBufCount (2048),
+      // and every completion consumes at least one whole buffer no
+      // matter how few bytes it carries. Under DEFER_TASKRUN all
+      // completions of a wait window are produced before userspace runs
+      // again, and buffers only return at the NEXT tick's advance - so
+      // >2048 readable connections in one window (or one bundle burst
+      // past 8 MiB) drain the pool and the rest post ENOBUFS. Without
+      // this re-arm their multishot is dead and the connection hangs.
       rearm_.push_back(idx);
       return;
     }
@@ -230,7 +335,7 @@ void Ring::on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     return;
   }
 
-  if (!(cqe->flags & IORING_CQE_F_BUFFER)) {
+  if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
     begin_close(idx);
     return;
   }
@@ -238,29 +343,37 @@ void Ring::on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
   const size_t total = static_cast<size_t>(cqe->res);
   // Kernel-supplied values, checked before use: an id or length past the
   // pool would hand out someone else's memory.
-  if (bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize) {
+  if (WM_UNLIKELY(bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize)) {
     begin_close(idx);
     return;
   }
 
-  // Bundle reconstruction, the documented contract (io_uring_prep_recv(3),
-  // examples/proxy.c): consecutive ids from bid0, each buffer filled
-  // completely except the last.
   std::string& sink = c.sending ? c.next : c.out;
-  size_t left = total;
-  uint32_t bid = bid0;
-  while (left > 0) {
-    const size_t n = left < kBufSize ? left : kBufSize;
-    const char* p = pool_ + static_cast<size_t>(bid) * kBufSize;
-    if (echo_) sink.append(p, n);
-    left -= n;
-    bid = (bid + 1) & (kBufCount - 1);
-    replenish_++;
-  }
   if (!echo_) {
+    // Production path: no per-buffer walk at all. The bundle's buffer
+    // count is arithmetic (dense-fill contract, io_uring_prep_recv(3)):
+    // every buffer full except the last.
+    replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
     // One answer per receive completion - the floor's whole protocol.
     sink.append(kResponse, kResponseLen);
-    served_++;
+  } else {
+    // Echo (the bintest's byte-proof): walk the bundle, consecutive ids
+    // from bid0, and give back exactly what arrived.
+    size_t left = total;
+    uint32_t bid = bid0;
+    while (left > 0) {
+      const size_t n = left < kBufSize ? left : kBufSize;
+      size_t off = 0;
+      if (WM_UNLIKELY(__builtin_mul_overflow(static_cast<size_t>(bid),
+                                             static_cast<size_t>(kBufSize), &off))) {
+        begin_close(idx);
+        return;
+      }
+      sink.append(pool_ + off, n);
+      left -= n;
+      bid = (bid + 1) & (kBufCount - 1);
+      replenish_++;
+    }
   }
 
   if (!c.sending && !c.out.empty()) arm_send(idx);
@@ -268,20 +381,24 @@ void Ring::on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
 }
 
 void Ring::on_send(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-  if (idx >= kMaxConns) return;
+  if (WM_UNLIKELY(idx >= kMaxConns)) return;
   Conn& c = conns_[idx];
   if (c.gen != gen) return;
   c.sending = false;
 
-  if (cqe->res < 0) {
+  if (WM_UNLIKELY(cqe->res < 0)) {
     begin_close(idx);
     return;
   }
-  c.sent += static_cast<size_t>(cqe->res);
-  if (c.sent > c.out.size()) {  // the kernel cannot have taken more than offered
+  const size_t took = static_cast<size_t>(cqe->res);
+  size_t new_sent = 0;
+  // The kernel cannot have taken more than it was offered, and the sum
+  // must not wrap - both are one check each, before anything uses them.
+  if (WM_UNLIKELY(took > c.out.size() - c.sent || __builtin_add_overflow(c.sent, took, &new_sent))) {
     begin_close(idx);
     return;
   }
+  c.sent = new_sent;
   if (c.sent < c.out.size()) {
     arm_send(idx);
     return;
