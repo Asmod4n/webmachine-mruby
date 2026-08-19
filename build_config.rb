@@ -11,5 +11,6 @@ MRuby::Build.new do |conf|
 
   conf.gembox 'default'
   conf.gem mgem: 'mruby-io-uring'
+  conf.gem mgem: 'mruby-phr'
   conf.gem File.expand_path(File.dirname(__FILE__))
 end

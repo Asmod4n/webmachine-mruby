@@ -10,3 +10,8 @@ builds:
       branch: main
       commit: 439a98c552f2a2377431e9f6a5768ec293600986
       version: 0.10.0
+    https://github.com/Asmod4n/mruby-phr.git:
+      url: https://github.com/Asmod4n/mruby-phr.git
+      branch: master
+      commit: 8ea875fd117c06f25d5c0b0d3dfd00025526b370
+      version: 0.0.0

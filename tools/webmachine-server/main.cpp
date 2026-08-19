@@ -1,6 +1,7 @@
-// The server binary. Today it is the floor: accept, read, answer a
-// fixed 200 (or echo, for the byte-proof bintest). Every later layer
-// grows inside Ring; this file stays the CLI.
+// The server binary: the CLI picks an App and hands it to the Ring.
+// --echo mounts the byte-proof Echo app (the bintest's mirror);
+// otherwise the HTTP/1.1 app runs. The Ring itself knows only bytes.
+#include <mruby.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
@@ -9,17 +10,50 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "../../src/http1.hpp"
 #include "../../src/ring.hpp"
+
+namespace {
+
+// The byte proof: what arrived goes back, nothing else. Lives here
+// because it is a test fixture, not a protocol.
+struct Echo {
+  struct Conn {
+    void reset() {}
+  };
+  bool feed(Conn&, const char* data, size_t len, std::string& sink) {
+    sink.append(data, len);
+    return true;
+  }
+  void on_tick() {}
+};
+
+template <class App>
+int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
+  webmachine::Ring<App> ring(app);
+  char err[256] = "";
+  if (!ring.init(cfg, err, sizeof(err))) {
+    std::fprintf(stderr, "webmachine: %s\n", err);
+    return 1;
+  }
+  std::fprintf(stderr, "webmachine: %s up, pid %d, %s\n", label, getpid(),
+               cfg.unix_path != nullptr ? cfg.unix_path : "tcp");
+  ring.run();
+  return 0;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   webmachine::RingConfig cfg;
+  bool echo = false;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
       cfg.unix_path = argv[++i];
     } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       cfg.port = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--echo") == 0) {
-      cfg.echo = true;
+      echo = true;
     } else {
       std::fprintf(stderr, "usage: %s (--unix PATH | --port N) [--echo]\n", argv[0]);
       return 2;
@@ -40,14 +74,23 @@ int main(int argc, char** argv) {
   sigprocmask(SIG_BLOCK, &mask, nullptr);
   cfg.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
-  webmachine::Ring ring;
-  char err[256];
-  if (!ring.init(cfg, err, sizeof(err))) {
-    std::fprintf(stderr, "webmachine: %s\n", err);
+  // Setup-only: the VM boots with the process and will hold the app;
+  // the request path enters it ZERO times today (VM entry is poison,
+  // budgeted - the copy floor prices one at ~0.2-0.3us).
+  mrb_state* mrb = mrb_open();
+  if (mrb == nullptr) {
+    std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
-  std::fprintf(stderr, "webmachine: floor up, pid %d, %s%s\n", getpid(),
-               cfg.unix_path ? cfg.unix_path : "tcp", cfg.echo ? ", echo" : "");
-  ring.run();
-  return 0;
+
+  int rc = 0;
+  if (echo) {
+    Echo app;
+    rc = serve(cfg, app, "echo floor");
+  } else {
+    webmachine::Http1 app;
+    rc = serve(cfg, app, "http/1.1");
+  }
+  mrb_close(mrb);
+  return rc;
 }
