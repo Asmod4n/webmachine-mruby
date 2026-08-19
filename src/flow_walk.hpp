@@ -114,76 +114,11 @@ constexpr uint16_t walk_compiled(const ReqFacts& req) {
   return detail::step<K, Node::kB13>(req);
 }
 
-// The bitset walk: every answer is one bit (57 nodes fit a word), so a
-// RUNTIME-defined resource - the Ruby case, where the konst vector is
-// data, not a template parameter - still walks without a single switch:
-// request bits are built branchless once per request and merged over
-// the resource's konst bits by mask.
-static_assert(kNodeCount <= 64, "answers must fit one word");
-
-constexpr uint64_t bit(Node n) { return uint64_t{1} << static_cast<size_t>(n); }
-
-constexpr uint64_t request_mask() {
-  uint64_t m = 0;
-  for (size_t i = 0; i < kNodeCount; i++) {
-    if (kFlow[i].kind == Kind::kRequest) m |= uint64_t{1} << i;
-  }
-  return m;
-}
-inline constexpr uint64_t kRequestMask = request_mask();
-
-constexpr uint64_t konst_bits(const KonstAnswers& k) {
-  uint64_t b = 0;
-  for (size_t i = 0; i < kNodeCount; i++) {
-    if (k.ans[i]) b |= uint64_t{1} << i;
-  }
-  return b;
-}
-
-constexpr uint64_t request_bits(const ReqFacts& r) {
-  uint64_t b = 0;
-  b |= uint64_t{r.has_content_md5} << static_cast<size_t>(Node::kB9);
-  b |= uint64_t{r.method == Method::kOptions} << static_cast<size_t>(Node::kB3);
-  b |= uint64_t{r.has_accept} << static_cast<size_t>(Node::kC3);
-  b |= uint64_t{r.has_accept_language} << static_cast<size_t>(Node::kD4);
-  b |= uint64_t{r.has_accept_charset} << static_cast<size_t>(Node::kE5);
-  b |= uint64_t{r.has_accept_encoding} << static_cast<size_t>(Node::kF6);
-  b |= uint64_t{r.has_if_match} << static_cast<size_t>(Node::kG8);
-  b |= uint64_t{r.if_match_star} << static_cast<size_t>(Node::kG9);
-  b |= uint64_t{r.has_if_match && r.if_match_star} << static_cast<size_t>(Node::kH7);
-  b |= uint64_t{r.has_if_unmodified_since} << static_cast<size_t>(Node::kH10);
-  b |= uint64_t{r.ius_valid} << static_cast<size_t>(Node::kH11);
-  b |= uint64_t{r.method == Method::kPut} << static_cast<size_t>(Node::kI7);
-  b |= uint64_t{r.has_if_none_match} << static_cast<size_t>(Node::kI12);
-  b |= uint64_t{r.inm_star} << static_cast<size_t>(Node::kI13);
-  b |= uint64_t{r.method == Method::kGet || r.method == Method::kHead}
-       << static_cast<size_t>(Node::kJ18);
-  b |= uint64_t{r.method == Method::kPost} << static_cast<size_t>(Node::kL7);
-  b |= uint64_t{r.has_if_modified_since} << static_cast<size_t>(Node::kL13);
-  b |= uint64_t{r.ims_valid} << static_cast<size_t>(Node::kL14);
-  b |= uint64_t{r.ims_future} << static_cast<size_t>(Node::kL15);
-  b |= uint64_t{r.method == Method::kPost} << static_cast<size_t>(Node::kM5);
-  b |= uint64_t{r.method == Method::kDelete} << static_cast<size_t>(Node::kM16);
-  b |= uint64_t{r.method == Method::kPost} << static_cast<size_t>(Node::kN16);
-  b |= uint64_t{r.method == Method::kPut} << static_cast<size_t>(Node::kO16);
-  b |= uint64_t{r.response_has_body} << static_cast<size_t>(Node::kO20);
-  b |= uint64_t{r.response_has_location} << static_cast<size_t>(Node::kP11);
-  return b;
-}
-
-constexpr uint64_t merge(uint64_t req_bits, uint64_t konst) {
-  return (req_bits & kRequestMask) | (konst & ~kRequestMask);
-}
-
-constexpr uint16_t walk_bits(uint64_t answers) {
-  Node n = Node::kB13;
-  for (;;) {  // terminates: proven acyclic in flow.hpp
-    const FlowNode& f = kFlow[static_cast<size_t>(n)];
-    const Target& t = ((answers >> static_cast<size_t>(n)) & 1) != 0 ? f.on_true : f.on_false;
-    if (t.status != 0) return t.status;
-    n = t.node;
-  }
-}
+// A bitset walk (all answers one word, branchless request bits, no
+// switch) was measured and REMOVED: it lost to the plain interpreted
+// walk on both machines (forgecore 37.2 vs 34.0ns, Pi 87.7 vs 81.9ns) -
+// the branchless bit build cost more than the predicted switch saved.
+// History holds the code; the numbers hold the verdict.
 
 // webmachine-ruby's Resource defaults, folded per method - the konst
 // vector a resource that overrides nothing compiles to. allowed_methods
@@ -251,15 +186,6 @@ static_assert(walk_compiled<default_konst(Method::kDelete)>(del) == 405);
 static_assert(walk_compiled<default_konst(Method::kGet)>(inm_star) == 304);
 static_assert(walk_compiled<missing>(im_star_missing) == 412);
 static_assert(walk_compiled<missing>(get_plain) == 404);
-// And so must the bitset walk, which serves runtime-defined resources.
-constexpr uint16_t wb(const ReqFacts& r, const KonstAnswers& k) {
-  return walk_bits(merge(request_bits(r), konst_bits(k)));
-}
-static_assert(wb(get_plain, default_konst(Method::kGet)) == 200);
-static_assert(wb(del, default_konst(Method::kDelete)) == 405);
-static_assert(wb(inm_star, default_konst(Method::kGet)) == 304);
-static_assert(wb(im_star_missing, missing) == 412);
-static_assert(wb(get_plain, missing) == 404);
 }  // namespace proof
 
 }  // namespace webmachine::flow

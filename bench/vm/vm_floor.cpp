@@ -163,22 +163,6 @@ void BM_flow_tier0_304_compiled(benchmark::State& state) {
 }
 BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 
-// The runtime-resource shape: konst bits are data (Ruby defines the
-// resource), request bits are built branchless per request, the walk
-// chases bits with no switch. Includes the per-request bit build.
-void BM_flow_tier0_get_bits(benchmark::State& state) {
-  const uint64_t konst = webmachine::flow::konst_bits(
-      webmachine::flow::default_konst(webmachine::flow::Method::kGet));
-  webmachine::flow::ReqFacts req;
-  for (auto _ : state) {
-    benchmark::DoNotOptimize(req);
-    uint16_t status = webmachine::flow::walk_bits(
-        webmachine::flow::merge(webmachine::flow::request_bits(req), konst));
-    benchmark::DoNotOptimize(status);
-  }
-}
-BENCHMARK(BM_flow_tier0_get_bits)->Unit(benchmark::kNanosecond);
-
 }  // namespace
 
 int main(int argc, char** argv) {
