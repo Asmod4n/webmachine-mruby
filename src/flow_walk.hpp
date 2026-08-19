@@ -161,13 +161,16 @@ constexpr KonstAnswers default_konst(Method m) {
   return k;
 }
 
-// Everything a bound resource compiles down to: one konst vector per
-// method, plus the Allow line B10's 405 speaks. Defaults are
-// webmachine-ruby's Resource defaults; the mruby bridge overwrites
-// them from a loaded resource class at setup - never per request.
+// Everything a resource compiles down to: one konst vector per method,
+// the Allow line B10's 405 speaks, and the rendered representation
+// (body + its content type). Defaults are webmachine-ruby's Resource
+// defaults; resource_setup overwrites them from the app's subclass at
+// setup - never per request.
 struct KonstSet {
   KonstAnswers per_method[7];
   std::string allow = "GET, HEAD";
+  std::string body = "OK";
+  std::string content_type;  // empty: no Content-Type header (the bare floor)
   KonstSet() {
     for (uint8_t m = 0; m < 7; m++) per_method[m] = default_konst(static_cast<Method>(m));
   }

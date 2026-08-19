@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "../../src/http1.hpp"
+#include "../../src/resource.hpp"
 #include "../../src/ring.hpp"
 
 namespace {
@@ -47,15 +48,19 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
 int main(int argc, char** argv) {
   webmachine::RingConfig cfg;
   bool echo = false;
+  const char* app_path = nullptr;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
       cfg.unix_path = argv[++i];
     } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       cfg.port = std::atoi(argv[++i]);
+    } else if (std::strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
+      app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
-      std::fprintf(stderr, "usage: %s (--unix PATH | --port N) [--echo]\n", argv[0]);
+      std::fprintf(stderr, "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--echo]\n",
+                   argv[0]);
       return 2;
     }
   }
@@ -74,13 +79,24 @@ int main(int argc, char** argv) {
   sigprocmask(SIG_BLOCK, &mask, nullptr);
   cfg.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
-  // Setup-only: the VM boots with the process and will hold the app;
-  // the request path enters it ZERO times (VM entry is poison,
-  // budgeted - the copy floor prices one at ~0.1-0.3us).
+  // The VM boots with the process and holds the resource. Setup asks it
+  // ONCE for the resource's konst answers and rendered body; the
+  // request path enters it ZERO times (VM entry is poison, budgeted -
+  // the copy floor prices one at ~0.1-0.3us).
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {
     std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
+  }
+
+  webmachine::flow::KonstSet konst;  // webmachine-ruby's defaults unbound
+  if (app_path != nullptr) {
+    char err[512];
+    if (!webmachine::resource_setup(mrb, app_path, konst, err, sizeof(err))) {
+      std::fprintf(stderr, "webmachine: %s: %s\n", app_path, err);
+      mrb_close(mrb);
+      return 1;
+    }
   }
 
   int rc = 0;
@@ -88,7 +104,7 @@ int main(int argc, char** argv) {
     Echo app;
     rc = serve(cfg, app, "echo floor");
   } else {
-    webmachine::Http1 app;
+    webmachine::Http1 app(konst);
     rc = serve(cfg, app, "http/1.1");
   }
   mrb_close(mrb);

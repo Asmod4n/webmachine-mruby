@@ -130,16 +130,24 @@ Http1::Http1(const flow::KonstSet& ks) : konst_(ks) {
   // only the 29 date bytes ever change.
   store_.reserve(32);
   const std::string allow = "Allow: " + konst_.allow + "\r\n";
+  // 200 carries the resource's rendered representation (RFC 9110 8.3:
+  // a body announces its Content-Type).
+  std::string ok_extra;
+  if (!konst_.content_type.empty()) {
+    ok_extra = "Content-Type: " + konst_.content_type + "\r\n";
+  }
+  const std::string ok_tail =
+      "Content-Length: " + std::to_string(konst_.body.size()) + "\r\n\r\n" + konst_.body;
   bool have[600] = {};
   const auto add = [&](uint16_t s) {
     if (have[s]) return;
     have[s] = true;
     // 204/304 are defined bodyless (RFC 9110 15.3.5/15.4.5): no
     // Content-Length, no body. 405 names what IS allowed (10.2.1),
-    // from the bound resource's list. 200 carries the floor body.
+    // from the resource's list.
     if (s == 204 || s == 304) build_status(s, "", "\r\n");
     else if (s == 405) build_status(s, allow.c_str(), "Content-Length: 0\r\n\r\n");
-    else if (s == 200) build_status(s, "", "Content-Length: 2\r\n\r\nOK");
+    else if (s == 200) build_status(s, ok_extra.c_str(), ok_tail.c_str());
     else build_status(s, "", "Content-Length: 0\r\n\r\n");
   };
   for (const auto& f : flow::kFlow) {
@@ -154,8 +162,9 @@ Http1::Http1(const flow::KonstSet& ks) : konst_(ks) {
   // HEAD answers with 200's head and no body bytes (RFC 9110 9.3.2).
   {
     const Variants& ok = variants(200);
-    const auto strip = [](const Resp& src, Resp& dst) {
-      dst.bytes.assign(src.bytes, 0, src.bytes.size() - 2);  // "OK" stays home
+    const size_t blen = konst_.body.size();
+    const auto strip = [&](const Resp& src, Resp& dst) {
+      dst.bytes.assign(src.bytes, 0, src.bytes.size() - blen);
       dst.date_off = src.date_off;
     };
     strip(ok.plain, ok_head_.plain);
