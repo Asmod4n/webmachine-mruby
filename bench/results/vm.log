@@ -1,0 +1,12 @@
+==== 2026-08-19T21:02Z repo=166c035 mruby=524586c ====
+harness: vm_floor google-benchmark v1.9.5 6.18.5-fc-v20 x86_64
+BM_vm_entry                   0.174 us        0.174 us     12903366
+BM_copy_floor_small           0.301 us        0.301 us      9238159 bytes_per_second=85.506Mi/s
+BM_copy_floor_browser         0.309 us        0.309 us      8838187 bytes_per_second=1.52436Gi/s
+BM_copy_floor_cached_sym      0.176 us        0.176 us     16561163
+==== 2026-08-19T21:10Z repo=166c035 mruby=524586c ====
+harness: wrk -t2 -c64 -d8s impl=uring transport=tcp WM_BUNDLE=default 6.18.5-fc-v20 x86_64
+    Req/Sec    93.07k    11.37k  115.72k    82.50%
+     50%  313.00us
+     99%  793.00us
+Requests/sec: 184498.15

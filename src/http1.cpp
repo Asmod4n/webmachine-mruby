@@ -5,7 +5,7 @@
 #include <cstring>
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
-#define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace webmachine {
 namespace {
@@ -35,20 +35,19 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
   return false;
 }
 
+// The date field's fixed shape; refresh patches exactly these 29 bytes.
+constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
+constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
+
 }  // namespace
 
-void Http1::refresh(time_t now) {
-  if (now == sec_) return;
-  sec_ = now;
-  char date[48];
-  struct tm tm;
-  gmtime_r(&now, &tm);
-  std::strftime(date, sizeof(date), "Date: %a, %d %b %Y %H:%M:%S GMT\r\n", &tm);
-
-  const auto build = [&](std::string& dst, const char* status, const char* conn,
-                         const char* tail) {
-    dst.clear();  // capacity survives: once a second, zero allocations warm
-    dst.append("HTTP/1.1 ").append(status).append("\r\n").append(date).append(conn).append(tail);
+Http1::Http1() {
+  // Built ONCE; from here on only the 29 date bytes ever change.
+  const auto build = [](Resp& r, const char* status, const char* conn, const char* tail) {
+    r.bytes.clear();
+    r.bytes.append("HTTP/1.1 ").append(status).append("\r\nDate: ");
+    r.date_off = r.bytes.size();
+    r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(tail);
   };
   build(ok_plain_, "200 OK", "", "Content-Length: 2\r\n\r\nOK");
   build(ok_keep_, "200 OK", "Connection: keep-alive\r\n", "Content-Length: 2\r\n\r\nOK");
@@ -58,15 +57,58 @@ void Http1::refresh(time_t now) {
   build(r413_, "413 Content Too Large", "Connection: close\r\n", "Content-Length: 0\r\n\r\n");
   build(r431_, "431 Request Header Fields Too Large", "Connection: close\r\n",
         "Content-Length: 0\r\n\r\n");
+  sec_ = 0;
+  on_tick();
 }
 
-H1Verdict Http1::fail(H1State& st, const std::string& resp, std::string& sink) {
-  sink.append(resp);
+void Http1::on_tick() {
+  const time_t now = ::time(nullptr);
+  if (now == sec_) return;
+  sec_ = now;
+  struct tm tm;
+  gmtime_r(&now, &tm);
+  // IMF-fixdate by hand (RFC 9110 §5.6.7): strftime's %a/%b obey the
+  // process locale and would emit German day names under LC_TIME=de_DE.
+  static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  char core[kDateLen];
+  //                    0123456789012345678901234567 8
+  //                    Sun, 00 Jan 1970 00:00:00 GMT
+  const auto two = [&](size_t at, int v) {
+    core[at] = static_cast<char>('0' + v / 10);
+    core[at + 1] = static_cast<char>('0' + v % 10);
+  };
+  std::memcpy(core, kDay[tm.tm_wday], 3);
+  core[3] = ',';
+  core[4] = ' ';
+  two(5, tm.tm_mday);
+  core[7] = ' ';
+  std::memcpy(core + 8, kMon[tm.tm_mon], 3);
+  core[11] = ' ';
+  const int year = tm.tm_year + 1900;
+  two(12, year / 100);
+  two(14, year % 100);
+  core[16] = ' ';
+  two(17, tm.tm_hour);
+  core[19] = ':';
+  two(20, tm.tm_min);
+  core[22] = ':';
+  two(23, tm.tm_sec);
+  core[25] = ' ';
+  std::memcpy(core + 26, "GMT", 3);
+
+  Resp* all[] = {&ok_plain_, &ok_keep_, &ok_close_, &r400_, &r411_, &r413_, &r431_};
+  for (Resp* r : all) std::memcpy(r->bytes.data() + r->date_off, core, kDateLen);
+}
+
+bool Http1::fail(Conn& st, const Resp& resp, std::string& sink) {
+  sink.append(resp.bytes);
   st.reset();
-  return H1Verdict::kClose;
+  return false;
 }
 
-H1Verdict Http1::feed(H1State& st, const char* data, size_t len, std::string& sink) {
+bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
   // Body bytes a previous receive left owing are consumed first -
   // skipped, this layer has no consumer, but the framing must hold or
   // keep-alive would parse body bytes as the next head.
@@ -75,7 +117,7 @@ H1Verdict Http1::feed(H1State& st, const char* data, size_t len, std::string& si
     st.body_skip -= take;
     data += take;
     len -= take;
-    if (len == 0) return H1Verdict::kOpen;
+    if (len == 0) return true;
   }
 
   // The hot path parses the receive buffer in place; only a head split
@@ -85,7 +127,7 @@ H1Verdict Http1::feed(H1State& st, const char* data, size_t len, std::string& si
   size_t viewlen = len;
   if (!in_place) {
     size_t grown = 0;
-    if (WM_UNLIKELY(__builtin_add_overflow(st.carry.size(), len, &grown))) {
+    if (WM_H1_UNLIKELY(__builtin_add_overflow(st.carry.size(), len, &grown))) {
       return fail(st, r431_, sink);
     }
     st.carry.append(data, len);
@@ -106,58 +148,76 @@ H1Verdict Http1::feed(H1State& st, const char* data, size_t len, std::string& si
                                       &path_len, &minor, headers, &num_headers, 0);
     if (ret == -2) {  // incomplete head: carry it (bytes die with the pool buffer)
       const size_t rest = viewlen - off;
-      if (WM_UNLIKELY(rest > kMaxHead)) return fail(st, r431_, sink);  // RFC 6585 §5
+      if (WM_H1_UNLIKELY(rest > kMaxHead)) return fail(st, r431_, sink);  // RFC 6585 §5
       if (in_place) st.carry.assign(view + off, rest);
       else st.carry.erase(0, off);
-      return H1Verdict::kOpen;
+      return true;
     }
-    if (WM_UNLIKELY(ret <= 0)) return fail(st, r400_, sink);  // RFC 9112 §2.2
+    if (WM_H1_UNLIKELY(ret <= 0)) return fail(st, r400_, sink);  // RFC 9112 §2.2
     // The cap holds for complete heads too, or one receive containing a
     // whole oversized head would sail past the -2 path's check.
-    if (WM_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, r431_, sink);
+    if (WM_H1_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, r431_, sink);
 
     size_t content_length = 0;
     bool have_cl = false, have_te = false, have_host = false;
     bool conn_close = false, conn_keep = false;
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      if (tok_eq(h.name, h.name_len, "content-length", 14)) {
-        // A second Content-Length is a smuggling shape (RFC 9112 §6.3).
-        if (WM_UNLIKELY(have_cl || h.value_len == 0)) return fail(st, r400_, sink);
-        have_cl = true;
-        size_t v = 0;
-        for (size_t j = 0; j < h.value_len; j++) {
-          const char ch = h.value[j];
-          if (WM_UNLIKELY(ch < '0' || ch > '9')) return fail(st, r400_, sink);  // 1*DIGIT, §6.2
-          size_t t = 0;
-          if (WM_UNLIKELY(__builtin_mul_overflow(v, static_cast<size_t>(10), &t) ||
-                          __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &v))) {
-            return fail(st, r413_, sink);
+      // The four interesting names have four distinct lengths: one jump
+      // on the length, one comparison behind it, every other header
+      // costs exactly the length check.
+      switch (h.name_len) {
+        case 14:
+          if (tok_eq(h.name, h.name_len, "content-length", 14)) {
+            // A second Content-Length is a smuggling shape (RFC 9112 §6.3).
+            if (WM_H1_UNLIKELY(have_cl || h.value_len == 0)) return fail(st, r400_, sink);
+            have_cl = true;
+            size_t v = 0;
+            for (size_t j = 0; j < h.value_len; j++) {
+              const char ch = h.value[j];
+              if (WM_H1_UNLIKELY(ch < '0' || ch > '9')) {
+                return fail(st, r400_, sink);  // 1*DIGIT, §6.2
+              }
+              size_t t = 0;
+              if (WM_H1_UNLIKELY(__builtin_mul_overflow(v, static_cast<size_t>(10), &t) ||
+                                 __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &v))) {
+                return fail(st, r413_, sink);
+              }
+            }
+            content_length = v;
           }
-        }
-        content_length = v;
-      } else if (tok_eq(h.name, h.name_len, "transfer-encoding", 17)) {
-        have_te = true;
-      } else if (tok_eq(h.name, h.name_len, "host", 4)) {
-        if (WM_UNLIKELY(have_host)) return fail(st, r400_, sink);  // RFC 9112 §3.2: exactly one
-        have_host = true;
-      } else if (tok_eq(h.name, h.name_len, "connection", 10)) {
-        if (conn_has(h.value, h.value_len, "close", 5)) conn_close = true;
-        else if (conn_has(h.value, h.value_len, "keep-alive", 10)) conn_keep = true;
+          break;
+        case 17:
+          if (tok_eq(h.name, h.name_len, "transfer-encoding", 17)) have_te = true;
+          break;
+        case 4:
+          if (tok_eq(h.name, h.name_len, "host", 4)) {
+            if (WM_H1_UNLIKELY(have_host)) return fail(st, r400_, sink);  // RFC 9112 §3.2: one
+            have_host = true;
+          }
+          break;
+        case 10:
+          if (tok_eq(h.name, h.name_len, "connection", 10)) {
+            if (conn_has(h.value, h.value_len, "close", 5)) conn_close = true;
+            else if (conn_has(h.value, h.value_len, "keep-alive", 10)) conn_keep = true;
+          }
+          break;
+        default:
+          break;
       }
     }
     // Transfer-Encoding alongside Content-Length is the classic
     // smuggling vector (RFC 9112 §6.3.3); chunked alone is refused with
     // 411 as §6.1 sanctions until a body consumer exists.
-    if (WM_UNLIKELY(have_te)) return fail(st, have_cl ? r400_ : r411_, sink);
-    if (WM_UNLIKELY(minor >= 1 && !have_host)) return fail(st, r400_, sink);  // RFC 9112 §3.2
-    if (WM_UNLIKELY(content_length > kMaxBody)) return fail(st, r413_, sink);
+    if (WM_H1_UNLIKELY(have_te)) return fail(st, have_cl ? r400_ : r411_, sink);
+    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, r400_, sink);  // RFC 9112 §3.2
+    if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, r413_, sink);
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
-    sink.append(minor >= 1 ? (persist ? ok_plain_ : ok_close_)
-                           : (persist ? ok_keep_ : ok_close_));
+    sink.append(minor >= 1 ? (persist ? ok_plain_.bytes : ok_close_.bytes)
+                           : (persist ? ok_keep_.bytes : ok_close_.bytes));
 
     off += static_cast<size_t>(ret);
     if (content_length != 0) {
@@ -170,11 +230,11 @@ H1Verdict Http1::feed(H1State& st, const char* data, size_t len, std::string& si
       // Bytes pipelined behind a closing request die with the
       // connection (RFC 9112 §9.6: the close ends the exchange).
       st.reset();
-      return H1Verdict::kClose;
+      return false;
     }
   }
   if (!in_place) st.carry.clear();
-  return H1Verdict::kOpen;
+  return true;
 }
 
 }  // namespace webmachine
