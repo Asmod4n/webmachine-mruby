@@ -126,7 +126,11 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
 
 Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
              bool dynamic_body)
-    : konst_(ks), res_(res), dynamic_nodes_(dynamic_nodes), dynamic_body_(dynamic_body) {
+    : konst_(ks),
+      res_(res),
+      dynamic_nodes_(dynamic_nodes),
+      dynamic_body_(dynamic_body),
+      bound_(res != nullptr && (dynamic_nodes || dynamic_body)) {
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
@@ -186,6 +190,19 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     prefix(ok.keep, ok_prefix_.keep);
     prefix(ok.close, ok_prefix_.close);
   }
+  // Exceptions answer as the negotiated type: a 500 head open for a
+  // per-request body carrying the reason.
+  if (bound_) {
+    const auto build = [&](Resp& r, const char* conn) {
+      r.bytes.clear();
+      r.bytes.append("HTTP/1.1 500 Internal Server Error\r\nDate: ");
+      r.date_off = r.bytes.size();
+      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra);
+    };
+    build(err_prefix_.plain, "");
+    build(err_prefix_.keep, "Connection: keep-alive\r\n");
+    build(err_prefix_.close, "Connection: close\r\n");
+  }
 
   sec_ = 0;
   on_tick();
@@ -239,6 +256,34 @@ void Http1::on_tick() {
     std::memcpy(ok_prefix_.keep.bytes.data() + ok_prefix_.keep.date_off, core, kDateLen);
     std::memcpy(ok_prefix_.close.bytes.data() + ok_prefix_.close.date_off, core, kDateLen);
   }
+  if (bound_) {
+    std::memcpy(err_prefix_.plain.bytes.data() + err_prefix_.plain.date_off, core, kDateLen);
+    std::memcpy(err_prefix_.keep.bytes.data() + err_prefix_.keep.date_off, core, kDateLen);
+    std::memcpy(err_prefix_.close.bytes.data() + err_prefix_.close.date_off, core, kDateLen);
+  }
+}
+
+void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
+                     bool head_only) {
+  sink.append(prefix.bytes);
+  // Content-Length spelled by hand: printf machinery has no business
+  // on the request path.
+  char cl[40] = "Content-Length: ";
+  size_t at = 16;
+  char digits[20];
+  size_t d = 0;
+  size_t v = len;
+  do {
+    digits[d++] = static_cast<char>('0' + v % 10);
+    v /= 10;
+  } while (v != 0);
+  while (d != 0) cl[at++] = digits[--d];
+  cl[at++] = '\r';
+  cl[at++] = '\n';
+  cl[at++] = '\r';
+  cl[at++] = '\n';
+  sink.append(cl, at);
+  if (!head_only) sink.append(body, len);
 }
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
@@ -399,28 +444,42 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
+    const bool head_only = facts.method == flow::Method::kHead;
+    bool answered = false;
     if (dynamic_body_ && status == 200) {
-      // The per-request representation: rendered in the VM, copied out
-      // (the copy floor in production), assembled onto the prebuilt
-      // head. HEAD renders too - its Content-Length must be the GET's -
-      // but sends no body bytes (RFC 9110 9.3.2).
-      if (WM_H1_UNLIKELY(!resource_render(*res_, body_scratch_))) {
+      // The per-request representation: rendered in the VM, its bytes
+      // BORROWED until render_end and copied exactly once, straight
+      // into the sink. HEAD renders too - its Content-Length must be
+      // the GET's - but sends no body bytes (RFC 9110 9.3.2).
+      const char* bp = nullptr;
+      size_t blen = 0;
+      int arena = 0;
+      if (WM_H1_UNLIKELY(!resource_render_begin(*res_, &bp, &blen, &arena))) {
         status = 500;  // the handler raised; the connection outlives it
       } else {
-        const Resp& p = minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
-                                   : (persist ? ok_prefix_.keep : ok_prefix_.close);
-        sink.append(p.bytes);
-        char cl[40];
-        const int n =
-            std::snprintf(cl, sizeof(cl), "Content-Length: %zu\r\n\r\n", body_scratch_.size());
-        sink.append(cl, static_cast<size_t>(n));
-        if (facts.method != flow::Method::kHead) sink.append(body_scratch_);
+        assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
+                                  : (persist ? ok_prefix_.keep : ok_prefix_.close),
+                 bp, blen, head_only);
+        resource_render_end(*res_, arena);
+        answered = true;
       }
     }
-    if (!(dynamic_body_ && status == 200)) {
-      const Variants& sv = (facts.method == flow::Method::kHead && status == 200)
-                               ? ok_head_
-                               : variants(status);
+    if (WM_H1_UNLIKELY(!answered && status == 500 && bound_)) {
+      // A raising callback answers in the negotiated type, the reason
+      // as body - the exception was left pending for exactly this.
+      const char* bp = nullptr;
+      size_t blen = 0;
+      int arena = 0;
+      if (resource_exception_begin(*res_, &bp, &blen, &arena)) {
+        assemble(sink, minor >= 1 ? (persist ? err_prefix_.plain : err_prefix_.close)
+                                  : (persist ? err_prefix_.keep : err_prefix_.close),
+                 bp, blen, head_only);
+        resource_render_end(*res_, arena);
+        answered = true;
+      }
+    }
+    if (!answered) {
+      const Variants& sv = (head_only && status == 200) ? ok_head_ : variants(status);
       sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                              : (persist ? sv.keep.bytes : sv.close.bytes));
     }

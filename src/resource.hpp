@@ -36,12 +36,21 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
 
 // Declared here, callable without mruby types via http1.hpp's forward
 // declaration: the flow with this resource's dynamic nodes answered
-// through the VM. A raising callback reads as 500.
+// through the VM (ONE arena cycle for the whole decision). A raising
+// callback reads as 500.
 uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
 
-// Renders the per-request body (instance to_html). False: the handler
-// raised or returned a non-String - the response is a 500.
-bool resource_render(const Resource& res, std::string& body);
+// Renders the per-request body and lends out the VM string's bytes:
+// *ptr/*len are valid until resource_render_end(arena) - the caller
+// copies them ONCE, straight into the sink. False: the handler raised
+// (the exception stays pending for resource_exception_begin) - the
+// response is a 500 carrying it.
+bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
+// The pending exception's message, lent the same way: a raising
+// callback answers 500 in the negotiated type with the reason as body.
+// False: nothing pending.
+bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
+void resource_render_end(const Resource& res, int arena);
 
 }  // namespace webmachine
 

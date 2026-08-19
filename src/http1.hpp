@@ -22,10 +22,13 @@ namespace webmachine {
 
 // The bound resource (resource.hpp owns the definition; Http1 stays
 // mruby-free). resource_decide answers the flow with its dynamic nodes
-// asked through the VM; resource_render produces a per-request body.
+// asked through the VM; resource_render_begin lends the per-request
+// body's bytes until resource_render_end.
 struct Resource;
 uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
-bool resource_render(const Resource& res, std::string& body);
+bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
+bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
+void resource_render_end(const Resource& res, int arena);
 
 // RFC 9110 §5.4 allows refusing oversized fields; 8k is the fleet
 // convention (nginx, h2o) and bounds one head's work - 431 past it.
@@ -78,6 +81,9 @@ class Http1 {
   };
 
   void build_status(uint16_t status, const char* extra, const char* body);
+  // prefix + hand-spelled Content-Length + (unless HEAD) the lent body.
+  static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
+                       bool head_only);
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];  // every status here came from the tables
   }
@@ -87,16 +93,18 @@ class Http1 {
   std::vector<Variants> store_;
   std::array<uint8_t, 600> index_ {};  // status -> store_ slot
   Variants ok_head_;  // 200 for HEAD: the same head, no body bytes
-  // 200's head up to (not including) Content-Length: the assembly
-  // point for per-request bodies.
+  // Heads up to (not including) Content-Length: the assembly points
+  // for per-request bodies (200) and for exceptions answering as the
+  // negotiated type (500).
   Variants ok_prefix_;
+  Variants err_prefix_;
   // One konst vector per method, the method folded in at bind time
   // (B12/B10 never re-compare method strings per request).
   flow::KonstSet konst_;
   const Resource* res_ = nullptr;
   bool dynamic_nodes_ = false;
   bool dynamic_body_ = false;
-  std::string body_scratch_;  // per-request rendered body; capacity survives
+  bool bound_ = false;  // any runtime tier at all
 };
 
 }  // namespace webmachine

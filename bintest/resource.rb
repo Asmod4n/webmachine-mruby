@@ -85,7 +85,7 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
   src = <<~RUBY
     class WideResource < Webmachine::Resource
       def self.allowed_methods
-        %w[GET HEAD POST DELETE]
+        'GET HEAD POST DELETE'
       end
       def self.delete_resource
         true
@@ -208,7 +208,7 @@ assert('resource: an instance decision is asked per request (state changes answe
   end
 end
 
-assert('resource: a raising runtime callback is 500, the process survives') do
+assert('resource: a raising callback answers 500 in the negotiated type, reason as body') do
   src = <<~RUBY
     class Boom < Webmachine::Resource
       def to_html
@@ -219,8 +219,10 @@ assert('resource: a raising runtime callback is 500, the process survives') do
   resource_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = resource_read(s)
+      head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 500')
+      assert_true head.match?(%r{^Content-Type: text/html\r$}i)
+      assert_true body.include?('boom'), body
     end
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
