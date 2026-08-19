@@ -59,3 +59,14 @@ harness: wrk -t3 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default cflags=
      50%  165.00us
      99%  203.00us
 Requests/sec: 714835.25
+==== 2026-08-19T21:56Z repo=a36bb56 mruby=524586c ====
+harness: vm_floor google-benchmark v1.9.5 6.18.39+rpt-rpi-2712 aarch64
+BM_vm_entry                     0.170 us        0.170 us     16477933
+BM_copy_floor_small             0.322 us        0.322 us      8681276 bytes_per_second=79.9358Mi/s
+BM_copy_floor_browser           0.319 us        0.319 us      8761174 bytes_per_second=1.47378Gi/s
+BM_copy_floor_cached_sym        0.190 us        0.190 us     14733204
+BM_flow_tier0_get                81.9 ns         81.9 ns     34187257
+BM_flow_tier0_304                67.1 ns         67.1 ns     41751569
+BM_flow_tier0_get_compiled       6.25 ns         6.25 ns    447810277
+BM_flow_tier0_304_compiled       5.00 ns         5.00 ns    559757566
+BM_flow_tier0_get_bits           87.7 ns         87.7 ns     31936485
