@@ -118,7 +118,12 @@ constexpr uint16_t walk_compiled(const ReqFacts& req) {
 // switch) was measured and REMOVED: it lost to the plain interpreted
 // walk on both machines (forgecore 37.2 vs 34.0ns, Pi 87.7 vs 81.9ns) -
 // the branchless bit build cost more than the predicted switch saved.
-// History holds the code; the numbers hold the verdict.
+// History holds the code; the numbers hold the verdict. Open question
+// attached to the grave: on a noisy shared vCPU it led (container 60
+// vs 70ns), so IF a cloud instance ever becomes a measured target,
+// resurrect and re-measure THERE - never resurrect on this evidence
+// alone. Note the path branches (edge per node) are identical in both;
+// only the dispatch differed.
 
 // webmachine-ruby's Resource defaults, folded per method - the konst
 // vector a resource that overrides nothing compiles to. allowed_methods
