@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "http1.hpp"
+
 // Prediction hints ONLY where the taken side is terminal - an exit, a
 // raise, a connection's death, an invariant violation. A branch that
 // swings naturally at runtime (workload-dependent) carries NO hint: a
@@ -55,6 +57,8 @@ struct Conn {
   // nothing.
   std::string out;
   std::string next;
+
+  H1State h1;
 };
 
 struct RingConfig {
@@ -109,6 +113,7 @@ class Ring {
   std::string unix_path_;  // owned copy: the destructor unlinks it
   bool bundles_ = false;
   bool echo_ = false;
+  Http1 http1_;
   char* pool_ = nullptr;  // kBufCount * kBufSize, mmap'd once
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   // Buffers consumed this tick, handed back (advance-only: the ring

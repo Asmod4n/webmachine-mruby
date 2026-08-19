@@ -3,3 +3,8 @@ harness: wrk -t4 -c128 -d10s transport=unix WM_BUNDLE=default 7.1.8-1-default x8
      50%  125.00us
      99%  174.00us
 Requests/sec: 955595.01
+==== 2026-08-19T20:30Z repo=b870b2b mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default 7.1.8-1-default x86_64
+     50%  243.00us
+     99%  269.00us
+Requests/sec: 521479.29

@@ -11,17 +11,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 namespace webmachine {
 namespace {
 
-// Fixed until the HTTP layer exists: one 200 per receive completion.
-constexpr char kResponse[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
-constexpr size_t kResponseLen = sizeof(kResponse) - 1;
-
 // user_data: kind(8) | gen(16) | idx(32). gen guards a reused slot
 // against CQEs of the connection that owned it before.
-enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6 };
+enum : uint8_t {
+  kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7
+};
 
 uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
@@ -313,7 +312,17 @@ void Ring::begin_close(uint32_t idx) {
     return;
   }
   c.live = false;
+  // The armed multishot recv holds a file reference: close_direct alone
+  // only clears the table slot, the socket stays open and the peer
+  // never sees FIN (three bintests hung exactly there). shutdown forces
+  // the FIN out first; the link keeps the order. Both SQEs must ride
+  // the same submission or the link breaks.
+  if (io_uring_sq_space_left(&ring_) < 2) io_uring_submit(&ring_);
   struct io_uring_sqe* s = sqe();
+  io_uring_prep_shutdown(s, static_cast<int>(idx), SHUT_RDWR);
+  s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+  io_uring_sqe_set_data64(s, tag(kShutdown, c.gen, idx));
+  s = sqe();
   io_uring_prep_close_direct(s, idx);
   io_uring_sqe_set_data64(s, tag(kClose, c.gen, idx));
 }
@@ -331,6 +340,7 @@ void Ring::on_accept(struct io_uring_cqe* cqe) {
   c.sent = 0;
   c.out.clear();  // capacity survives: a warm slot allocates nothing
   c.next.clear();
+  c.h1.reset();
   arm_recv(idx);
 }
 
@@ -370,35 +380,45 @@ void Ring::on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     return;
   }
 
-  std::string& sink = c.sending ? c.next : c.out;
-  if (!echo_) {
-    // Production path: no per-buffer walk at all. The bundle's buffer
-    // count is arithmetic (dense-fill contract, io_uring_prep_recv(3)):
-    // every buffer full except the last.
+  // A connection already condemned (close_after_send) reads nothing
+  // more; its buffers still go back to the pool.
+  if (WM_UNLIKELY(c.close_after_send)) {
     replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
-    // One answer per receive completion - the floor's whole protocol.
-    sink.append(kResponse, kResponseLen);
-  } else {
-    // Echo (the bintest's byte-proof): walk the bundle, consecutive ids
-    // from bid0, and give back exactly what arrived.
-    size_t left = total;
-    uint32_t bid = bid0;
-    while (left > 0) {
-      const size_t n = left < kBufSize ? left : kBufSize;
-      size_t off = 0;
-      if (WM_UNLIKELY(__builtin_mul_overflow(static_cast<size_t>(bid),
-                                             static_cast<size_t>(kBufSize), &off))) {
-        begin_close(idx);
-        return;
-      }
-      sink.append(pool_ + off, n);
-      left -= n;
-      bid = (bid + 1) & (kBufCount - 1);
-      replenish_++;
+    return;
+  }
+
+  // Walk the bundle: consecutive ids from bid0, every buffer full
+  // except the last (dense-fill contract, io_uring_prep_recv(3)).
+  std::string& sink = c.sending ? c.next : c.out;
+  bool closing = false;
+  size_t left = total;
+  uint32_t bid = bid0;
+  while (left > 0) {
+    const size_t n = left < kBufSize ? left : kBufSize;
+    size_t off = 0;
+    if (WM_UNLIKELY(__builtin_mul_overflow(static_cast<size_t>(bid),
+                                           static_cast<size_t>(kBufSize), &off))) {
+      begin_close(idx);
+      return;
     }
+    if (echo_) {
+      // The bintest's byte-proof: give back exactly what arrived.
+      sink.append(pool_ + off, n);
+    } else if (!closing) {
+      closing = http1_.feed(c.h1, pool_ + off, n, sink) == H1Verdict::kClose;
+    }
+    left -= n;
+    bid = (bid + 1) & (kBufCount - 1);
+    replenish_++;
   }
 
   if (!c.sending && !c.out.empty()) arm_send(idx);
+  if (WM_UNLIKELY(closing)) {
+    // Everything queued still drains; on_send finishes the close.
+    if (c.sending) c.close_after_send = true;
+    else begin_close(idx);
+    return;
+  }
   if (!(cqe->flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
 }
 
@@ -427,14 +447,16 @@ void Ring::on_send(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
   }
   c.out.clear();
   c.sent = 0;
-  if (c.close_after_send) {
-    c.close_after_send = false;
-    begin_close(idx);
-    return;
-  }
+  // next drains BEFORE a pending close: an error response queued behind
+  // an in-flight send must still reach the wire (RFC 9112 §9.6).
   if (!c.next.empty()) {
     c.out.swap(c.next);
     arm_send(idx);
+    return;
+  }
+  if (c.close_after_send) {
+    c.close_after_send = false;
+    begin_close(idx);
   }
 }
 
@@ -447,7 +469,16 @@ void Ring::handle(struct io_uring_cqe* cqe) {
     case kAccept: on_accept(cqe); break;
     case kRecv: on_recv(idx, gen, cqe); break;
     case kSend: on_send(idx, gen, cqe); break;
-    case kClose: break;  // the slot freed itself; nothing is owed
+    case kClose:
+      if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
+        // The linked shutdown failed (peer reset first); the close is
+        // still owed or the direct slot leaks.
+        struct io_uring_sqe* s = sqe();
+        io_uring_prep_close_direct(s, idx);
+        io_uring_sqe_set_data64(s, tag(kClose, gen, idx));
+      }
+      break;
+    case kShutdown: break;  // best effort; the linked close is the contract
     case kStop: stop_ = true; break;
     default: break;
   }
@@ -459,6 +490,9 @@ void Ring::tick() {
     replenish_ = 0;
   }
   io_uring_submit_and_wait(&ring_, 1);
+  // Once per wake, not per request: the writer's Date and prebuilt
+  // heads move only when the second does.
+  http1_.refresh(::time(nullptr));
   struct io_uring_cqe* cqe = nullptr;
   unsigned head = 0;
   unsigned seen = 0;
@@ -470,7 +504,8 @@ void Ring::tick() {
   if (!rearm_.empty()) {
     for (uint32_t idx : rearm_) {
       Conn& c = conns_[idx];
-      if (c.live) arm_recv(idx);
+      // A condemned connection gets no new read; its close is in flight.
+      if (c.live && !c.close_after_send) arm_recv(idx);
     }
     rearm_.clear();
   }

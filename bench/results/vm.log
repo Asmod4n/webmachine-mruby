@@ -34,3 +34,8 @@ harness: wrk -t2 -c64 -d8s impl=epoll transport=tcp WM_BUNDLE=default 6.18.5-fc-
      50%  573.00us
      99%    1.66ms
 Requests/sec: 105499.42
+==== 2026-08-19T20:42Z repo=74a680c mruby=524586c ====
+harness: wrk -t2 -c64 -d8s impl=uring transport=tcp WM_BUNDLE=default 6.18.5-fc-v20 x86_64
+     50%  313.00us
+     99%  767.00us
+Requests/sec: 183179.18
