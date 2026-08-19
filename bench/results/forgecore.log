@@ -40,3 +40,14 @@ harness: wrk -t4 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default cflags=
      50%  241.00us
      99%  258.00us
 Requests/sec: 526256.39
+==== 2026-08-19T21:53Z repo=c090077 mruby=524586c ====
+harness: vm_floor google-benchmark v1.9.5 7.1.8-1-default x86_64
+BM_vm_entry                     0.072 us        0.072 us     38803013
+BM_copy_floor_small             0.141 us        0.141 us     19741830 bytes_per_second=182.159Mi/s
+BM_copy_floor_browser           0.141 us        0.141 us     20152661 bytes_per_second=3.33459Gi/s
+BM_copy_floor_cached_sym        0.091 us        0.091 us     30721103
+BM_flow_tier0_get                34.0 ns         34.0 ns     82156336
+BM_flow_tier0_304                28.2 ns         28.2 ns     98877760
+BM_flow_tier0_get_compiled       1.46 ns         1.46 ns   1918284508
+BM_flow_tier0_304_compiled       1.46 ns         1.46 ns   1919142894
+BM_flow_tier0_get_bits           37.2 ns         37.2 ns     75132184
