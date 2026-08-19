@@ -26,6 +26,8 @@ namespace webmachine {
 // body's bytes until resource_render_end.
 struct Resource;
 uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
+uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                         bool* have_body);
 bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
 void resource_render_end(const Resource& res, int arena);
@@ -105,6 +107,8 @@ class Http1 {
   bool dynamic_nodes_ = false;
   bool dynamic_body_ = false;
   bool bound_ = false;  // any runtime tier at all
+  bool run_vm_ = false;  // WM_RUNVM=1: variant B, the run inside the VM (A/B knob)
+  std::string vm_body_;  // variant B's rendered bytes; capacity survives
 };
 
 }  // namespace webmachine

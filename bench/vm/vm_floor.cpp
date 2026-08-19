@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "../../src/flow_walk.hpp"
+#include "../../src/resource.hpp"
 
 namespace {
 
@@ -163,6 +164,96 @@ void BM_flow_tier0_304_compiled(benchmark::State& state) {
 }
 BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 
+// The two runtime-tier shapes, on real bound resources: A = per-node
+// VM entries with hand protection, B = the whole run inside one VM
+// call (naked yields under the wrapper's TRY). One and four callbacks,
+// because B's wrapper must scale with the callback count to earn it.
+webmachine::Resource g_res1;
+webmachine::Resource g_res4;
+
+bool bind_bench_resource(const char* path, const char* src, webmachine::Resource& out) {
+  FILE* f = std::fopen(path, "w");
+  if (f == nullptr) return false;
+  std::fputs(src, f);
+  std::fclose(f);
+  char err[256];
+  return webmachine::resource_setup(mrb, path, out, err, sizeof(err));
+}
+
+uint16_t variant_a(const webmachine::Resource& res, const webmachine::flow::ReqFacts& facts,
+                   std::string& body) {
+  uint16_t status = webmachine::resource_decide(res, facts);
+  if (status == 200 && res.dynamic_body) {
+    const char* bp = nullptr;
+    size_t blen = 0;
+    int arena = 0;
+    if (!webmachine::resource_render_begin(res, &bp, &blen, &arena)) return 500;
+    body.assign(bp, blen);
+    webmachine::resource_render_end(res, arena);
+  }
+  return status;
+}
+
+void BM_runtime_1cb_entries(benchmark::State& state) {
+  webmachine::flow::ReqFacts facts;
+  std::string body;
+  for (auto _ : state) {
+    uint16_t st = variant_a(g_res1, facts, body);
+    benchmark::DoNotOptimize(st);
+    benchmark::DoNotOptimize(body);
+  }
+}
+BENCHMARK(BM_runtime_1cb_entries)->Unit(benchmark::kMicrosecond);
+
+void BM_runtime_1cb_run_vm(benchmark::State& state) {
+  webmachine::flow::ReqFacts facts;
+  std::string body;
+  bool have = false;
+  for (auto _ : state) {
+    uint16_t st = webmachine::resource_run_vm(g_res1, facts, &body, &have);
+    benchmark::DoNotOptimize(st);
+    benchmark::DoNotOptimize(body);
+  }
+}
+BENCHMARK(BM_runtime_1cb_run_vm)->Unit(benchmark::kMicrosecond);
+
+void BM_runtime_4cb_entries(benchmark::State& state) {
+  webmachine::flow::ReqFacts facts;
+  std::string body;
+  for (auto _ : state) {
+    uint16_t st = variant_a(g_res4, facts, body);
+    benchmark::DoNotOptimize(st);
+    benchmark::DoNotOptimize(body);
+  }
+}
+BENCHMARK(BM_runtime_4cb_entries)->Unit(benchmark::kMicrosecond);
+
+void BM_runtime_4cb_run_vm(benchmark::State& state) {
+  webmachine::flow::ReqFacts facts;
+  std::string body;
+  bool have = false;
+  for (auto _ : state) {
+    uint16_t st = webmachine::resource_run_vm(g_res4, facts, &body, &have);
+    benchmark::DoNotOptimize(st);
+    benchmark::DoNotOptimize(body);
+  }
+}
+BENCHMARK(BM_runtime_4cb_run_vm)->Unit(benchmark::kMicrosecond);
+
+constexpr char kApp1[] =
+    "class BenchCounter < Webmachine::Resource\n"
+    "  def initialize; @n = 0; end\n"
+    "  def to_html; \"<html><body>hit #{@n += 1}</body></html>\"; end\n"
+    "end\n";
+constexpr char kApp4[] =
+    "class BenchMulti < Webmachine::Resource\n"
+    "  def initialize; @n = 0; end\n"
+    "  def service_available?; true; end\n"
+    "  def resource_exists?; true; end\n"
+    "  def multiple_choices?; false; end\n"
+    "  def to_html; \"<html><body>hit #{@n += 1}</body></html>\"; end\n"
+    "end\n";
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -178,6 +269,11 @@ int main(int argc, char** argv) {
                   "end\n");
   if (mrb->exc != nullptr) {
     std::fprintf(stderr, "handler setup raised\n");
+    return 1;
+  }
+  if (!bind_bench_resource("/tmp/wm-bench-app1.rb", kApp1, g_res1) ||
+      !bind_bench_resource("/tmp/wm-bench-app4.rb", kApp4, g_res4)) {
+    std::fprintf(stderr, "bench resource setup failed\n");
     return 1;
   }
   benchmark::Initialize(&argc, argv);

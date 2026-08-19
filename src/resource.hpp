@@ -38,7 +38,18 @@ struct Resource {
   mrb_sym body_sym = {};
   mrb_method_t body_m = {};
   bool body_fast = false;
+  // Variant B (A/B under WM_RUNVM=1): the whole flow run as ONE VM
+  // method on a hidden class - inside it mrb->jmp is armed and the
+  // arena lives until exit, so callbacks are naked yields with no
+  // per-call protection. The wrapper funcall is the price measured.
+  mrb_value run_self = {};
 };
+
+// Variant B entry: runs the whole decision + render inside one VM
+// call. body receives the rendered bytes (copied while the frame is
+// alive); returns the status, 500 with pending exception on a raise.
+uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                         bool* have_body);
 
 // Loads the app file (its class inherits Webmachine::Resource) and
 // folds its answers into `out`. False leaves the reason in err - what

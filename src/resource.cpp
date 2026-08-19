@@ -239,7 +239,93 @@ mrb_value call_cached(const Resource& res, mrb_method_t m, bool fast, mrb_sym sy
   return r;
 }
 
+// --- Variant B: the run inside the VM -------------------------------
+struct RunCtx {
+  const Resource* res;
+  const flow::ReqFacts* facts;
+  std::string* body;
+  bool have_body;
+  uint16_t status;
+};
+
+mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
+  RunCtx* ctx = static_cast<RunCtx*>(mrb->ud);
+  const Resource& res = *ctx->res;
+  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(ctx->facts->method)];
+  flow::Node n = flow::Node::kB13;
+  uint16_t status = 0;
+  for (;;) {
+    const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
+    bool ans;
+    if (f.kind == flow::Kind::kRequest) {
+      ans = flow::eval_request(n, *ctx->facts);
+    } else if ((res.dynamic >> static_cast<size_t>(n)) & 1) {
+      // Naked: the wrapper's TRY catches raises, its arena roots the
+      // value, its exit restores - nothing to do by hand.
+      const size_t i = static_cast<size_t>(n);
+      mrb_value v;
+      if (res.node_fast[i]) {
+        mrb_callinfo* ci = mrb->c->ci;
+        const mrb_sym saved = ci->mid;
+        ci->mid = res.node_sym[i];
+        v = mrb_yield_with_class(
+            mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(res.node_m[i]))), 0,
+            nullptr, res.self, res.klass);
+        ci->mid = saved;
+      } else {
+        v = mrb_funcall_argv(mrb, res.self, res.node_sym[i], 0, nullptr);
+      }
+      ans = mrb_test(v);
+    } else {
+      ans = k.ans[static_cast<size_t>(n)];
+    }
+    const flow::Target& t = ans ? f.on_true : f.on_false;
+    if (t.status != 0) {
+      status = t.status;
+      break;
+    }
+    n = t.node;
+  }
+  if (status == 200 && res.dynamic_body) {
+    mrb_value v;
+    if (res.body_fast) {
+      mrb_callinfo* ci = mrb->c->ci;
+      const mrb_sym saved = ci->mid;
+      ci->mid = res.body_sym;
+      v = mrb_yield_with_class(
+          mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(res.body_m))), 0, nullptr,
+          res.self, res.klass);
+      ci->mid = saved;
+    } else {
+      v = mrb_funcall_argv(mrb, res.self, res.body_sym, 0, nullptr);
+    }
+    if (!mrb_string_p(v)) {
+      mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
+    }
+    // Copied while the frame is alive - the frame IS the borrow.
+    ctx->body->assign(RSTRING_PTR(v), RSTRING_LEN(v));
+    ctx->have_body = true;
+  }
+  ctx->status = status;
+  return mrb_nil_value();
+}
+
 }  // namespace
+
+uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                         bool* have_body) {
+  RunCtx ctx{&res, &facts, body, false, 0};
+  void* prev = res.mrb->ud;
+  res.mrb->ud = &ctx;
+  mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
+  res.mrb->ud = prev;
+  if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
+    *have_body = false;
+    return 500;  // exception stays pending for the answering path
+  }
+  *have_body = ctx.have_body;
+  return ctx.status;
+}
 
 bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
@@ -393,6 +479,12 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
       return false;
     }
     mrb_gc_register(mrb, out.self);
+    // Variant B's carrier: a HIDDEN class (no constant - Ruby code
+    // cannot reach or reopen it) holding the run cfunc.
+    struct RClass* hidden = mrb_class_new(mrb, mrb->object_class);
+    mrb_define_method_id(mrb, hidden, MRB_SYM(call), run_cfunc, MRB_ARGS_NONE());
+    out.run_self = mrb_obj_new(mrb, hidden, 0, nullptr);
+    mrb_gc_register(mrb, out.run_self);
   }
 
   // The method lists, folded (defaults: webmachine's standard known
