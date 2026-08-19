@@ -86,22 +86,24 @@ inline constexpr FlowNode kFlow[] = {
      halt(200), to(Node::kC3)},
 
     // --- C..F: content negotiation -----------------------------------
-    {Node::kC3, Kind::kConneg, "content_types_provided",
+    // C3/D4/E5/F6 DECIDE on header presence (request); the resource
+    // list only feeds the default negotiation noted in the clause.
+    {Node::kC3, Kind::kRequest, "content_types_provided",
      "RFC 9110 12.5.1: Accept absent takes the first provided type",
      to(Node::kC4), to(Node::kD4)},
     {Node::kC4, Kind::kConneg, "content_types_provided", "RFC 9110 12.5.1 / 15.5.7 (406)",
      to(Node::kD4), halt(406)},
-    {Node::kD4, Kind::kConneg, "languages_provided",
+    {Node::kD4, Kind::kRequest, "languages_provided",
      "RFC 9110 12.5.4: absent negotiates '*' and may still 406",
      to(Node::kD5), to(Node::kE5)},
     {Node::kD5, Kind::kConneg, "languages_provided", "RFC 9110 12.5.4 / 15.5.7 (406)",
      to(Node::kE5), halt(406)},
-    {Node::kE5, Kind::kConneg, "charsets_provided",
+    {Node::kE5, Kind::kRequest, "charsets_provided",
      "RFC 9110 12.5.2: absent negotiates '*' and may still 406",
      to(Node::kE6), to(Node::kF6)},
     {Node::kE6, Kind::kConneg, "charsets_provided", "RFC 9110 12.5.2 / 15.5.7 (406)",
      to(Node::kF6), halt(406)},
-    {Node::kF6, Kind::kConneg, "encodings_provided",
+    {Node::kF6, Kind::kRequest, "encodings_provided",
      "RFC 9110 12.5.3: absent negotiates identity;q=1,*;q=0.5; Content-Type header lands here",
      to(Node::kF7), to(Node::kG7)},
     {Node::kF7, Kind::kConneg, "encodings_provided", "RFC 9110 12.5.3 / 15.5.7 (406)",

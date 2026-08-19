@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../../src/flow_walk.hpp"
+
 namespace {
 
 mrb_state* mrb = nullptr;
@@ -103,6 +105,79 @@ void BM_copy_floor_cached_sym(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_copy_floor_cached_sym)->Unit(benchmark::kMicrosecond);
+
+// Tier 0 next to tier 1: the full decision graph for a konst resource,
+// walked without the VM. Its distance to BM_copy_floor_* is the price
+// difference between a konst answer and a budgeted VM entry.
+void BM_flow_tier0_get(benchmark::State& state) {
+  const webmachine::flow::KonstAnswers k =
+      webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  webmachine::flow::ReqFacts req;  // the wrk shape: plain GET, no conditionals
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(req);
+    uint16_t status = webmachine::flow::walk(req, k);
+    benchmark::DoNotOptimize(status);
+  }
+}
+BENCHMARK(BM_flow_tier0_get)->Unit(benchmark::kNanosecond);
+
+// The conditional-request path: If-None-Match: * short-circuits to 304.
+void BM_flow_tier0_304(benchmark::State& state) {
+  const webmachine::flow::KonstAnswers k =
+      webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  webmachine::flow::ReqFacts req;
+  req.has_if_none_match = true;
+  req.inm_star = true;
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(req);
+    uint16_t status = webmachine::flow::walk(req, k);
+    benchmark::DoNotOptimize(status);
+  }
+}
+BENCHMARK(BM_flow_tier0_304)->Unit(benchmark::kNanosecond);
+
+// The same walks with the konst vector folded at compile time: the
+// graph reduced to a chain of request-fact tests. Interpreted vs
+// compiled is a Gebot-10 A/B - the loser goes.
+void BM_flow_tier0_get_compiled(benchmark::State& state) {
+  constexpr auto kK = webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  webmachine::flow::ReqFacts req;
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(req);
+    uint16_t status = webmachine::flow::walk_compiled<kK>(req);
+    benchmark::DoNotOptimize(status);
+  }
+}
+BENCHMARK(BM_flow_tier0_get_compiled)->Unit(benchmark::kNanosecond);
+
+void BM_flow_tier0_304_compiled(benchmark::State& state) {
+  constexpr auto kK = webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  webmachine::flow::ReqFacts req;
+  req.has_if_none_match = true;
+  req.inm_star = true;
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(req);
+    uint16_t status = webmachine::flow::walk_compiled<kK>(req);
+    benchmark::DoNotOptimize(status);
+  }
+}
+BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
+
+// The runtime-resource shape: konst bits are data (Ruby defines the
+// resource), request bits are built branchless per request, the walk
+// chases bits with no switch. Includes the per-request bit build.
+void BM_flow_tier0_get_bits(benchmark::State& state) {
+  const uint64_t konst = webmachine::flow::konst_bits(
+      webmachine::flow::default_konst(webmachine::flow::Method::kGet));
+  webmachine::flow::ReqFacts req;
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(req);
+    uint16_t status = webmachine::flow::walk_bits(
+        webmachine::flow::merge(webmachine::flow::request_bits(req), konst));
+    benchmark::DoNotOptimize(status);
+  }
+}
+BENCHMARK(BM_flow_tier0_get_bits)->Unit(benchmark::kNanosecond);
 
 }  // namespace
 
