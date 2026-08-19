@@ -30,3 +30,13 @@ BM_vm_entry                   0.072 us        0.072 us     39055314
 BM_copy_floor_small           0.152 us        0.152 us     18360622 bytes_per_second=169.941Mi/s
 BM_copy_floor_browser         0.151 us        0.151 us     18689678 bytes_per_second=3.119Gi/s
 BM_copy_floor_cached_sym      0.095 us        0.095 us     29756826
+==== 2026-08-19T21:40Z repo=ff3b9b3 mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  128.00us
+     99%  176.00us
+Requests/sec: 932168.63
+==== 2026-08-19T21:40Z repo=ff3b9b3 mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  241.00us
+     99%  258.00us
+Requests/sec: 526256.39
