@@ -75,3 +75,13 @@ harness: wrk -t4 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default cflags=
      50%  173.00us
      99%  387.00us
 Requests/sec: 672065.81
+==== 2026-08-19T22:49Z repo=27a857e mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 6.18.39+rpt-rpi-2712 aarch64
+     50%  170.00us
+     99%  288.00us
+Requests/sec: 675385.07
+==== 2026-08-19T22:49Z repo=27a857e mruby=524586c ====
+harness: wrk -t4 -c128 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 6.18.39+rpt-rpi-2712 aarch64
+     50%  249.00us
+     99%  320.00us
+Requests/sec: 482112.86
