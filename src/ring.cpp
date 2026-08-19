@@ -44,13 +44,25 @@ const char* stage_name(uint32_t st) {
 
 Ring::~Ring() {
   if (ring_up_) {
-    // The listener leaves through the ring like everything else did.
+    // The listener leaves through the ring like everything else did,
+    // and a unix listener takes its path with it - waited on, because
+    // queue_exit would race the unlink.
+    unsigned n = 0;
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (s != nullptr) {
       io_uring_prep_close_direct(s, kListenerSlot);
       io_uring_sqe_set_data64(s, tag(kClose, 0, kListenerSlot));
-      io_uring_submit(&ring_);
+      n++;
     }
+    if (!unix_path_.empty()) {
+      s = io_uring_get_sqe(&ring_);
+      if (s != nullptr) {
+        io_uring_prep_unlink(s, unix_path_.c_str(), 0);
+        io_uring_sqe_set_data64(s, tag(kSetup, 0, 0));
+        n++;
+      }
+    }
+    if (n != 0) io_uring_submit_and_wait(&ring_, n);
   }
   if (buf_ring_ != nullptr) io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
   if (pool_ != nullptr) ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
@@ -233,6 +245,8 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
     io_uring_cq_advance(&ring_, seen);
     if (failed) return false;
   }
+  // Only a bind that happened leaves a path to remove again.
+  if (is_unix) unix_path_.assign(cfg.unix_path);
 
   conns_.resize(kMaxConns);
   rearm_.reserve(64);
@@ -453,8 +467,8 @@ void Ring::tick() {
   }
 }
 
-void Ring::run() {
-  for (;;) tick();
+void Ring::run(const volatile std::sig_atomic_t* stop) {
+  while (!*stop) tick();
 }
 
 }  // namespace webmachine

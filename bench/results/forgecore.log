@@ -1,0 +1,5 @@
+==== 2026-08-19T20:12Z repo=4d94a97 mruby=524586c ====
+harness: wrk -t4 -c128 -d10s transport=unix WM_BUNDLE=default 7.1.8-1-default x86_64
+     50%  125.00us
+     99%  174.00us
+Requests/sec: 955595.01

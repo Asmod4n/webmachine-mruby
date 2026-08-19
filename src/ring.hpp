@@ -12,6 +12,7 @@
 
 #include <liburing.h>
 
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -79,7 +80,10 @@ class Ring {
   // WM_BUNDLE=0.
   bool init(const RingConfig& cfg, char* err, size_t errlen);
 
-  [[noreturn]] void run();
+  // Loops until *stop is set (a signal handler's write) - the signal
+  // interrupts the wait, the loop reads the flag, and the destructor
+  // gets to run: that is what removes the unix socket path again.
+  void run(const volatile std::sig_atomic_t* stop);
 
  private:
   void tick();
@@ -98,6 +102,7 @@ class Ring {
 
   struct io_uring ring_ {};
   bool ring_up_ = false;
+  std::string unix_path_;  // owned copy: the destructor unlinks it
   bool bundles_ = false;
   bool echo_ = false;
   char* pool_ = nullptr;  // kBufCount * kBufSize, mmap'd once
