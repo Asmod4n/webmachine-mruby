@@ -23,13 +23,23 @@ WRK="${WRK:-$HOME/wrk/wrk}"
 [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
 
 SOCK=/tmp/wm-floor-bench.sock
+DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
   "$BIN" --unix "$SOCK" 2>/tmp/wm-floor-srv.log & SRV=$!
+  # The patched wrk routes every byte over WRK_UNIX but still validates
+  # its URL with one probe connect() to the TCP port - something must
+  # answer that handshake or wrk refuses to start.
+  python3 -c "
+import socket
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(('127.0.0.1',$PORT)); s.listen(16)
+while True:
+    c,_=s.accept(); c.close()" >/dev/null 2>&1 & DUMMY=$!
 else
   "$BIN" --port "$PORT" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
-trap 'kill $SRV 2>/dev/null' EXIT
+trap 'kill $SRV $DUMMY 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
 
