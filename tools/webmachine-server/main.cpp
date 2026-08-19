@@ -1,8 +1,10 @@
 // The server binary. Today it is the floor: accept, read, answer a
 // fixed 200 (or echo, for the byte-proof bintest). Every later layer
 // grows inside Ring; this file stays the CLI.
+#include <sys/signalfd.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +30,16 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // TERM/INT are blocked and land in a signalfd the ring polls: the
+  // stop arrives as a CQE, so it cannot race the ring wait the way a
+  // handler flag would (flag checked, signal lands, wait blocks forever).
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGTERM);
+  sigaddset(&mask, SIGINT);
+  sigprocmask(SIG_BLOCK, &mask, nullptr);
+  cfg.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
+
   webmachine::Ring ring;
   char err[256];
   if (!ring.init(cfg, err, sizeof(err))) {
@@ -37,4 +49,5 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "webmachine: floor up, pid %d, %s%s\n", getpid(),
                cfg.unix_path ? cfg.unix_path : "tcp", cfg.echo ? ", echo" : "");
   ring.run();
+  return 0;
 }

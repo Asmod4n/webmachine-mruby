@@ -6,7 +6,8 @@
 #
 #   THREADS=4 CONNS=400 bench/floor.sh            # AF_UNIX (default)
 #   THREADS=4 CONNS=400 TRANSPORT=tcp bench/floor.sh
-#   WM_BUNDLE=0 ... for the A/B on a kernel under suspicion
+#   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
+#   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
 [ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
   echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
@@ -15,12 +16,26 @@ set -u
 DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
-BIN=mruby/build/host/bin/webmachine-server
+IMPL="${IMPL:-uring}"
+case "$IMPL" in
+  uring) BIN=mruby/build/host/bin/webmachine-server ;;
+  epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
+  *) echo "IMPL must be uring or epoll" >&2; exit 2 ;;
+esac
 cd "$(dirname "$0")/.." || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
 WRK="${WRK:-$HOME/wrk/wrk}"
 [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
+if [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
+  # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
+  # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
+  # run. Refused here, with the fix named. grep -a, not strings(1):
+  # strings is binutils, absent on a stock Pi, and a missing checker
+  # once rejected a correctly patched wrk.
+  echo "$WRK is not the WRK_UNIX-patched build - apply bench/wrk-af-unix.patch (see its header)" >&2
+  exit 1
+fi
 
 SOCK=/tmp/wm-floor-bench.sock
 DUMMY=""
@@ -39,7 +54,8 @@ while True:
 else
   "$BIN" --port "$PORT" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
-trap 'kill $SRV $DUMMY 2>/dev/null' EXIT
+# wait: back-to-back runs must not race the dying listener for the port.
+trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
 
@@ -50,9 +66,10 @@ RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 REPO_REV=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
 MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
+OUT=$(mktemp)
 {
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} $(uname -mr)"
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
@@ -60,4 +77,11 @@ MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
     "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
   fi
-} | tee -a "$RESULTS"
+} | tee "$OUT"
+# A failed run writes nothing: the log holds only numbers that existed.
+if grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; then
+  cat "$OUT" >> "$RESULTS"
+else
+  echo "run measured nothing - NOT recorded in $RESULTS" >&2
+fi
+rm -f "$OUT"

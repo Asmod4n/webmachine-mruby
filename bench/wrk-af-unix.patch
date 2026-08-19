@@ -1,0 +1,47 @@
+diff --git a/src/wrk.c b/src/wrk.c
+index 51f46f7..9b937d0 100644
+--- a/src/wrk.c
++++ b/src/wrk.c
+@@ -1,6 +1,7 @@
+ // Copyright (C) 2012 - Will Glozer.  All rights reserved.
+ 
+ #include "wrk.h"
++#include <sys/un.h>
+ #include "script.h"
+ #include "main.h"
+ 
+@@ -238,6 +239,25 @@ static int connect_socket(thread *thread, connection *c) {
+     struct aeEventLoop *loop = thread->loop;
+     int fd, flags;
+ 
++    /* BUTCHERED: WRK_UNIX=/path/to.sock connects over AF_UNIX instead of
++       TCP. The URL is still parsed and still supplies Host: and the path,
++       we just ignore the resolved address. Test hack, not for upstream. */
++    const char *wrk_unix_path = getenv("WRK_UNIX");
++    if (wrk_unix_path) {
++        struct sockaddr_un un;
++        memset(&un, 0, sizeof(un));
++        un.sun_family = AF_UNIX;
++        strncpy(un.sun_path, wrk_unix_path, sizeof(un.sun_path) - 1);
++        fd = socket(AF_UNIX, SOCK_STREAM, 0);
++        if (fd < 0) goto error;
++        flags = fcntl(fd, F_GETFL, 0);
++        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++        if (connect(fd, (struct sockaddr *) &un, sizeof(un)) == -1) {
++            if (errno != EINPROGRESS) goto error;
++        }
++        goto armed;
++    }
++
+     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+ 
+     flags = fcntl(fd, F_GETFL, 0);
+@@ -250,6 +270,8 @@ static int connect_socket(thread *thread, connection *c) {
+     flags = 1;
+     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags));
+ 
++  armed:
++
+     flags = AE_READABLE | AE_WRITABLE;
+     if (aeCreateFileEvent(loop, fd, flags, socket_connected, c) == AE_OK) {
+         c->parser.data = c;

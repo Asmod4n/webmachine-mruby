@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -20,7 +21,7 @@ constexpr size_t kResponseLen = sizeof(kResponse) - 1;
 
 // user_data: kind(8) | gen(16) | idx(32). gen guards a reused slot
 // against CQEs of the connection that owned it before.
-enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5 };
+enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6 };
 
 uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
@@ -44,13 +45,25 @@ const char* stage_name(uint32_t st) {
 
 Ring::~Ring() {
   if (ring_up_) {
-    // The listener leaves through the ring like everything else did.
+    // The listener leaves through the ring like everything else did,
+    // and a unix listener takes its path with it - waited on, because
+    // queue_exit would race the unlink.
+    unsigned n = 0;
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (s != nullptr) {
       io_uring_prep_close_direct(s, kListenerSlot);
       io_uring_sqe_set_data64(s, tag(kClose, 0, kListenerSlot));
-      io_uring_submit(&ring_);
+      n++;
     }
+    if (!unix_path_.empty()) {
+      s = io_uring_get_sqe(&ring_);
+      if (s != nullptr) {
+        io_uring_prep_unlink(s, unix_path_.c_str(), 0);
+        io_uring_sqe_set_data64(s, tag(kSetup, 0, 0));
+        n++;
+      }
+    }
+    if (n != 0) io_uring_submit_and_wait(&ring_, n);
   }
   if (buf_ring_ != nullptr) io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
   if (pool_ != nullptr) ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
@@ -233,9 +246,18 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
     io_uring_cq_advance(&ring_, seen);
     if (failed) return false;
   }
+  // Only a bind that happened leaves a path to remove again.
+  if (is_unix) unix_path_.assign(cfg.unix_path);
 
   conns_.resize(kMaxConns);
   rearm_.reserve(64);
+
+  if (cfg.stop_fd >= 0) {
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+    io_uring_prep_poll_add(s, cfg.stop_fd, POLLIN);
+    io_uring_sqe_set_data64(s, tag(kStop, 0, 0));
+  }
 
   arm_accept();
   return true;
@@ -426,6 +448,7 @@ void Ring::handle(struct io_uring_cqe* cqe) {
     case kRecv: on_recv(idx, gen, cqe); break;
     case kSend: on_send(idx, gen, cqe); break;
     case kClose: break;  // the slot freed itself; nothing is owed
+    case kStop: stop_ = true; break;
     default: break;
   }
 }
@@ -454,7 +477,7 @@ void Ring::tick() {
 }
 
 void Ring::run() {
-  for (;;) tick();
+  while (!stop_) tick();
 }
 
 }  // namespace webmachine

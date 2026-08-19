@@ -63,6 +63,11 @@ struct RingConfig {
   // Echo received bytes instead of answering 200: the byte-proof mode
   // the small-segment bintest drives.
   bool echo = false;
+  // A signalfd main owns (signals blocked, so they land there). The
+  // ring polls it: the stop signal arrives as a CQE like everything
+  // else - a handler flag would race the wait (checked, then the signal
+  // lands, then the wait blocks forever with the flag set).
+  int stop_fd = -1;
 };
 
 class Ring {
@@ -79,7 +84,9 @@ class Ring {
   // WM_BUNDLE=0.
   bool init(const RingConfig& cfg, char* err, size_t errlen);
 
-  [[noreturn]] void run();
+  // Loops until the stop_fd CQE lands, then returns so the destructor
+  // runs: that is what removes the unix socket path again.
+  void run();
 
  private:
   void tick();
@@ -98,6 +105,8 @@ class Ring {
 
   struct io_uring ring_ {};
   bool ring_up_ = false;
+  bool stop_ = false;
+  std::string unix_path_;  // owned copy: the destructor unlinks it
   bool bundles_ = false;
   bool echo_ = false;
   char* pool_ = nullptr;  // kBufCount * kBufSize, mmap'd once
