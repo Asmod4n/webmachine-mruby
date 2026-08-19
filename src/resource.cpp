@@ -10,6 +10,9 @@
 #include <cstring>
 #include <string>
 
+// Prediction hints only where the taken side is terminal (see ring.hpp).
+#define WM_RES_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 namespace webmachine {
 namespace {
 
@@ -36,15 +39,22 @@ void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
                 mrb_string_p(msg) ? RSTRING_PTR(msg) : "");
 }
 
-// One callback, asked once. Absent -> the default stands. Raise -> a
-// named refusal (a setup that cannot answer cannot serve).
-bool ask(mrb_state* mrb, mrb_value res, const char* name, bool defv, bool* out, char* err,
+// Is `name` defined as an INSTANCE method (runtime, per request)?
+bool instance_defined(mrb_state* mrb, mrb_value klass, const char* name) {
+  const mrb_value defined = mrb_funcall(mrb, klass, "method_defined?", 1,
+                                        mrb_symbol_value(mrb_intern_cstr(mrb, name)));
+  return mrb->exc == nullptr && mrb_test(defined);
+}
+
+// A konst callback, asked once on the CLASS. Absent -> the default
+// stands. Raise -> a named refusal.
+bool ask(mrb_state* mrb, mrb_value klass, const char* name, bool defv, bool* out, char* err,
          size_t errlen) {
-  if (!mrb_respond_to(mrb, res, mrb_intern_cstr(mrb, name))) {
+  if (!mrb_respond_to(mrb, klass, mrb_intern_cstr(mrb, name))) {
     *out = defv;
     return true;
   }
-  const mrb_value v = mrb_funcall(mrb, res, name, 0);
+  const mrb_value v = mrb_funcall(mrb, klass, name, 0);
   if (mrb->exc != nullptr) {
     exc_into(mrb, name, err, errlen);
     return false;
@@ -56,10 +66,10 @@ bool ask(mrb_state* mrb, mrb_value res, const char* name, bool defv, bool* out, 
 // A method list (known_methods / allowed_methods): asked once, folded
 // into per-method bits. Entries outside the compiled set are refused -
 // a method the walker cannot name would silently 501.
-bool ask_methods(mrb_state* mrb, mrb_value res, const char* name, bool present[7], char* err,
+bool ask_methods(mrb_state* mrb, mrb_value klass, const char* name, bool present[7], char* err,
                  size_t errlen) {
-  if (!mrb_respond_to(mrb, res, mrb_intern_cstr(mrb, name))) return true;
-  const mrb_value v = mrb_funcall(mrb, res, name, 0);
+  if (!mrb_respond_to(mrb, klass, mrb_intern_cstr(mrb, name))) return true;
+  const mrb_value v = mrb_funcall(mrb, klass, name, 0);
   if (mrb->exc != nullptr) {
     exc_into(mrb, name, err, errlen);
     return false;
@@ -91,9 +101,36 @@ bool ask_methods(mrb_state* mrb, mrb_value res, const char* name, bool present[7
   return true;
 }
 
+// The boolean flow callbacks: node ans = callback truthiness, exactly
+// flow.rb's decision_test orientation, already encoded in the table.
+struct BoolCb {
+  Node node;
+  const char* name;
+  bool defv;
+};
+constexpr BoolCb kBools[] = {
+    {Node::kB13, "service_available?", true},
+    {Node::kB11, "uri_too_long?", false},
+    {Node::kB9a, "validate_content_checksum", true},  // nil = not validated reads as pass
+    {Node::kB9b, "malformed_request?", false},
+    {Node::kB7, "forbidden?", false},
+    {Node::kB6, "valid_content_headers?", true},
+    {Node::kB5, "known_content_type?", true},
+    {Node::kB4, "valid_entity_length?", true},
+    {Node::kG7, "resource_exists?", true},
+    {Node::kK7, "previously_existed?", false},
+    {Node::kM7, "allow_missing_post?", false},
+    {Node::kN5, "allow_missing_post?", false},
+    {Node::kM20, "delete_resource", false},
+    {Node::kM20b, "delete_completed?", true},
+    {Node::kO14, "is_conflict?", false},
+    {Node::kP3, "is_conflict?", false},
+    {Node::kO18b, "multiple_choices?", false},
+};
+
 }  // namespace
 
-bool resource_setup(mrb_state* mrb, const char* path, KonstSet& out, char* err, size_t errlen) {
+bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
   FILE* f = std::fopen(path, "r");
   if (f == nullptr) {
@@ -114,82 +151,51 @@ bool resource_setup(mrb_state* mrb, const char* path, KonstSet& out, char* err, 
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-  // Konst is DECLARED, not guessed: a class method (def self.x) belongs
-  // to the class, not to a request - only those are asked, once, here.
-  // An INSTANCE method on any flow callback is per-request semantics;
-  // that tier does not exist yet, so it refuses the start by name.
-  static const char* kAllCallbacks[] = {
-      "service_available?", "known_methods", "uri_too_long?", "allowed_methods",
-      "validate_content_checksum", "malformed_request?", "is_authorized?", "forbidden?",
-      "valid_content_headers?", "known_content_type?", "valid_entity_length?", "options",
-      "content_types_provided", "languages_provided", "charsets_provided",
-      "encodings_provided", "resource_exists?", "generate_etag", "last_modified",
-      "moved_permanently?", "moved_temporarily?", "previously_existed?",
-      "allow_missing_post?", "delete_resource", "delete_completed?", "post_is_create?",
-      "create_path", "process_post", "content_types_accepted", "is_conflict?",
-      "multiple_choices?", "base_uri", "expires", "variances", "to_html",
-  };
-  for (const char* name : kAllCallbacks) {
-    const mrb_value defined = mrb_funcall(mrb, klass, "method_defined?", 1,
-                                          mrb_symbol_value(mrb_intern_cstr(mrb, name)));
-    if (mrb->exc != nullptr) {
-      exc_into(mrb, "method_defined?", err, errlen);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
-    }
-    if (mrb_test(defined)) {
-      std::snprintf(err, errlen,
-                    "%s is an instance method - per-request answers need a tier that does "
-                    "not exist yet; declare it konst as a class method (def self.%s)",
-                    name, name);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
-    }
-  }
-  const mrb_value res = klass;  // class methods answer for the class
 
-  // Callbacks only a later tier can honor refuse the start by name.
+  out = Resource{};
+  out.mrb = mrb;
+
+  // Callbacks whose VALUES the machine cannot speak yet refuse the
+  // start by name - konst or runtime alike.
   static const char* kUnhonored[] = {
       "generate_etag", "last_modified", "options", "create_path", "process_post",
       "content_types_accepted", "base_uri", "expires", "variances",
   };
   for (const char* name : kUnhonored) {
-    if (mrb_respond_to(mrb, res, mrb_intern_cstr(mrb, name))) {
-      std::snprintf(err, errlen, "%s is defined but only a later tier can honor it", name);
+    if (mrb_respond_to(mrb, klass, mrb_intern_cstr(mrb, name)) ||
+        instance_defined(mrb, klass, name)) {
+      std::snprintf(err, errlen, "%s is defined but no tier can honor it yet", name);
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+  }
+  // These shape the compiled vectors or carry values: class methods only.
+  static const char* kKonstOnly[] = {
+      "known_methods", "allowed_methods", "content_types_provided", "languages_provided",
+      "charsets_provided", "encodings_provided", "is_authorized?", "moved_permanently?",
+      "moved_temporarily?",
+  };
+  for (const char* name : kKonstOnly) {
+    if (instance_defined(mrb, klass, name)) {
+      std::snprintf(err, errlen, "%s shapes the compiled vectors - declare it konst (def self.%s)",
+                    name, name);
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
   }
 
-  // The plain booleans: node ans = callback truthiness, exactly
-  // flow.rb's decision_test orientation, already encoded in the table.
-  struct BoolCb {
-    Node node;
-    const char* name;
-    bool defv;
-  };
-  static const BoolCb kBools[] = {
-      {Node::kB13, "service_available?", true},
-      {Node::kB11, "uri_too_long?", false},
-      {Node::kB9a, "validate_content_checksum", true},  // nil = not validated reads as pass
-      {Node::kB9b, "malformed_request?", false},
-      {Node::kB7, "forbidden?", false},
-      {Node::kB6, "valid_content_headers?", true},
-      {Node::kB5, "known_content_type?", true},
-      {Node::kB4, "valid_entity_length?", true},
-      {Node::kG7, "resource_exists?", true},
-      {Node::kK7, "previously_existed?", false},
-      {Node::kM7, "allow_missing_post?", false},
-      {Node::kN5, "allow_missing_post?", false},
-      {Node::kM20, "delete_resource", false},
-      {Node::kM20b, "delete_completed?", true},
-      {Node::kO14, "is_conflict?", false},
-      {Node::kP3, "is_conflict?", false},
-      {Node::kO18b, "multiple_choices?", false},
-  };
+  // The booleans: class method -> konst bit; instance method -> the
+  // node goes dynamic and is asked through the VM on every request.
   bool ans[sizeof(kBools) / sizeof(kBools[0])];
   for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
-    if (!ask(mrb, res, kBools[i].name, kBools[i].defv, &ans[i], err, errlen)) {
+    const BoolCb& cb = kBools[i];
+    ans[i] = cb.defv;
+    if (instance_defined(mrb, klass, cb.name)) {
+      out.dynamic |= uint64_t{1} << static_cast<size_t>(cb.node);
+      out.node_sym[static_cast<size_t>(cb.node)] = mrb_intern_cstr(mrb, cb.name);
+      continue;
+    }
+    if (!ask(mrb, klass, cb.name, cb.defv, &ans[i], err, errlen)) {
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
@@ -198,7 +204,7 @@ bool resource_setup(mrb_state* mrb, const char* path, KonstSet& out, char* err, 
   // is_authorized?: only an unconditional true is konst (a 401 with
   // WWW-Authenticate needs the callback's string - a later tier).
   bool authorized = true;
-  if (!ask(mrb, res, "is_authorized?", true, &authorized, err, errlen)) {
+  if (!ask(mrb, klass, "is_authorized?", true, &authorized, err, errlen)) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
@@ -207,106 +213,111 @@ bool resource_setup(mrb_state* mrb, const char* path, KonstSet& out, char* err, 
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-
   // moved_*: a truthy answer carries a Location URI - a later tier.
   for (const char* name : {"moved_permanently?", "moved_temporarily?"}) {
     bool moved = false;
-    if (!ask(mrb, res, name, false, &moved, err, errlen)) {
+    if (!ask(mrb, klass, name, false, &moved, err, errlen)) {
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
     if (moved) {
-      std::snprintf(err, errlen, "%s with a Location is not konst-representable yet", name);
+      std::snprintf(err, errlen, "%s with a Location is not representable yet", name);
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
   }
 
-  // content_types_provided: exactly one [type, handler] pair is konst
-  // (value conneg between several is a later tier). The handler runs
-  // ONCE, here - its bytes become the prebuilt 200.
-  std::string content_type;
-  std::string body;
-  bool have_body = false;
-  if (mrb_respond_to(mrb, res, mrb_intern_lit(mrb, "content_types_provided")) ||
-      mrb_respond_to(mrb, res, mrb_intern_lit(mrb, "to_html"))) {
-    mrb_value pair_type = mrb_nil_value();
-    mrb_sym handler = mrb_intern_lit(mrb, "to_html");  // webmachine's default pair
-    content_type = "text/html";
-    if (mrb_respond_to(mrb, res, mrb_intern_lit(mrb, "content_types_provided"))) {
-      const mrb_value v = mrb_funcall(mrb, res, "content_types_provided", 0);
-      if (mrb->exc != nullptr) {
-        exc_into(mrb, "content_types_provided", err, errlen);
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
-      }
-      if (!mrb_array_p(v) || RARRAY_LEN(v) != 1) {
-        std::snprintf(err, errlen,
-                      "content_types_provided must hold exactly one [type, handler] pair "
-                      "(value conneg is a later tier)");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
-      }
-      const mrb_value pair = mrb_ary_ref(mrb, v, 0);
-      if (!mrb_array_p(pair) || RARRAY_LEN(pair) != 2) {
-        std::snprintf(err, errlen, "content_types_provided pair must be [String, Symbol]");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
-      }
-      pair_type = mrb_ary_ref(mrb, pair, 0);
-      const mrb_value h = mrb_ary_ref(mrb, pair, 1);
-      if (!mrb_string_p(pair_type) || !mrb_symbol_p(h)) {
-        std::snprintf(err, errlen, "content_types_provided pair must be [String, Symbol]");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
-      }
-      content_type.assign(RSTRING_PTR(pair_type), RSTRING_LEN(pair_type));
-      handler = mrb_symbol(h);
-    }
-    const mrb_value rendered = mrb_funcall_argv(mrb, res, handler, 0, nullptr);
+  // The representation. content_types_provided (class method, one
+  // [type, handler] pair - value conneg is a later tier) names the
+  // handler; default is webmachine's ['text/html', :to_html]. A CLASS
+  // handler renders once, here; an INSTANCE handler renders per
+  // request through the VM.
+  std::string content_type = "text/html";
+  mrb_sym handler = mrb_intern_lit(mrb, "to_html");
+  if (mrb_respond_to(mrb, klass, mrb_intern_lit(mrb, "content_types_provided"))) {
+    const mrb_value v = mrb_funcall(mrb, klass, "content_types_provided", 0);
     if (mrb->exc != nullptr) {
-      exc_into(mrb, "body handler raised", err, errlen);
+      exc_into(mrb, "content_types_provided", err, errlen);
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
-    if (!mrb_string_p(rendered)) {
-      std::snprintf(err, errlen, "the body handler must return a String");
+    mrb_value pair;
+    mrb_value type;
+    mrb_value h;
+    if (!mrb_array_p(v) || RARRAY_LEN(v) != 1 || !mrb_array_p(pair = mrb_ary_ref(mrb, v, 0)) ||
+        RARRAY_LEN(pair) != 2 || !mrb_string_p(type = mrb_ary_ref(mrb, pair, 0)) ||
+        !mrb_symbol_p(h = mrb_ary_ref(mrb, pair, 1))) {
+      std::snprintf(err, errlen,
+                    "content_types_provided must hold exactly one [String, Symbol] pair "
+                    "(value conneg is a later tier)");
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
-    body.assign(RSTRING_PTR(rendered), RSTRING_LEN(rendered));
-    have_body = true;
+    content_type.assign(RSTRING_PTR(type), RSTRING_LEN(type));
+    handler = mrb_symbol(h);
+  }
+  const bool body_konst = mrb_respond_to(mrb, klass, handler);
+  const bool body_runtime =
+      !body_konst && mrb_test(mrb_funcall(mrb, klass, "method_defined?", 1,
+                                          mrb_symbol_value(handler)));
+  if (mrb->exc != nullptr) {
+    exc_into(mrb, "method_defined?", err, errlen);
+    mrb_gc_arena_restore(mrb, ai);
+    return false;
+  }
+  if (body_konst) {
+    const mrb_value rendered = mrb_funcall_argv(mrb, klass, handler, 0, nullptr);
+    if (mrb->exc != nullptr || !mrb_string_p(rendered)) {
+      mrb->exc == nullptr
+          ? static_cast<void>(std::snprintf(err, errlen, "the body handler must return a String"))
+          : exc_into(mrb, "body handler raised", err, errlen);
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+    out.konst.body.assign(RSTRING_PTR(rendered), RSTRING_LEN(rendered));
+    out.konst.content_type = content_type;
+  } else if (body_runtime) {
+    out.dynamic_body = true;
+    out.body_sym = handler;
+    out.konst.content_type = content_type;
+  }
+
+  // The instance dynamic callbacks are asked on: created once, pinned
+  // against GC, holding whatever state the app's initialize gave it.
+  if (out.dynamic != 0 || out.dynamic_body) {
+    out.self = mrb_obj_new(mrb, mrb_class_ptr(klass), 0, nullptr);
+    if (mrb->exc != nullptr) {
+      exc_into(mrb, "resource initialize raised", err, errlen);
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+    mrb_gc_register(mrb, out.self);
   }
 
   // The method lists, folded (defaults: webmachine's standard known
   // set, GET/HEAD allowed).
   bool known[7] = {true, true, true, true, true, true, false};
-  if (!ask_methods(mrb, res, "known_methods", known, err, errlen)) {
+  if (!ask_methods(mrb, klass, "known_methods", known, err, errlen)) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
   bool allowed[7] = {true, true, false, false, false, false, false};
-  if (!ask_methods(mrb, res, "allowed_methods", allowed, err, errlen)) {
+  if (!ask_methods(mrb, klass, "allowed_methods", allowed, err, errlen)) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
 
   // Fold everything into the per-method vectors, and spell the Allow
   // line B10's 405 will speak (RFC 9110 10.2.1).
-  out = KonstSet{};
-  if (have_body) {
-    out.body = body;
-    out.content_type = content_type;
-  }
-  out.allow.clear();
+  out.konst.allow.clear();
   for (uint8_t m = 0; m < 6; m++) {
     if (allowed[m]) {
-      if (!out.allow.empty()) out.allow.append(", ");
-      out.allow.append(kMethodName[m]);
+      if (!out.konst.allow.empty()) out.konst.allow.append(", ");
+      out.konst.allow.append(kMethodName[m]);
     }
   }
   for (uint8_t m = 0; m < 7; m++) {
-    flow::KonstAnswers& k = out.per_method[m];
+    flow::KonstAnswers& k = out.konst.per_method[m];
     k.ans[static_cast<size_t>(Node::kB12)] = known[m];
     k.ans[static_cast<size_t>(Node::kB10)] = allowed[m];
     for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
@@ -314,6 +325,52 @@ bool resource_setup(mrb_state* mrb, const char* path, KonstSet& out, char* err, 
     }
   }
   mrb_gc_arena_restore(mrb, ai);
+  return true;
+}
+
+uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts) {
+  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
+  flow::Node n = flow::Node::kB13;
+  for (;;) {  // terminates: proven acyclic in flow.hpp
+    const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
+    bool ans;
+    if (f.kind == flow::Kind::kRequest) {
+      ans = flow::eval_request(n, facts);
+    } else if ((res.dynamic >> static_cast<size_t>(n)) & 1) {
+      // The budgeted entry: this node's answer lives in the world, the
+      // VM is asked on every request. A raise ends in 500, never in a
+      // dead process (the VM boundary is always protected).
+      const int ai = mrb_gc_arena_save(res.mrb);
+      const mrb_value v =
+          mrb_funcall_argv(res.mrb, res.self, res.node_sym[static_cast<size_t>(n)], 0, nullptr);
+      if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
+        res.mrb->exc = nullptr;
+        mrb_gc_arena_restore(res.mrb, ai);
+        return 500;
+      }
+      ans = mrb_test(v);
+      mrb_gc_arena_restore(res.mrb, ai);
+    } else {
+      ans = k.ans[static_cast<size_t>(n)];
+    }
+    const flow::Target& t = ans ? f.on_true : f.on_false;
+    if (t.status != 0) return t.status;
+    n = t.node;
+  }
+}
+
+bool resource_render(const Resource& res, std::string& body) {
+  // The copy floor in production: render in the VM, copy out, restore
+  // the arena - the VM keeps nothing.
+  const int ai = mrb_gc_arena_save(res.mrb);
+  const mrb_value v = mrb_funcall_argv(res.mrb, res.self, res.body_sym, 0, nullptr);
+  if (WM_RES_UNLIKELY(res.mrb->exc != nullptr) || !mrb_string_p(v)) {
+    res.mrb->exc = nullptr;
+    mrb_gc_arena_restore(res.mrb, ai);
+    return false;
+  }
+  body.assign(RSTRING_PTR(v), RSTRING_LEN(v));
+  mrb_gc_arena_restore(res.mrb, ai);
   return true;
 }
 

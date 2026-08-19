@@ -20,6 +20,13 @@
 
 namespace webmachine {
 
+// The bound resource (resource.hpp owns the definition; Http1 stays
+// mruby-free). resource_decide answers the flow with its dynamic nodes
+// asked through the VM; resource_render produces a per-request body.
+struct Resource;
+uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
+bool resource_render(const Resource& res, std::string& body);
+
 // RFC 9110 §5.4 allows refusing oversized fields; 8k is the fleet
 // convention (nginx, h2o) and bounds one head's work - 431 past it.
 inline constexpr size_t kMaxHead = 8192;
@@ -42,9 +49,11 @@ class Http1 {
   };
 
   // Builds every response the flow can speak, once, and stamps the
-  // date. The KonstSet is the bound resource - webmachine-ruby's
-  // defaults when none was bound, the mruby bridge's product otherwise.
-  explicit Http1(const flow::KonstSet& ks = {});
+  // date. `res` (with its two flags, readable only where resource.hpp
+  // is included) carries the runtime tier: dynamic flow nodes and/or a
+  // per-request body. Null = fully konst.
+  explicit Http1(const flow::KonstSet& ks = {}, const Resource* res = nullptr,
+                 bool dynamic_nodes = false, bool dynamic_body = false);
 
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
   // second changed. Never runs per request.
@@ -78,9 +87,16 @@ class Http1 {
   std::vector<Variants> store_;
   std::array<uint8_t, 600> index_ {};  // status -> store_ slot
   Variants ok_head_;  // 200 for HEAD: the same head, no body bytes
+  // 200's head up to (not including) Content-Length: the assembly
+  // point for per-request bodies.
+  Variants ok_prefix_;
   // One konst vector per method, the method folded in at bind time
   // (B12/B10 never re-compare method strings per request).
   flow::KonstSet konst_;
+  const Resource* res_ = nullptr;
+  bool dynamic_nodes_ = false;
+  bool dynamic_body_ = false;
+  std::string body_scratch_;  // per-request rendered body; capacity survives
 };
 
 }  // namespace webmachine

@@ -79,20 +79,20 @@ int main(int argc, char** argv) {
   sigprocmask(SIG_BLOCK, &mask, nullptr);
   cfg.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
-  // The VM boots with the process and holds the resource. Setup asks it
-  // ONCE for the resource's konst answers and rendered body; the
-  // request path enters it ZERO times (VM entry is poison, budgeted -
-  // the copy floor prices one at ~0.1-0.3us).
+  // The VM boots with the process and holds the resource. Class
+  // methods are asked ONCE here and become constants; instance methods
+  // are the runtime tier, asked through the VM on every request (the
+  // budgeted entry - the copy floor prices one at ~0.1-0.3us).
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {
     std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
 
-  webmachine::flow::KonstSet konst;  // webmachine-ruby's defaults unbound
+  webmachine::Resource res;  // webmachine-ruby's defaults unbound
   if (app_path != nullptr) {
     char err[512];
-    if (!webmachine::resource_setup(mrb, app_path, konst, err, sizeof(err))) {
+    if (!webmachine::resource_setup(mrb, app_path, res, err, sizeof(err))) {
       std::fprintf(stderr, "webmachine: %s: %s\n", app_path, err);
       mrb_close(mrb);
       return 1;
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     Echo app;
     rc = serve(cfg, app, "echo floor");
   } else {
-    webmachine::Http1 app(konst);
+    webmachine::Http1 app(res.konst, &res, res.dynamic != 0, res.dynamic_body);
     rc = serve(cfg, app, "http/1.1");
   }
   mrb_close(mrb);

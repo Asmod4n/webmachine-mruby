@@ -7,6 +7,7 @@
 #   THREADS=4 CONNS=400 bench/floor.sh            # AF_UNIX (default)
 #   THREADS=4 CONNS=400 TRANSPORT=tcp bench/floor.sh
 #   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
+#   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
 [ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
@@ -37,11 +38,14 @@ if [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
   exit 1
 fi
 
+APP_ARGS=()
+[ -n "${APP:-}" ] && APP_ARGS=(--app "$APP")
+
 SOCK=/tmp/wm-floor-bench.sock
 DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix "$SOCK" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
   # The patched wrk routes every byte over WRK_UNIX but still validates
   # its URL with one probe connect() to the TCP port - something must
   # answer that handshake or wrk refuses to start.
@@ -52,7 +56,7 @@ s.bind(('127.0.0.1',$PORT)); s.listen(16)
 while True:
     c,_=s.accept(); c.close()" >/dev/null 2>&1 & DUMMY=$!
 else
-  "$BIN" --port "$PORT" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "$BIN" --port "$PORT" "${APP_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
@@ -72,7 +76,7 @@ OUT=$(mktemp)
   # The compiler flags are part of every number since they became a
   # variable (O2 -> O3+native landed mid-archive).
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" build_config.rb | head -1 | tr -d "'" | tr '<' ' ' | tr -s ' ')
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"

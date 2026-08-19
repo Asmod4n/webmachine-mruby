@@ -70,6 +70,9 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       nxt = +''
       nxt << s.readpartial(1) until nxt.end_with?("\r\n\r\n")
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
+      len = nxt[/^Content-Length: *(\d+)\r$/i, 1].to_i
+      drain = +''
+      drain << s.readpartial(len - drain.bytesize) while drain.bytesize < len
       # POST is outside the default allowed_methods: 405 from B10.
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head3, = resource_read(s)
@@ -156,17 +159,75 @@ assert('resource: later-tier callbacks refuse the start by name') do
   assert_true resource_refused(src).include?('generate_etag')
 end
 
-assert('resource: an instance method on a callback refuses - konst is declared') do
+assert('resource: an instance body renders per request through the VM') do
+  src = File.read(File.expand_path('../examples/counter.rb', __dir__))
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, body1 = resource_read(s)
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, body2 = resource_read(s)
+      assert_equal '<html><body>hit 1</body></html>', body1
+      assert_equal '<html><body>hit 2</body></html>', body2
+      # HEAD announces the NEXT render's length and sends no bytes; the
+      # pipelined GET must begin right after the head.
+      s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      hh = +''
+      hh << s.readpartial(1) until hh.end_with?("\r\n\r\n")
+      assert_true hh.match?(/^Content-Length: 31\r$/i), hh
+      nxt, body4 = resource_read(s)
+      assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
+      assert_equal '<html><body>hit 4</body></html>', body4
+    end
+  end
+end
+
+assert('resource: an instance decision is asked per request (state changes answers)') do
   src = <<~RUBY
-    class PerRequest < Webmachine::Resource
-      def to_html
-        'dynamic'
+    class Flaky < Webmachine::Resource
+      def initialize
+        @n = 0
+      end
+      def resource_exists?
+        (@n += 1).odd?
       end
     end
   RUBY
-  msg = resource_refused(src)
-  assert_true msg.include?('to_html'), msg
-  assert_true msg.include?('class method'), msg
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head1, = resource_read(s)
+      assert_true head1.start_with?('HTTP/1.1 200')
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head2, = resource_read(s)
+      assert_true head2.start_with?('HTTP/1.1 404')
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head3, = resource_read(s)
+      assert_true head3.start_with?('HTTP/1.1 200')
+    end
+  end
+end
+
+assert('resource: a raising runtime callback is 500, the process survives') do
+  src = <<~RUBY
+    class Boom < Webmachine::Resource
+      def to_html
+        raise 'boom'
+      end
+    end
+  RUBY
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 500')
+    end
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 500')  # still answering, still alive
+    end
+  end
 end
 
 assert('resource: an app that raises at load refuses the start with the error') do

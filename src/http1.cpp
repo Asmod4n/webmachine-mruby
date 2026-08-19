@@ -124,7 +124,9 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   store_.push_back(std::move(v));
 }
 
-Http1::Http1(const flow::KonstSet& ks) : konst_(ks) {
+Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
+             bool dynamic_body)
+    : konst_(ks), res_(res), dynamic_nodes_(dynamic_nodes), dynamic_body_(dynamic_body) {
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
@@ -170,6 +172,19 @@ Http1::Http1(const flow::KonstSet& ks) : konst_(ks) {
     strip(ok.plain, ok_head_.plain);
     strip(ok.keep, ok_head_.keep);
     strip(ok.close, ok_head_.close);
+  }
+  // A per-request body assembles onto 200's head cut before
+  // Content-Length: prefix + "Content-Length: N\r\n\r\n" + body.
+  if (dynamic_body_) {
+    const Variants& ok = variants(200);
+    const size_t cut = ok_tail.size();  // ok's bytes end with the whole tail
+    const auto prefix = [&](const Resp& src, Resp& dst) {
+      dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
+      dst.date_off = src.date_off;
+    };
+    prefix(ok.plain, ok_prefix_.plain);
+    prefix(ok.keep, ok_prefix_.keep);
+    prefix(ok.close, ok_prefix_.close);
   }
 
   sec_ = 0;
@@ -219,6 +234,11 @@ void Http1::on_tick() {
   std::memcpy(ok_head_.plain.bytes.data() + ok_head_.plain.date_off, core, kDateLen);
   std::memcpy(ok_head_.keep.bytes.data() + ok_head_.keep.date_off, core, kDateLen);
   std::memcpy(ok_head_.close.bytes.data() + ok_head_.close.date_off, core, kDateLen);
+  if (dynamic_body_) {
+    std::memcpy(ok_prefix_.plain.bytes.data() + ok_prefix_.plain.date_off, core, kDateLen);
+    std::memcpy(ok_prefix_.keep.bytes.data() + ok_prefix_.keep.date_off, core, kDateLen);
+    std::memcpy(ok_prefix_.close.bytes.data() + ok_prefix_.close.date_off, core, kDateLen);
+  }
 }
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
@@ -368,20 +388,42 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink);  // RFC 9112 §3.2
     if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink);
 
-    // The wire is valid; from here the FLOW decides the status. The
-    // konst vector for this method already folded the resource's
-    // constant answers - the VM sees nothing.
-    const uint16_t status =
-        flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
+    // The wire is valid; from here the FLOW decides the status. Konst
+    // answers are compiled into the method's vector; dynamic nodes -
+    // instance methods, by declaration - are asked through the VM per
+    // request (this branch is deployment-stable: no hint).
+    uint16_t status =
+        dynamic_nodes_ ? resource_decide(*res_, facts)
+                       : flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
-    const Variants& sv = (facts.method == flow::Method::kHead && status == 200)
-                             ? ok_head_
-                             : variants(status);
-    sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
-                           : (persist ? sv.keep.bytes : sv.close.bytes));
+    if (dynamic_body_ && status == 200) {
+      // The per-request representation: rendered in the VM, copied out
+      // (the copy floor in production), assembled onto the prebuilt
+      // head. HEAD renders too - its Content-Length must be the GET's -
+      // but sends no body bytes (RFC 9110 9.3.2).
+      if (WM_H1_UNLIKELY(!resource_render(*res_, body_scratch_))) {
+        status = 500;  // the handler raised; the connection outlives it
+      } else {
+        const Resp& p = minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
+                                   : (persist ? ok_prefix_.keep : ok_prefix_.close);
+        sink.append(p.bytes);
+        char cl[40];
+        const int n =
+            std::snprintf(cl, sizeof(cl), "Content-Length: %zu\r\n\r\n", body_scratch_.size());
+        sink.append(cl, static_cast<size_t>(n));
+        if (facts.method != flow::Method::kHead) sink.append(body_scratch_);
+      }
+    }
+    if (!(dynamic_body_ && status == 200)) {
+      const Variants& sv = (facts.method == flow::Method::kHead && status == 200)
+                               ? ok_head_
+                               : variants(status);
+      sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
+                             : (persist ? sv.keep.bytes : sv.close.bytes));
+    }
 
     off += static_cast<size_t>(ret);
     if (content_length != 0) {
