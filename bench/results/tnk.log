@@ -44,3 +44,8 @@ BM_vm_entry                   0.170 us        0.170 us     16461239
 BM_copy_floor_small           0.324 us        0.324 us      8646374 bytes_per_second=79.5592Mi/s
 BM_copy_floor_browser         0.320 us        0.320 us      8744731 bytes_per_second=1.46874Gi/s
 BM_copy_floor_cached_sym      0.191 us        0.191 us     14651663
+==== 2026-08-19T21:24Z repo=c014527 mruby=524586c ====
+harness: wrk -t3 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default cflags=-O3 -march=native 6.18.39+rpt-rpi-2712 aarch64
+     50%  235.00us
+     99%  252.00us
+Requests/sec: 528875.52
