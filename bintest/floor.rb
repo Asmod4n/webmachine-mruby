@@ -15,11 +15,12 @@ require 'socket'
 require 'tempfile'
 
 SERVER_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SERVER_BIN)
+EPOLL_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-floor-epoll') unless defined?(EPOLL_BIN)
 
-def floor_server(echo: false, bundles: false)
-  sock = "/tmp/wm-floor-#{$$}-#{echo ? 'e' : 'r'}#{bundles ? 'b' : ''}.sock"
+def floor_server(echo: false, bundles: false, bin: SERVER_BIN)
+  sock = "/tmp/wm-floor-#{$$}-#{echo ? 'e' : 'r'}#{bundles ? 'b' : ''}#{bin.equal?(SERVER_BIN) ? '' : 'p'}.sock"
   File.unlink(sock) if File.exist?(sock)
-  args = [SERVER_BIN, '--unix', sock]
+  args = [bin, '--unix', sock]
   args << '--echo' if echo
   err = "/tmp/wm-floor-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => bundles ? '1' : '0' }, *args, out: File::NULL, err: err)
@@ -37,8 +38,8 @@ def floor_server(echo: false, bundles: false)
   end
 end
 
-def floor_echo_assertions(bundles)
-  floor_server(echo: true, bundles: bundles) do |sock|
+def floor_echo_assertions(bundles, bin: SERVER_BIN)
+  floor_server(echo: true, bundles: bundles, bin: bin) do |sock|
     UNIXSocket.open(sock) do |s|
       # Many small segments, written with pauses so they arrive as
       # separate receives - the exact traffic shape that caught the
@@ -113,6 +114,27 @@ assert('floor: the ring-built TCP listener answers like the unix one') do
   ensure
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
+  end
+end
+
+assert('epoll floor: echo returns every byte (the measuring stick answers alike)') do
+  floor_echo_assertions(false, bin: EPOLL_BIN)
+end
+
+assert('epoll floor: a receive is answered 200, keep-alive holds') do
+  floor_server(bin: EPOLL_BIN) do |sock|
+    UNIXSocket.open(sock) do |s|
+      3.times do
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head = +''
+        head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+        assert_true head.start_with?('HTTP/1.1 200 OK')
+        len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
+        body = +''
+        body << s.readpartial(len - body.bytesize) while body.bytesize < len
+        assert_equal 'OK', body
+      end
+    end
   end
 end
 

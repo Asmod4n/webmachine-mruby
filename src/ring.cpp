@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -20,7 +21,7 @@ constexpr size_t kResponseLen = sizeof(kResponse) - 1;
 
 // user_data: kind(8) | gen(16) | idx(32). gen guards a reused slot
 // against CQEs of the connection that owned it before.
-enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5 };
+enum : uint8_t { kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6 };
 
 uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
@@ -251,6 +252,13 @@ bool Ring::init(const RingConfig& cfg, char* err, size_t errlen) {
   conns_.resize(kMaxConns);
   rearm_.reserve(64);
 
+  if (cfg.stop_fd >= 0) {
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+    io_uring_prep_poll_add(s, cfg.stop_fd, POLLIN);
+    io_uring_sqe_set_data64(s, tag(kStop, 0, 0));
+  }
+
   arm_accept();
   return true;
 }
@@ -440,6 +448,7 @@ void Ring::handle(struct io_uring_cqe* cqe) {
     case kRecv: on_recv(idx, gen, cqe); break;
     case kSend: on_send(idx, gen, cqe); break;
     case kClose: break;  // the slot freed itself; nothing is owed
+    case kStop: stop_ = true; break;
     default: break;
   }
 }
@@ -467,8 +476,8 @@ void Ring::tick() {
   }
 }
 
-void Ring::run(const volatile std::sig_atomic_t* stop) {
-  while (!*stop) tick();
+void Ring::run() {
+  while (!stop_) tick();
 }
 
 }  // namespace webmachine
