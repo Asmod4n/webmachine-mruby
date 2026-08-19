@@ -49,3 +49,13 @@ harness: wrk -t3 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default cflags=
      50%  235.00us
      99%  252.00us
 Requests/sec: 528875.52
+==== 2026-08-19T21:38Z repo=f5f5c6f mruby=524586c ====
+harness: wrk -t3 -c128 -d10s impl=epoll transport=unix WM_BUNDLE=default cflags=-O3 -march=native 6.18.39+rpt-rpi-2712 aarch64
+     50%  232.00us
+     99%  249.00us
+Requests/sec: 535123.22
+==== 2026-08-19T21:38Z repo=f5f5c6f mruby=524586c ====
+harness: wrk -t3 -c128 -d10s impl=uring transport=unix WM_BUNDLE=default cflags=-O3 -march=native 6.18.39+rpt-rpi-2712 aarch64
+     50%  165.00us
+     99%  203.00us
+Requests/sec: 714835.25
