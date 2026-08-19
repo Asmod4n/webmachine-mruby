@@ -23,10 +23,21 @@ struct Resource {
   // The one shared instance dynamic callbacks are asked on (resources
   // hold no per-request state; dynamic answers come from the world).
   mrb_value self = {};
+  // The class, FROZEN at bind: nobody can redefine a method after
+  // routes are added, so everything resolved below stays true forever.
+  struct RClass* klass = nullptr;
   uint64_t dynamic = 0;  // nodes answered per request
   mrb_sym node_sym[flow::kNodeCount] = {};  // interned once, never per request
+  // Resolved ONCE at bind (aliases unwrapped): a Ruby proc enters
+  // directly via mrb_yield_with_class, skipping the funcall machinery;
+  // a cfunc or undef falls back to funcall (reproducing vm.c's frame
+  // setup is not worth owning).
+  mrb_method_t node_m[flow::kNodeCount] = {};
+  bool node_fast[flow::kNodeCount] = {};
   bool dynamic_body = false;
   mrb_sym body_sym = {};
+  mrb_method_t body_m = {};
+  bool body_fast = false;
 };
 
 // Loads the app file (its class inherits Webmachine::Resource) and
