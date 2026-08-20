@@ -179,7 +179,15 @@ bool bind_bench_resource(const char* path, const char* src, webmachine::Resource
   std::fputs(src, f);
   std::fclose(f);
   char err[256];
-  return webmachine::resource_setup(mrb, path, out, err, sizeof(err));
+  // Its own VM: setup demands exactly ONE Resource subclass per state,
+  // and the two bench resources must not see each other.
+  mrb_state* own = mrb_open();
+  if (own == nullptr) return false;
+  if (!webmachine::resource_setup(own, path, out, err, sizeof(err))) {
+    std::fprintf(stderr, "bench bind: %s\n", err);
+    return false;
+  }
+  return true;
 }
 
 void BM_runtime_1cb(benchmark::State& state) {
