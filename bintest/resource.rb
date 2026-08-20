@@ -20,7 +20,7 @@ def resource_server(app_source)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
-    yield sock
+    yield sock, pid
   ensure
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
@@ -44,12 +44,20 @@ ensure
   app.unlink
 end
 
+# Every suite read has a deadline: a wedged server must FAIL the test,
+# never hang it. Seen live (2026-08-20): the pre-fix accept bug held a
+# readpartial forever and the whole run died in the scrollback.
+def wm_recv(s, maxlen = 1, deadline = 10)
+  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
+  s.readpartial(maxlen)
+end
+
 def resource_read(s)
   head = +''
-  head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+  head << wm_recv(s) until head.end_with?("\r\n\r\n")
   len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
   body = +''
-  body << s.readpartial(len - body.bytesize) while body.bytesize < len
+  body << wm_recv(s, len - body.bytesize) while body.bytesize < len
   [head, body]
 end
 
@@ -65,14 +73,14 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       # the pipelined GET's response must begin immediately after.
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
-      hh << s.readpartial(1) until hh.end_with?("\r\n\r\n")
+      hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
       assert_true hh.match?(/^Content-Length: 39\r$/i)
       nxt = +''
-      nxt << s.readpartial(1) until nxt.end_with?("\r\n\r\n")
+      nxt << wm_recv(s) until nxt.end_with?("\r\n\r\n")
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
       len = nxt[/^Content-Length: *(\d+)\r$/i, 1].to_i
       drain = +''
-      drain << s.readpartial(len - drain.bytesize) while drain.bytesize < len
+      drain << wm_recv(s, len - drain.bytesize) while drain.bytesize < len
       # POST is outside the default allowed_methods: 405 from B10.
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head3, = resource_read(s)
@@ -173,7 +181,7 @@ assert('resource: an instance body renders per request through the VM') do
       # pipelined GET must begin right after the head.
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
-      hh << s.readpartial(1) until hh.end_with?("\r\n\r\n")
+      hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
       assert_true hh.match?(/^Content-Length: 31\r$/i), hh
       nxt, body4 = resource_read(s)
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
@@ -238,4 +246,113 @@ end
 
 assert('resource: an app without a Webmachine::Resource subclass is refused') do
   assert_true resource_refused('class Quiet; end').include?('Webmachine::Resource')
+end
+
+assert('chrono: duration units and clocks answer inside the run frame') do
+  # mruby-chrono is the ONE gate for durations crossing Ruby<->C.
+  # Prove the gem is linked into the server and its whole surface -
+  # units, both clocks, the timer - answers inside a per-request frame.
+  src = <<~RUBY
+    class Clocked < Webmachine::Resource
+      def initialize
+        @t0 = Chrono::Steady.now
+        @timer = Chrono::Timer.new
+      end
+      def to_html
+        raise 'unit broke' unless 500.ms == 0.5 && 2.s == 2.0 && 1.h == 3600.0
+        raise 'steady went backwards' if Chrono::Steady.now < @t0
+        raise 'timer broke' if @timer.elapsed < 0
+        raise 'system clock implausible' if Chrono::System.now < 1.7e9
+        '<html><body>chrono ok</body></html>'
+      end
+    end
+  RUBY
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      2.times do
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+        assert_equal '<html><body>chrono ok</body></html>', body
+      end
+    end
+  end
+end
+
+assert('run frame: bodies survive a full GC per request, 200 requests exact') do
+  # The memory model on trial: ONE frame roots everything, the arena
+  # carries values between callbacks, no ivars, no pins. Two GC.start
+  # per render is the harshest weather that claim must hold in - a
+  # body swept too early answers with corrupted bytes here.
+  src = <<~RUBY
+    class Churn < Webmachine::Resource
+      def initialize
+        @n = 0
+      end
+      def to_html
+        GC.start
+        junk = Array.new(64) { |i| 'x' * (65 + (i % 31)) }
+        GC.start
+        "<html><body>hit \#{@n += 1} of \#{junk.size}</body></html>"
+      end
+    end
+  RUBY
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      200.times do |i|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        _, body = resource_read(s)
+        assert_equal "<html><body>hit #{i + 1} of 64</body></html>", body
+      end
+    end
+  end
+end
+
+assert('run frame: a raise right after GC still answers 500 with its message') do
+  # The pending exception (and its mesg bytes we lend to the writer)
+  # must be rooted through the collection that preceded the raise.
+  src = <<~RUBY
+    class GcBoom < Webmachine::Resource
+      def to_html
+        GC.start
+        raise 'gcboom'
+      end
+    end
+  RUBY
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      3.times do
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 500')
+        assert_true body.include?('gcboom'), body
+      end
+    end
+  end
+end
+
+assert('run frame: RSS stays flat across 8000 runtime requests') do
+  # No per-request allocation may outlive its request: not in the VM
+  # (arena resets, no ivars), not in C (string capacities are reused).
+  # Measured curve (container): the mruby heap reaches steady state by
+  # ~4000 requests and then moves ZERO bytes over 16000 more - so warm
+  # past the knee and demand near-flat after it. 512KB headroom still
+  # convicts any leak of >= 64 bytes per request.
+  src = File.read(File.expand_path('../examples/counter.rb', __dir__))
+  resource_server(src) do |sock, pid|
+    rss = -> { File.read("/proc/#{pid}/status")[/^VmRSS:\s*(\d+)/, 1].to_i }
+    UNIXSocket.open(sock) do |s|
+      run = lambda do |n|
+        n.times do
+          s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+          resource_read(s)
+        end
+      end
+      run.call(4000)  # warm past the heap's steady-state knee
+      before = rss.call
+      run.call(8000)
+      grew = rss.call - before
+      assert_true grew < 512, "RSS grew #{grew}KB over 8000 requests"
+    end
+  end
 end

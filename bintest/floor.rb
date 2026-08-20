@@ -17,6 +17,14 @@ require 'tempfile'
 SERVER_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SERVER_BIN)
 EPOLL_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-floor-epoll') unless defined?(EPOLL_BIN)
 
+# Every suite read has a deadline: a wedged server must FAIL the test,
+# never hang it. Seen live (2026-08-20): the pre-fix accept bug held a
+# readpartial forever and the whole run died in the scrollback.
+def wm_recv(s, maxlen = 1, deadline = 10)
+  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
+  s.readpartial(maxlen)
+end
+
 def floor_server(echo: false, bundles: false, bin: SERVER_BIN)
   sock = "/tmp/wm-floor-#{$$}-#{echo ? 'e' : 'r'}#{bundles ? 'b' : ''}#{bin.equal?(SERVER_BIN) ? '' : 'p'}.sock"
   File.unlink(sock) if File.exist?(sock)
@@ -52,7 +60,7 @@ def floor_echo_assertions(bundles, bin: SERVER_BIN)
         sleep 0.002
       end
       got = +''
-      got << s.readpartial(65536) while got.bytesize < sent.bytesize
+      got << wm_recv(s, 65536) while got.bytesize < sent.bytesize
       assert_equal sent.bytesize, got.bytesize
       assert_equal sent, got
     end
@@ -61,7 +69,7 @@ def floor_echo_assertions(bundles, bin: SERVER_BIN)
       blob = Random.bytes(3 * 4096 + 123)
       s.write(blob)
       got = +''
-      got << s.readpartial(65536) while got.bytesize < blob.bytesize
+      got << wm_recv(s, 65536) while got.bytesize < blob.bytesize
       assert_equal blob, got
     end
   end
@@ -77,11 +85,11 @@ assert('floor: a receive is answered 200, keep-alive holds') do
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         head = +''
-        head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+        head << wm_recv(s) until head.end_with?("\r\n\r\n")
         assert_true head.start_with?('HTTP/1.1 200 OK')
         len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
         body = +''
-        body << s.readpartial(len - body.bytesize) while body.bytesize < len
+        body << wm_recv(s, len - body.bytesize) while body.bytesize < len
         assert_equal 'OK', body
       end
     end
@@ -108,7 +116,7 @@ assert('floor: the ring-built TCP listener answers like the unix one') do
     raise "tcp floor never came up\n#{File.read(err) rescue ''}" unless s
     s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
     head = +''
-    head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+    head << wm_recv(s) until head.end_with?("\r\n\r\n")
     assert_true head.start_with?('HTTP/1.1 200 OK')
     s.close
   ensure
@@ -127,11 +135,11 @@ assert('epoll floor: a receive is answered 200, keep-alive holds') do
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         head = +''
-        head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+        head << wm_recv(s) until head.end_with?("\r\n\r\n")
         assert_true head.start_with?('HTTP/1.1 200 OK')
         len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
         body = +''
-        body << s.readpartial(len - body.bytesize) while body.bytesize < len
+        body << wm_recv(s, len - body.bytesize) while body.bytesize < len
         assert_equal 'OK', body
       end
     end

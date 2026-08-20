@@ -26,12 +26,20 @@ def h1_server
   end
 end
 
+# Every suite read has a deadline: a wedged server must FAIL the test,
+# never hang it. Seen live (2026-08-20): the pre-fix accept bug held a
+# readpartial forever and the whole run died in the scrollback.
+def wm_recv(s, maxlen = 1, deadline = 10)
+  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
+  s.readpartial(maxlen)
+end
+
 def h1_read_response(s)
   head = +''
-  head << s.readpartial(1) until head.end_with?("\r\n\r\n")
+  head << wm_recv(s) until head.end_with?("\r\n\r\n")
   len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
   body = +''
-  body << s.readpartial(len - body.bytesize) while body.bytesize < len
+  body << wm_recv(s, len - body.bytesize) while body.bytesize < len
   [head, body]
 end
 
@@ -138,21 +146,21 @@ assert('h1: the flow speaks on the wire - 405/304/HEAD from the graph') do
       # bodyless by definition (RFC 9110 15.4.5).
       s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: *\r\n\r\n")
       head304 = +''
-      head304 << s.readpartial(1) until head304.end_with?("\r\n\r\n")
+      head304 << wm_recv(s) until head304.end_with?("\r\n\r\n")
       assert_true head304.start_with?('HTTP/1.1 304')
       assert_false head304.match?(/^Content-Length:/i)
       # HEAD: 200's head, Content-Length announced, NO body bytes - the
       # pipelined GET's response must begin immediately after.
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
-      hh << s.readpartial(1) until hh.end_with?("\r\n\r\n")
+      hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
       assert_true hh.start_with?('HTTP/1.1 200 OK')
       assert_true hh.match?(/^Content-Length: 2\r$/i)
       nxt = +''
-      nxt << s.readpartial(1) until nxt.end_with?("\r\n\r\n")
+      nxt << wm_recv(s) until nxt.end_with?("\r\n\r\n")
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
       body = +''
-      body << s.readpartial(2 - body.bytesize) while body.bytesize < 2
+      body << wm_recv(s, 2 - body.bytesize) while body.bytesize < 2
       assert_equal 'OK', body
       # A browser-shaped GET negotiates through C4/D5/E6/F7 to 200.
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: */*\r\nAccept-Language: de\r\n" \
