@@ -246,6 +246,39 @@ assert('h2: a request body is counted, credited and discarded; END_STREAM dispat
   end
 end
 
+assert('h2: an exhausted window parks DATA, WINDOW_UPDATE drains it (9113 6.9)') do
+  # Found live: a credit-less client stalled at exchange 1681 - exactly
+  # 65535/39 bytes - because the server correctly refused to send past
+  # the window. This pins that behavior deterministically: a 20-byte
+  # initial stream window splits hello's 39-byte body into a sent part
+  # and a parked part, and the credit releases the rest.
+  h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
+    UNIXSocket.open(sock) do |s|
+      # SETTINGS_INITIAL_WINDOW_SIZE = 20 (6.9.2): stream windows start
+      # at 20; the connection window keeps its default and does not
+      # bind here.
+      s.write(H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
+      t, f, = h2_next(s)
+      raise 'expected server SETTINGS' unless t == 4 && f == 0
+      t, f, = h2_next(s)
+      raise 'expected SETTINGS ACK' unless t == 4 && f == 1
+      s.write(h2_frame(1, 0x05, 1, h2_get_block))
+      type, flags, = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0, flags & 1  # END_STREAM must wait for the parked DATA
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 20, data.bytesize  # the window, to the byte
+      assert_equal 0, flags & 1
+      s.write(h2_frame(8, 0, 1, [64].pack('N')))  # stream credit
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 19, data.bytesize  # the parked remainder
+      assert_equal 1, flags & 1       # and only now END_STREAM
+    end
+  end
+end
+
 if `curl --version 2>/dev/null`.include?('HTTP2')
   assert('h2: curl --http2-prior-knowledge round-trips against the same listener') do
     h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
