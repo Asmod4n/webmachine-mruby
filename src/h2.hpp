@@ -1,0 +1,185 @@
+// HTTP/2 connection state and wire helpers (RFC 9113). One H2State per
+// connection that spoke the client preface, allocated THEN and never
+// before - eager per-connection objects measured -12% throughput /
+// +58% p99 at 7000 idle connections on the old tree, so an h1
+// connection carries one null pointer and nothing else.
+//
+// Only the HPACK codec is foreign (ls-hpack, see mrbgem.rake); the
+// frame and stream machinery is this tree's own, driven from
+// http2.cpp. Priority trees are deprecated in RFC 9113 and absent
+// here; so is server push (8.4 forbids the client, nothing here wants
+// the server side).
+#ifndef WEBMACHINE_H2_HPP
+#define WEBMACHINE_H2_HPP
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "flow_walk.hpp"
+#include "lshpack.h"
+
+namespace webmachine {
+
+// Frame types (RFC 9113 6).
+enum : uint8_t {
+  kH2Data = 0x0,
+  kH2Headers = 0x1,
+  kH2Priority = 0x2,
+  kH2RstStream = 0x3,
+  kH2Settings = 0x4,
+  kH2PushPromise = 0x5,
+  kH2Ping = 0x6,
+  kH2Goaway = 0x7,
+  kH2WindowUpdate = 0x8,
+  kH2Continuation = 0x9,
+};
+
+// Frame flags. ACK shares the END_STREAM bit on purpose (the spec's).
+enum : uint8_t {
+  kH2FlagEndStream = 0x1,
+  kH2FlagAck = 0x1,
+  kH2FlagEndHeaders = 0x4,
+  kH2FlagPadded = 0x8,
+  kH2FlagPriority = 0x20,
+};
+
+// Error codes (RFC 9113 7).
+enum : uint32_t {
+  kH2NoError = 0x0,
+  kH2ProtocolError = 0x1,
+  kH2InternalError = 0x2,
+  kH2FlowControlError = 0x3,
+  kH2StreamClosed = 0x5,
+  kH2FrameSizeError = 0x6,
+  kH2RefusedStream = 0x7,
+  kH2CompressionError = 0x9,
+  kH2EnhanceYourCalm = 0xb,
+};
+
+// Settings identifiers (RFC 9113 6.5.2).
+enum : uint16_t {
+  kH2SettingsHeaderTableSize = 0x1,
+  kH2SettingsMaxConcurrentStreams = 0x3,
+  kH2SettingsInitialWindowSize = 0x4,
+  kH2SettingsMaxFrameSize = 0x5,
+};
+
+// The client connection preface (RFC 9113 3.4).
+inline constexpr char kH2Preface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+inline constexpr size_t kH2PrefaceLen = 24;
+
+inline constexpr size_t kH2FrameHeaderLen = 9;
+// Ours, and also the floor every peer must accept (RFC 9113 4.2).
+inline constexpr uint32_t kH2MaxFrameSize = 16384;
+inline constexpr int64_t kH2DefaultWindow = 65535;
+inline constexpr uint32_t kH2MaxConcurrentStreams = 256;
+inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
+
+inline void h2_put_frame_header(unsigned char* p, uint32_t len, uint8_t type,
+                                uint8_t flags, uint32_t stream) {
+  p[0] = static_cast<unsigned char>(len >> 16);
+  p[1] = static_cast<unsigned char>(len >> 8);
+  p[2] = static_cast<unsigned char>(len);
+  p[3] = type;
+  p[4] = flags;
+  p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
+  p[6] = static_cast<unsigned char>(stream >> 16);
+  p[7] = static_cast<unsigned char>(stream >> 8);
+  p[8] = static_cast<unsigned char>(stream);
+}
+
+inline uint32_t h2_u24(const unsigned char* p) {
+  return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2];
+}
+inline uint32_t h2_u32(const unsigned char* p) {
+  return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+         (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+inline uint32_t h2_u31(const unsigned char* p) { return h2_u32(p) & 0x7fffffff; }
+inline uint16_t h2_u16(const unsigned char* p) {
+  return static_cast<uint16_t>((p[0] << 8) | p[1]);
+}
+
+// One stream the connection still needs to remember. A stream answered
+// in full inside its own dispatch never appears here. Request bodies
+// are COUNTED and discarded, exactly the h1 tier (no consumer until
+// the POST/PUT tier delivers them) - what survives until END_STREAM is
+// the facts vector, not the bytes.
+struct H2Stream {
+  uint32_t id = 0;
+  int64_t send_window = kH2DefaultWindow;
+  size_t body_len = 0;  // received DATA payload, counted against kMaxBody
+  // Response DATA the peer's window refused; flushed on WINDOW_UPDATE.
+  std::string pending;
+  flow::ReqFacts facts;  // decoded at HEADERS, dispatched at END_STREAM
+  bool head_only = false;
+  bool headers_done = false;
+  bool half_closed_remote = false;
+};
+
+struct H2State {
+  struct lshpack_enc enc;
+  struct lshpack_dec dec;
+
+  // What the PEER may still receive - connection-level, debited by
+  // every DATA payload byte sent, credited by their WINDOW_UPDATEs.
+  int64_t send_window = kH2DefaultWindow;
+  int64_t peer_initial_window = kH2DefaultWindow;
+  uint32_t peer_max_frame = kH2MaxFrameSize;
+  uint32_t last_stream = 0;  // highest stream id seen, for GOAWAY
+  bool goaway_sent = false;
+  bool goaway_recv = false;  // the peer is done; finish and close
+
+  // A header block split over HEADERS + CONTINUATION accumulates here;
+  // frag_stream says whose it is, END_STREAM travels in frag_flags.
+  std::string frag;
+  uint32_t frag_stream = 0;
+  uint8_t frag_flags = 0;
+  bool frag_active = false;
+
+  // Decoded header bytes for the request being dispatched. Reused, so
+  // its capacity survives; facts are extracted before the next decode.
+  std::string hdrbuf;
+
+  std::vector<H2Stream> streams;
+
+  H2State() {
+    lshpack_enc_init(&enc);
+    lshpack_dec_init(&dec);
+  }
+  ~H2State() {
+    lshpack_enc_cleanup(&enc);
+    lshpack_dec_cleanup(&dec);
+  }
+  H2State(const H2State&) = delete;
+  H2State& operator=(const H2State&) = delete;
+
+  H2Stream* find(uint32_t id) {
+    for (H2Stream& st : streams)
+      if (st.id == id) return &st;
+    return nullptr;
+  }
+  H2Stream& open(uint32_t id) {
+    if (H2Stream* st = find(id)) return *st;
+    streams.emplace_back();
+    H2Stream& st = streams.back();
+    st.id = id;
+    st.send_window = peer_initial_window;
+    return st;
+  }
+  void close_stream(uint32_t id) {
+    for (size_t i = 0; i < streams.size(); i++) {
+      if (streams[i].id == id) {
+        streams[i] = std::move(streams.back());
+        streams.pop_back();
+        return;
+      }
+    }
+  }
+};
+
+}  // namespace webmachine
+
+#endif

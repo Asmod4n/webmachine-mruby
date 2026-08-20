@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "h2.hpp"
 #include "http.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
@@ -145,8 +146,8 @@ void Http1::on_tick() {
   sec_ = now;
   struct tm tm;
   gmtime_r(&now, &tm);
-  char core[kDateLen];
-  http::date_core(core, tm);
+  http::date_core(date_, tm);
+  const char* core = date_;
 
   for (Variants& v : store_) {
     std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
@@ -185,6 +186,30 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
 }
 
 bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
+  // A connection that spoke the client preface routes its bytes to the
+  // frame layer forever after (RFC 9113 3.4); everything below is h1.
+  if (st.h2 != nullptr) return h2_feed(st, data, len, sink);
+  if (st.fresh) {
+    // Decided on the first bytes: GET diverges at byte 0, POST/PUT at
+    // byte 1 - the h1 path pays for this compare exactly once per
+    // connection, never per request.
+    const size_t seen = st.carry.size();  // a partial preface carried over
+    size_t i = 0;
+    while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
+    if (seen + i == kH2PrefaceLen) {  // the full preface: h2 from here on
+      st.fresh = false;
+      st.carry.clear();
+      if (!h2_begin(st, sink)) return false;
+      return h2_feed(st, data + i, len - i, sink);
+    }
+    if (i == len) {  // every byte so far matches: wait for the verdict
+      st.carry.append(data, len);
+      return true;
+    }
+    // Mismatch: h1 forever. Any stashed preface prefix doubles as a
+    // partial h1 head; the carry path below already handles it.
+    st.fresh = false;
+  }
   // Body bytes a previous receive left owing are consumed first -
   // skipped, this layer has no consumer, but the framing must hold or
   // keep-alive would parse body bytes as the next head.

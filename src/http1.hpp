@@ -29,6 +29,12 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::str
                       bool* have_body);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
+// h2.hpp owns the definition (it pulls lshpack.h; this header stays
+// lean). A connection that never speaks the preface carries only the
+// null pointer. h2_free lives in http2.cpp where the type is complete.
+struct H2State;
+void h2_free(H2State* h2);
+
 // RFC 9110 §5.4 allows refusing oversized fields; 8k is the fleet
 // convention (nginx, h2o) and bounds one head's work - 431 past it.
 inline constexpr size_t kMaxHead = 8192;
@@ -41,15 +47,24 @@ class Http1 {
  public:
   struct Conn {
     // Head bytes a receive ended in the middle of. Capacity survives
-    // clear(): a warm connection allocates nothing.
+    // clear(): a warm connection allocates nothing. An h2 connection
+    // reuses it as its frame buffer.
     std::string carry;
     size_t body_skip = 0;  // Content-Length bytes still owed by the wire
     uint8_t listener = 0;  // which listener accepted - whose app this is
+    // Undecided until the first bytes: the client preface upgrades to
+    // h2 (RFC 9113 3.4), anything else is h1 forever.
+    bool fresh = true;
+    H2State* h2 = nullptr;  // allocated on the preface, never before
     void reset(uint8_t li) {
       carry.clear();
       body_skip = 0;
       listener = li;
+      fresh = true;
+      h2_free(h2);
+      h2 = nullptr;
     }
+    ~Conn() { h2_free(h2); }
   };
 
   // Builds every response the flow can speak, once, and stamps the
@@ -90,6 +105,18 @@ class Http1 {
   }
   bool fail(Conn& st, uint16_t status, std::string& sink);
 
+  // The h2 half (http2.cpp): the same konst/resource machinery
+  // answers; only the serialization differs - HPACK + HEADERS/DATA
+  // frames into the same sink. Return value = feed's contract.
+  bool h2_begin(Conn& st, std::string& sink);
+  bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink);
+  bool h2_error(Conn& st, uint32_t code, std::string& sink);
+  void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
+  bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, std::string& sink);
+  bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
+                 std::string& sink);
+  void h2_flush_pending(Conn& st, std::string& sink);
+
   time_t sec_ = 0;
   std::vector<Variants> store_;
   std::array<uint8_t, 600> index_ {};  // status -> store_ slot
@@ -107,6 +134,10 @@ class Http1 {
   bool dynamic_body_ = false;
   bool bound_ = false;  // any runtime tier at all
   std::string body_;    // the run frame's rendered bytes; capacity survives
+  // The current IMF-fixdate value; h1 patches it into prebuilt bytes,
+  // h2 encodes it per response (the peer's dynamic table indexes it
+  // after the first send).
+  char date_[29] = {};
 };
 
 }  // namespace webmachine
