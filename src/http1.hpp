@@ -105,6 +105,24 @@ class Http1 {
   }
   bool fail(Conn& st, uint16_t status, std::string& sink);
 
+  // h2's precomputed response header block - ONLY what never changes
+  // (:status, konst content-type, allow), encoded never-indexed so the
+  // bytes are connection-independent. Built once by h2_build_block
+  // (http2.cpp owns the encoding); per response it costs a 9-byte
+  // frame header (stream id + flags) + one memcpy.
+  struct H2Block {
+    std::string bytes;
+  };
+  void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
+                      const std::string* allow);
+  // Lane 2: whatever CHANGES goes through ls-hpack's encoder and the
+  // connection's dynamic table. Today that is the date (changes per
+  // second - one insert per second per connection, a one-byte
+  // reference in between); the value tiers (etag, location, ...) join
+  // it when they land.
+  static bool h2_enc_field(void* enc, unsigned char*& ep, unsigned char* eend,
+                           const char* name, size_t nlen, const char* val, size_t vlen);
+
   // The h2 half (http2.cpp): the same konst/resource machinery
   // answers; only the serialization differs - HPACK + HEADERS/DATA
   // frames into the same sink. Return value = feed's contract.
@@ -134,6 +152,11 @@ class Http1 {
   bool dynamic_body_ = false;
   bool bound_ = false;  // any runtime tier at all
   std::string body_;    // the run frame's rendered bytes; capacity survives
+  // h2 blocks, parallel to store_ via index_; h2_err_ is 500 in the
+  // negotiated type (the exception path). ONE 200 block serves konst
+  // and dynamic bodies alike - h2 has no Content-Length to differ in.
+  std::vector<H2Block> h2_store_;
+  H2Block h2_err_;
   // The current IMF-fixdate value; h1 patches it into prebuilt bytes,
   // h2 encodes it per response (the peer's dynamic table indexes it
   // after the first send).

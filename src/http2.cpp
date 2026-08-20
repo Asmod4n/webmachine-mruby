@@ -44,13 +44,53 @@ void emit_control(std::string& sink, uint8_t type, uint8_t flags, uint32_t strea
   if (len != 0) sink.append(reinterpret_cast<const char*>(payload), len);
 }
 
-// One response field into the encode buffer. lsxpack's canonical
-// layout is name ": " value in one buffer; the ": " is what
-// LSHPACK_DEC_HTTP1X_OUTPUT builds expect between the offsets, kept
-// even though this build does not set it. False = buffer exhausted
-// (the caller's connection error).
-bool enc_field(struct lshpack_enc& enc, unsigned char*& ep, unsigned char* eend,
-               const char* name, size_t nlen, const char* val, size_t vlen) {
+// HPACK string length: 7-bit prefix integer, H bit 0 - no Huffman on
+// the way out (RFC 7541 5.2).
+void hp_len(std::string& out, size_t n) {
+  if (n < 127) {
+    out.push_back(static_cast<char>(n));
+    return;
+  }
+  out.push_back(0x7f);
+  n -= 127;
+  while (n >= 128) {
+    out.push_back(static_cast<char>(0x80 | (n & 0x7f)));
+    n >>= 7;
+  }
+  out.push_back(static_cast<char>(n));
+}
+
+// Literal field without indexing, indexed name: 4-bit prefix integer
+// (RFC 7541 6.2.2) - never-indexed responses keep the blocks
+// connection-independent, which is what makes precomputing them legal.
+void hp_name_idx(std::string& out, uint32_t idx) {
+  if (idx < 15) {
+    out.push_back(static_cast<char>(idx));
+    return;
+  }
+  out.push_back(0x0f);
+  idx -= 15;
+  while (idx >= 128) {
+    out.push_back(static_cast<char>(0x80 | (idx & 0x7f)));
+    idx >>= 7;
+  }
+  out.push_back(static_cast<char>(idx));
+}
+
+}  // namespace
+
+void h2_free(H2State* h2) { delete h2; }
+
+// Lane 2: one per-request response field through ls-hpack's encoder
+// and its dynamic table. lsxpack's canonical layout is name ": "
+// value in one buffer; the ": " is what LSHPACK_DEC_HTTP1X_OUTPUT
+// builds expect between the offsets, kept even though this build does
+// not set it. False = buffer exhausted (the caller's connection
+// error). The date is its standing caller (it CHANGES, per second);
+// the value tiers (etag, location, ...) join it when they land.
+bool Http1::h2_enc_field(void* encp, unsigned char*& ep, unsigned char* eend,
+                         const char* name, size_t nlen, const char* val, size_t vlen) {
+  struct lshpack_enc* enc = static_cast<struct lshpack_enc*>(encp);
   char hbuf[512];
   if (nlen + 2 + vlen > sizeof(hbuf)) return false;
   std::memcpy(hbuf, name, nlen);
@@ -59,15 +99,54 @@ bool enc_field(struct lshpack_enc& enc, unsigned char*& ep, unsigned char* eend,
   std::memcpy(hbuf + nlen + 2, val, vlen);
   lsxpack_header_t xh;
   lsxpack_header_set_offset2(&xh, hbuf, 0, nlen, nlen + 2, vlen);
-  unsigned char* np = lshpack_enc_encode(&enc, ep, eend, &xh);
+  unsigned char* np = lshpack_enc_encode(enc, ep, eend, &xh);
   if (np == ep) return false;
   ep = np;
   return true;
 }
 
-}  // namespace
-
-void h2_free(H2State* h2) { delete h2; }
+// Lane 1, one precomputed response header block - ONLY what never
+// changes: :status rides its static-table entry where one exists (RFC
+// 7541 6.1, Appendix A idx 8-14) or a literal without indexing;
+// content-type and allow are konst per resource. The date is NOT here:
+// it changes (per second), so it speaks through ls-hpack (lane 2),
+// where the connection's dynamic table turns it into a one-byte
+// reference for both sides until the second rolls.
+void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
+                           const std::string* allow) {
+  b.bytes.clear();
+  switch (status) {
+    case 200: b.bytes.push_back(static_cast<char>(0x88)); break;
+    case 204: b.bytes.push_back(static_cast<char>(0x89)); break;
+    case 206: b.bytes.push_back(static_cast<char>(0x8a)); break;
+    case 304: b.bytes.push_back(static_cast<char>(0x8b)); break;
+    case 400: b.bytes.push_back(static_cast<char>(0x8c)); break;
+    case 404: b.bytes.push_back(static_cast<char>(0x8d)); break;
+    case 500: b.bytes.push_back(static_cast<char>(0x8e)); break;
+    default: {
+      hp_name_idx(b.bytes, 8);  // :status, literal value
+      char d[3];
+      d[0] = static_cast<char>('0' + status / 100);
+      d[1] = static_cast<char>('0' + (status / 10) % 10);
+      d[2] = static_cast<char>('0' + status % 10);
+      hp_len(b.bytes, 3);
+      b.bytes.append(d, 3);
+      break;
+    }
+  }
+  if (ctype != nullptr && !ctype->empty()) {
+    hp_name_idx(b.bytes, 31);  // content-type
+    hp_len(b.bytes, ctype->size());
+    b.bytes.append(*ctype);
+  }
+  if (allow != nullptr && !allow->empty()) {
+    b.bytes.push_back(0x00);  // literal without indexing, new name
+    hp_len(b.bytes, 5);
+    b.bytes.append("allow", 5);
+    hp_len(b.bytes, allow->size());
+    b.bytes.append(*allow);
+  }
+}
 
 bool Http1::h2_begin(Conn& st, std::string& sink) {
   st.h2 = new H2State();
@@ -261,12 +340,11 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
 
   const char* body = nullptr;
   size_t blen = 0;
-  const std::string* ctype = nullptr;
-  const std::string* allow = nullptr;
+  const H2Block* blk;
   if (have_body && status == 200) {
     body = body_.data();
     blen = body_.size();
-    if (!konst_.content_type.empty()) ctype = &konst_.content_type;
+    blk = &h2_store_[index_[200]];
   } else if (status == 500 && bound_) {
     // A raising callback answers in the negotiated type, the reason as
     // body; the lent bytes are appended (copied) before any next mruby
@@ -276,46 +354,41 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     if (resource_exception_begin(*res_, &bp, &bl)) {
       body = bp;
       blen = bl;
-      if (!konst_.content_type.empty()) ctype = &konst_.content_type;
+      blk = &h2_err_;
+    } else {
+      blk = &h2_store_[index_[500]];
     }
   } else if (status == 200) {
     body = konst_.body.data();
     blen = konst_.body.size();
-    if (!konst_.content_type.empty()) ctype = &konst_.content_type;
-  } else if (status == 405) {
-    allow = &konst_.allow;  // 405 names what IS allowed (RFC 9110 10.2.1)
+    blk = &h2_store_[index_[200]];
+  } else {
+    // Every status block was precomputed at setup (405 carries Allow,
+    // RFC 9110 10.2.1); 204/304 are bodyless and every other status
+    // sends no body at this tier - DATA framing already delimits, so
+    // there is no Content-Length to spell (RFC 9113 8.1.1).
+    blk = &h2_store_[index_[status]];
   }
-  // 204/304 are defined bodyless and every other status sends no body
-  // at this tier; h2's DATA framing already delimits, so there is no
-  // Content-Length to spell (RFC 9113 8.1.1 leaves it optional).
 
-  // The header block: :status, date, and what the status carries.
-  // Bounded well under one frame, so no CONTINUATION on the way out.
-  unsigned char block[1024];
-  unsigned char* ep = block;
-  unsigned char* const eend = block + sizeof(block);
-  char stbuf[3];
-  stbuf[0] = static_cast<char>('0' + status / 100);
-  stbuf[1] = static_cast<char>('0' + (status / 10) % 10);
-  stbuf[2] = static_cast<char>('0' + status % 10);
-  bool encok = enc_field(h2.enc, ep, eend, ":status", 7, stbuf, 3) &&
-               enc_field(h2.enc, ep, eend, "date", 4, date_, sizeof(date_));
-  if (encok && ctype != nullptr) {
-    encok = enc_field(h2.enc, ep, eend, "content-type", 12, ctype->data(), ctype->size());
+  // Lane 1 is a memcpy; the date - it CHANGES, per second - is lane
+  // 2's first caller: the connection's dynamic table makes it a
+  // one-byte reference for both sides until the second rolls.
+  unsigned char dbuf[64];
+  unsigned char* dp = dbuf;
+  if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+    return h2_error(st0, kH2InternalError, sink);
   }
-  if (encok && allow != nullptr) {
-    encok = enc_field(h2.enc, ep, eend, "allow", 5, allow->data(), allow->size());
-  }
-  if (!encok) return h2_error(st0, kH2InternalError, sink);
+  const size_t dlen = static_cast<size_t>(dp - dbuf);
 
   // HEAD answers with the head and no DATA; its render already ran for
   // parity with h1 (the Content-Length h1 announces is the GET's).
   const bool no_data = head_only || blen == 0;
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, static_cast<uint32_t>(ep - block), kH2Headers,
+  h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
                       kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
   sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  sink.append(reinterpret_cast<const char*>(block), static_cast<size_t>(ep - block));
+  sink.append(blk->bytes);
+  sink.append(reinterpret_cast<const char*>(dbuf), dlen);
 
   size_t give = 0;
   if (!no_data) {

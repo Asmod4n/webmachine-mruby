@@ -87,6 +87,13 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     else if (s == 405) build_status(s, allow.c_str(), "Content-Length: 0\r\n\r\n");
     else if (s == 200) build_status(s, ok_extra.c_str(), ok_tail.c_str());
     else build_status(s, "", "Content-Length: 0\r\n\r\n");
+    // The same status precomputed as h2's header block (same slot as
+    // store_ via index_); bodies ride DATA frames, so ONE 200 block
+    // serves konst and dynamic alike.
+    H2Block b;
+    h2_build_block(b, s, s == 200 ? &konst_.content_type : nullptr,
+                   s == 405 ? &konst_.allow : nullptr);
+    h2_store_.push_back(std::move(b));
   };
   for (const auto& f : flow::kFlow) {
     if (f.on_true.status != 0) add(f.on_true.status);
@@ -134,6 +141,8 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     build(err_prefix_.plain, "");
     build(err_prefix_.keep, "Connection: keep-alive\r\n");
     build(err_prefix_.close, "Connection: close\r\n");
+    // h2's exception answer: 500 in the negotiated type.
+    h2_build_block(h2_err_, 500, &konst_.content_type, nullptr);
   }
 
   sec_ = 0;
@@ -167,6 +176,8 @@ void Http1::on_tick() {
     std::memcpy(err_prefix_.keep.bytes.data() + err_prefix_.keep.date_off, core, kDateLen);
     std::memcpy(err_prefix_.close.bytes.data() + err_prefix_.close.date_off, core, kDateLen);
   }
+  // The h2 blocks carry no date - it changes, so it rides the encoder
+  // lane per response, reading date_ directly.
 }
 
 void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,

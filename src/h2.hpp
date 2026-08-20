@@ -120,6 +120,13 @@ struct H2Stream {
 };
 
 struct H2State {
+  // Two lanes on the sending side: what never changes is PRECOMPUTED
+  // as never-indexed blocks (Http1::h2_build_block - status, date
+  // patched per second, konst content-type, allow) and costs a
+  // memcpy; what is dynamic per request goes through ls-hpack's
+  // encoder (Http1::h2_enc_field). Never-indexed literals touch no
+  // table state on either side, so the lanes interleave freely in one
+  // header block.
   struct lshpack_enc enc;
   struct lshpack_dec dec;
 
