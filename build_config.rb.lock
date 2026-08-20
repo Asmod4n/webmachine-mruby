@@ -15,3 +15,13 @@ builds:
       branch: master
       commit: 8ea875fd117c06f25d5c0b0d3dfd00025526b370
       version: 0.0.0
+    https://github.com/Asmod4n/mruby-chrono.git:
+      url: https://github.com/Asmod4n/mruby-chrono.git
+      branch: master
+      commit: 42ea6b1eb8481cc40a15caedab3d84c1d426a728
+      version: 0.0.0
+    https://github.com/Asmod4n/mruby-c-ext-helpers.git:
+      url: https://github.com/Asmod4n/mruby-c-ext-helpers.git
+      branch: master
+      commit: 01d260f00f5d13e75c90ddc8c0de7e519f732dfc
+      version: 0.3.0
