@@ -20,7 +20,7 @@ namespace {
 // because it is a test fixture, not a protocol.
 struct Echo {
   struct Conn {
-    void reset() {}
+    void reset(uint8_t) {}
   };
   bool feed(Conn&, const char* data, size_t len, std::string& sink) {
     sink.append(data, len);
@@ -38,7 +38,7 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
     return 1;
   }
   std::fprintf(stderr, "webmachine: %s up, pid %d, %s\n", label, getpid(),
-               cfg.unix_path != nullptr ? cfg.unix_path : "tcp");
+               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
   ring.run();
   return 0;
 }
@@ -47,13 +47,14 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
 
 int main(int argc, char** argv) {
   webmachine::RingConfig cfg;
+  cfg.nlisteners = 1;
   bool echo = false;
   const char* app_path = nullptr;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
-      cfg.unix_path = argv[++i];
+      cfg.listeners[0].unix_path = argv[++i];
     } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-      cfg.port = std::atoi(argv[++i]);
+      cfg.listeners[0].port = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
       app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  if ((cfg.unix_path == nullptr) == (cfg.port == 0)) {
+  if ((cfg.listeners[0].unix_path == nullptr) == (cfg.listeners[0].port == 0)) {
     std::fprintf(stderr, "exactly one of --unix or --port\n");
     return 2;
   }

@@ -289,7 +289,8 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
   // Wire invalidity: framing trust is gone, the connection always ends.
   sink.append(variants(status).close.bytes);
-  st.reset();
+  st.carry.clear();
+  st.body_skip = 0;
   return false;
 }
 
@@ -491,7 +492,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (!persist) {
       // Bytes pipelined behind a closing request die with the
       // connection (RFC 9112 §9.6: the close ends the exchange).
-      st.reset();
+      st.carry.clear();
+      st.body_skip = 0;
       return false;
     }
   }

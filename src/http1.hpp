@@ -44,9 +44,11 @@ class Http1 {
     // clear(): a warm connection allocates nothing.
     std::string carry;
     size_t body_skip = 0;  // Content-Length bytes still owed by the wire
-    void reset() {
+    uint8_t listener = 0;  // which listener accepted - whose app this is
+    void reset(uint8_t li) {
       carry.clear();
       body_skip = 0;
+      listener = li;
     }
   };
 
