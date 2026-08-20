@@ -14,8 +14,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # picohttpparser arrives through mruby-phr the same way liburing does
   # through mruby-io-uring: one place builds and pins it.
   spec.add_dependency 'mruby-phr'
-  # Every time value that crosses the Ruby<->C boundary goes through
-  # mruby-chrono - Float seconds on the Ruby side, std::chrono/timespec
-  # on the C side, converted at the edge and nowhere else.
+  # Every DURATION that crosses the Ruby<->C boundary - timeouts,
+  # work budgets, intervals - goes through mruby-chrono: Float seconds
+  # on the Ruby side, std::chrono/timespec on the C side, converted at
+  # the edge and nowhere else. Wall-clock/date stays plain C.
   spec.add_dependency 'mruby-chrono'
 end
