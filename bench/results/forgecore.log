@@ -86,3 +86,17 @@ harness: wrk -t4 -c128 -d10s impl=uring transport=unix app=examples/counter.rb W
      50%  162.00us
      99%  207.00us
 Requests/sec: 755424.37
+==== 2026-08-20T04:53Z repo=7a807d6 mruby=524586c ====
+harness: vm_floor google-benchmark v1.9.5 7.1.8-1-default x86_64
+BM_vm_entry                     0.069 us        0.069 us     40548923
+BM_copy_floor_small             0.155 us        0.155 us     17903288 bytes_per_second=166.17Mi/s
+BM_copy_floor_browser           0.154 us        0.154 us     18274103 bytes_per_second=3.05903Gi/s
+BM_copy_floor_cached_sym        0.108 us        0.108 us     25948019
+BM_flow_tier0_get                33.7 ns         33.7 ns     83021149
+BM_flow_tier0_304                28.1 ns         28.1 ns     99652422
+BM_flow_tier0_get_compiled       1.44 ns         1.44 ns   1941561301
+BM_flow_tier0_304_compiled       1.85 ns         1.85 ns   1513612313
+BM_runtime_1cb_entries          0.230 us        0.230 us     12347378
+BM_runtime_1cb_run_vm           0.256 us        0.256 us     10978423
+BM_runtime_4cb_entries          0.303 us        0.303 us      9286675
+BM_runtime_4cb_run_vm           0.308 us        0.308 us      9094602
