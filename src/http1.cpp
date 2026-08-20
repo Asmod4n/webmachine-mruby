@@ -4,102 +4,33 @@
 
 #include <cstring>
 
+#include "http.hpp"
+
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace webmachine {
 namespace {
 
-// Case-insensitive equality against a lowercase literal (header names
-// are case-insensitive, RFC 9110 §5.1).
-bool tok_eq(const char* s, size_t n, const char* lit, size_t litn) {
-  if (n != litn) return false;
-  for (size_t i = 0; i < n; i++) {
-    char c = s[i];
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
-    if (c != lit[i]) return false;
-  }
-  return true;
-}
+// The version-free HTTP semantics live in http.hpp (RFC 9110); this
+// anonymous namespace holds only 9112 wire property.
 
 // Connection is a comma-separated token list (RFC 9110 §7.6.1); a
-// substring match would accept e.g. "not-close".
+// substring match would accept e.g. "not-close". The header itself is
+// 9112 property - h2 forbids it (RFC 9113 §8.2.2).
 bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
   size_t i = 0;
   while (i < n) {
     while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
     const size_t start = i;
     while (i < n && v[i] != ',' && v[i] != ' ' && v[i] != '\t') i++;
-    if (tok_eq(v + start, i - start, lit, litn)) return true;
+    if (http::tok_eq(v + start, i - start, lit, litn)) return true;
   }
   return false;
 }
 
-// If-Match / If-None-Match spell "any" as * (RFC 9110 §13.1.1/13.1.2);
-// a quoted "*" arrives from some clients and means the same.
-bool star_value(const char* v, size_t n) {
-  if (n == 1 && v[0] == '*') return true;
-  return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
-}
-
-// Methods are case-sensitive tokens (RFC 9110 §9.1).
-flow::Method parse_method(const char* m, size_t n) {
-  switch (n) {
-    case 3:
-      if (std::memcmp(m, "GET", 3) == 0) return flow::Method::kGet;
-      if (std::memcmp(m, "PUT", 3) == 0) return flow::Method::kPut;
-      break;
-    case 4:
-      if (std::memcmp(m, "HEAD", 4) == 0) return flow::Method::kHead;
-      if (std::memcmp(m, "POST", 4) == 0) return flow::Method::kPost;
-      break;
-    case 6:
-      if (std::memcmp(m, "DELETE", 6) == 0) return flow::Method::kDelete;
-      break;
-    case 7:
-      if (std::memcmp(m, "OPTIONS", 7) == 0) return flow::Method::kOptions;
-      break;
-    default:
-      break;
-  }
-  return flow::Method::kOther;
-}
-
-const char* reason(uint16_t status) {
-  switch (status) {
-    case 200: return "OK";
-    case 201: return "Created";
-    case 202: return "Accepted";
-    case 204: return "No Content";
-    case 300: return "Multiple Choices";
-    case 301: return "Moved Permanently";
-    case 303: return "See Other";
-    case 304: return "Not Modified";
-    case 307: return "Temporary Redirect";
-    case 400: return "Bad Request";
-    case 401: return "Unauthorized";
-    case 403: return "Forbidden";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 406: return "Not Acceptable";
-    case 409: return "Conflict";
-    case 410: return "Gone";
-    case 411: return "Length Required";
-    case 412: return "Precondition Failed";
-    case 413: return "Content Too Large";
-    case 414: return "URI Too Long";
-    case 415: return "Unsupported Media Type";
-    case 431: return "Request Header Fields Too Large";
-    case 500: return "Internal Server Error";
-    case 501: return "Not Implemented";
-    case 503: return "Service Unavailable";
-  }
-  return "Response";
-}
-
-// The date field's fixed shape; on_tick patches exactly these 29 bytes.
-constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
-constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
+using http::kDateLen;
+using http::kDatePlaceholder;
 
 }  // namespace
 
@@ -111,7 +42,7 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
     line[1] = static_cast<char>('0' + (status / 10) % 10);
     line[2] = static_cast<char>('0' + status % 10);
     line[3] = '\0';
-    r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(reason(status));
+    r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
     r.bytes.append("\r\nDate: ");
     r.date_off = r.bytes.size();
     r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(extra).append(body);
@@ -214,34 +145,8 @@ void Http1::on_tick() {
   sec_ = now;
   struct tm tm;
   gmtime_r(&now, &tm);
-  // IMF-fixdate by hand (RFC 9110 §5.6.7): strftime's %a/%b obey the
-  // process locale and would emit German day names under LC_TIME=de_DE.
-  static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
   char core[kDateLen];
-  const auto two = [&](size_t at, int v) {
-    core[at] = static_cast<char>('0' + v / 10);
-    core[at + 1] = static_cast<char>('0' + v % 10);
-  };
-  std::memcpy(core, kDay[tm.tm_wday], 3);
-  core[3] = ',';
-  core[4] = ' ';
-  two(5, tm.tm_mday);
-  core[7] = ' ';
-  std::memcpy(core + 8, kMon[tm.tm_mon], 3);
-  core[11] = ' ';
-  const int year = tm.tm_year + 1900;
-  two(12, year / 100);
-  two(14, year % 100);
-  core[16] = ' ';
-  two(17, tm.tm_hour);
-  core[19] = ':';
-  two(20, tm.tm_min);
-  core[22] = ':';
-  two(23, tm.tm_sec);
-  core[25] = ' ';
-  std::memcpy(core + 26, "GMT", 3);
+  http::date_core(core, tm);
 
   for (Variants& v : store_) {
     std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
@@ -266,23 +171,8 @@ void Http1::on_tick() {
 void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                      bool head_only) {
   sink.append(prefix.bytes);
-  // Content-Length spelled by hand: printf machinery has no business
-  // on the request path.
-  char cl[40] = "Content-Length: ";
-  size_t at = 16;
-  char digits[20];
-  size_t d = 0;
-  size_t v = len;
-  do {
-    digits[d++] = static_cast<char>('0' + v % 10);
-    v /= 10;
-  } while (v != 0);
-  while (d != 0) cl[at++] = digits[--d];
-  cl[at++] = '\r';
-  cl[at++] = '\n';
-  cl[at++] = '\r';
-  cl[at++] = '\n';
-  sink.append(cl, at);
+  char cl[40];
+  sink.append(cl, http::spell_content_length(cl, len));
   if (!head_only) sink.append(body, len);
 }
 
@@ -347,86 +237,56 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     size_t content_length = 0;
     bool have_cl = false, have_te = false, have_host = false;
     bool conn_close = false, conn_keep = false;
+    uint16_t wire_err = 0;  // first wire violation wins; the loop is bounded
     flow::ReqFacts facts;
-    facts.method = parse_method(method, method_len);
+    facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      // One jump on the length, one or two comparisons behind it; every
-      // foreign header costs exactly the length check.
-      switch (h.name_len) {
-        case 14:
-          if (tok_eq(h.name, h.name_len, "content-length", 14)) {
-            // A second Content-Length is a smuggling shape (RFC 9112 §6.3).
-            if (WM_H1_UNLIKELY(have_cl || h.value_len == 0)) return fail(st, 400, sink);
-            have_cl = true;
-            size_t v = 0;
-            for (size_t j = 0; j < h.value_len; j++) {
-              const char ch = h.value[j];
-              if (WM_H1_UNLIKELY(ch < '0' || ch > '9')) {
-                return fail(st, 400, sink);  // 1*DIGIT, §6.2
-              }
-              size_t t = 0;
-              if (WM_H1_UNLIKELY(__builtin_mul_overflow(v, static_cast<size_t>(10), &t) ||
-                                 __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &v))) {
-                return fail(st, 413, sink);
-              }
+      // The 9110 facts fill in http.hpp's length-switch; the functor
+      // carries the 9112 wire names. It inlines per case arm, where
+      // the length is a known constant - the compiled result is the
+      // ONE fused switch this loop always was.
+      http::header_switch(
+          h.name, h.name_len, h.value, h.value_len, facts,
+          [&](const char* n, size_t nl, const char* v, size_t vl) {
+            if (wire_err != 0) return;
+            switch (nl) {
+              case 14:
+                if (http::tok_eq(n, nl, "content-length", 14)) {
+                  // A second Content-Length is a smuggling shape (RFC 9112 §6.3).
+                  if (WM_H1_UNLIKELY(have_cl)) {
+                    wire_err = 400;
+                    return;
+                  }
+                  have_cl = true;
+                  switch (http::parse_content_length(v, vl, &content_length)) {
+                    case http::ClStatus::kOk: break;
+                    case http::ClStatus::kBad: wire_err = 400; break;  // 1*DIGIT, §6.2
+                    case http::ClStatus::kOverflow: wire_err = 413; break;
+                  }
+                }
+                break;
+              case 17:
+                if (http::tok_eq(n, nl, "transfer-encoding", 17)) have_te = true;
+                break;
+              case 4:
+                if (http::tok_eq(n, nl, "host", 4)) {
+                  if (WM_H1_UNLIKELY(have_host)) wire_err = 400;  // RFC 9112 §3.2: one
+                  have_host = true;
+                }
+                break;
+              case 10:
+                if (http::tok_eq(n, nl, "connection", 10)) {
+                  if (conn_has(v, vl, "close", 5)) conn_close = true;
+                  else if (conn_has(v, vl, "keep-alive", 10)) conn_keep = true;
+                }
+                break;
+              default:
+                break;
             }
-            content_length = v;
-          } else if (tok_eq(h.name, h.name_len, "accept-charset", 14)) {
-            facts.has_accept_charset = true;
-          }
-          break;
-        case 17:
-          if (tok_eq(h.name, h.name_len, "transfer-encoding", 17)) have_te = true;
-          else if (tok_eq(h.name, h.name_len, "if-modified-since", 17)) {
-            // Date parsing is a later tier; an unparsed date reads as
-            // invalid, which flow.rb's rescue path also ignores (L14).
-            facts.has_if_modified_since = true;
-          }
-          break;
-        case 4:
-          if (tok_eq(h.name, h.name_len, "host", 4)) {
-            if (WM_H1_UNLIKELY(have_host)) return fail(st, 400, sink);  // RFC 9112 §3.2: one
-            have_host = true;
-          }
-          break;
-        case 10:
-          if (tok_eq(h.name, h.name_len, "connection", 10)) {
-            if (conn_has(h.value, h.value_len, "close", 5)) conn_close = true;
-            else if (conn_has(h.value, h.value_len, "keep-alive", 10)) conn_keep = true;
-          }
-          break;
-        case 6:
-          if (tok_eq(h.name, h.name_len, "accept", 6)) facts.has_accept = true;
-          break;
-        case 15:
-          if (tok_eq(h.name, h.name_len, "accept-language", 15)) facts.has_accept_language = true;
-          else if (tok_eq(h.name, h.name_len, "accept-encoding", 15)) facts.has_accept_encoding = true;
-          break;
-        case 8:
-          if (tok_eq(h.name, h.name_len, "if-match", 8)) {
-            facts.has_if_match = true;
-            facts.if_match_star = star_value(h.value, h.value_len);
-          }
-          break;
-        case 13:
-          if (tok_eq(h.name, h.name_len, "if-none-match", 13)) {
-            facts.has_if_none_match = true;
-            facts.inm_star = star_value(h.value, h.value_len);
-          }
-          break;
-        case 19:
-          if (tok_eq(h.name, h.name_len, "if-unmodified-since", 19)) {
-            facts.has_if_unmodified_since = true;  // date tier pending, like IMS
-          }
-          break;
-        case 11:
-          if (tok_eq(h.name, h.name_len, "content-md5", 11)) facts.has_content_md5 = true;
-          break;
-        default:
-          break;
-      }
+          });
     }
+    if (WM_H1_UNLIKELY(wire_err != 0)) return fail(st, wire_err, sink);
     // Transfer-Encoding alongside Content-Length is the classic
     // smuggling vector (RFC 9112 §6.3.3); chunked alone is refused with
     // 411 as §6.1 sanctions until a body consumer exists.

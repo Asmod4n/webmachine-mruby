@@ -1,0 +1,245 @@
+// The version-free HTTP layer: RFC 9110 semantics as pure inline
+// functions and data. No state, no wire syntax - status lines,
+// Connection handling, chunked framing and phr are 9112 property and
+// stay in http1 (9113's frames will stay in http2). Sharing happens
+// at zero cost: everything here inlines into its caller, so the
+// machine code is identical to the copy it replaced.
+#ifndef WEBMACHINE_HTTP_HPP
+#define WEBMACHINE_HTTP_HPP
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <ctime>
+
+#include "flow_walk.hpp"
+
+namespace webmachine::http {
+
+// Case-insensitive equality against a lowercase literal (header names
+// are case-insensitive, RFC 9110 §5.1).
+constexpr bool tok_eq(const char* s, size_t n, const char* lit, size_t litn) {
+  if (n != litn) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = s[i];
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    if (c != lit[i]) return false;
+  }
+  return true;
+}
+
+// If-Match / If-None-Match spell "any" as * (RFC 9110 §13.1.1/13.1.2);
+// a quoted "*" arrives from some clients and means the same.
+constexpr bool star_value(const char* v, size_t n) {
+  if (n == 1 && v[0] == '*') return true;
+  return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
+}
+
+// Methods are case-sensitive tokens (RFC 9110 §9.1).
+inline flow::Method parse_method(const char* m, size_t n) {
+  switch (n) {
+    case 3:
+      if (std::memcmp(m, "GET", 3) == 0) return flow::Method::kGet;
+      if (std::memcmp(m, "PUT", 3) == 0) return flow::Method::kPut;
+      break;
+    case 4:
+      if (std::memcmp(m, "HEAD", 4) == 0) return flow::Method::kHead;
+      if (std::memcmp(m, "POST", 4) == 0) return flow::Method::kPost;
+      break;
+    case 6:
+      if (std::memcmp(m, "DELETE", 6) == 0) return flow::Method::kDelete;
+      break;
+    case 7:
+      if (std::memcmp(m, "OPTIONS", 7) == 0) return flow::Method::kOptions;
+      break;
+    default:
+      break;
+  }
+  return flow::Method::kOther;
+}
+
+// The status names of RFC 9110 §15.
+constexpr const char* reason(uint16_t status) {
+  switch (status) {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 202: return "Accepted";
+    case 204: return "No Content";
+    case 300: return "Multiple Choices";
+    case 301: return "Moved Permanently";
+    case 303: return "See Other";
+    case 304: return "Not Modified";
+    case 307: return "Temporary Redirect";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 406: return "Not Acceptable";
+    case 409: return "Conflict";
+    case 410: return "Gone";
+    case 411: return "Length Required";
+    case 412: return "Precondition Failed";
+    case 413: return "Content Too Large";
+    case 414: return "URI Too Long";
+    case 415: return "Unsupported Media Type";
+    case 431: return "Request Header Fields Too Large";
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 503: return "Service Unavailable";
+  }
+  return "Response";
+}
+
+// The Date field value's fixed shape (RFC 9110 §5.6.7 IMF-fixdate);
+// writers may prebuild with the placeholder and patch exactly these
+// 29 bytes per second.
+inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
+inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
+
+// IMF-fixdate by hand: strftime's %a/%b obey the process locale and
+// would emit German day names under LC_TIME=de_DE.
+inline void date_core(char out[kDateLen], const struct tm& tm) {
+  static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  const auto two = [&](size_t at, int v) {
+    out[at] = static_cast<char>('0' + v / 10);
+    out[at + 1] = static_cast<char>('0' + v % 10);
+  };
+  std::memcpy(out, kDay[tm.tm_wday], 3);
+  out[3] = ',';
+  out[4] = ' ';
+  two(5, tm.tm_mday);
+  out[7] = ' ';
+  std::memcpy(out + 8, kMon[tm.tm_mon], 3);
+  out[11] = ' ';
+  const int year = tm.tm_year + 1900;
+  two(12, year / 100);
+  two(14, year % 100);
+  out[16] = ' ';
+  two(17, tm.tm_hour);
+  out[19] = ':';
+  two(20, tm.tm_min);
+  out[22] = ':';
+  two(23, tm.tm_sec);
+  out[25] = ' ';
+  std::memcpy(out + 26, "GMT", 3);
+}
+
+// "Content-Length: N\r\n\r\n" spelled by hand (RFC 9110 §8.6): printf
+// machinery has no business on the request path. Returns the length.
+inline size_t spell_content_length(char (&buf)[40], size_t len) {
+  std::memcpy(buf, "Content-Length: ", 16);
+  size_t at = 16;
+  char digits[20];
+  size_t d = 0;
+  size_t v = len;
+  do {
+    digits[d++] = static_cast<char>('0' + v % 10);
+    v /= 10;
+  } while (v != 0);
+  while (d != 0) buf[at++] = digits[--d];
+  buf[at++] = '\r';
+  buf[at++] = '\n';
+  buf[at++] = '\r';
+  buf[at++] = '\n';
+  return at;
+}
+
+// Content-Length is 1*DIGIT (RFC 9110 §8.6). kOk fills *out; kBad is
+// a syntax violation (the caller's 400), kOverflow exceeds size_t
+// (the caller's refusal bound, 413).
+enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
+inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
+  if (n == 0) return ClStatus::kBad;
+  size_t v = 0;
+  for (size_t j = 0; j < n; j++) {
+    const char ch = s[j];
+    if (ch < '0' || ch > '9') return ClStatus::kBad;
+    size_t t = 0;
+    if (__builtin_mul_overflow(v, static_cast<size_t>(10), &t) ||
+        __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &v)) {
+      return ClStatus::kOverflow;
+    }
+  }
+  *out = v;
+  return ClStatus::kOk;
+}
+
+// One length-switch per header - the hot-path shape stays ONE dispatch.
+// The 9110 facts (conneg, preconditions, content-md5) are filled here;
+// every name this layer does not own falls through to the framer's
+// functor (9112 owns host/connection/transfer-encoding/content-length;
+// 9113 owns none of them, §8.2.2). The functor inlines at each call
+// site, where the case's length is a known constant - the compiler
+// folds its checks to exactly the arms the old fused switch had.
+template <class OnWire>
+inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
+                          flow::ReqFacts& facts, OnWire&& wire) {
+  switch (nlen) {
+    case 6:
+      if (tok_eq(name, nlen, "accept", 6)) {
+        facts.has_accept = true;
+        return;
+      }
+      break;
+    case 8:
+      if (tok_eq(name, nlen, "if-match", 8)) {
+        facts.has_if_match = true;
+        facts.if_match_star = star_value(value, vlen);
+        return;
+      }
+      break;
+    case 11:
+      if (tok_eq(name, nlen, "content-md5", 11)) {
+        facts.has_content_md5 = true;
+        return;
+      }
+      break;
+    case 13:
+      if (tok_eq(name, nlen, "if-none-match", 13)) {
+        facts.has_if_none_match = true;
+        facts.inm_star = star_value(value, vlen);
+        return;
+      }
+      break;
+    case 14:
+      if (tok_eq(name, nlen, "accept-charset", 14)) {
+        facts.has_accept_charset = true;
+        return;
+      }
+      break;
+    case 15:
+      if (tok_eq(name, nlen, "accept-language", 15)) {
+        facts.has_accept_language = true;
+        return;
+      }
+      if (tok_eq(name, nlen, "accept-encoding", 15)) {
+        facts.has_accept_encoding = true;
+        return;
+      }
+      break;
+    case 17:
+      if (tok_eq(name, nlen, "if-modified-since", 17)) {
+        // Date parsing is a later tier; an unparsed date reads as
+        // invalid, which flow.rb's rescue path also ignores (L14).
+        facts.has_if_modified_since = true;
+        return;
+      }
+      break;
+    case 19:
+      if (tok_eq(name, nlen, "if-unmodified-since", 19)) {
+        facts.has_if_unmodified_since = true;  // date tier pending, like IMS
+        return;
+      }
+      break;
+    default:
+      break;
+  }
+  wire(name, nlen, value, vlen);
+}
+
+}  // namespace webmachine::http
+
+#endif
