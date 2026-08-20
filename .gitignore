@@ -3,3 +3,4 @@
 # Fetched and built by bench/vm.sh; never committed.
 bench/vm/benchmark/
 bench/vm/vm_floor
+bench/echo/echo_bench
