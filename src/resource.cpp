@@ -23,16 +23,6 @@ using flow::Node;
 
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
-// Class#inherited fires when the app writes
-// `class Hello < Webmachine::Resource`; the subclass lands in the C
-// slot resource_setup parked in mrb->ud - no ivar, no Ruby-side state.
-mrb_value resource_inherited(mrb_state* mrb, mrb_value) {
-  mrb_value sub;
-  mrb_get_args(mrb, "C", &sub);
-  if (mrb->ud != nullptr) *static_cast<mrb_value*>(mrb->ud) = sub;
-  return mrb_nil_value();
-}
-
 void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
   // The direct variant: mruby prints exception + backtrace to stderr
   // itself; err carries only the context line.
@@ -41,24 +31,96 @@ void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
   mrb->exc = nullptr;
 }
 
-// Is `sym` defined as an INSTANCE method (runtime, per request)?
-bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
-  mrb_value symv = mrb_symbol_value(sym);
-  const mrb_value defined =
-      mrb_funcall_argv(mrb, klass, MRB_SYM_Q(method_defined), 1, &symv);
-  return mrb->exc == nullptr && mrb_test(defined);
+// An alias (`alias_method` in the class body) stores a proc carrying
+// MRB_PROC_ALIAS whose body holds the aliased-from mid, not an irep;
+// vm.c unwraps that at every call site. Unwrapped ONCE here instead -
+// the chain is fixed the moment the class freezes.
+mrb_method_t resolve_alias(mrb_method_t m) {
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) return m;
+  const struct RProc* p = MRB_METHOD_PROC(m);
+  while (p != nullptr && MRB_PROC_ALIAS_P(p)) p = p->upper;  // aliases chain
+  if (p == nullptr) return m;
+  mrb_method_t out = m;
+  MRB_METHOD_FROM_PROC(out, p);
+  return out;
 }
 
-// A konst callback, asked once on the CLASS. Absent -> the default
-// stands. Raise -> a named refusal (a setup that cannot answer cannot
-// serve).
+// ONE resolver: where does `sym` answer for receivers of class `c`?
+// mrb_method_search_vm scribbles on the class it is given - always a
+// copy. fast = a Ruby proc we may enter directly.
+struct Resolved {
+  mrb_method_t m = {};
+  bool defined = false;
+  bool fast = false;
+};
+
+Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
+  Resolved r;
+  struct RClass* owner = c;
+  r.m = resolve_alias(mrb_method_search_vm(mrb, &owner, sym));
+  r.defined = !MRB_METHOD_UNDEF_P(r.m);
+  r.fast = r.defined && !MRB_METHOD_CFUNC_P(r.m);
+  return r;
+}
+
+// Is `sym` an INSTANCE method (runtime, per request)? A direct look
+// into the class's method table - no funcall, no method_defined?.
+bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
+  return resolve(mrb, mrb_class_ptr(klass), sym).defined;
+}
+
+// The yield body for SETUP calls, run under mrb_protect_error: outside
+// a VM frame nothing catches a raise (funcall builds its own TRY,
+// yield does not).
+struct SetupCall {
+  const struct RProc* proc;
+  mrb_sym sym;
+  mrb_value self;
+  struct RClass* c;
+};
+
+mrb_value setup_call_body(mrb_state* mrb, void* ud) {
+  const SetupCall* c = static_cast<const SetupCall*>(ud);
+  // Lend the callback its own name: yield_with_class fills the new
+  // frame's mid from the CURRENT frame for a plain def, and `super`
+  // resolves through ci->mid. Restored after; on a raise the unwind
+  // pops past the frame and the value is moot.
+  mrb_callinfo* ci = mrb->c->ci;
+  const mrb_sym saved_mid = ci->mid;
+  ci->mid = c->sym;
+  mrb_value r = mrb_yield_with_class(mrb, mrb_obj_value(const_cast<struct RProc*>(c->proc)), 0,
+                                     nullptr, c->self, c->c);
+  ci->mid = saved_mid;
+  return r;
+}
+
+// Invoke a resolved method at SETUP time (cold): Ruby procs enter
+// directly under protection, cfuncs go through funcall (vm.c's frame
+// setup is not worth owning). On a raise the exception stays pending.
+mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_value self,
+                        struct RClass* c) {
+  if (!r.fast) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
+  SetupCall ctx{MRB_METHOD_PROC(r.m), sym, self, c};
+  mrb_bool raised = FALSE;
+  mrb_value v = mrb_protect_error(mrb, setup_call_body, &ctx, &raised);
+  if (WM_RES_UNLIKELY(raised)) {
+    mrb->exc = mrb_obj_ptr(v);  // protect_error cleared it; re-arm
+    return mrb_nil_value();
+  }
+  mrb_gc_protect(mrb, v);  // yield does not protect its result; funcall does
+  return v;
+}
+
+// A konst callback, asked once on the CLASS (its metaclass owns class
+// methods). Absent -> the default stands. Raise -> a named refusal.
 bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool defv, bool* out,
          char* err, size_t errlen) {
-  if (!mrb_respond_to(mrb, klass, sym)) {
+  const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
+  if (!r.defined) {
     *out = defv;
     return true;
   }
-  const mrb_value v = mrb_funcall_argv(mrb, klass, sym, 0, nullptr);
+  const mrb_value v = call_resolved(mrb, r, sym, klass, mrb_class(mrb, klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, name, err, errlen);
     return false;
@@ -73,8 +135,9 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
 // a method the walker cannot name would silently 501.
 bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
                  char* err, size_t errlen) {
-  if (!mrb_respond_to(mrb, klass, sym)) return true;
-  const mrb_value v = mrb_funcall_argv(mrb, klass, sym, 0, nullptr);
+  const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
+  if (!r.defined) return true;
+  const mrb_value v = call_resolved(mrb, r, sym, klass, mrb_class(mrb, klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, name, err, errlen);
     return false;
@@ -174,108 +237,41 @@ const NamedSym kKonstOnly[] = {
     {MRB_SYM_Q(moved_temporarily), "moved_temporarily?"},
 };
 
-// An alias (`alias_method` in the class body) stores a proc carrying
-// MRB_PROC_ALIAS whose body holds the aliased-from mid, not an irep;
-// vm.c unwraps that at every call site. Unwrapped ONCE here instead -
-// the chain is fixed the moment the class freezes.
-mrb_method_t resolve_alias(mrb_method_t m) {
-  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) return m;
-  const struct RProc* p = MRB_METHOD_PROC(m);
-  while (p != nullptr && MRB_PROC_ALIAS_P(p)) p = p->upper;  // aliases chain
-  if (p == nullptr) return m;
-  mrb_method_t out = m;
-  MRB_METHOD_FROM_PROC(out, p);
-  return out;
-}
-
-// The yield body, run under mrb_protect_error: yield_with_class has no
-// TRY of its own (funcall builds one when mrb->jmp is empty; yield does
-// not), so a raising callback would longjmp into nothing.
-struct YieldCtx {
-  const Resource* res;
-  const struct RProc* proc;
-  mrb_sym sym;
-};
-
-mrb_value call_cached_body(mrb_state* mrb, void* ud) {
-  const YieldCtx* c = static_cast<const YieldCtx*>(ud);
-  // Lend the callback its own name: yield_with_class fills the new
-  // frame's mid from the CURRENT frame for a plain def, and `super`
-  // resolves through ci->mid - without this a callback calling super
-  // hunted its caller's superclass method. Restored after; on a raise
-  // the unwind pops past the frame and the value is moot.
-  mrb_callinfo* ci = mrb->c->ci;
-  const mrb_sym saved_mid = ci->mid;
-  ci->mid = c->sym;
-  mrb_value r = mrb_yield_with_class(mrb, mrb_obj_value(const_cast<struct RProc*>(c->proc)), 0,
-                                     nullptr, c->res->self, c->res->klass);
-  ci->mid = saved_mid;
-  return r;
-}
-
-// Invoke a bind-time-resolved method. The frozen class guarantees the
-// method still IS what was resolved; the one thing Ruby code can still
-// do is grow a singleton class on the instance - checked with a load
-// and a branch, falling back to the full funcall when it happened.
-mrb_value call_cached(const Resource& res, mrb_method_t m, bool fast, mrb_sym sym) {
-  mrb_state* mrb = res.mrb;
-  if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.self)->c != res.klass)) {
-    return mrb_funcall_argv(mrb, res.self, sym, 0, nullptr);
-  }
-  YieldCtx ctx{&res, MRB_METHOD_PROC(m), sym};
-  mrb_bool raised = FALSE;
-  mrb_value r = mrb_protect_error(mrb, call_cached_body, &ctx, &raised);
-  if (WM_RES_UNLIKELY(raised)) {
-    // protect_error hands the exception back as the value and clears
-    // mrb->exc; re-arm it so the one pending-exception path answers.
-    mrb->exc = mrb_obj_ptr(r);
-    return mrb_nil_value();
-  }
-  // PROTECTED, because yield_with_class does not: funcall ends with
-  // arena_restore + gc_protect, yield does neither - the old tree
-  // watched a rendered String go live -> FREE across the next VM call
-  // under MRB_GC_STRESS (gc.c:1772). One arena entry per real VM call.
-  mrb_gc_protect(mrb, r);
-  return r;
-}
-
-// --- Variant B: the run inside the VM -------------------------------
-struct RunCtx {
-  const Resource* res;
-  const flow::ReqFacts* facts;
-  std::string* body;
-  bool have_body;
-  uint16_t status;
-};
-
+// --- the run: the whole flow inside ONE VM frame ---------------------
+//
+// Within this cfunc the wrapper funcall's TRY catches raises, the
+// wrapper's arena roots every value until exit, and anything one
+// callback returns stays alive for the next one - the frame IS the
+// memory model. The Resource arrives through the proc's env.
 mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
-  RunCtx* ctx = static_cast<RunCtx*>(mrb->ud);
-  const Resource& res = *ctx->res;
-  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(ctx->facts->method)];
+  const Resource& res = *static_cast<const Resource*>(mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0)));
+  const flow::ReqFacts& facts = *res.run_facts;
+  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
+  const auto naked = [&](mrb_method_t m, bool fast, mrb_sym sym) -> mrb_value {
+    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.self)->c != res.klass)) {
+      // cfunc, or a singleton class grew on the instance: full funcall.
+      return mrb_funcall_argv(mrb, res.self, sym, 0, nullptr);
+    }
+    mrb_callinfo* ci = mrb->c->ci;
+    const mrb_sym saved = ci->mid;
+    ci->mid = sym;
+    mrb_value r = mrb_yield_with_class(
+        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), 0, nullptr, res.self,
+        res.klass);
+    ci->mid = saved;
+    return r;
+  };
+
   flow::Node n = flow::Node::kB13;
   uint16_t status = 0;
-  for (;;) {
+  for (;;) {  // terminates: proven acyclic in flow.hpp
     const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
     bool ans;
     if (f.kind == flow::Kind::kRequest) {
-      ans = flow::eval_request(n, *ctx->facts);
+      ans = flow::eval_request(n, facts);
     } else if ((res.dynamic >> static_cast<size_t>(n)) & 1) {
-      // Naked: the wrapper's TRY catches raises, its arena roots the
-      // value, its exit restores - nothing to do by hand.
       const size_t i = static_cast<size_t>(n);
-      mrb_value v;
-      if (res.node_fast[i]) {
-        mrb_callinfo* ci = mrb->c->ci;
-        const mrb_sym saved = ci->mid;
-        ci->mid = res.node_sym[i];
-        v = mrb_yield_with_class(
-            mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(res.node_m[i]))), 0,
-            nullptr, res.self, res.klass);
-        ci->mid = saved;
-      } else {
-        v = mrb_funcall_argv(mrb, res.self, res.node_sym[i], 0, nullptr);
-      }
-      ans = mrb_test(v);
+      ans = mrb_test(naked(res.node_m[i], res.node_fast[i], res.node_sym[i]));
     } else {
       ans = k.ans[static_cast<size_t>(n)];
     }
@@ -287,45 +283,19 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
     n = t.node;
   }
   if (status == 200 && res.dynamic_body) {
-    mrb_value v;
-    if (res.body_fast) {
-      mrb_callinfo* ci = mrb->c->ci;
-      const mrb_sym saved = ci->mid;
-      ci->mid = res.body_sym;
-      v = mrb_yield_with_class(
-          mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(res.body_m))), 0, nullptr,
-          res.self, res.klass);
-      ci->mid = saved;
-    } else {
-      v = mrb_funcall_argv(mrb, res.self, res.body_sym, 0, nullptr);
-    }
-    if (!mrb_string_p(v)) {
+    const mrb_value v = naked(res.body_m, res.body_fast, res.body_sym);
+    if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
       mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
     }
-    // Copied while the frame is alive - the frame IS the borrow.
-    ctx->body->assign(RSTRING_PTR(v), RSTRING_LEN(v));
-    ctx->have_body = true;
+    // Copied while the frame roots it - the frame is the borrow.
+    res.run_body->assign(RSTRING_PTR(v), RSTRING_LEN(v));
+    res.run_have_body = true;
   }
-  ctx->status = status;
+  res.run_status = status;
   return mrb_nil_value();
 }
 
 }  // namespace
-
-uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                         bool* have_body) {
-  RunCtx ctx{&res, &facts, body, false, 0};
-  void* prev = res.mrb->ud;
-  res.mrb->ud = &ctx;
-  mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
-  res.mrb->ud = prev;
-  if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
-    *have_body = false;
-    return 500;  // exception stays pending for the answering path
-  }
-  *have_body = ctx.have_body;
-  return ctx.status;
-}
 
 bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
@@ -334,30 +304,54 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
     std::snprintf(err, errlen, "cannot open %s", path);
     return false;
   }
-  // The inherited hook fills this slot through mrb->ud while the app
-  // file loads; the class itself is held alive by its own constant.
-  mrb_value klass = mrb_nil_value();
-  void* prev_ud = mrb->ud;
-  mrb->ud = &klass;
   mrb_load_file(mrb, f);
-  mrb->ud = prev_ud;
   std::fclose(f);
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, "app raised while loading", err, errlen);
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-  if (WM_RES_UNLIKELY(mrb_type(klass) != MRB_TT_CLASS)) {
-    std::snprintf(err, errlen, "the app must define a class inheriting Webmachine::Resource");
+  // The app's class: found by walking Object's constant table in C -
+  // a value of class type whose super chain hits Webmachine::Resource.
+  // Exactly one, or a named refusal. No hook, no ivar, no mrb->ud.
+  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+  struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
+  struct Finder {
+    struct RClass* base;
+    mrb_value found;
+    int count;
+  } finder{base, mrb_nil_value(), 0};
+  mrb_iv_foreach(
+      mrb, mrb_obj_value(mrb->object_class),
+      [](mrb_state*, mrb_sym, mrb_value v, void* p) -> int {
+        Finder* fd = static_cast<Finder*>(p);
+        if (mrb_type(v) == MRB_TT_CLASS) {
+          for (struct RClass* c = mrb_class_ptr(v)->super; c != nullptr; c = c->super) {
+            if (c == fd->base) {
+              fd->found = v;
+              fd->count++;
+              break;
+            }
+          }
+        }
+        return 0;  // keep going
+      },
+      &finder);
+  if (WM_RES_UNLIKELY(finder.count != 1)) {
+    std::snprintf(err, errlen,
+                  "the app must define exactly one top-level class inheriting "
+                  "Webmachine::Resource (found %d)",
+                  finder.count);
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
+  const mrb_value klass = finder.found;
 
   out = Resource{};
   out.mrb = mrb;
 
   for (const NamedSym& cb : kUnhonored) {
-    if (WM_RES_UNLIKELY(mrb_respond_to(mrb, klass, cb.sym) ||
+    if (WM_RES_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
                         instance_defined(mrb, klass, cb.sym))) {
       std::snprintf(err, errlen, "%s is defined but no tier can honor it yet", cb.name);
       mrb_gc_arena_restore(mrb, ai);
@@ -374,19 +368,17 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
   }
 
   // The booleans: class method -> konst bit; instance method -> the
-  // node goes dynamic and is asked through the VM on every request.
+  // node goes dynamic, resolved HERE, asked inside the run frame.
   bool ans[sizeof(kBools) / sizeof(kBools[0])];
   for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
     const BoolCb& cb = kBools[i];
     ans[i] = cb.defv;
-    if (instance_defined(mrb, klass, cb.sym)) {
+    const Resolved inst = resolve(mrb, mrb_class_ptr(klass), cb.sym);
+    if (inst.defined) {
       out.dynamic |= uint64_t{1} << static_cast<size_t>(cb.node);
       out.node_sym[static_cast<size_t>(cb.node)] = cb.sym;
-      struct RClass* owner = mrb_class_ptr(klass);  // search_vm scribbles on it
-      const mrb_method_t m = resolve_alias(mrb_method_search_vm(mrb, &owner, cb.sym));
-      out.node_m[static_cast<size_t>(cb.node)] = m;
-      out.node_fast[static_cast<size_t>(cb.node)] =
-          !MRB_METHOD_UNDEF_P(m) && !MRB_METHOD_CFUNC_P(m);
+      out.node_m[static_cast<size_t>(cb.node)] = inst.m;
+      out.node_fast[static_cast<size_t>(cb.node)] = inst.fast;
       continue;
     }
     if (WM_RES_UNLIKELY(!ask(mrb, klass, cb.sym, cb.name, cb.defv, &ans[i], err, errlen))) {
@@ -427,26 +419,29 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
   }
 
   // The representation: content_type is one String (default text/html),
-  // to_html the one handler - no pair arrays, that ceremony is value
-  // conneg and refused above. A CLASS handler renders once, here; an
-  // INSTANCE handler renders per request through the VM.
+  // to_html the one handler. A CLASS handler renders once, here; an
+  // INSTANCE handler renders per request inside the run frame.
   std::string content_type = "text/html";
-  const mrb_sym handler = MRB_SYM(to_html);
-  if (mrb_respond_to(mrb, klass, MRB_SYM(content_type))) {
-    const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(content_type), 0, nullptr);
-    if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
-      mrb->exc == nullptr
-          ? static_cast<void>(std::snprintf(err, errlen, "content_type must return a String"))
-          : exc_into(mrb, "content_type", err, errlen);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
+  {
+    const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
+    if (ct.defined) {
+      const mrb_value v = call_resolved(mrb, ct, MRB_SYM(content_type), klass,
+                                        mrb_class(mrb, klass));
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
+        mrb->exc == nullptr
+            ? static_cast<void>(std::snprintf(err, errlen, "content_type must return a String"))
+            : exc_into(mrb, "content_type", err, errlen);
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
+      }
+      content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
     }
-    content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
   }
-  const bool body_konst = mrb_respond_to(mrb, klass, handler);
-  const bool body_runtime = !body_konst && instance_defined(mrb, klass, handler);
-  if (body_konst) {
-    const mrb_value rendered = mrb_funcall_argv(mrb, klass, handler, 0, nullptr);
+  const Resolved body_k = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(to_html));
+  const Resolved body_i = resolve(mrb, mrb_class_ptr(klass), MRB_SYM(to_html));
+  if (body_k.defined) {
+    const mrb_value rendered =
+        call_resolved(mrb, body_k, MRB_SYM(to_html), klass, mrb_class(mrb, klass));
     if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
       mrb->exc == nullptr
           ? static_cast<void>(std::snprintf(err, errlen, "the body handler must return a String"))
@@ -455,12 +450,11 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
       return false;
     }
     out.konst.body.assign(RSTRING_PTR(rendered), RSTRING_LEN(rendered));
-  } else if (body_runtime) {
+  } else if (body_i.defined) {
     out.dynamic_body = true;
-    out.body_sym = handler;
-    struct RClass* owner = mrb_class_ptr(klass);  // search_vm scribbles on it
-    out.body_m = resolve_alias(mrb_method_search_vm(mrb, &owner, handler));
-    out.body_fast = !MRB_METHOD_UNDEF_P(out.body_m) && !MRB_METHOD_CFUNC_P(out.body_m);
+    out.body_sym = MRB_SYM(to_html);
+    out.body_m = body_i.m;
+    out.body_fast = body_i.fast;
   }
   out.konst.content_type = content_type;  // the negotiated type, body or not
 
@@ -471,6 +465,9 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
 
   // The instance dynamic callbacks are asked on: created once, pinned
   // against GC, holding whatever state the app's initialize gave it.
+  // Plus the run carrier: a HIDDEN class (no constant - unreachable
+  // from Ruby) whose one method is the run cfunc, the Resource wired
+  // in through the proc's env as a cptr.
   if (out.dynamic != 0 || out.dynamic_body) {
     out.self = mrb_obj_new(mrb, mrb_class_ptr(klass), 0, nullptr);
     if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
@@ -479,10 +476,13 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
       return false;
     }
     mrb_gc_register(mrb, out.self);
-    // Variant B's carrier: a HIDDEN class (no constant - Ruby code
-    // cannot reach or reopen it) holding the run cfunc.
+
     struct RClass* hidden = mrb_class_new(mrb, mrb->object_class);
-    mrb_define_method_id(mrb, hidden, MRB_SYM(call), run_cfunc, MRB_ARGS_NONE());
+    const mrb_value env = mrb_cptr_value(mrb, &out);
+    struct RProc* run_proc = mrb_proc_new_cfunc_with_env(mrb, run_cfunc, 1, &env);
+    mrb_method_t m;
+    MRB_METHOD_FROM_PROC(m, run_proc);
+    mrb_define_method_raw(mrb, hidden, MRB_SYM(call), m);
     out.run_self = mrb_obj_new(mrb, hidden, 0, nullptr);
     mrb_gc_register(mrb, out.run_self);
   }
@@ -523,100 +523,48 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
   return true;
 }
 
-uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts) {
-  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
-  flow::Node n = flow::Node::kB13;
-  int ai = -1;  // one arena cycle for the whole decision, opened lazily
-  uint16_t status = 0;
-  for (;;) {  // terminates: proven acyclic in flow.hpp
-    const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
-    bool ans;
-    if (f.kind == flow::Kind::kRequest) {
-      ans = flow::eval_request(n, facts);
-    } else if ((res.dynamic >> static_cast<size_t>(n)) & 1) {
-      // The budgeted entry: this node's answer lives in the world, the
-      // VM is asked on every request. A raise ends in 500, never in a
-      // dead process (the VM boundary is always protected).
-      if (ai < 0) ai = mrb_gc_arena_save(res.mrb);
-      const mrb_value v = call_cached(res, res.node_m[static_cast<size_t>(n)],
-                                      res.node_fast[static_cast<size_t>(n)],
-                                      res.node_sym[static_cast<size_t>(n)]);
-      if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
-        // The exception stays pending: it becomes the 500's body, in
-        // the negotiated type (resource_exception_begin lends it).
-        status = 500;
-        break;
-      }
-      ans = mrb_test(v);
-    } else {
-      ans = k.ans[static_cast<size_t>(n)];
-    }
-    const flow::Target& t = ans ? f.on_true : f.on_false;
-    if (t.status != 0) {
-      status = t.status;
-      break;
-    }
-    n = t.node;
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                      bool* have_body) {
+  res.run_facts = &facts;
+  res.run_body = body;
+  res.run_have_body = false;
+  res.run_status = 0;
+  // The wrapper: funcall arms the TRY, its arena roots the whole frame,
+  // its exit restores - one entry pays for everything inside.
+  mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
+  if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
+    *have_body = false;
+    return 500;  // exception stays pending for the answering path
   }
-  if (ai >= 0) mrb_gc_arena_restore(res.mrb, ai);
-  return status;
+  *have_body = res.run_have_body;
+  return res.run_status;
 }
 
-bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena) {
-  // ONE copy, made by the caller straight into the sink: the VM string
-  // is lent out and stays alive until resource_render_end restores the
-  // arena - the borrow contract, not a scratch buffer.
-  mrb_state* mrb = res.mrb;  // E_TYPE_ERROR expands against this name
-  const int ai = mrb_gc_arena_save(mrb);
-  const mrb_value v = call_cached(res, res.body_m, res.body_fast, res.body_sym);
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
-    if (mrb->exc == nullptr) {
-      // A non-String is the handler's own fault - raise it as one, so
-      // the one exception path answers.
-      mrb->exc = mrb_obj_ptr(
-          mrb_exc_new_lit(mrb, E_TYPE_ERROR, "the body handler must return a String"));
-    }
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  *ptr = RSTRING_PTR(v);
-  *len = static_cast<size_t>(RSTRING_LEN(v));
-  *arena = ai;
-  return true;
-}
-
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena) {
+bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len) {
   if (res.mrb->exc == nullptr) return false;
-  const int ai = mrb_gc_arena_save(res.mrb);
-  const mrb_value msg = mrb_funcall_argv(res.mrb, mrb_obj_value(res.mrb->exc),
-                                         MRB_SYM(message), 0, nullptr);
+  // Straight from the field (mruby/error.h: RException.mesg is "NULL or
+  // probably RString"). The exception roots the message while pending;
+  // the caller copies before any mruby call can run, so clearing exc
+  // here is safe - no allocation happens in between.
+  struct RException* e = reinterpret_cast<struct RException*>(res.mrb->exc);
   res.mrb->exc = nullptr;
-  if (WM_RES_UNLIKELY(res.mrb->exc != nullptr || !mrb_string_p(msg))) {
-    res.mrb->exc = nullptr;  // even message raised; the plain 500 stands
-    mrb_gc_arena_restore(res.mrb, ai);
-    return false;
-  }
-  *ptr = RSTRING_PTR(msg);
-  *len = static_cast<size_t>(RSTRING_LEN(msg));
-  *arena = ai;
+  if (e->mesg == nullptr || e->mesg->tt != MRB_TT_STRING) return false;
+  const mrb_value mesg = mrb_obj_value(e->mesg);
+  *ptr = RSTRING_PTR(mesg);
+  *len = static_cast<size_t>(RSTRING_LEN(mesg));
   return true;
-}
-
-void resource_render_end(const Resource& res, int arena) {
-  mrb_gc_arena_restore(res.mrb, arena);
 }
 
 }  // namespace webmachine
 
 // The gem's Ruby surface: the Webmachine::Resource base class an app
-// subclasses; Class#inherited records the subclass for resource_setup.
+// subclasses. Registration happens by inheritance alone - setup finds
+// the subclass in the constant table, no hook, no state.
 extern "C" {
 
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
-  struct RClass* res = mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
-  mrb_define_class_method_id(mrb, res, MRB_SYM(inherited), webmachine::resource_inherited,
-                             MRB_ARGS_REQ(1));
+  mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
 }
 
 void mrb_webmachine_mruby_gem_final(mrb_state*) {}

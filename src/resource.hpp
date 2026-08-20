@@ -3,8 +3,16 @@
 //   class methods  (def self.x) - konst: asked ONCE at setup, folded
 //                                 into the compiled vectors
 //   instance methods (def x)    - runtime: answered through the VM on
-//                                 EVERY request (the budgeted entry,
-//                                 95-191ns cached-sym, measured)
+//                                 EVERY request, inside ONE frame
+//
+// The runtime tier runs the WHOLE flow inside one VM method (a hidden
+// class carries it): within that frame mrb->jmp is armed and the arena
+// lives until exit, so callbacks are naked yields, values one callback
+// returns stay alive for the next one IN THE ARENA (cheaper than any
+// ivar), and the rendered body is copied out while the frame roots it.
+// This frame IS the memory model - a per-node-entry variant measured
+// 26ns faster on one callback (forgecore 230 vs 256ns) and was removed
+// anyway: it cannot host cross-callback lifetimes without ivars.
 #ifndef WEBMACHINE_RESOURCE_HPP
 #define WEBMACHINE_RESOURCE_HPP
 
@@ -12,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "flow_walk.hpp"
 
@@ -27,7 +36,7 @@ struct Resource {
   // routes are added, so everything resolved below stays true forever.
   struct RClass* klass = nullptr;
   uint64_t dynamic = 0;  // nodes answered per request
-  mrb_sym node_sym[flow::kNodeCount] = {};  // interned once, never per request
+  mrb_sym node_sym[flow::kNodeCount] = {};  // presym constants, never interned
   // Resolved ONCE at bind (aliases unwrapped): a Ruby proc enters
   // directly via mrb_yield_with_class, skipping the funcall machinery;
   // a cfunc or undef falls back to funcall (reproducing vm.c's frame
@@ -38,41 +47,33 @@ struct Resource {
   mrb_sym body_sym = {};
   mrb_method_t body_m = {};
   bool body_fast = false;
-  // Variant B (A/B under WM_RUNVM=1): the whole flow run as ONE VM
-  // method on a hidden class - inside it mrb->jmp is armed and the
-  // arena lives until exit, so callbacks are naked yields with no
-  // per-call protection. The wrapper funcall is the price measured.
+  // The run method's carrier object (hidden class - no constant, Ruby
+  // code cannot reach or reopen it). Its cfunc finds this Resource
+  // through the proc's env (a cptr), never through mrb->ud.
   mrb_value run_self = {};
+  // The run frame's in/out slots, valid for one resource_run call.
+  mutable const flow::ReqFacts* run_facts = nullptr;
+  mutable std::string* run_body = nullptr;
+  mutable bool run_have_body = false;
+  mutable uint16_t run_status = 0;
 };
-
-// Variant B entry: runs the whole decision + render inside one VM
-// call. body receives the rendered bytes (copied while the frame is
-// alive); returns the status, 500 with pending exception on a raise.
-uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                         bool* have_body);
 
 // Loads the app file (its class inherits Webmachine::Resource) and
 // folds its answers into `out`. False leaves the reason in err - what
 // no tier can honor refuses the start by name, never silently.
+// NOTE: `out` must live at its final address (the run env borrows it).
 bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen);
 
-// Declared here, callable without mruby types via http1.hpp's forward
-// declaration: the flow with this resource's dynamic nodes answered
-// through the VM (ONE arena cycle for the whole decision). A raising
-// callback reads as 500.
-uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
+// THE runtime path: decision + render inside one VM call. The rendered
+// body (if any) is copied into *body while the frame still roots it.
+// A raising callback leaves its exception pending and returns 500.
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                      bool* have_body);
 
-// Renders the per-request body and lends out the VM string's bytes:
-// *ptr/*len are valid until resource_render_end(arena) - the caller
-// copies them ONCE, straight into the sink. False: the handler raised
-// (the exception stays pending for resource_exception_begin) - the
-// response is a 500 carrying it.
-bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
-// The pending exception's message, lent the same way: a raising
-// callback answers 500 in the negotiated type with the reason as body.
-// False: nothing pending.
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
-void resource_render_end(const Resource& res, int arena);
+// The pending exception's message, read straight from RException's
+// mesg field and LENT: copy the bytes before the next mruby call - no
+// allocation happens in between, so nothing can collect them.
+bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
 }  // namespace webmachine
 

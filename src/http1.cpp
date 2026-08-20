@@ -2,7 +2,6 @@
 
 #include <picohttpparser.h>
 
-#include <cstdlib>
 #include <cstring>
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
@@ -132,9 +131,6 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
       dynamic_nodes_(dynamic_nodes),
       dynamic_body_(dynamic_body),
       bound_(res != nullptr && (dynamic_nodes || dynamic_body)) {
-  if (bound_) {
-    if (const char* e = std::getenv("WM_RUNVM")) run_vm_ = e[0] == '1';
-  }
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
@@ -441,14 +437,15 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     // answers are compiled into the method's vector; dynamic nodes -
     // instance methods, by declaration - are asked through the VM per
     // request (this branch is deployment-stable: no hint).
+    // Konst resources never see the VM; anything dynamic runs the whole
+    // flow inside ONE VM frame (this branch is deployment-stable: no
+    // hint).
     uint16_t status;
-    bool vm_have_body = false;
-    if (run_vm_) {
-      status = resource_run_vm(*res_, facts, &vm_body_, &vm_have_body);
+    bool have_body = false;
+    if (bound_) {
+      status = resource_run(*res_, facts, &body_, &have_body);
     } else {
-      status = dynamic_nodes_
-                   ? resource_decide(*res_, facts)
-                   : flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
+      status = flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
     }
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
@@ -456,41 +453,25 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
     bool answered = false;
-    if (run_vm_ && vm_have_body && status == 200) {
+    if (have_body && status == 200) {
+      // Rendered inside the run frame, copied there while the frame
+      // rooted it; HEAD renders too - its Content-Length must be the
+      // GET's - but sends no body bytes (RFC 9110 9.3.2).
       assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
                                 : (persist ? ok_prefix_.keep : ok_prefix_.close),
-               vm_body_.data(), vm_body_.size(), head_only);
+               body_.data(), body_.size(), head_only);
       answered = true;
-    }
-    if (!answered && !run_vm_ && dynamic_body_ && status == 200) {
-      // The per-request representation: rendered in the VM, its bytes
-      // BORROWED until render_end and copied exactly once, straight
-      // into the sink. HEAD renders too - its Content-Length must be
-      // the GET's - but sends no body bytes (RFC 9110 9.3.2).
-      const char* bp = nullptr;
-      size_t blen = 0;
-      int arena = 0;
-      if (WM_H1_UNLIKELY(!resource_render_begin(*res_, &bp, &blen, &arena))) {
-        status = 500;  // the handler raised; the connection outlives it
-      } else {
-        assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
-                                  : (persist ? ok_prefix_.keep : ok_prefix_.close),
-                 bp, blen, head_only);
-        resource_render_end(*res_, arena);
-        answered = true;
-      }
     }
     if (WM_H1_UNLIKELY(!answered && status == 500 && bound_)) {
       // A raising callback answers in the negotiated type, the reason
       // as body - the exception was left pending for exactly this.
+      // Copied before any mruby call can run.
       const char* bp = nullptr;
       size_t blen = 0;
-      int arena = 0;
-      if (resource_exception_begin(*res_, &bp, &blen, &arena)) {
+      if (resource_exception_begin(*res_, &bp, &blen)) {
         assemble(sink, minor >= 1 ? (persist ? err_prefix_.plain : err_prefix_.close)
                                   : (persist ? err_prefix_.keep : err_prefix_.close),
-                 bp, blen, head_only);
-        resource_render_end(*res_, arena);
+               bp, blen, head_only);
         answered = true;
       }
     }

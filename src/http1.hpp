@@ -21,16 +21,13 @@
 namespace webmachine {
 
 // The bound resource (resource.hpp owns the definition; Http1 stays
-// mruby-free). resource_decide answers the flow with its dynamic nodes
-// asked through the VM; resource_render_begin lends the per-request
-// body's bytes until resource_render_end.
+// mruby-free). resource_run answers decision + render inside ONE VM
+// frame; resource_exception_begin lends a pending exception's message
+// (copy before the next mruby call).
 struct Resource;
-uint16_t resource_decide(const Resource& res, const flow::ReqFacts& facts);
-uint16_t resource_run_vm(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                         bool* have_body);
-bool resource_render_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len, int* arena);
-void resource_render_end(const Resource& res, int arena);
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
+                      bool* have_body);
+bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
 // RFC 9110 §5.4 allows refusing oversized fields; 8k is the fleet
 // convention (nginx, h2o) and bounds one head's work - 431 past it.
@@ -107,8 +104,7 @@ class Http1 {
   bool dynamic_nodes_ = false;
   bool dynamic_body_ = false;
   bool bound_ = false;  // any runtime tier at all
-  bool run_vm_ = false;  // WM_RUNVM=1: variant B, the run inside the VM (A/B knob)
-  std::string vm_body_;  // variant B's rendered bytes; capacity survives
+  std::string body_;    // the run frame's rendered bytes; capacity survives
 };
 
 }  // namespace webmachine

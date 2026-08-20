@@ -164,10 +164,12 @@ void BM_flow_tier0_304_compiled(benchmark::State& state) {
 }
 BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 
-// The two runtime-tier shapes, on real bound resources: A = per-node
-// VM entries with hand protection, B = the whole run inside one VM
-// call (naked yields under the wrapper's TRY). One and four callbacks,
-// because B's wrapper must scale with the callback count to earn it.
+// The runtime tier on real bound resources: the whole run inside one
+// VM frame (naked yields under the wrapper's TRY). One and four
+// callbacks. A per-node-entry variant was 26ns faster at one callback
+// (forgecore 230 vs 256ns) and died anyway: it cannot host
+// cross-callback arena lifetimes without ivars - the frame IS the
+// memory model.
 webmachine::Resource g_res1;
 webmachine::Resource g_res4;
 
@@ -180,65 +182,29 @@ bool bind_bench_resource(const char* path, const char* src, webmachine::Resource
   return webmachine::resource_setup(mrb, path, out, err, sizeof(err));
 }
 
-uint16_t variant_a(const webmachine::Resource& res, const webmachine::flow::ReqFacts& facts,
-                   std::string& body) {
-  uint16_t status = webmachine::resource_decide(res, facts);
-  if (status == 200 && res.dynamic_body) {
-    const char* bp = nullptr;
-    size_t blen = 0;
-    int arena = 0;
-    if (!webmachine::resource_render_begin(res, &bp, &blen, &arena)) return 500;
-    body.assign(bp, blen);
-    webmachine::resource_render_end(res, arena);
-  }
-  return status;
-}
-
-void BM_runtime_1cb_entries(benchmark::State& state) {
-  webmachine::flow::ReqFacts facts;
-  std::string body;
-  for (auto _ : state) {
-    uint16_t st = variant_a(g_res1, facts, body);
-    benchmark::DoNotOptimize(st);
-    benchmark::DoNotOptimize(body);
-  }
-}
-BENCHMARK(BM_runtime_1cb_entries)->Unit(benchmark::kMicrosecond);
-
-void BM_runtime_1cb_run_vm(benchmark::State& state) {
+void BM_runtime_1cb(benchmark::State& state) {
   webmachine::flow::ReqFacts facts;
   std::string body;
   bool have = false;
   for (auto _ : state) {
-    uint16_t st = webmachine::resource_run_vm(g_res1, facts, &body, &have);
+    uint16_t st = webmachine::resource_run(g_res1, facts, &body, &have);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
 }
-BENCHMARK(BM_runtime_1cb_run_vm)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_runtime_1cb)->Unit(benchmark::kMicrosecond);
 
-void BM_runtime_4cb_entries(benchmark::State& state) {
-  webmachine::flow::ReqFacts facts;
-  std::string body;
-  for (auto _ : state) {
-    uint16_t st = variant_a(g_res4, facts, body);
-    benchmark::DoNotOptimize(st);
-    benchmark::DoNotOptimize(body);
-  }
-}
-BENCHMARK(BM_runtime_4cb_entries)->Unit(benchmark::kMicrosecond);
-
-void BM_runtime_4cb_run_vm(benchmark::State& state) {
+void BM_runtime_4cb(benchmark::State& state) {
   webmachine::flow::ReqFacts facts;
   std::string body;
   bool have = false;
   for (auto _ : state) {
-    uint16_t st = webmachine::resource_run_vm(g_res4, facts, &body, &have);
+    uint16_t st = webmachine::resource_run(g_res4, facts, &body, &have);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
 }
-BENCHMARK(BM_runtime_4cb_run_vm)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_runtime_4cb)->Unit(benchmark::kMicrosecond);
 
 constexpr char kApp1[] =
     "class BenchCounter < Webmachine::Resource\n"
