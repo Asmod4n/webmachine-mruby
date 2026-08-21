@@ -62,6 +62,18 @@ fi
 DURATION="${DURATION:-20}"
 FREQ="${FREQ:-999}"
 CALLGRAPH="${CALLGRAPH:-fp}"
+# perf maps one ring buffer PER CPU - 129 pages each by default, which
+# on a 32-thread host is 16 MB. Those pages land in the kernel's
+# per-USER locked_vm, and io_uring's accounting compares that same
+# user-wide counter against RLIMIT_MEMLOCK: once perf has pushed it
+# over, io_uring_setup returns ENOMEM for ANY ring - measured here, a
+# 2-entry probe ring failed too. (ENOMEM, not the EPERM/EAGAIN mlock(2)
+# gives, which is why it does not look like a limit at first.)
+# The server is ONE thread, so those 32 buffers were never needed:
+# 8 pages each is 0.5 MB total and still ample at -F 999 for a
+# single-threaded target. --per-thread would sidestep the per-CPU
+# multiplication entirely; -m stays the smaller, less surprising knob.
+PERF_MMAP="${PERF_MMAP:-8}"
 PIN_SRV="${PIN_SRV:-}"
 PIN_CLI="${PIN_CLI:-}"
 PORT="${PORT:-8123}"
@@ -105,7 +117,7 @@ leg() {
   local name=$1 data=$2
   shift 2
   echo "== recording $name -> $data =="
-  "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -o "$data" -- \
+  "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
     "${SRV_WRAP[@]}" "$BIN" --port "$PORT" "${APP_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
@@ -127,10 +139,15 @@ leg() {
     # locked-memory budget, and the server only ever fails this way
     # UNDER perf - so say so instead of leaving it to be rediscovered.
     if grep -q "Cannot allocate memory" /tmp/wm-profile-srv.log 2>/dev/null; then
-      echo "ENOMEM at ring init: perf's buffers and io_uring both take locked memory." >&2
-      echo "ulimit -l says $(ulimit -l); perf_event_mlock_kb says" \
-           "$(cat /proc/sys/kernel/perf_event_mlock_kb 2>/dev/null || echo '?')." >&2
-      echo "Try: ulimit -l unlimited (same shell), or run this under sudo." >&2
+      # Traced on forgecore: perf's 32 per-CPU buffers pushed the
+      # per-user locked_vm over RLIMIT_MEMLOCK, and io_uring_setup then
+      # refused even a 2-entry ring with ENOMEM. -m is already lowered
+      # above; if it still happens, the limit itself is too small for
+      # this host's CPU count.
+      echo "ENOMEM at ring init: perf's per-CPU buffers and io_uring share the" >&2
+      echo "per-USER locked_vm budget, checked against RLIMIT_MEMLOCK." >&2
+      echo "ulimit -l says $(ulimit -l) KB; perf mapped $(nproc) buffers of" \
+           "$PERF_MMAP pages. Lower PERF_MMAP further, or raise ulimit -l." >&2
     fi
     exit 1
   fi
