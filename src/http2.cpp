@@ -370,25 +370,39 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     blk = &h2_store_[index_[status]];
   }
 
-  // Lane 1 is a memcpy; the date - it CHANGES, per second - is lane
-  // 2's first caller: the connection's dynamic table makes it a
-  // one-byte reference for both sides until the second rolls.
-  unsigned char dbuf[64];
-  unsigned char* dp = dbuf;
-  if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
-    return h2_error(st0, kH2InternalError, sink);
-  }
-  const size_t dlen = static_cast<size_t>(dp - dbuf);
-
   // HEAD answers with the head and no DATA; its render already ran for
   // parity with h1 (the Content-Length h1 announces is the GET's).
   const bool no_data = head_only || blen == 0;
-  unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
-                      kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
-  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  sink.append(blk->bytes);
-  sink.append(reinterpret_cast<const char*>(dbuf), dlen);
+
+  // HEADERS region, cheat #1: the encoder only sees a genuinely new
+  // value once per second per connection (h2.head_cache.sec), and only
+  // the status's block content differs otherwise - so a cache MISS is
+  // the rare case, not the per-response default. Flags carries the
+  // one bit (END_STREAM) that varies for a cached status between a
+  // bodied GET and a bodyless HEAD/204/304; it and stream id are the
+  // ONLY bytes patched after the append, both at fixed offsets
+  // (h2_put_frame_header's own layout, mirrored by h2_patch_stream_id).
+  if (h2.head_cache.status != status || h2.head_cache.sec != sec_) {
+    unsigned char dbuf[64];
+    unsigned char* dp = dbuf;
+    if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+      return h2_error(st0, kH2InternalError, sink);
+    }
+    const size_t dlen = static_cast<size_t>(dp - dbuf);
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
+                        kH2FlagEndHeaders, 0);
+    h2.head_cache.bytes.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+    h2.head_cache.bytes.append(blk->bytes);
+    h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
+    h2.head_cache.status = status;
+    h2.head_cache.sec = sec_;
+  }
+  const size_t hoff = sink.size();
+  sink.append(h2.head_cache.bytes);
+  unsigned char* hp = reinterpret_cast<unsigned char*>(&sink[hoff]);
+  hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+  h2_patch_stream_id(hp, stream_id);
 
   size_t give = 0;
   if (!no_data) {
@@ -398,22 +412,36 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     H2Stream* stp = h2.find(stream_id);
     const int64_t swin = stp != nullptr ? stp->send_window : h2.peer_initial_window;
     const int64_t budget = h2.send_window < swin ? h2.send_window : swin;
-    give = blen;
-    if (budget <= 0) {
-      give = 0;
-    } else if (static_cast<int64_t>(give) > budget) {
-      give = static_cast<size_t>(budget);
-    }
-    size_t off = 0;
-    while (off < give) {
-      size_t n = give - off;
-      if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-      const bool last = off + n == blen;
-      h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
-                          last ? kH2FlagEndStream : 0, stream_id);
-      sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-      sink.append(body + off, n);
-      off += n;
+    // DATA region, cheat #2: konst_.body never varies (!bound_), so
+    // the whole frame - header, length, END_STREAM, bytes - was baked
+    // once at setup (Http1's ctor). Only when it fits unclamped: the
+    // window-park and multi-frame-chunk paths below are untouched and
+    // still own every case this fast path does not.
+    if (!bound_ && status == 200 && budget >= static_cast<int64_t>(blen) &&
+        blen <= h2.peer_max_frame) {
+      const size_t doff = sink.size();
+      sink.append(h2_data200_);
+      h2_patch_stream_id(reinterpret_cast<unsigned char*>(&sink[doff]), stream_id);
+      give = blen;
+    } else {
+      give = blen;
+      if (budget <= 0) {
+        give = 0;
+      } else if (static_cast<int64_t>(give) > budget) {
+        give = static_cast<size_t>(budget);
+      }
+      unsigned char fh[kH2FrameHeaderLen];
+      size_t off = 0;
+      while (off < give) {
+        size_t n = give - off;
+        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
+        const bool last = off + n == blen;
+        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
+                            last ? kH2FlagEndStream : 0, stream_id);
+        sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+        sink.append(body + off, n);
+        off += n;
+      }
     }
     h2.send_window -= static_cast<int64_t>(give);
     if (stp != nullptr) stp->send_window -= static_cast<int64_t>(give);

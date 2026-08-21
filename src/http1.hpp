@@ -157,6 +157,13 @@ class Http1 {
   // and dynamic bodies alike - h2 has no Content-Length to differ in.
   std::vector<H2Block> h2_store_;
   H2Block h2_err_;
+  // The fast lane's DATA half: a whole precomputed DATA frame (header
+  // + konst_.body), stream id still zero at its fixed offset (5) -
+  // h2_answer patches those 4 bytes and appends the rest untouched.
+  // Only valid when !bound_ (konst_.body never varies); bound
+  // resources and the 500 exception body vary per request and keep
+  // the dynamic DATA path.
+  std::string h2_data200_;
   // The current IMF-fixdate value; h1 patches it into prebuilt bytes,
   // h2 encodes it per response (the peer's dynamic table indexes it
   // after the first send).

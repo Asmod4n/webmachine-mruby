@@ -104,6 +104,20 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
   add(413);
   add(431);
 
+  // The fast lane's DATA half, whole and precomputed: valid only when
+  // the body never varies at all - !bound_ means status 200 always
+  // sends konst_.body verbatim, forever. stream id is patched per
+  // response at its fixed offset (h2_patch_stream_id); END_STREAM is
+  // baked in because h2_answer only ever reaches for this buffer when
+  // it has already proven it will be the sole, last frame.
+  if (!bound_) {
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, static_cast<uint32_t>(konst_.body.size()), kH2Data,
+                        kH2FlagEndStream, 0);
+    h2_data200_.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+    h2_data200_.append(konst_.body);
+  }
+
   // HEAD answers with 200's head and no body bytes (RFC 9110 9.3.2).
   {
     const Variants& ok = variants(200);

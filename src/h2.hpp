@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,17 @@ inline void h2_put_frame_header(unsigned char* p, uint32_t len, uint8_t type,
   p[8] = static_cast<unsigned char>(stream);
 }
 
+// Patches the 4 stream-id bytes h2_put_frame_header wrote at a fixed
+// offset (5) within an ALREADY-EMITTED frame header - the same trick
+// http1's on_tick uses for its date_off, applied to stream id instead
+// of date. p must point at byte 0 of that 9-byte frame header.
+inline void h2_patch_stream_id(unsigned char* p, uint32_t stream) {
+  p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
+  p[6] = static_cast<unsigned char>(stream >> 16);
+  p[7] = static_cast<unsigned char>(stream >> 8);
+  p[8] = static_cast<unsigned char>(stream);
+}
+
 inline uint32_t h2_u24(const unsigned char* p) {
   return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2];
 }
@@ -151,6 +163,21 @@ struct H2State {
   std::string hdrbuf;
 
   std::vector<H2Stream> streams;
+
+  // The HEADERS-region cache: one slot, deliberately not one per
+  // status - the -12%/+58% eager-per-connection-object cost above is
+  // exactly why this stays small. Homogeneous traffic (the common
+  // case) gets the full win; a status change just falls back to
+  // rebuilding it fresh, same cost as before this cache existed,
+  // never wrong. bytes = a whole HEADERS frame header + h2_store_
+  // block + encoded date, stream id still zero at its fixed offset
+  // (5) - h2_answer patches those 4 bytes per response and appends
+  // the rest untouched. Valid only while status/sec still match.
+  struct {
+    std::string bytes;
+    uint16_t status = 0;
+    time_t sec = 0;
+  } head_cache;
 
   H2State() {
     lshpack_enc_init(&enc);
