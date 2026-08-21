@@ -191,28 +191,36 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
 
   // Decode into the shared buffer; quads carry offsets because the
   // buffer relocates as it grows.
-  h2.hdrbuf.clear();
+  // `used` is the cursor the old code kept in hdrbuf.size() - and that
+  // is why it is a cursor now. resize() VALUE-INITIALIZES, so growing
+  // the buffer per field zeroed 4 KiB of scratch ls-hpack overwrites
+  // immediately: 16 KiB per 4-field request, measured on forgecore as
+  // the single largest h2-over-h1 cost (+2.42% in memset, more than
+  // h2_answer itself). Keeping the high-water mark instead means the
+  // zeroing happens on a connection's FIRST request and never again -
+  // and the buffer stops relocating mid-decode, which is what the
+  // offsets in `quads` existed to survive.
   uint32_t quads[4 * kH2MaxFields];
   size_t nq = 0;
+  size_t used = 0;
   const unsigned char* p = reinterpret_cast<const unsigned char*>(h2.frag.data());
   const unsigned char* end = p + h2.frag.size();
   while (p < end) {
     if (nq + 4 > 4 * kH2MaxFields) return h2_error(st0, kH2EnhanceYourCalm, sink);
-    const size_t base = h2.hdrbuf.size();
     // A field larger than the request-header budget is refused either
     // way; one slot of that size is the decode ceiling per field.
-    if (base > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
-    h2.hdrbuf.resize(base + 4096);
+    if (used > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
+    if (h2.hdrbuf.size() < used + 4096) h2.hdrbuf.resize(used + 4096);
     lsxpack_header_t xh;
-    lsxpack_header_prepare_decode(&xh, &h2.hdrbuf[base], 0, 4096);
+    lsxpack_header_prepare_decode(&xh, &h2.hdrbuf[used], 0, 4096);
     if (lshpack_dec_decode(&h2.dec, &p, end, &xh) != 0) {
       return h2_error(st0, kH2CompressionError, sink);
     }
-    quads[nq++] = static_cast<uint32_t>(base + xh.name_offset);
+    quads[nq++] = static_cast<uint32_t>(used + xh.name_offset);
     quads[nq++] = xh.name_len;
-    quads[nq++] = static_cast<uint32_t>(base + xh.val_offset);
+    quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
     quads[nq++] = xh.val_len;
-    h2.hdrbuf.resize(base + xh.val_offset + xh.val_len);
+    used += xh.val_offset + xh.val_len;
   }
   h2.frag.clear();
 
