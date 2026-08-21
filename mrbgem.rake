@@ -56,6 +56,10 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.objs += %W(#{lshp}/lshpack.c #{lshp}/deps/xxhash/xxhash.c).map { |f|
     f.relative_path_from(dir).pathmap("#{build_dir}/%X#{spec.exts.object}")
   }
+  # test/flow_vectors.cpp drives src/flow_walk.hpp from outside the
+  # product, the way a caller does. src/ is on the path for the gem's
+  # own sources by convention, not for test/ - so say it.
+  spec.cxx.include_paths << "#{dir}/src"
   # mrbtest runs each gem in an isolated state of gem + dependencies;
   # test/hpack.rb builds its byte strings with string-ext methods. Test
   # only - the product never depends on it.

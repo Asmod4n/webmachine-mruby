@@ -181,12 +181,14 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
     case 6:
       if (tok_eq(name, nlen, "accept", 6)) {
         facts.has_accept = true;
+        facts.plain = false;
         return;
       }
       break;
     case 8:
       if (tok_eq(name, nlen, "if-match", 8)) {
         facts.has_if_match = true;
+        facts.plain = false;
         facts.if_match_star = star_value(value, vlen);
         return;
       }
@@ -194,12 +196,14 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
     case 11:
       if (tok_eq(name, nlen, "content-md5", 11)) {
         facts.has_content_md5 = true;
+        facts.plain = false;
         return;
       }
       break;
     case 13:
       if (tok_eq(name, nlen, "if-none-match", 13)) {
         facts.has_if_none_match = true;
+        facts.plain = false;
         facts.inm_star = star_value(value, vlen);
         return;
       }
@@ -207,16 +211,19 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
     case 14:
       if (tok_eq(name, nlen, "accept-charset", 14)) {
         facts.has_accept_charset = true;
+        facts.plain = false;
         return;
       }
       break;
     case 15:
       if (tok_eq(name, nlen, "accept-language", 15)) {
         facts.has_accept_language = true;
+        facts.plain = false;
         return;
       }
       if (tok_eq(name, nlen, "accept-encoding", 15)) {
         facts.has_accept_encoding = true;
+        facts.plain = false;
         return;
       }
       break;
@@ -225,12 +232,14 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         // Date parsing is a later tier; an unparsed date reads as
         // invalid, which flow.rb's rescue path also ignores (L14).
         facts.has_if_modified_since = true;
+        facts.plain = false;
         return;
       }
       break;
     case 19:
       if (tok_eq(name, nlen, "if-unmodified-since", 19)) {
         facts.has_if_unmodified_since = true;  // date tier pending, like IMS
+        facts.plain = false;
         return;
       }
       break;

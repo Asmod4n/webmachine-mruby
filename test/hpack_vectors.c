@@ -147,9 +147,15 @@ roundtrip_blocks(mrb_state *mrb, mrb_value self)
   return out;
 }
 
+/* test/flow_vectors.cpp - the gem gets ONE gem_test entry point, so the
+ * flow surface is registered from here rather than growing a second. */
+void mrb_webmachine_flow_vectors_init(mrb_state *mrb);
+
 void
 mrb_webmachine_mruby_gem_test(mrb_state *mrb)
 {
+  mrb_webmachine_flow_vectors_init(mrb);
+
   struct RClass *m = mrb_define_module(mrb, "HPackVectors");
   mrb_define_module_function(mrb, m, "decode_blocks", decode_blocks,
                              MRB_ARGS_REQ(1) | MRB_ARGS_OPT(1));

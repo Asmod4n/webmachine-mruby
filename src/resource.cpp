@@ -519,6 +519,10 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
       k.ans[static_cast<size_t>(kBools[i].node)] = ans[i];
     }
   }
+  // The vectors just changed, so the answers derived from them are
+  // stale. A fully konst resource (no dynamic node, no dynamic body)
+  // is NOT bound_, so it answers through flow::answer and reads these.
+  out.konst.resolve_shortcuts();
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }

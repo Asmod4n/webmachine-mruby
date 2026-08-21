@@ -37,6 +37,12 @@ struct ReqFacts {
   bool ims_future = false;
   bool response_has_location = false;
   bool response_has_body = true;
+  // True while every header-derived fact above is still false - the
+  // request carried no conditional and no conneg field. Cleared by
+  // http::header_switch, the one place those facts are born, which h1
+  // and h2 already share. It is what lets `answer` skip the graph:
+  // with nothing set, the outcome was decided at bind time.
+  bool plain = true;
 };
 
 // One konst answer per node, resolved per resource class x method.
@@ -85,6 +91,56 @@ constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
     if (t.status != 0) return t.status;
     n = t.node;
   }
+}
+
+// Run only what cannot be predicted; have the rest as a result.
+//
+// A konst vector decides most of the graph at bind time, and the
+// method is folded into it - so of the 58 nodes, a default resource
+// visits 46 for GET (21 of them request-dependent) and just 4 for
+// POST/PUT/DELETE/OPTIONS, where NOTHING depends on the request: four
+// node visits per request to rediscover a fixed 405. Two values,
+// computed once per resource x method, retire both cases.
+struct Shortcut {
+  uint16_t status = 0;  // the answer when there is nothing to decide
+  bool always = false;  // no request-dependent node reachable at all
+};
+
+// Does any reachable node read the request? Explores BOTH branches at
+// a kRequest node (either may be taken at runtime) and follows the
+// konst answer everywhere else. Terminates for the same reason walk
+// does - the graph is proven acyclic in flow.hpp - and `seen` bounds
+// it regardless.
+constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
+  if (seen[static_cast<size_t>(n)]) return false;
+  seen[static_cast<size_t>(n)] = true;
+  const FlowNode& f = kFlow[static_cast<size_t>(n)];
+  if (f.kind == Kind::kRequest) return true;
+  const Target& t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
+  if (t.status != 0) return false;
+  return any_request_node(t.node, k, seen);
+}
+
+// Built at bind time, never per request. `status` comes from the SAME
+// walk the request path uses, run once with every header fact false -
+// no second interpreter to drift from the first.
+constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
+  Shortcut s;
+  ReqFacts plain_facts;
+  plain_facts.method = m;
+  s.status = walk(plain_facts, k);
+  bool seen[kNodeCount] = {};
+  s.always = !any_request_node(Node::kB13, k, seen);
+  return s;
+}
+
+// The one entry point the request path calls. Two integer tests stand
+// in for the graph whenever the graph could not have said anything
+// else; everything conditional still walks it, so the answers cannot
+// differ - test/flow.rb proves that exhaustively.
+constexpr uint16_t answer(const ReqFacts& req, const KonstAnswers& k, const Shortcut& s) {
+  if (s.always || req.plain) return s.status;
+  return walk(req, k);
 }
 
 // The compiled walk: the konst vector is a template parameter, so the
@@ -168,11 +224,22 @@ constexpr KonstAnswers default_konst(Method m) {
 // setup - never per request.
 struct KonstSet {
   KonstAnswers per_method[7];
+  // Parallel to per_method: what the graph would have said when it had
+  // nothing to decide. Whoever changes per_method must call
+  // resolve_shortcuts() after - resource_setup does, and the ctor
+  // below does for the defaults.
+  Shortcut shortcut[7];
   std::string allow = "GET, HEAD";
   std::string body = "OK";
   std::string content_type;  // empty: no Content-Type header (the bare floor)
   KonstSet() {
     for (uint8_t m = 0; m < 7; m++) per_method[m] = default_konst(static_cast<Method>(m));
+    resolve_shortcuts();
+  }
+  void resolve_shortcuts() {
+    for (uint8_t m = 0; m < 7; m++) {
+      shortcut[m] = shortcut_for(static_cast<Method>(m), per_method[m]);
+    }
   }
 };
 

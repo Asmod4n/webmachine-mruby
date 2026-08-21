@@ -356,7 +356,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (bound_) {
       status = resource_run(*res_, facts, &body_, &have_body);
     } else {
-      status = flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
+      status = flow::answer(facts, konst_.per_method[static_cast<size_t>(facts.method)],
+                           konst_.shortcut[static_cast<size_t>(facts.method)]);
     }
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it

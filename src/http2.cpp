@@ -360,7 +360,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   if (bound_) {
     status = resource_run(*res_, facts, &body_, &have_body);
   } else {
-    status = flow::walk(facts, konst_.per_method[static_cast<size_t>(facts.method)]);
+    status = flow::answer(facts, konst_.per_method[static_cast<size_t>(facts.method)],
+                         konst_.shortcut[static_cast<size_t>(facts.method)]);
   }
 
   const char* body = nullptr;
