@@ -145,10 +145,11 @@ class Ring {
   }
 
   // False leaves the reason - naming the failed setup stage - in err.
-  // Reads WM_BUNDLE (debug knob, only ever narrowing): recv bundles
-  // default to the kernel's feature bit; one known-broken kernel
-  // (container 6.18.5-fc) violates the dense-fill contract and sets
-  // WM_BUNDLE=0.
+  // Reads WM_BUNDLE, the one env knob left and only ever narrowing:
+  // recv bundles default to the kernel's feature bit, and one
+  // known-broken kernel (container 6.18.5-fc) violates the dense-fill
+  // contract and needs WM_BUNDLE=0. It earns its place by answering a
+  // correctness question no build-time check can.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
     struct io_uring_params p {};
     p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
@@ -222,7 +223,6 @@ class Ring {
     if (const char* e = std::getenv("WM_BUNDLE")) {
       if (e[0] == '0') bundles_ = false;
     }
-    if (const char* e = std::getenv("WM_TRACE")) trace_ = e[0] == '1';
 
     if (cfg.nlisteners == 0 || cfg.nlisteners > kMaxListeners) {
       std::snprintf(err, errlen, "listener count %u out of range (1..%u)", cfg.nlisteners,
@@ -591,13 +591,6 @@ class Ring {
 
   void handle(struct io_uring_cqe* cqe) {
     const uint64_t ud = io_uring_cqe_get_data64(cqe);
-    if (WM_UNLIKELY(trace_)) {
-      // WM_TRACE=1: every CQE on stderr (ENV-only debugging; the flag
-      // is read once at init). Found the alloc-range bug in minutes.
-      std::fprintf(stderr, "CQE kind=%u gen=%u idx=%u res=%d flags=%x\n",
-                   unsigned(ud >> 56), unsigned((ud >> 32) & 0xffff), unsigned(ud), cqe->res,
-                   cqe->flags);
-    }
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
     const uint16_t gen = static_cast<uint16_t>(ud >> 32);
     const uint32_t idx = static_cast<uint32_t>(ud);
@@ -652,7 +645,6 @@ class Ring {
   bool ring_up_ = false;
   bool stop_ = false;
   bool bundles_ = false;
-  bool trace_ = false;
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
   char* pool_ = nullptr;   // kBufCount * kBufSize, mmap'd once
