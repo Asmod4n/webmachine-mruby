@@ -164,17 +164,27 @@ struct H2State {
 
   std::vector<H2Stream> streams;
 
-  // The HEADERS-region cache: one slot, deliberately not one per
-  // status - the -12%/+58% eager-per-connection-object cost above is
-  // exactly why this stays small. Homogeneous traffic (the common
-  // case) gets the full win; a status change just falls back to
-  // rebuilding it fresh, same cost as before this cache existed,
-  // never wrong. bytes = a whole HEADERS frame header + h2_store_
-  // block + encoded date, stream id still zero at its fixed offset
-  // (5) - h2_answer patches those 4 bytes per response and appends
-  // the rest untouched. Valid only while status/sec still match.
+  // The response cache: one slot, deliberately not one per status -
+  // the -12%/+58% eager-per-connection-object cost above is exactly
+  // why this stays small. Homogeneous traffic (the common case) gets
+  // the full win; a status change just falls back to rebuilding it
+  // fresh, same cost as before this cache existed, never wrong.
+  //
+  // bytes holds a whole HEADERS frame (header + h2_store_ block +
+  // encoded date) and, when has_data, the whole DATA frame right
+  // behind it - so the common answer is ONE append of one contiguous
+  // buffer, the way h1 answers. head_len says where the HEADERS frame
+  // ends, which is both the second frame's patch point and the length
+  // to append when the body must not ride along (HEAD, a bodyless
+  // status, or a window too small for it).
+  //
+  // Every byte in here is fixed except two 4-byte stream ids and one
+  // flags byte, all at offsets h2_put_frame_header defines. Valid
+  // only while status/sec still match.
   struct {
     std::string bytes;
+    size_t head_len = 0;
+    bool has_data = false;
     uint16_t status = 0;
     time_t sec = 0;
   } head_cache;

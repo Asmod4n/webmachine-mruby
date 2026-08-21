@@ -27,6 +27,11 @@ constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 // bounds the compressed side (the decoded side is bounded per field
 // in the decode loop).
 constexpr size_t kH2FragBudget = kMaxHead * 2;
+// Up to this much konst body rides in the per-connection response
+// cache, so head and body leave as one append (h2_answer). Past it
+// the memmove dominates the per-call overhead the merge saves, and
+// the copy is per CONNECTION - the trade stops paying.
+constexpr size_t kH2MergeBody = 1024;
 
 void put_u32(unsigned char* p, uint32_t v) {
   p[0] = static_cast<unsigned char>(v >> 24);
@@ -394,14 +399,11 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // parity with h1 (the Content-Length h1 announces is the GET's).
   const bool no_data = head_only || blen == 0;
 
-  // HEADERS region, cheat #1: the encoder only sees a genuinely new
-  // value once per second per connection (h2.head_cache.sec), and only
-  // the status's block content differs otherwise - so a cache MISS is
-  // the rare case, not the per-response default. Flags carries the
-  // one bit (END_STREAM) that varies for a cached status between a
-  // bodied GET and a bodyless HEAD/204/304; it and stream id are the
-  // ONLY bytes patched after the append, both at fixed offsets
-  // (h2_put_frame_header's own layout, mirrored by h2_patch_stream_id).
+  // The cache is rebuilt when the status changes or the second rolls -
+  // so a MISS is the rare case, not the per-response default, and the
+  // encoder sees a genuinely new date at most once per second per
+  // connection. Both frames are built here, back to back, because the
+  // answer wants to leave as ONE append.
   if (h2.head_cache.status != status || h2.head_cache.sec != sec_) {
     unsigned char dbuf[64];
     unsigned char* dp = dbuf;
@@ -415,33 +417,55 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     h2.head_cache.bytes.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
     h2.head_cache.bytes.append(blk->bytes);
     h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
+    h2.head_cache.head_len = h2.head_cache.bytes.size();
+    // The DATA frame joins it when the body is konst (!bound_ - it is
+    // then the same bytes for the life of the process) and SMALL. The
+    // cap is the whole argument for the size: this saves per-call
+    // overhead, and past a kilobyte the memmove dominates that anyway,
+    // while the copy is per CONNECTION - h2.hpp's header says what
+    // eager per-connection bytes cost at scale. Small bodies get one
+    // append; large ones keep the two they already had, and lose
+    // nothing.
+    h2.head_cache.has_data = !bound_ && status == 200 && !konst_.body.empty() &&
+                             konst_.body.size() <= kH2MergeBody;
+    if (h2.head_cache.has_data) h2.head_cache.bytes.append(h2_data200_);
     h2.head_cache.status = status;
     h2.head_cache.sec = sec_;
   }
+
+  // Whether DATA rides along has to be settled BEFORE the append, so
+  // the window is read first. DATA beyond min(connection, stream) is
+  // PARKED, never written - writing it anyway is the flow-control
+  // violation that gets a GOAWAY (RFC 9113 6.9.1).
+  H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
+  int64_t budget = 0;
+  if (!no_data) {
+    const int64_t swin = stp != nullptr ? stp->send_window : h2.peer_initial_window;
+    budget = h2.send_window < swin ? h2.send_window : swin;
+  }
+  const bool merged = !no_data && h2.head_cache.has_data &&
+                      budget >= static_cast<int64_t>(blen) && blen <= h2.peer_max_frame;
+
+  // ONE append for the whole answer when it can be - head and body,
+  // the shape h1 has always had. Everything variable is patched after
+  // it: the END_STREAM bit (byte 4 of the HEADERS header) and one
+  // stream id per frame, at offsets h2_put_frame_header defines.
   const size_t hoff = sink.size();
-  sink.append(h2.head_cache.bytes);
+  if (merged) {
+    sink.append(h2.head_cache.bytes);
+  } else {
+    sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
+  }
   unsigned char* hp = reinterpret_cast<unsigned char*>(&sink[hoff]);
   hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
   h2_patch_stream_id(hp, stream_id);
+  if (merged) h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
 
   size_t give = 0;
   if (!no_data) {
-    // DATA beyond min(connection, stream) window is PARKED, never
-    // written - writing it anyway is the flow-control violation that
-    // gets a GOAWAY (RFC 9113 6.9.1).
-    H2Stream* stp = h2.find(stream_id);
-    const int64_t swin = stp != nullptr ? stp->send_window : h2.peer_initial_window;
-    const int64_t budget = h2.send_window < swin ? h2.send_window : swin;
-    // DATA region, cheat #2: konst_.body never varies (!bound_), so
-    // the whole frame - header, length, END_STREAM, bytes - was baked
-    // once at setup (Http1's ctor). Only when it fits unclamped: the
-    // window-park and multi-frame-chunk paths below are untouched and
-    // still own every case this fast path does not.
-    if (!bound_ && status == 200 && budget >= static_cast<int64_t>(blen) &&
-        blen <= h2.peer_max_frame) {
-      const size_t doff = sink.size();
-      sink.append(h2_data200_);
-      h2_patch_stream_id(reinterpret_cast<unsigned char*>(&sink[doff]), stream_id);
+    if (merged) {
+      // The DATA frame already left with the head, whole and within
+      // the window - that is what `merged` asserted.
       give = blen;
     } else {
       give = blen;
@@ -463,9 +487,11 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         off += n;
       }
     }
-    // Whether a stream existed BEFORE this answer decides who owes the
-    // debit below - and h2.open() may move the vector, so the answer
-    // has to be taken while stp is still meaningful.
+    // Sent is sent: the debit belongs to BOTH ways out of here, or a
+    // merged answer would put bytes on the wire the peer's window
+    // never paid for. Whether a stream existed BEFORE this answer
+    // decides who owes it - and h2.open() may move the vector, so the
+    // answer has to be taken while stp is still meaningful.
     const bool had_stream = stp != nullptr;
     h2.send_window -= static_cast<int64_t>(give);
     if (had_stream) stp->send_window -= static_cast<int64_t>(give);

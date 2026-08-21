@@ -319,6 +319,56 @@ assert('h2: a drained stream is debited for what it already sent (9113 6.9.1)') 
   end
 end
 
+assert('h2: a merged answer pays the connection window too (9113 6.9.1)') do
+  # A konst body under the merge cap leaves as ONE append - head and
+  # DATA in the same buffer - and that path owes the connection window
+  # exactly what the chunked one owes. Nothing else here can see it:
+  # the other tests use 2-byte bodies, where an unpaid window takes
+  # thousands of exchanges to show.
+  #
+  # 1000-byte body: 65 answers fit the 65535 default, the 66th does
+  # not and must be cut to the 535 that remain. Unpaid, the window
+  # would still read 65535 at the 66th and all 1000 bytes would leave
+  # with END_STREAM, past a window the peer never opened.
+  app = <<~RUBY
+    class Big < Webmachine::Resource
+      def self.to_html
+        'x' * 1000
+      end
+    end
+  RUBY
+  h2_server(app) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      sid = 1
+      65.times do
+        s.write(h2_frame(1, 0x05, sid, h2_get_block))
+        t, = h2_next(s)
+        raise "expected HEADERS, got #{t}" unless t == 1
+        t, _, _, data = h2_next(s)
+        raise "expected DATA, got #{t}" unless t == 0
+        raise "short DATA: #{data.bytesize}" unless data.bytesize == 1000
+        sid += 2
+      end
+      # 65535 - 65 * 1000 = 535 left on the connection.
+      s.write(h2_frame(1, 0x05, sid, h2_get_block))
+      type, flags, = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0, flags & 1, 'body is owed - END_STREAM must wait'
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 535, data.bytesize, 'merged answers did not pay the connection window'
+      assert_equal 0, flags & 1
+      # Credit the CONNECTION (stream 0); the parked remainder follows.
+      s.write(h2_frame(8, 0, 0, [4096].pack('N')))
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 465, data.bytesize
+      assert_equal 1, flags & 1
+    end
+  end
+end
+
 if `curl --version 2>/dev/null`.include?('HTTP2')
   assert('h2: curl --http2-prior-knowledge round-trips against the same listener') do
     h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
