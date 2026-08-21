@@ -312,23 +312,35 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   }
 
   if (stream_id > h2.last_stream) h2.last_stream = stream_id;
+  // The cap counts streams the connection still OWES something - a body
+  // to arrive, or a parked remainder to drain. One answered inside its
+  // own dispatch owes nothing and never enters the table, so it cannot
+  // occupy a slot (RFC 9113 5.1.2 counts open streams, and it is not
+  // one by the time the next frame is read).
   if (h2.streams.size() >= kH2MaxConcurrentStreams) {
     // We announced the cap in our SETTINGS; a peer past it is refused
-    // per stream, not per connection (RFC 9113 5.1.2).
+    // per stream, not per connection.
     h2_rst(st0, stream_id, kH2RefusedStream, sink);
     return true;
   }
+  const bool head_only = facts.method == flow::Method::kHead;
+
+  if (end_stream) {
+    // h2.hpp already claimed this ("A stream answered in full inside
+    // its own dispatch never appears here"); it just was not true yet.
+    // Opening it here only to close it at the end of h2_answer cost an
+    // emplace_back with a std::string member, two more linear scans and
+    // the matching destructor - per request, on the hot path. The facts
+    // are on this stack, which is all the answer needs; h2_answer opens
+    // a stream itself if the peer's window parks a remainder.
+    return h2_answer(st0, stream_id, facts, head_only, sink);
+  }
+  // A body follows; THAT is what the stream has to be remembered for -
+  // the facts wait on it, the bytes will not.
   H2Stream& stx = h2.open(stream_id);
   stx.headers_done = true;
   stx.facts = facts;
-  stx.head_only = facts.method == flow::Method::kHead;
-
-  if (end_stream) {
-    stx.half_closed_remote = true;
-    if (!h2_answer(st0, stream_id, facts, stx.head_only, sink)) return false;
-    return true;
-  }
-  // A body follows; the facts wait on the stream, the bytes will not.
+  stx.head_only = head_only;
   return true;
 }
 
@@ -451,8 +463,12 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         off += n;
       }
     }
+    // Whether a stream existed BEFORE this answer decides who owes the
+    // debit below - and h2.open() may move the vector, so the answer
+    // has to be taken while stp is still meaningful.
+    const bool had_stream = stp != nullptr;
     h2.send_window -= static_cast<int64_t>(give);
-    if (stp != nullptr) stp->send_window -= static_cast<int64_t>(give);
+    if (had_stream) stp->send_window -= static_cast<int64_t>(give);
     if (give < blen) {
       // The window-refused remainder parks on the stream and drains on
       // WINDOW_UPDATE. Copied NOW: the body_ buffer is reused by the
@@ -461,6 +477,13 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       keep.pending.assign(body + give, blen - give);
       keep.headers_done = true;
       keep.half_closed_remote = true;
+      // Opened only now (dispatch no longer opens the common case), so
+      // it starts at the peer's initial window and has NOT been debited
+      // for the bytes this answer already sent. Missing this would let
+      // the drain overshoot the peer's window by exactly `give` - a
+      // flow-control violation the park test cannot see, because it
+      // only checks that the remainder arrives.
+      if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
     }
   }
   if (no_data || give == blen) h2.close_stream(stream_id);

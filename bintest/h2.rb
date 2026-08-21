@@ -279,6 +279,46 @@ assert('h2: an exhausted window parks DATA, WINDOW_UPDATE drains it (9113 6.9)')
   end
 end
 
+assert('h2: a drained stream is debited for what it already sent (9113 6.9.1)') do
+  # The park test above cannot see a wrong window: it hands over more
+  # credit than the remainder needs, so an undebited stream and a
+  # correctly debited one both deliver the same 19 bytes. This one
+  # credits LESS than the remainder, which only the correct accounting
+  # can answer partially.
+  #
+  # Correct: 20-byte window, 20 sent, stream window now 0. +10 credit
+  # releases exactly 10, END_STREAM still withheld.
+  # Undebited (the bug this pins): the stream would still read 20, +10
+  # would make 30, and all 19 remaining bytes would leave at once WITH
+  # END_STREAM - overshooting the peer's window by the 20 already sent.
+  h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write(H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
+      t, f, = h2_next(s)
+      raise 'expected server SETTINGS' unless t == 4 && f == 0
+      t, f, = h2_next(s)
+      raise 'expected SETTINGS ACK' unless t == 4 && f == 1
+      s.write(h2_frame(1, 0x05, 1, h2_get_block))
+      h2_next(s)  # HEADERS
+      type, _, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 20, data.bytesize
+      # Ten bytes of credit against a nineteen-byte remainder.
+      s.write(h2_frame(8, 0, 1, [10].pack('N')))
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 10, data.bytesize, 'stream window was not debited for the first 20 bytes'
+      assert_equal 0, flags & 1, 'nine bytes still owed - END_STREAM must wait'
+      # The rest, once it is actually paid for.
+      s.write(h2_frame(8, 0, 1, [64].pack('N')))
+      type, flags, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 9, data.bytesize
+      assert_equal 1, flags & 1
+    end
+  end
+end
+
 if `curl --version 2>/dev/null`.include?('HTTP2')
   assert('h2: curl --http2-prior-knowledge round-trips against the same listener') do
     h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
