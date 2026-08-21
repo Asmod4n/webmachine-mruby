@@ -27,6 +27,25 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # at fleet scale in the LiteSpeed ecosystem and is fuzzed there.
   # Pinned v2.3.5 (submodule), proven against RFC 7541's own vectors
   # in test/hpack.rb before any frame exists.
+  #
+  # It is also the fastest of the three that can be vendored at all,
+  # measured once against the two real alternatives on the exact calls
+  # src/http2.cpp makes - a request decode and one date field:
+  #
+  #               decode    encode
+  #   ls-hpack     90.9ns    31.6ns
+  #   cashpack      118ns    39.9ns   (+30% / +26%)
+  #   nghttp2_hd    145ns    47.0ns   (+59% / +49%)
+  #
+  # (container, one thread, google-benchmark; nghttp2 v1.66.0,
+  # cashpack 0.5 from git.sr.ht/~dridi/cashpack). h2o, proxygen,
+  # Envoy and QUICHE never got that far: none is extractable as a bare
+  # codec - h2o's hpack.c wants h2o's memory pools and token table,
+  # proxygen needs Folly, Envoy has no HPACK of its own (it uses
+  # nghttp2). The harness that produced this is deliberately NOT in
+  # the tree: it fetched and built two foreign libraries to answer a
+  # question that is now answered, and the answer is worth keeping
+  # where the choice is made - the machinery is not.
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
   spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"

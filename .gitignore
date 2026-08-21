@@ -9,9 +9,3 @@ bench/echo/echo_bench
 # perf-diff FINDING that comes out of them belongs in commit prose,
 # not the raw samples.
 bench/profile/
-# Fetched and built by bench/hpack.sh - the comparison codec (never a
-# product dependency) and the compiled benchmark binary.
-bench/hpack/nghttp2/
-bench/hpack/cashpack/
-bench/hpack/hpack_bench
-bench/hpack/obj/
