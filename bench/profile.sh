@@ -78,6 +78,28 @@ OUT=bench/profile
 mkdir -p "$OUT"
 URL="http://127.0.0.1:$PORT/"
 
+# An io_uring ring is locked memory, so a LEAKED server costs more than
+# a pid: enough orphans and the next ring init fails with ENOMEM
+# ("io_uring_queue_init: Cannot allocate memory"), which reads like a
+# code fault and is not one. Every other bench script traps EXIT; this
+# one did not, and a ^C mid-run left both perf and the server behind.
+SRVPID=""
+PERFPID=""
+cleanup() {
+  [ -n "$SRVPID" ] && kill -TERM "$SRVPID" 2>/dev/null
+  [ -n "$PERFPID" ] && kill "$PERFPID" 2>/dev/null
+  wait 2>/dev/null
+  return 0
+}
+trap cleanup EXIT INT TERM
+
+if pgrep -f "$BIN" >/dev/null 2>&1; then
+  echo "a webmachine-server is already running - it holds an io_uring ring:" >&2
+  pgrep -af "$BIN" >&2
+  echo "kill it first (pkill -f webmachine-server), or this run competes with it" >&2
+  exit 1
+fi
+
 # leg <name> <perf.data path> <h2load flags...>
 leg() {
   local name=$1 data=$2
@@ -87,6 +109,7 @@ leg() {
     "${SRV_WRAP[@]}" "$BIN" --port "$PORT" "${APP_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
+  PERFPID=$perfpid
   # $! is perf's own pid (it execs the server as ITS child, taskset if
   # pinned execs again in place, same pid throughout) - pgrep -P finds
   # that direct child unambiguously, no full-line matching to race.
@@ -100,12 +123,23 @@ leg() {
   if [ -z "$srvpid" ]; then
     echo "server did not start (or never became reachable on :$PORT):" >&2
     cat /tmp/wm-profile-srv.log >&2
-    kill "$perfpid" 2>/dev/null
+    # perf's own mmap buffers and io_uring's ring draw on the SAME
+    # locked-memory budget, and the server only ever fails this way
+    # UNDER perf - so say so instead of leaving it to be rediscovered.
+    if grep -q "Cannot allocate memory" /tmp/wm-profile-srv.log 2>/dev/null; then
+      echo "ENOMEM at ring init: perf's buffers and io_uring both take locked memory." >&2
+      echo "ulimit -l says $(ulimit -l); perf_event_mlock_kb says" \
+           "$(cat /proc/sys/kernel/perf_event_mlock_kb 2>/dev/null || echo '?')." >&2
+      echo "Try: ulimit -l unlimited (same shell), or run this under sudo." >&2
+    fi
     exit 1
   fi
+  SRVPID=$srvpid
   "${CLI_WRAP[@]}" h2load -D"$DURATION" -t1 -c1 "$@" "$URL" 2>&1 | grep '^finished'
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
+  SRVPID=""
+  PERFPID=""
 }
 
 leg "h1 anchor" "$OUT/perf.data.h1" --h1 -m1
