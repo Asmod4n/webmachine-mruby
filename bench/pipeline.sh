@@ -71,21 +71,60 @@ RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 REPO_REV=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
 MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
+RAW=$(mktemp)
+if [ "$TRANSPORT" = unix ]; then
+  WRK_UNIX="$SOCK" PIPELINE_DEPTH="$DEPTH" "$WRK" -t"$THREADS" -c"$CONNS" \
+    -d"${DURATION}"s -s bench/pipeline.lua "http://127.0.0.1:$PORT/" > "$RAW" 2>&1
+else
+  PIPELINE_DEPTH="$DEPTH" "$WRK" -t"$THREADS" -c"$CONNS" \
+    -d"${DURATION}"s -s bench/pipeline.lua "http://127.0.0.1:$PORT/" > "$RAW" 2>&1
+fi
+
+# wrk prints "Socket errors:"/"Non-2xx or 3xx responses:" ONLY when the
+# count is nonzero (wrk.c:181-189), so their absence is the proof that
+# there were none. Never grep for the throughput line alone: an earlier
+# version of this script did, and it would have hidden exactly the
+# failures a benchmark must never hide.
+ERRS=$(grep -E "Socket errors|Non-2xx or 3xx" "$RAW" || true)
+# --latency is deliberately NOT passed: wrk's percentiles are WRONG for
+# pipelined runs and would be read as failures. Latency is recorded once
+# per BATCH (wrk.c:365), but the coordinated-omission correction derives
+# its interval from the per-RESPONSE count (wrk.c:170), so stats_correct
+# inflates stats->count while filling buckets below stats->min - which
+# it never updates (stats.c:33-42). stats_percentile then sums only
+# [min,max], never reaches its rank, and falls through to `return 0`
+# (stats.c:78-86). That is where the "0.00us" comes from: an accounting
+# artifact, not a timeout. Batch turnaround has no per-request meaning
+# here anyway - this bench measures throughput, floor.sh measures
+# latency.
 OUT=$(mktemp)
 {
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
   echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s PIPELINED depth=$DEPTH transport=$TRANSPORT app=${APP:-none} pin_srv=${PIN_SRV:-no} $(uname -mr)"
-  if [ "$TRANSPORT" = unix ]; then
-    WRK_UNIX="$SOCK" PIPELINE_DEPTH="$DEPTH" "$WRK" -t"$THREADS" -c"$CONNS" \
-      -d"${DURATION}"s -s bench/pipeline.lua --latency \
-      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
-  else
-    PIPELINE_DEPTH="$DEPTH" "$WRK" -t"$THREADS" -c"$CONNS" \
-      -d"${DURATION}"s -s bench/pipeline.lua --latency \
-      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
-  fi
+  grep -E "requests in .*read" "$RAW"
+  [ -n "$ERRS" ] && echo "$ERRS"
+  grep -E "Requests/sec|Transfer/sec" "$RAW"
 } | tee "$OUT"
+
+if [ -n "$ERRS" ]; then
+  echo "ERRORS above - this run is not a number, nothing logged" >&2
+  rm -f "$OUT" "$RAW"
+  exit 1
+fi
+# The bytes must account for every request: complete * response size.
+# A batch that silently lost answers would still report a throughput.
+awk '/requests in/ {
+  n = $1
+  bs = $(NF-1)                 # "1.29GB" - $NF is the word "read"
+  mult = 1
+  if (bs ~ /GB/) mult = 1024*1024*1024
+  else if (bs ~ /MB/) mult = 1024*1024
+  else if (bs ~ /KB/) mult = 1024
+  gsub(/[^0-9.]/, "", bs)
+  printf "  bytes/response: %.1f (must equal the response size - a batch that lost answers still reports throughput)\n", (bs * mult) / n
+}' "$RAW" | tee -a "$OUT"
+
 if grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; then
   cat "$OUT" >> "$RESULTS"
 fi
-rm -f "$OUT"
+rm -f "$OUT" "$RAW"
