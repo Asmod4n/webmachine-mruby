@@ -1,26 +1,35 @@
 #!/bin/bash
-# Where does the h2-vs-h1 -m1 gap go? Records ONE matched pair of perf
-# profiles - the h1 anchor and h2 -m1, same duration, same pinning,
-# same run - and diffs them with `perf diff`, so the delta is read off
-# relative sample share per symbol instead of guessed at from req/s.
+# Two questions, two modes - and they are not interchangeable.
 #
-# Needs a WM_PROFILE=1 build (debug symbols + retained frame pointers -
-# see build_config.rb): rake clean && WM_PROFILE=1 rake compile.
-# Rebuild WITHOUT it (rake clean && rake compile) before trusting any
-# req/s number again - this binary is not the one throughput is
-# measured on.
+# DIFF (default): where does the h2-vs-h1 gap go? Records ONE matched
+# pair - the h1 anchor and h2 -m1, same duration, same pinning, same
+# run - and diffs them, so the delta is read off relative sample share
+# per symbol instead of guessed at from req/s.
 #
-# Default shape is THREADS=1 CONNS=1 -m1 on purpose: it's the exact
-# pair that already showed the ~7% gap (bench/h2.sh, pinned, real
-# hardware) - overriding it profiles a different question, not this
-# finding.
+# LOAD (MULTI=32): where does h2 spend its time under load? Records
+# the h2 leg alone at that multiplexing depth and reports it. There is
+# no h1 anchor here - h1 has no multiplexing to answer with.
 #
-# Knobs: DURATION (default 20 - profiling wants more samples than a
-# throughput run), FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf,
-# default fp - matches the frame pointers WM_PROFILE retains), PIN_SRV/
-# PIN_CLI (cpu lists for taskset; empty = unpinned, not recommended
-# here - a migrated process smears the profile across cores), PORT,
-# APP (default examples/hello.rb).
+# Which one to reach for, learned the hard way on forgecore: at -m1 a
+# connection sits idle for a whole round trip between requests, and
+# the kernel's own path (netfilter alone ~5%) evicts its working set
+# meanwhile. So a -m1 profile shows COLD-CACHE cost as much as work -
+# a 296-byte H2State, whose hot fields already share three cache
+# lines, still took a visible miss per request there. Use DIFF to
+# compare the protocols, LOAD to find work worth removing.
+#
+# Needs a WM_PROFILE=1 build (debug symbols + retained frame pointers,
+# see build_config.rb): WM_PROFILE=1 rake compile. Rebuild without it
+# before trusting any req/s number again - this binary is not the one
+# throughput is measured on.
+#
+# Knobs: MULTI (1 = diff mode, >1 = load mode at that depth), DURATION
+# (default 20 - profiling wants more samples than a throughput run),
+# FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default fp -
+# matches the frame pointers WM_PROFILE retains), PIN_SRV/PIN_CLI (cpu
+# lists for taskset; empty = unpinned, and an unpinned anchor has been
+# seen to swing 6% on its own, which reads as progress and is not),
+# CONNS (load mode, default 32), PORT, APP (default examples/hello.rb).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -78,6 +87,8 @@ PIN_SRV="${PIN_SRV:-}"
 PIN_CLI="${PIN_CLI:-}"
 PORT="${PORT:-8123}"
 APP="${APP-examples/hello.rb}"
+MULTI="${MULTI:-1}"
+CONNS="${CONNS:-32}"
 
 APP_ARGS=()
 [ -n "$APP" ] && APP_ARGS=(--app "$APP")
@@ -152,19 +163,35 @@ leg() {
     exit 1
   fi
   SRVPID=$srvpid
-  "${CLI_WRAP[@]}" h2load -D"$DURATION" -t1 -c1 "$@" "$URL" 2>&1 | grep '^finished'
+  "${CLI_WRAP[@]}" h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "$URL" 2>&1 | grep '^finished'
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
   SRVPID=""
   PERFPID=""
 }
 
-leg "h1 anchor" "$OUT/perf.data.h1" --h1 -m1
-leg "h2 -m1"    "$OUT/perf.data.h2" -m1
-
-echo
-echo "== perf diff: relative sample share, h1 -> h2 (positive = h2 spends more here) =="
-"$PERF" diff "$OUT/perf.data.h1" "$OUT/perf.data.h2" 2>/dev/null | head -60
+if [ "$MULTI" = 1 ]; then
+  LEGCONNS=1
+  leg "h1 anchor" "$OUT/perf.data.h1" --h1 -m1
+  leg "h2 -m1"    "$OUT/perf.data.h2" -m1
+  echo
+  echo "== perf diff: relative sample share, h1 -> h2 (positive = h2 spends more here) =="
+  "$PERF" diff "$OUT/perf.data.h1" "$OUT/perf.data.h2" 2>/dev/null | head -60
+else
+  # No h1 anchor: h1 has no multiplexing to answer -m$MULTI with, so
+  # there is nothing to diff against. This is the shape that keeps the
+  # connection's working set warm, which is the whole point - what
+  # shows up here is work, not the cold-cache cost -m1 also measures.
+  LEGCONNS="$CONNS"
+  leg "h2 -m$MULTI (c$CONNS)" "$OUT/perf.data.h2" -m"$MULTI"
+  echo
+  echo "== perf report: where h2 spends its time under load =="
+  # -g none: a flat list. The call graph was recorded (it is what
+  # annotate and the flamegraph want) but here the question is only
+  # which symbol burns the cycles.
+  "$PERF" report -i "$OUT/perf.data.h2" --stdio --no-children -g none \
+    --percent-limit=0.5 2>/dev/null | grep -vE '^#|^$' | head -30
+fi
 
 if command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null; then
   "$PERF" script -i "$OUT/perf.data.h2" 2>/dev/null | stackcollapse-perf.pl | flamegraph.pl \
