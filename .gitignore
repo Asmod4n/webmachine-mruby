@@ -19,5 +19,10 @@ bench/tmp/
 bench/idle_load
 /tmp/
 # Dependency checkouts fetched on demand, like /mruby/ above. Only
-# deps/ls-hpack is a real submodule and stays tracked.
-/deps/zlib-ng/
+# deps/ls-hpack is a real submodule and stays tracked - anything else
+# under deps/ arrived by hand and belongs to the checkout, not the
+# repo. (deps/zlib-ng was found STAGED as a bare gitlink on a working
+# host: a submodule entry with no .gitmodules behind it, which is a
+# pull hazard rather than a dependency.)
+/deps/*
+!/deps/ls-hpack
