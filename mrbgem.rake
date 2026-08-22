@@ -97,6 +97,36 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # product, the way a caller does. src/ is on the path for the gem's
   # own sources by convention, not for test/ - so say it.
   spec.cxx.include_paths << "#{dir}/src"
+
+  # src/embed.hpp is the flow machine WITHOUT the reactor (#173): bytes
+  # in, bytes out, no IO. That is a claim about an include closure, so
+  # it is checked where a claim can still stop something - here, at
+  # build time, on every build. test/embed_vectors.cpp carries the same
+  # cut as a #error on ring.hpp's guard; this walks the hops that guard
+  # cannot see, and names <liburing.h> too, which only the reactor has
+  # ever included.
+  #
+  # A missing embed.hpp is not silence: the facade is part of the gem,
+  # so its absence is a broken tree, not an opt-out.
+  facade = "#{dir}/src/embed.hpp"
+  abort 'webmachine-mruby: src/embed.hpp is missing - the embedder facade is not optional (#173)' unless File.exist?(facade)
+  seen = {}
+  todo = [facade]
+  until todo.empty?
+    f = todo.shift
+    next if seen[f]
+    seen[f] = true
+    # binread: these headers cite RFC sections with a UTF-8 section
+    # sign, and the check is about ASCII include lines either way.
+    File.binread(f).scan(/^\s*#\s*include\s+[<"]([^>"]+)[>"]/).flatten.each do |inc|
+      if ['ring.hpp', 'liburing.h'].include?(File.basename(inc))
+        abort "webmachine-mruby: src/embed.hpp reaches #{inc} through " \
+              "#{f.sub("#{dir}/", '')} - the embedder facade must carry no IO (#173)"
+      end
+      hop = File.join(File.dirname(f), inc)
+      todo << hop if File.exist?(hop)
+    end
+  end
   # mrbtest runs each gem in an isolated state of gem + dependencies;
   # test/hpack.rb builds its byte strings with string-ext methods. Test
   # only - the product never depends on it.
