@@ -32,12 +32,12 @@ struct Resource {
   // The one shared instance dynamic callbacks are asked on (resources
   // hold no per-request state; dynamic answers come from the world).
   mrb_value self = {};
-  // The class, FROZEN at bind: nobody can redefine a method after
+  // The class, FROZEN at add_route: nobody can redefine a method after
   // routes are added, so everything resolved below stays true forever.
   struct RClass* klass = nullptr;
   uint64_t dynamic = 0;  // nodes answered per request
   mrb_sym node_sym[flow::kNodeCount] = {};  // presym constants, never interned
-  // Resolved ONCE at bind (aliases unwrapped): a Ruby proc enters
+  // Resolved ONCE at add_route (aliases unwrapped): a Ruby proc enters
   // directly via mrb_yield_with_class, skipping the funcall machinery;
   // a cfunc or undef falls back to funcall (reproducing vm.c's frame
   // setup is not worth owning).

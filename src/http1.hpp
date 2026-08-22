@@ -144,7 +144,7 @@ class Http1 {
   // negotiated type (500).
   Variants ok_prefix_;
   Variants err_prefix_;
-  // One konst vector per method, the method folded in at bind time
+  // One konst vector per method, the method folded in at add_route
   // (B12/B10 never re-compare method strings per request).
   flow::KonstSet konst_;
   const Resource* res_ = nullptr;

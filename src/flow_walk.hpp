@@ -41,7 +41,7 @@ struct ReqFacts {
   // request carried no conditional and no conneg field. Cleared by
   // http::header_switch, the one place those facts are born, which h1
   // and h2 already share. It is what lets `answer` skip the graph:
-  // with nothing set, the outcome was decided at bind time.
+  // with nothing set, the outcome was decided at add_route.
   bool plain = true;
 };
 
@@ -95,7 +95,7 @@ constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
 
 // Run only what cannot be predicted; have the rest as a result.
 //
-// A konst vector decides most of the graph at bind time, and the
+// A konst vector decides most of the graph at add_route, and the
 // method is folded into it - so of the 58 nodes, a default resource
 // visits 46 for GET (21 of them request-dependent) and just 4 for
 // POST/PUT/DELETE/OPTIONS, where NOTHING depends on the request: four
@@ -121,7 +121,7 @@ constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
   return any_request_node(t.node, k, seen);
 }
 
-// Built at bind time, never per request. `status` comes from the SAME
+// Built at add_route, never per request. `status` comes from the SAME
 // walk the request path uses, run once with every header fact false -
 // no second interpreter to drift from the first.
 constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
