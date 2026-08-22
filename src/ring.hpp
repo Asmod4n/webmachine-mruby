@@ -40,9 +40,8 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <liburing.h>
 
-#include "io_backend.hpp"
+#include <liburing.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -132,6 +131,54 @@ static_assert((kBufCount & (kBufCount - 1)) == 0, "buffer walk wraps by mask");
 static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
               "pool size arithmetic must not overflow");
 
+// #169's raise: soft to hard, ceiling fs.nr_open - done ONCE at init,
+// and the capacity falls out of whatever finally stands.
+//
+// The select implementation caps it at FD_SETSIZE - 1 (user decision).
+// There a connection IS a process fd and would otherwise climb past
+// every stock fd_set in the process - mruby-c-ares is the concrete
+// neighbour. The io_uring path deliberately has no such cap: #169
+// measured why it would only cost there.
+inline uint64_t raise_nofile() {
+  struct rlimit rl {};
+  if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
+#ifdef SLIPSTREAM_IO
+  // Under slipstreamIO a connection IS a process fd, so the count has
+  // to stay under every stock fd_set in the process - mruby-c-ares is
+  // the concrete neighbour. This is the one place the two differ in
+  // KIND, which is why that header defines a name to ask.
+  rlim_t target = static_cast<rlim_t>(FD_SETSIZE - 1);
+  if (target > rl.rlim_max) target = rl.rlim_max;
+  if (rl.rlim_cur != target) {
+    struct rlimit want {target, rl.rlim_max};
+    (void)::setrlimit(RLIMIT_NOFILE, &want);
+    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
+  }
+  const uint64_t cur = static_cast<uint64_t>(rl.rlim_cur);
+  return cur < FD_SETSIZE ? cur : FD_SETSIZE - 1;
+#else
+  // With the real ring, connections live in the fixed-file table and
+  // consume no fd numbers: take everything the hard limit allows,
+  // ceiling fs.nr_open. #169 measured why a cap would only cost here.
+  rlim_t target = rl.rlim_max;
+  if (target == RLIM_INFINITY) {
+    uint64_t nr_open = 1u << 20;  // kernel default; used only if /proc is unreadable
+    if (std::FILE* f = std::fopen("/proc/sys/fs/nr_open", "re")) {
+      unsigned long long v = 0;
+      if (std::fscanf(f, "%llu", &v) == 1 && v > 0) nr_open = v;
+      std::fclose(f);
+    }
+    target = static_cast<rlim_t>(nr_open);
+  }
+  if (rl.rlim_cur < target) {
+    struct rlimit want {target, rl.rlim_max};
+    (void)::setrlimit(RLIMIT_NOFILE, &want);
+    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
+  }
+  return static_cast<uint64_t>(rl.rlim_cur);
+#endif
+}
+
 // One listener: exactly one of unix_path / port.
 struct ListenerSpec {
   const char* unix_path = nullptr;
@@ -180,7 +227,7 @@ inline const char* stage_name(uint32_t st) {
 // Io picks the backend (#171): UringIo by default, SelectIo as the
 // portable/lazy path - two instantiations, zero indirection in
 // either, the one branch point living in main at init.
-template <class App, class Io = UringIo>
+template <class App>
 class Ring {
  public:
   explicit Ring(App& app) : app_(app) {}
@@ -194,24 +241,24 @@ class Ring {
       // queue_exit would race the unlink.
       unsigned n = 0;
       for (uint32_t i = 0; i < nlisteners_; i++) {
-        struct io_uring_sqe* s = Io::get_sqe(&ring_);
+        struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) break;
         io_uring_prep_close_direct(s, listener_base_ + i);
         io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
         n++;
       }
       for (const std::string& path : unix_paths_) {
-        struct io_uring_sqe* s = Io::get_sqe(&ring_);
+        struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) break;
         io_uring_prep_unlink(s, path.c_str(), 0);
         io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
         n++;
       }
-      if (n != 0) Io::submit_and_wait(&ring_, n);
+      if (n != 0) io_uring_submit_and_wait(&ring_, n);
     }
-    if (buf_ring_ != nullptr) Io::free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
+    if (buf_ring_ != nullptr) io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
     if (pool_ != nullptr) ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
-    if (ring_up_) Io::queue_exit(&ring_);
+    if (ring_up_) io_uring_queue_exit(&ring_);
   }
 
   // False leaves the reason - naming the failed setup stage - in err.
@@ -221,22 +268,27 @@ class Ring {
   // contract and needs WM_BUNDLE=0. It earns its place by answering a
   // correctness question no build-time check can.
   // EVERY failure here is this machine refusing this configuration - a
-  // taken port, an fd limit that leaves no room - and means the same
-  // under either backend. Whether the backend EXISTS was settled
-  // before this was called (Io::available, asked by main), so nothing
-  // in here is a reason to go try another one: a bind clash that
-  // silently demoted the server to the select shim would be a
+  // taken port, an fd limit that leaves no room. Which io_uring answers
+  // these calls was settled at BUILD time (src/uring.hpp), so nothing
+  // in here is a reason to go looking for another one: a bind clash
+  // that silently demoted the server to a slower path would be a
   // performance cliff wearing a startup message.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
-    if (!Io::setup(&ring_, err, errlen)) return false;
-    ring_up_ = true;
     int rc = 0;
+    struct io_uring_params p {};
+    p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
+    rc = io_uring_queue_init_params(1024, &ring_, &p);
+    if (rc != 0) {
+      std::snprintf(err, errlen, "io_uring_queue_init: %s", std::strerror(-rc));
+      return false;
+    }
+    // One fewer fd-table lookup per enter(2); nothing else shares this fd.
+    io_uring_register_ring_fd(&ring_);
+    ring_up_ = true;
 
-
-    // The limit is set ONCE, here, by the backend - only it knows what
-    // it can index - and never touched again. The capacity falls out of
-    // whatever finally stands.
-    const uint64_t nofile = Io::raise_nofile();
+    // The limit is set ONCE, here, and never touched again. The
+    // capacity falls out of whatever finally stands.
+    const uint64_t nofile = raise_nofile();
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
@@ -247,7 +299,7 @@ class Ring {
     }
     listener_base_ = max_conns_;
 
-    rc = Io::register_files_sparse(&ring_, max_conns_ + kMaxListeners);
+    rc = io_uring_register_files_sparse(&ring_, max_conns_ + kMaxListeners);
     if (rc != 0) {
       std::snprintf(err, errlen, "register_files_sparse(%u): %s",
                     max_conns_ + kMaxListeners, std::strerror(-rc));
@@ -258,7 +310,7 @@ class Ring {
     // next accept would be handed a LISTENER slot (measured: res=4097).
     // Confine allocation to the connection slots; listeners are placed,
     // never allocated.
-    rc = Io::register_file_alloc_range(&ring_, 0, max_conns_);
+    rc = io_uring_register_file_alloc_range(&ring_, 0, max_conns_);
     if (rc != 0) {
       std::snprintf(err, errlen, "register_file_alloc_range: %s", std::strerror(-rc));
       return false;
@@ -274,7 +326,7 @@ class Ring {
     pool_ = static_cast<char*>(mem);
 
     int bre = 0;
-    buf_ring_ = Io::setup_buf_ring(&ring_, kBufCount, kBufGroup, 0, &bre);
+    buf_ring_ = io_uring_setup_buf_ring(&ring_, kBufCount, kBufGroup, 0, &bre);
     if (buf_ring_ == nullptr) {
       std::snprintf(err, errlen, "setup_buf_ring: %s", std::strerror(-bre));
       return false;
@@ -282,17 +334,17 @@ class Ring {
     // Written once. Replenish is advance-only: the kernel consumes entries
     // strictly in ring order, so re-exposing a slot re-exposes the buffer
     // it has always named.
-    const int mask = Io::buf_ring_mask(kBufCount);
+    const int mask = io_uring_buf_ring_mask(kBufCount);
     for (uint32_t i = 0; i < kBufCount; i++) {
-      Io::buf_ring_add(buf_ring_, pool_ + static_cast<size_t>(i) * kBufSize, kBufSize,
+      io_uring_buf_ring_add(buf_ring_, pool_ + static_cast<size_t>(i) * kBufSize, kBufSize,
                             static_cast<uint16_t>(i), mask, static_cast<int>(i));
     }
-    Io::buf_ring_advance(buf_ring_, kBufCount);
+    io_uring_buf_ring_advance(buf_ring_, kBufCount);
 
     // Default: the kernel's own feature bit. WM_BUNDLE=0 narrows, for the
     // one kernel caught violating the dense-fill contract (6.18.5-fc:
     // res spanned buffers each holding only its own small segment).
-    bundles_ = Io::has_bundles(&ring_);
+    bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
     if (const char* e = std::getenv("WM_BUNDLE")) {
       if (e[0] == '0') bundles_ = false;
     }
@@ -316,7 +368,7 @@ class Ring {
     rearm_.reserve(64);
 
     if (cfg.stop_fd >= 0) {
-      struct io_uring_sqe* s = Io::get_sqe(&ring_);
+      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
       if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
       io_uring_prep_poll_add(s, cfg.stop_fd, POLLIN);
       io_uring_sqe_set_data64(s, detail::tag(detail::kStop, 0, 0));
@@ -361,22 +413,22 @@ class Ring {
       sa = reinterpret_cast<struct sockaddr*>(&sun);
       salen = sizeof(sun);
 
-      struct io_uring_sqe* s = Io::get_sqe(&ring_);
+      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
       if (s == nullptr) {
         std::snprintf(err, errlen, "SQ empty at setup");
         return false;
       }
       io_uring_prep_unlink(s, spec.unix_path, 0);
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
-      Io::submit_and_wait(&ring_, 1);
+      io_uring_submit_and_wait(&ring_, 1);
       struct io_uring_cqe* cqe = nullptr;
-      if (Io::peek_cqe(&ring_, &cqe) == 0) {
+      if (io_uring_peek_cqe(&ring_, &cqe) == 0) {
         // Only ENOENT is ordinary; anything else on the path is a refusal.
         if (cqe->res < 0 && cqe->res != -ENOENT) {
           std::snprintf(err, errlen, "unlink %s: %s", spec.unix_path, std::strerror(-cqe->res));
           return false;
         }
-        Io::cqe_seen(&ring_, cqe);
+        io_uring_cqe_seen(&ring_, cqe);
       }
     } else {
       if (spec.port <= 0 || spec.port > 65535) {
@@ -395,7 +447,7 @@ class Ring {
     static const int kOne = 1;  // static: SO_REUSEADDR optval, borrowed by the ring op
     unsigned chain = 0;
     {
-      struct io_uring_sqe* s = Io::get_sqe(&ring_);
+      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
       if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
       io_uring_prep_socket_direct(s, is_unix ? AF_UNIX : AF_INET, SOCK_STREAM, 0, slot, 0);
       s->flags |= IOSQE_IO_LINK;
@@ -403,7 +455,7 @@ class Ring {
       chain++;
 
       if (!is_unix) {
-        s = Io::get_sqe(&ring_);
+        s = io_uring_get_sqe(&ring_);
         if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
         io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, slot, SOL_SOCKET, SO_REUSEADDR,
                                const_cast<int*>(&kOne), sizeof(kOne));
@@ -412,25 +464,25 @@ class Ring {
         chain++;
       }
 
-      s = Io::get_sqe(&ring_);
+      s = io_uring_get_sqe(&ring_);
       if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
       io_uring_prep_bind(s, slot, sa, salen);
       s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStBind));
       chain++;
 
-      s = Io::get_sqe(&ring_);
+      s = io_uring_get_sqe(&ring_);
       if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
       io_uring_prep_listen(s, slot, 511);
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStListen));
       chain++;
     }
-    Io::submit_and_wait(&ring_, chain);
+    io_uring_submit_and_wait(&ring_, chain);
     {
       bool failed = false;
       struct io_uring_cqe* cqe = nullptr;
-      while (Io::peek_cqe(&ring_, &cqe) == 0) {
+      while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
         if (cqe->res < 0 && !failed) {
           // -ECANCELED names the victim of an earlier failure, not a cause.
           if (cqe->res != -ECANCELED) {
@@ -443,7 +495,7 @@ class Ring {
             failed = true;
           }
         }
-        Io::cqe_seen(&ring_, cqe);
+        io_uring_cqe_seen(&ring_, cqe);
       }
       if (failed) return false;
     }
@@ -495,10 +547,10 @@ class Ring {
   // ring that cannot take an SQE after that is a broken ring - checked,
   // reported on stderr, process exits (there is no connection to blame).
   struct io_uring_sqe* sqe() {
-    struct io_uring_sqe* s = Io::get_sqe(&ring_);
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (WM_LIKELY(s != nullptr)) return s;
-    Io::submit(&ring_);
-    s = Io::get_sqe(&ring_);
+    io_uring_submit(&ring_);
+    s = io_uring_get_sqe(&ring_);
     if (WM_UNLIKELY(s == nullptr)) {
       std::fprintf(stderr, "webmachine: SQ stuck after submit; ring is broken\n");
       std::exit(1);
@@ -605,7 +657,7 @@ class Ring {
     // never sees FIN (three bintests hung exactly there). shutdown forces
     // the FIN out first; the link keeps the order. Both SQEs must ride
     // the same submission or the link breaks.
-    if (Io::sq_space_left(&ring_) < 2) Io::submit(&ring_);
+    if (io_uring_sq_space_left(&ring_) < 2) io_uring_submit(&ring_);
     struct io_uring_sqe* s = sqe();
     io_uring_prep_shutdown(s, static_cast<int>(idx), SHUT_RDWR);
     s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
@@ -832,17 +884,17 @@ class Ring {
 
   void tick() {
     if (replenish_ != 0) {
-      Io::buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
+      io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
       replenish_ = 0;
     }
-    Io::submit_and_wait(&ring_, 1);
+    io_uring_submit_and_wait(&ring_, 1);
     // Once per wake, never per request; the Ring does not know or care
     // what the App keeps fresh.
     app_.on_tick();
     struct io_uring_cqe* cqe = nullptr;
-    while (Io::peek_cqe(&ring_, &cqe) == 0) {
+    while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
       handle(cqe);
-      Io::cqe_seen(&ring_, cqe);
+      io_uring_cqe_seen(&ring_, cqe);
     }
     if (!rearm_.empty()) {
       for (uint32_t idx : rearm_) {
@@ -855,7 +907,7 @@ class Ring {
   }
 
   App& app_;
-  typename Io::State ring_ {};
+  struct io_uring ring_ {};
   bool ring_up_ = false;
   bool stop_ = false;
   bool bundles_ = false;
@@ -868,7 +920,7 @@ class Ring {
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
   char* pool_ = nullptr;   // kBufCount * kBufSize, mmap'd once
-  typename Io::BufRing* buf_ring_ = nullptr;
+  struct io_uring_buf_ring* buf_ring_ = nullptr;
   // Buffers consumed this tick, handed back (advance-only: the ring
   // entries were written once and consumption strictly rotates) at the
   // top of the NEXT tick - a Read's bytes stay valid until then.

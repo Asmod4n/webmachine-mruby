@@ -40,29 +40,20 @@ struct Echo {
   void on_tick() {}
 };
 
-template <class App, class Io>
-int serve_on(const webmachine::RingConfig& cfg, App& app, const char* label) {
-  webmachine::Ring<App, Io> ring(app);
-  char err[256] = "";
-  if (!ring.init(cfg, err, sizeof(err))) {
-    std::fprintf(stderr, "webmachine: %s\n", err);
-    return 1;
-  }
-  std::fprintf(stderr, "webmachine: %s up, pid %d, %s, io=%s\n", label, getpid(),
-               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp",
-               Io::kName);
-  ring.run();
-  return 0;
-}
-
-// Does io_uring exist on this machine? Not asked here - ANSWERED
+// Does io_uring exist on THIS machine? Not asked here - ANSWERED
 // here, by reading the answer the process already has. mruby-io_uring
-// probes in its gem_init during mrb_open() and publishes the result
-// as URING_AVAILABLE on Object; it is a hard dependency of this tree
+// probes in its gem_init during mrb_open() and publishes the result as
+// URING_AVAILABLE on Object; it is a hard dependency of this tree
 // (mrbgem.rake), so the constant is always there and always current.
-// Asking a second time with a probe of our own would create a second
-// answer that can disagree with the first - the whole point of the
-// gem exporting a signal is that there is exactly one.
+// Asking again with a probe of our own would create a second answer
+// that can disagree with the first - the point of the gem exporting a
+// signal is that there is exactly one.
+//
+// This is a RUNTIME question and stays one even though WHICH
+// implementation of the API got compiled in is settled at build time
+// (see slipstreamIO): a binary built against the real liburing can
+// still land on a kernel too old for the ring ops, or under a seccomp
+// profile or sysctl that blocks them.
 bool uring_present(mrb_state* mrb) {
   const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
   const mrb_value obj = mrb_obj_value(mrb->object_class);
@@ -70,47 +61,53 @@ bool uring_present(mrb_state* mrb) {
   return mrb_bool(mrb_const_get(mrb, obj, k));
 }
 
-// The ONE branch point (#171): io_uring sets up, or the select backend
-// runs and SCREAMS. Never silent, never per-request, not disableable -
-// the warning says which backend, why concretely, what it costs, and
-// how to fix it. WM_IO narrows only: "select" forces the shim (the
-// test suite runs the whole tree over it), "uring" forbids the lazy
-// path (a named refusal instead of a slow surprise).
+// ONE path (#171). The Ring calls io_uring_* and never learns which
+// implementation answers - there is no template parameter, no function
+// table and no `if (have_uring)` anywhere below this line. Which one
+// got linked was decided when the tree was built, by whoever put a
+// liburing.h on the include path; SLIPSTREAM_IO says it landed on the
+// select implementation, and that is worth SAYING - loudly, once, at
+// startup - because it is correct and not fast.
+//
+// When the real ring is in and the machine cannot run it, this refuses
+// BY NAME and stops. There is no second backend in the binary to fall
+// back to, and inventing a slow one at that moment would be a
+// performance cliff wearing a startup message.
 template <class App>
 int serve(const webmachine::RingConfig& cfg, App& app, const char* label, bool have_uring) {
-  const char* force = std::getenv("WM_IO");
-  char why[256] = "";
-  if (force == nullptr || std::strcmp(force, "uring") == 0) {
-    if (!have_uring) {
-      std::snprintf(why, sizeof(why),
-                    "URING_AVAILABLE is false - no io_uring on this kernel, or a "
-                    "seccomp profile / sysctl blocks it");
-    } else if (webmachine::UringIo::available(why, sizeof(why))) {
-      return serve_on<App, webmachine::UringIo>(cfg, app, label);
-    }
-    if (force != nullptr) {  // uring demanded: refuse by name, no lazy path
-      std::fprintf(stderr, "webmachine: %s\n", why);
-      return 1;
-    }
-  } else if (std::strcmp(force, "select") != 0) {
-    std::fprintf(stderr, "webmachine: WM_IO=%s is not a backend (uring|select)\n", force);
-    return 1;
-  } else {
-    std::snprintf(why, sizeof(why), "WM_IO=select forced it");
-  }
+#ifdef SLIPSTREAM_IO
+  (void)have_uring;
   std::fprintf(stderr,
                "webmachine: ================================================================\n"
-               "webmachine: == IO BACKEND: select(2) SHIM - correct, NOT fast\n"
-               "webmachine: == why: %s\n"
-               "webmachine: == cost: every op is readiness + a classic syscall; recv\n"
-               "webmachine: ==   bundles do not exist (one buffer per completion);\n"
-               "webmachine: ==   file IO would block the reactor; capacity is capped\n"
-               "webmachine: ==   below\n"
-               "webmachine: ==   FD_SETSIZE (%d) fds\n"
-               "webmachine: == fix: run on Linux >= 6.11 with io_uring available\n"
+               "webmachine: == IO: slipstreamIO - the ring API over select(2)\n"
+               "webmachine: == why: this build found no liburing to compile against\n"
+               "webmachine: == cost: CORRECT, NOT FAST. Every operation is readiness plus\n"
+               "webmachine: ==   a classic syscall; recv bundles do not exist (one buffer\n"
+               "webmachine: ==   per completion); capacity is capped below FD_SETSIZE\n"
+               "webmachine: ==   (%d) because a connection is a process fd here\n"
+               "webmachine: == fix: build on Linux >= 6.11 against liburing\n"
                "webmachine: ================================================================\n",
-               why, FD_SETSIZE);
-  return serve_on<App, webmachine::SelectIo>(cfg, app, label);
+               FD_SETSIZE);
+#else
+  if (!have_uring) {
+    std::fprintf(stderr,
+                 "webmachine: io_uring is not usable here (URING_AVAILABLE is false: the\n"
+                 "webmachine: kernel is too old, or a seccomp profile or sysctl blocks it).\n"
+                 "webmachine: This binary was built against liburing and carries no other\n"
+                 "webmachine: implementation. Build against slipstreamIO to run anyway.\n");
+    return 1;
+  }
+#endif
+  webmachine::Ring<App> ring(app);
+  char err[256] = "";
+  if (!ring.init(cfg, err, sizeof(err))) {
+    std::fprintf(stderr, "webmachine: %s\n", err);
+    return 1;
+  }
+  std::fprintf(stderr, "webmachine: %s up, pid %d, %s\n", label, getpid(),
+               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
+  ring.run();
+  return 0;
 }
 
 }  // namespace
