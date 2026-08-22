@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <liburing.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -691,6 +692,20 @@ class Ring {
     c.next.clear();
     c.app.reset(static_cast<uint8_t>(li));  // whose listener, whose app
     arm_recv(idx);
+    // A server that writes complete responses has nothing for Nagle to
+    // coalesce - only stalls to offer. Found the hard way (#168): a
+    // splice chain's page-alignment tail (65499+37 of a 64K chunk)
+    // left a small segment waiting ~43ms for the peer's delayed ACK,
+    // once per response. Best effort through the ring; the CQE is
+    // ignored (kSetup has no handler arm, deliberately).
+    if (!unix_listener_[li]) {
+      static const int kOne = 1;
+      struct io_uring_sqe* s = sqe();
+      io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx),
+                             IPPROTO_TCP, TCP_NODELAY, const_cast<int*>(&kOne), sizeof(kOne));
+      s->flags |= IOSQE_FIXED_FILE;
+      io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, idx));
+    }
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {

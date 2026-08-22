@@ -769,6 +769,15 @@ bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
       size_t take = span_hi - st.xfer_off;
       if (take > kDeliverChunk) take = kDeliverChunk;
       sp.off = e.file_off + (st.xfer_off - span_lo);
+      // Splice moves page-cache pages by reference: a misaligned start
+      // wastes a whole pipe slot on its partial first page and the
+      // chunk needs a second fill for its tail (measured: 65499+37).
+      // Cutting the FIRST round at the next page edge aligns every
+      // round after it - one fill per chunk instead of two.
+      const size_t misalign = sp.off & 4095u;
+      if (misalign != 0 && take > kDeliverChunk - misalign) {
+        take = kDeliverChunk - misalign;
+      }
       sp.len = take;
       // Advanced NOW: a failed chain kills the connection (never the
       // process), so there is no retry to rewind for.
