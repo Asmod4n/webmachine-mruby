@@ -331,3 +331,20 @@ harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb W
      50%  529.00us
      99%  568.00us
 Requests/sec: 740095.42
+==== 2026-08-22T15:34Z repo=3e63994 mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  527.00us
+     99%  556.00us
+Requests/sec: 742534.36
+==== 2026-08-22T15:34Z repo=3e63994 mruby=06ed794 ====
+harness: vm_floor google-benchmark v1.9.5 7.1.8-1-default x86_64
+BM_vm_entry                     0.069 us        0.069 us     41151204
+BM_copy_floor_small             0.162 us        0.162 us     17254943 bytes_per_second=158.662Mi/s
+BM_copy_floor_browser           0.158 us        0.158 us     17679615 bytes_per_second=2.97468Gi/s
+BM_copy_floor_cached_sym        0.112 us        0.112 us     24969895
+BM_flow_tier0_get                32.8 ns         32.8 ns     85450227
+BM_flow_tier0_304                27.1 ns         27.0 ns    102993927
+BM_flow_tier0_get_compiled       1.43 ns         1.43 ns   1964410539
+BM_flow_tier0_304_compiled       1.43 ns         1.43 ns   1954643432
+BM_runtime_1cb                  0.240 us        0.240 us     11822273
+BM_runtime_4cb                  0.294 us        0.294 us      9618416
