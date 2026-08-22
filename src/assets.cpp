@@ -359,8 +359,8 @@ void Assets::patch_date(AssetEntry::Resp& r, const char* date, time_t sec) {
   r.sec = sec;
 }
 
-void Assets::answer_h1(AssetEntry& e, uint16_t status, Variant v, bool head_only,
-                       const char* date, time_t sec, std::string& sink) {
+void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date,
+                         time_t sec, std::string& sink) {
   AssetEntry::Resp* r;
   switch (status) {
     case 200: r = &e.h200[v]; break;
@@ -370,13 +370,32 @@ void Assets::answer_h1(AssetEntry& e, uint16_t status, Variant v, bool head_only
   }
   patch_date(*r, date, sec);
   sink.append(r->bytes);
-  if (status != 200 || head_only) return;
+}
+
+void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {
+  struct Seg {
+    const char* p;
+    size_t len;
+  };
+  Seg segs[3];
+  size_t ns = 0;
   if (e.deflated) {
-    sink.append(reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr));
-    sink.append(e.data, e.comp_size);
-    sink.append(reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer));
+    segs[ns++] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
+    segs[ns++] = {e.data, e.comp_size};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
   } else {
-    sink.append(e.data, e.comp_size);
+    segs[ns++] = {e.data, e.comp_size};
+  }
+  for (size_t i = 0; i < ns && n != 0; i++) {
+    if (off >= segs[i].len) {
+      off -= segs[i].len;
+      continue;
+    }
+    const size_t avail = segs[i].len - off;
+    const size_t take = avail < n ? avail : n;
+    sink.append(segs[i].p + off, take);
+    off = 0;
+    n -= take;
   }
 }
 

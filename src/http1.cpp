@@ -255,6 +255,25 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (len == 0) return true;
   }
 
+  // An active transfer owns the wire order (#168): responses to
+  // anything pipelined behind it would overtake its remaining chunks.
+  // The bytes wait in the carry; more() resumes parsing them when the
+  // source is exhausted. One head's budget bounds the wait - a peer
+  // stuffing more than that behind a running transfer wants buffer,
+  // not service (RFC 6585 §5 sanctions the refusal).
+  if (WM_H1_UNLIKELY(st.xfer != nullptr)) {
+    if (WM_H1_UNLIKELY(st.carry.size() + len > kMaxHead)) {
+      // Mid-body no status can be spoken (the bytes would land inside
+      // the transfer's Content-Length); the connection just ends.
+      st.carry.clear();
+      st.body_skip = 0;
+      st.xfer = nullptr;
+      return false;
+    }
+    st.carry.append(data, len);
+    return true;
+  }
+
   // The hot path parses the receive buffer in place; only a head split
   // across receives pays for the carry copy.
   const bool in_place = st.carry.empty();
@@ -366,6 +385,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (assets_ != nullptr) {
       if (AssetEntry* ae = assets_->find(path, path_len)) {
         const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
+        bool started_xfer = false;
         if (as == 412 || as == 501) {
           // Nothing asset-specific in these; the shared store answers.
           const Variants& sv = variants(as);
@@ -374,7 +394,21 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
         } else {
           const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
                                                 : (persist ? Assets::kKeep : Assets::kClose);
-          assets_->answer_h1(*ae, as, av, head_only, date_, sec_, sink);
+          assets_->answer_head(*ae, as, av, date_, sec_, sink);
+          if (as == 200 && !head_only) {
+            // Delivery (#168): one chunk per round, never the whole
+            // body into the sink. A body within the budget is the
+            // degenerate one-append case; past it the entry becomes
+            // the connection's source and more() continues it.
+            const size_t wlen = Assets::wire_len(*ae);
+            const size_t take = wlen < kDeliverChunk ? wlen : kDeliverChunk;
+            Assets::copy_wire(*ae, 0, take, sink);
+            if (take < wlen) {
+              st.xfer = ae;
+              st.xfer_off = take;
+              started_xfer = true;
+            }
+          }
         }
         off += static_cast<size_t>(ret);
         if (content_length != 0) {
@@ -386,7 +420,16 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
         if (!persist) {
           st.carry.clear();
           st.body_skip = 0;
-          return false;
+          return false;  // false still delivers: more() drains the source first
+        }
+        if (started_xfer) {
+          // The transfer owns the wire order: the rest of this view is
+          // pipelined behind it and waits in the carry (more() resumes
+          // parsing when the source is exhausted).
+          const size_t rest = viewlen - off;
+          if (in_place) st.carry.assign(view + off, rest);
+          else st.carry.erase(0, off);
+          return true;
         }
         continue;
       }

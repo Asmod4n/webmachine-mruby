@@ -27,6 +27,7 @@ struct Echo {
     sink.append(data, len);
     return true;
   }
+  bool more(Conn&, std::string&) { return true; }  // echo owes nothing between feeds
   void on_tick() {}
 };
 

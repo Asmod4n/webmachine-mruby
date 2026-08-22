@@ -47,6 +47,12 @@ inline constexpr size_t kMaxHead = 8192;
 // bounds it - 413 past it (RFC 9110 §15.5.14).
 inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
+// One delivery round's budget (#168, Gebot 18: bounded work per tick):
+// a source never puts more than this into the sink per continuation.
+// 64 KiB is one full-size pipe (16 pages) - the splice segment the
+// delivery model's next stage moves without copying - and small enough
+// that a slow consumer holds one chunk, not a whole file.
+inline constexpr size_t kDeliverChunk = 64u * 1024;
 
 class Http1 {
  public:
@@ -61,6 +67,13 @@ class Http1 {
     // h2 (RFC 9113 3.4), anything else is h1 forever.
     bool fresh = true;
     H2State* h2 = nullptr;  // allocated on the preface, never before
+    // The h1 delivery model's source (#168): null on the fast path -
+    // that null IS the model's cost there. Set only while a body
+    // larger than one kDeliverChunk is being delivered; more() pulls
+    // the next chunk each time the sink drains. h1 is serial, so one
+    // source suffices; bytes pipelined behind it wait in the carry.
+    const AssetEntry* xfer = nullptr;
+    size_t xfer_off = 0;
     void reset(uint8_t li) {
       carry.clear();
       body_skip = 0;
@@ -68,6 +81,8 @@ class Http1 {
       fresh = true;
       h2_free(h2);
       h2 = nullptr;
+      xfer = nullptr;
+      xfer_off = 0;
     }
     ~Conn() { h2_free(h2); }
   };
@@ -88,6 +103,16 @@ class Http1 {
   // whichever accumulates). False: the connection ends once everything
   // queued has drained - wire-invalidity paths and Connection: close.
   bool feed(Conn& st, const char* data, size_t len, std::string& sink);
+
+  // The delivery model's continuation (#168): the Ring calls this when
+  // the connection's sink has fully drained - the one signal BOTH
+  // protocols produce (h1 has no window; its only backpressure is the
+  // send CQE). h1 pulls the next chunk of an active transfer and, once
+  // the source is exhausted, resumes whatever was pipelined behind it;
+  // h2 re-runs the parked-stream flush (WINDOW_UPDATE remains its
+  // second trigger). Same contract as feed: false ends the connection
+  // once everything queued has drained.
+  bool more(Conn& st, std::string& sink);
 
  private:
   // A prebuilt response whose date field sits at a fixed offset.

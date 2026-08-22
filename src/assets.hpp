@@ -124,11 +124,21 @@ class Assets {
   uint16_t verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
                    const http::ReqValues& vals) const;
 
-  // Append the h1 response for a verdict this tier owns (200, 304,
-  // 405, 406). 412/501 stay with the caller's shared status store -
-  // they carry nothing asset-specific.
-  void answer_h1(AssetEntry& e, uint16_t status, Variant v, bool head_only,
-                 const char* date, time_t sec, std::string& sink);
+  // Append the h1 HEADER SECTION for a verdict this tier owns (200,
+  // 304, 405, 406) - never body bytes: delivery is the caller's (#168,
+  // it owns the budget and the transfer state). 412/501 stay with the
+  // caller's shared status store - they carry nothing asset-specific.
+  void answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date, time_t sec,
+                   std::string& sink);
+
+  // The wire body and the ONE place that knows its shape: gzip header
+  // + deflate bytes + trailer for method 8, the stored bytes alone for
+  // method 0. Both protocols copy through here - h1 chunks, h2 frames,
+  // parked continuations - so the segment arithmetic exists once.
+  static size_t wire_len(const AssetEntry& e) {
+    return e.deflated ? e.comp_size + 18 : e.comp_size;
+  }
+  static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
 
   std::vector<AssetEntry>& entries() { return entries_; }
   // The one fd, kept open past the mmap: the splice path (#168) will

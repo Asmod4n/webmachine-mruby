@@ -13,6 +13,11 @@
 //                  key to "whose connection is this")
 //   bool feed(Conn&, const char*, size_t, std::string& sink);
 //        false = close this connection once the sink has drained
+//   bool more(Conn&, std::string& sink);
+//        the delivery continuation (#168): called when the sink has
+//        fully drained; the App may append the next chunk of whatever
+//        it still owes. Same close contract as feed. An App without
+//        sources appends nothing and returns true.
 //   void on_tick();                                   once per reactor wake
 //
 // EVERYTHING goes through the ring. The listener is born as a direct
@@ -664,6 +669,15 @@ class Ring {
     // an in-flight send must still reach the wire (RFC 9112 §9.6).
     if (!c.next.empty()) {
       c.out.swap(c.next);
+      arm_send(idx);
+      return;
+    }
+    // The delivery continuation (#168): a fully drained sink is the
+    // one signal every protocol produces; the App appends the next
+    // chunk of whatever it still owes. Runs BEFORE a pending close -
+    // a closing response still delivers its source to the end.
+    if (!app_.more(c.app, c.out)) c.close_after_send = true;
+    if (!c.out.empty()) {
       arm_send(idx);
       return;
     }

@@ -446,25 +446,7 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
     default: blk = &h2_store_[index_[status]].bytes; break;  // 412/501: the shared store
   }
 
-  struct Seg {
-    const char* p;
-    size_t n;
-  };
-  Seg segs[3];
-  size_t nsegs = 0;
-  size_t blen = 0;
-  if (status == 200) {
-    if (e.deflated) {
-      segs[0] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
-      segs[1] = {e.data, e.comp_size};
-      segs[2] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
-      nsegs = 3;
-    } else {
-      segs[0] = {e.data, e.comp_size};
-      nsegs = 1;
-    }
-    for (size_t i = 0; i < nsegs; i++) blen += segs[i].n;
-  }
+  const size_t blen = status == 200 ? Assets::wire_len(e) : 0;
   const bool no_data = head_only || blen == 0;
 
   // The date rides the encoder lane, as everywhere.
@@ -491,11 +473,14 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   const bool had_stream = stp != nullptr;
   const int64_t swin = had_stream ? stp->send_window : h2.peer_initial_window;
   const int64_t budget = h2.send_window < swin ? h2.send_window : swin;
-  size_t give = blen;
+  // Two bounds, two owners: the window is the peer's, the chunk is
+  // ours (Gebot 18 - one round never writes more than kDeliverChunk;
+  // the drained sink and WINDOW_UPDATE both continue the rest).
+  size_t give = blen < kDeliverChunk ? blen : kDeliverChunk;
   if (budget <= 0) give = 0;
   else if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
 
-  size_t off = 0, si = 0, soff = 0;
+  size_t off = 0;
   while (off < give) {
     size_t n = give - off;
     if (n > h2.peer_max_frame) n = h2.peer_max_frame;
@@ -503,18 +488,7 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
     h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
                         stream_id);
     sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    size_t left = n;
-    while (left != 0) {
-      const size_t avail = segs[si].n - soff;
-      const size_t take = avail < left ? avail : left;
-      sink.append(segs[si].p + soff, take);
-      soff += take;
-      left -= take;
-      if (soff == segs[si].n) {
-        si++;
-        soff = 0;
-      }
-    }
+    Assets::copy_wire(e, off, n, sink);
     off += n;
   }
   // Debit BEFORE any open() can move the stream vector (h2_answer's
@@ -522,15 +496,13 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   h2.send_window -= static_cast<int64_t>(give);
   if (had_stream) stp->send_window -= static_cast<int64_t>(give);
   if (give < blen) {
-    // The window-refused remainder parks as BYTES for now; the
-    // delivery model (#168) will park an offset into the source
-    // instead. Drained by h2_flush_pending like every parked stream.
+    // No byte lies in the park, an offset does (#168): the remainder
+    // is three numbers, drained by h2_flush_pending on WINDOW_UPDATE
+    // and on every drained sink.
     H2Stream& keep = h2.open(stream_id);
-    keep.pending.clear();
-    for (size_t k = si; k < nsegs; k++) {
-      const size_t from = k == si ? soff : 0;
-      keep.pending.append(segs[k].p + from, segs[k].n - from);
-    }
+    keep.src = &e;
+    keep.src_off = give;
+    keep.src_len = blen;
     keep.headers_done = true;
     keep.half_closed_remote = true;
     if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
@@ -711,6 +683,33 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
 void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
   H2State& h2 = *st0.h2;
   for (H2Stream& stp : h2.streams) {
+    // A parked SOURCE drains by offset (#168) - chunk-capped per round
+    // (Gebot 18), continued by WINDOW_UPDATE and every drained sink.
+    if (stp.src != nullptr) {
+      const int64_t budget =
+          h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
+      if (budget <= 0) continue;
+      const size_t remaining = stp.src_len - stp.src_off;
+      size_t give = remaining < kDeliverChunk ? remaining : kDeliverChunk;
+      if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
+      size_t off = 0;
+      while (off < give) {
+        size_t n = give - off;
+        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
+        const bool last = stp.src_off + off + n == stp.src_len;
+        unsigned char fh[kH2FrameHeaderLen];
+        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
+                            last ? kH2FlagEndStream : 0, stp.id);
+        sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+        Assets::copy_wire(*stp.src, stp.src_off + off, n, sink);
+        off += n;
+      }
+      h2.send_window -= static_cast<int64_t>(give);
+      stp.send_window -= static_cast<int64_t>(give);
+      stp.src_off += give;
+      if (stp.src_off == stp.src_len) stp.src = nullptr;
+      continue;
+    }
     if (stp.pending.empty()) continue;
     const int64_t budget =
         h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
@@ -737,12 +736,39 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
   // reorders the vector under the iterator.
   for (size_t i = 0; i < h2.streams.size();) {
     H2Stream& stp = h2.streams[i];
-    if (stp.headers_done && stp.half_closed_remote && stp.pending.empty()) {
+    if (stp.headers_done && stp.half_closed_remote && stp.pending.empty() &&
+        stp.src == nullptr) {
       h2.close_stream(stp.id);
     } else {
       i++;
     }
   }
+}
+
+// The continuation both protocols share (#168): the Ring calls this
+// when the connection's sink has fully drained. h1 pulls the active
+// transfer's next chunk and resumes pipelined bytes once the source is
+// exhausted; h2 re-runs the parked-stream flush. feed's contract.
+bool Http1::more(Conn& st, std::string& sink) {
+  if (st.h2 != nullptr) {
+    h2_flush_pending(st, sink);
+    return true;
+  }
+  if (st.xfer == nullptr) return true;
+  const size_t wlen = Assets::wire_len(*st.xfer);
+  size_t take = wlen - st.xfer_off;
+  if (take > kDeliverChunk) take = kDeliverChunk;
+  Assets::copy_wire(*st.xfer, st.xfer_off, take, sink);
+  st.xfer_off += take;
+  if (st.xfer_off < wlen) return true;
+  st.xfer = nullptr;
+  st.xfer_off = 0;
+  if (st.carry.empty()) return true;
+  // What was pipelined behind the transfer parses now; feed's verdict
+  // is the connection's verdict.
+  std::string held;
+  held.swap(st.carry);
+  return feed(st, held.data(), held.size(), sink);
 }
 
 bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) {

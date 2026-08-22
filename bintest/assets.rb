@@ -108,7 +108,7 @@ assert('assets: a method-8 entry ships as gzip synthesized from the archive itse
       # the Central Directory. Content-Length = deflate + 18.
       assert_equal "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff".b, body[0, 10]
       assert_equal [Zlib.crc32(A_CSS), A_CSS.bytesize].pack('VV'), body[-8, 8]
-      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read
+      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
       # HEAD: the same head (Content-Length announced), no body bytes -
       # a pipelined GET's answer must begin immediately.
       s.write("HEAD /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /img.bin HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -294,7 +294,7 @@ assert('assets over h2: the same gzip bytes ride DATA frames') do
         body << payload
         break if (f & 0x1) == 0x1  # END_STREAM
       end
-      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read
+      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
       # A conditional over h2 hits the same verdict: 304, no DATA.
       etag = format('"%08x"', Zlib.crc32(A_CSS))
       inm = "if-none-match"
@@ -306,6 +306,116 @@ assert('assets over h2: the same gzip bytes ride DATA frames') do
       assert_equal 3, st
       assert_equal 0x01, f & 0x01  # END_STREAM on HEADERS: bodyless
       assert_equal 0x8b, blk.getbyte(0)  # :status 304, indexed
+    end
+  end
+end
+
+# --- the delivery model (#168): bodies past one chunk arrive whole ---
+
+# Incompressible bytes, deterministic: deflate stays >1 chunk, so the
+# gzip framing crosses chunk boundaries and the h1 transfer needs
+# several more() rounds.
+A_BIG = Random.new(42).bytes(300 * 1024) unless defined?(A_BIG)
+
+def a_big_zip
+  a_build_zip([['big.bin', A_BIG, 0], ['big.gz.bin', A_BIG, 8], ['site.css', A_CSS, 8]])
+end
+
+assert('delivery h1: a body past the chunk budget arrives whole, in order') do
+  a_server(a_big_zip) do |sock|
+    UNIXSocket.open(sock) do |s|
+      # Stored: the body is the mapping's bytes, several chunks long.
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK')
+      assert_equal A_BIG.bytesize, body.bytesize
+      assert_equal A_BIG.b, body
+      # Deflated: gzip header/deflate/trailer cross chunk boundaries.
+      s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.match?(/^Content-Encoding: gzip\r$/i)
+      assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
+      # Pipelined BEHIND a transfer: the small answer must wait its
+      # turn and still be byte-perfect.
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\nGET /site.css HTTP/1.1\r\nHost: x\r\n\r\n")
+      h1, b1 = a_read(s)
+      assert_true h1.start_with?('HTTP/1.1 200 OK')
+      assert_equal A_BIG.b, b1
+      h2, b2 = a_read(s)
+      assert_true h2.match?(%r{^Content-Type: text/css\r$}i)
+      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(b2)).read.b
+      # HEAD on a big entry: the head announces the full length, no
+      # transfer starts, the connection stays immediately usable.
+      s.write("HEAD /big.bin HTTP/1.1\r\nHost: x\r\n\r\nGET /site.css HTTP/1.1\r\nHost: x\r\n\r\n")
+      hh, = a_read(s, body: false)
+      assert_true hh.match?(/^Content-Length: #{A_BIG.bytesize}\r$/i)
+      nh, = a_read(s)
+      assert_true nh.start_with?('HTTP/1.1 200 OK')
+    end
+    # Connection: close still delivers the whole source first, then FIN.
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.match?(/^Connection: close\r$/i)
+      assert_equal A_BIG.b, body
+      assert_equal '', (s.read_nonblock(1) rescue '') if IO.select([s], nil, nil, 2)
+    end
+  end
+end
+
+assert('delivery h2: the drained sink continues a parked source; so does WINDOW_UPDATE') do
+  a_server(a_big_zip) do |sock|
+    UNIXSocket.open(sock) do |s|
+      # Big client windows: the ONLY thing that can continue past the
+      # chunk cap is the drained-sink signal (more()) - no further
+      # client frame arrives.
+      settings = [4, 1 << 24].pack('nN')  # INITIAL_WINDOW_SIZE
+      s.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b + a_h2_frame(4, 0, 0, settings))
+      t, = a_h2_next(s)
+      raise "expected server SETTINGS, got #{t}" unless t == 4
+      t, f, = a_h2_next(s)
+      raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
+      s.write(a_h2_frame(8, 0, 0, [1 << 24].pack('N')))  # connection window
+      s.write(a_h2_frame(1, 0x05, 1, a_h2_get('/big.bin')))
+      t, _f, st, = a_h2_next(s)
+      assert_equal 1, t
+      assert_equal 1, st
+      body = +''.b
+      loop do
+        t, f, _st, payload = a_h2_next(s)
+        assert_equal 0, t
+        body << payload
+        break if (f & 0x1) == 0x1
+      end
+      assert_equal A_BIG.b, body
+    end
+    UNIXSocket.open(sock) do |s|
+      # A 20-byte stream window parks the source at offset 20; the
+      # WINDOW_UPDATE pair drains the rest - the offset park behaves
+      # exactly like the byte park the window test has always pinned.
+      settings = [4, 20].pack('nN')
+      s.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b + a_h2_frame(4, 0, 0, settings))
+      t, = a_h2_next(s)
+      raise "expected server SETTINGS, got #{t}" unless t == 4
+      t, f, = a_h2_next(s)
+      raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
+      s.write(a_h2_frame(1, 0x05, 1, a_h2_get('/site.css')))
+      t, _f, st, = a_h2_next(s)
+      assert_equal 1, t
+      t, f, _st, payload = a_h2_next(s)
+      assert_equal 0, t
+      assert_equal 20, payload.bytesize
+      assert_equal 0, f & 0x1  # not END_STREAM: the rest is parked
+      s.write(a_h2_frame(8, 0, 0, [1 << 20].pack('N')))
+      s.write(a_h2_frame(8, 0, 1, [1 << 20].pack('N')))
+      body = payload.dup
+      loop do
+        t, f, _st, p2 = a_h2_next(s)
+        assert_equal 0, t
+        body << p2
+        break if (f & 0x1) == 0x1
+      end
+      assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
     end
   end
 end

@@ -133,6 +133,13 @@ struct H2Stream {
   // the entry and the finished verdict, never a value pointer.
   const AssetEntry* asset = nullptr;
   uint16_t asset_status = 0;
+  // A parked DELIVERY (#168): no byte lies in the park, an offset
+  // does. src_off walks [0, src_len) over Assets::copy_wire's virtual
+  // wire body; `pending` (bytes) remains for dynamic bodies, which
+  // have no durable backing to point into.
+  const AssetEntry* src = nullptr;
+  size_t src_off = 0;
+  size_t src_len = 0;
   bool head_only = false;
   bool headers_done = false;
   bool half_closed_remote = false;
