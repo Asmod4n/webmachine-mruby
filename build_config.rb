@@ -22,6 +22,12 @@ MRuby::Build.new do |conf|
 
   conf.gembox 'default'
   conf.gem mgem: 'mruby-io-uring'
+  # slipstreamIO decides what <liburing.h> resolves to on THIS host: it
+  # stands aside when mruby-io-uring built a real liburing, and takes
+  # over the name when it could not. That is the only reason it is
+  # here - no source in this tree names it (see src/ring.hpp, which
+  # includes <liburing.h> and nothing else).
+  conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem mgem: 'mruby-phr'
   conf.gem mgem: 'mruby-chrono'
   conf.gem File.expand_path(File.dirname(__FILE__))

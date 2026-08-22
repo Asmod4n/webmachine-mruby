@@ -25,3 +25,8 @@ builds:
       branch: master
       commit: 01d260f00f5d13e75c90ddc8c0de7e519f732dfc
       version: 0.3.0
+    https://github.com/Asmod4n/slipstreamIO.git:
+      url: https://github.com/Asmod4n/slipstreamIO.git
+      branch: main
+      commit: 3d5e8f29a2ac1aa3f1f4f8a63f5fd0ee406d50a6
+      version: 0.0.0

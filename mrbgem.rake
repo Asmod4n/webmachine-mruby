@@ -9,8 +9,15 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.bins = ['webmachine-server', 'webmachine-floor-epoll']
 
   # liburing arrives through mruby-io-uring and only through it - one
-  # place builds and pins it for every consumer in the process.
+  # place builds and pins it for every consumer in the process. And it
+  # may not arrive at all: that gem runs liburing's own build on the
+  # host and degrades when it fails (URING_AVAILABLE = false). This
+  # tree degrades WITH it rather than aborting the whole build, because
+  # mruby-slipstreamio takes the name <liburing.h> over on such a host
+  # and implements it over select(2). Nothing in src/ knows which one
+  # answered.
   spec.add_dependency 'mruby-io-uring'
+  spec.add_dependency 'mruby-slipstreamio'
   # picohttpparser arrives through mruby-phr the same way liburing does
   # through mruby-io-uring: one place builds and pins it.
   spec.add_dependency 'mruby-phr'
