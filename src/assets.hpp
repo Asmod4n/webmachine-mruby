@@ -50,9 +50,6 @@ namespace webmachine {
 struct AssetEntry {
   std::string name;  // the lookup key: the archive name, no leading slash
   const char* data = nullptr;
-  // Where `data` sits in the ZIP FILE - the splice path (#168) reads
-  // the same page-cache pages through the fd that the mapping shows.
-  size_t file_off = 0;
   size_t comp_size = 0;
   size_t uncomp_size = 0;
   uint32_t crc = 0;
@@ -164,14 +161,10 @@ class Assets {
   static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
 
   std::vector<AssetEntry>& entries() { return entries_; }
-  // The one fd, kept open past the mmap: the splice path (#168) will
-  // read from it; it is part of ring.hpp's kFdReserve arithmetic.
-  int fd() const { return fd_; }
 
  private:
   static void patch_date(AssetEntry::Resp& r, const char* date, time_t sec);
 
-  int fd_ = -1;
   const char* map_ = nullptr;
   size_t map_len_ = 0;
   std::vector<AssetEntry> entries_;  // sorted by name; find binary-searches

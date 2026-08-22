@@ -25,9 +25,9 @@
 //   - every operation is readiness + a classic syscall
 //   - file IO under select is never non-blocking (select on a regular
 //     file always says ready); it would run synchronously and block
-//     the reactor - which is why splice does not exist here at all:
-//     kSupportsSplice = false, the Ring never builds the pipe pool,
-//     every body goes iovec.
+//     the reactor, so nothing here ever touches a file. Bodies are
+//     iovecs into the asset mapping, exactly as under io_uring - the
+//     kernel copies them out on send either way (see arm_send).
 //   - recv bundles do not exist (has_bundles = false); one buffer per
 //     completion, the dense-fill contract holds trivially.
 #ifndef WEBMACHINE_IO_BACKEND_HPP
@@ -55,12 +55,40 @@ namespace webmachine {
 struct UringIo {
   using State = struct io_uring;
   using BufRing = struct io_uring_buf_ring;
-  static constexpr bool kSupportsSplice = true;
   static constexpr const char* kName = "io_uring";
 
-  // queue init + ring-fd registration + the load-bearing probe:
-  // IORING_OP_BIND/LISTEN are 6.11, and their absence is what flips
-  // main to the select backend (a NAMED reason, carried out in err).
+  // CAN this machine run this backend at all? Asked ONCE, before any
+  // server exists, and answered on its own - not read out of a failed
+  // startup. The distinction is load-bearing: "there is no io_uring
+  // here" is answered by choosing another backend, while "port 8123 is
+  // taken" or "the fd limit leaves no room" means the same thing under
+  // every backend and must be reported, never routed around. Folding
+  // the two together is how a bind clash silently demotes a server to
+  // the lazy path and calls it a startup message.
+  //
+  // THIS IS THE NARROWER HALF OF THE QUESTION. "Does io_uring exist on
+  // this machine" is already answered for the whole process by
+  // mruby-io_uring's gem_init during mrb_open(): it probes and
+  // publishes URING_AVAILABLE on Object, and that constant is the
+  // process's ONE answer - main asks it and only then comes here (a
+  // second probe of the same thing could disagree with the first, and
+  // a signal exists precisely to stop that). What is left for the
+  // backend is its own requirement: the setup chain is built on
+  // IORING_OP_BIND/LISTEN (6.11+) and has no POSIX fallback.
+  //
+  // io_uring_get_probe() does its own scratch queue_init and tears it
+  // down again, so nothing is left behind here.
+  static bool available(char* why, size_t whylen) {
+    struct io_uring_probe* probe = io_uring_get_probe();
+    const bool ok = probe != nullptr && io_uring_opcode_supported(probe, IORING_OP_BIND) &&
+                    io_uring_opcode_supported(probe, IORING_OP_LISTEN);
+    if (probe != nullptr) io_uring_free_probe(probe);
+    if (!ok) std::snprintf(why, whylen, "kernel lacks IORING_OP_BIND/LISTEN (needs 6.11+)");
+    return ok;
+  }
+
+  // The real queue. Only reached once available() has said yes, so a
+  // failure here is this machine refusing this configuration.
   static bool setup(State* st, char* err, size_t errlen) {
     struct io_uring_params p {};
     p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
@@ -71,25 +99,10 @@ struct UringIo {
     }
     // One fewer fd-table lookup per enter(2); nothing else shares this fd.
     io_uring_register_ring_fd(st);
-    struct io_uring_probe* probe = io_uring_get_probe_ring(st);
-    const bool ok = probe != nullptr && io_uring_opcode_supported(probe, IORING_OP_BIND) &&
-                    io_uring_opcode_supported(probe, IORING_OP_LISTEN);
-    if (probe != nullptr) io_uring_free_probe(probe);
-    if (!ok) {
-      io_uring_queue_exit(st);
-      std::snprintf(err, errlen, "kernel lacks IORING_OP_BIND/LISTEN (needs 6.11+)");
-      return false;
-    }
     return true;
   }
   static void queue_exit(State* st) { io_uring_queue_exit(st); }
 
-  static bool has_op_pipe(State* st) {
-    struct io_uring_probe* probe = io_uring_get_probe_ring(st);
-    const bool ok = probe != nullptr && io_uring_opcode_supported(probe, IORING_OP_PIPE);
-    if (probe != nullptr) io_uring_free_probe(probe);
-    return ok;
-  }
   static bool has_bundles(State* st) {
     return (st->features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
   }
@@ -154,7 +167,6 @@ struct UringIo {
 // ---- SelectIo: the portable interpreter -----------------------------
 
 struct SelectIo {
-  static constexpr bool kSupportsSplice = false;
   static constexpr const char* kName = "select";
 
   struct BufRing {
@@ -187,9 +199,11 @@ struct SelectIo {
     }
   };
 
+  // select(2) is in every libc there is: this backend is the answer
+  // to "no io_uring", so it can never be the thing that is missing.
+  static bool available(char*, size_t) { return true; }
   static bool setup(State*, char*, size_t) { return true; }
   static void queue_exit(State*) {}  // the State destructor closes what remains
-  static bool has_op_pipe(State*) { return false; }
   static bool has_bundles(State*) { return false; }
 
   // THE RLIMIT RULE (user decision, this backend only): the soft limit
@@ -317,7 +331,7 @@ struct SelectIo {
 
   static bool deferred(uint8_t op) {
     return op == IORING_OP_ACCEPT || op == IORING_OP_RECV || op == IORING_OP_SEND ||
-           op == IORING_OP_POLL_ADD;
+           op == IORING_OP_SENDMSG || op == IORING_OP_POLL_ADD;
   }
 
   static int resolve_fd(State* st, const struct io_uring_sqe& s) {
@@ -428,7 +442,7 @@ struct SelectIo {
     for (const struct io_uring_sqe& w : st->waiting) {
       const int fd = resolve_fd(st, w);
       if (fd < 0 || fd >= FD_SETSIZE) continue;
-      if (w.opcode == IORING_OP_SEND) FD_SET(fd, &wset);
+      if (w.opcode == IORING_OP_SEND || w.opcode == IORING_OP_SENDMSG) FD_SET(fd, &wset);
       else FD_SET(fd, &rset);
       if (fd + 1 > nfds) nfds = fd + 1;
     }
@@ -445,6 +459,16 @@ struct SelectIo {
           const void* buf = reinterpret_cast<const void*>(static_cast<uintptr_t>(w.addr));
           const ssize_t r =
               ::send(fd, buf, w.len, static_cast<int>(w.msg_flags) | MSG_NOSIGNAL);
+          push_cqe(st, w.user_data, r >= 0 ? static_cast<int>(r) : -errno, 0);
+          remove = true;
+        } else if (w.opcode == IORING_OP_SENDMSG && FD_ISSET(fd, &wset)) {
+          // The delivery plan (#168): head plus pointers into the asset
+          // mapping, handed over as one msghdr. prep_sendmsg puts the
+          // msghdr POINTER in addr (len is the count, always 1), and
+          // the Ring keeps that msghdr in the connection, so it is
+          // still alive when this deferred op finally runs.
+          struct msghdr* m = reinterpret_cast<struct msghdr*>(static_cast<uintptr_t>(w.addr));
+          const ssize_t r = ::sendmsg(fd, m, static_cast<int>(w.msg_flags) | MSG_NOSIGNAL);
           push_cqe(st, w.user_data, r >= 0 ? static_cast<int>(r) : -errno, 0);
           remove = true;
         } else if (w.opcode == IORING_OP_ACCEPT && FD_ISSET(fd, &rset)) {

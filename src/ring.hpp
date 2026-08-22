@@ -16,19 +16,18 @@
 //        false = close this connection once the sink has drained
 //   bool pending(const Conn&) const;
 //        does this connection still owe bytes the App has not handed
-//        over? Asked before each send: true makes it carry MSG_MORE
-//        (and a splice round SPLICE_F_MORE), so a small head does not
-//        go out alone and wait out the peer's delayed ACK.
-//   struct Splice { size_t off; size_t len; };       a splice request
-//   bool more(Conn&, std::string& sink, Splice&, bool splice_ok);
+//        over? Asked before each send: true makes it carry MSG_MORE,
+//        so a small head does not go out alone and wait out the peer's
+//        delayed ACK.
+//   struct Plan { struct iovec iov[4]; unsigned niov; size_t iov_len; };
+//   bool more(Conn&, std::string& sink, Plan&);
 //        the delivery continuation (#168): called when the sink has
-//        fully drained; the App may append the next chunk of whatever
-//        it still owes - or, when splice_ok says a pipe is free and
-//        the socket can take it, fill the Splice request instead
-//        (bytes off the configured source file, moved file->pipe->
-//        socket without a copy). Never both in one round. Same close
-//        contract as feed. An App without sources appends nothing and
-//        returns true.
+//        fully drained. The App either appends to the sink, or fills
+//        the Plan with POINTERS to bytes that already exist somewhere
+//        (a mapping, a table built at add_route) - those leave with
+//        the sink in ONE sendmsg, without a copy in this process.
+//        Same close contract as feed. An App without sources appends
+//        nothing and returns true.
 //   void on_tick();                                   once per reactor wake
 //
 // EVERYTHING goes through the ring. The listener is born as a direct
@@ -86,8 +85,7 @@ namespace webmachine {
 // ok, 4096 EMFILE), which is why the raise must come first.
 inline constexpr uint32_t kMaxListeners = 16;
 // Classic fds the process keeps NEXT TO the fixed table: stdio, the
-// ring fd, the stop signalfd, the asset ZIP (#170), the pipe pool's
-// ends (#168 re-derives this when the pool exists), and foreign
+// ring fd, the stop signalfd, the asset ZIP (#170), and foreign
 // in-process code (mruby-c-ares sockets). Connections consume NO fd
 // numbers here - multishot_accept_direct lands them in the fixed table
 // only - so this is headroom, not arithmetic necessity; under a shim
@@ -102,8 +100,8 @@ inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 // The one arithmetic with two consumers: the server sizes itself with
 // it here; tools/webmachine-tune.sh (#167) only PRINTS it. extra_slots
 // = fixed-table slots something other than connections and listeners
-// claims (the splice source + pipe pool, #168). 0 = the limit leaves
-// no room, a named refusal for the caller to spell out.
+// claims; nothing does today. 0 = the limit leaves no room, a named
+// refusal for the caller to spell out.
 inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0) {
   const uint64_t taken = static_cast<uint64_t>(kFdReserve) + kMaxListeners + extra_slots;
   if (nofile_limit <= taken) return 0;
@@ -114,50 +112,17 @@ inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0
   return static_cast<uint32_t>(n);
 }
 
-// NEVER PIN THIS PROCESS, and the reason is structural rather than a
-// number: the moment a server touches a FILE, io_uring spawns an io-wq
-// pool to carry that work (splice has no non-blocking fast path), and
-// io-wq workers INHERIT the issuing thread's affinity. Pinning
-// therefore locks the pool that exists to move bytes on OTHER cores
-// onto the one core the loop already occupies. A server that never
-// touches a file could be pinned - and would not be a web server.
+// NEVER PIN THIS PROCESS. It was measured twice and lost twice - the
+// older tree deleted every taskset it had ("handing the scheduler one
+// core was slower than letting it choose"; a client mask widened
+// 2 -> 15 -> 30 cpus raised throughput monotonically in the MEDIAN).
+// And whenever io_uring hands work to an io-wq worker, that worker
+// INHERITS the issuing thread's affinity: pinning locks the pool that
+// exists to use OTHER cores onto the core the loop already occupies.
+// Measured here at its worst, back when file bodies went through
+// splice: 0.07x under `taskset -c 0`, the system at 49.3% sy against
+// 10.3% us.
 //
-// Measured here on 4 cpus, both halves of it:
-//   - the pool is 10 workers under load, and `taskset -c 0` put all
-//     ten plus the loop thread on one core: a 32 KiB asset collapsed
-//     to 0.07x its unspliced twin (2,903 vs 42,688 req/s), with the
-//     system at 49.3% sy against 10.3% us.
-//   - capping the pool to the core count was tried and REMOVED again:
-//     two runs of the identical configuration disagreed by 20%
-//     (2.79x vs 2.32x on a 256 KiB asset), so the container cannot
-//     resolve whether a cap helps, and an unmeasured knob does not
-//     get to exist. The kernel grows the pool on demand; it is left
-//     to do that.
-//
-// The pipe pool's derived size (#168): pipe-user-pages-soft divided by
-// the pages one full-size pipe holds (16 x 4K = 64K = kDeliverChunk's
-// worth). The soft limit is per USER - root (CAP_SYS_RESOURCE) is not
-// held to it, but reads the same number, so developing as root and
-// running as a service user derive the SAME pool instead of silently
-// degrading (the classic trap, measured: unprivileged gets one page
-// per pipe past the budget). A measurement value, not a design value.
-inline uint32_t derive_pipe_pool() {
-  uint64_t pages = 16384;  // the kernel default, used only if /proc is unreadable
-  if (std::FILE* f = std::fopen("/proc/sys/fs/pipe-user-pages-soft", "re")) {
-    unsigned long long v = 0;
-    if (std::fscanf(f, "%llu", &v) == 1 && v > 0) pages = v;
-    std::fclose(f);
-  }
-  return static_cast<uint32_t>(pages / 16);
-}
-// What every pipe in the pool is ASKED to hold. fs.pipe-max-size caps
-// it (1 MiB on a stock kernel, and an unprivileged process is simply
-// given less rather than refused), so the pool reads back what it
-// actually got and uses the smallest. A megabyte matters because it
-// IS the round: a 1 MiB body then moves in one splice instead of the
-// sixteen a 64 KiB default would need.
-inline constexpr uint32_t kPipeWanted = 1u << 20;
-
 // Pool geometry measured in the old tree as not moving the profile
 // (2048 x 4096 vs ladders: null result), so the simple shape stays.
 inline constexpr uint32_t kBufCount = 2048;
@@ -181,14 +146,6 @@ struct RingConfig {
   // else - a handler flag would race the wait (checked, then the signal
   // lands, then the wait blocks forever with the flag set).
   int stop_fd = -1;
-  // The splice source (#168): ONE file (the asset ZIP) whose byte
-  // ranges the App may ask to move file->pipe->socket without a copy.
-  // -1 = no source, the splice machinery does not exist.
-  int splice_src_fd = -1;
-  // Pipe pool size: -1 derives it (derive_pipe_pool), 0 disables
-  // splice entirely (the A/B baseline the verdict on splice needs),
-  // >0 is the operator's number.
-  long pipes = -1;
 };
 
 namespace detail {
@@ -197,7 +154,7 @@ namespace detail {
 // against CQEs of the connection that owned it before.
 enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
-  kSpliceIn = 8, kSpliceOut = 9, kSndbuf = 10
+  kSetupTcp = 8
 };
 
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
@@ -263,44 +220,37 @@ class Ring {
   // known-broken kernel (container 6.18.5-fc) violates the dense-fill
   // contract and needs WM_BUNDLE=0. It earns its place by answering a
   // correctness question no build-time check can.
+  // EVERY failure here is this machine refusing this configuration - a
+  // taken port, an fd limit that leaves no room - and means the same
+  // under either backend. Whether the backend EXISTS was settled
+  // before this was called (Io::available, asked by main), so nothing
+  // in here is a reason to go try another one: a bind clash that
+  // silently demoted the server to the select shim would be a
+  // performance cliff wearing a startup message.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
-    // The backend's own setup and its load-bearing probes (#171): a
-    // named failure here is what makes main flip to the select
-    // backend and scream - never a silent fallback inside the Ring.
     if (!Io::setup(&ring_, err, errlen)) return false;
     ring_up_ = true;
     int rc = 0;
 
 
-    // The splice pool (#168) claims its fixed-table slots BEFORE the
-    // connection count falls out of the limit: one source slot plus
-    // two per pipe. pipes=0 keeps the pure-iovec baseline - the A/B
-    // the verdict on splice is measured against.
-    if (Io::kSupportsSplice && cfg.splice_src_fd >= 0 && cfg.pipes != 0) {
-      npipes_ = cfg.pipes < 0 ? derive_pipe_pool() : static_cast<uint32_t>(cfg.pipes);
-    }
-    const uint32_t extra = npipes_ != 0 ? 1 + 2 * npipes_ : 0;
-
     // The limit is set ONCE, here, by the backend - only it knows what
     // it can index - and never touched again. The capacity falls out of
     // whatever finally stands.
     const uint64_t nofile = Io::raise_nofile();
-    max_conns_ = derive_max_conns(nofile, extra);
+    max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
                     "RLIMIT_NOFILE %llu leaves no room for connections "
-                    "(reserve %u + listeners %u + splice slots %u)",
-                    static_cast<unsigned long long>(nofile), kFdReserve, kMaxListeners, extra);
+                    "(reserve %u + listeners %u)",
+                    static_cast<unsigned long long>(nofile), kFdReserve, kMaxListeners);
       return false;
     }
     listener_base_ = max_conns_;
-    src_slot_ = max_conns_ + kMaxListeners;
-    pipe_base_ = src_slot_ + 1;
 
-    rc = Io::register_files_sparse(&ring_, max_conns_ + kMaxListeners + extra);
+    rc = Io::register_files_sparse(&ring_, max_conns_ + kMaxListeners);
     if (rc != 0) {
       std::snprintf(err, errlen, "register_files_sparse(%u): %s",
-                    max_conns_ + kMaxListeners + extra, std::strerror(-rc));
+                    max_conns_ + kMaxListeners, std::strerror(-rc));
       return false;
     }
     // The direct-descriptor allocator's cursor continues past the last
@@ -313,8 +263,6 @@ class Ring {
       std::snprintf(err, errlen, "register_file_alloc_range: %s", std::strerror(-rc));
       return false;
     }
-
-    if (npipes_ != 0 && !setup_splice_pool(cfg.splice_src_fd, err, errlen)) return false;
 
     const size_t pool_bytes = static_cast<size_t>(kBufCount) * kBufSize;  // static_assert-bounded
     void* mem =
@@ -390,61 +338,6 @@ class Ring {
   uint32_t max_conns() const { return max_conns_; }
 
  private:
-  // The splice pool (#168): the one source file and npipes_ pipes, all
-  // as fixed-table entries - the whole delivery chain (file -> pipe ->
-  // socket) runs without an fd-table lookup. Direct pipes where the
-  // kernel has IORING_OP_PIPE (6.16); classic pipe2 + files_update
-  // otherwise - a handful of setup syscalls, and the classic fds are
-  // closed after registration, so the process fd table stays small on
-  // both paths.
-  bool setup_splice_pool(int src_fd, char* err, size_t errlen) {
-    int rc = Io::register_files_update(&ring_, src_slot_, &src_fd, 1);
-    if (rc < 0) {
-      std::snprintf(err, errlen, "splice source register: %s", std::strerror(-rc));
-      return false;
-    }
-    // BIG PIPES, and that is why this does NOT use IORING_OP_PIPE: the
-    // capacity is an fcntl (F_SETPIPE_SZ) and a direct descriptor has
-    // no fd to spend it on. So the pool is built the classic way -
-    // pipe2, resize, register, close the classic ends - which is a
-    // handful of syscalls ONCE at init and buys the thing that matters
-    // per request: a pipe that holds a whole megabyte instead of 64 KiB
-    // moves a 1 MiB body in ONE round instead of sixteen.
-    //
-    // Asked for, then READ BACK: fs.pipe-max-size caps the request and
-    // an unprivileged process is simply given less, so the capacity
-    // this pool actually has is measured, never assumed - the chunk
-    // arithmetic downstream is only correct against the real number.
-    free_pipes_.reserve(npipes_);
-    for (uint32_t i = 0; i < npipes_; i++) {
-      const uint32_t slot = pipe_base_ + 2 * i;  // read end; write end at +1
-      int fds[2];
-      if (::pipe2(fds, O_CLOEXEC) != 0) {
-        std::snprintf(err, errlen, "pipe2 %u of %u: %s", i, npipes_, std::strerror(errno));
-        return false;
-      }
-      // Best effort: a refusal leaves the default, which the read-back
-      // below then reports honestly.
-      (void)::fcntl(fds[1], F_SETPIPE_SZ, static_cast<int>(kPipeWanted));
-      const int got = ::fcntl(fds[1], F_GETPIPE_SZ);
-      const uint32_t cap = got > 0 ? static_cast<uint32_t>(got) : 65536;
-      // The pool is only as good as its smallest pipe: one short pipe
-      // would silently turn every chain that lands on it into extra
-      // rounds. Whatever the weakest one holds is what a round is.
-      if (i == 0 || cap < pipe_cap_) pipe_cap_ = cap;
-      rc = Io::register_files_update(&ring_, slot, fds, 2);
-      ::close(fds[0]);
-      ::close(fds[1]);
-      if (rc < 0) {
-        std::snprintf(err, errlen, "pipe register %u: %s", i, std::strerror(-rc));
-        return false;
-      }
-      free_pipes_.push_back(i);
-    }
-    have_src_ = true;
-    return true;
-  }
-
   // One listener, made entirely of ring ops: a stale unix path goes
   // first and UNLINKED from the chain (a linked op that fails - ENOENT
   // is normal - would cancel everything behind it), then socket ->
@@ -556,8 +449,8 @@ class Ring {
     }
     // Only a bind that happened leaves a path to remove again.
     if (is_unix) unix_paths_.emplace_back(spec.unix_path);
-    // Splice needs a socket with splice_write - TCP has it, AF_UNIX
-    // does not; connections remember their listener for exactly this.
+    // TCP-only settings (TCP_NODELAY, SO_SNDBUF) are asked per accept;
+    // a connection remembers which listener took it.
     unix_listener_[li] = is_unix;
     return true;
   }
@@ -567,22 +460,8 @@ class Ring {
     bool live = false;
     bool sending = false;          // `out` is borrowed by the kernel
     bool close_after_send = false;
-    // A file->pipe->socket chain (#168) is in flight; like sending, it
-    // defers a close until its completions land.
-    bool splicing = false;
-    uint8_t li = 0;    // which listener accepted (unix sockets cannot splice)
+    uint8_t li = 0;    // which listener accepted - the App's key
     uint16_t gen = 0;  // stale-CQE guard: slot reuse bumps it, old ops miss
-    uint32_t pipe = 0;        // the in-flight chain's pool index
-    size_t splice_off = 0;    // next source-file offset to pull
-    size_t splice_left = 0;   // bytes not yet in the pipe
-    size_t splice_owed = 0;   // bytes in the pipe not yet at the socket
-    // SO_SNDBUF, asked once at accept (#168): a linked chain that stays
-    // within it cannot make the socket run out of room, so a short
-    // splice-out means the peer is gone rather than that we asked for
-    // too much. 0 until the answer lands, and for AF_UNIX, which never
-    // splices. TCP auto-tuning only grows this, so the value is a
-    // floor that stays true.
-    int sndbuf = 0;
     size_t sent = 0;   // bytes of `out` the kernel has taken so far
 
     // Two buffers, not one: `out` is BORROWED by an in-flight send (its
@@ -666,6 +545,28 @@ class Ring {
       // time because a partial send may have consumed whole segments
       // and part of the next - the kernel takes what the socket has
       // room for and says how much.
+      //
+      // MSG_SPLICE_PAGES WAS TRIED HERE AND DOES NOTHING (measured,
+      // 6.18, io_uring): it is an MSG_INTERNAL_SENDMSG_FLAGS bit meant
+      // for in-kernel callers whose iterators are already bvec/kvec; a
+      // userspace iovec does not qualify. 2 GiB in 256 KiB chunks over
+      // loopback, flag on against flag off, three rounds each: 2001 /
+      // 2025 / 2147 MB/s against 2158 / 2064 / 2080, with system time
+      // equal to three decimals - no saved copy, in either direction.
+      // A second probe confirms it from the other side: clobbering the
+      // source buffer immediately after io_uring_submit still puts the
+      // ORIGINAL bytes on the wire, i.e. the copy already happened.
+      // Which is also the standing rule for every send here - anything
+      // that fits in the sndbuf (3.76 MiB on loopback TCP, 208 KiB on
+      // AF_UNIX) is the kernel's the moment submit returns.
+      //
+      // That leaves ONE kernel copy per body and nothing to remove.
+      // The alternatives both cost more than they save and are closed:
+      // splice needs a pipe, a second operation and an io-wq hop
+      // (measured 0.63x-0.79x at 256 KiB / 1 MiB); SEND_ZC buys the
+      // copy back with a ubuf_info and a SECOND completion per send,
+      // and caps in-flight bytes at the RLIMIT_MEMLOCK account (~8 MB)
+      // - a great deal of bookkeeping around a small window.
       unsigned n = 0;
       size_t skip = c.sent;
       for (unsigned i = 0; i < c.niov; i++) {
@@ -691,10 +592,10 @@ class Ring {
   void begin_close(uint32_t idx) {
     Conn& c = conns_[idx];
     if (!c.live) return;
-    // An in-flight send borrows c.out, an in-flight splice borrows the
-    // pipe; the slot may not be reset (and the descriptor not closed)
-    // until their CQEs land - on_send/on_splice_out finish the close.
-    if (c.sending || c.splicing) {
+    // An in-flight send borrows c.out and the plan's pointers; the slot
+    // may not be reset (and the descriptor not closed) until its CQE
+    // lands - on_send finishes the close.
+    if (c.sending) {
       c.close_after_send = true;
       return;
     }
@@ -724,8 +625,6 @@ class Ring {
     c.live = true;
     c.sending = false;
     c.close_after_send = false;
-    c.splicing = false;
-    c.splice_owed = 0;
     c.li = static_cast<uint8_t>(li);
     c.sent = 0;
     c.out.clear();  // capacity survives: a warm slot allocates nothing
@@ -734,10 +633,10 @@ class Ring {
     arm_recv(idx);
     // A server that writes complete responses has nothing for Nagle to
     // coalesce - only stalls to offer. Found the hard way (#168): a
-    // splice chain's page-alignment tail (65499+37 of a 64K chunk)
-    // left a small segment waiting ~43ms for the peer's delayed ACK,
-    // once per response. Best effort through the ring; the CQE is
-    // ignored (kSetup has no handler arm, deliberately).
+    // response whose tail went out as its own small segment waited
+    // ~43ms for the peer's delayed ACK, once per response. Best effort
+    // through the ring; the CQE is ignored (kSetup has no handler arm,
+    // deliberately).
     if (!unix_listener_[li]) {
       static const int kOne = 1;
       struct io_uring_sqe* s = sqe();
@@ -745,32 +644,7 @@ class Ring {
                              IPPROTO_TCP, TCP_NODELAY, const_cast<int*>(&kOne), sizeof(kOne));
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, idx));
-
-      // The send buffer's size, asked ONCE per connection, because it
-      // is what makes a linked splice chain safe: while a chain stays
-      // within it the socket cannot run out of room, so no splice-out
-      // can come back short - and a short one therefore means the peer
-      // is gone, not that we asked for too much. TCP auto-tuning only
-      // ever grows this, so the value read here is a floor that stays
-      // valid. (AF_UNIX never splices, so it never asks.) The answer
-      // lands in c.sndbuf via on_sndbuf; until it does, sndbuf is 0
-      // and the chain falls back to a single pair.
-      s = sqe();
-      io_uring_prep_cmd_sock(s, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(idx), SOL_SOCKET,
-                             SO_SNDBUF, &c.sndbuf, sizeof(c.sndbuf));
-      s->flags |= IOSQE_FIXED_FILE;
-      io_uring_sqe_set_data64(s, detail::tag(detail::kSndbuf, c.gen, idx));
     }
-  }
-
-  // The kernel wrote the value into c.sndbuf itself; res carries the
-  // length it wrote. A failure just leaves 0 - one pair per chain,
-  // which is what this did before the question was asked at all.
-  void on_sndbuf(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
-    Conn& c = conns_[idx];
-    if (c.gen != gen) return;
-    if (cqe->res < 0 || c.sndbuf < 0) c.sndbuf = 0;
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
@@ -891,11 +765,9 @@ class Ring {
   // The delivery continuation (#168): a fully drained sink is the one
   // signal every protocol produces. Backlog first - bytes queued in
   // `out` while a chain flew belong to EARLIER wire order than any new
-  // round. Then the App speaks: bytes into `out`, or a splice request
-  // when a pipe is free and the socket can splice at all (AF_UNIX has
-  // no splice_write). "Auf eine Pipe wartet niemand": no pipe free
-  // means the App produces bytes - the worst case is exactly the iovec
-  // baseline. Runs BEFORE a pending close is honored: a closing
+  // round. Then the App speaks: bytes into `out`, or a PLAN - pointers
+  // to bytes that already exist, which leave with the sink in one
+  // sendmsg. Runs BEFORE a pending close is honored: a closing
   // response still delivers its source to the end.
   void continue_conn(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -903,13 +775,8 @@ class Ring {
       arm_send(idx);
       return;
     }
-    typename App::Splice req{};
-    const bool splice_ok = have_src_ && !free_pipes_.empty() && !unix_listener_[c.li];
-    if (!app_.more(c.app, c.out, req, splice_ok)) c.close_after_send = true;
-    if (req.len != 0) {
-      start_splice(idx, req.off, req.len);
-      return;
-    }
+    typename App::Plan req{};
+    if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     if (req.niov != 0) {
       // Take the plan: iov[0] is whatever the round also put in the
       // sink (usually nothing here - the head left with an earlier
@@ -939,120 +806,6 @@ class Ring {
       begin_close(idx);
     }
   }
-
-  void start_splice(uint32_t idx, size_t off, size_t len) {
-    Conn& c = conns_[idx];
-    const uint32_t p = free_pipes_.back();  // splice_ok guaranteed one
-    free_pipes_.pop_back();
-    c.pipe = p;
-    c.splicing = true;
-    c.splice_off = off;
-    c.splice_left = len;
-    c.splice_owed = 0;
-    arm_splice_in(idx);
-  }
-
-  // The chain is a LOOP, not a linked pair: splice moves page-cache
-  // pages by reference, so an unaligned file offset fills the first
-  // pipe slot only up to its page boundary and the transfer comes back
-  // SHORT (measured: off 37 -> 65499 of 65536). A short completion
-  // severs an IOSQE_IO_LINK, so the two halves arm each other from
-  // their CQEs instead, with real bookkeeping: in fills the pipe, out
-  // drains it, until the requested range has fully reached the socket.
-  void arm_splice_in(uint32_t idx) {
-    Conn& c = conns_[idx];
-    struct io_uring_sqe* s = sqe();
-    io_uring_prep_splice(s, static_cast<int>(src_slot_),
-                         static_cast<int64_t>(c.splice_off),
-                         static_cast<int>(pipe_base_ + 2 * c.pipe + 1), -1,
-                         static_cast<unsigned>(c.splice_left), SPLICE_F_FD_IN_FIXED);
-    s->flags |= IOSQE_FIXED_FILE;
-    io_uring_sqe_set_data64(s, detail::tag(detail::kSpliceIn, c.gen, idx));
-  }
-
-  // SPLICE_F_MORE is MSG_MORE for a splice, and it has to answer the
-  // WHOLE question: more of this transfer (splice_left), or another
-  // response queued behind it (the App's). Asking only the first is
-  // the bug the previous tree found - the LAST round of a body is
-  // exactly the one whose small trailing segment waits out the ACK.
-  void arm_splice_out(uint32_t idx) {
-    Conn& c = conns_[idx];
-    struct io_uring_sqe* s = sqe();
-    unsigned flags = SPLICE_F_FD_IN_FIXED;
-    if (c.splice_left != 0 || app_.pending(c.app)) flags |= SPLICE_F_MORE;
-    io_uring_prep_splice(s, static_cast<int>(pipe_base_ + 2 * c.pipe), -1,
-                         static_cast<int>(idx), -1,
-                         static_cast<unsigned>(c.splice_owed), flags);
-    s->flags |= IOSQE_FIXED_FILE;
-    io_uring_sqe_set_data64(s, detail::tag(detail::kSpliceOut, c.gen, idx));
-  }
-
-  void on_splice_in(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
-    Conn& c = conns_[idx];
-    if (WM_UNLIKELY(c.gen != gen)) return;  // closes defer while splicing; belt anyway
-    if (WM_UNLIKELY(cqe->res <= 0)) {
-      // Nothing entered the pipe this round, so it is still clean.
-      c.splicing = false;
-      free_pipes_.push_back(c.pipe);
-      begin_close(idx);
-      return;
-    }
-    const size_t got = static_cast<size_t>(cqe->res);
-    c.splice_off += got;
-    c.splice_left -= got < c.splice_left ? got : c.splice_left;
-    c.splice_owed = got;
-    arm_splice_out(idx);
-  }
-
-  void on_splice_out(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
-    Conn& c = conns_[idx];
-    if (WM_UNLIKELY(c.gen != gen)) return;
-    if (WM_UNLIKELY(cqe->res <= 0)) {
-      // The socket's failure. A clean pipe returns to the pool, a
-      // dirty one (bytes stuck inside) retires - the pool shrinks
-      // toward the iovec baseline instead of ever serving someone
-      // else's bytes.
-      c.splicing = false;
-      if (c.splice_owed == 0) free_pipes_.push_back(c.pipe);
-      else drop_pipe(c.pipe);
-      c.splice_owed = 0;
-      begin_close(idx);
-      return;
-    }
-    const size_t took = static_cast<size_t>(cqe->res);
-    if (WM_UNLIKELY(took > c.splice_owed)) {  // kernel moved more than went in
-      c.splicing = false;
-      drop_pipe(c.pipe);
-      begin_close(idx);
-      return;
-    }
-    c.splice_owed -= took;
-    if (c.splice_owed != 0) {
-      arm_splice_out(idx);  // the socket took a partial cut
-      return;
-    }
-    if (c.splice_left != 0) {
-      arm_splice_in(idx);  // pipe drained, range not done: next fill
-      return;
-    }
-    c.splicing = false;
-    free_pipes_.push_back(c.pipe);
-    continue_conn(idx);
-  }
-
-  // A pipe with bytes stuck in it must never serve the next transfer.
-  void drop_pipe(uint32_t p) {
-    if (Io::sq_space_left(&ring_) < 2) Io::submit(&ring_);
-    struct io_uring_sqe* s = sqe();
-    io_uring_prep_close_direct(s, pipe_base_ + 2 * p);
-    io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, pipe_base_ + 2 * p));
-    s = sqe();
-    io_uring_prep_close_direct(s, pipe_base_ + 2 * p + 1);
-    io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, pipe_base_ + 2 * p + 1));
-  }
-
   void handle(struct io_uring_cqe* cqe) {
     const uint64_t ud = io_uring_cqe_get_data64(cqe);
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
@@ -1062,8 +815,6 @@ class Ring {
       case detail::kAccept: on_accept(idx, cqe); break;
       case detail::kRecv: on_recv(idx, gen, cqe); break;
       case detail::kSend: on_send(idx, gen, cqe); break;
-      case detail::kSpliceIn: on_splice_in(idx, gen, cqe); break;
-      case detail::kSpliceOut: on_splice_out(idx, gen, cqe); break;
       case detail::kClose:
         if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
           // The linked shutdown failed (peer reset first); the close is
@@ -1109,21 +860,11 @@ class Ring {
   bool stop_ = false;
   bool bundles_ = false;
   // Derived at init from the raised RLIMIT_NOFILE (#169); 0 only
-  // before init. listener_base_ = max_conns_: listeners sit behind
-  // the connection slots; behind THOSE sit the splice source and the
-  // pipe pool (#168): src_slot_, then pipe i's read end at
-  // pipe_base_ + 2i and write end right after it.
+  // before init. listener_base_ = max_conns_: the listeners sit behind
+  // the connection slots.
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
-  uint32_t src_slot_ = 0;
-  uint32_t pipe_base_ = 0;
-  uint32_t npipes_ = 0;
-  // What the pool's SMALLEST pipe actually holds (F_GETPIPE_SZ, read
-  // back rather than assumed) - one splice round can never exceed it.
-  uint32_t pipe_cap_ = 65536;
-  bool have_src_ = false;
   bool unix_listener_[kMaxListeners] = {};
-  std::vector<uint32_t> free_pipes_;  // "auf eine Pipe wartet niemand"
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
   char* pool_ = nullptr;   // kBufCount * kBufSize, mmap'd once

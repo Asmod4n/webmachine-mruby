@@ -839,11 +839,10 @@ bool Http1::pending(const Conn& st) const {
 
 // The continuation both protocols share (#168): the Ring calls this
 // when the connection's sink has fully drained. h1 pulls the active
-// transfer's next chunk - a splice request where the round is
-// file-backed and a pipe is free, bytes otherwise - and resumes
-// pipelined bytes once the source is exhausted; h2 re-runs the
-// parked-stream flush. feed's contract.
-bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
+// transfer's next slice as POINTERS and resumes pipelined bytes once
+// the source is exhausted; h2 re-runs the parked-stream flush. feed's
+// contract.
+bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink);
     return true;
@@ -851,61 +850,24 @@ bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
   if (st.xfer != nullptr) {
     const AssetEntry& e = *st.xfer;
     const size_t lim = st.xfer_end;  // full body or a 206 window alike
-    // The file-backed span within the wire body: everything for a
-    // stored entry, the deflate middle for a method-8 one (the gzip
-    // header and trailer live in memory and go as bytes). Clipped to
-    // the window - a range's octets are wire-body octets.
-    const size_t span_lo = e.deflated ? sizeof(e.gz_hdr) : 0;
-    const size_t raw_hi = span_lo + e.comp_size;
-    const size_t span_hi = raw_hi < lim ? raw_hi : lim;
-    if (splice_ok && st.xfer_off >= span_lo && st.xfer_off < span_hi &&
-        span_hi - st.xfer_off >= kSpliceMin) {
-      size_t take = span_hi - st.xfer_off;
-      if (take > kDeliverChunk) take = kDeliverChunk;
-      sp.off = e.file_off + (st.xfer_off - span_lo);
-      // Splice moves page-cache pages by reference: a misaligned start
-      // wastes a whole pipe slot on its partial first page and the
-      // chunk needs a second fill for its tail (measured: 65499+37).
-      // Cutting the FIRST round at the next page edge aligns every
-      // round after it - one fill per chunk instead of two.
-      const size_t misalign = sp.off & 4095u;
-      if (misalign != 0 && take > kDeliverChunk - misalign) {
-        take = kDeliverChunk - misalign;
-      }
-      sp.len = take;
-      // Advanced NOW: a failed chain kills the connection (never the
-      // process), so there is no retry to rewind for.
-      st.xfer_off += take;
-      if (st.xfer_off == lim) {
-        st.xfer = nullptr;
-        st.xfer_off = 0;
-        st.xfer_end = 0;
-      }
-      return true;
-    }
     size_t take = lim - st.xfer_off;
     if (take > kDeliverChunk) take = kDeliverChunk;
-    // With a pipe at hand, a pointer round stops at the span's edge so
-    // the NEXT round can splice from it.
-    if (splice_ok && st.xfer_off < span_lo) take = span_lo - st.xfer_off;
     // POINTERS, not a copy: the deflate stream stays where it lies in
-    // the mapping and the kernel reads it there. What used to be a
-    // memcpy into the sink and a second copy out of it is now one copy,
-    // the kernel's - which is also the pathological arm splice was
-    // being compared against.
-    sp.niov = Assets::wire_iov(e, st.xfer_off, take, sp.iov);
-    sp.iov_len = take;
+    // the mapping and the kernel reads it there on send.
+    plan.niov = Assets::wire_iov(e, st.xfer_off, take, plan.iov);
+    plan.iov_len = take;
     st.xfer_off += take;
     if (st.xfer_off == lim) {
       st.xfer = nullptr;
       st.xfer_off = 0;
       st.xfer_end = 0;
     }
-    // RETURN, exactly as the splice branch does: a plan is unsent
-    // bytes, and the carry below would put the NEXT response in the
-    // sink ahead of them - the transfer owns the wire order until its
-    // last segment has left. The round after this one drains the
-    // carry, by which time these pointers are spent.
+    // RETURN here: a plan is unsent bytes, and the carry below would
+    // put the NEXT response in the sink ahead of them - the transfer
+    // owns the wire order until its last segment has left. The round
+    // after this one drains the carry, by which time these pointers
+    // are spent. (Found as a hang: the plan branch first fell through
+    // to feed() and the next response overtook the body.)
     return true;
   }
   if (st.carry.empty()) return true;

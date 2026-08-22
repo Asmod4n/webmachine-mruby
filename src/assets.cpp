@@ -1,7 +1,7 @@
 // The ZIP side of the asset tier (#170): Central Directory in, entry
 // table + prebuilt responses out. Runs ONCE at setup - classic
 // open/mmap is fine here (ring.hpp exempts mmap by name: memory, not
-// IO; the fd stays open for the splice path, #168).
+// IO). The fd does not outlive setup: the mapping is what serves.
 #include "assets.hpp"
 
 #include <fcntl.h>
@@ -107,22 +107,27 @@ void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::
 
 Assets::~Assets() {
   if (map_ != nullptr) ::munmap(const_cast<char*>(map_), map_len_);
-  if (fd_ >= 0) ::close(fd_);
 }
 
 bool Assets::open(const char* zip_path, char* err, size_t errlen) {
-  fd_ = ::open(zip_path, O_RDONLY | O_CLOEXEC);
-  if (fd_ < 0) {
+  // The fd is a SETUP tool, closed before this function returns: the
+  // mapping keeps the pages alive by itself, and nothing past setup
+  // ever reads the archive through a descriptor. One fd fewer against
+  // ring.hpp's kFdReserve, and one fewer thing to own.
+  const int fd = ::open(zip_path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
     std::snprintf(err, errlen, "%s: %s", zip_path, std::strerror(errno));
     return false;
   }
   struct stat st;
-  if (::fstat(fd_, &st) != 0 || st.st_size < 22) {
+  if (::fstat(fd, &st) != 0 || st.st_size < 22) {
+    ::close(fd);
     std::snprintf(err, errlen, "%s: not a ZIP (too small for an end record)", zip_path);
     return false;
   }
   map_len_ = static_cast<size_t>(st.st_size);
-  void* m = ::mmap(nullptr, map_len_, PROT_READ, MAP_PRIVATE, fd_, 0);
+  void* m = ::mmap(nullptr, map_len_, PROT_READ, MAP_PRIVATE, fd, 0);
+  ::close(fd);
   if (m == MAP_FAILED) {
     map_len_ = 0;
     std::snprintf(err, errlen, "mmap %s: %s", zip_path, std::strerror(errno));
@@ -228,7 +233,6 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
     AssetEntry e;
     e.name.assign(nm, nlen);
     e.data = map_ + data_off;
-    e.file_off = data_off;
     e.comp_size = comp;
     e.uncomp_size = uncomp;
     e.crc = crc;

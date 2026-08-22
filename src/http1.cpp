@@ -449,9 +449,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
               // copied and leaves with its head in one append - the
               // degenerate case of the model, and the fast path. Above
               // it the entry becomes the connection's source and every
-              // body round goes through more(), where the splice
-              // choice lives; only the head leaves here. The budget is
-              // a measured line, not the round size (kWarmBudgetDefault).
+              // body round goes through more(), which hands the Ring
+              // pointers instead of bytes; only the head leaves here.
               const size_t wlen = Assets::wire_len(*ae);
               if (wlen <= warm_budget_) {
                 Assets::copy_wire(*ae, 0, wlen, sink);

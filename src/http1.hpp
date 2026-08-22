@@ -50,46 +50,38 @@ inline constexpr size_t kMaxHead = 8192;
 inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
 // One delivery round's budget (#168, Gebot 18: bounded work per tick):
-// a source never puts more than this into the sink per continuation.
-// 64 KiB is one full-size pipe (16 pages) - exactly the splice segment
-// the Ring moves without copying - and small enough that a slow
-// consumer holds one chunk, not a whole file.
+// a source hands over at most this much per continuation, so a slow
+// consumer holds one round's worth of pointers, never a whole file.
 inline constexpr size_t kDeliverChunk = 64u * 1024;
 
 // THE WARM BUDGET: at or below this a body is COPIED into the response
 // buffer and leaves with its head in one append; above it the body
-// becomes a source the Ring delivers (and splices where it can).
+// becomes a source, handed over as POINTERS a round at a time.
 //
-// IT IS ONE DELIVERY ROUND, and that is a structural line rather than
-// a tuned one: a body that fits in a single round gets NOTHING from
-// splice. It pays the whole price - the head has to leave on its own
-// first, a pipe is taken and returned, and the chain costs two
-// completions and an io-wq hop - and then there is no second round for
-// any of that to amortise over. Only a body that needs several rounds
-// turns the hop into what it is for: a second core moving bytes while
-// the loop thread parses the next request.
+// It is one delivery round, which is a structural line rather than a
+// tuned one: a body that fits in a single round has nothing to gain
+// from being a source - the head would have to leave on its own first
+// and there is no second round for that to amortise over.
 //
-// Measured on forgecore (real hardware, -t4 -c400, spliced against the
-// same server with --pipes 0), and the shape is exactly that line:
+// THE MEASUREMENT THIS REPLACED IS WORTH KEEPING, because it is why
+// the number here is not the one the older tree used. That tree put
+// the crossover at 4 KiB and this one carried it over, which produced
+// a 32 KiB collapse on forgecore (0.22x). The cause was not the
+// budget: bodies above it went through splice, and splice was being
+// compared against a path that copied TWICE (mapping -> buffer ->
+// socket). Against the pointer path it actually loses at every size:
 //
-//     4 KiB    1.00x   both arms copy - below the budget, no splice
-//    32 KiB    0.22x   ONE round: splice loses 4.5x
-//   256 KiB    2.67x   four rounds: splice wins
-//     1 MiB    4.90x   sixteen rounds: splice wins big
+//   forgecore, -t4 -c400, splice against the same server without it
+//       4 KiB  0.99x    32 KiB  1.01x   256 KiB  0.63x    1 MiB  0.79x
 //
-// The 4 KiB the older tree measured came from a different delivery
-// path (a 1 MiB splice chunk, no per-round head), and carrying that
-// number over here is what produced the 32 KiB collapse.
+// So splice is gone, and what remains is one kernel copy out of the
+// mapping - which is also what makes this budget a small number
+// rather than a tuning surface.
 //
-// Settable because the crossover belongs to the machine and the asset
-// mix rather than to this file - and because being settable is what
-// made those sweeps possible at all (#166 will fold WM_WARM_BUDGET
+// Settable anyway, because the crossover belongs to the machine and
+// the asset mix rather than to this file (#166 folds WM_WARM_BUDGET
 // into the config; the env knob is what exists today).
 inline constexpr size_t kWarmBudgetDefault = kDeliverChunk;
-// Below this a splice round is not worth its two SQEs against one
-// memcpy; less than a page never is. Reached by the tail of a file
-// span, and by bodies between the warm budget and a page.
-inline constexpr size_t kSpliceMin = 4096;
 
 class Http1 {
  public:
@@ -155,17 +147,12 @@ class Http1 {
   bool feed(Conn& st, const char* data, size_t len, std::string& sink);
 
   // What a source hands the Ring for one round (#168: "eine Quelle
-  // liefert einen Plan, kein Byte"). Exactly one of the two is used:
-  //
-  //   len != 0   move these source-file bytes file->pipe->socket
-  //   niov != 0  send these POINTERS - into the mapping, into the
-  //              entry table - alongside whatever is in the sink, as
-  //              one sendmsg. Nothing is copied in this process.
-  //
-  // Neither set means the round put its bytes in the sink the old way.
-  struct Splice {
-    size_t off = 0;
-    size_t len = 0;
+  // liefert einen Plan, kein Byte"): POINTERS to bytes that already
+  // exist - the deflate stream where it lies in the mapping, the 18
+  // framing bytes in the entry table. They leave with whatever is in
+  // the sink as ONE sendmsg, so nothing is copied in this process.
+  // niov == 0 means the round put its bytes in the sink instead.
+  struct Plan {
     struct iovec iov[4] = {};
     unsigned niov = 0;
     size_t iov_len = 0;  // total across iov
@@ -174,15 +161,12 @@ class Http1 {
   // The delivery model's continuation (#168): the Ring calls this when
   // the connection's sink has fully drained - the one signal BOTH
   // protocols produce (h1 has no window; its only backpressure is the
-  // send CQE). h1 pulls the next chunk of an active transfer - as a
-  // splice request when splice_ok and the chunk is file-backed, as
-  // bytes otherwise ("auf eine Pipe wartet niemand") - and, once the
-  // source is exhausted, resumes whatever was pipelined behind it; h2
-  // re-runs the parked-stream flush (WINDOW_UPDATE remains its second
-  // trigger; h2's interleaved frames keep the iovec path). Same
-  // contract as feed: false ends the connection once everything queued
-  // has drained.
-  bool more(Conn& st, std::string& sink, Splice& sp, bool splice_ok);
+  // send CQE). h1 hands over the next slice of an active transfer as
+  // POINTERS; h2 re-runs the parked-stream flush (WINDOW_UPDATE
+  // remains its second trigger, and its DATA payload is copied because
+  // it interleaves with other streams). Same contract as feed: false
+  // ends the connection once everything queued has drained.
+  bool more(Conn& st, std::string& sink, Plan& plan);
 
  private:
   // A prebuilt response whose date field sits at a fixed offset.

@@ -420,9 +420,14 @@ assert('delivery h2: the drained sink continues a parked source; so does WINDOW_
   end
 end
 
-# --- splice (#168 stage 2): TCP only - AF_UNIX has no splice_write ---
+# --- plan delivery over TCP (#168): many rounds, one connection ---
+#
+# The unix-socket cases elsewhere cover the same code; TCP is here
+# because it is the transport that actually segments - a big body
+# leaves as a plan spread over several sends, and the rounds must not
+# reorder against the small responses queued behind them.
 
-def a_tcp_server(zip_bytes, extra_args = [])
+def a_tcp_server(zip_bytes)
   zf = Tempfile.new(['wm-assets-tcp', '.zip'])
   zf.binmode
   zf.write(zip_bytes)
@@ -434,7 +439,7 @@ def a_tcp_server(zip_bytes, extra_args = [])
   10.times do
     port = 20000 + rand(40000)
     pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
-                *extra_args, out: File::NULL, err: err)
+                out: File::NULL, err: err)
     up = false
     50.times do
       begin
@@ -461,37 +466,30 @@ def a_tcp_server(zip_bytes, extra_args = [])
   end
 end
 
-assert('splice: big bodies over TCP arrive whole, interleaved with small ones, same as pipes=0') do
-  wire = {}
-  [[], ['--pipes', '0']].each do |args|
-    a_tcp_server(a_big_zip, args) do |port|
-      TCPSocket.open('127.0.0.1', port) do |s|
-        # deflated (gzip framing around the spliced middle), a small
-        # entry behind it, then stored - all on ONE connection, order
-        # must hold across splice chains and byte rounds alike.
-        s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
-        h, b1 = a_read(s)
-        assert_true h.match?(/^Content-Encoding: gzip\r$/i)
-        assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(b1)).read.b
-        s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
-        h2a, b2 = a_read(s)
-        assert_true h2a.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
-        h3, b3 = a_read(s)
-        assert_equal A_BIG.b, b3
-        # a ranged window wider than one chunk splices too, clipped to
-        # the window's edges (#148 through #168's machinery)
-        s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
-        h4, b4 = a_read(s)
-        assert_true h4.start_with?('HTTP/1.1 206')
-        assert_equal A_BIG.b[1000..201000], b4
-        wire[args.empty? ? :spliced : :iovec] = [b1, b2, b3, b4]
-      end
+assert('big bodies over TCP arrive whole, interleaved with small ones') do
+  a_tcp_server(a_big_zip) do |port|
+    TCPSocket.open('127.0.0.1', port) do |s|
+      # deflated (gzip framing around the mapping's deflate bytes), a
+      # small entry behind it, then stored - all on ONE connection.
+      # Order must hold across continuation rounds: a plan is unsent
+      # bytes, and the next response may not overtake them.
+      s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      h, b1 = a_read(s)
+      assert_true h.match?(/^Content-Encoding: gzip\r$/i)
+      assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(b1)).read.b
+      s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      h2a, = a_read(s)
+      assert_true h2a.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
+      _, b3 = a_read(s)
+      assert_equal A_BIG.b, b3
+      # a ranged window wider than one chunk spans rounds too, clipped
+      # to the window's edges (#148 through #168's machinery)
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
+      h4, b4 = a_read(s)
+      assert_true h4.start_with?('HTTP/1.1 206')
+      assert_equal A_BIG.b[1000..201000], b4
     end
   end
-  # The A/B the verdict rests on: the spliced wire and the pure-iovec
-  # wire are the same bytes - splice may only ever change the path,
-  # never the payload.
-  assert_equal wire[:iovec], wire[:spliced]
 end
 
 # --- ranges (#148): one range, wire-body octets, 206/416/If-Range ---

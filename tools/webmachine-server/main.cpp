@@ -2,6 +2,7 @@
 // --echo mounts the byte-proof Echo app (the bintest's mirror);
 // otherwise the HTTP/1.1 app runs. The Ring itself knows only bytes.
 #include <mruby.h>
+#include <mruby/variable.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
@@ -25,9 +26,7 @@ struct Echo {
   struct Conn {
     void reset(uint8_t) {}
   };
-  struct Splice {  // echo delivers no plan; the fields exist for the Ring's shape
-    size_t off = 0;
-    size_t len = 0;
+  struct Plan {  // echo hands over no pointers; the shape is the Ring's
     struct iovec iov[4] = {};
     unsigned niov = 0;
     size_t iov_len = 0;
@@ -36,8 +35,7 @@ struct Echo {
     sink.append(data, len);
     return true;
   }
-  // echo owes nothing between feeds and never splices
-  bool more(Conn&, std::string&, Splice&, bool) { return true; }
+  bool more(Conn&, std::string&, Plan&) { return true; }  // owes nothing between feeds
   bool pending(const Conn&) const { return false; }  // nothing is ever owed
   void on_tick() {}
 };
@@ -57,6 +55,21 @@ int serve_on(const webmachine::RingConfig& cfg, App& app, const char* label) {
   return 0;
 }
 
+// Does io_uring exist on this machine? Not asked here - ANSWERED
+// here, by reading the answer the process already has. mruby-io_uring
+// probes in its gem_init during mrb_open() and publishes the result
+// as URING_AVAILABLE on Object; it is a hard dependency of this tree
+// (mrbgem.rake), so the constant is always there and always current.
+// Asking a second time with a probe of our own would create a second
+// answer that can disagree with the first - the whole point of the
+// gem exporting a signal is that there is exactly one.
+bool uring_present(mrb_state* mrb) {
+  const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
+  const mrb_value obj = mrb_obj_value(mrb->object_class);
+  if (!mrb_const_defined(mrb, obj, k)) return false;  // a build without the gem
+  return mrb_bool(mrb_const_get(mrb, obj, k));
+}
+
 // The ONE branch point (#171): io_uring sets up, or the select backend
 // runs and SCREAMS. Never silent, never per-request, not disableable -
 // the warning says which backend, why concretely, what it costs, and
@@ -64,16 +77,16 @@ int serve_on(const webmachine::RingConfig& cfg, App& app, const char* label) {
 // test suite runs the whole tree over it), "uring" forbids the lazy
 // path (a named refusal instead of a slow surprise).
 template <class App>
-int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
+int serve(const webmachine::RingConfig& cfg, App& app, const char* label, bool have_uring) {
   const char* force = std::getenv("WM_IO");
   char why[256] = "";
   if (force == nullptr || std::strcmp(force, "uring") == 0) {
-    webmachine::Ring<App> ring(app);
-    if (ring.init(cfg, why, sizeof(why))) {
-      std::fprintf(stderr, "webmachine: %s up, pid %d, %s, io=io_uring\n", label, getpid(),
-                   cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
-      ring.run();
-      return 0;
+    if (!have_uring) {
+      std::snprintf(why, sizeof(why),
+                    "URING_AVAILABLE is false - no io_uring on this kernel, or a "
+                    "seccomp profile / sysctl blocks it");
+    } else if (webmachine::UringIo::available(why, sizeof(why))) {
+      return serve_on<App, webmachine::UringIo>(cfg, app, label);
     }
     if (force != nullptr) {  // uring demanded: refuse by name, no lazy path
       std::fprintf(stderr, "webmachine: %s\n", why);
@@ -90,8 +103,9 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
                "webmachine: == IO BACKEND: select(2) SHIM - correct, NOT fast\n"
                "webmachine: == why: %s\n"
                "webmachine: == cost: every op is readiness + a classic syscall; recv\n"
-               "webmachine: ==   bundles and splice do not exist (always iovec); file IO\n"
-               "webmachine: ==   would block the reactor; capacity is capped below\n"
+               "webmachine: ==   bundles do not exist (one buffer per completion);\n"
+               "webmachine: ==   file IO would block the reactor; capacity is capped\n"
+               "webmachine: ==   below\n"
                "webmachine: ==   FD_SETSIZE (%d) fds\n"
                "webmachine: == fix: run on Linux >= 6.11 with io_uring available\n"
                "webmachine: ================================================================\n",
@@ -116,16 +130,12 @@ int main(int argc, char** argv) {
       app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       assets_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--pipes") == 0 && i + 1 < argc) {
-      // 0 = pure-iovec baseline (the A/B splice is judged against);
-      // unset = derived from pipe-user-pages-soft (#168).
-      cfg.pipes = std::atol(argv[++i]);
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
                    "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--assets FILE.zip] "
-                   "[--pipes N] [--echo]\n",
+                   "[--echo]\n",
                    argv[0]);
       return 2;
     }
@@ -175,19 +185,18 @@ int main(int argc, char** argv) {
       mrb_close(mrb);
       return 1;
     }
-    // The ZIP is the splice source (#168): the ring registers it and
-    // moves its byte ranges file->pipe->socket where that pays.
-    cfg.splice_src_fd = assets.fd();
   }
+
+  const bool have_uring = uring_present(mrb);
 
   int rc = 0;
   if (echo) {
     Echo app;
-    rc = serve(cfg, app, "echo floor");
+    rc = serve(cfg, app, "echo floor", have_uring);
   } else {
     webmachine::Http1 app(res.konst, &res, res.dynamic != 0, res.dynamic_body,
                           assets_path != nullptr ? &assets : nullptr);
-    rc = serve(cfg, app, "http/1.1");
+    rc = serve(cfg, app, "http/1.1", have_uring);
   }
   mrb_close(mrb);
   return rc;
