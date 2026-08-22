@@ -238,7 +238,10 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
         s->table.splat();
         continue;
       }
-      if (!s->table.binding()) {
+      // The Symbol's own id rides into the table: slice 4's request
+      // object names what the span captured, and this is the only
+      // moment the name exists.
+      if (!s->table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
         s->table.abandon();
         refuse(mrb, "route.add: too many bindings in one route (16 is the table's width)");
       }

@@ -17,6 +17,7 @@
 #include "h2.hpp"
 #include "http.hpp"
 #include "http1.hpp"
+#include "request.hpp"
 
 namespace webmachine {
 namespace {
@@ -86,6 +87,25 @@ void hp_name_idx(std::string& out, uint32_t idx) {
 }  // namespace
 
 void h2_free(H2State* h2) { delete h2; }
+
+// The request view for a PARKED request (#116 slice 4): its bytes are
+// the stream's own copy, and the spans have to be captured again -
+// the ones the dispatch computed died with that frame. One table walk,
+// paid only by a request that carried a body, which allocated for its
+// body long before it got here. The route it finds is the route the
+// dispatch found: the same table, the same bytes, the same order.
+const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqView& out) {
+  if (target.empty()) return nullptr;
+  const AppSlot& slot = apps_[st0.listener];
+  const int r = slot.table->match(target.data(), target.size(), out.spans);
+  if (r < 0) return nullptr;
+  out.target = target.data();
+  out.target_len = target.size();
+  out.path_len = http::path_only(target.data(), target.size());
+  out.table = slot.table;
+  out.route = r;
+  return &out;
+}
 
 // Lane 2: one per-request response field through ls-hpack's encoder
 // and its dynamic table. lsxpack's canonical layout is name ": "
@@ -246,6 +266,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     const size_t asset_off = existing->asset_off;
     const size_t asset_end = existing->asset_end;
     const uint16_t route = existing->route;
+    const std::string target = existing->target;
     if (asset != nullptr) {
       if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
                            asset_end, sink)) {
@@ -253,7 +274,9 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       }
       return true;
     }
-    if (!h2_answer(st0, stream_id, facts, head_only, route, sink)) return false;
+    ReqView rv;
+    const ReqView* rvp = h2_parked_view(st0, target, rv);
+    if (!h2_answer(st0, stream_id, facts, head_only, route, rvp, sink)) return false;
     return true;
   }
 
@@ -403,7 +426,17 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     // the matching destructor - per request, on the hot path. The facts
     // are on this stack, which is all the answer needs; h2_answer opens
     // a stream itself if the peer's window parks a remainder.
-    return h2_answer(st0, stream_id, facts, head_only, route, sink);
+    // The request object's view, on THIS frame: the :path bytes are
+    // still in the decode buffer and the spans are still in registers.
+    ReqView rv;
+    rv.target = path_val;
+    rv.target_len = path_vlen;
+    rv.path_len = http::path_only(path_val, path_vlen);
+    rv.method = facts.method;
+    rv.table = apps_[st0.listener].table;
+    rv.route = r;
+    rv.spans = spans;
+    return h2_answer(st0, stream_id, facts, head_only, route, r < 0 ? nullptr : &rv, sink);
   }
   // A body follows; THAT is what the stream has to be remembered for -
   // the facts wait on it, the bytes will not.
@@ -416,6 +449,9 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   stx.asset_off = asset_off;
   stx.asset_end = asset_end;
   stx.route = route;
+  // #116 slice 4: what a callback will be allowed to ask about, kept
+  // because this request answers after its decode buffer is gone.
+  stx.target.assign(path_val, path_vlen);
   return true;
 }
 
@@ -602,7 +638,8 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 }
 
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
-                      bool head_only, uint16_t route, std::string& sink) {
+                      bool head_only, uint16_t route, const ReqView* req,
+                      std::string& sink) {
   H2State& h2 = *st0.h2;
 
   // The router's verdict decides who answers, exactly as in h1: a miss
@@ -622,7 +659,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     b = &bundles_[apps_[st0.listener].base + route];
     idx = &b->index;
     if (b->bound) {
-      status = resource_run(*b->res, facts, &body_, &have_body);
+      status = resource_run(*b->res, facts, req, &body_, &have_body);
     } else {
       status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                            b->konst.shortcut[static_cast<size_t>(facts.method)]);
@@ -977,7 +1014,10 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           const flow::ReqFacts facts = stp->facts;
           const bool head_only = stp->head_only;
           const uint16_t route = stp->route;
-          if (!h2_answer(st0, stream, facts, head_only, route, sink)) return false;
+          const std::string target = stp->target;
+          ReqView rv;
+          const ReqView* rvp = h2_parked_view(st0, target, rv);
+          if (!h2_answer(st0, stream, facts, head_only, route, rvp, sink)) return false;
         }
         break;
       }

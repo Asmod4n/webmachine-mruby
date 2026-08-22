@@ -9,6 +9,7 @@
 #include "gzip.hpp"
 #include "h2.hpp"
 #include "http.hpp"
+#include "request.hpp"
 #include "resource.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
@@ -643,7 +644,22 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       // runs the whole flow inside ONE VM frame (this branch is
       // deployment-stable: no hint).
       if (b->bound) {
-        status = resource_run(*b->res, facts, &body_, &have_body);
+        // The request the callbacks may ask about (#116 slice 4). Built
+        // on THIS frame out of what the framer and the router already
+        // held - the spans the match captured, the target bytes still
+        // in the receive buffer - and nothing in it is materialised
+        // until a callback asks.
+        ReqView rv;
+        rv.target = path;
+        rv.target_len = path_len;
+        rv.path_len = http::path_only(path, path_len);
+        rv.method = facts.method;
+        rv.method_p = method;
+        rv.method_n = method_len;
+        rv.table = slot.table;
+        rv.route = route;
+        rv.spans = spans;
+        status = resource_run(*b->res, facts, &rv, &body_, &have_body);
       } else {
         status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                              b->konst.shortcut[static_cast<size_t>(facts.method)]);

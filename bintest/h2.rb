@@ -481,3 +481,54 @@ assert('h2: the router is the SAME table - each route keeps its own body, a miss
     end
   end
 end
+
+# Literal :method and literal :path in one block - the shape a PARKED
+# request needs: a method that owes a body, on a path with a binding.
+def h2_method_path_block(method, path)
+  "\x02#{method.bytesize.chr}#{method}\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
+end
+
+# #116 slice 4, the case only h2 has: a request that PARKS (a body is
+# still owed) answers after its decode buffer is gone, so the request
+# object it hands the callback must read the stream's OWN copy of the
+# target. If it read the dead buffer instead, this is where it would
+# show - as garbage, or as a crash.
+assert('h2: a parked request still names what its route captured') do
+  src = <<~RUBY
+    class Parked < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def to_html
+        r = request
+        "\#{r.path}|\#{r.path_info[:id]}|\#{r.disp_path}"
+      end
+    end
+  RUBY
+  app = <<~RUBY
+    #{src}
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['thing', :id, :*], Parked
+        end
+      end
+    end
+  RUBY
+  h2_server(app) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      # HEADERS without END_STREAM: the stream parks on its body.
+      s.write(h2_frame(1, 0x04, 1, h2_method_path_block('POST', '/thing/42/tail')))
+      s.write(h2_frame(0, 0x01, 1, 'body'))
+      # One DATA frame in: two WINDOW_UPDATEs (connection and stream)
+      # back, then the answer's HEADERS and DATA.
+      frames = []
+      4.times { frames << h2_next(s) }
+      data = frames.find { |t, _, _, _| t == 0 }
+      assert_true data != nil, 'no DATA answer after END_STREAM'
+      assert_equal '/thing/42/tail|42|tail', data[3]
+    end
+  end
+end

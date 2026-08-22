@@ -782,3 +782,117 @@ assert('application: Webmachine.run inside main serves like the tool loop') do
     app.unlink
   end
 end
+
+# SLICE 4 (#116): the request object. Lazy by construction - the router
+# captured the spans while it was walking anyway, and NOTHING becomes a
+# Ruby value until a callback asks for it.
+assert('application: request names what the route captured, per request') do
+  # One field per line, so a value with a space in it (a decoded query
+  # parameter) cannot be mistaken for a field boundary.
+  src = <<~RUBY
+    class Debug < Webmachine::Resource
+      def to_html
+        r = request
+        [r.method, r.uri, r.path, r.disp_path,
+         r.path_info.map { |k, v| "\#{k}=\#{v}" }.sort.join(','),
+         r.path_tokens.join('|'),
+         r.query.map { |k, v| "\#{k}=\#{v}" }.sort.join(','),
+         r.query_string].join("\n")
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['fizz', :buzz, :*], Debug
+        end
+      end
+    end
+  RUBY
+  ap_server(src) do |sock|
+    s = UNIXSocket.new(sock)
+    s.write("GET /fizz/one/a/b?x=1&y=two%20words&z HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, body = ap_read(s)
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    f = body.split("\n", -1)
+    assert_equal 'GET', f[0]
+    assert_equal '/fizz/one/a/b?x=1&y=two%20words&z', f[1]
+    assert_equal '/fizz/one/a/b', f[2]
+    assert_equal 'a/b', f[3]             # the splat tail is what is left
+    assert_equal 'buzz=one', f[4]        # the Symbol token, by NAME
+    assert_equal 'a|b', f[5]
+    assert_equal 'x=1,y=two words,z=', f[6]  # percent-decoded, '+' a space
+    assert_equal 'x=1&y=two%20words&z', f[7]
+
+    # A SECOND request through the same warm connection sees its own
+    # values - the view is swapped per request, never remembered.
+    s.write("GET /fizz/two HTTP/1.1\r\nHost: x\r\n\r\n")
+    _, body2 = ap_read(s)
+    g = body2.split("\n", -1)
+    assert_equal '/fizz/two', g[1]
+    assert_equal '', g[3]                # an empty splat tail
+    assert_equal 'buzz=two', g[4]
+    assert_equal '', g[5]
+    assert_equal '', g[7]                # no query at all
+    s.close
+  end
+end
+
+assert('application: request.headers and request.body refuse by name') do
+  src = <<~RUBY
+    class Asks < Webmachine::Resource
+      def to_html
+        request.headers
+      rescue RuntimeError => e
+        e.message
+      end
+    end
+
+    class AsksBody < Webmachine::Resource
+      def to_html
+        request.body
+      rescue RuntimeError => e
+        e.message
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['h'], Asks
+          route.add ['b'], AsksBody
+        end
+      end
+    end
+  RUBY
+  ap_server(src) do |sock|
+    s = UNIXSocket.new(sock)
+    s.write("GET /h HTTP/1.1\r\nHost: x\r\n\r\n")
+    _, body = ap_read(s)
+    assert_true body.include?('#165'), body
+    s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    _, body2 = ap_read(s)
+    assert_true body2.include?('request bodies'), body2
+    s.close
+  end
+end
+
+assert('application: request outside a callback refuses instead of reading a dead view') do
+  # `main` runs at setup, with no request being answered - asking then
+  # is a mistake worth naming.
+  out = ap_refused(<<~RUBY)
+    class R < Webmachine::Resource
+      def self.to_html
+        'x'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_route [:*], R
+      end
+      Webmachine::Resource.new.request
+    end
+  RUBY
+  assert_true out.include?('no request being answered'), out
+end

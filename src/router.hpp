@@ -77,11 +77,29 @@ class RouteTable {
     return true;
   }
   // False: past kMaxRouteBindings - refused by name at add_route.
-  bool binding() {
+  // `sym` is the Symbol token's own id, kept so the request object
+  // (#116 slice 4) can NAME what a span captured. It is an mrb_sym
+  // stored as a plain number: this header stays mruby-free, and a
+  // symbol id is one anyway.
+  bool binding(uint32_t sym) {
     if (pending_binds_ >= kMaxRouteBindings) return false;
     pending_binds_++;
-    toks_.push_back(RouteToken{kBinding, 0, 0});
+    toks_.push_back(RouteToken{kBinding, sym, 0});
     return true;
+  }
+
+  // The name of a route's i-th binding, in the order match() captured
+  // them. 0 = no such binding (a caller past nbind).
+  uint32_t binding_sym(int route, uint8_t i) const {
+    const Route& rt = routes_[static_cast<size_t>(route)];
+    uint8_t seen = 0;
+    for (uint32_t t = 0; t < rt.count; t++) {
+      const RouteToken& tk = toks_[rt.first + t];
+      if (tk.kind != kBinding) continue;
+      if (seen == i) return tk.off;
+      seen++;
+    }
+    return 0;
   }
   void splat() {
     pending_splat_ = true;

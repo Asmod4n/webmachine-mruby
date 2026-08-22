@@ -29,8 +29,9 @@ namespace webmachine {
 // frame; resource_exception_begin lends a pending exception's message
 // (copy before the next mruby call).
 struct Resource;
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                      bool* have_body);
+struct ReqView;
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
+                      std::string* body, bool* have_body);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
 // h2.hpp owns the definition (it pulls lshpack.h; this header stays
@@ -333,8 +334,17 @@ class Http1 {
   // `route` is the router's verdict for this stream, parked with the
   // facts when a body is still owed; kNoRoute answers the prebuilt 404
   // the miss earned, before B13 and before any method test.
+  // `req` is what a runtime callback may ask about this request (#116
+  // slice 4), built by the caller because only the caller knows where
+  // the bytes are: the live decode buffer for a request answered
+  // inside its own dispatch, the stream's own copy for one that
+  // parked. Null where no resource can ask (a router miss).
+  // A parked request's view, rebuilt from the stream's own copy of the
+  // target (http2.cpp says why the spans cannot be parked with it).
+  // Null = no route, so nothing can ask.
+  const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
-                 uint16_t route, std::string& sink);
+                 uint16_t route, const ReqView* req, std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink);
   // The asset tier's h2 half (#170): per-entry never-indexed blocks
   // built at setup (the HPACK spelling lives in http2.cpp), answered

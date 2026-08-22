@@ -1,6 +1,7 @@
 #include "resource.hpp"
 
 #include "application.hpp"
+#include "request.hpp"
 #include "server.hpp"
 
 #include <mruby/class.h>
@@ -516,8 +517,11 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   return true;
 }
 
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                      bool* have_body) {
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
+                      std::string* body, bool* have_body) {
+  // One pointer store: the request object materialises nothing until a
+  // callback asks it something (#116 slice 4).
+  request_bind(req);
   res.run_facts = &facts;
   res.run_body = body;
   res.run_have_body = false;
@@ -525,6 +529,9 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::str
   // The wrapper: funcall arms the TRY, its arena roots the whole frame,
   // its exit restores - one entry pays for everything inside.
   mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
+  // The view's bytes belong to the receive buffer and to this frame;
+  // nothing may reach them once it is over.
+  request_bind(nullptr);
   if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
     *have_body = false;
     return 500;  // exception stays pending for the answering path
@@ -561,6 +568,8 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
   webmachine::application_init(mrb, wm);
+  // What a runtime callback sees of the request it is answering.
+  webmachine::request_init(mrb, wm);
   // The loop itself (#116 slice 3): run / tick / fd, next to the
   // Application that says WHAT is served.
   webmachine::server_init(mrb, wm);

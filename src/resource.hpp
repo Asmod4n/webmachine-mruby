@@ -23,6 +23,7 @@
 #include <string>
 
 #include "flow_walk.hpp"
+#include "request.hpp"
 
 namespace webmachine {
 
@@ -77,8 +78,11 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 // THE runtime path: decision + render inside one VM call. The rendered
 // body (if any) is copied into *body while the frame still roots it.
 // A raising callback leaves its exception pending and returns 500.
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, std::string* body,
-                      bool* have_body);
+// `req` is what the callbacks see of the request (#116 slice 4): bound
+// for the frame's duration and unbound after it, so nothing can read a
+// view whose bytes are gone. Null is legal and means the same thing.
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
+                      std::string* body, bool* have_body);
 
 // The pending exception's message, read straight from RException's
 // mesg field and LENT: copy the bytes before the next mruby call - no

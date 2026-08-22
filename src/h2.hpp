@@ -150,6 +150,13 @@ struct H2Stream {
   // like the asset verdict and for the same reason: the :path bytes
   // die with the decode buffer. kNoRoute = a miss, answered 404.
   uint16_t route = 0;
+  // A COPY of the :path value, for the same reason spelled the other
+  // way round (#116 slice 4): a request that parks answers after its
+  // decode buffer is gone, so a request object built then has nothing
+  // to point at unless the bytes were kept. Only a stream that PARKS
+  // pays this - a request answered inside its own dispatch borrows the
+  // live bytes and copies nothing.
+  std::string target;
   bool head_only = false;
   bool headers_done = false;
   bool half_closed_remote = false;

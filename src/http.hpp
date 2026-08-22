@@ -36,6 +36,16 @@ constexpr bool star_value(const char* v, size_t n) {
 }
 
 // Methods are case-sensitive tokens (RFC 9110 §9.1).
+// RFC 9110 4.2.1: the query is not part of the path. How long the
+// path half of a request-target is - the router splits the same way,
+// and the request object (#116 slice 4) reads the same boundary.
+inline size_t path_only(const char* p, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] == '?') return i;
+  }
+  return n;
+}
+
 inline flow::Method parse_method(const char* m, size_t n) {
   switch (n) {
     case 3:
