@@ -405,7 +405,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   // again. webmachine-ruby's shape is a Hash of coding name -> encoder
   // method; ONLY THE KEYS ARE READ. The values name a per-representation
   // encoder callback and no tier honors that dispatch yet (gzip is
-  // built in, by zlib-ng, at answer time - see gzip.hpp) - documented
+  // built in, by zlib, at answer time - see gzip.hpp) - documented
   // here, at the one place the declaration is read, per #147's own
   // requirement. Presence of "gzip" is the whole question; "identity"
   // needs no key at all (RFC 9110 12.5.3: it is always available, and

@@ -14,7 +14,7 @@
 // validation (round one's caller does it through
 // mruby-string-is-utf8, whose simdutf validates a whole buffer with
 // SIMD - reimplementing that here would be the slow variant of a
-// solved problem), permessage-deflate (round two, zlib-ng), and any
+// solved problem), permessage-deflate (round two, the system zlib), and any
 // policy about who may open a socket (that is the route's).
 #ifndef WEBMACHINE_WEBSOCKET_HPP
 #define WEBMACHINE_WEBSOCKET_HPP

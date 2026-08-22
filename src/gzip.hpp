@@ -4,12 +4,12 @@
 // mapping, because a dynamic body does not exist until a resource
 // callback renders it. One-shot: the whole body is already in memory
 // (Resource::to_html returns a String, never a stream), so there is no
-// reason to hold a persistent zng_stream across calls the way #172's
-// permessage-deflate streaming eventually will.
+// reason to hold a persistent z_stream across calls the way #175's
+// permessage-deflate streaming will.
 #ifndef WEBMACHINE_GZIP_HPP
 #define WEBMACHINE_GZIP_HPP
 
-#include <zlib-ng.h>
+#include <zlib.h>
 
 #include <cstdint>
 #include <cstring>
@@ -29,11 +29,11 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 // Level 1 (Z_BEST_SPEED, #147: dynamic bodies live at the fast end of
 // the scale only - zstd -19 / brotli q11 are an asset BUILD's job,
 // never a response's). Raw deflate (windowBits -15): no zlib/gzip
-// wrapper from zlib-ng itself - the header above and the trailer below
+// wrapper from zlib itself - the header above and the trailer below
 // ARE the wrapper, hand-built the same way assets.cpp's is, so both
 // tiers emit the exact same envelope shape around a deflate stream.
 //
-// False = zlib-ng refused compressing (allocation failure, or `in` at
+// False = zlib refused compressing (allocation failure, or `in` at
 // or above 4 GiB - avail_in is uint32_t and no resource body comes
 // anywhere close). The caller's answer is to serve identity instead:
 // compression is an optimization on top of an always-correct fallback,
@@ -41,29 +41,32 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 // available for a dynamic body, so nothing here may 406 or 500).
 inline bool compress(const std::string& in, std::string& out) {
   if (in.size() >= std::numeric_limits<uint32_t>::max()) return false;
-  zng_stream strm{};
-  if (zng_deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+  z_stream strm{};
+  if (deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
     return false;
   }
-  const unsigned long bound = zng_deflateBound(&strm, static_cast<unsigned long>(in.size()));
+  const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
   out.assign(reinterpret_cast<const char*>(kHeader), sizeof(kHeader));
   const size_t body_off = out.size();
   out.resize(body_off + bound);
-  strm.next_in = reinterpret_cast<const uint8_t*>(in.data());
-  strm.avail_in = static_cast<uint32_t>(in.size());
-  strm.next_out = reinterpret_cast<uint8_t*>(out.data()) + body_off;
-  strm.avail_out = static_cast<uint32_t>(bound);
-  const int rc = zng_deflate(&strm, Z_FINISH);
+  // zlib's next_in is Bytef* even for input it only reads (the const
+  // is missing from the 1995 API, not from the contract).
+  strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
+  strm.avail_in = static_cast<uInt>(in.size());
+  strm.next_out = reinterpret_cast<Bytef*>(&out[0]) + body_off;
+  strm.avail_out = static_cast<uInt>(bound);
+  const int rc = deflate(&strm, Z_FINISH);
   const size_t produced = strm.total_out;
-  zng_deflateEnd(&strm);
+  deflateEnd(&strm);
   // deflateBound sized the buffer for one call to finish the WHOLE
   // input in a single shot; anything but Z_STREAM_END here means
-  // zlib-ng itself refused (not "needs another call" - there isn't
+  // zlib itself refused (not "needs another call" - there isn't
   // going to be one).
   if (rc != Z_STREAM_END) return false;
   out.resize(body_off + produced);
 
-  const uint32_t crc = zng_crc32_z(0, reinterpret_cast<const uint8_t*>(in.data()), in.size());
+  const uint32_t crc = static_cast<uint32_t>(
+      crc32_z(0, reinterpret_cast<const Bytef*>(in.data()), in.size()));
   const uint32_t isize = static_cast<uint32_t>(in.size());  // RFC 1952: length mod 2^32
   unsigned char trailer[8];
   trailer[0] = static_cast<unsigned char>(crc);

@@ -100,99 +100,52 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.objs += %W(#{lshp}/lshpack.c #{lshp}/deps/xxhash/xxhash.c).map { |f|
     f.relative_path_from(dir).pathmap("#{build_dir}/%X#{spec.exts.object}")
   }
-  # zlib-ng: gzip for dynamic bodies (#147) - encodings_provided,
-  # server-side, gzip level 1 only (the fast end of the scale; a build
-  # step is where zstd -19 / brotli q11 belong, never a response).
-  # Chosen over mruby-libdeflate (already vendored, used for #170's
-  # zip reader) for one reason that outranks speed: #172/#175's
-  # permessage-deflate will need Z_SYNC_FLUSH streaming with a
-  # persistent context across messages, which libdeflate's one-shot
-  # whole-buffer API cannot do at all. One library for both customers,
-  # decided honestly on day one rather than adding a second dependency
-  # later - libdeflate stays a candidate for THIS path specifically if
-  # a measurement ever justifies it (Gebot 10), not a default.
+  # zlib, THE SYSTEM ONE: gzip for dynamic bodies (#147) and, next
+  # round, permessage-deflate (#175). Chosen over mruby-libdeflate
+  # (vendored for #170's zip reader) for a reason that outranks speed:
+  # permessage-deflate needs Z_SYNC_FLUSH streaming with a persistent
+  # context across messages, which libdeflate's one-shot whole-buffer
+  # API cannot do at all. One library for both customers.
   #
-  # Pinned 2.3.3 (submodule) - no system zlib anywhere, on the same
-  # reasoning as ls-hpack above: an unpinned version is an unpinned CVE
-  # surface in a library that decompresses attacker-adjacent bytes
-  # nowhere here yet, but will (RFC 7692 receives untrusted DEFLATE).
+  # SYSTEM, not vendored - STEHENDE NUTZER-REGEL (2026-08-22): what has
+  # a stable ABI and is de facto present on every distribution, we USE;
+  # we do not carry our own copy of it. zlib is the textbook case:
+  # libz.so.1 has been the soname since the 1990s, z_stream has not
+  # moved, and nothing on a server is without it (systemd, rpm/dpkg,
+  # git, curl all pull it in). Where a distribution has swapped in
+  # zlib-ng under that soname (Fedora, recent Ubuntu), we get its
+  # speed for free and without knowing.
   #
-  # Built the SAME way ls-hpack is, three lines up - portable sources
-  # through spec.objs, not a shelled-out cmake/configure. zlib-ng's own
-  # build asks autotools/cmake to fill in three templated headers, and
-  # every substitution turns out to be something this Rake file can do
-  # itself without either tool: the symbol prefix is empty (native zng_
-  # API, see below - nothing to substitute), unistd.h is a probe
-  # spec.cc can run directly, and the name-mangling header has an
-  # upstream .empty for exactly the no-prefix case. spec.objs also
-  # means every target this gem ever cross-compiles for (a real
-  # concern the day #171's build_config grows one) gets these objects
-  # built with ITS toolchain automatically, the way ls-hpack's already
-  # do - a nested cmake would have to be taught the cross toolchain and
-  # sysroot separately to get the same result.
+  # This tree DID vendor zlib-ng at a pinned tag, and the measurement
+  # that ends that is embarrassing enough to write down: the vendored
+  # build compiled arch/generic/*.c ONLY - no SIMD at all, because
+  # those sources want per-file flags (-mavx512f and friends) that
+  # spec.objs applies uniformly or not at all. So the copy we carried
+  # was the SLOW path, next to a distribution library that ships the
+  # full runtime-dispatched one. Pinning also bought less than it
+  # promised: a pinned tag is a CVE we patch ourselves, on a library
+  # that will decompress attacker-supplied DEFLATE (RFC 7692) - the
+  # distribution's security team does that job better and sooner.
   #
-  # zng_ API, not --zlib-compat: this process links nothing else that
-  # touches zlib today (checked: no gem under this build pulls libz),
-  # but the compat build's whole point is binary-compatible `deflate`/
-  # `z_stream` symbol names for a caller expecting system zlib - names
-  # that a TLS library linked in later could bring right back. The
-  # zng_ prefix cannot collide with anything, ever, by construction;
-  # paying for that safety costs nothing since nothing here calls the
-  # classic API today.
-  #
-  # Only the GENERIC C implementations are compiled (arch/generic/*.c),
-  # no arch/x86 or arch/arm SIMD sources: those want per-file flags
-  # (-mavx512f and friends) that spec.objs applies uniformly or not at
-  # all, and a dynamic HTTP body compressed once per response is a
-  # different cost shape than the hot per-packet path those exist for.
-  # WITH_ALL_FALLBACKS wires functable.c's dispatch straight to the
-  # generic implementations instead of a runtime CPU-feature switch
-  # (see functable.c's own #ifndef WITH_ALL_FALLBACKS) - correct on
-  # every host, not merely the one this was built on. Revisiting this
-  # is a measurement away (Gebot 10), not a rewrite: bench/results/ is
-  # exactly where that measurement would have to live, never guessed
-  # from a container number.
-  zng_src = "#{dir}/deps/zlib-ng"
-  zng_gen = "#{spec.build_dir}/zlib-ng"
-  FileUtils.mkdir_p(zng_gen)
-  File.write("#{zng_gen}/zlib-ng.h",
-             File.read("#{zng_src}/zlib-ng.h.in").gsub('@ZLIB_SYMBOL_PREFIX@', ''))
-  have_unistd = spec.cc.respond_to?(:search_header_path) && spec.cc.search_header_path('unistd.h')
-  File.write("#{zng_gen}/zconf-ng.h",
-             File.read("#{zng_src}/zconf-ng.h.in")
-                 .sub('#ifdef HAVE_UNISTD_H', have_unistd ? '#if 1' : '#if 0'))
-  FileUtils.cp "#{zng_src}/zlib_name_mangling.h.empty", "#{zng_gen}/zlib_name_mangling-ng.h"
+  # Refused BY NAME at build time when the headers are missing: the
+  # runtime library is everywhere, the -dev package is not, and a
+  # missing header should say which package instead of erroring 40
+  # lines deep in a compile.
+  unless spec.cc.search_header('zlib.h')
+    abort <<~MSG
+      webmachine-mruby: zlib headers not found.
 
-  spec.cc.include_paths  << zng_src << zng_gen
-  spec.cxx.include_paths << zng_src << zng_gen
+      This tree links the SYSTEM zlib (gzip for dynamic bodies, #147,
+      and permessage-deflate next). The library itself is on every
+      server distribution; only its headers are a separate package:
 
-  zng_defines = %w(ZLIBNG_NATIVE_API WITH_ALL_FALLBACKS)
-  unless spec.cc.command.to_s =~ /\bcl(\.exe)?$/
-    zng_defines += %w(HAVE_ATTRIBUTE_ALIGNED HAVE_BUILTIN_ASSUME_ALIGNED
-                      HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL
-                      HAVE_VISIBILITY_HIDDEN HAVE_VISIBILITY_INTERNAL)
+        Debian/Ubuntu   apt install zlib1g-dev
+        RHEL/Fedora     dnf install zlib-devel
+        Alpine          apk add zlib-dev
+        macOS           xcode-select --install
+    MSG
   end
-  if spec.cc.respond_to?(:search_header_path)
-    zng_defines << 'HAVE_SYS_AUXV_H' if spec.cc.search_header_path('sys/auxv.h')
-    zng_defines << 'HAVE_LINUX_AUXVEC_H' if spec.cc.search_header_path('linux/auxvec.h')
-  end
-  spec.cc.defines += zng_defines
-  spec.cxx.defines += zng_defines
-
-  zng_sources = %w(
-    adler32.c compress.c cpu_features.c crc32.c crc32_braid_comb.c
-    deflate.c deflate_fast.c deflate_huff.c deflate_medium.c
-    deflate_quick.c deflate_rle.c deflate_slow.c deflate_stored.c
-    functable.c infback.c inflate.c inftrees.c insert_string.c
-    insert_string_roll.c trees.c uncompr.c zutil.c
-    arch/generic/adler32_c.c arch/generic/adler32_fold_c.c
-    arch/generic/chunkset_c.c arch/generic/compare256_c.c
-    arch/generic/crc32_braid_c.c arch/generic/crc32_chorba_c.c
-    arch/generic/crc32_fold_c.c arch/generic/slide_hash_c.c
-  ).map { |f| "#{zng_src}/#{f}" }
-  spec.objs += zng_sources.map { |f|
-    f.relative_path_from(dir).pathmap("#{build_dir}/%X#{spec.exts.object}")
-  }
+  spec.linker.libraries << 'z'
 
   # test/flow_vectors.cpp drives src/flow_walk.hpp from outside the
   # product, the way a caller does. src/ is on the path for the gem's
