@@ -96,6 +96,22 @@ OUT=$(mktemp)
   # variable (O2 -> O3+native landed mid-archive).
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" build_config.rb | head -1 | tr -d "'" | tr '<' ' ' | tr -s ' ')
   echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  # The measuring condition, sampled NOW - loadavg would smear a whole
+  # minute of history over it (a browser closed 40s ago still shows).
+  # runnable/total is /proc/loadavg field 4: the scheduler's own
+  # instantaneous count, no averaging. busy% is a 200ms /proc/stat
+  # delta - wide enough to catch a compositor's frame cadence (~24
+  # frames at 120Hz), short enough to be "now". ENV_NOTE names what no
+  # sampler can (ENV_NOTE="plasma 4k120" ...); the desktop the numbers
+  # are measured beside is part of every number.
+  RUNQ=$(cut -d' ' -f4 /proc/loadavg)
+  read -r _ U1 N1 S1 I1 IO1 IRQ1 SIRQ1 ST1 _REST < /proc/stat
+  sleep 0.2
+  read -r _ U2 N2 S2 I2 IO2 IRQ2 SIRQ2 ST2 _REST < /proc/stat
+  BUSY=$(( (U2-U1)+(N2-N1)+(S2-S1)+(IRQ2-IRQ1)+(SIRQ2-SIRQ1)+(ST2-ST1) ))
+  TOTAL=$(( BUSY + (I2-I1)+(IO2-IO1) ))
+  [ "$TOTAL" -gt 0 ] && BUSYPCT=$((100*BUSY/TOTAL)) || BUSYPCT=0
+  echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
       "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
