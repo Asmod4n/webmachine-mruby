@@ -69,6 +69,11 @@ bool uring_present(mrb_state* mrb) {
 // select implementation, and that is worth SAYING - loudly, once, at
 // startup - because it is correct and not fast.
 //
+// SAYING is all the name is good for. The numbers in that banner are
+// read from the PROPERTY the header states (IO_URING_FD_CEILING), not
+// from the name: a limit derived from a name is a limit every later
+// implementation inherits whether or not it has one.
+//
 // When the real ring is in and the machine cannot run it, this refuses
 // BY NAME and stops. There is no second backend in the binary to fall
 // back to, and inventing a slow one at that moment would be a
@@ -83,11 +88,16 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label, bool h
                "webmachine: == why: this build found no liburing to compile against\n"
                "webmachine: == cost: CORRECT, NOT FAST. Every operation is readiness plus\n"
                "webmachine: ==   a classic syscall; recv bundles do not exist (one buffer\n"
-               "webmachine: ==   per completion); capacity is capped below FD_SETSIZE\n"
-               "webmachine: ==   (%d) because a connection is a process fd here\n"
+               "webmachine: ==   per completion)\n");
+#ifdef IO_URING_FD_CEILING
+  std::fprintf(stderr,
+               "webmachine: == cap: descriptors must stay below %llu - the API says so, and\n"
+               "webmachine: ==   a connection is a process fd here\n",
+               static_cast<unsigned long long>(IO_URING_FD_CEILING));
+#endif
+  std::fprintf(stderr,
                "webmachine: == fix: build on Linux >= 6.11 against liburing\n"
-               "webmachine: ================================================================\n",
-               FD_SETSIZE);
+               "webmachine: ================================================================\n");
 #else
   if (!have_uring) {
     std::fprintf(stderr,

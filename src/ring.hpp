@@ -134,20 +134,26 @@ static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
 // #169's raise: soft to hard, ceiling fs.nr_open - done ONCE at init,
 // and the capacity falls out of whatever finally stands.
 //
-// The select implementation caps it at FD_SETSIZE - 1 (user decision).
-// There a connection IS a process fd and would otherwise climb past
-// every stock fd_set in the process - mruby-c-ares is the concrete
-// neighbour. The io_uring path deliberately has no such cap: #169
-// measured why it would only cost there.
+// Which of the two paths below runs is decided by a PROPERTY the
+// liburing.h on this include path states, never by which
+// implementation it is (#171). IO_URING_FD_CEILING means "every
+// descriptor handed to these functions must stay strictly below this
+// number"; its ABSENCE means the API imposes no ceiling and the
+// process rlimits are the only bound. Asking WHO answered instead
+// would hand select's FD_SETSIZE to every implementation that comes
+// later - an IOCP build has no fd_set at all - so this file never
+// learns a name.
 inline uint64_t raise_nofile() {
   struct rlimit rl {};
   if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
-#ifdef SLIPSTREAM_IO
-  // Under slipstreamIO a connection IS a process fd, so the count has
-  // to stay under every stock fd_set in the process - mruby-c-ares is
-  // the concrete neighbour. This is the one place the two differ in
-  // KIND, which is why that header defines a name to ask.
-  rlim_t target = static_cast<rlim_t>(FD_SETSIZE - 1);
+#ifdef IO_URING_FD_CEILING
+  // The API states a ceiling, so descriptors are what it counts: here a
+  // connection IS a process fd, and the rlimit is the only thing that
+  // keeps fd numbers under that roof - for this process AND for every
+  // neighbour holding an fd_set, mruby-c-ares being the concrete one.
+  // The soft limit is moved TO that roof - down where it stood higher,
+  // up where it stood lower - so the two agree, once, at init.
+  rlim_t target = static_cast<rlim_t>(IO_URING_FD_CEILING - 1);
   if (target > rl.rlim_max) target = rl.rlim_max;
   if (rl.rlim_cur != target) {
     struct rlimit want {target, rl.rlim_max};
@@ -155,11 +161,12 @@ inline uint64_t raise_nofile() {
     if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
   }
   const uint64_t cur = static_cast<uint64_t>(rl.rlim_cur);
-  return cur < FD_SETSIZE ? cur : FD_SETSIZE - 1;
+  return cur < IO_URING_FD_CEILING ? cur : IO_URING_FD_CEILING - 1;
 #else
-  // With the real ring, connections live in the fixed-file table and
-  // consume no fd numbers: take everything the hard limit allows,
-  // ceiling fs.nr_open. #169 measured why a cap would only cost here.
+  // No ceiling stated: nothing but the rlimits bounds this. With the
+  // real ring, connections live in the fixed-file table and consume no
+  // fd numbers, so take everything the hard limit allows, ceiling
+  // fs.nr_open. #169 measured why a cap would only cost here.
   rlim_t target = rl.rlim_max;
   if (target == RLIM_INFINITY) {
     uint64_t nr_open = 1u << 20;  // kernel default; used only if /proc is unreadable

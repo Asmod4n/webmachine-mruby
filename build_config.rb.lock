@@ -28,5 +28,5 @@ builds:
     https://github.com/Asmod4n/slipstreamIO.git:
       url: https://github.com/Asmod4n/slipstreamIO.git
       branch: main
-      commit: 3d5e8f29a2ac1aa3f1f4f8a63f5fd0ee406d50a6
+      commit: a50c1b77895415b3b90d483bd42ca3e9f9d3b1e3
       version: 0.0.0
