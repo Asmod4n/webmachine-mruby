@@ -1,15 +1,19 @@
-# A websocket, and the one command that drives it:
+# A websocket, and the command that drives it:
 #
 #   mrbc -o websocket.mrb examples/websocket.rb
 #   webmachine-server --app websocket.mrb
-#   curl ws://127.0.0.1:8080/ws        # type a line, it comes back
+#   websocat ws://127.0.0.1:8080/ws     # type a line, it comes back
 #
-# (A curl without ws:// in `curl --version | grep Protocols` cannot
-# frame; it can still do the handshake:
+# websocat (https://github.com/vi/websocat), not curl: curl's CLI can
+# only RECEIVE websocket frames - its src/ carries no send path at all,
+# so what you type into `curl ws://...` never leaves the terminal. curl
+# is still good for the handshake:
+#
 #   curl -i --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
 #        -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
 #        -H 'Sec-WebSocket-Version: 13' http://127.0.0.1:8080/ws
-# which must answer 101 with Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=)
+#
+# which must answer 101 with Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 #
 # A websocket resource is NOT a Webmachine::Resource: no response, no
 # status, no flow survives the upgrade. It is instantiated once and
@@ -19,7 +23,10 @@
 # :policy, :too_big, :internal_error), nil says nothing.
 class Echo < Webmachine::WebsocketResource
   def on_data(data, binary)
-    return :close if data == 'bye'
+    # chomp: a line typed into websocat arrives WITH its newline, and a
+    # message is bytes - nothing strips anything for you here.
+    return :close if data.chomp == 'bye'
+
     data
   end
 

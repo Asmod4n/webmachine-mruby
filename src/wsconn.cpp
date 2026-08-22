@@ -36,6 +36,14 @@ struct WsResource {
   int data_argc = 1;
   int close_argc = 0;
   size_t max_message = kMaxWsMessageDefault;
+  // Does a TEXT message get checked for valid UTF-8 (RFC 6455 8.1)?
+  // TRUE by default, because the RFC says MUST and Autobahn's whole
+  // section 6 checks it. A route may answer false - the one reason to
+  // is throughput on a link whose payloads are known good (a private
+  // binary protocol that spells itself text), and the price is stated
+  // where it is paid: this endpoint then forwards whatever arrives,
+  // and a peer sending broken text gets an answer instead of 1007.
+  bool validate_text = true;
 };
 
 // One peer, as a STREAMING frame reader.
@@ -82,6 +90,13 @@ struct WsConn {
   mrb_value msg = mrb_nil_value();
   bool msg_live = false;
   uint8_t msg_op = 0;  // the opcode the message started with, 0 = none
+  // How much of a TEXT message has been validated as UTF-8 already.
+  // RFC 6455 8.1 lets a text message be rejected the moment it CANNOT
+  // become valid, and Autobahn 6.4.x tests exactly that: waiting for
+  // the last fragment is correct but late (measured NON-STRICT). So
+  // every chunk is validated as it lands, and only a sequence the
+  // chunk boundary cut in half is carried to the next one.
+  size_t validated = 0;
 
   bool sent_close = false;
   bool got_close = false;
@@ -126,12 +141,71 @@ void emit_close(WsConn* c, std::string& sink, uint16_t code, const char* reason,
   emit(sink, ws::kClose, payload, n);
 }
 
+// Can these 1-3 bytes still BECOME a valid UTF-8 sequence? simdutf
+// answers TOO_SHORT both for a sequence the chunk boundary cut and for
+// a lead byte followed by a byte that can never continue it - and the
+// difference is the whole of Autobahn 6.4.x: F4 90 is already
+// unrecoverable (F4 admits only 80-8F), so a server that waits for the
+// rest of the message is late. Table from RFC 3629, spelled here
+// because this is the ONE thing the library cannot tell us.
+bool valid_prefix(const unsigned char* p, size_t n) {
+  if (n == 0) return true;
+  const unsigned char b0 = p[0];
+  size_t need = 0;
+  unsigned char lo = 0x80, hi = 0xbf;  // the range the SECOND byte may take
+  if (b0 >= 0xc2 && b0 <= 0xdf) need = 1;
+  else if (b0 == 0xe0) { need = 2; lo = 0xa0; }
+  else if (b0 >= 0xe1 && b0 <= 0xec) need = 2;
+  else if (b0 == 0xed) { need = 2; hi = 0x9f; }
+  else if (b0 >= 0xee && b0 <= 0xef) need = 2;
+  else if (b0 == 0xf0) { need = 3; lo = 0x90; }
+  else if (b0 >= 0xf1 && b0 <= 0xf3) need = 3;
+  else if (b0 == 0xf4) { need = 3; hi = 0x8f; }
+  else return false;  // ASCII would not be pending, and 80-C1/F5+ never start one
+  if (n - 1 > need) return false;
+  for (size_t i = 1; i < n; i++) {
+    const unsigned char lim_lo = i == 1 ? lo : 0x80;
+    const unsigned char lim_hi = i == 1 ? hi : 0xbf;
+    if (p[i] < lim_lo || p[i] > lim_hi) return false;
+  }
+  return true;
+}
+
+// UTF-8 over a message that is still arriving (RFC 6455 8.1). `final`
+// is the last word: a sequence still incomplete then is invalid, while
+// before then it is simply a sequence the chunk boundary cut.
+bool utf8_ok(WsConn* c, bool final) {
+  if (!c->res->validate_text) return true;
+  const char* p = RSTRING_PTR(c->msg);
+  const size_t n = static_cast<size_t>(RSTRING_LEN(c->msg));
+  if (n <= c->validated) return true;
+  const simdutf::result r =
+      simdutf::validate_utf8_with_errors(p + c->validated, n - c->validated);
+  if (r.error == simdutf::error_code::SUCCESS) {
+    c->validated = n;
+    return true;
+  }
+  // TOO_SHORT within the last three bytes is the boundary case: a
+  // multi-byte sequence whose tail has not arrived yet. Anything else -
+  // and anything at all once the message is complete - is the message
+  // failing 8.1.
+  if (!final && r.error == simdutf::error_code::TOO_SHORT &&
+      c->validated + r.count + 4 > n) {
+    const size_t at = c->validated + r.count;
+    if (!valid_prefix(reinterpret_cast<const unsigned char*>(p) + at, n - at)) return false;
+    c->validated = at;
+    return true;
+  }
+  return false;
+}
+
 void drop_msg(WsConn* c) {
   if (!c->msg_live) return;
   mrb_gc_unregister(c->res->mrb, c->msg);
   c->msg = mrb_nil_value();
   c->msg_live = false;
   c->msg_op = 0;
+  c->validated = 0;
 }
 
 // on_close, once, however the connection ended. A raise here is
@@ -254,12 +328,11 @@ bool finish_frame(WsConn* c, std::string& sink) {
   // A data frame. Nothing is assembled here - the payload has been in
   // the message String since the moment its header was read.
   if (!c->fin) return true;  // more fragments follow
-  mrb_state* mrb = c->res->mrb;
-  if (c->msg_op == ws::kText &&
-      !simdutf::validate_utf8(RSTRING_PTR(c->msg), static_cast<size_t>(RSTRING_LEN(c->msg)))) {
-    // 8.1: a text message that is not valid UTF-8 fails the
-    // connection with 1007. The resource never sees it.
-    (void)mrb;
+  // 8.1: a text message that is not valid UTF-8 fails the connection
+  // with 1007, and the resource never sees it. Most of it was checked
+  // as it arrived; this is the last word on whatever the final chunk
+  // boundary left open.
+  if (c->msg_op == ws::kText && !utf8_ok(c, true)) {
     return fail(c, sink, ws::kCloseInvalidPayload);
   }
   return deliver(c, sink);
@@ -410,6 +483,12 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
         mrb_str_cat(mrb, c->msg, tmp, chunk);
         done += chunk;
       }
+      // As it lands, not when it ends (Autobahn 6.4.x): a text message
+      // that can no longer become valid is refused right here.
+      if (c->msg_op == ws::kText && !utf8_ok(c, false)) {
+        alive = fail(c, sink, ws::kCloseInvalidPayload);
+        break;
+      }
     }
     c->mask_off = static_cast<uint8_t>((c->mask_off + take) & 3);
     c->remaining -= take;
@@ -501,6 +580,24 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
   int open_argc = 0;
   out.have_open = argc_of(MRB_SYM(on_open), 0, &open_argc);
   out.have_close = argc_of(MRB_SYM(on_close), 2, &out.close_argc);
+
+  // RFC 6455 8.1's check, on or off per route - asked ONCE, like every
+  // other konst answer. A `?` predicate, per the house rule.
+  {
+    struct RClass* meta = mrb_class(mrb, klass);
+    mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(validate_text));
+    if (!MRB_METHOD_UNDEF_P(m)) {
+      const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM_Q(validate_text), 0, nullptr);
+      if (mrb->exc != nullptr) {
+        std::snprintf(err, errlen,
+                      "route.websocket: validate_text? raised (exception below)");
+        mrb_print_error(mrb);
+        mrb->exc = nullptr;
+        return false;
+      }
+      out.validate_text = mrb_test(v);
+    }
+  }
 
   // How big a message this route lets an mruby String become. Asked
   // ONCE on the class (its metaclass owns class methods), exactly like

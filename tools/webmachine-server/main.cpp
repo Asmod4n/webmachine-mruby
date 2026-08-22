@@ -88,6 +88,7 @@ int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
 
 int main(int argc, char** argv) {
   bool echo = false;
+  const char* pidfile = nullptr;
   webmachine::ServerOptions opts;
   const char* cli_unix = nullptr;
   int cli_port = 0;
@@ -100,14 +101,17 @@ int main(int argc, char** argv) {
       opts.app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       opts.assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
+      pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
                    "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] "
-                   "[--echo]\n"
+                   "[--pidfile PATH] [--echo]\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
-                   "  app (or without a conf listener) one of them is required.\n",
+                   "  app (or without a conf listener) one of them is required.\n"
+                   "  --pidfile writes this process's pid and removes the file on the way out.\n",
                    argv[0]);
       return 2;
     }
@@ -118,6 +122,25 @@ int main(int argc, char** argv) {
   }
   opts.cli_unix = cli_unix;
   opts.cli_port = cli_port;
+
+  // The pid, for whoever started this process and has to find it again
+  // - a supervisor, a test harness, a bench script. Written BEFORE
+  // anything can fail, so a file that exists names a process that at
+  // least got this far, and removed on the way out (the stop signal
+  // lands in the signalfd below, so the normal exit path runs).
+  //
+  // Pattern-matching the process table is the alternative, and it is
+  // worse than it looks: `pkill -f webmachine-server` also matches the
+  // shell that typed the command, which is how an afternoon gets spent.
+  if (pidfile != nullptr) {
+    FILE* pf = std::fopen(pidfile, "we");
+    if (pf == nullptr) {
+      std::fprintf(stderr, "webmachine: cannot write pidfile %s\n", pidfile);
+      return 1;
+    }
+    std::fprintf(pf, "%d\n", getpid());
+    std::fclose(pf);
+  }
 
   // TERM/INT are blocked and land in a signalfd the ring polls: the
   // stop arrives as a CQE, so it cannot race the ring wait the way a
@@ -186,5 +209,6 @@ int main(int argc, char** argv) {
     if (rc != 0) std::fprintf(stderr, "webmachine: %s\n", err);
   }
   mrb_close(mrb);
+  if (pidfile != nullptr) ::unlink(pidfile);
   return rc;
 }

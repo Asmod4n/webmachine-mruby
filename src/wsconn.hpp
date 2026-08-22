@@ -42,6 +42,16 @@
 // endpoint's duty and not an application decision; an incoming pong is
 // silent. A resource never sees either.
 //
+// Two more konst answers, asked once at fold and free per message:
+//
+//     def self.max_message = 8 * 1024 * 1024   # default 64 KiB
+//     def self.validate_text? = false          # default true
+//
+// validate_text? off means this endpoint stops checking incoming TEXT
+// messages against RFC 6455 8.1 - faster on a link whose payloads are
+// known good, and a peer sending broken text then gets an answer
+// instead of the 1007 the RFC asks for.
+//
 // What the method RETURNS is the whole protocol between Ruby and this
 // layer:
 //   String  - sent to the client, in the SAME kind the message arrived
