@@ -348,3 +348,19 @@ BM_flow_tier0_get_compiled       1.43 ns         1.43 ns   1964410539
 BM_flow_tier0_304_compiled       1.43 ns         1.43 ns   1954643432
 BM_runtime_1cb                  0.240 us        0.240 us     11822273
 BM_runtime_4cb                  0.294 us        0.294 us      9618416
+==== 2026-08-22T16:12Z repo=7b53d8b mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+    Req/Sec   182.67k     2.75k  187.14k    76.50%
+     50%  536.00us
+     99%  676.00us
+Requests/sec: 724634.01
+==== 2026-08-22T16:16Z repo=7b53d8b mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  430.00us
+     99%  534.00us
+Requests/sec: 910110.27
+==== 2026-08-22T16:22Z repo=7b53d8b mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  530.00us
+     99%  562.00us
+Requests/sec: 739818.77
