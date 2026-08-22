@@ -134,6 +134,14 @@ class Assets {
   void answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date, time_t sec,
                    std::string& sink);
 
+  // Ranged heads (#148) are built per request - the rare path, and
+  // they carry three request-dependent numbers no prebuild can hold.
+  // The window [first, last] counts octets of the WIRE body
+  // (wire_len), i.e. the selected representation's encoded bytes.
+  void answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
+                       const char* date, std::string& sink);
+  void answer_416_head(const AssetEntry& e, Variant v, const char* date, std::string& sink);
+
   // The wire body and the ONE place that knows its shape: gzip header
   // + deflate bytes + trailer for method 8, the stored bytes alone for
   // method 0. Both protocols copy through here - h1 chunks, h2 frames,

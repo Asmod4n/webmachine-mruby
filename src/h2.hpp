@@ -133,6 +133,12 @@ struct H2Stream {
   // the entry and the finished verdict, never a value pointer.
   const AssetEntry* asset = nullptr;
   uint16_t asset_status = 0;
+  // The answer's window into the wire body (#148): the full body for
+  // a 200, the satisfied range for a 206. Resolved at dispatch like
+  // the verdict - the Range/If-Range values die with the decode
+  // buffer.
+  size_t asset_off = 0;
+  size_t asset_end = 0;
   // A parked DELIVERY (#168): no byte lies in the park, an offset
   // does. src_off walks [0, src_len) over Assets::copy_wire's virtual
   // wire body; `pending` (bytes) remains for dynamic bodies, which

@@ -243,8 +243,13 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     const bool head_only = existing->head_only;
     const AssetEntry* asset = existing->asset;
     const uint16_t asset_status = existing->asset_status;
+    const size_t asset_off = existing->asset_off;
+    const size_t asset_end = existing->asset_end;
     if (asset != nullptr) {
-      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, sink)) return false;
+      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
+                           asset_end, sink)) {
+        return false;
+      }
       return true;
     }
     if (!h2_answer(st0, stream_id, facts, head_only, sink)) return false;
@@ -347,16 +352,39 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   // entry and the finished verdict.
   const AssetEntry* asset = nullptr;
   uint16_t asset_status = 0;
+  size_t asset_off = 0;
+  size_t asset_end = 0;
   if (assets_ != nullptr) {
     if (AssetEntry* ae = assets_->find(path_val, path_vlen)) {
       asset = ae;
       asset_status = assets_->verdict(*ae, facts.method, facts, vals);
+      asset_end = Assets::wire_len(*ae);
+      // Range (#148), resolved here for the same reason the verdict
+      // is: GET only, 200 only, past a matching If-Range; ignored
+      // forms serve the full 200 (h1's rules, verbatim).
+      if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
+          vals.range != nullptr &&
+          (vals.if_range == nullptr ||
+           http::if_range_matches(vals.if_range, vals.if_range_len, ae->etag,
+                                  sizeof(ae->etag)))) {
+        size_t rf = 0, rl = 0;
+        switch (http::parse_range(vals.range, vals.range_len, asset_end, &rf, &rl)) {
+          case http::RangeParse::kOne:
+            asset_status = 206;
+            asset_off = rf;
+            asset_end = rl + 1;
+            break;
+          case http::RangeParse::kUnsat: asset_status = 416; break;
+          case http::RangeParse::kNone: break;
+        }
+      }
     }
   }
 
   if (end_stream) {
     if (asset != nullptr) {
-      return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, sink);
+      return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
+                             asset_end, sink);
     }
     // h2.hpp already claimed this ("A stream answered in full inside
     // its own dispatch never appears here"); it just was not true yet.
@@ -375,6 +403,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   stx.head_only = head_only;
   stx.asset = asset;
   stx.asset_status = asset_status;
+  stx.asset_off = asset_off;
+  stx.asset_end = asset_end;
   return true;
 }
 
@@ -406,6 +436,9 @@ void Http1::h2_build_asset_blocks(AssetEntry& e) {
     hp_len(b, sizeof(e.lm));
     b.append(e.lm, sizeof(e.lm));
   }
+  hp_name_idx(b, 18);  // accept-ranges (#148): advertised because true
+  hp_len(b, 5);
+  b.append("bytes", 5);
 
   std::string& c = e.h2_304;
   c.clear();
@@ -435,18 +468,62 @@ void Http1::h2_build_asset_shared() {
 // contiguous buffer. Bypasses the head_cache - it is keyed by status
 // alone and asset heads differ per entry.
 bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
-                            uint16_t status, bool head_only, std::string& sink) {
+                            uint16_t status, bool head_only, size_t win_off, size_t win_end,
+                            std::string& sink) {
   H2State& h2 = *st0.h2;
+  std::string rblk;  // 206/416 blocks carry request numbers: built per request (rare path)
   const std::string* blk;
   switch (status) {
     case 200: blk = &e.h2_200; break;
+    case 206: {
+      rblk.push_back(static_cast<char>(0x8a));  // :status 206, indexed
+      hp_name_idx(rblk, 31);
+      hp_len(rblk, e.ctype.size());
+      rblk.append(e.ctype);
+      if (e.deflated) {
+        hp_name_idx(rblk, 26);
+        hp_len(rblk, 4);
+        rblk.append("gzip", 4);
+        hp_name_idx(rblk, 59);
+        hp_len(rblk, 15);
+        rblk.append("Accept-Encoding", 15);
+      }
+      hp_name_idx(rblk, 34);
+      hp_len(rblk, sizeof(e.etag));
+      rblk.append(e.etag, sizeof(e.etag));
+      hp_name_idx(rblk, 30);  // content-range
+      const std::string cr = "bytes " + std::to_string(win_off) + "-" +
+                             std::to_string(win_end - 1) + "/" +
+                             std::to_string(Assets::wire_len(e));
+      hp_len(rblk, cr.size());
+      rblk.append(cr);
+      blk = &rblk;
+      break;
+    }
+    case 416: {
+      hp_name_idx(rblk, 8);  // :status literal
+      hp_len(rblk, 3);
+      rblk.append("416", 3);
+      if (e.deflated) {
+        hp_name_idx(rblk, 59);
+        hp_len(rblk, 15);
+        rblk.append("Accept-Encoding", 15);
+      }
+      hp_name_idx(rblk, 30);
+      const std::string cr = "bytes */" + std::to_string(Assets::wire_len(e));
+      hp_len(rblk, cr.size());
+      rblk.append(cr);
+      blk = &rblk;
+      break;
+    }
     case 304: blk = &e.h2_304; break;
     case 405: blk = &h2_asset405_.bytes; break;
     case 406: blk = &h2_asset406_.bytes; break;
     default: blk = &h2_store_[index_[status]].bytes; break;  // 412/501: the shared store
   }
 
-  const size_t blen = status == 200 ? Assets::wire_len(e) : 0;
+  const bool has_body = status == 200 || status == 206;
+  const size_t blen = has_body ? win_end - win_off : 0;
   const bool no_data = head_only || blen == 0;
 
   // The date rides the encoder lane, as everywhere.
@@ -484,11 +561,11 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   while (off < give) {
     size_t n = give - off;
     if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-    const bool last = off + n == blen;
+    const bool last = win_off + off + n == win_end;
     h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
                         stream_id);
     sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    Assets::copy_wire(e, off, n, sink);
+    Assets::copy_wire(e, win_off + off, n, sink);
     off += n;
   }
   // Debit BEFORE any open() can move the stream vector (h2_answer's
@@ -498,11 +575,12 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   if (give < blen) {
     // No byte lies in the park, an offset does (#168): the remainder
     // is three numbers, drained by h2_flush_pending on WINDOW_UPDATE
-    // and on every drained sink.
+    // and on every drained sink. src_off/src_len are absolute wire
+    // offsets, so a 206 window parks exactly like a full body.
     H2Stream& keep = h2.open(stream_id);
     keep.src = &e;
-    keep.src_off = give;
-    keep.src_len = blen;
+    keep.src_off = win_off + give;
+    keep.src_len = win_end;
     keep.headers_done = true;
     keep.half_closed_remote = true;
     if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
@@ -758,12 +836,14 @@ bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
   }
   if (st.xfer != nullptr) {
     const AssetEntry& e = *st.xfer;
-    const size_t wlen = Assets::wire_len(e);
+    const size_t lim = st.xfer_end;  // full body or a 206 window alike
     // The file-backed span within the wire body: everything for a
     // stored entry, the deflate middle for a method-8 one (the gzip
-    // header and trailer live in memory and go as bytes).
+    // header and trailer live in memory and go as bytes). Clipped to
+    // the window - a range's octets are wire-body octets.
     const size_t span_lo = e.deflated ? sizeof(e.gz_hdr) : 0;
-    const size_t span_hi = span_lo + e.comp_size;
+    const size_t raw_hi = span_lo + e.comp_size;
+    const size_t span_hi = raw_hi < lim ? raw_hi : lim;
     if (splice_ok && st.xfer_off >= span_lo && st.xfer_off < span_hi &&
         span_hi - st.xfer_off >= kSpliceMin) {
       size_t take = span_hi - st.xfer_off;
@@ -782,22 +862,24 @@ bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
       // Advanced NOW: a failed chain kills the connection (never the
       // process), so there is no retry to rewind for.
       st.xfer_off += take;
-      if (st.xfer_off == wlen) {
+      if (st.xfer_off == lim) {
         st.xfer = nullptr;
         st.xfer_off = 0;
+        st.xfer_end = 0;
       }
       return true;
     }
-    size_t take = wlen - st.xfer_off;
+    size_t take = lim - st.xfer_off;
     if (take > kDeliverChunk) take = kDeliverChunk;
     // With a pipe at hand, a bytes round stops at the span's edge so
     // the NEXT round can splice from it.
     if (splice_ok && st.xfer_off < span_lo) take = span_lo - st.xfer_off;
     Assets::copy_wire(e, st.xfer_off, take, sink);
     st.xfer_off += take;
-    if (st.xfer_off < wlen) return true;
+    if (st.xfer_off < lim) return true;
     st.xfer = nullptr;
     st.xfer_off = 0;
+    st.xfer_end = 0;
   }
   if (st.carry.empty()) return true;
   // What was pipelined behind a transfer parses now (a plain partial

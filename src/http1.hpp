@@ -78,7 +78,11 @@ class Http1 {
     // the next chunk each time the sink drains. h1 is serial, so one
     // source suffices; bytes pipelined behind it wait in the carry.
     const AssetEntry* xfer = nullptr;
+    // The transfer's window into the wire body: [xfer_off, xfer_end).
+    // A full body is {0, wire_len}; a 206 (#148) is the satisfied
+    // range - the SAME machinery walks both.
     size_t xfer_off = 0;
+    size_t xfer_end = 0;
     void reset(uint8_t li) {
       carry.clear();
       body_skip = 0;
@@ -88,6 +92,7 @@ class Http1 {
       h2 = nullptr;
       xfer = nullptr;
       xfer_off = 0;
+      xfer_end = 0;
     }
     ~Conn() { h2_free(h2); }
   };
@@ -187,8 +192,10 @@ class Http1 {
   // is segments over the mapping instead of one buffer.
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();
+  // win_off/win_end: the answer's window into the wire body - full for
+  // 200, the satisfied range for 206 (#148); ignored otherwise.
   bool h2_asset_answer(Conn& st, uint32_t stream_id, const AssetEntry& e, uint16_t status,
-                       bool head_only, std::string& sink);
+                       bool head_only, size_t win_off, size_t win_end, std::string& sink);
 
   time_t sec_ = 0;
   std::vector<Variants> store_;

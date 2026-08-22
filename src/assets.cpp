@@ -262,6 +262,9 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
     }
     f.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
     if (e.lm_valid) f.append("Last-Modified: ").append(e.lm, sizeof(e.lm)).append("\r\n");
+    // Advertised because it is true (#148, RFC 9110 14.3) - both
+    // methods range over the wire body through the same copy_wire.
+    f.append("Accept-Ranges: bytes\r\n");
     // gzip framing costs exactly 18 bytes: 10 header + 8 trailer.
     const size_t clen = e.deflated ? e.comp_size + 18 : e.comp_size;
     f.append("Content-Length: ").append(std::to_string(clen)).append("\r\n");
@@ -371,6 +374,50 @@ void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* 
   }
   patch_date(*r, date, sec);
   sink.append(r->bytes);
+}
+
+namespace {
+
+// The connection spelling for a per-request head (no placeholder, the
+// date goes in directly - nothing patches these later).
+const char* conn_of(Assets::Variant v) {
+  switch (v) {
+    case Assets::kKeep: return "Connection: keep-alive\r\n";
+    case Assets::kClose: return "Connection: close\r\n";
+    default: return "";
+  }
+}
+
+}  // namespace
+
+void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
+                             const char* date, std::string& sink) {
+  sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
+  sink.append(date, http::kDateLen);
+  sink.append("\r\n").append(conn_of(v));
+  sink.append("Content-Type: ").append(e.ctype).append("\r\n");
+  if (e.deflated) {
+    sink.append("Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+  }
+  sink.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
+  sink.append("Accept-Ranges: bytes\r\n");
+  // RFC 9110 14.4/15.3.7: the satisfied range and the complete length,
+  // both counting the wire body's octets.
+  sink.append("Content-Range: bytes ").append(std::to_string(first)).append("-");
+  sink.append(std::to_string(last)).append("/").append(std::to_string(wire_len(e)));
+  sink.append("\r\nContent-Length: ").append(std::to_string(last - first + 1));
+  sink.append("\r\n\r\n");
+}
+
+void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
+                             std::string& sink) {
+  sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
+  sink.append(date, http::kDateLen);
+  sink.append("\r\n").append(conn_of(v));
+  if (e.deflated) sink.append("Vary: Accept-Encoding\r\n");
+  // 15.5.17: the unsatisfied-range form names the complete length.
+  sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e)));
+  sink.append("\r\nContent-Length: 0\r\n\r\n");
 }
 
 void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {

@@ -82,6 +82,7 @@ constexpr const char* reason(uint16_t status) {
     case 201: return "Created";
     case 202: return "Accepted";
     case 204: return "No Content";
+    case 206: return "Partial Content";
     case 300: return "Multiple Choices";
     case 301: return "Moved Permanently";
     case 303: return "See Other";
@@ -100,6 +101,7 @@ constexpr const char* reason(uint16_t status) {
     case 413: return "Content Too Large";
     case 414: return "URI Too Long";
     case 415: return "Unsupported Media Type";
+    case 416: return "Range Not Satisfiable";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
@@ -196,7 +198,77 @@ struct ReqValues {
   size_t if_match_len = 0;
   const char* if_none_match = nullptr;
   size_t if_none_match_len = 0;
+  // Range/If-Range never touch the graph (webmachine has no range
+  // node - a representation concern, not a decision one), so they set
+  // no fact and leave `plain` alone; only the asset tier reads them.
+  const char* range = nullptr;
+  size_t range_len = 0;
+  const char* if_range = nullptr;
+  size_t if_range_len = 0;
 };
+
+// Range: bytes=first-last | first- | -suffix, ONE range only (RFC 9110
+// §14.1.2). kNone = act as if the field were absent - a server MAY
+// ignore Range entirely (§14.2), so a multi-range request, a foreign
+// unit or a malformed value degrades to the full 200, stated here
+// rather than discovered. kUnsat = 416 (§15.5.17). `complete` counts
+// the SELECTED representation's octets - for a Content-Encoding: gzip
+// response that is the compressed stream (§14.1.2; ranging the
+// uncompressed bytes under a gzip coding would be silent corruption).
+enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
+inline RangeParse parse_range(const char* v, size_t n, size_t complete, size_t* first,
+                              size_t* last) {
+  if (n < 7 || !tok_eq(v, 6, "bytes=", 6)) return RangeParse::kNone;
+  size_t i = 6;
+  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
+  const auto digits = [&](size_t* out) -> bool {  // 1*DIGIT, overflow-checked
+    bool any = false;
+    size_t val = 0;
+    while (i < n && v[i] >= '0' && v[i] <= '9') {
+      size_t t = 0;
+      if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
+          __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
+        return false;
+      }
+      any = true;
+      i++;
+    }
+    *out = val;
+    return any;
+  };
+  size_t a = 0, b = 0;
+  const bool have_a = digits(&a);
+  if (i >= n || v[i] != '-') return RangeParse::kNone;
+  i++;
+  const bool have_b = digits(&b);
+  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
+  if (i != n) return RangeParse::kNone;  // a second range or trailing junk: ignore
+  if (!have_a && !have_b) return RangeParse::kNone;
+  if (complete == 0) return RangeParse::kUnsat;  // no byte satisfies any range
+  if (!have_a) {  // -suffix: the final b octets
+    if (b == 0) return RangeParse::kUnsat;
+    *first = b >= complete ? 0 : complete - b;
+    *last = complete - 1;
+    return RangeParse::kOne;
+  }
+  if (have_b && b < a) return RangeParse::kNone;  // malformed: ignore
+  if (a >= complete) return RangeParse::kUnsat;
+  *first = a;
+  *last = have_b ? (b < complete - 1 ? b : complete - 1) : complete - 1;
+  return RangeParse::kOne;
+}
+
+// If-Range holds ONE validator (RFC 9110 §14.2): an entity-tag,
+// compared STRONGLY (a weak tag can never match), or an HTTP-date -
+// unparsed here, and an unmatched validator lawfully serves the full
+// 200, so a date reads as "no match" and stays correct.
+inline bool if_range_matches(const char* v, size_t n, const char* tag, size_t taglen) {
+  size_t i = 0;
+  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
+  size_t e = n;
+  while (e > i && (v[e - 1] == ' ' || v[e - 1] == '\t')) e--;
+  return e - i == taglen && std::memcmp(v + i, tag, taglen) == 0;
+}
 
 // Accept-Encoding, asked the one question this tree has: may gzip be
 // sent? (RFC 9110 §12.5.3.) Most specific wins: an explicit gzip (or
@@ -299,6 +371,13 @@ template <class OnWire>
 inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
                           flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
   switch (nlen) {
+    case 5:
+      if (tok_eq(name, nlen, "range", 5)) {
+        vals.range = value;  // no fact, no plain: the graph has no range node
+        vals.range_len = vlen;
+        return;
+      }
+      break;
     case 6:
       if (tok_eq(name, nlen, "accept", 6)) {
         facts.has_accept = true;
@@ -307,6 +386,11 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       }
       break;
     case 8:
+      if (tok_eq(name, nlen, "if-range", 8)) {
+        vals.if_range = value;  // like range: representation-level only
+        vals.if_range_len = vlen;
+        return;
+      }
       if (tok_eq(name, nlen, "if-match", 8)) {
         facts.has_if_match = true;
         facts.plain = false;

@@ -399,21 +399,57 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
         } else {
           const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
                                                 : (persist ? Assets::kKeep : Assets::kClose);
-          assets_->answer_head(*ae, as, av, date_, sec_, sink);
-          if (as == 200 && !head_only) {
-            // Delivery (#168): a body within one round's budget is the
-            // degenerate one-append case - head and body together,
-            // today's fast path. Past it the entry becomes the
-            // connection's source and every body round goes through
-            // more(), where the splice choice lives; only the head
-            // leaves here.
-            const size_t wlen = Assets::wire_len(*ae);
-            if (wlen <= kDeliverChunk) {
-              Assets::copy_wire(*ae, 0, wlen, sink);
+          // Range (#148): defined for GET alone (RFC 9110 14.2 - a
+          // HEAD carrying Range answers the plain 200 head), on the
+          // 200 verdict alone, and only past a matching If-Range (an
+          // unmatched or date-form validator lawfully serves the full
+          // 200). The window counts WIRE-body octets - a range over a
+          // gzip response ranges the encoded stream, structurally.
+          uint16_t rs = 0;
+          size_t rf = 0, rl = 0;
+          if (as == 200 && !head_only && facts.method == flow::Method::kGet &&
+              vals.range != nullptr &&
+              (vals.if_range == nullptr ||
+               http::if_range_matches(vals.if_range, vals.if_range_len, ae->etag,
+                                      sizeof(ae->etag)))) {
+            switch (http::parse_range(vals.range, vals.range_len, Assets::wire_len(*ae),
+                                      &rf, &rl)) {
+              case http::RangeParse::kOne: rs = 206; break;
+              case http::RangeParse::kUnsat: rs = 416; break;
+              case http::RangeParse::kNone: break;  // ignored: the full 200
+            }
+          }
+          if (rs == 416) {
+            assets_->answer_416_head(*ae, av, date_, sink);
+          } else if (rs == 206) {
+            assets_->answer_206_head(*ae, av, rf, rl, date_, sink);
+            const size_t rlen = rl - rf + 1;
+            if (rlen <= kDeliverChunk) {
+              Assets::copy_wire(*ae, rf, rlen, sink);
             } else {
               st.xfer = ae;
-              st.xfer_off = 0;
+              st.xfer_off = rf;
+              st.xfer_end = rl + 1;
               started_xfer = true;
+            }
+          } else {
+            assets_->answer_head(*ae, as, av, date_, sec_, sink);
+            if (as == 200 && !head_only) {
+              // Delivery (#168): a body within one round's budget is
+              // the degenerate one-append case - head and body
+              // together, today's fast path. Past it the entry becomes
+              // the connection's source and every body round goes
+              // through more(), where the splice choice lives; only
+              // the head leaves here.
+              const size_t wlen = Assets::wire_len(*ae);
+              if (wlen <= kDeliverChunk) {
+                Assets::copy_wire(*ae, 0, wlen, sink);
+              } else {
+                st.xfer = ae;
+                st.xfer_off = 0;
+                st.xfer_end = wlen;
+                started_xfer = true;
+              }
             }
           }
         }

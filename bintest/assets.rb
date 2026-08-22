@@ -478,7 +478,13 @@ assert('splice: big bodies over TCP arrive whole, interleaved with small ones, s
         assert_true h2a.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
         h3, b3 = a_read(s)
         assert_equal A_BIG.b, b3
-        wire[args.empty? ? :spliced : :iovec] = [b1, b2, b3]
+        # a ranged window wider than one chunk splices too, clipped to
+        # the window's edges (#148 through #168's machinery)
+        s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
+        h4, b4 = a_read(s)
+        assert_true h4.start_with?('HTTP/1.1 206')
+        assert_equal A_BIG.b[1000..201000], b4
+        wire[args.empty? ? :spliced : :iovec] = [b1, b2, b3, b4]
       end
     end
   end
@@ -486,4 +492,118 @@ assert('splice: big bodies over TCP arrive whole, interleaved with small ones, s
   # wire are the same bytes - splice may only ever change the path,
   # never the payload.
   assert_equal wire[:iovec], wire[:spliced]
+end
+
+# --- ranges (#148): one range, wire-body octets, 206/416/If-Range ---
+
+def a_wire_gzip(data)
+  z = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -Zlib::MAX_WBITS)
+  c = z.deflate(data, Zlib::FINISH)
+  z.close
+  "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff".b + c + [Zlib.crc32(data), data.bytesize].pack('VV')
+end
+
+assert('ranges: 206 slices the wire body - stored AND the gzip stream alike') do
+  a_server(a_big_zip) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 206 Partial Content')
+      assert_true head.match?(%r{^Content-Range: bytes 0-9/#{A_BIG.bytesize}\r$}i)
+      assert_equal A_BIG.b[0, 10], body
+      # suffix form: the final 10 octets
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=-10\r\n\r\n")
+      head, body = a_read(s)
+      assert_equal A_BIG.b[-10, 10], body
+      # open end from an offset
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=307000-\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.match?(%r{^Content-Range: bytes 307000-#{A_BIG.bytesize - 1}/#{A_BIG.bytesize}\r$}i)
+      assert_equal A_BIG.b[307000..], body
+      # A range over a Content-Encoding: gzip response ranges the
+      # ENCODED stream (RFC 9110 14.1.2) - anything else is silent
+      # corruption. The wire body is reconstructable bit for bit.
+      wire = a_wire_gzip(A_BIG)
+      s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=5-1004\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 206')
+      assert_true head.match?(/^Content-Encoding: gzip\r$/i)
+      assert_true head.match?(%r{^Content-Range: bytes 5-1004/#{wire.bytesize}\r$}i)
+      assert_equal wire[5, 1000], body
+      # a range wider than one delivery chunk walks the window through
+      # the transfer machinery
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
+      _head, body = a_read(s)
+      assert_equal A_BIG.b[1000..201000], body
+    end
+  end
+end
+
+assert('ranges: 416, ignored forms, If-Range, HEAD') do
+  a_server(a_big_zip) do |sock|
+    etag = format('"%08x"', Zlib.crc32(A_BIG))
+    UNIXSocket.open(sock) do |s|
+      # past the end: unsatisfiable, names the complete length
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=999999999-\r\n\r\n")
+      head, = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 416 Range Not Satisfiable')
+      assert_true head.match?(%r{^Content-Range: bytes \*/#{A_BIG.bytesize}\r$}i)
+      # multi-range and foreign units degrade to the full 200 (14.2:
+      # a server MAY ignore Range) - stated, tested, never a surprise
+      ['bytes=0-1,5-6', 'chapters=1-2', 'bytes=9-5'].each do |r|
+        s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: #{r}\r\n\r\n")
+        head, body = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "#{r} answered #{head[0, 20].inspect}"
+        assert_equal A_BIG.bytesize, body.bytesize
+      end
+      # If-Range: the matching validator keeps the range; a stale one
+      # (and the unparsed date form) serves the whole representation
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\nIf-Range: #{etag}\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 206')
+      assert_equal 10, body.bytesize
+      ['"deadbeef"', 'Sat, 01 Mar 2025 12:04:06 GMT'].each do |ir|
+        s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\nIf-Range: #{ir}\r\n\r\n")
+        head, body = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "If-Range #{ir} answered #{head[0, 20].inspect}"
+        assert_equal A_BIG.bytesize, body.bytesize
+      end
+      # Range handling is defined for GET alone: HEAD answers its
+      # plain 200 head, which now advertises the ability
+      s.write("HEAD /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\n\r\n")
+      head, = a_read(s, body: false)
+      assert_true head.start_with?('HTTP/1.1 200')
+      assert_true head.match?(/^Accept-Ranges: bytes\r$/i)
+      assert_true head.match?(/^Content-Length: #{A_BIG.bytesize}\r$/i)
+    end
+  end
+end
+
+assert('ranges over h2: 206 block and windowed DATA') do
+  a_server(a_big_zip) do |sock|
+    UNIXSocket.open(sock) do |s|
+      settings = [4, 1 << 24].pack('nN')
+      s.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b + a_h2_frame(4, 0, 0, settings))
+      t, = a_h2_next(s)
+      raise "expected server SETTINGS, got #{t}" unless t == 4
+      t, f, = a_h2_next(s)
+      raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
+      s.write(a_h2_frame(8, 0, 0, [1 << 24].pack('N')))
+      block = a_h2_get('/big.bin')
+      block << "\x00\x05range\x0Cbytes=10-109".b  # literal new-name range
+      s.write(a_h2_frame(1, 0x05, 1, block))
+      t, _f, st, blk = a_h2_next(s)
+      assert_equal 1, t
+      assert_equal 0x8a, blk.getbyte(0)  # :status 206, indexed
+      assert_true blk.include?("bytes 10-109/#{A_BIG.bytesize}".b)
+      body = +''.b
+      loop do
+        t, f, _st2, payload = a_h2_next(s)
+        assert_equal 0, t
+        body << payload
+        break if (f & 0x1) == 0x1
+      end
+      assert_equal A_BIG.b[10, 100], body
+    end
+  end
 end
