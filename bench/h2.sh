@@ -60,8 +60,22 @@ command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2;
 h2load --help 2>&1 | grep -q -- --h1 || { echo "this h2load lacks --h1" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
+# The server loads bytecode only (#100). A .rb APP is compiled here
+# with the tree's own mrbc into a scratch .mrb; the harness line keeps
+# naming the .rb source. An .mrb APP (or none) passes through as-is.
 APP_ARGS=()
-[ -n "$APP" ] && APP_ARGS=(--app "$APP")
+if [ -n "${APP:-}" ]; then
+  case "$APP" in
+    *.rb)
+      MRBC="${MRBC:-mruby/bin/mrbc}"
+      [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
+      APP_MRB=/tmp/wm-h2-app.mrb
+      "$MRBC" -o "$APP_MRB" "$APP" || exit 1
+      APP_ARGS=(--app "$APP_MRB")
+      ;;
+    *) APP_ARGS=(--app "$APP") ;;
+  esac
+fi
 
 "$BIN" --port "$PORT" "${APP_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
 SRV=$!
