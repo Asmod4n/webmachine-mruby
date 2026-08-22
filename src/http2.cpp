@@ -201,6 +201,13 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
   return false;  // feed's contract: close once the sink has drained
 }
 
+// RFC 9113 5.1's three states, out of two numbers: a stream in the
+// table is OPEN (or half-closed), an id above everything ever accepted
+// is IDLE, and anything else is CLOSED. Idle and closed earn different
+// errors on almost every frame type, which is the whole reason this
+// exists.
+static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_opened; }
+
 void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink) {
   unsigned char payload[4];
   put_u32(payload, code);
@@ -288,7 +295,12 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   const char* path_val = nullptr;
   size_t path_vlen = 0;
   bool ok = true, saw_regular = false;
-  bool have_method = false, have_path = false, have_scheme = false;
+  bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
+  // 8.1.2.6: what the request CLAIMS its body is. Compared against the
+  // DATA that actually arrives - here if this dispatch is the whole
+  // request, on the stream if a body follows.
+  size_t claimed_len = 0;
+  bool have_claimed_len = false;
   for (size_t i = 0; ok && i < nq; i += 4) {
     const char* name = h2.hdrbuf.data() + quads[i];
     const size_t nlen = quads[i + 1];
@@ -303,17 +315,23 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
         ok = false;
         break;
       }
+      // 8.3: exactly ONE of each pseudo-field. A second one is not a
+      // later value winning - it is a malformed request.
       if (nlen == 7 && std::memcmp(name, ":method", 7) == 0) {
+        if (have_method) { ok = false; break; }
         have_method = true;
         facts.method = http::parse_method(val, vlen);
       } else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) {
+        if (path_val != nullptr) { ok = false; break; }
         have_path = vlen != 0;
         path_val = val;  // the asset tier reads it; the router (#116) will too
         path_vlen = vlen;
       } else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0) {
+        if (have_scheme) { ok = false; break; }
         have_scheme = true;  // h2c: the scheme is a claim, the socket is the fact
       } else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) {
-        // host's seat; nothing reads it at this tier
+        if (have_authority) { ok = false; break; }
+        have_authority = true;  // host's seat; nothing reads it at this tier
       } else {
         ok = false;
       }
@@ -328,11 +346,28 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     }
     if (!ok) break;
     http::header_switch(name, nlen, val, vlen, facts, vals,
-                        [&](const char* n, size_t nl, const char*, size_t) {
-                          // content-length is advisory here (DATA frames
-                          // are counted instead); connection-specific
-                          // fields are malformed per 8.2.2.
+                        [&](const char* n, size_t nl, const char* v, size_t vl) {
+                          // Connection-specific fields are malformed per
+                          // 8.2.2; content-length is a CLAIM to be
+                          // checked against the DATA (8.1.2.6); te may
+                          // say "trailers" and nothing else (8.2.2).
                           switch (nl) {
+                            case 2:
+                              if (http::tok_eq(n, nl, "te", 2) &&
+                                  !(vl == 8 && http::tok_eq(v, vl, "trailers", 8))) {
+                                ok = false;
+                              }
+                              break;
+                            case 14:
+                              if (http::tok_eq(n, nl, "content-length", 14)) {
+                                if (have_claimed_len) { ok = false; break; }
+                                have_claimed_len = true;
+                                if (http::parse_content_length(v, vl, &claimed_len) !=
+                                    http::ClStatus::kOk) {
+                                  ok = false;
+                                }
+                              }
+                              break;
                             case 10:
                               if (http::tok_eq(n, nl, "connection", 10) ||
                                   http::tok_eq(n, nl, "keep-alive", 10)) {
@@ -358,6 +393,11 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   }
 
   if (stream_id > h2.last_stream) h2.last_stream = stream_id;
+  // The state machine's other half (5.1): from here this id counts as
+  // used, so a later frame naming it - or naming a SMALLER one - is
+  // measured against a stream that once existed rather than an idle
+  // one.
+  if (stream_id > h2.highest_opened) h2.highest_opened = stream_id;
   // The cap counts streams the connection still OWES something - a body
   // to arrive, or a parked remainder to drain. One answered inside its
   // own dispatch owes nothing and never enters the table, so it cannot
@@ -415,6 +455,12 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
 
   if (end_stream) {
+    // 8.1.2.6: END_STREAM here means no DATA is coming, so a non-zero
+    // content-length was a claim about a body that never existed.
+    if (have_claimed_len && claimed_len != 0) {
+      h2_rst(st0, stream_id, kH2ProtocolError, sink);
+      return true;
+    }
     if (asset != nullptr) {
       return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
                              asset_end, sink);
@@ -452,6 +498,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   // #116 slice 4: what a callback will be allowed to ask about, kept
   // because this request answers after its decode buffer is gone.
   stx.target.assign(path_val, path_vlen);
+  stx.content_length = claimed_len;
+  stx.have_content_length = have_claimed_len;
   return true;
 }
 
@@ -978,7 +1026,14 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
       case kH2Data: {
         if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
         H2Stream* stp = h2.find(stream);
-        if (stp == nullptr || !stp->headers_done || stp->half_closed_remote) {
+        if (stp == nullptr) {
+          // 5.1: DATA on an IDLE stream is a connection error; on a
+          // CLOSED one it is the stream's, and the connection lives.
+          if (h2_is_idle(h2, stream)) return h2_error(st0, kH2ProtocolError, sink);
+          h2_rst(st0, stream, kH2StreamClosed, sink);
+          break;
+        }
+        if (!stp->headers_done || stp->half_closed_remote) {
           h2_rst(st0, stream, kH2StreamClosed, sink);
           break;
         }
@@ -1009,6 +1064,12 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           emit_control(sink, kH2WindowUpdate, 0, stream, inc, 4);
         }
         if (flags & kH2FlagEndStream) {
+          // 8.1.2.6: the body that arrived must be the body that was
+          // announced. Checked here, where both numbers finally exist.
+          if (stp->have_content_length && stp->body_len != stp->content_length) {
+            h2_rst(st0, stream, kH2ProtocolError, sink);
+            break;
+          }
           stp->half_closed_remote = true;
           // Copies: h2_answer may grow the stream vector under stp.
           const flow::ReqFacts facts = stp->facts;
@@ -1024,6 +1085,13 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
 
       case kH2Headers: {
         if (stream == 0 || (stream & 1) == 0) return h2_error(st0, kH2ProtocolError, sink);
+        // 5.1 / 5.1.1: HEADERS opens a stream, and only an IDLE id can
+        // be opened - an id at or below the highest one ever accepted
+        // is either closed or out of order, and both are the
+        // connection's error.
+        if (h2.find(stream) == nullptr && !h2_is_idle(h2, stream)) {
+          return h2_error(st0, kH2ProtocolError, sink);
+        }
         const unsigned char* hp = p;
         size_t hlen = flen;
         if (flags & kH2FlagPadded) {
@@ -1035,8 +1103,11 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           hlen -= pad;
         }
         if (flags & kH2FlagPriority) {
-          // Deprecated by RFC 9113; the five bytes are skipped.
+          // Deprecated by RFC 9113, so the five bytes are skipped - but
+          // 5.3.1 still forbids a stream depending on ITSELF, and that
+          // is a check, not a priority tree.
           if (hlen < 5) return h2_error(st0, kH2FrameSizeError, sink);
+          if (h2_u31(hp) == stream) return h2_error(st0, kH2ProtocolError, sink);
           hp += 5;
           hlen -= 5;
         }
@@ -1070,12 +1141,22 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
       }
 
       case kH2Priority:
-        // Deprecated by RFC 9113; parsed for length and ignored.
+        // Deprecated by RFC 9113, and still not free: 6.3 gives it a
+        // stream of its own (never 0), and 5.3.1 forbids depending on
+        // itself. Everything else about it is ignored.
+        if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
         if (flen != 5) return h2_error(st0, kH2FrameSizeError, sink);
+        if (h2_u31(p) == stream) return h2_error(st0, kH2ProtocolError, sink);
         break;
 
       case kH2RstStream:
-        if (flen != 4 || stream == 0) return h2_error(st0, kH2FrameSizeError, sink);
+        // 6.4: stream 0 and an IDLE stream are the connection's error;
+        // a wrong length is its own.
+        if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
+        if (flen != 4) return h2_error(st0, kH2FrameSizeError, sink);
+        if (h2.find(stream) == nullptr && h2_is_idle(h2, stream)) {
+          return h2_error(st0, kH2ProtocolError, sink);
+        }
         h2.close_stream(stream);
         break;
 
@@ -1092,6 +1173,12 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           switch (id) {
             case kH2SettingsHeaderTableSize:
               lshpack_enc_set_max_capacity(&h2.enc, v);
+              break;
+            case kH2SettingsEnablePush:
+              // 6.5.2: 0 or 1, and nothing else. This server never
+              // pushes either way (8.4), so the VALUE changes nothing
+              // here - the refusal is about the peer being wrong.
+              if (v > 1) return h2_error(st0, kH2ProtocolError, sink);
               break;
             case kH2SettingsInitialWindowSize: {
               if (v > kH2WindowCeiling) return h2_error(st0, kH2FlowControlError, sink);
@@ -1143,10 +1230,16 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
             return h2_error(st0, kH2FlowControlError, sink);
           }
         } else if (H2Stream* stp = h2.find(stream)) {
+          // 6.9.1: a window past 2^31-1 is the STREAM's error, not the
+          // connection's - the stream dies, the peer keeps talking.
           stp->send_window += inc;
           if (stp->send_window > kH2WindowCeiling) {
-            return h2_error(st0, kH2FlowControlError, sink);
+            h2_rst(st0, stream, kH2FlowControlError, sink);
+            break;
           }
+        } else if (h2_is_idle(h2, stream)) {
+          // 5.1: an idle stream has no window to update.
+          return h2_error(st0, kH2ProtocolError, sink);
         }
         h2_flush_pending(st0, sink);
         break;

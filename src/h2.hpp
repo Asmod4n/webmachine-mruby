@@ -62,6 +62,7 @@ enum : uint32_t {
 // Settings identifiers (RFC 9113 6.5.2).
 enum : uint16_t {
   kH2SettingsHeaderTableSize = 0x1,
+  kH2SettingsEnablePush = 0x2,
   kH2SettingsMaxConcurrentStreams = 0x3,
   kH2SettingsInitialWindowSize = 0x4,
   kH2SettingsMaxFrameSize = 0x5,
@@ -70,6 +71,12 @@ enum : uint16_t {
 // The client connection preface (RFC 9113 3.4).
 inline constexpr char kH2Preface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 inline constexpr size_t kH2PrefaceLen = 24;
+// The ANNOUNCEMENT half: no HTTP/1 request begins with these sixteen
+// bytes, so a connection that got this far has said "h2" whether or
+// not it finishes the sentence. What follows the announcement can
+// therefore be answered as h2 - with a GOAWAY - instead of with a
+// status line the peer is not reading (RFC 9113 3.5, h2spec 3.5/2).
+inline constexpr size_t kH2PrefaceAnnounce = 18;
 
 inline constexpr size_t kH2FrameHeaderLen = 9;
 // Ours, and also the floor every peer must accept (RFC 9113 4.2).
@@ -125,6 +132,11 @@ struct H2Stream {
   uint32_t id = 0;
   int64_t send_window = kH2DefaultWindow;
   size_t body_len = 0;  // received DATA payload, counted against kMaxBody
+  // RFC 9113 8.1.2.6: a content-length that disagrees with the DATA
+  // actually sent makes the request malformed. Remembered here because
+  // the disagreement can only be seen at END_STREAM.
+  size_t content_length = 0;
+  bool have_content_length = false;
   // Response DATA the peer's window refused; flushed on WINDOW_UPDATE.
   std::string pending;
   flow::ReqFacts facts;  // decoded at HEADERS, dispatched at END_STREAM
@@ -179,6 +191,13 @@ struct H2State {
   int64_t peer_initial_window = kH2DefaultWindow;
   uint32_t peer_max_frame = kH2MaxFrameSize;
   uint32_t last_stream = 0;  // highest stream id seen, for GOAWAY
+  // The highest client-initiated id this connection ever ACCEPTED.
+  // With the stream table it is the whole state machine (RFC 9113
+  // 5.1): an id above it was never used and the stream is IDLE, an id
+  // at or below it that is no longer in the table is CLOSED, and the
+  // two earn different errors. Keeping the number instead of the dead
+  // streams is what makes that free.
+  uint32_t highest_opened = 0;
   bool goaway_sent = false;
   bool goaway_recv = false;  // the peer is done; finish and close
 

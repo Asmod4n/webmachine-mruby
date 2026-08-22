@@ -391,6 +391,36 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       st.carry.append(data, len);
       return true;
     }
+    // WHERE the mismatch fell decides who the peer is, and that is the
+    // whole of RFC 9113 3.4's advice: "an invalid preface indicates
+    // that the peer is not using HTTP/2".
+    //
+    // Past the announcement half - the 18 bytes "PRI * HTTP/2.0" CRLF
+    // CRLF, which no HTTP/1 request line can be a prefix of - the peer
+    // HAS named itself an h2 client and then fumbled the rest. It is
+    // waiting for a frame and cannot read a status line, so it gets
+    // the frame 3.4 names: GOAWAY, PROTOCOL_ERROR, last-stream-id 0
+    // (none was ever opened), then the connection ends.
+    //
+    // Before it, the peer never said "PRI" at all, so by 3.4's own
+    // sentence it is not an h2 client - and this listener also speaks
+    // HTTP/1.1, so it gets the HTTP/1.1 answer to a request line that
+    // does not parse: 400, Connection: close (RFC 9112 2.2). That is
+    // the ONE h2spec case this tree does not pass (3.5/2, "Sends
+    // invalid connection preface" - h2spec sends "INVALID CONNECTION
+    // PREFACE" CRLF CRLF and reads our status line as a frame header).
+    // Named, not accidental: h2spec measures an h2-ONLY endpoint, the
+    // connection dies either way as 3.4 requires, and the alternative
+    // - closing a fresh connection mute - would take the 400 away from
+    // every real HTTP/1 client that mistypes its first request line.
+    if (seen + i >= kH2PrefaceAnnounce) {
+      static const unsigned char kGoaway[kH2FrameHeaderLen + 8] = {
+          0, 0, 8, kH2Goaway, 0, 0, 0, 0, 0,  // length 8, stream 0
+          0, 0, 0, 0,                         // last stream id: none was opened
+          0, 0, 0, kH2ProtocolError};
+      sink.append(reinterpret_cast<const char*>(kGoaway), sizeof(kGoaway));
+      return false;
+    }
     // Mismatch: h1 forever. Any stashed preface prefix doubles as a
     // partial h1 head; the carry path below already handles it.
     st.fresh = false;

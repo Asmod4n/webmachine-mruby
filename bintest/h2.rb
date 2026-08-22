@@ -532,3 +532,45 @@ assert('h2: a parked request still names what its route captured') do
     end
   end
 end
+
+# RFC 9113 3.4: an invalid preface is a connection error, and WHERE it
+# falls decides who the peer is - the clause's own reason, "an invalid
+# preface indicates that the peer is not using HTTP/2", is what makes
+# this listener able to serve both. Past the 18-byte announcement the
+# peer named itself h2 and gets a frame it can read; before it, it
+# never did, and this listener also speaks HTTP/1.1.
+assert('h2: a fumbled preface is GOAWAY, a foreign one is h1 400 (9113 3.4)') do
+  h2_server do |sock|
+    # Announcement matched, "SM" CRLF CRLF did not: an h2 client that
+    # cannot read a status line, so GOAWAY/PROTOCOL_ERROR, stream 0,
+    # last-stream-id 0 - nothing was ever opened.
+    UNIXSocket.open(sock) do |s|
+      s.write("PRI * HTTP/2.0\r\n\r\nXX\r\n\r\n".b)
+      type, flags, stream, payload = h2_next(s)
+      assert_equal 7, type      # GOAWAY
+      assert_equal 0, flags
+      assert_equal 0, stream
+      assert_equal 8, payload.bytesize
+      assert_equal 0, payload[0, 4].unpack1('N')          # last stream id
+      assert_equal 1, payload[4, 4].unpack1('N')          # PROTOCOL_ERROR
+      assert_equal '', s.read                             # and then the end
+    end
+    # The announcement half is not a prefix of any HTTP/1 request line,
+    # so a partial one is held, not decided: no bytes come back while
+    # the verdict is still open.
+    UNIXSocket.open(sock) do |s|
+      s.write("PRI * HTTP/2.0\r\n".b)
+      assert_nil IO.select([s], nil, nil, 0.5), 'a partial preface was answered too early'
+    end
+    # Mismatched at byte 0 - the peer never said "PRI", so it is not an
+    # h2 client and this listener answers as the HTTP/1.1 server it also
+    # is (RFC 9112 2.2). This is h2spec 3.5/2, refused by name.
+    UNIXSocket.open(sock) do |s|
+      s.write("INVALID CONNECTION PREFACE\r\n\r\n".b)
+      head = +''
+      head << wm_recv(s) until head.include?("\r\n\r\n")
+      assert_true head.start_with?('HTTP/1.1 400 Bad Request'), head[0, 40]
+      assert_true head.include?('Connection: close')
+    end
+  end
+end

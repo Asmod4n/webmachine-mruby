@@ -28,3 +28,4 @@ bench/idle_load
 build_config.rb.lock
 bench/vm/*.mrb
 build/fuzz/
+build/conformance/
