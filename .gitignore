@@ -9,3 +9,15 @@ bench/echo/echo_bench
 # perf-diff FINDING that comes out of them belongs in commit prose,
 # not the raw samples.
 bench/profile/
+
+# Bench artifacts. Today's scripts write only to /tmp, but the
+# pre-neustart ones scattered fixtures through the tree and those
+# files still sit in older checkouts, where they block a pull by
+# colliding with nothing. Never committed: they are generated, large,
+# and host-specific.
+bench/tmp/
+bench/idle_load
+/tmp/
+# Dependency checkouts fetched on demand, like /mruby/ above. Only
+# deps/ls-hpack is a real submodule and stays tracked.
+/deps/zlib-ng/
