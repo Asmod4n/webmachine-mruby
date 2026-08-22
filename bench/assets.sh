@@ -58,6 +58,10 @@ leg() {  # leg <label> <--pipes value or ""> <port>
   SRV=$!
   sleep 0.5
   kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat "$WORK/srv.log" >&2; exit 1; }
+  grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
+    echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
+    exit 1
+  }
   # Byte proof before any number: both legs must serve the same asset.
   curl -s --max-time 20 "$URL" | cmp -s - "$WORK/asset.bin" || {
     echo "leg '$label': served bytes differ from the asset - no number is written" >&2

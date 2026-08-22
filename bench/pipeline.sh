@@ -66,6 +66,11 @@ fi
 trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-pipeline-srv.log; exit 1; }
+grep -q "select(2) SHIM" /tmp/wm-pipeline-srv.log 2>/dev/null && {
+  echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
+  exit 1
+}
+
 
 RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results

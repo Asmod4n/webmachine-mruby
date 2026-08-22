@@ -57,6 +57,11 @@ SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat /tmp/wm-h2bench-srv.log >&2; exit 1; }
+grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
+  echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
+  exit 1
+}
+
 
 URL="http://127.0.0.1:$PORT/"
 LOG="bench/results/$(hostname).log"

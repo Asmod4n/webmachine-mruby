@@ -36,18 +36,61 @@ struct Echo {
   void on_tick() {}
 };
 
-template <class App>
-int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
-  webmachine::Ring<App> ring(app);
+template <class App, class Io>
+int serve_on(const webmachine::RingConfig& cfg, App& app, const char* label) {
+  webmachine::Ring<App, Io> ring(app);
   char err[256] = "";
   if (!ring.init(cfg, err, sizeof(err))) {
     std::fprintf(stderr, "webmachine: %s\n", err);
     return 1;
   }
-  std::fprintf(stderr, "webmachine: %s up, pid %d, %s\n", label, getpid(),
-               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
+  std::fprintf(stderr, "webmachine: %s up, pid %d, %s, io=%s\n", label, getpid(),
+               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp",
+               Io::kName);
   ring.run();
   return 0;
+}
+
+// The ONE branch point (#171): io_uring sets up, or the select backend
+// runs and SCREAMS. Never silent, never per-request, not disableable -
+// the warning says which backend, why concretely, what it costs, and
+// how to fix it. WM_IO narrows only: "select" forces the shim (the
+// test suite runs the whole tree over it), "uring" forbids the lazy
+// path (a named refusal instead of a slow surprise).
+template <class App>
+int serve(const webmachine::RingConfig& cfg, App& app, const char* label) {
+  const char* force = std::getenv("WM_IO");
+  char why[256] = "";
+  if (force == nullptr || std::strcmp(force, "uring") == 0) {
+    webmachine::Ring<App> ring(app);
+    if (ring.init(cfg, why, sizeof(why))) {
+      std::fprintf(stderr, "webmachine: %s up, pid %d, %s, io=io_uring\n", label, getpid(),
+                   cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
+      ring.run();
+      return 0;
+    }
+    if (force != nullptr) {  // uring demanded: refuse by name, no lazy path
+      std::fprintf(stderr, "webmachine: %s\n", why);
+      return 1;
+    }
+  } else if (std::strcmp(force, "select") != 0) {
+    std::fprintf(stderr, "webmachine: WM_IO=%s is not a backend (uring|select)\n", force);
+    return 1;
+  } else {
+    std::snprintf(why, sizeof(why), "WM_IO=select forced it");
+  }
+  std::fprintf(stderr,
+               "webmachine: ================================================================\n"
+               "webmachine: == IO BACKEND: select(2) SHIM - correct, NOT fast\n"
+               "webmachine: == why: %s\n"
+               "webmachine: == cost: every op is readiness + a classic syscall; recv\n"
+               "webmachine: ==   bundles and splice do not exist (always iovec); file IO\n"
+               "webmachine: ==   would block the reactor; capacity is capped below\n"
+               "webmachine: ==   FD_SETSIZE (%d) fds\n"
+               "webmachine: == fix: run on Linux >= 6.11 with io_uring available\n"
+               "webmachine: ================================================================\n",
+               why, FD_SETSIZE);
+  return serve_on<App, webmachine::SelectIo>(cfg, app, label);
 }
 
 }  // namespace
