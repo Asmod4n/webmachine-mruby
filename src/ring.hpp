@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -52,11 +53,68 @@ namespace webmachine {
 // Slot count == the sparse direct-descriptor table size: a connection's
 // id IS its direct descriptor index, so lookup is an array index. The
 // listeners live in the slots behind the connections: listener i sits
-// at kListenerBase + i ("more than one app per thread" = more than one
+// at listener_base_ + i ("more than one app per thread" = more than one
 // listener on the one ring).
-inline constexpr uint32_t kMaxConns = 4096;
-inline constexpr uint32_t kListenerBase = kMaxConns;
+//
+// The COUNT is derived, never guessed (#169): the backend owns
+// RLIMIT_NOFILE - it raises soft to hard at init (unprivileged, allowed
+// for every process; systemd default is soft 1024 / hard 524288, the
+// ceiling for the raise is /proc/sys/fs/nr_open) and takes everything
+// the final limit allows, minus a reserve. The kernel checks the sparse
+// table size against RLIMIT_NOFILE (measured: limit 1024 -> 1023 slots
+// ok, 4096 EMFILE), which is why the raise must come first.
 inline constexpr uint32_t kMaxListeners = 16;
+// Classic fds the process keeps NEXT TO the fixed table: stdio, the
+// ring fd, the stop signalfd, the asset ZIP (#170), the pipe pool's
+// ends (#168 re-derives this when the pool exists), and foreign
+// in-process code (mruby-c-ares sockets). Connections consume NO fd
+// numbers here - multishot_accept_direct lands them in the fixed table
+// only - so this is headroom, not arithmetic necessity; under a shim
+// backend (#171), where connections ARE process fds, the SAME formula
+// holds and the reserve becomes load-bearing. One arithmetic, every
+// backend: max_conns = final_limit - kFdReserve - kMaxListeners.
+inline constexpr uint32_t kFdReserve = 128;
+// The kernel's own cap on a fixed-file table (io_uring/rsrc.c,
+// IORING_MAX_FIXED_FILES) - a limit above it must not size the table.
+inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
+
+// Raise soft to hard and report what finally stands. A hard limit of
+// RLIM_INFINITY cannot be handed to setrlimit for NOFILE (the kernel
+// refuses values above fs.nr_open), so it is clamped to nr_open first.
+// getrlimit/setrlimit have no ring op - init-time classic calls, like
+// getenv.
+inline uint64_t raise_nofile() {
+  struct rlimit rl {};
+  if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
+  rlim_t target = rl.rlim_max;
+  if (target == RLIM_INFINITY) {
+    uint64_t nr_open = 1u << 20;  // the kernel default, used only if /proc is unreadable
+    if (std::FILE* f = std::fopen("/proc/sys/fs/nr_open", "re")) {
+      unsigned long long v = 0;
+      if (std::fscanf(f, "%llu", &v) == 1 && v > 0) nr_open = v;
+      std::fclose(f);
+    }
+    target = static_cast<rlim_t>(nr_open);
+  }
+  if (rl.rlim_cur < target) {
+    struct rlimit want {target, rl.rlim_max};
+    // Failure is not a second path: whatever stands after the attempt
+    // is re-read and becomes the one truth the derivation uses.
+    (void)::setrlimit(RLIMIT_NOFILE, &want);
+    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
+  }
+  return static_cast<uint64_t>(rl.rlim_cur);
+}
+
+// The one arithmetic with two consumers: the server sizes itself with
+// it here; tools/webmachine-tune.sh (#167) only PRINTS it. 0 = the
+// limit leaves no room, a named refusal for the caller to spell out.
+inline uint32_t derive_max_conns(uint64_t nofile_limit) {
+  if (nofile_limit <= kFdReserve + kMaxListeners) return 0;
+  uint64_t n = nofile_limit - kFdReserve - kMaxListeners;
+  if (n + kMaxListeners > kFixedTableKernelMax) n = kFixedTableKernelMax - kMaxListeners;
+  return static_cast<uint32_t>(n);
+}
 // Pool geometry measured in the old tree as not moving the profile
 // (2048 x 4096 vs ladders: null result), so the simple shape stays.
 inline constexpr uint32_t kBufCount = 2048;
@@ -126,8 +184,8 @@ class Ring {
       for (uint32_t i = 0; i < nlisteners_; i++) {
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) break;
-        io_uring_prep_close_direct(s, kListenerBase + i);
-        io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, kListenerBase + i));
+        io_uring_prep_close_direct(s, listener_base_ + i);
+        io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
         n++;
       }
       for (const std::string& path : unix_paths_) {
@@ -175,17 +233,32 @@ class Ring {
       }
     }
 
-    rc = io_uring_register_files_sparse(&ring_, kMaxConns + kMaxListeners);  // + listener slots
+    // The limit is set ONCE, here, by the backend - only it knows what
+    // it can index - and never touched again. The capacity falls out of
+    // whatever finally stands.
+    const uint64_t nofile = raise_nofile();
+    max_conns_ = derive_max_conns(nofile);
+    if (max_conns_ == 0) {
+      std::snprintf(err, errlen,
+                    "RLIMIT_NOFILE %llu leaves no room for connections "
+                    "(reserve %u + listeners %u)",
+                    static_cast<unsigned long long>(nofile), kFdReserve, kMaxListeners);
+      return false;
+    }
+    listener_base_ = max_conns_;
+
+    rc = io_uring_register_files_sparse(&ring_, max_conns_ + kMaxListeners);  // + listener slots
     if (rc != 0) {
-      std::snprintf(err, errlen, "register_files_sparse: %s", std::strerror(-rc));
+      std::snprintf(err, errlen, "register_files_sparse(%u): %s", max_conns_ + kMaxListeners,
+                    std::strerror(-rc));
       return false;
     }
     // The direct-descriptor allocator's cursor continues past the last
-    // slot it touched - after the listeners land at kListenerBase+ the
+    // slot it touched - after the listeners land at listener_base_+ the
     // next accept would be handed a LISTENER slot (measured: res=4097).
     // Confine allocation to the connection slots; listeners are placed,
     // never allocated.
-    rc = io_uring_register_file_alloc_range(&ring_, 0, kMaxConns);
+    rc = io_uring_register_file_alloc_range(&ring_, 0, max_conns_);
     if (rc != 0) {
       std::snprintf(err, errlen, "register_file_alloc_range: %s", std::strerror(-rc));
       return false;
@@ -234,7 +307,12 @@ class Ring {
     }
     nlisteners_ = cfg.nlisteners;
 
-    conns_.resize(kMaxConns);
+    // One allocation at init, sized by the derived capacity - memory now
+    // scales with the limit (a half-million-fd host pays tens of MB
+    // here). Deliberate: no guessed cap anywhere; #166 makes it
+    // overridable, and an override ABOVE the derivation is refused by
+    // name there, never silently clamped.
+    conns_.resize(max_conns_);
     rearm_.reserve(64);
 
     if (cfg.stop_fd >= 0) {
@@ -254,6 +332,11 @@ class Ring {
     while (!stop_) tick();
   }
 
+  // The derived capacity - what the machine actually allows, the "thing
+  // that says what max is". tools/webmachine-tune.sh prints the same
+  // arithmetic without running a server.
+  uint32_t max_conns() const { return max_conns_; }
+
  private:
   // One listener, made entirely of ring ops: a stale unix path goes
   // first and UNLINKED from the chain (a linked op that fails - ENOENT
@@ -261,7 +344,7 @@ class Ring {
   // (setsockopt) -> bind -> listen as one linked chain, one submit,
   // every CQE checked, a failure naming its stage.
   bool setup_listener(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
-    const uint32_t slot = kListenerBase + li;
+    const uint32_t slot = listener_base_ + li;
     const bool is_unix = spec.unix_path != nullptr;
     struct sockaddr_un sun {};
     struct sockaddr_in sin {};
@@ -409,7 +492,7 @@ class Ring {
 
   void arm_accept(uint32_t li) {
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_multishot_accept_direct(s, kListenerBase + li, nullptr, nullptr, 0);
+    io_uring_prep_multishot_accept_direct(s, listener_base_ + li, nullptr, nullptr, 0);
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kAccept, 0, li));
   }
@@ -464,7 +547,7 @@ class Ring {
     if (!(cqe->flags & IORING_CQE_F_MORE)) arm_accept(li);
     if (cqe->res < 0) return;  // transient (EMFILE and friends); multishot may carry on
     const uint32_t idx = static_cast<uint32_t>(cqe->res);
-    if (WM_UNLIKELY(idx >= kMaxConns)) return;  // the kernel named a slot we never registered
+    if (WM_UNLIKELY(idx >= max_conns_)) return;  // the kernel named a slot we never registered
     Conn& c = conns_[idx];
     c.gen++;
     c.live = true;
@@ -478,14 +561,15 @@ class Ring {
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= kMaxConns)) return;
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;  // a previous tenant's completion
 
     if (WM_UNLIKELY(cqe->res <= 0)) {
       if (cqe->res == -ENOBUFS) {
-        // Reachable by arithmetic: kMaxConns (4096) > kBufCount (2048),
-        // and every completion consumes at least one whole buffer no
+        // Reachable by arithmetic: max_conns_ (derived; in practice far
+        // above kBufCount's 2048 since #169), and every completion
+        // consumes at least one whole buffer no
         // matter how few bytes it carries. Under DEFER_TASKRUN all
         // completions of a wait window are produced before userspace runs
         // again, and buffers only return at the NEXT tick's advance - so
@@ -551,7 +635,7 @@ class Ring {
   }
 
   void on_send(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= kMaxConns)) return;
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
     c.sending = false;
@@ -645,6 +729,11 @@ class Ring {
   bool ring_up_ = false;
   bool stop_ = false;
   bool bundles_ = false;
+  // Derived at init from the raised RLIMIT_NOFILE (#169); 0 only
+  // before init. listener_base_ = max_conns_: listeners sit behind
+  // the connection slots.
+  uint32_t max_conns_ = 0;
+  uint32_t listener_base_ = 0;
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
   char* pool_ = nullptr;   // kBufCount * kBufSize, mmap'd once
