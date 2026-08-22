@@ -1,0 +1,8 @@
+# The image build clones mruby itself, and a host checkout would be
+# copied in only to be rebuilt - it is also by far the biggest thing
+# here. Same for the git metadata: an image should not carry a
+# repository, so the submodules must be checked out in the CONTEXT
+# before the build (the Containerfile says so by name if they are not).
+mruby/
+.git/
+bench/results/

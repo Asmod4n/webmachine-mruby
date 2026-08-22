@@ -34,7 +34,17 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # mruby-slipstreamio stays neutral in this - it installs its
   # liburing.h wherever there is none, and another project may well
   # want that on Linux. The policy is ours, so the check is ours.
-  if spec.cc.search_header('sys/epoll.h') && !spec.cc.search_header('liburing.h')
+  # WHICH liburing counts: the one mruby-io-uring BUILDS out of its own
+  # submodule is the one this tree links (a static .a, its headers on
+  # the include path), so a machine without liburing-dev is perfectly
+  # fine - and a container image should not have to install a package
+  # it never links. Asking only the system header was wrong and only
+  # ever worked by accident on a host that happened to carry it: an
+  # image built from a clean base refused with liburing sitting right
+  # there, freshly compiled.
+  uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-io-uring/build/lib/liburing.a")
+  if spec.cc.search_header('sys/epoll.h') && !spec.cc.search_header('liburing.h') &&
+     !uring_built
     abort <<~MSG
       webmachine-mruby: this is a Linux build with no liburing.
 

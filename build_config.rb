@@ -6,8 +6,17 @@ MRuby::Build.new do |conf|
 
   # march=native: every machine compiles its own binary, so every
   # recorded number is bound to the host that measured it.
-  conf.cc.flags << '-O3' << '-march=native'
-  conf.cxx.flags << '-O3' << '-march=native' << '-std=c++20'
+  #
+  # WM_MARCH overrides it, and exists for ONE caller: a container image,
+  # which is built on one machine and run on another. `native` there
+  # bakes the BUILDER's CPU into the binary, and the first host with an
+  # older one dies on an illegal instruction. An image build names a
+  # baseline instead (x86-64-v3 is the sane fleet floor: AVX2, ~2015 and
+  # later), and pays whatever that costs against a native build - which
+  # is a measurement, and belongs in bench/results/ like every other.
+  march = ENV['WM_MARCH'] || 'native'
+  conf.cc.flags << '-O3' << "-march=#{march}"
+  conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
 
   # WM_PROFILE=1: symbols (-g) and retained frame pointers, for perf -
   # never the shape a req/s number is taken through. -g only adds a
