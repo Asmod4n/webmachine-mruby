@@ -26,10 +26,17 @@
 # Knobs: MULTI (1 = diff mode, >1 = load mode at that depth), DURATION
 # (default 20 - profiling wants more samples than a throughput run),
 # FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default fp -
-# matches the frame pointers WM_PROFILE retains), PIN_SRV/PIN_CLI (cpu
-# lists for taskset; empty = unpinned, and an unpinned anchor has been
-# seen to swing 6% on its own, which reads as progress and is not),
+# matches the frame pointers WM_PROFILE retains), # seen to swing 6% on its own, which reads as progress and is not),
 # CONNS (load mode, default 32), PORT, APP (default examples/hello.rb).
+# NO PINNING - measured twice, lost twice. The previous tree removed
+# every taskset it had ("handing the scheduler one core was slower than
+# letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
+# throughput monotonically in the MEDIAN). And io-wq workers inherit the
+# issuing thread's affinity, so pinning the server pins the pool that
+# carries splice: a 32 KiB asset measured 0.07x its unspliced twin under
+# `taskset -c 0`. The knobs are gone rather than defaulted off - they
+# are not something anyone should turn on.
+#
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -83,8 +90,6 @@ CALLGRAPH="${CALLGRAPH:-fp}"
 # single-threaded target. --per-thread would sidestep the per-CPU
 # multiplication entirely; -m stays the smaller, less surprising knob.
 PERF_MMAP="${PERF_MMAP:-8}"
-PIN_SRV="${PIN_SRV:-}"
-PIN_CLI="${PIN_CLI:-}"
 PORT="${PORT:-8123}"
 APP="${APP-examples/hello.rb}"
 MULTI="${MULTI:-1}"
@@ -92,10 +97,6 @@ CONNS="${CONNS:-32}"
 
 APP_ARGS=()
 [ -n "$APP" ] && APP_ARGS=(--app "$APP")
-SRV_WRAP=()
-[ -n "$PIN_SRV" ] && SRV_WRAP=(taskset -c "$PIN_SRV")
-CLI_WRAP=()
-[ -n "$PIN_CLI" ] && CLI_WRAP=(taskset -c "$PIN_CLI")
 
 OUT=bench/profile
 mkdir -p "$OUT"
@@ -129,11 +130,11 @@ leg() {
   shift 2
   echo "== recording $name -> $data =="
   "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
-    "${SRV_WRAP[@]}" "$BIN" --port "$PORT" "${APP_ARGS[@]}" \
+    "$BIN" --port "$PORT" "${APP_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid
-  # $! is perf's own pid (it execs the server as ITS child, taskset if
+  # $! is perf's own pid (it execs the server as ITS child, so
   # pinned execs again in place, same pid throughout) - pgrep -P finds
   # that direct child unambiguously, no full-line matching to race.
   local srvpid=""
@@ -163,7 +164,7 @@ leg() {
     exit 1
   fi
   SRVPID=$srvpid
-  "${CLI_WRAP[@]}" h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "$URL" 2>&1 | grep '^finished'
+  h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "$URL" 2>&1 | grep '^finished'
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
   SRVPID=""

@@ -19,6 +19,15 @@
 #   THREADS=4 CONNS=400 bench/pipeline.sh          # AF_UNIX (default)
 #   THREADS=4 CONNS=400 DEPTH=32 bench/pipeline.sh
 #   THREADS=4 CONNS=400 TRANSPORT=tcp bench/pipeline.sh
+# NO PINNING - measured twice, lost twice. The previous tree removed
+# every taskset it had ("handing the scheduler one core was slower than
+# letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
+# throughput monotonically in the MEDIAN). And io-wq workers inherit the
+# issuing thread's affinity, so pinning the server pins the pool that
+# carries splice: a 32 KiB asset measured 0.07x its unspliced twin under
+# `taskset -c 0`. The knobs are gone rather than defaulted off - they
+# are not something anyone should turn on.
+#
 set -u
 [ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
   echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
@@ -28,7 +37,6 @@ DURATION="${DURATION:-10}"
 DEPTH="${DEPTH:-16}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
-PIN_SRV="${PIN_SRV:-}"
 APP="${APP-examples/hello.rb}"
 cd "$(dirname "$0")/.." || exit 1
 
@@ -44,14 +52,12 @@ fi
 
 APP_ARGS=()
 [ -n "$APP" ] && APP_ARGS=(--app "$APP")
-SRV_WRAP=()
-[ -n "$PIN_SRV" ] && SRV_WRAP=(taskset -c "$PIN_SRV")
 
 SOCK=/tmp/wm-pipeline-bench.sock
 DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "${SRV_WRAP[@]}" "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
+  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
   # The patched wrk still probe-connects the TCP port to validate its
   # URL even when every byte rides WRK_UNIX (see floor.sh).
   python3 -c "
@@ -61,7 +67,7 @@ s.bind(('127.0.0.1',$PORT)); s.listen(16)
 while True:
     c,_=s.accept(); c.close()" >/dev/null 2>&1 & DUMMY=$!
 else
-  "${SRV_WRAP[@]}" "$BIN" --port "$PORT" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
+  "$BIN" --port "$PORT" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
 fi
 trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
 sleep 0.5
@@ -105,7 +111,7 @@ ERRS=$(grep -E "Socket errors|Non-2xx or 3xx" "$RAW" || true)
 OUT=$(mktemp)
 {
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s PIPELINED depth=$DEPTH transport=$TRANSPORT app=${APP:-none} pin_srv=${PIN_SRV:-no} $(uname -mr)"
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s PIPELINED depth=$DEPTH transport=$TRANSPORT app=${APP:-none} $(uname -mr)"
   grep -E "requests in .*read" "$RAW"
   [ -n "$ERRS" ] && echo "$ERRS"
   grep -E "Requests/sec|Transfer/sec" "$RAW"

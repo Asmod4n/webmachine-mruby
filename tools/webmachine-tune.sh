@@ -28,18 +28,30 @@ read_or() {  # read_or <file> <fallback-text>
 
 echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 
-# ---- CPU / pinning ---------------------------------------------------
-# One thread, one ring (src/ring.hpp:1-3): the recommendation is which
-# ONE core the one server process sits on - never "N threads on N
-# cores", that mode does not exist.
+# ---- CPU placement ---------------------------------------------------
+# NO PINNING. This is a measured verdict, not a preference, and it has
+# been reached twice:
+#
+#   1. The previous tree removed every --cpu/--fast-core/taskset it had
+#      ("it was measured and it lost - handing the scheduler one core
+#      was slower than letting it choose"). Widening the CLIENT's mask
+#      from 2 to 15 to 30 cpus raised throughput monotonically,
+#      332k -> 341k -> 352k req/s, and moved the MEDIAN, not the tail.
+#
+#   2. Splice makes it worse than merely useless. io-wq workers INHERIT
+#      the issuing thread's affinity, so pinning the server pins the
+#      pool that exists to move bytes on ANOTHER core. Measured here on
+#      4 cpus: a 32 KiB asset served at 0.07x its unspliced twin under
+#      `taskset -c 0` (2,903 vs 42,688 req/s).
+#
+# So this section reports what the machine looks like and does NOT
+# hand out a taskset line.
 echo ""
-echo "-- cpu / pinning"
+echo "-- cpu placement"
 NPROC=$(nproc)
 ISOLATED=$(read_or /sys/devices/system/cpu/isolated "")
 echo "cores: $NPROC   isolated: ${ISOLATED:-none}"
 
-# Effective core budget can be below nproc in a cgroup (shared-vCPU
-# reality that motivated bench/h2.sh's scatter methodology).
 if [ -r /sys/fs/cgroup/cpu.max ]; then
   echo "cgroup v2 cpu.max: $(cat /sys/fs/cgroup/cpu.max) (quota period; max = unrestricted)"
 elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
@@ -54,21 +66,18 @@ else
   echo "cgroup cpu quota: unreadable here"
 fi
 
-# Live steal over one second - contention is a property of NOW, not of
-# nproc. Idiom shared with bench/h2.sh's per-leg steal guard.
+# Live steal over one second - contention is a property of NOW.
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 S0=$(steal_ticks); sleep 1; S1=$(steal_ticks)
 echo "steal: +$((S1 - S0)) ticks over 1s (0 = quiet; sustained >0 = a neighbor is eating this host)"
 
-if [ -n "$ISOLATED" ]; then
-  PIN=$(echo "$ISOLATED" | sed 's/[-,].*//')
-  echo "recommend: taskset -c $PIN (first isolated core - nothing else is scheduled there)"
-elif [ "$NPROC" -gt 1 ]; then
-  PIN=1
-  echo "recommend: taskset -c 1 (core 0 stays free for kernel/IRQ work; matches the hand-derived pin in bench/results/vm.log)"
-else
-  PIN=""
-  echo "one core - pinning has no effect here"
+echo "recommend: do NOT pin - no taskset, no cpu mask, no isolated core."
+echo "  the scheduler beat every placement this project measured, and the"
+echo "  io-wq pool that carries splice inherits whatever affinity it is given."
+if [ "$NPROC" -lt 4 ]; then
+  echo "note: $NPROC cores is few for splice - its workers need cores of their"
+  echo "  own to be worth the hop; the delivery path falls back to plain copies"
+  echo "  wherever they are not there (that fallback is the design, not a bug)."
 fi
 
 # ---- io_uring / WM_BUNDLE --------------------------------------------
@@ -157,8 +166,7 @@ fi
 # ---- summary ---------------------------------------------------------
 echo ""
 echo "-- run it like this"
-WRAP=""
-[ -n "$PIN" ] && WRAP="taskset -c $PIN "
 ENVP=""
 [ -n "$WM_BUNDLE_REC" ] && ENVP="env $WM_BUNDLE_REC"
-echo "  $WRAP$ENVP$BIN --port 8080 --app your_app.rb"
+echo "  $ENVP$BIN --port 8080 --app your_app.rb"
+echo "  (no taskset on purpose - see the cpu placement section)"
