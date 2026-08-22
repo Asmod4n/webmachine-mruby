@@ -7,11 +7,28 @@ require 'tempfile'
 
 RES_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RES_BIN)
 
+# --app takes bytecode (#100): mrbc runs here, the same way an app's
+# author runs it before shipping. ENV['MRBCFILE'] is mruby's own
+# bintest.rb export - see test/bintest.rb in the mruby checkout - and
+# names whichever mrbc this build produced (the bootstrap host/mrbc
+# build when the shipped build carries no mruby-compiler, as here).
+def wm_compile(app_source)
+  src = Tempfile.new(['wm-app', '.rb'])
+  src.write(app_source)
+  src.close
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  mrb = Tempfile.new(['wm-app', '.mrb'])
+  mrb.close
+  ok = system(mrbc, '-o', mrb.path, src.path)
+  raise "mrbc failed to compile:\n#{app_source}" unless ok
+  mrb
+ensure
+  src&.unlink
+end
+
 # Runs a server bound to the given app source; raises if it never comes up.
 def resource_server(app_source)
-  app = Tempfile.new(['wm-app', '.rb'])
-  app.write(app_source)
-  app.close
+  app = wm_compile(app_source)
   sock = "/tmp/wm-res-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-res-stderr-#{$$}.log"
@@ -31,9 +48,7 @@ end
 
 # Starts a server that MUST refuse; returns its stderr for the reason.
 def resource_refused(app_source)
-  app = Tempfile.new(['wm-app', '.rb'])
-  app.write(app_source)
-  app.close
+  app = wm_compile(app_source)
   err = "/tmp/wm-res-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, '--unix', "/tmp/wm-res-#{$$}.sock",
               '--app', app.path, out: File::NULL, err: err)
@@ -42,6 +57,22 @@ def resource_refused(app_source)
   File.read(err)
 ensure
   app.unlink
+end
+
+# Starts a server pointed straight at a .rb path - never compiled, the
+# case the mrbc line in the refusal message exists to fix.
+def resource_refused_rb(app_source)
+  src = Tempfile.new(['wm-app', '.rb'])
+  src.write(app_source)
+  src.close
+  err = "/tmp/wm-res-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, '--unix', "/tmp/wm-res-#{$$}.sock",
+              '--app', src.path, out: File::NULL, err: err)
+  Process.wait(pid)
+  raise 'server came up but must have refused the .rb path' if $?.exitstatus == 0
+  [File.read(err), src.path]
+ensure
+  src.unlink
 end
 
 # Every suite read has a deadline: a wedged server must FAIL the test,
@@ -246,6 +277,13 @@ end
 
 assert('resource: an app without a Webmachine::Resource subclass is refused') do
   assert_true resource_refused('class Quiet; end').include?('Webmachine::Resource')
+end
+
+assert('resource: a .rb path is refused by name, with the mrbc line that fixes it (#100)') do
+  out, rb_path = resource_refused_rb("class NotCompiled < Webmachine::Resource; end\n")
+  assert_true out.include?(rb_path), out
+  mrb_path = "#{rb_path[0..-4]}.mrb"
+  assert_true out.include?("mrbc -o #{mrb_path} #{rb_path}"), out
 end
 
 assert('chrono: duration units and clocks answer inside the run frame') do

@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
       echo = true;
     } else {
       std::fprintf(stderr,
-                   "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--assets FILE.zip] "
+                   "usage: %s (--unix PATH | --port N) [--app FILE.mrb] [--assets FILE.zip] "
                    "[--echo]\n",
                    argv[0]);
       return 2;

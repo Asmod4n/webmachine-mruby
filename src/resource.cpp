@@ -1,7 +1,7 @@
 #include "resource.hpp"
 
 #include <mruby/class.h>
-#include <mruby/compile.h>
+#include <mruby/dump.h>
 #include <mruby/error.h>
 #include <mruby/proc.h>
 #include <mruby/presym.h>
@@ -299,12 +299,29 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
 
 bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
-  FILE* f = std::fopen(path, "r");
+  // DECIDED (#100): --app takes a precompiled .mrb; this server never
+  // compiles Ruby itself (build_config.rb asks mruby-compiler for
+  // nothing of its own - see the comment there on what still pulls it
+  // in transitively, and why that is a build-time fact, not a reason
+  // for this function to behave differently). A .rb here is refused BY
+  // NAME, with the mrbc line that produces what --app wants -
+  // compiling it as a fallback is how the source path would come back
+  // in through the side door.
+  const size_t path_len = std::strlen(path);
+  if (WM_RES_UNLIKELY(path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0)) {
+    const std::string mrb_path(path, path_len - 3);
+    std::snprintf(err, errlen,
+                  "%s is Ruby source, not bytecode - this server loads bytecode only. "
+                  "Compile it first: mrbc -o %s.mrb %s",
+                  path, mrb_path.c_str(), path);
+    return false;
+  }
+  FILE* f = std::fopen(path, "rb");
   if (WM_RES_UNLIKELY(f == nullptr)) {
     std::snprintf(err, errlen, "cannot open %s", path);
     return false;
   }
-  mrb_load_file(mrb, f);
+  mrb_load_irep_file(mrb, f);
   std::fclose(f);
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, "app raised while loading", err, errlen);

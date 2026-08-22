@@ -17,13 +17,28 @@ def wm_recv(s, maxlen = 1, deadline = 10)
   s.readpartial(maxlen)
 end
 
+# --app takes bytecode (#100): mrbc runs here, the same way an app's
+# author runs it before shipping. ENV['MRBCFILE'] is mruby's own
+# bintest.rb export (test/bintest.rb in the mruby checkout).
+def wm_compile(app_source)
+  src = Tempfile.new(['wm-h2app', '.rb'])
+  src.write(app_source)
+  src.close
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  mrb = Tempfile.new(['wm-h2app', '.mrb'])
+  mrb.close
+  ok = system(mrbc, '-o', mrb.path, src.path)
+  raise "mrbc failed to compile:\n#{app_source}" unless ok
+  mrb
+ensure
+  src&.unlink
+end
+
 def h2_server(app_source = nil)
   args = []
   app = nil
   if app_source
-    app = Tempfile.new(['wm-h2app', '.rb'])
-    app.write(app_source)
-    app.close
+    app = wm_compile(app_source)
     args = ['--app', app.path]
   end
   sock = "/tmp/wm-h2-#{$$}.sock"
