@@ -146,6 +146,10 @@ struct H2Stream {
   const AssetEntry* src = nullptr;
   size_t src_off = 0;
   size_t src_len = 0;
+  // The router's verdict for this stream (#116), resolved at HEADERS
+  // like the asset verdict and for the same reason: the :path bytes
+  // die with the decode buffer. kNoRoute = a miss, answered 404.
+  uint16_t route = 0;
   bool head_only = false;
   bool headers_done = false;
   bool half_closed_remote = false;
@@ -206,6 +210,11 @@ struct H2State {
     size_t head_len = 0;
     bool has_data = false;
     uint16_t status = 0;
+    // Which ROUTE's block is cached: the same status means different
+    // bytes for different resources (content-type, allow), so the
+    // route joins the key. One more compare on a path that already
+    // compares two.
+    uint16_t route = 0xffff;
     time_t sec = 0;
   } head_cache;
 

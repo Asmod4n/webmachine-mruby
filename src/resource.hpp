@@ -66,11 +66,13 @@ struct Resource {
   mutable uint16_t run_status = 0;
 };
 
-// Loads the app file (its class inherits Webmachine::Resource) and
-// folds its answers into `out`. False leaves the reason in err - what
-// no tier can honor refuses the start by name, never silently.
+// Folds ONE resource class into `out`: every konst callback asked once,
+// every dynamic callback resolved, the class frozen. Called by
+// route.add (#116) and nowhere else - the constant scan that used to
+// find "the" resource class is gone. False leaves the reason in err;
+// what no tier can honor refuses the start by name, never silently.
 // NOTE: `out` must live at its final address (the run env borrows it).
-bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen);
+bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen);
 
 // THE runtime path: decision + render inside one VM call. The rendered
 // body (if any) is copied into *body while the frame still roots it.

@@ -20,6 +20,8 @@
 #include <string>
 
 #include "embed.hpp"
+#include "resource.hpp"
+#include "router.hpp"
 
 /* THE PROOF THE FACADE EXISTS FOR. embed.hpp is the machine without
  * the reactor; if the reactor ever comes back through it - directly or
@@ -39,10 +41,18 @@ mrb_value exchange(mrb_state *mrb, mrb_value)
   mrb_value chunks;
   mrb_get_args(mrb, "A", &chunks);
 
-  /* Fully konst: the default KonstSet is webmachine-ruby's unbound
-   * resource, so this exchange needs no VM tier and no assets - the
-   * flow machine alone answers. */
-  webmachine::Http1 app;
+  /* Fully konst: the default Resource is webmachine-ruby's unbound
+   * one, so this exchange needs no VM tier and no assets - the flow
+   * machine alone answers. ONE splat route, which is what an app
+   * without routes of its own has meant since #116: every path lands
+   * on the same resource. */
+  webmachine::RouteTable table;
+  table.open();
+  table.splat();
+  table.commit();
+  webmachine::Resource unbound;
+  const webmachine::Resource *rp = &unbound;
+  webmachine::Http1 app(table, &rp, 1);
   webmachine::Embedded conn(app);
 
   std::string out;

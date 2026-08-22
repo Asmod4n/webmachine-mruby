@@ -245,6 +245,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     const uint16_t asset_status = existing->asset_status;
     const size_t asset_off = existing->asset_off;
     const size_t asset_end = existing->asset_end;
+    const uint16_t route = existing->route;
     if (asset != nullptr) {
       if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
                            asset_end, sink)) {
@@ -252,7 +253,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       }
       return true;
     }
-    if (!h2_answer(st0, stream_id, facts, head_only, sink)) return false;
+    if (!h2_answer(st0, stream_id, facts, head_only, route, sink)) return false;
     return true;
   }
 
@@ -381,6 +382,15 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     }
   }
 
+  // THE ROUTER (#116), the SAME table h1 walks, in the same
+  // registration order - resolved NOW, while the :path bytes still
+  // live in hdrbuf, exactly like the asset verdict above. What
+  // survives into a parked stream is the index, never a pointer into
+  // the decode buffer.
+  RouteSpans spans;
+  const int r = router_->match(path_val, path_vlen, spans);
+  const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
+
   if (end_stream) {
     if (asset != nullptr) {
       return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
@@ -393,7 +403,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     // the matching destructor - per request, on the hot path. The facts
     // are on this stack, which is all the answer needs; h2_answer opens
     // a stream itself if the peer's window parks a remainder.
-    return h2_answer(st0, stream_id, facts, head_only, sink);
+    return h2_answer(st0, stream_id, facts, head_only, route, sink);
   }
   // A body follows; THAT is what the stream has to be remembered for -
   // the facts wait on it, the bytes will not.
@@ -405,6 +415,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   stx.asset_status = asset_status;
   stx.asset_off = asset_off;
   stx.asset_end = asset_end;
+  stx.route = route;
   return true;
 }
 
@@ -591,18 +602,29 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 }
 
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
-                      bool head_only, std::string& sink) {
+                      bool head_only, uint16_t route, std::string& sink) {
   H2State& h2 = *st0.h2;
 
-  // The same decision the h1 path makes: konst resources never see the
-  // VM, anything dynamic runs the whole flow inside ONE VM frame.
+  // The router's verdict decides who answers, exactly as in h1: a miss
+  // is 404 out of the generic table, before B13 and before any method
+  // test. Otherwise the same decision the h1 path makes: konst
+  // resources never see the VM, anything dynamic runs the whole flow
+  // inside ONE VM frame.
+  const Bundle* b = nullptr;
+  const std::array<uint16_t, 600>* idx = &index_;
   uint16_t status;
   bool have_body = false;
-  if (bound_) {
-    status = resource_run(*res_, facts, &body_, &have_body);
+  if (route == kNoRoute) {
+    status = 404;
   } else {
-    status = flow::answer(facts, konst_.per_method[static_cast<size_t>(facts.method)],
-                         konst_.shortcut[static_cast<size_t>(facts.method)]);
+    b = &bundles_[route];
+    idx = &b->index;
+    if (b->bound) {
+      status = resource_run(*b->res, facts, &body_, &have_body);
+    } else {
+      status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
+                           b->konst.shortcut[static_cast<size_t>(facts.method)]);
+    }
   }
 
   const char* body = nullptr;
@@ -611,30 +633,30 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   if (have_body && status == 200) {
     body = body_.data();
     blen = body_.size();
-    blk = &h2_store_[index_[200]];
-  } else if (status == 500 && bound_) {
+    blk = &h2_store_[(*idx)[200]];
+  } else if (status == 500 && b != nullptr && b->bound) {
     // A raising callback answers in the negotiated type, the reason as
     // body; the lent bytes are appended (copied) before any next mruby
     // call can run.
     const char* bp = nullptr;
     size_t bl = 0;
-    if (resource_exception_begin(*res_, &bp, &bl)) {
+    if (resource_exception_begin(*b->res, &bp, &bl)) {
       body = bp;
       blen = bl;
-      blk = &h2_err_;
+      blk = &b->h2_err;
     } else {
-      blk = &h2_store_[index_[500]];
+      blk = &h2_store_[(*idx)[500]];
     }
   } else if (status == 200) {
-    body = konst_.body.data();
-    blen = konst_.body.size();
-    blk = &h2_store_[index_[200]];
+    body = b->konst.body.data();
+    blen = b->konst.body.size();
+    blk = &h2_store_[(*idx)[200]];
   } else {
     // Every status block was precomputed at setup (405 carries Allow,
     // RFC 9110 10.2.1); 204/304 are bodyless and every other status
     // sends no body at this tier - DATA framing already delimits, so
     // there is no Content-Length to spell (RFC 9113 8.1.1).
-    blk = &h2_store_[index_[status]];
+    blk = &h2_store_[(*idx)[status]];
   }
 
   // HEAD answers with the head and no DATA; its render already ran for
@@ -646,7 +668,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // encoder sees a genuinely new date at most once per second per
   // connection. Both frames are built here, back to back, because the
   // answer wants to leave as ONE append.
-  if (h2.head_cache.status != status || h2.head_cache.sec != sec_) {
+  if (h2.head_cache.status != status || h2.head_cache.route != route ||
+      h2.head_cache.sec != sec_) {
     unsigned char dbuf[64];
     unsigned char* dp = dbuf;
     if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
@@ -660,7 +683,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     h2.head_cache.bytes.append(blk->bytes);
     h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
     h2.head_cache.head_len = h2.head_cache.bytes.size();
-    // The DATA frame joins it when the body is konst (!bound_ - it is
+    // The DATA frame joins it when the body is konst (!bound - it is
     // then the same bytes for the life of the process) and SMALL. The
     // cap is the whole argument for the size: this saves per-call
     // overhead, and past a kilobyte the memmove dominates that anyway,
@@ -668,10 +691,12 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     // eager per-connection bytes cost at scale. Small bodies get one
     // append; large ones keep the two they already had, and lose
     // nothing.
-    h2.head_cache.has_data = !bound_ && status == 200 && !konst_.body.empty() &&
-                             konst_.body.size() <= kH2MergeBody;
-    if (h2.head_cache.has_data) h2.head_cache.bytes.append(h2_data200_);
+    h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
+                             !b->konst.body.empty() &&
+                             b->konst.body.size() <= kH2MergeBody;
+    if (h2.head_cache.has_data) h2.head_cache.bytes.append(b->h2_data200);
     h2.head_cache.status = status;
+    h2.head_cache.route = route;
     h2.head_cache.sec = sec_;
   }
 
@@ -949,7 +974,8 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           // Copies: h2_answer may grow the stream vector under stp.
           const flow::ReqFacts facts = stp->facts;
           const bool head_only = stp->head_only;
-          if (!h2_answer(st0, stream, facts, head_only, sink)) return false;
+          const uint16_t route = stp->route;
+          if (!h2_answer(st0, stream, facts, head_only, route, sink)) return false;
         }
         break;
       }

@@ -6,6 +6,7 @@
 // real cost of this shape.
 #include <benchmark/benchmark.h>
 #include <mruby.h>
+#include <mruby/class.h>
 #include <mruby/compile.h>
 #include <mruby/string.h>
 
@@ -173,17 +174,20 @@ BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 webmachine::Resource g_res1;
 webmachine::Resource g_res4;
 
-bool bind_bench_resource(const char* path, const char* src, webmachine::Resource& out) {
-  FILE* f = std::fopen(path, "w");
-  if (f == nullptr) return false;
-  std::fputs(src, f);
-  std::fclose(f);
+bool bind_bench_resource(const char* cls, const char* src, webmachine::Resource& out) {
   char err[256];
-  // Its own VM: setup demands exactly ONE Resource subclass per state,
-  // and the two bench resources must not see each other.
+  // Its own VM: the two bench resources must not see each other's
+  // classes. The fold is what route.add does (#116) - the same call,
+  // without a listener in front of it.
   mrb_state* own = mrb_open();
   if (own == nullptr) return false;
-  if (!webmachine::resource_setup(own, path, out, err, sizeof(err))) {
+  mrb_load_string(own, src);
+  if (own->exc != nullptr) {
+    std::fprintf(stderr, "bench bind: %s raised while loading\n", cls);
+    return false;
+  }
+  if (!webmachine::resource_fold(own, mrb_obj_value(mrb_class_get(own, cls)), out, err,
+                                 sizeof(err))) {
     std::fprintf(stderr, "bench bind: %s\n", err);
     return false;
   }
@@ -245,8 +249,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "handler setup raised\n");
     return 1;
   }
-  if (!bind_bench_resource("/tmp/wm-bench-app1.rb", kApp1, g_res1) ||
-      !bind_bench_resource("/tmp/wm-bench-app4.rb", kApp4, g_res4)) {
+  if (!bind_bench_resource("BenchCounter", kApp1, g_res1) ||
+      !bind_bench_resource("BenchMulti", kApp4, g_res4)) {
     std::fprintf(stderr, "bench resource setup failed\n");
     return 1;
   }

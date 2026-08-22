@@ -34,6 +34,23 @@ ensure
   src&.unlink
 end
 
+# Since #116 a resource class is not an app: the file defines `main`,
+# and the Application registered there carries the routes. Every
+# fixture here is one resource on the root splat route; --unix on the
+# command line names the listener.
+def h2_app(name, src)
+  <<~RUBY
+    #{src}
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add [:*], #{name}
+        end
+      end
+    end
+  RUBY
+end
+
 def h2_server(app_source = nil)
   args = []
   app = nil
@@ -86,6 +103,13 @@ end
 # Literal :method (name index 2, no indexing) + indexed scheme/path.
 def h2_method_block(method)
   "\x02#{method.bytesize.chr}#{method}\x86\x84\x41\x0bexample.com".b
+end
+
+# Indexed :method GET + :scheme http, a LITERAL :path (name index 4,
+# without indexing), then :authority - the shape the router test needs,
+# since every canned block above spells :path as the indexed "/".
+def h2_path_block(path)
+  "\x82\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
 end
 
 # Preface + empty client SETTINGS; consumes the server SETTINGS and the
@@ -213,7 +237,7 @@ assert('h2: the run frame answers per request, exceptions speak 500 with their r
       end
     end
   RUBY
-  h2_server(boom) do |sock|
+  h2_server(h2_app('Boom', boom)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       s.write(h2_frame(1, 0x05, 1, h2_get_block))
@@ -240,7 +264,7 @@ assert('h2: a request body is counted, credited and discarded; END_STREAM dispat
       end
     end
   RUBY
-  h2_server(src) do |sock|
+  h2_server(h2_app('WideResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       # POST with a body over two DATA frames; headers first, no
@@ -352,7 +376,7 @@ assert('h2: a merged answer pays the connection window too (9113 6.9.1)') do
       end
     end
   RUBY
-  h2_server(app) do |sock|
+  h2_server(h2_app('Big', app)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       sid = 1
@@ -389,6 +413,71 @@ if `curl --version 2>/dev/null`.include?('HTTP2')
     h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
       body = `curl -sS --max-time 10 --http2-prior-knowledge --unix-socket #{sock} http://localhost/`
       assert_equal '<html><body>Hello, World!</body></html>', body
+    end
+  end
+end
+
+assert('h2: the router is the SAME table - each route keeps its own body, a miss is 404') do
+  # The router is protocol-free (#116): this walks the same entries in
+  # the same order h1 does, off the :path pseudo-header.
+  src = <<~RUBY
+    class Alpha < Webmachine::Resource
+      def self.to_html
+        'alpha'
+      end
+    end
+    class Beta < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+      def self.to_html
+        'beta'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['alpha'], Alpha
+          route.add ['beta', :*], Beta
+        end
+      end
+    end
+  RUBY
+  h2_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_path_block('/alpha')))
+      type, _, _, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0x88, block.getbyte(0)  # :status 200
+      _, _, _, data = h2_next(s)
+      assert_equal 'alpha', data
+      # The second route, splat tail included.
+      s.write(h2_frame(1, 0x05, 3, h2_path_block('/beta/one/two')))
+      type, _, _, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0x88, block.getbyte(0)
+      _, _, _, data = h2_next(s)
+      assert_equal 'beta', data
+      # A miss answers 404 (static entry 13) with END_STREAM and no DATA.
+      s.write(h2_frame(1, 0x05, 5, h2_path_block('/nowhere')))
+      type, flags, stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 5, stream
+      assert_equal 0x8d, block.getbyte(0)
+      assert_equal 1, flags & 1, 'a bodyless 404 must end the stream on HEADERS'
+      # Each route's own 405 travels its own block: PUT on the narrow
+      # one names GET, HEAD; on the wide one it names POST too.
+      s.write(h2_frame(1, 0x05, 7, "\x02\x03PUT\x86\x04\x06/alpha\x41\x0bexample.com".b))
+      type, _, _, block = h2_next(s)
+      assert_equal 1, type
+      assert_true block.include?('GET, HEAD'), block.inspect
+      assert_false block.include?('POST'), block.inspect
+      s.write(h2_frame(1, 0x05, 9, "\x02\x03PUT\x86\x04\x05/beta\x41\x0bexample.com".b))
+      type, _, _, block = h2_next(s)
+      assert_equal 1, type
+      assert_true block.include?('GET, HEAD, POST'), block.inspect
     end
   end
 end

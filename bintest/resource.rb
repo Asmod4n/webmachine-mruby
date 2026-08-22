@@ -26,6 +26,25 @@ ensure
   src&.unlink
 end
 
+# Since #116 a resource class is not an app: the file defines `main`,
+# and the Webmachine::Application registered there carries the listener
+# and the routes. Every fixture below is ONE resource on the root splat
+# route - exactly the semantics the constant scan used to hand out for
+# free - and the listener comes from --unix on the command line, which
+# overrides whatever conf would have said.
+def wm_app(name, src)
+  <<~RUBY
+    #{src}
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add [:*], #{name}
+        end
+      end
+    end
+  RUBY
+end
+
 # Runs a server bound to the given app source; raises if it never comes up.
 def resource_server(app_source)
   app = wm_compile(app_source)
@@ -134,7 +153,7 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('WideResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head, = resource_read(s)
@@ -158,7 +177,7 @@ assert('resource: service_available? false turns every request into 503 (B13)') 
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('DownResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = resource_read(s)
@@ -175,7 +194,7 @@ assert('resource: a missing resource speaks 404/412 like the graph says') do
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('GhostResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = resource_read(s)
@@ -195,7 +214,7 @@ assert('resource: later-tier callbacks refuse the start by name') do
       end
     end
   RUBY
-  assert_true resource_refused(src).include?('generate_etag')
+  assert_true resource_refused(wm_app('EtagResource', src)).include?('generate_etag')
 end
 
 assert('resource: an instance body renders per request through the VM') do
@@ -232,7 +251,7 @@ assert('resource: an instance decision is asked per request (state changes answe
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('Flaky', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head1, = resource_read(s)
@@ -255,7 +274,7 @@ assert('resource: a raising callback answers 500 in the negotiated type, reason 
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('Boom', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = resource_read(s)
@@ -275,8 +294,42 @@ assert('resource: an app that raises at load refuses the start with the error') 
   assert_true resource_refused("raise 'kaputt'").include?('kaputt')
 end
 
-assert('resource: an app without a Webmachine::Resource subclass is refused') do
-  assert_true resource_refused('class Quiet; end').include?('Webmachine::Resource')
+assert('resource: an app file without `main` is refused by name (#116)') do
+  # The constant scan is gone with #116: nothing goes looking for "the"
+  # resource class any more. An app file defines `main`, and a file
+  # that does not is refused with that sentence, not with a
+  # NoMethodError from a funcall.
+  out = resource_refused("class Quiet < Webmachine::Resource; end\n")
+  assert_true out.include?('main'), out
+end
+
+assert('resource: a main that registers no application is refused by name (#116)') do
+  out = resource_refused("def main; end\n")
+  assert_true out.include?('registered no application'), out
+end
+
+assert('resource: a class NOT on a route never answers - the route is the door') do
+  # Two classes in one file, one route: what the scan used to call
+  # ambiguous is now simply a fact about routing.
+  src = <<~RUBY
+    class Served < Webmachine::Resource
+      def self.to_html
+        '<html><body>served</body></html>'
+      end
+    end
+    class Ignored < Webmachine::Resource
+      def self.to_html
+        '<html><body>ignored</body></html>'
+      end
+    end
+  RUBY
+  resource_server(wm_app('Served', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, body = resource_read(s)
+      assert_equal '<html><body>served</body></html>', body
+    end
+  end
 end
 
 assert('resource: a .rb path is refused by name, with the mrbc line that fixes it (#100)') do
@@ -305,7 +358,7 @@ assert('chrono: duration units and clocks answer inside the run frame') do
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('Clocked', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       2.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -335,7 +388,7 @@ assert('run frame: bodies survive a full GC per request, 200 requests exact') do
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('Churn', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       200.times do |i|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -357,7 +410,7 @@ assert('run frame: a raise right after GC still answers 500 with its message') d
       end
     end
   RUBY
-  resource_server(src) do |sock|
+  resource_server(wm_app('GcBoom', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")

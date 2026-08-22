@@ -20,6 +20,7 @@
 
 #include "flow_walk.hpp"
 #include "http.hpp"
+#include "router.hpp"
 
 namespace webmachine {
 
@@ -109,6 +110,11 @@ inline constexpr size_t kDeliverChunk = 64u * 1024;
 // into the config; the env knob is what exists today).
 inline constexpr size_t kWarmBudgetDefault = kDeliverChunk;
 
+// The router's miss, carried where a route index is carried (#116). A
+// miss answers the prebuilt 404 before B13 - before any method test,
+// so POST on an unknown path is 404 and never 405.
+inline constexpr uint16_t kNoRoute = 0xffff;
+
 class Http1 {
  public:
   struct Conn {
@@ -155,13 +161,13 @@ class Http1 {
     ~Conn() { h2_free(h2); }
   };
 
-  // Builds every response the flow can speak, once, and stamps the
-  // date. `res` (with its two flags, readable only where resource.hpp
-  // is included) carries the runtime tier: dynamic flow nodes and/or a
-  // per-request body. Null = fully konst.
-  explicit Http1(const flow::KonstSet& ks = {}, const Resource* res = nullptr,
-                 bool dynamic_nodes = false, bool dynamic_body = false,
-                 Assets* assets = nullptr);
+  // Builds every response every route can speak, once, and stamps the
+  // date. `table` is the app's route table (borrowed - the app owns
+  // it) and `resources` its resources, one per route, in the SAME
+  // order route.add registered them; the router's verdict is an index
+  // into both. From here on only the 29 date bytes ever change.
+  Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
+        Assets* assets = nullptr);
 
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
   // second changed. Never runs per request.
@@ -214,22 +220,6 @@ class Http1 {
   struct Variants {
     Resp plain, keep, close;
   };
-
-  void build_status(uint16_t status, const char* extra, const char* body);
-  // prefix + hand-spelled Content-Length + (unless HEAD) the lent body.
-  static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
-                       bool head_only);
-  // #147: the one place a dynamic 200 body picks identity or gzip.
-  // Called only when gzip_ok_ - every other resource never reaches
-  // here, and pays nothing beyond that one bool test at the call site.
-  void assemble_dynamic(const Conn& st, const flow::ReqFacts& facts, const http::ReqValues& vals,
-                        const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
-                        std::string& sink);
-  const Variants& variants(uint16_t status) const {
-    return store_[index_[status]];  // every status here came from the tables
-  }
-  bool fail(Conn& st, uint16_t status, std::string& sink);
-
   // h2's precomputed response header block - ONLY what never changes
   // (:status, konst content-type, allow), encoded never-indexed so the
   // bytes are connection-independent. Built once by h2_build_block
@@ -238,6 +228,75 @@ class Http1 {
   struct H2Block {
     std::string bytes;
   };
+
+  // ONE ROUTE'S VOICE (#116). The status supply below (store_/index_)
+  // stays ONE per app - a 400 is the same bytes whoever was going to
+  // answer, and the date patch walks it once. Everything that carries
+  // a RESOURCE's own voice - its 200 in every shape, its Allow, its
+  // negotiated type, its #147 gzip decision, its h2 blocks - lives
+  // here, one per route, and the router's verdict is the only thing
+  // that chooses between them. A konst request therefore pays one
+  // table walk and then indexes: no allocation, and no branch the
+  // single-resource tree did not already have.
+  struct Bundle {
+    flow::KonstSet konst;
+    const Resource* res = nullptr;
+    // status -> slot in the SHARED store_. It starts as a copy of the
+    // generic table and then points 200 and 405 at this route's own
+    // entries, which were appended to that same store_ at setup. That
+    // is why a matched request still indexes ONCE, with no status
+    // compare and no second table to consult - the multi-resource cut
+    // costs setup memory (two arrays of slots per route) and not a
+    // single per-request branch. uint16_t, not uint8_t: two slots per
+    // route would otherwise cap the app at ~113 routes.
+    std::array<uint16_t, 600> index {};
+    bool dynamic_body = false;
+    bool bound = false;    // any runtime tier at all
+    bool gzip_ok = false;  // #147's setup-time decision, see below
+    Variants ok_head;      // 200 for HEAD (RFC 9110 9.3.2): head, no body
+    // Heads up to (not including) Content-Length: the assembly points
+    // for per-request bodies (200) and for exceptions answering as the
+    // negotiated type (500).
+    Variants ok_prefix;
+    // #147: identity always carries the resource's own ok_prefix;
+    // these two exist only where gzip_ok is true - a 200 head ending,
+    // respectively, in "Vary: Accept-Encoding\r\n" alone (identity was
+    // chosen, but the resource DOES vary by coding - RFC 9110 12.5.5)
+    // or in "Content-Encoding: gzip\r\nVary: ...\r\n" (gzip was
+    // chosen). Prebuilt like every other head; only the body bytes and
+    // which of the three prefixes gets used are decided per request.
+    Variants ok_prefix_vary;
+    Variants ok_prefix_gzip;
+    Variants err_prefix;
+    H2Block h2_err;  // 500 in the negotiated type (bound routes only)
+    // The fast lane's DATA half: a whole precomputed DATA frame
+    // (header + konst.body), stream id still zero at its fixed offset
+    // (5) - h2_answer patches those 4 bytes and appends the rest
+    // untouched. Only valid when !bound (konst.body never varies);
+    // bound resources and the 500 exception body vary per request and
+    // keep the dynamic DATA path.
+    std::string h2_data200;
+  };
+
+  static void build_variants(Variants& v, uint16_t status, const char* extra,
+                             const char* body, const char* date);
+  void build_status(uint16_t status, const char* extra, const char* body);
+  void build_bundle(Bundle& b, const Resource* res);
+  static void patch_date(Variants& v, const char* core);
+  // prefix + hand-spelled Content-Length + (unless HEAD) the lent body.
+  static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
+                       bool head_only);
+  // #147: the one place a dynamic 200 body picks identity or gzip.
+  // Called only when the route's gzip_ok - every other route never
+  // reaches here, and pays nothing beyond that one bool test.
+  void assemble_dynamic(const Conn& st, const flow::ReqFacts& facts, const http::ReqValues& vals,
+                        const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
+                        std::string& sink);
+  const Variants& variants(uint16_t status) const {
+    return store_[index_[status]];  // every status here came from the tables
+  }
+  bool fail(Conn& st, uint16_t status, std::string& sink);
+
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
   // Lane 2: whatever CHANGES goes through ls-hpack's encoder and the
@@ -256,8 +315,11 @@ class Http1 {
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
   void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
   bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, std::string& sink);
+  // `route` is the router's verdict for this stream, parked with the
+  // facts when a body is still owed; kNoRoute answers the prebuilt 404
+  // the miss earned, before B13 and before any method test.
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
-                 std::string& sink);
+                 uint16_t route, std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink);
   // The asset tier's h2 half (#170): per-entry never-indexed blocks
   // built at setup (the HPACK spelling lives in http2.cpp), answered
@@ -271,63 +333,32 @@ class Http1 {
                        bool head_only, size_t win_off, size_t win_end, std::string& sink);
 
   time_t sec_ = 0;
+  // The app's route table, borrowed. ONE walk per request decides
+  // which bundle answers; both protocols walk this same table in this
+  // same order (h1 in feed, h2 in h2_dispatch).
+  const RouteTable* router_ = nullptr;
+  std::vector<Bundle> bundles_;  // parallel to the table's routes
+  // The generic status supply, one per app. It also holds a 200 and a
+  // 405 slot, built neutrally so index_ stays total for any status the
+  // flow tables can name - a MATCHED route never reads those two (its
+  // bundle owns them), and a miss only ever reads 404.
   std::vector<Variants> store_;
-  std::array<uint8_t, 600> index_ {};  // status -> store_ slot
-  Variants ok_head_;  // 200 for HEAD: the same head, no body bytes
-  // Heads up to (not including) Content-Length: the assembly points
-  // for per-request bodies (200) and for exceptions answering as the
-  // negotiated type (500).
-  Variants ok_prefix_;
-  Variants err_prefix_;
-  // #147: identity always carries the resource's own ok_prefix_; these
-  // two exist only for resources where gzip_ok_ is true - a 200 head
-  // ending, respectively, in "Vary: Accept-Encoding\r\n" alone
-  // (identity was chosen, but the resource DOES vary by coding - RFC
-  // 9110 12.5.5) or in "Content-Encoding: gzip\r\nVary: ...\r\n" (gzip
-  // was chosen). Prebuilt at construction like every other head; only
-  // the body bytes and which of these three prefixes get used are
-  // decided per request.
-  Variants ok_prefix_vary_;
-  Variants ok_prefix_gzip_;
-  // #147's setup-time decision, TOR 2: this resource's declared
-  // encodings (Resource::gzip_offered) AND its Content-Type both say
-  // yes (http::compressible_media_type). False for every resource that
-  // never declared encodings_provided, and false whenever it did but
-  // the media type table says no - "eine Ressource, die nicht
-  // komprimiert, kostet keine Verzweigung" beyond this one bool.
-  bool gzip_ok_ = false;
-  // One konst vector per method, the method folded in at add_route
-  // (B12/B10 never re-compare method strings per request).
-  flow::KonstSet konst_;
-  const Resource* res_ = nullptr;
-  bool dynamic_nodes_ = false;
-  bool dynamic_body_ = false;
-  bool bound_ = false;  // any runtime tier at all
-  // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
-  size_t warm_budget_ = kWarmBudgetDefault;
-  std::string body_;    // the run frame's rendered bytes; capacity survives
-  // #147: the gzip encoding of body_ for the current request, when
-  // gzip_ok_ chose to compress. Capacity survives across requests like
-  // body_ does - a warm connection reusing a resource that compresses
-  // every response allocates nothing after the first one.
-  std::string gz_body_;
-  // h2 blocks, parallel to store_ via index_; h2_err_ is 500 in the
-  // negotiated type (the exception path). ONE 200 block serves konst
-  // and dynamic bodies alike - h2 has no Content-Length to differ in.
+  std::array<uint16_t, 600> index_ {};  // status -> store_ slot
+  // h2 blocks, parallel to store_ via index_.
   std::vector<H2Block> h2_store_;
-  H2Block h2_err_;
   // Asset-tier refusals for h2: 405 with Allow: GET, HEAD and 406 with
   // Vary - the entry blocks live on the entries themselves.
   H2Block h2_asset405_;
   H2Block h2_asset406_;
   Assets* assets_ = nullptr;
-  // The fast lane's DATA half: a whole precomputed DATA frame (header
-  // + konst_.body), stream id still zero at its fixed offset (5) -
-  // h2_answer patches those 4 bytes and appends the rest untouched.
-  // Only valid when !bound_ (konst_.body never varies); bound
-  // resources and the 500 exception body vary per request and keep
-  // the dynamic DATA path.
-  std::string h2_data200_;
+  // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
+  size_t warm_budget_ = kWarmBudgetDefault;
+  std::string body_;  // the run frame's rendered bytes; capacity survives
+  // #147: the gzip encoding of body_ for the current request, when the
+  // route's gzip_ok chose to compress. Capacity survives across
+  // requests like body_ does - a warm connection reusing a resource
+  // that compresses every response allocates nothing after the first.
+  std::string gz_body_;
   // The current IMF-fixdate value; h1 patches it into prebuilt bytes,
   // h2 encodes it per response (the peer's dynamic table indexes it
   // after the first send).

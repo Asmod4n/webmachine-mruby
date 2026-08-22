@@ -39,7 +39,8 @@ using http::kDatePlaceholder;
 
 }  // namespace
 
-void Http1::build_status(uint16_t status, const char* extra, const char* body) {
+void Http1::build_variants(Variants& v, uint16_t status, const char* extra, const char* body,
+                           const char* date) {
   const auto build = [&](Resp& r, const char* conn) {
     r.bytes.clear();
     char line[16];
@@ -50,59 +51,173 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
     r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
     r.bytes.append("\r\nDate: ");
     r.date_off = r.bytes.size();
-    r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(extra).append(body);
+    r.bytes.append(date).append("\r\n").append(conn).append(extra).append(body);
   };
-  Variants v;
   build(v.plain, "");
   build(v.keep, "Connection: keep-alive\r\n");
   build(v.close, "Connection: close\r\n");
-  index_[status] = static_cast<uint8_t>(store_.size());
+}
+
+void Http1::build_status(uint16_t status, const char* extra, const char* body) {
+  Variants v;
+  build_variants(v, status, extra, body, kDatePlaceholder);
+  index_[status] = static_cast<uint16_t>(store_.size());
   store_.push_back(std::move(v));
 }
 
-Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
-             bool dynamic_body, Assets* assets)
-    : konst_(ks),
-      res_(res),
-      dynamic_nodes_(dynamic_nodes),
-      dynamic_body_(dynamic_body),
-      bound_(res != nullptr && (dynamic_nodes || dynamic_body)),
-      assets_(assets) {
-  // Every status the flow's halt edges can speak, plus the framer's own
-  // wire refusals - collected from the table, built ONCE. From here on
-  // only the 29 date bytes ever change.
-  store_.reserve(32);
+void Http1::patch_date(Variants& v, const char* core) {
+  std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
+  std::memcpy(v.keep.bytes.data() + v.keep.date_off, core, kDateLen);
+  std::memcpy(v.close.bytes.data() + v.close.date_off, core, kDateLen);
+}
+
+// ONE route's whole voice, built once (#116). Everything here used to
+// be a member of Http1 itself, when an app had exactly one resource;
+// the code is the same code, the owner is the route.
+void Http1::build_bundle(Bundle& b, const Resource* res) {
+  b.res = res;
+  b.konst = res->konst;
+  b.dynamic_body = res->dynamic_body;
+  b.bound = res->dynamic != 0 || res->dynamic_body;
   // One transformation, at the ONE point every writer reads from:
   // ok_extra, the h2 blocks and the exception head all spell whatever
   // stands here (#146). The resource's own copy is untouched -
   // negotiation never string-compares this.
-  konst_.content_type = http::with_charset(konst_.content_type);
-  const std::string allow = "Allow: " + konst_.allow + "\r\n";
+  b.konst.content_type = http::with_charset(b.konst.content_type);
+  // Start from the generic table, then point the two statuses that
+  // carry a resource's own voice at this route's own entries.
+  b.index = index_;
   // 200 carries the resource's rendered representation (RFC 9110 8.3:
   // a body announces its Content-Type).
   std::string ok_extra;
-  if (!konst_.content_type.empty()) {
-    ok_extra = "Content-Type: " + konst_.content_type + "\r\n";
+  if (!b.konst.content_type.empty()) {
+    ok_extra = "Content-Type: " + b.konst.content_type + "\r\n";
   }
   const std::string ok_tail =
-      "Content-Length: " + std::to_string(konst_.body.size()) + "\r\n\r\n" + konst_.body;
+      "Content-Length: " + std::to_string(b.konst.body.size()) + "\r\n\r\n" + b.konst.body;
+  Variants ok;
+  build_variants(ok, 200, ok_extra.c_str(), ok_tail.c_str(), kDatePlaceholder);
+  // 405 names what IS allowed (RFC 9110 10.2.1), from THIS resource's
+  // list - which is the whole reason 405 needs a per-route entry.
+  const std::string allow = "Allow: " + b.konst.allow + "\r\n";
+  Variants m405;
+  build_variants(m405, 405, allow.c_str(), "Content-Length: 0\r\n\r\n", kDatePlaceholder);
+
+  // The fast lane's DATA half, whole and precomputed: valid only when
+  // the body never varies at all - !bound means status 200 always
+  // sends konst.body verbatim, forever. stream id is patched per
+  // response at its fixed offset (h2_patch_stream_id); END_STREAM is
+  // baked in because h2_answer only ever reaches for this buffer when
+  // it has already proven it will be the sole, last frame.
+  if (!b.bound) {
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, static_cast<uint32_t>(b.konst.body.size()), kH2Data,
+                        kH2FlagEndStream, 0);
+    b.h2_data200.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+    b.h2_data200.append(b.konst.body);
+  }
+
+  // HEAD answers with 200's head and no body bytes (RFC 9110 9.3.2).
+  {
+    const size_t blen = b.konst.body.size();
+    const auto strip = [&](const Resp& src, Resp& dst) {
+      dst.bytes.assign(src.bytes, 0, src.bytes.size() - blen);
+      dst.date_off = src.date_off;
+    };
+    strip(ok.plain, b.ok_head.plain);
+    strip(ok.keep, b.ok_head.keep);
+    strip(ok.close, b.ok_head.close);
+  }
+  // A per-request body assembles onto 200's head cut before
+  // Content-Length: prefix + "Content-Length: N\r\n\r\n" + body.
+  if (b.dynamic_body) {
+    const size_t cut = ok_tail.size();  // ok's bytes end with the whole tail
+    const auto prefix = [&](const Resp& src, Resp& dst) {
+      dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
+      dst.date_off = src.date_off;
+    };
+    prefix(ok.plain, b.ok_prefix.plain);
+    prefix(ok.keep, b.ok_prefix.keep);
+    prefix(ok.close, b.ok_prefix.close);
+  }
+  // Into the shared store, one slot each; on_tick patches them with
+  // every other prebuilt status and never walks a per-route list.
+  b.index[200] = static_cast<uint16_t>(store_.size());
+  store_.push_back(std::move(ok));
+  {
+    H2Block hb;
+    h2_build_block(hb, 200, &b.konst.content_type, nullptr);
+    h2_store_.push_back(std::move(hb));
+  }
+  b.index[405] = static_cast<uint16_t>(store_.size());
+  store_.push_back(std::move(m405));
+  {
+    H2Block hb;
+    h2_build_block(hb, 405, nullptr, &b.konst.allow);
+    h2_store_.push_back(std::move(hb));
+  }
+  // #147: this resource's own answer to TOR 2 (media-type table) and
+  // "encodings_provided says gzip" - decided ONCE, here, never again.
+  // A resource that fails either test costs no branch beyond this bool
+  // at answer time. Built directly rather than sliced from b.ok the
+  // way ok_prefix is above, because these carry headers (Vary,
+  // Content-Encoding) the konst 200 head never has.
+  b.gzip_ok = b.dynamic_body && res->gzip_offered &&
+              http::compressible_media_type(b.konst.content_type);
+  if (b.gzip_ok) {
+    const auto buildv = [&](Resp& r, const char* conn, const char* enc) {
+      r.bytes.clear();
+      r.bytes.append("HTTP/1.1 200 OK\r\nDate: ");
+      r.date_off = r.bytes.size();
+      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra).append(enc);
+    };
+    buildv(b.ok_prefix_vary.plain, "", "Vary: Accept-Encoding\r\n");
+    buildv(b.ok_prefix_vary.keep, "Connection: keep-alive\r\n", "Vary: Accept-Encoding\r\n");
+    buildv(b.ok_prefix_vary.close, "Connection: close\r\n", "Vary: Accept-Encoding\r\n");
+    buildv(b.ok_prefix_gzip.plain, "", "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+    buildv(b.ok_prefix_gzip.keep, "Connection: keep-alive\r\n",
+           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+    buildv(b.ok_prefix_gzip.close, "Connection: close\r\n",
+           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+  }
+  // Exceptions answer as the negotiated type: a 500 head open for a
+  // per-request body carrying the reason.
+  if (b.bound) {
+    const auto build = [&](Resp& r, const char* conn) {
+      r.bytes.clear();
+      r.bytes.append("HTTP/1.1 500 Internal Server Error\r\nDate: ");
+      r.date_off = r.bytes.size();
+      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra);
+    };
+    build(b.err_prefix.plain, "");
+    build(b.err_prefix.keep, "Connection: keep-alive\r\n");
+    build(b.err_prefix.close, "Connection: close\r\n");
+    // h2's exception answer: 500 in the negotiated type.
+    h2_build_block(b.h2_err, 500, &b.konst.content_type, nullptr);
+  }
+}
+
+Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
+             Assets* assets)
+    : router_(&table), assets_(assets) {
+  // Every status the flow's halt edges can speak, plus the framer's own
+  // wire refusals - collected from the table, built ONCE. The 200 and
+  // 405 slots are built NEUTRALLY here (no content type, no Allow):
+  // they exist so index_ stays total for any status the tables name,
+  // and a matched route never reads them - its bundle owns those two.
+  store_.reserve(32);
   bool have[600] = {};
   const auto add = [&](uint16_t s) {
     if (have[s]) return;
     have[s] = true;
     // 204/304 are defined bodyless (RFC 9110 15.3.5/15.4.5): no
-    // Content-Length, no body. 405 names what IS allowed (10.2.1),
-    // from the resource's list.
+    // Content-Length, no body.
     if (s == 204 || s == 304) build_status(s, "", "\r\n");
-    else if (s == 405) build_status(s, allow.c_str(), "Content-Length: 0\r\n\r\n");
-    else if (s == 200) build_status(s, ok_extra.c_str(), ok_tail.c_str());
     else build_status(s, "", "Content-Length: 0\r\n\r\n");
     // The same status precomputed as h2's header block (same slot as
-    // store_ via index_); bodies ride DATA frames, so ONE 200 block
-    // serves konst and dynamic alike.
+    // store_ via index_).
     H2Block b;
-    h2_build_block(b, s, s == 200 ? &konst_.content_type : nullptr,
-                   s == 405 ? &konst_.allow : nullptr);
+    h2_build_block(b, s, nullptr, nullptr);
     h2_store_.push_back(std::move(b));
   };
   for (const auto& f : flow::kFlow) {
@@ -113,85 +228,13 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
   add(411);
   add(413);
   add(431);
+  // The router's own answer: a path no route claims is 404, built here
+  // like every other prebuilt status (the flow tables already name it,
+  // so this is a no-op the day they stop).
+  add(404);
 
-  // The fast lane's DATA half, whole and precomputed: valid only when
-  // the body never varies at all - !bound_ means status 200 always
-  // sends konst_.body verbatim, forever. stream id is patched per
-  // response at its fixed offset (h2_patch_stream_id); END_STREAM is
-  // baked in because h2_answer only ever reaches for this buffer when
-  // it has already proven it will be the sole, last frame.
-  if (!bound_) {
-    unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(konst_.body.size()), kH2Data,
-                        kH2FlagEndStream, 0);
-    h2_data200_.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-    h2_data200_.append(konst_.body);
-  }
-
-  // HEAD answers with 200's head and no body bytes (RFC 9110 9.3.2).
-  {
-    const Variants& ok = variants(200);
-    const size_t blen = konst_.body.size();
-    const auto strip = [&](const Resp& src, Resp& dst) {
-      dst.bytes.assign(src.bytes, 0, src.bytes.size() - blen);
-      dst.date_off = src.date_off;
-    };
-    strip(ok.plain, ok_head_.plain);
-    strip(ok.keep, ok_head_.keep);
-    strip(ok.close, ok_head_.close);
-  }
-  // A per-request body assembles onto 200's head cut before
-  // Content-Length: prefix + "Content-Length: N\r\n\r\n" + body.
-  if (dynamic_body_) {
-    const Variants& ok = variants(200);
-    const size_t cut = ok_tail.size();  // ok's bytes end with the whole tail
-    const auto prefix = [&](const Resp& src, Resp& dst) {
-      dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
-      dst.date_off = src.date_off;
-    };
-    prefix(ok.plain, ok_prefix_.plain);
-    prefix(ok.keep, ok_prefix_.keep);
-    prefix(ok.close, ok_prefix_.close);
-  }
-  // #147: this resource's own answer to TOR 2 (media-type table) and
-  // "encodings_provided says gzip" - decided ONCE, here, never again.
-  // A resource that fails either test costs no branch beyond this bool
-  // at answer time. Built directly rather than sliced from variants(200)
-  // the way ok_prefix_ is above, because these carry headers (Vary,
-  // Content-Encoding) the konst 200 head never has.
-  gzip_ok_ = dynamic_body_ && res_ != nullptr && res_->gzip_offered &&
-            http::compressible_media_type(konst_.content_type);
-  if (gzip_ok_) {
-    const auto buildv = [&](Resp& r, const char* conn, const char* enc) {
-      r.bytes.clear();
-      r.bytes.append("HTTP/1.1 200 OK\r\nDate: ");
-      r.date_off = r.bytes.size();
-      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra).append(enc);
-    };
-    buildv(ok_prefix_vary_.plain, "", "Vary: Accept-Encoding\r\n");
-    buildv(ok_prefix_vary_.keep, "Connection: keep-alive\r\n", "Vary: Accept-Encoding\r\n");
-    buildv(ok_prefix_vary_.close, "Connection: close\r\n", "Vary: Accept-Encoding\r\n");
-    buildv(ok_prefix_gzip_.plain, "", "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
-    buildv(ok_prefix_gzip_.keep, "Connection: keep-alive\r\n",
-           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
-    buildv(ok_prefix_gzip_.close, "Connection: close\r\n",
-           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
-  }
-  // Exceptions answer as the negotiated type: a 500 head open for a
-  // per-request body carrying the reason.
-  if (bound_) {
-    const auto build = [&](Resp& r, const char* conn) {
-      r.bytes.clear();
-      r.bytes.append("HTTP/1.1 500 Internal Server Error\r\nDate: ");
-      r.date_off = r.bytes.size();
-      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra);
-    };
-    build(err_prefix_.plain, "");
-    build(err_prefix_.keep, "Connection: keep-alive\r\n");
-    build(err_prefix_.close, "Connection: close\r\n");
-    // h2's exception answer: 500 in the negotiated type.
-    h2_build_block(h2_err_, 500, &konst_.content_type, nullptr);
-  }
+  bundles_.resize(nroutes);
+  for (size_t i = 0; i < nroutes; i++) build_bundle(bundles_[i], resources[i]);
 
   // The warm budget, read once (see kWarmBudgetDefault for the
   // measurement behind the number). 0 is legal and means "never copy,
@@ -222,37 +265,18 @@ void Http1::on_tick() {
   http::date_core(date_, tm);
   const char* core = date_;
 
-  for (Variants& v : store_) {
-    std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
-    std::memcpy(v.keep.bytes.data() + v.keep.date_off, core, kDateLen);
-    std::memcpy(v.close.bytes.data() + v.close.date_off, core, kDateLen);
-  }
-  std::memcpy(ok_head_.plain.bytes.data() + ok_head_.plain.date_off, core, kDateLen);
-  std::memcpy(ok_head_.keep.bytes.data() + ok_head_.keep.date_off, core, kDateLen);
-  std::memcpy(ok_head_.close.bytes.data() + ok_head_.close.date_off, core, kDateLen);
-  if (dynamic_body_) {
-    std::memcpy(ok_prefix_.plain.bytes.data() + ok_prefix_.plain.date_off, core, kDateLen);
-    std::memcpy(ok_prefix_.keep.bytes.data() + ok_prefix_.keep.date_off, core, kDateLen);
-    std::memcpy(ok_prefix_.close.bytes.data() + ok_prefix_.close.date_off, core, kDateLen);
-  }
-  if (gzip_ok_) {
-    std::memcpy(ok_prefix_vary_.plain.bytes.data() + ok_prefix_vary_.plain.date_off, core,
-               kDateLen);
-    std::memcpy(ok_prefix_vary_.keep.bytes.data() + ok_prefix_vary_.keep.date_off, core,
-               kDateLen);
-    std::memcpy(ok_prefix_vary_.close.bytes.data() + ok_prefix_vary_.close.date_off, core,
-               kDateLen);
-    std::memcpy(ok_prefix_gzip_.plain.bytes.data() + ok_prefix_gzip_.plain.date_off, core,
-               kDateLen);
-    std::memcpy(ok_prefix_gzip_.keep.bytes.data() + ok_prefix_gzip_.keep.date_off, core,
-               kDateLen);
-    std::memcpy(ok_prefix_gzip_.close.bytes.data() + ok_prefix_gzip_.close.date_off, core,
-               kDateLen);
-  }
-  if (bound_) {
-    std::memcpy(err_prefix_.plain.bytes.data() + err_prefix_.plain.date_off, core, kDateLen);
-    std::memcpy(err_prefix_.keep.bytes.data() + err_prefix_.keep.date_off, core, kDateLen);
-    std::memcpy(err_prefix_.close.bytes.data() + err_prefix_.close.date_off, core, kDateLen);
+  for (Variants& v : store_) patch_date(v, core);
+  // Per route, only the shapes that route actually built. This is the
+  // one place the multi-resource cut costs work proportional to the
+  // number of routes, and it is per SECOND, never per request.
+  for (Bundle& b : bundles_) {
+    patch_date(b.ok_head, core);
+    if (b.dynamic_body) patch_date(b.ok_prefix, core);
+    if (b.gzip_ok) {
+      patch_date(b.ok_prefix_vary, core);
+      patch_date(b.ok_prefix_gzip, core);
+    }
+    if (b.bound) patch_date(b.err_prefix, core);
   }
   // The h2 blocks carry no date - it changes, so it rides the encoder
   // lane per response, reading date_ directly.
@@ -266,8 +290,8 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
   if (!head_only) sink.append(body, len);
 }
 
-// #147: called only when gzip_ok_ - the caller already paid the one
-// branch that costs every other resource nothing.
+// #147: called only when the route's gzip_ok - the caller already paid
+// the one branch that costs every other resource nothing.
 void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
                              const http::ReqValues& vals, const Resp& prefix_id,
                              const Resp& prefix_gz, bool head_only, std::string& sink) {
@@ -563,20 +587,38 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       }
     }
 
-    // The wire is valid; from here the FLOW decides the status. Konst
-    // answers are compiled into the method's vector; dynamic nodes -
-    // instance methods, by declaration - are asked through the VM per
-    // request (this branch is deployment-stable: no hint).
-    // Konst resources never see the VM; anything dynamic runs the whole
-    // flow inside ONE VM frame (this branch is deployment-stable: no
-    // hint).
+    // THE ROUTER (#116). One walk of the app's constant table decides
+    // which resource answers - literals by memcmp, symbols and :*
+    // captured as spans nothing reads yet (router.hpp says why they
+    // are captured anyway). A MISS answers the prebuilt 404 and stops
+    // here: before B13, therefore before any method test, so POST on
+    // an unknown path is 404 and never 405.
+    RouteSpans spans;
+    const int route = router_->match(path, path_len, spans);
+    const Bundle* b = nullptr;
+    // Which status table answers, settled INSIDE the branch that was
+    // going to be taken anyway - so the writer below stays one indexed
+    // load with no test of its own.
+    const std::array<uint16_t, 600>* idx = &index_;
     uint16_t status;
     bool have_body = false;
-    if (bound_) {
-      status = resource_run(*res_, facts, &body_, &have_body);
+    if (WM_H1_UNLIKELY(route < 0)) {
+      status = 404;
     } else {
-      status = flow::answer(facts, konst_.per_method[static_cast<size_t>(facts.method)],
-                           konst_.shortcut[static_cast<size_t>(facts.method)]);
+      b = &bundles_[static_cast<size_t>(route)];
+      idx = &b->index;
+      // The wire is valid; from here the FLOW decides the status. Konst
+      // answers are compiled into the method's vector; dynamic nodes -
+      // instance methods, by declaration - are asked through the VM per
+      // request. Konst resources never see the VM; anything dynamic
+      // runs the whole flow inside ONE VM frame (this branch is
+      // deployment-stable: no hint).
+      if (b->bound) {
+        status = resource_run(*b->res, facts, &body_, &have_body);
+      } else {
+        status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
+                             b->konst.shortcut[static_cast<size_t>(facts.method)]);
+      }
     }
 
     bool answered = false;
@@ -584,39 +626,45 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       // Rendered inside the run frame, copied there while the frame
       // rooted it; HEAD renders too - its Content-Length must be the
       // GET's - but sends no body bytes (RFC 9110 9.3.2).
-      if (gzip_ok_) {
-        // #147: deployment-stable like bound_ above - a resource either
+      if (b->gzip_ok) {
+        // #147: deployment-stable like bound above - a resource either
         // declared gzip or it never did, so no hint (see WM_H1_UNLIKELY's
         // own rule: only for a branch that swings per request).
         assemble_dynamic(
             st, facts, vals,
-            minor >= 1 ? (persist ? ok_prefix_vary_.plain : ok_prefix_vary_.close)
-                       : (persist ? ok_prefix_vary_.keep : ok_prefix_vary_.close),
-            minor >= 1 ? (persist ? ok_prefix_gzip_.plain : ok_prefix_gzip_.close)
-                       : (persist ? ok_prefix_gzip_.keep : ok_prefix_gzip_.close),
+            minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
+                       : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close),
+            minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
+                       : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close),
             head_only, sink);
       } else {
-        assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
-                                  : (persist ? ok_prefix_.keep : ok_prefix_.close),
+        assemble(sink, minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
+                                  : (persist ? b->ok_prefix.keep : b->ok_prefix.close),
                  body_.data(), body_.size(), head_only);
       }
       answered = true;
     }
-    if (WM_H1_UNLIKELY(!answered && status == 500 && bound_)) {
+    if (WM_H1_UNLIKELY(!answered && status == 500 && b != nullptr && b->bound)) {
       // A raising callback answers in the negotiated type, the reason
       // as body - the exception was left pending for exactly this.
       // Copied before any mruby call can run.
       const char* bp = nullptr;
       size_t blen = 0;
-      if (resource_exception_begin(*res_, &bp, &blen)) {
-        assemble(sink, minor >= 1 ? (persist ? err_prefix_.plain : err_prefix_.close)
-                                  : (persist ? err_prefix_.keep : err_prefix_.close),
+      if (resource_exception_begin(*b->res, &bp, &blen)) {
+        assemble(sink, minor >= 1 ? (persist ? b->err_prefix.plain : b->err_prefix.close)
+                                  : (persist ? b->err_prefix.keep : b->err_prefix.close),
                bp, blen, head_only);
         answered = true;
       }
     }
     if (!answered) {
-      const Variants& sv = (head_only && status == 200) ? ok_head_ : variants(status);
+      // The route's own table for a matched request (its 200 and 405
+      // sit in the shared store like everything else, at slots only
+      // its index names), the generic one for a router miss. The shape
+      // is one indexed load either way - exactly what a single-resource
+      // app paid.
+      const Variants& sv =
+          (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
       sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                              : (persist ? sv.keep.bytes : sv.close.bytes));
     }

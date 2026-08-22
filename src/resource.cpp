@@ -1,7 +1,8 @@
 #include "resource.hpp"
 
+#include "application.hpp"
+
 #include <mruby/class.h>
-#include <mruby/dump.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
 #include <mruby/proc.h>
@@ -303,73 +304,8 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
 
 }  // namespace
 
-bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, size_t errlen) {
+bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
-  // DECIDED (#100): --app takes a precompiled .mrb; this server never
-  // compiles Ruby itself (build_config.rb asks mruby-compiler for
-  // nothing of its own - see the comment there on what still pulls it
-  // in transitively, and why that is a build-time fact, not a reason
-  // for this function to behave differently). A .rb here is refused BY
-  // NAME, with the mrbc line that produces what --app wants -
-  // compiling it as a fallback is how the source path would come back
-  // in through the side door.
-  const size_t path_len = std::strlen(path);
-  if (WM_RES_UNLIKELY(path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0)) {
-    const std::string mrb_path(path, path_len - 3);
-    std::snprintf(err, errlen,
-                  "%s is Ruby source, not bytecode - this server loads bytecode only. "
-                  "Compile it first: mrbc -o %s.mrb %s",
-                  path, mrb_path.c_str(), path);
-    return false;
-  }
-  FILE* f = std::fopen(path, "rb");
-  if (WM_RES_UNLIKELY(f == nullptr)) {
-    std::snprintf(err, errlen, "cannot open %s", path);
-    return false;
-  }
-  mrb_load_irep_file(mrb, f);
-  std::fclose(f);
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, "app raised while loading", err, errlen);
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  // The app's class: found by walking Object's constant table in C -
-  // a value of class type whose super chain hits Webmachine::Resource.
-  // Exactly one, or a named refusal. No hook, no ivar, no mrb->ud.
-  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-  struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
-  struct Finder {
-    struct RClass* base;
-    mrb_value found;
-    int count;
-  } finder{base, mrb_nil_value(), 0};
-  mrb_iv_foreach(
-      mrb, mrb_obj_value(mrb->object_class),
-      [](mrb_state*, mrb_sym, mrb_value v, void* p) -> int {
-        Finder* fd = static_cast<Finder*>(p);
-        if (mrb_type(v) == MRB_TT_CLASS) {
-          for (struct RClass* c = mrb_class_ptr(v)->super; c != nullptr; c = c->super) {
-            if (c == fd->base) {
-              fd->found = v;
-              fd->count++;
-              break;
-            }
-          }
-        }
-        return 0;  // keep going
-      },
-      &finder);
-  if (WM_RES_UNLIKELY(finder.count != 1)) {
-    std::snprintf(err, errlen,
-                  "the app must define exactly one top-level class inheriting "
-                  "Webmachine::Resource (found %d)",
-                  finder.count);
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  const mrb_value klass = finder.found;
-
   out = Resource{};
   out.mrb = mrb;
 
@@ -573,7 +509,7 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
   }
   // The vectors just changed, so the answers derived from them are
   // stale. A fully konst resource (no dynamic node, no dynamic body)
-  // is NOT bound_, so it answers through flow::answer and reads these.
+  // is NOT bound, so it answers through flow::answer and reads these.
   out.konst.resolve_shortcuts();
   mrb_gc_arena_restore(mrb, ai);
   return true;
@@ -614,13 +550,16 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
 }  // namespace webmachine
 
 // The gem's Ruby surface: the Webmachine::Resource base class an app
-// subclasses. Registration happens by inheritance alone - setup finds
-// the subclass in the constant table, no hook, no state.
+// subclasses, and Webmachine::Application (#116), which is how a
+// resource reaches a listener at all. Inheritance registers nothing on
+// its own any more - route.add is the only door, and it is the door
+// that freezes the class.
 extern "C" {
 
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
+  webmachine::application_init(mrb, wm);
 }
 
 void mrb_webmachine_mruby_gem_final(mrb_state*) {}

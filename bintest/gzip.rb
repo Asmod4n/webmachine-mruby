@@ -27,6 +27,23 @@ def gz_recv(s, maxlen = 65536, deadline = 10)
   s.readpartial(maxlen)
 end
 
+# Since #116 a resource class is not an app: the file defines `main`,
+# and the Application registered there carries the routes. Every
+# fixture here is one resource on the root splat route; the listener
+# comes from --unix/--port on the command line, which overrides conf.
+def gz_app(name, src)
+  <<~RUBY
+    #{src}
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add [:*], #{name}
+        end
+      end
+    end
+  RUBY
+end
+
 def gz_compile(app_source)
   src = Tempfile.new(['wm-gzapp', '.rb'])
   src.write(app_source)
@@ -112,7 +129,7 @@ def gz_tcp_connect(port)
   TCPSocket.open('127.0.0.1', port)
 end
 
-GZ_ENC_RESOURCE = <<~RUBY unless defined?(GZ_ENC_RESOURCE)
+GZ_ENC_RESOURCE = gz_app('GzEncResource', <<~RUBY) unless defined?(GZ_ENC_RESOURCE)
   class GzEncResource < Webmachine::Resource
     def self.encodings_provided
       {"identity" => :encode_identity, "gzip" => :encode_gzip}
@@ -123,7 +140,7 @@ GZ_ENC_RESOURCE = <<~RUBY unless defined?(GZ_ENC_RESOURCE)
   end
 RUBY
 
-GZ_NOENC_RESOURCE = <<~RUBY unless defined?(GZ_NOENC_RESOURCE)
+GZ_NOENC_RESOURCE = gz_app('GzNoEncResource', <<~RUBY) unless defined?(GZ_NOENC_RESOURCE)
   class GzNoEncResource < Webmachine::Resource
     def to_html
       "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 200
@@ -131,7 +148,7 @@ GZ_NOENC_RESOURCE = <<~RUBY unless defined?(GZ_NOENC_RESOURCE)
   end
 RUBY
 
-GZ_SMALL_RESOURCE = <<~RUBY unless defined?(GZ_SMALL_RESOURCE)
+GZ_SMALL_RESOURCE = gz_app('GzSmallResource', <<~RUBY) unless defined?(GZ_SMALL_RESOURCE)
   class GzSmallResource < Webmachine::Resource
     def self.encodings_provided
       {"identity" => :encode_identity, "gzip" => :encode_gzip}
@@ -152,7 +169,7 @@ GZ_BODY = ("Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 200).b 
 def gz_sized_resource(n)
   body = GZ_BODY[0, n]
   raise "GZ_BODY too short for #{n} bytes" if body.bytesize != n
-  <<~RUBY
+  gz_app('GzBoundaryResource', <<~RUBY)
     class GzBoundaryResource < Webmachine::Resource
       def self.encodings_provided
         {"identity" => :encode_identity, "gzip" => :encode_gzip}
