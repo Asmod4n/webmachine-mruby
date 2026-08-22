@@ -50,21 +50,21 @@ MRuby::Build.new do |conf|
   # includes <liburing.h> and nothing else).
   conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem mgem: 'mruby-phr'
-  # mruby-chrono pulls in mruby-c-ext-helpers, whose mrbgem.rake lists
-  # `add_test_dependency 'mruby-compiler'` alongside its other test-only
-  # gems - normally inert, but conf.enable_test/enable_bintest above
-  # (needed for `rake test` to run at all, on this same build) turn
-  # every add_test_dependency in the whole gem graph into a real one,
-  # for every gem, not only the one under test. So mruby-compiler is
-  # still an active gem of THIS build and still lands in
-  # webmachine-server's libmruby via the generated gem_init.c, which
-  # calls every active gem's init unconditionally - dropping 'default'
-  # above (#100) does not reach this one. Confirmed by build summary
-  # ("host" lists mruby-compiler) and `nm` (mrb_mruby_compiler_gem_init
-  # present in the linked binary). The fix is upstream, in
-  # mruby-c-ext-helpers itself, or in splitting this tree's one build
-  # target into a shipping build and a test build - both bigger than
-  # #100 asked for, so this is named here rather than done silently.
+  # conf.enable_test/enable_bintest above (needed for `rake test` to
+  # run at all, on this same build) turn every add_test_dependency in
+  # the whole gem graph into a real dependency of THIS one target:
+  # mruby's add_test_dependency is add_dependency guarded only by
+  # test_enabled? (lib/mruby/gem.rb) - there is no separate mrbtest
+  # gem set, so a test-only gem's objects land in the same libmruby.a
+  # every binary links. That is a property of this tree's one-target
+  # build, not a defect in any gem's declaration. mruby-compiler used
+  # to reach the shipped binary through exactly this door, via
+  # mruby-c-ext-helpers' (correctly declared) test dependency; that
+  # gem's tests need no compiler since 7d582c5, so the binary is clean
+  # today - proven by A/B builds toggling only enable_test, and by
+  # `nm` below. Any future gem's add_test_dependency would ride in the
+  # same way; the durable fix, if ever wanted, is a shipping target
+  # without enable_test (#176).
   conf.gem mgem: 'mruby-chrono'
   conf.gem File.expand_path(File.dirname(__FILE__))
 end

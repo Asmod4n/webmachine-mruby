@@ -23,10 +23,10 @@ builds:
     https://github.com/Asmod4n/mruby-c-ext-helpers.git:
       url: https://github.com/Asmod4n/mruby-c-ext-helpers.git
       branch: master
-      commit: 01d260f00f5d13e75c90ddc8c0de7e519f732dfc
+      commit: 7d582c598c3575a9a6cc57f775de494fb809ddef
       version: 0.3.0
     https://github.com/Asmod4n/slipstreamIO.git:
       url: https://github.com/Asmod4n/slipstreamIO.git
       branch: main
-      commit: a50c1b77895415b3b90d483bd42ca3e9f9d3b1e3
+      commit: 321670af6abc912ab7ba6c19b2a551eca2798206
       version: 0.0.0
