@@ -364,3 +364,15 @@ harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb W
      50%  530.00us
      99%  562.00us
 Requests/sec: 739818.77
+==== 2026-08-22T19:50Z repo=7d894fd mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 "-march=#{march}" 7.1.8-1-default x86_64
+env: runnable=1/1443 busy=0% (200ms sample)
+     50%  533.00us
+     99%  567.00us
+Requests/sec: 734744.16
+==== 2026-08-22T19:50Z repo=7d894fd mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 "-march=#{march}" 7.1.8-1-default x86_64
+env: runnable=1/1445 busy=0% (200ms sample)
+     50%  424.00us
+     99%  522.00us
+Requests/sec: 923285.89
