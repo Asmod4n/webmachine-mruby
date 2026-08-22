@@ -26,3 +26,4 @@ bench/idle_load
 !/deps/ls-hpack
 !/deps/zlib-ng
 build_config.rb.lock
+bench/vm/*.mrb

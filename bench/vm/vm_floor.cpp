@@ -7,7 +7,7 @@
 #include <benchmark/benchmark.h>
 #include <mruby.h>
 #include <mruby/class.h>
-#include <mruby/compile.h>
+#include <mruby/dump.h>   // mrb_load_irep_file: bytecode, never source (#100)
 #include <mruby/string.h>
 
 #include <cstdio>
@@ -174,15 +174,28 @@ BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 webmachine::Resource g_res1;
 webmachine::Resource g_res4;
 
-bool bind_bench_resource(const char* cls, const char* src, webmachine::Resource& out) {
+// Bytecode, never source (#100): the binary this measures carries no
+// compiler, so this one does not either - bench/vm.sh runs mrbc over
+// bench/vm/*.rb first and hands the .mrb paths in.
+bool load_irep(mrb_state* m, const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  if (f == nullptr) {
+    std::fprintf(stderr, "bench: cannot open %s (run bench/vm.sh, not the binary)\n", path);
+    return false;
+  }
+  mrb_load_irep_file(m, f);
+  std::fclose(f);
+  return m->exc == nullptr;
+}
+
+bool bind_bench_resource(const char* cls, const char* mrb_path, webmachine::Resource& out) {
   char err[256];
   // Its own VM: the two bench resources must not see each other's
   // classes. The fold is what route.add does (#116) - the same call,
   // without a listener in front of it.
   mrb_state* own = mrb_open();
   if (own == nullptr) return false;
-  mrb_load_string(own, src);
-  if (own->exc != nullptr) {
+  if (!load_irep(own, mrb_path)) {
     std::fprintf(stderr, "bench bind: %s raised while loading\n", cls);
     return false;
   }
@@ -199,7 +212,10 @@ void BM_runtime_1cb(benchmark::State& state) {
   std::string body;
   bool have = false;
   for (auto _ : state) {
-    uint16_t st = webmachine::resource_run(g_res1, facts, &body, &have);
+    // No request view (#116 slice 4): these two measure the VM entry
+    // and the callbacks, and a callback that asked `request` anything
+    // would be measuring the accessor instead.
+    uint16_t st = webmachine::resource_run(g_res1, facts, nullptr, &body, &have);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
@@ -211,26 +227,12 @@ void BM_runtime_4cb(benchmark::State& state) {
   std::string body;
   bool have = false;
   for (auto _ : state) {
-    uint16_t st = webmachine::resource_run(g_res4, facts, &body, &have);
+    uint16_t st = webmachine::resource_run(g_res4, facts, nullptr, &body, &have);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
 }
 BENCHMARK(BM_runtime_4cb)->Unit(benchmark::kMicrosecond);
-
-constexpr char kApp1[] =
-    "class BenchCounter < Webmachine::Resource\n"
-    "  def initialize; @n = 0; end\n"
-    "  def to_html; \"<html><body>hit #{@n += 1}</body></html>\"; end\n"
-    "end\n";
-constexpr char kApp4[] =
-    "class BenchMulti < Webmachine::Resource\n"
-    "  def initialize; @n = 0; end\n"
-    "  def service_available?; true; end\n"
-    "  def resource_exists?; true; end\n"
-    "  def multiple_choices?; false; end\n"
-    "  def to_html; \"<html><body>hit #{@n += 1}</body></html>\"; end\n"
-    "end\n";
 
 }  // namespace
 
@@ -240,17 +242,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "mrb_open failed\n");
     return 1;
   }
-  mrb_load_string(mrb,
-                  "def wm_noop; end\n"
-                  "def wm_handle(req)\n"
-                  "  \"HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nOK\"\n"
-                  "end\n");
-  if (mrb->exc != nullptr) {
+  if (!load_irep(mrb, "bench/vm/handlers.mrb")) {
     std::fprintf(stderr, "handler setup raised\n");
     return 1;
   }
-  if (!bind_bench_resource("BenchCounter", kApp1, g_res1) ||
-      !bind_bench_resource("BenchMulti", kApp4, g_res4)) {
+  if (!bind_bench_resource("BenchCounter", "bench/vm/bench_counter.mrb", g_res1) ||
+      !bind_bench_resource("BenchMulti", "bench/vm/bench_multi.mrb", g_res4)) {
     std::fprintf(stderr, "bench resource setup failed\n");
     return 1;
   }
