@@ -18,6 +18,36 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # answered.
   spec.add_dependency 'mruby-io-uring'
   spec.add_dependency 'mruby-slipstreamio'
+
+  # ON LINUX IT IS io_uring OR NOTHING (user decision). The whole point
+  # of this server is the ring; a Linux build that quietly fell back to
+  # select would still be called webmachine and would no longer be the
+  # thing the numbers describe. So refuse to produce it - at BUILD
+  # time, by name, next to the reason - rather than shipping a binary
+  # that is slow in a way nobody can see. (The same rule at runtime is
+  # in tools/webmachine-server: URING_AVAILABLE false does not start.)
+  #
+  # Asked through the compiler's own include path rather than the host
+  # Ruby's platform string, so a cross build answers for its TARGET:
+  # sys/epoll.h exists on Linux and nowhere else.
+  #
+  # mruby-slipstreamio stays neutral in this - it installs its
+  # liburing.h wherever there is none, and another project may well
+  # want that on Linux. The policy is ours, so the check is ours.
+  if spec.cc.search_header('sys/epoll.h') && !spec.cc.search_header('liburing.h')
+    abort <<~MSG
+      webmachine-mruby: this is a Linux build with no liburing.
+
+      liburing could not be built here (see mruby-io-uring's output above;
+      it needs kernel headers and a working C compiler). On Linux this
+      tree is io_uring or nothing: the alternative implementations exist
+      for platforms that have no io_uring at all, not to make a Linux
+      server quietly slow.
+
+      Fix the liburing build, or build for a platform where slipstreamIO
+      is the intended implementation.
+    MSG
+  end
   # picohttpparser arrives through mruby-phr the same way liburing does
   # through mruby-io-uring: one place builds and pins it.
   spec.add_dependency 'mruby-phr'
