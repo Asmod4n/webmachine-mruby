@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "../../src/assets.hpp"
 #include "../../src/http1.hpp"
 #include "../../src/resource.hpp"
 #include "../../src/ring.hpp"
@@ -50,6 +51,7 @@ int main(int argc, char** argv) {
   cfg.nlisteners = 1;
   bool echo = false;
   const char* app_path = nullptr;
+  const char* assets_path = nullptr;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
       cfg.listeners[0].unix_path = argv[++i];
@@ -57,10 +59,14 @@ int main(int argc, char** argv) {
       cfg.listeners[0].port = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
       app_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
+      assets_path = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
-      std::fprintf(stderr, "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--echo]\n",
+      std::fprintf(stderr,
+                   "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--assets FILE.zip] "
+                   "[--echo]\n",
                    argv[0]);
       return 2;
     }
@@ -100,12 +106,25 @@ int main(int argc, char** argv) {
     }
   }
 
+  // The asset table is built ONCE, before any listener exists; a bad
+  // archive refuses the start by name (#170).
+  webmachine::Assets assets;
+  if (assets_path != nullptr) {
+    char err[512];
+    if (!assets.open(assets_path, err, sizeof(err))) {
+      std::fprintf(stderr, "webmachine: assets: %s\n", err);
+      mrb_close(mrb);
+      return 1;
+    }
+  }
+
   int rc = 0;
   if (echo) {
     Echo app;
     rc = serve(cfg, app, "echo floor");
   } else {
-    webmachine::Http1 app(res.konst, &res, res.dynamic != 0, res.dynamic_body);
+    webmachine::Http1 app(res.konst, &res, res.dynamic != 0, res.dynamic_body,
+                          assets_path != nullptr ? &assets : nullptr);
     rc = serve(cfg, app, "http/1.1");
   }
   mrb_close(mrb);

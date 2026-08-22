@@ -167,6 +167,110 @@ inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
   return ClStatus::kOk;
 }
 
+// The value tier's first residents (#165, first customer #170): the
+// header VALUES negotiation reads. The pointers BORROW the receive
+// buffer (h1) or the decode buffer (h2) and die with the dispatch that
+// filled them - presence lives in ReqFacts' has_* flags, these only
+// say where the bytes are while the answer is being made.
+struct ReqValues {
+  const char* accept_encoding = nullptr;
+  size_t accept_encoding_len = 0;
+  const char* if_match = nullptr;
+  size_t if_match_len = 0;
+  const char* if_none_match = nullptr;
+  size_t if_none_match_len = 0;
+};
+
+// Accept-Encoding, asked the one question this tree has: may gzip be
+// sent? (RFC 9110 §12.5.3.) Most specific wins: an explicit gzip (or
+// its x-gzip alias, §12.5.3) decides by its own q; otherwise * decides;
+// otherwise - the field is present but names neither - gzip is not
+// acceptable. An empty value means "no codings": also not acceptable.
+// Callers only ask when the field EXISTS; a missing field means any
+// coding is acceptable and never reaches this parse.
+inline bool gzip_acceptable(const char* v, size_t n) {
+  bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
+  size_t i = 0;
+  while (i < n) {
+    while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
+    const size_t ts = i;
+    while (i < n && v[i] != ',' && v[i] != ';' && v[i] != ' ' && v[i] != '\t') i++;
+    const size_t tl = i - ts;
+    // Parameters up to the next element; q's digits decide (weight is
+    // 0[.000]..1[.000], so "any nonzero digit" IS "q > 0").
+    bool q_nonzero = true;
+    while (i < n && v[i] != ',') {
+      if (v[i] != ';') {
+        i++;
+        continue;
+      }
+      i++;
+      while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
+      if (i < n && (v[i] == 'q' || v[i] == 'Q')) {
+        size_t j = i + 1;
+        while (j < n && (v[j] == ' ' || v[j] == '\t')) j++;
+        if (j < n && v[j] == '=') {
+          j++;
+          q_nonzero = false;
+          while (j < n && v[j] != ',' && v[j] != ';') {
+            if (v[j] >= '1' && v[j] <= '9') q_nonzero = true;
+            j++;
+          }
+          i = j;
+        }
+      }
+    }
+    if (tl != 0) {
+      if (tok_eq(v + ts, tl, "gzip", 4) || tok_eq(v + ts, tl, "x-gzip", 6)) {
+        gz_seen = true;
+        gz_ok = q_nonzero;
+      } else if (tl == 1 && v[ts] == '*') {
+        star_seen = true;
+        star_ok = q_nonzero;
+      }
+    }
+  }
+  if (gz_seen) return gz_ok;
+  if (star_seen) return star_ok;
+  return false;
+}
+
+// Does an If-Match/If-None-Match list contain `tag` (the full quoted
+// form)? If-None-Match compares weakly - a W/ prefix is stripped and
+// ignored (RFC 9110 §13.1.2); If-Match compares strongly, so a weak
+// member can never match there (§13.1.1). The * form never reaches
+// this parse - ReqFacts carries it as a fact.
+inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t taglen,
+                            bool weak) {
+  size_t i = 0;
+  while (i < n) {
+    while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
+    if (i >= n) break;
+    bool member_weak = false;
+    if (i + 1 < n && v[i] == 'W' && v[i + 1] == '/') {
+      member_weak = true;
+      i += 2;
+    }
+    if (i >= n || v[i] != '"') {
+      // Not an entity-tag; skip to the next element rather than trust
+      // the rest of a malformed list.
+      while (i < n && v[i] != ',') i++;
+      continue;
+    }
+    const size_t start = i;
+    i++;
+    while (i < n && v[i] != '"') i++;
+    if (i >= n) break;  // unterminated: nothing more to compare
+    i++;
+    const size_t mlen = i - start;
+    if ((weak || !member_weak) && mlen == taglen &&
+        std::memcmp(v + start, tag, taglen) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // One length-switch per header - the hot-path shape stays ONE dispatch.
 // The 9110 facts (conneg, preconditions, content-md5) are filled here;
 // every name this layer does not own falls through to the framer's
@@ -176,7 +280,7 @@ inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
 // folds its checks to exactly the arms the old fused switch had.
 template <class OnWire>
 inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
-                          flow::ReqFacts& facts, OnWire&& wire) {
+                          flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
   switch (nlen) {
     case 6:
       if (tok_eq(name, nlen, "accept", 6)) {
@@ -190,6 +294,8 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.has_if_match = true;
         facts.plain = false;
         facts.if_match_star = star_value(value, vlen);
+        vals.if_match = value;
+        vals.if_match_len = vlen;
         return;
       }
       break;
@@ -205,6 +311,8 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.has_if_none_match = true;
         facts.plain = false;
         facts.inm_star = star_value(value, vlen);
+        vals.if_none_match = value;
+        vals.if_none_match_len = vlen;
         return;
       }
       break;
@@ -224,6 +332,8 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "accept-encoding", 15)) {
         facts.has_accept_encoding = true;
         facts.plain = false;
+        vals.accept_encoding = value;
+        vals.accept_encoding_len = vlen;
         return;
       }
       break;

@@ -35,6 +35,11 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
 struct H2State;
 void h2_free(H2State* h2);
 
+// assets.hpp owns both (#170). Null = no asset tier; requests never
+// pay a lookup they did not configure.
+class Assets;
+struct AssetEntry;
+
 // RFC 9110 §5.4 allows refusing oversized fields; 8k is the fleet
 // convention (nginx, h2o) and bounds one head's work - 431 past it.
 inline constexpr size_t kMaxHead = 8192;
@@ -72,7 +77,8 @@ class Http1 {
   // is included) carries the runtime tier: dynamic flow nodes and/or a
   // per-request body. Null = fully konst.
   explicit Http1(const flow::KonstSet& ks = {}, const Resource* res = nullptr,
-                 bool dynamic_nodes = false, bool dynamic_body = false);
+                 bool dynamic_nodes = false, bool dynamic_body = false,
+                 Assets* assets = nullptr);
 
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
   // second changed. Never runs per request.
@@ -134,6 +140,14 @@ class Http1 {
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
                  std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink);
+  // The asset tier's h2 half (#170): per-entry never-indexed blocks
+  // built at setup (the HPACK spelling lives in http2.cpp), answered
+  // with the same window/park discipline h2_answer has - only the body
+  // is segments over the mapping instead of one buffer.
+  void h2_build_asset_blocks(AssetEntry& e);
+  void h2_build_asset_shared();
+  bool h2_asset_answer(Conn& st, uint32_t stream_id, const AssetEntry& e, uint16_t status,
+                       bool head_only, std::string& sink);
 
   time_t sec_ = 0;
   std::vector<Variants> store_;
@@ -157,6 +171,11 @@ class Http1 {
   // and dynamic bodies alike - h2 has no Content-Length to differ in.
   std::vector<H2Block> h2_store_;
   H2Block h2_err_;
+  // Asset-tier refusals for h2: 405 with Allow: GET, HEAD and 406 with
+  // Vary - the entry blocks live on the entries themselves.
+  H2Block h2_asset405_;
+  H2Block h2_asset406_;
+  Assets* assets_ = nullptr;
   // The fast lane's DATA half: a whole precomputed DATA frame (header
   // + konst_.body), stream id still zero at its fixed offset (5) -
   // h2_answer patches those 4 bytes and appends the rest untouched.

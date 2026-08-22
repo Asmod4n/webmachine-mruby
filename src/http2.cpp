@@ -13,6 +13,7 @@
 
 #include <cstring>
 
+#include "assets.hpp"
 #include "h2.hpp"
 #include "http.hpp"
 #include "http1.hpp"
@@ -240,6 +241,12 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     existing->half_closed_remote = true;
     const flow::ReqFacts facts = existing->facts;
     const bool head_only = existing->head_only;
+    const AssetEntry* asset = existing->asset;
+    const uint16_t asset_status = existing->asset_status;
+    if (asset != nullptr) {
+      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, sink)) return false;
+      return true;
+    }
     if (!h2_answer(st0, stream_id, facts, head_only, sink)) return false;
     return true;
   }
@@ -248,6 +255,9 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   // exactly one :method/:scheme/:path; 8.2: field names lowercase;
   // 8.2.2: connection-specific fields make the request malformed.
   flow::ReqFacts facts;
+  http::ReqValues vals;  // borrows hdrbuf; dead once this dispatch answers
+  const char* path_val = nullptr;
+  size_t path_vlen = 0;
   bool ok = true, saw_regular = false;
   bool have_method = false, have_path = false, have_scheme = false;
   for (size_t i = 0; ok && i < nq; i += 4) {
@@ -268,7 +278,9 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
         have_method = true;
         facts.method = http::parse_method(val, vlen);
       } else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) {
-        have_path = vlen != 0;  // routing reads it when the router lands
+        have_path = vlen != 0;
+        path_val = val;  // the asset tier reads it; the router (#116) will too
+        path_vlen = vlen;
       } else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0) {
         have_scheme = true;  // h2c: the scheme is a claim, the socket is the fact
       } else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) {
@@ -286,7 +298,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       }
     }
     if (!ok) break;
-    http::header_switch(name, nlen, val, vlen, facts,
+    http::header_switch(name, nlen, val, vlen, facts, vals,
                         [&](const char* n, size_t nl, const char*, size_t) {
                           // content-length is advisory here (DATA frames
                           // are counted instead); connection-specific
@@ -330,7 +342,22 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   }
   const bool head_only = facts.method == flow::Method::kHead;
 
+  // The asset tier (#170): resolved NOW, while the value pointers
+  // still live in hdrbuf - what survives into a parked stream is the
+  // entry and the finished verdict.
+  const AssetEntry* asset = nullptr;
+  uint16_t asset_status = 0;
+  if (assets_ != nullptr) {
+    if (AssetEntry* ae = assets_->find(path_val, path_vlen)) {
+      asset = ae;
+      asset_status = assets_->verdict(*ae, facts.method, facts, vals);
+    }
+  }
+
   if (end_stream) {
+    if (asset != nullptr) {
+      return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, sink);
+    }
     // h2.hpp already claimed this ("A stream answered in full inside
     // its own dispatch never appears here"); it just was not true yet.
     // Opening it here only to close it at the end of h2_answer cost an
@@ -346,6 +373,170 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   stx.headers_done = true;
   stx.facts = facts;
   stx.head_only = head_only;
+  stx.asset = asset;
+  stx.asset_status = asset_status;
+  return true;
+}
+
+// The asset tier's h2 setup half: never-indexed blocks per entry (the
+// same lane-1 discipline h2_build_block has), spelled here because the
+// HPACK helpers live in this file. Static-table name indexes are RFC
+// 7541 Appendix A: content-type 31, content-encoding 26, vary 59,
+// etag 34, last-modified 44.
+void Http1::h2_build_asset_blocks(AssetEntry& e) {
+  std::string& b = e.h2_200;
+  b.clear();
+  b.push_back(static_cast<char>(0x88));  // :status 200, indexed
+  hp_name_idx(b, 31);
+  hp_len(b, e.ctype.size());
+  b.append(e.ctype);
+  if (e.deflated) {
+    hp_name_idx(b, 26);
+    hp_len(b, 4);
+    b.append("gzip", 4);
+    hp_name_idx(b, 59);
+    hp_len(b, 15);
+    b.append("Accept-Encoding", 15);
+  }
+  hp_name_idx(b, 34);
+  hp_len(b, sizeof(e.etag));
+  b.append(e.etag, sizeof(e.etag));
+  if (e.lm_valid) {
+    hp_name_idx(b, 44);
+    hp_len(b, sizeof(e.lm));
+    b.append(e.lm, sizeof(e.lm));
+  }
+
+  std::string& c = e.h2_304;
+  c.clear();
+  c.push_back(static_cast<char>(0x8b));  // :status 304, indexed
+  hp_name_idx(c, 34);
+  hp_len(c, sizeof(e.etag));
+  c.append(e.etag, sizeof(e.etag));
+  if (e.deflated) {
+    hp_name_idx(c, 59);
+    hp_len(c, 15);
+    c.append("Accept-Encoding", 15);
+  }
+}
+
+void Http1::h2_build_asset_shared() {
+  static const std::string kAllow = "GET, HEAD";
+  h2_build_block(h2_asset405_, 405, nullptr, &kAllow);
+  h2_build_block(h2_asset406_, 406, nullptr, nullptr);
+  hp_name_idx(h2_asset406_.bytes, 59);  // vary: the 406 varies by AE too
+  hp_len(h2_asset406_.bytes, 15);
+  h2_asset406_.bytes.append("Accept-Encoding", 15);
+}
+
+// The asset answer: same window/park discipline as h2_answer, body as
+// segments over the mapping (gzip header + deflate bytes + trailer for
+// method 8; the stored bytes alone for method 0) instead of one
+// contiguous buffer. Bypasses the head_cache - it is keyed by status
+// alone and asset heads differ per entry.
+bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
+                            uint16_t status, bool head_only, std::string& sink) {
+  H2State& h2 = *st0.h2;
+  const std::string* blk;
+  switch (status) {
+    case 200: blk = &e.h2_200; break;
+    case 304: blk = &e.h2_304; break;
+    case 405: blk = &h2_asset405_.bytes; break;
+    case 406: blk = &h2_asset406_.bytes; break;
+    default: blk = &h2_store_[index_[status]].bytes; break;  // 412/501: the shared store
+  }
+
+  struct Seg {
+    const char* p;
+    size_t n;
+  };
+  Seg segs[3];
+  size_t nsegs = 0;
+  size_t blen = 0;
+  if (status == 200) {
+    if (e.deflated) {
+      segs[0] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
+      segs[1] = {e.data, e.comp_size};
+      segs[2] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
+      nsegs = 3;
+    } else {
+      segs[0] = {e.data, e.comp_size};
+      nsegs = 1;
+    }
+    for (size_t i = 0; i < nsegs; i++) blen += segs[i].n;
+  }
+  const bool no_data = head_only || blen == 0;
+
+  // The date rides the encoder lane, as everywhere.
+  unsigned char dbuf[64];
+  unsigned char* dp = dbuf;
+  if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+    return h2_error(st0, kH2InternalError, sink);
+  }
+  const size_t dlen = static_cast<size_t>(dp - dbuf);
+
+  unsigned char fh[kH2FrameHeaderLen];
+  h2_put_frame_header(fh, static_cast<uint32_t>(blk->size() + dlen), kH2Headers,
+                      kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
+  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+  sink.append(*blk);
+  sink.append(reinterpret_cast<const char*>(dbuf), dlen);
+
+  if (no_data) {
+    h2.close_stream(stream_id);
+    return true;
+  }
+
+  H2Stream* stp = h2.find(stream_id);
+  const bool had_stream = stp != nullptr;
+  const int64_t swin = had_stream ? stp->send_window : h2.peer_initial_window;
+  const int64_t budget = h2.send_window < swin ? h2.send_window : swin;
+  size_t give = blen;
+  if (budget <= 0) give = 0;
+  else if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
+
+  size_t off = 0, si = 0, soff = 0;
+  while (off < give) {
+    size_t n = give - off;
+    if (n > h2.peer_max_frame) n = h2.peer_max_frame;
+    const bool last = off + n == blen;
+    h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
+                        stream_id);
+    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+    size_t left = n;
+    while (left != 0) {
+      const size_t avail = segs[si].n - soff;
+      const size_t take = avail < left ? avail : left;
+      sink.append(segs[si].p + soff, take);
+      soff += take;
+      left -= take;
+      if (soff == segs[si].n) {
+        si++;
+        soff = 0;
+      }
+    }
+    off += n;
+  }
+  // Debit BEFORE any open() can move the stream vector (h2_answer's
+  // hard-won ordering).
+  h2.send_window -= static_cast<int64_t>(give);
+  if (had_stream) stp->send_window -= static_cast<int64_t>(give);
+  if (give < blen) {
+    // The window-refused remainder parks as BYTES for now; the
+    // delivery model (#168) will park an offset into the source
+    // instead. Drained by h2_flush_pending like every parked stream.
+    H2Stream& keep = h2.open(stream_id);
+    keep.pending.clear();
+    for (size_t k = si; k < nsegs; k++) {
+      const size_t from = k == si ? soff : 0;
+      keep.pending.append(segs[k].p + from, segs[k].n - from);
+    }
+    keep.headers_done = true;
+    keep.half_closed_remote = true;
+    if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
+    return true;
+  }
+  h2.close_stream(stream_id);
   return true;
 }
 

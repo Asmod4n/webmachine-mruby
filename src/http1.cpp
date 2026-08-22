@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "assets.hpp"
 #include "h2.hpp"
 #include "http.hpp"
 
@@ -57,12 +58,13 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
 }
 
 Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
-             bool dynamic_body)
+             bool dynamic_body, Assets* assets)
     : konst_(ks),
       res_(res),
       dynamic_nodes_(dynamic_nodes),
       dynamic_body_(dynamic_body),
-      bound_(res != nullptr && (dynamic_nodes || dynamic_body)) {
+      bound_(res != nullptr && (dynamic_nodes || dynamic_body)),
+      assets_(assets) {
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
@@ -157,6 +159,13 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     build(err_prefix_.close, "Connection: close\r\n");
     // h2's exception answer: 500 in the negotiated type.
     h2_build_block(h2_err_, 500, &konst_.content_type, nullptr);
+  }
+
+  // The asset tier's h2 blocks (#170): per entry once, at setup, plus
+  // the shared 405/406. The h1 heads were prebuilt by Assets::open.
+  if (assets_ != nullptr) {
+    h2_build_asset_shared();
+    for (AssetEntry& e : assets_->entries()) h2_build_asset_blocks(e);
   }
 
   sec_ = 0;
@@ -289,6 +298,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     bool conn_close = false, conn_keep = false;
     uint16_t wire_err = 0;  // first wire violation wins; the loop is bounded
     flow::ReqFacts facts;
+    http::ReqValues vals;  // value borrows die with this request's answer
     facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
@@ -297,7 +307,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       // the length is a known constant - the compiled result is the
       // ONE fused switch this loop always was.
       http::header_switch(
-          h.name, h.name_len, h.value, h.value_len, facts,
+          h.name, h.name_len, h.value, h.value_len, facts, vals,
           [&](const char* n, size_t nl, const char* v, size_t vl) {
             if (wire_err != 0) return;
             switch (nl) {
@@ -344,6 +354,44 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink);  // RFC 9112 §3.2
     if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink);
 
+    // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
+    // asked (§C.2.2), and the asked-for keep-alive is echoed.
+    const bool persist = minor >= 1 ? !conn_close : conn_keep;
+    const bool head_only = facts.method == flow::Method::kHead;
+
+    // The asset tier (#170): a path naming a ZIP entry answers from
+    // the table, before the flow - the first thing in this tree that
+    // reads the request-target at all. A miss falls through to the app
+    // resource unchanged (the general router is #116's).
+    if (assets_ != nullptr) {
+      if (AssetEntry* ae = assets_->find(path, path_len)) {
+        const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
+        if (as == 412 || as == 501) {
+          // Nothing asset-specific in these; the shared store answers.
+          const Variants& sv = variants(as);
+          sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
+                                 : (persist ? sv.keep.bytes : sv.close.bytes));
+        } else {
+          const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
+                                                : (persist ? Assets::kKeep : Assets::kClose);
+          assets_->answer_h1(*ae, as, av, head_only, date_, sec_, sink);
+        }
+        off += static_cast<size_t>(ret);
+        if (content_length != 0) {
+          const size_t avail = viewlen - off;
+          const size_t skip = content_length < avail ? content_length : avail;
+          off += skip;
+          st.body_skip = content_length - skip;
+        }
+        if (!persist) {
+          st.carry.clear();
+          st.body_skip = 0;
+          return false;
+        }
+        continue;
+      }
+    }
+
     // The wire is valid; from here the FLOW decides the status. Konst
     // answers are compiled into the method's vector; dynamic nodes -
     // instance methods, by declaration - are asked through the VM per
@@ -360,10 +408,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
                            konst_.shortcut[static_cast<size_t>(facts.method)]);
     }
 
-    // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
-    // asked (§C.2.2), and the asked-for keep-alive is echoed.
-    const bool persist = minor >= 1 ? !conn_close : conn_keep;
-    const bool head_only = facts.method == flow::Method::kHead;
     bool answered = false;
     if (have_body && status == 200) {
       // Rendered inside the run frame, copied there while the frame

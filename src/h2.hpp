@@ -119,6 +119,8 @@ inline uint16_t h2_u16(const unsigned char* p) {
 // are COUNTED and discarded, exactly the h1 tier (no consumer until
 // the POST/PUT tier delivers them) - what survives until END_STREAM is
 // the facts vector, not the bytes.
+struct AssetEntry;  // assets.hpp owns it (#170)
+
 struct H2Stream {
   uint32_t id = 0;
   int64_t send_window = kH2DefaultWindow;
@@ -126,6 +128,11 @@ struct H2Stream {
   // Response DATA the peer's window refused; flushed on WINDOW_UPDATE.
   std::string pending;
   flow::ReqFacts facts;  // decoded at HEADERS, dispatched at END_STREAM
+  // An asset request resolves at dispatch - the header VALUES it
+  // negotiates with die with the decode buffer - so what parks here is
+  // the entry and the finished verdict, never a value pointer.
+  const AssetEntry* asset = nullptr;
+  uint16_t asset_status = 0;
   bool head_only = false;
   bool headers_done = false;
   bool half_closed_remote = false;
