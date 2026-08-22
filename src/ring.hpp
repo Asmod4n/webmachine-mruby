@@ -249,14 +249,8 @@ class Ring {
       // The listeners leave through the ring like everything else did,
       // and a unix listener takes its path with it - waited on, because
       // queue_exit would race the unlink.
+      close_listeners();
       unsigned n = 0;
-      for (uint32_t i = 0; i < nlisteners_; i++) {
-        struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-        if (s == nullptr) break;
-        io_uring_prep_close_direct(s, listener_base_ + i);
-        io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
-        n++;
-      }
       for (const std::string& path : unix_paths_) {
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) break;
@@ -419,6 +413,30 @@ class Ring {
   // Did the stop signal's completion land? The bounded tick's caller
   // owns its own loop and has to be able to ask.
   bool stopped() const { return stop_; }
+
+  // DRAIN, THEN FORGET (#116 slice 5). The listeners close at once -
+  // nothing new is taken - and the loop keeps turning until either the
+  // last accepted connection is gone or the grace runs out, whichever
+  // comes first. Grace 0 means the second condition is already true,
+  // which is the immediate stop.
+  //
+  // The connections that survive the grace are FORGOTTEN, not waited
+  // on: an idle keep-alive peer that says nothing would otherwise hold
+  // the process open forever, and it is the destructor's ring exit that
+  // ends them - one place, the same place a signal's stop uses.
+  void drain(int64_t grace_ns) {
+    if (draining_) return;
+    draining_ = true;
+    close_listeners();
+    struct timespec now {};
+    ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+    drain_deadline_ = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec + grace_ns;
+    if (live_ == 0 || grace_ns <= 0) stop_ = true;
+  }
+
+  // How many accepted connections are still being served. The drain
+  // watches it; a caller with its own loop can too.
+  uint32_t live_conns() const { return live_; }
 
   // The derived capacity - what the machine actually allows, the "thing
   // that says what max is". tools/webmachine-tune.sh prints the same
@@ -594,7 +612,23 @@ class Ring {
     return s;
   }
 
+  // The listeners leave through the ring, like everything else. Called
+  // by drain and by the destructor, which is why it is idempotent -
+  // closing a slot twice would take a slot a later accept was given.
+  void close_listeners() {
+    if (listeners_closed_) return;
+    listeners_closed_ = true;
+    for (uint32_t i = 0; i < nlisteners_; i++) {
+      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+      if (s == nullptr) break;
+      io_uring_prep_close_direct(s, listener_base_ + i);
+      io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
+    }
+    io_uring_submit(&ring_);
+  }
+
   void arm_accept(uint32_t li) {
+    if (draining_) return;  // nothing new is taken once the drain began
     struct io_uring_sqe* s = sqe();
     io_uring_prep_multishot_accept_direct(s, listener_base_ + li, nullptr, nullptr, 0);
     s->flags |= IOSQE_FIXED_FILE;
@@ -688,6 +722,7 @@ class Ring {
       return;
     }
     c.live = false;
+    if (live_ != 0) live_--;
     // The armed multishot recv holds a file reference: close_direct alone
     // only clears the table slot, the socket stays open and the peer
     // never sees FIN (three bintests hung exactly there). shutdown forces
@@ -711,6 +746,7 @@ class Ring {
     Conn& c = conns_[idx];
     c.gen++;
     c.live = true;
+    live_++;
     c.sending = false;
     c.close_after_send = false;
     c.li = static_cast<uint8_t>(li);
@@ -984,6 +1020,12 @@ class Ring {
       }
       rearm_.clear();
     }
+    if (WM_UNLIKELY(draining_) && !stop_) {
+      struct timespec now {};
+      ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+      const int64_t at = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+      if (live_ == 0 || at >= drain_deadline_) stop_ = true;
+    }
     return worked;
   }
 
@@ -1000,6 +1042,12 @@ class Ring {
   bool unix_listener_[kMaxListeners] = {};
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
+  bool listeners_closed_ = false;
+  // The drain (#116 slice 5): set once, never cleared - a server that
+  // began stopping does not start again.
+  bool draining_ = false;
+  int64_t drain_deadline_ = 0;
+  uint32_t live_ = 0;  // accepted connections still being served
   char* pool_ = nullptr;   // kBufCount * kBufSize, mmap'd once
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   // Buffers consumed this tick, handed back (advance-only: the ring

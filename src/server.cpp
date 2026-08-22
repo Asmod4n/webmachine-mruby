@@ -216,6 +216,33 @@ mrb_value wm_fd(mrb_state* mrb, mrb_value) {
   return mrb_fixnum_value(fd);
 }
 
+// DRAIN, THEN FORGET (#116 slice 5). The listeners close at once, and
+// the loop turns until the last accepted connection is gone or the
+// grace runs out - whichever comes first. No argument = stop now.
+//
+// This is process-wide, and the name says as much: there is ONE ring
+// and ONE loop, so a second application's connections stop with the
+// first's. Application#stop is this same method under webmachine-ruby's
+// spelling, not a second, narrower one - a per-app stop would have to
+// mean a listener closing while the loop kept turning, which nothing
+// has asked for and which this would only pretend to do.
+mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
+  mrb_value grace = mrb_nil_value();
+  mrb_get_args(mrb, "|o", &grace);
+  // Never BUILDS the server: stopping one that was never started is
+  // not an error, it is a no-op with nothing to drain.
+  if (!built_) return self;
+  int64_t ns = 0;
+  if (!mrb_nil_p(grace)) {
+    ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, grace).count();
+    if (ns < 0) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.stop wants a grace, not a negative one");
+    }
+  }
+  ring_->drain(ns);
+  return self;
+}
+
 mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   return mrb_bool_value(ring_->stopped());
@@ -231,6 +258,11 @@ void server_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_module_function_id(mrb, wm, MRB_SYM(run), wm_run, MRB_ARGS_NONE());
   mrb_define_module_function_id(mrb, wm, MRB_SYM(tick), wm_tick, MRB_ARGS_OPT(1));
   mrb_define_module_function_id(mrb, wm, MRB_SYM(fd), wm_fd, MRB_ARGS_NONE());
+  mrb_define_module_function_id(mrb, wm, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
+  // webmachine-ruby's own spelling, the same method: an application
+  // object is where a Ruby program has the server in its hand.
+  struct RClass* app = mrb_class_get_under_id(mrb, wm, MRB_SYM(Application));
+  mrb_define_method_id(mrb, app, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
   mrb_define_module_function_id(mrb, wm, MRB_SYM_Q(stopped), wm_stopped, MRB_ARGS_NONE());
 }
 

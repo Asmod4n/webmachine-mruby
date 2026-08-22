@@ -896,3 +896,55 @@ assert('application: request outside a callback refuses instead of reading a dea
   RUBY
   assert_true out.include?('no request being answered'), out
 end
+
+# SLICE 5 (#116): the server stops from Ruby - drain, then forget.
+assert('application: Webmachine.stop drains, then the process ends by itself') do
+  sock = "/tmp/wm-ap-stop-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  src = <<~RUBY
+    class Bye < Webmachine::Resource
+      def to_html
+        # The answer still goes out: the drain closes the LISTENERS,
+        # what is already accepted finishes.
+        Webmachine.stop(200.ms)
+        'bye'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{sock}' }
+        app.add_route [:*], Bye
+      end
+      Webmachine.run
+    end
+  RUBY
+  app = ap_compile(src)
+  err = "/tmp/wm-ap-stop-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  begin
+    100.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock), (File.read(err) rescue '')
+    s = UNIXSocket.new(sock)
+    s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, body = ap_read(s)
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    assert_equal 'bye', body
+    s.close
+    # No signal is sent: the grace runs out (or the connection goes)
+    # and the loop returns on its own. The unix path goes with it -
+    # that is the destructor, the same one a signal's stop reaches.
+    ended = false
+    100.times do
+      break ended = true if Process.waitpid(pid, Process::WNOHANG)
+      sleep 0.05
+    end
+    assert_true ended, 'the server did not end after its drain'
+    assert_false File.exist?(sock)
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    app.unlink
+  end
+end
