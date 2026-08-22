@@ -396,16 +396,18 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
                                                 : (persist ? Assets::kKeep : Assets::kClose);
           assets_->answer_head(*ae, as, av, date_, sec_, sink);
           if (as == 200 && !head_only) {
-            // Delivery (#168): one chunk per round, never the whole
-            // body into the sink. A body within the budget is the
-            // degenerate one-append case; past it the entry becomes
-            // the connection's source and more() continues it.
+            // Delivery (#168): a body within one round's budget is the
+            // degenerate one-append case - head and body together,
+            // today's fast path. Past it the entry becomes the
+            // connection's source and every body round goes through
+            // more(), where the splice choice lives; only the head
+            // leaves here.
             const size_t wlen = Assets::wire_len(*ae);
-            const size_t take = wlen < kDeliverChunk ? wlen : kDeliverChunk;
-            Assets::copy_wire(*ae, 0, take, sink);
-            if (take < wlen) {
+            if (wlen <= kDeliverChunk) {
+              Assets::copy_wire(*ae, 0, wlen, sink);
+            } else {
               st.xfer = ae;
-              st.xfer_off = take;
+              st.xfer_off = 0;
               started_xfer = true;
             }
           }

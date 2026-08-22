@@ -747,25 +747,53 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
 
 // The continuation both protocols share (#168): the Ring calls this
 // when the connection's sink has fully drained. h1 pulls the active
-// transfer's next chunk and resumes pipelined bytes once the source is
-// exhausted; h2 re-runs the parked-stream flush. feed's contract.
-bool Http1::more(Conn& st, std::string& sink) {
+// transfer's next chunk - a splice request where the round is
+// file-backed and a pipe is free, bytes otherwise - and resumes
+// pipelined bytes once the source is exhausted; h2 re-runs the
+// parked-stream flush. feed's contract.
+bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink);
     return true;
   }
-  if (st.xfer == nullptr) return true;
-  const size_t wlen = Assets::wire_len(*st.xfer);
-  size_t take = wlen - st.xfer_off;
-  if (take > kDeliverChunk) take = kDeliverChunk;
-  Assets::copy_wire(*st.xfer, st.xfer_off, take, sink);
-  st.xfer_off += take;
-  if (st.xfer_off < wlen) return true;
-  st.xfer = nullptr;
-  st.xfer_off = 0;
+  if (st.xfer != nullptr) {
+    const AssetEntry& e = *st.xfer;
+    const size_t wlen = Assets::wire_len(e);
+    // The file-backed span within the wire body: everything for a
+    // stored entry, the deflate middle for a method-8 one (the gzip
+    // header and trailer live in memory and go as bytes).
+    const size_t span_lo = e.deflated ? sizeof(e.gz_hdr) : 0;
+    const size_t span_hi = span_lo + e.comp_size;
+    if (splice_ok && st.xfer_off >= span_lo && st.xfer_off < span_hi &&
+        span_hi - st.xfer_off >= kSpliceMin) {
+      size_t take = span_hi - st.xfer_off;
+      if (take > kDeliverChunk) take = kDeliverChunk;
+      sp.off = e.file_off + (st.xfer_off - span_lo);
+      sp.len = take;
+      // Advanced NOW: a failed chain kills the connection (never the
+      // process), so there is no retry to rewind for.
+      st.xfer_off += take;
+      if (st.xfer_off == wlen) {
+        st.xfer = nullptr;
+        st.xfer_off = 0;
+      }
+      return true;
+    }
+    size_t take = wlen - st.xfer_off;
+    if (take > kDeliverChunk) take = kDeliverChunk;
+    // With a pipe at hand, a bytes round stops at the span's edge so
+    // the NEXT round can splice from it.
+    if (splice_ok && st.xfer_off < span_lo) take = span_lo - st.xfer_off;
+    Assets::copy_wire(e, st.xfer_off, take, sink);
+    st.xfer_off += take;
+    if (st.xfer_off < wlen) return true;
+    st.xfer = nullptr;
+    st.xfer_off = 0;
+  }
   if (st.carry.empty()) return true;
-  // What was pipelined behind the transfer parses now; feed's verdict
-  // is the connection's verdict.
+  // What was pipelined behind a transfer parses now (a plain partial
+  // head re-carries itself harmlessly); feed's verdict is the
+  // connection's verdict.
   std::string held;
   held.swap(st.carry);
   return feed(st, held.data(), held.size(), sink);

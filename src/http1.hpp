@@ -49,10 +49,15 @@ inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
 // One delivery round's budget (#168, Gebot 18: bounded work per tick):
 // a source never puts more than this into the sink per continuation.
-// 64 KiB is one full-size pipe (16 pages) - the splice segment the
-// delivery model's next stage moves without copying - and small enough
-// that a slow consumer holds one chunk, not a whole file.
+// 64 KiB is one full-size pipe (16 pages) - exactly the splice segment
+// the Ring moves without copying - and small enough that a slow
+// consumer holds one chunk, not a whole file.
 inline constexpr size_t kDeliverChunk = 64u * 1024;
+// Below this a splice round is not worth its two SQEs against one
+// memcpy; less than a page never is. Only ever reached by the tail of
+// a file span - whole bodies under kDeliverChunk never start a
+// transfer at all.
+inline constexpr size_t kSpliceMin = 4096;
 
 class Http1 {
  public:
@@ -104,15 +109,26 @@ class Http1 {
   // queued has drained - wire-invalidity paths and Connection: close.
   bool feed(Conn& st, const char* data, size_t len, std::string& sink);
 
+  // The Ring's splice-request shape (the App owns the type; the Ring
+  // reads off/len). len != 0 = "move these source-file bytes
+  // file->pipe->socket instead of any append this round".
+  struct Splice {
+    size_t off = 0;
+    size_t len = 0;
+  };
+
   // The delivery model's continuation (#168): the Ring calls this when
   // the connection's sink has fully drained - the one signal BOTH
   // protocols produce (h1 has no window; its only backpressure is the
-  // send CQE). h1 pulls the next chunk of an active transfer and, once
-  // the source is exhausted, resumes whatever was pipelined behind it;
-  // h2 re-runs the parked-stream flush (WINDOW_UPDATE remains its
-  // second trigger). Same contract as feed: false ends the connection
-  // once everything queued has drained.
-  bool more(Conn& st, std::string& sink);
+  // send CQE). h1 pulls the next chunk of an active transfer - as a
+  // splice request when splice_ok and the chunk is file-backed, as
+  // bytes otherwise ("auf eine Pipe wartet niemand") - and, once the
+  // source is exhausted, resumes whatever was pipelined behind it; h2
+  // re-runs the parked-stream flush (WINDOW_UPDATE remains its second
+  // trigger; h2's interleaved frames keep the iovec path). Same
+  // contract as feed: false ends the connection once everything queued
+  // has drained.
+  bool more(Conn& st, std::string& sink, Splice& sp, bool splice_ok);
 
  private:
   // A prebuilt response whose date field sits at a fixed offset.

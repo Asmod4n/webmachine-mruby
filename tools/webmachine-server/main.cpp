@@ -23,11 +23,16 @@ struct Echo {
   struct Conn {
     void reset(uint8_t) {}
   };
+  struct Splice {
+    size_t off = 0;
+    size_t len = 0;
+  };
   bool feed(Conn&, const char* data, size_t len, std::string& sink) {
     sink.append(data, len);
     return true;
   }
-  bool more(Conn&, std::string&) { return true; }  // echo owes nothing between feeds
+  // echo owes nothing between feeds and never splices
+  bool more(Conn&, std::string&, Splice&, bool) { return true; }
   void on_tick() {}
 };
 
@@ -62,12 +67,16 @@ int main(int argc, char** argv) {
       app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--pipes") == 0 && i + 1 < argc) {
+      // 0 = pure-iovec baseline (the A/B splice is judged against);
+      // unset = derived from pipe-user-pages-soft (#168).
+      cfg.pipes = std::atol(argv[++i]);
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
                    "usage: %s (--unix PATH | --port N) [--app FILE.rb] [--assets FILE.zip] "
-                   "[--echo]\n",
+                   "[--pipes N] [--echo]\n",
                    argv[0]);
       return 2;
     }
@@ -117,6 +126,9 @@ int main(int argc, char** argv) {
       mrb_close(mrb);
       return 1;
     }
+    // The ZIP is the splice source (#168): the ring registers it and
+    // moves its byte ranges file->pipe->socket where that pays.
+    cfg.splice_src_fd = assets.fd();
   }
 
   int rc = 0;

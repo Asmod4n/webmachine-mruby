@@ -48,6 +48,9 @@ namespace webmachine {
 struct AssetEntry {
   std::string name;  // the lookup key: the archive name, no leading slash
   const char* data = nullptr;
+  // Where `data` sits in the ZIP FILE - the splice path (#168) reads
+  // the same page-cache pages through the fd that the mapping shows.
+  size_t file_off = 0;
   size_t comp_size = 0;
   size_t uncomp_size = 0;
   uint32_t crc = 0;

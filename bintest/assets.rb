@@ -419,3 +419,71 @@ assert('delivery h2: the drained sink continues a parked source; so does WINDOW_
     end
   end
 end
+
+# --- splice (#168 stage 2): TCP only - AF_UNIX has no splice_write ---
+
+def a_tcp_server(zip_bytes, extra_args = [])
+  zf = Tempfile.new(['wm-assets-tcp', '.zip'])
+  zf.binmode
+  zf.write(zip_bytes)
+  zf.close
+  err = "/tmp/wm-assets-tcp-#{$$}.log"
+  port = nil
+  pid = nil
+  # The port is a guess; a taken one shows as a dead server - try on.
+  10.times do
+    port = 20000 + rand(40000)
+    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
+                *extra_args, out: File::NULL, err: err)
+    up = false
+    50.times do
+      begin
+        TCPSocket.open('127.0.0.1', port).close
+        up = true
+        break
+      rescue Errno::ECONNREFUSED, Errno::EADDRNOTAVAIL
+        break unless Process.wait(pid, Process::WNOHANG).nil?
+        sleep 0.05
+      end
+    end
+    break if up
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    pid = nil
+  end
+  raise "tcp asset server never came up:\n#{File.read(err) rescue ''}" if pid.nil?
+  begin
+    yield port
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    zf.unlink
+  end
+end
+
+assert('splice: big bodies over TCP arrive whole, interleaved with small ones, same as pipes=0') do
+  wire = {}
+  [[], ['--pipes', '0']].each do |args|
+    a_tcp_server(a_big_zip, args) do |port|
+      TCPSocket.open('127.0.0.1', port) do |s|
+        # deflated (gzip framing around the spliced middle), a small
+        # entry behind it, then stored - all on ONE connection, order
+        # must hold across splice chains and byte rounds alike.
+        s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+        h, b1 = a_read(s)
+        assert_true h.match?(/^Content-Encoding: gzip\r$/i)
+        assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(b1)).read.b
+        s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+        h2a, b2 = a_read(s)
+        assert_true h2a.match?(%r{^Content-Type: text/css\r$}i)
+        h3, b3 = a_read(s)
+        assert_equal A_BIG.b, b3
+        wire[args.empty? ? :spliced : :iovec] = [b1, b2, b3]
+      end
+    end
+  end
+  # The A/B the verdict rests on: the spliced wire and the pure-iovec
+  # wire are the same bytes - splice may only ever change the path,
+  # never the payload.
+  assert_equal wire[:iovec], wire[:spliced]
+end

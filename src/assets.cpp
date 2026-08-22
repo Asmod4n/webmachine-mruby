@@ -228,6 +228,7 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
     AssetEntry e;
     e.name.assign(nm, nlen);
     e.data = map_ + data_off;
+    e.file_off = data_off;
     e.comp_size = comp;
     e.uncomp_size = uncomp;
     e.crc = crc;
