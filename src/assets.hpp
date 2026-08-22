@@ -31,6 +31,8 @@
 #ifndef WEBMACHINE_ASSETS_HPP
 #define WEBMACHINE_ASSETS_HPP
 
+#include <sys/uio.h>  // struct iovec: a source hands out pointers, not bytes
+
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -144,11 +146,21 @@ class Assets {
 
   // The wire body and the ONE place that knows its shape: gzip header
   // + deflate bytes + trailer for method 8, the stored bytes alone for
-  // method 0. Both protocols copy through here - h1 chunks, h2 frames,
+  // method 0. Both protocols go through here - h1 chunks, h2 frames,
   // parked continuations - so the segment arithmetic exists once.
   static size_t wire_len(const AssetEntry& e) {
     return e.deflated ? e.comp_size + 18 : e.comp_size;
   }
+  // POINTERS, not bytes: [off, off+n) of the wire body as up to three
+  // iovecs - the constant gzip header, the deflate stream WHERE IT
+  // LIES IN THE MAPPING, the trailer. Nothing is copied; the kernel
+  // reads the mapping directly on send. Returns how many iovecs were
+  // filled. This is what #168 means by "a source delivers a plan": the
+  // one copy that remains is the kernel's, into the socket buffer.
+  static unsigned wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov);
+  // The copying form, kept for the paths that must own their bytes:
+  // h2 DATA frames interleave with other streams' frames in one sink,
+  // so their payload cannot be a pointer that outlives the round.
   static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
 
   std::vector<AssetEntry>& entries() { return entries_; }

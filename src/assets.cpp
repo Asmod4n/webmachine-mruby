@@ -420,6 +420,41 @@ void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
   sink.append("\r\nContent-Length: 0\r\n\r\n");
 }
 
+unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov) {
+  struct Seg {
+    const char* p;
+    size_t len;
+  };
+  Seg segs[3];
+  size_t ns = 0;
+  if (e.deflated) {
+    segs[ns++] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
+    segs[ns++] = {e.data, e.comp_size};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
+  } else {
+    segs[ns++] = {e.data, e.comp_size};
+  }
+  unsigned out = 0;
+  for (size_t i = 0; i < ns && n != 0; i++) {
+    if (off >= segs[i].len) {
+      off -= segs[i].len;
+      continue;
+    }
+    const size_t avail = segs[i].len - off;
+    const size_t take = avail < n ? avail : n;
+    // The pointer goes out as it lies - into the mapping for the
+    // deflate stream, into the entry for the 18 framing bytes. Both
+    // outlive any send: the mapping is process-lifetime, the entry is
+    // in the table built at add_route.
+    iov[out].iov_base = const_cast<char*>(segs[i].p + off);
+    iov[out].iov_len = take;
+    out++;
+    off = 0;
+    n -= take;
+  }
+  return out;
+}
+
 void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {
   struct Seg {
     const char* p;

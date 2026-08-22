@@ -885,15 +885,28 @@ bool Http1::more(Conn& st, std::string& sink, Splice& sp, bool splice_ok) {
     }
     size_t take = lim - st.xfer_off;
     if (take > kDeliverChunk) take = kDeliverChunk;
-    // With a pipe at hand, a bytes round stops at the span's edge so
+    // With a pipe at hand, a pointer round stops at the span's edge so
     // the NEXT round can splice from it.
     if (splice_ok && st.xfer_off < span_lo) take = span_lo - st.xfer_off;
-    Assets::copy_wire(e, st.xfer_off, take, sink);
+    // POINTERS, not a copy: the deflate stream stays where it lies in
+    // the mapping and the kernel reads it there. What used to be a
+    // memcpy into the sink and a second copy out of it is now one copy,
+    // the kernel's - which is also the pathological arm splice was
+    // being compared against.
+    sp.niov = Assets::wire_iov(e, st.xfer_off, take, sp.iov);
+    sp.iov_len = take;
     st.xfer_off += take;
-    if (st.xfer_off < lim) return true;
-    st.xfer = nullptr;
-    st.xfer_off = 0;
-    st.xfer_end = 0;
+    if (st.xfer_off == lim) {
+      st.xfer = nullptr;
+      st.xfer_off = 0;
+      st.xfer_end = 0;
+    }
+    // RETURN, exactly as the splice branch does: a plan is unsent
+    // bytes, and the carry below would put the NEXT response in the
+    // sink ahead of them - the transfer owns the wire order until its
+    // last segment has left. The round after this one drains the
+    // carry, by which time these pointers are spent.
+    return true;
   }
   if (st.carry.empty()) return true;
   // What was pipelined behind a transfer parses now (a plain partial

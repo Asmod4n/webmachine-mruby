@@ -5,6 +5,8 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
+#include <sys/uio.h>
+
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -23,9 +25,12 @@ struct Echo {
   struct Conn {
     void reset(uint8_t) {}
   };
-  struct Splice {
+  struct Splice {  // echo delivers no plan; the fields exist for the Ring's shape
     size_t off = 0;
     size_t len = 0;
+    struct iovec iov[4] = {};
+    unsigned niov = 0;
+    size_t iov_len = 0;
   };
   bool feed(Conn&, const char* data, size_t len, std::string& sink) {
     sink.append(data, len);

@@ -89,6 +89,14 @@ done
 LOG="bench/results/$(hostname).log"
 mkdir -p bench/results
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
+# utime+stime of a pid, in ticks. Split after the ") " that ends the
+# comm field, so a process name containing spaces cannot shift the
+# fields - utime/stime are then items 12 and 13 of the remainder.
+cpu_ticks() {
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
+    "/proc/$1/stat" 2>/dev/null || echo 0
+}
+HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
 start_srv() {  # start_srv <--pipes value or ""> <port>
   local pipes=$1 port=$2
@@ -118,9 +126,30 @@ measure() {  # measure <port> <size> -> "rps"
   }
   local vals=()
   for _ in $(seq "$REPS"); do
-    local rps
-    rps=$(h2load --h1 -m1 -D"$DURATION" -t"$THREADS" -c"$CONNS" "$url" 2>&1 |
-      grep '^finished' | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
+    local rps s0 s1 c0 c1 cli threads_running
+    s0=$(cpu_ticks "$SRV")
+    h2load --h1 -m1 -D"$DURATION" -t"$THREADS" -c"$CONNS" "$url" >"$WORK/cli.out" 2>&1 &
+    cli=$!
+    c0=$(cpu_ticks "$cli")
+    # One mid-run sample: a client on a single running thread is
+    # measuring itself, whatever -t claimed.
+    sleep 1
+    threads_running=$(ps -L -p "$cli" -o stat= 2>/dev/null | grep -c '^R' || echo 0)
+    wait "$cli" 2>/dev/null
+    c1=$(cpu_ticks "$cli")
+    s1=$(cpu_ticks "$SRV")
+    rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
+    [ -n "$rps" ] || { echo "h2load produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
+    # THE CLIENT MUST NOT BE THE BOTTLENECK. If h2load burned as much
+    # cpu as the server, the figure describes h2load. Named refusal,
+    # because a client-bound number in bench/results/ is worse than no
+    # number - it looks like a verdict forever after.
+    local cu=$((c1 - c0)) su=$((s1 - s0))
+    if [ "$su" -gt 0 ] && [ "$cu" -ge "$su" ]; then
+      echo "REFUSED: the client spent $((cu * 100 / HZ / DURATION))% of a core against the server's $((su * 100 / HZ / DURATION))%, on $threads_running running client threads." >&2
+      echo "  This measures h2load, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
+      exit 1
+    fi
     vals+=("$rps")
   done
   printf '%s\n' "${vals[@]}" | sort -n | awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f", $1}'

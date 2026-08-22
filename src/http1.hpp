@@ -9,6 +9,8 @@
 #ifndef WEBMACHINE_HTTP1_HPP
 #define WEBMACHINE_HTTP1_HPP
 
+#include <sys/uio.h>  // struct iovec: a round's plan is pointers, not bytes
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -58,42 +60,32 @@ inline constexpr size_t kDeliverChunk = 64u * 1024;
 // buffer and leaves with its head in one append; above it the body
 // becomes a source the Ring delivers (and splices where it can).
 //
-// The line is measured, not chosen, and the measurement is old enough
-// to have been forgotten once: the previous tree swept it on a
-// 70-asset page at -c48 and found the crossover at 4 KiB, with the
-// then-default 16 KiB already 17% behind (108,099 vs 92,505 req/s;
-// 64 KiB reached only 40,398, and p99 went 1.27ms -> 17.77ms). A
-// second measurement compared the two ways of sending the SAME asset:
-// at 8 KiB the arms were within noise, at 32 KiB splice won 2.8x, at
-// 64 KiB 3.4x.
+// IT IS ONE DELIVERY ROUND, and that is a structural line rather than
+// a tuned one: a body that fits in a single round gets NOTHING from
+// splice. It pays the whole price - the head has to leave on its own
+// first, a pipe is taken and returned, and the chain costs two
+// completions and an io-wq hop - and then there is no second round for
+// any of that to amortise over. Only a body that needs several rounds
+// turns the hop into what it is for: a second core moving bytes while
+// the loop thread parses the next request.
 //
-// The reason the direction surprises: IORING_OP_SPLICE has no
-// non-blocking fast path, so io_uring hands it to an io-wq worker -
-// a SECOND CORE moving bytes while the loop thread parses the next
-// request. Copying takes that work back onto the one thread that must
-// never block. Which is also why a single-connection benchmark cannot
-// see any of this: with nothing to overlap, the worker hop is pure
-// latency (measured here: 880 vs 2543 req/s at -c1, the exact
-// inversion of the -c48 result).
+// Measured on forgecore (real hardware, -t4 -c400, spliced against the
+// same server with --pipes 0), and the shape is exactly that line:
 //
-// RE-MEASURED HERE, and the container could only answer half of it:
-// with real concurrency (-c32) a 256 KiB asset splices at 4.25x the
-// iovec arm (22,011 vs 5,184 req/s) - the direction the old numbers
-// predicted, and far outside the noise. But a sweep of THIS constant
-// at 32 KiB produced arms that disagreed by 2x with no ordering, and
-// disagreed even where the constant makes the two arms IDENTICAL by
-// construction. So the exact crossover is not answerable on a shared
-// 4-vCPU container with the client on the same machine (Gebot 10:
-// verdicts on real hardware), and the default stays where the earlier
-// hardware measurement put it rather than where container noise
-// suggests. bench/assets.sh sweeps it wherever the question is asked
-// seriously.
+//     4 KiB    1.00x   both arms copy - below the budget, no splice
+//    32 KiB    0.22x   ONE round: splice loses 4.5x
+//   256 KiB    2.67x   four rounds: splice wins
+//     1 MiB    4.90x   sixteen rounds: splice wins big
+//
+// The 4 KiB the older tree measured came from a different delivery
+// path (a 1 MiB splice chunk, no per-round head), and carrying that
+// number over here is what produced the 32 KiB collapse.
 //
 // Settable because the crossover belongs to the machine and the asset
 // mix rather than to this file - and because being settable is what
-// made the sweeps above possible at all (#166 will fold
-// WM_WARM_BUDGET into the config; the env knob is what exists today).
-inline constexpr size_t kWarmBudgetDefault = 4096;
+// made those sweeps possible at all (#166 will fold WM_WARM_BUDGET
+// into the config; the env knob is what exists today).
+inline constexpr size_t kWarmBudgetDefault = kDeliverChunk;
 // Below this a splice round is not worth its two SQEs against one
 // memcpy; less than a page never is. Reached by the tail of a file
 // span, and by bodies between the warm budget and a page.
@@ -162,12 +154,21 @@ class Http1 {
   // queued has drained - wire-invalidity paths and Connection: close.
   bool feed(Conn& st, const char* data, size_t len, std::string& sink);
 
-  // The Ring's splice-request shape (the App owns the type; the Ring
-  // reads off/len). len != 0 = "move these source-file bytes
-  // file->pipe->socket instead of any append this round".
+  // What a source hands the Ring for one round (#168: "eine Quelle
+  // liefert einen Plan, kein Byte"). Exactly one of the two is used:
+  //
+  //   len != 0   move these source-file bytes file->pipe->socket
+  //   niov != 0  send these POINTERS - into the mapping, into the
+  //              entry table - alongside whatever is in the sink, as
+  //              one sendmsg. Nothing is copied in this process.
+  //
+  // Neither set means the round put its bytes in the sink the old way.
   struct Splice {
     size_t off = 0;
     size_t len = 0;
+    struct iovec iov[4] = {};
+    unsigned niov = 0;
+    size_t iov_len = 0;  // total across iov
   };
 
   // The delivery model's continuation (#168): the Ring calls this when

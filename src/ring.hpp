@@ -150,6 +150,14 @@ inline uint32_t derive_pipe_pool() {
   }
   return static_cast<uint32_t>(pages / 16);
 }
+// What every pipe in the pool is ASKED to hold. fs.pipe-max-size caps
+// it (1 MiB on a stock kernel, and an unprivileged process is simply
+// given less rather than refused), so the pool reads back what it
+// actually got and uses the smallest. A megabyte matters because it
+// IS the round: a 1 MiB body then moves in one splice instead of the
+// sixteen a 64 KiB default would need.
+inline constexpr uint32_t kPipeWanted = 1u << 20;
+
 // Pool geometry measured in the old tree as not moving the profile
 // (2048 x 4096 vs ladders: null result), so the simple shape stays.
 inline constexpr uint32_t kBufCount = 2048;
@@ -189,7 +197,7 @@ namespace detail {
 // against CQEs of the connection that owned it before.
 enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
-  kSpliceIn = 8, kSpliceOut = 9
+  kSpliceIn = 8, kSpliceOut = 9, kSndbuf = 10
 };
 
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
@@ -395,44 +403,41 @@ class Ring {
       std::snprintf(err, errlen, "splice source register: %s", std::strerror(-rc));
       return false;
     }
-    const bool op_pipe = Io::has_op_pipe(&ring_);
+    // BIG PIPES, and that is why this does NOT use IORING_OP_PIPE: the
+    // capacity is an fcntl (F_SETPIPE_SZ) and a direct descriptor has
+    // no fd to spend it on. So the pool is built the classic way -
+    // pipe2, resize, register, close the classic ends - which is a
+    // handful of syscalls ONCE at init and buys the thing that matters
+    // per request: a pipe that holds a whole megabyte instead of 64 KiB
+    // moves a 1 MiB body in ONE round instead of sixteen.
+    //
+    // Asked for, then READ BACK: fs.pipe-max-size caps the request and
+    // an unprivileged process is simply given less, so the capacity
+    // this pool actually has is measured, never assumed - the chunk
+    // arithmetic downstream is only correct against the real number.
     free_pipes_.reserve(npipes_);
     for (uint32_t i = 0; i < npipes_; i++) {
       const uint32_t slot = pipe_base_ + 2 * i;  // read end; write end at +1
-      if (op_pipe) {
-        int fds[2] = {-1, -1};
-        struct io_uring_sqe* s = Io::get_sqe(&ring_);
-        if (s == nullptr) {
-          std::snprintf(err, errlen, "SQ empty at setup");
-          return false;
-        }
-        io_uring_prep_pipe_direct(s, fds, 0, slot);
-        io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
-        Io::submit_and_wait(&ring_, 1);
-        struct io_uring_cqe* cqe = nullptr;
-        if (Io::peek_cqe(&ring_, &cqe) != 0) {
-          std::snprintf(err, errlen, "pipe %u: no completion", i);
-          return false;
-        }
-        const int res = cqe->res;
-        Io::cqe_seen(&ring_, cqe);
-        if (res < 0) {
-          std::snprintf(err, errlen, "pipe %u of %u: %s", i, npipes_, std::strerror(-res));
-          return false;
-        }
-      } else {
-        int fds[2];
-        if (::pipe2(fds, O_CLOEXEC) != 0) {
-          std::snprintf(err, errlen, "pipe2 %u of %u: %s", i, npipes_, std::strerror(errno));
-          return false;
-        }
-        rc = Io::register_files_update(&ring_, slot, fds, 2);
-        ::close(fds[0]);
-        ::close(fds[1]);
-        if (rc < 0) {
-          std::snprintf(err, errlen, "pipe register %u: %s", i, std::strerror(-rc));
-          return false;
-        }
+      int fds[2];
+      if (::pipe2(fds, O_CLOEXEC) != 0) {
+        std::snprintf(err, errlen, "pipe2 %u of %u: %s", i, npipes_, std::strerror(errno));
+        return false;
+      }
+      // Best effort: a refusal leaves the default, which the read-back
+      // below then reports honestly.
+      (void)::fcntl(fds[1], F_SETPIPE_SZ, static_cast<int>(kPipeWanted));
+      const int got = ::fcntl(fds[1], F_GETPIPE_SZ);
+      const uint32_t cap = got > 0 ? static_cast<uint32_t>(got) : 65536;
+      // The pool is only as good as its smallest pipe: one short pipe
+      // would silently turn every chain that lands on it into extra
+      // rounds. Whatever the weakest one holds is what a round is.
+      if (i == 0 || cap < pipe_cap_) pipe_cap_ = cap;
+      rc = Io::register_files_update(&ring_, slot, fds, 2);
+      ::close(fds[0]);
+      ::close(fds[1]);
+      if (rc < 0) {
+        std::snprintf(err, errlen, "pipe register %u: %s", i, std::strerror(-rc));
+        return false;
       }
       free_pipes_.push_back(i);
     }
@@ -571,6 +576,13 @@ class Ring {
     size_t splice_off = 0;    // next source-file offset to pull
     size_t splice_left = 0;   // bytes not yet in the pipe
     size_t splice_owed = 0;   // bytes in the pipe not yet at the socket
+    // SO_SNDBUF, asked once at accept (#168): a linked chain that stays
+    // within it cannot make the socket run out of room, so a short
+    // splice-out means the peer is gone rather than that we asked for
+    // too much. 0 until the answer lands, and for AF_UNIX, which never
+    // splices. TCP auto-tuning only grows this, so the value is a
+    // floor that stays true.
+    int sndbuf = 0;
     size_t sent = 0;   // bytes of `out` the kernel has taken so far
 
     // Two buffers, not one: `out` is BORROWED by an in-flight send (its
@@ -580,6 +592,21 @@ class Ring {
     // nothing.
     std::string out;
     std::string next;
+
+    // The App's PLAN for the bytes that do not live in `out` (#168):
+    // pointers into a mapping or into a table built at add_route,
+    // never copies. iov[0] is always `out` itself (the prebuilt head),
+    // so one sendmsg puts head and body on the wire together without a
+    // single byte passing through this process. They must live until
+    // the CQE, which is why they sit here and not on a stack frame.
+    struct iovec iov[5];
+    unsigned niov = 0;    // 0 = plain send of `out`
+    size_t plan_len = 0;  // total bytes across iov, `out` included
+    // What the in-flight sendmsg actually points at: iov minus whatever
+    // an earlier partial send already consumed. Separate from iov so
+    // the plan itself stays intact across retries.
+    struct iovec msg_iov[5];
+    struct msghdr msg {};
 
     // The App's per-connection state; the Ring only resets it.
     typename App::Conn app;
@@ -630,8 +657,32 @@ class Ring {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
     const int flags = MSG_NOSIGNAL | (app_.pending(c.app) ? MSG_MORE : 0);
-    io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.sent, c.out.size() - c.sent,
-                       flags);
+    if (c.niov == 0) {
+      io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.sent,
+                         c.out.size() - c.sent, flags);
+    } else {
+      // A PLAN: head plus pointers into the mapping, one operation, no
+      // copy in this process. The iovecs are rebuilt from `sent` each
+      // time because a partial send may have consumed whole segments
+      // and part of the next - the kernel takes what the socket has
+      // room for and says how much.
+      unsigned n = 0;
+      size_t skip = c.sent;
+      for (unsigned i = 0; i < c.niov; i++) {
+        if (skip >= c.iov[i].iov_len) {
+          skip -= c.iov[i].iov_len;
+          continue;
+        }
+        c.msg_iov[n].iov_base = static_cast<char*>(c.iov[i].iov_base) + skip;
+        c.msg_iov[n].iov_len = c.iov[i].iov_len - skip;
+        skip = 0;
+        n++;
+      }
+      c.msg = msghdr{};
+      c.msg.msg_iov = c.msg_iov;
+      c.msg.msg_iovlen = n;
+      io_uring_prep_sendmsg(s, static_cast<int>(idx), &c.msg, flags);
+    }
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kSend, c.gen, idx));
     c.sending = true;
@@ -694,7 +745,32 @@ class Ring {
                              IPPROTO_TCP, TCP_NODELAY, const_cast<int*>(&kOne), sizeof(kOne));
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, idx));
+
+      // The send buffer's size, asked ONCE per connection, because it
+      // is what makes a linked splice chain safe: while a chain stays
+      // within it the socket cannot run out of room, so no splice-out
+      // can come back short - and a short one therefore means the peer
+      // is gone, not that we asked for too much. TCP auto-tuning only
+      // ever grows this, so the value read here is a floor that stays
+      // valid. (AF_UNIX never splices, so it never asks.) The answer
+      // lands in c.sndbuf via on_sndbuf; until it does, sndbuf is 0
+      // and the chain falls back to a single pair.
+      s = sqe();
+      io_uring_prep_cmd_sock(s, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(idx), SOL_SOCKET,
+                             SO_SNDBUF, &c.sndbuf, sizeof(c.sndbuf));
+      s->flags |= IOSQE_FIXED_FILE;
+      io_uring_sqe_set_data64(s, detail::tag(detail::kSndbuf, c.gen, idx));
     }
+  }
+
+  // The kernel wrote the value into c.sndbuf itself; res carries the
+  // length it wrote. A failure just leaves 0 - one pair per chain,
+  // which is what this did before the question was asked at all.
+  void on_sndbuf(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (c.gen != gen) return;
+    if (cqe->res < 0 || c.sndbuf < 0) c.sndbuf = 0;
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
@@ -782,21 +858,26 @@ class Ring {
       return;
     }
     const size_t took = static_cast<size_t>(cqe->res);
+    // What was offered: the plan's total when there is one, `out`
+    // alone otherwise.
+    const size_t offered = c.niov != 0 ? c.plan_len : c.out.size();
     size_t new_sent = 0;
     // The kernel cannot have taken more than it was offered, and the sum
     // must not wrap - both are one check each, before anything uses them.
-    if (WM_UNLIKELY(took > c.out.size() - c.sent ||
+    if (WM_UNLIKELY(took > offered - c.sent ||
                     __builtin_add_overflow(c.sent, took, &new_sent))) {
       begin_close(idx);
       return;
     }
     c.sent = new_sent;
-    if (c.sent < c.out.size()) {
-      arm_send(idx);
+    if (c.sent < offered) {
+      arm_send(idx);  // partial: the rebuilt iovecs skip what already went
       return;
     }
     c.out.clear();
     c.sent = 0;
+    c.niov = 0;  // the plan is spent; its pointers are nobody's business now
+    c.plan_len = 0;
     // next drains BEFORE a pending close: an error response queued behind
     // an in-flight send must still reach the wire (RFC 9112 §9.6).
     if (!c.next.empty()) {
@@ -827,6 +908,26 @@ class Ring {
     if (!app_.more(c.app, c.out, req, splice_ok)) c.close_after_send = true;
     if (req.len != 0) {
       start_splice(idx, req.off, req.len);
+      return;
+    }
+    if (req.niov != 0) {
+      // Take the plan: iov[0] is whatever the round also put in the
+      // sink (usually nothing here - the head left with an earlier
+      // round), then the source's own pointers.
+      c.niov = 0;
+      c.plan_len = 0;
+      if (!c.out.empty()) {
+        c.iov[c.niov].iov_base = c.out.data();
+        c.iov[c.niov].iov_len = c.out.size();
+        c.plan_len += c.out.size();
+        c.niov++;
+      }
+      for (unsigned i = 0; i < req.niov && c.niov < 5; i++) {
+        c.iov[c.niov++] = req.iov[i];
+        c.plan_len += req.iov[i].iov_len;
+      }
+      c.sent = 0;
+      arm_send(idx);
       return;
     }
     if (!c.out.empty()) {
@@ -1017,6 +1118,9 @@ class Ring {
   uint32_t src_slot_ = 0;
   uint32_t pipe_base_ = 0;
   uint32_t npipes_ = 0;
+  // What the pool's SMALLEST pipe actually holds (F_GETPIPE_SZ, read
+  // back rather than assumed) - one splice round can never exceed it.
+  uint32_t pipe_cap_ = 65536;
   bool have_src_ = false;
   bool unix_listener_[kMaxListeners] = {};
   std::vector<uint32_t> free_pipes_;  // "auf eine Pipe wartet niemand"
