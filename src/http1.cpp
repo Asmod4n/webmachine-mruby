@@ -199,7 +199,16 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
 
 Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
              Assets* assets)
-    : router_(&table), assets_(assets) {
+    : assets_(assets) {
+  const AppInput one{&table, resources, nroutes};
+  build(&one, 1);
+}
+
+Http1::Http1(const AppInput* apps, size_t napps, Assets* assets) : assets_(assets) {
+  build(apps, napps);
+}
+
+void Http1::build(const AppInput* apps, size_t napps) {
   // Every status the flow's halt edges can speak, plus the framer's own
   // wire refusals - collected from the table, built ONCE. The 200 and
   // 405 slots are built NEUTRALLY here (no content type, no Allow):
@@ -233,8 +242,24 @@ Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t n
   // so this is a no-op the day they stop).
   add(404);
 
-  bundles_.resize(nroutes);
-  for (size_t i = 0; i < nroutes; i++) build_bundle(bundles_[i], resources[i]);
+  // Every app's routes go into ONE bundle vector, back to back; the
+  // app's slot remembers where its own start. A request therefore
+  // still indexes once (base + the router's verdict), and the date
+  // patch above stays one loop for the whole process.
+  size_t total = 0;
+  for (size_t a = 0; a < napps; a++) total += apps[a].nroutes;
+  bundles_.resize(total);
+  apps_.resize(napps);
+  size_t at = 0;
+  for (size_t a = 0; a < napps; a++) {
+    apps_[a].table = apps[a].table;
+    apps_[a].base = static_cast<uint16_t>(at);
+    apps_[a].count = static_cast<uint16_t>(apps[a].nroutes);
+    for (size_t i = 0; i < apps[a].nroutes; i++) {
+      build_bundle(bundles_[at + i], apps[a].resources[i]);
+    }
+    at += apps[a].nroutes;
+  }
 
   // The warm budget, read once (see kWarmBudgetDefault for the
   // measurement behind the number). 0 is legal and means "never copy,
@@ -593,8 +618,12 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     // are captured anyway). A MISS answers the prebuilt 404 and stops
     // here: before B13, therefore before any method test, so POST on
     // an unknown path is 404 and never 405.
+    // WHOSE table: the listener the Ring wrote into this connection at
+    // accept (#116 slice 2). One indexed load, no search, no branch -
+    // a one-app process reads slot 0 every time.
+    const AppSlot& slot = apps_[st.listener];
     RouteSpans spans;
-    const int route = router_->match(path, path_len, spans);
+    const int route = slot.table->match(path, path_len, spans);
     const Bundle* b = nullptr;
     // Which status table answers, settled INSIDE the branch that was
     // going to be taken anyway - so the writer below stays one indexed
@@ -605,7 +634,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     if (WM_H1_UNLIKELY(route < 0)) {
       status = 404;
     } else {
-      b = &bundles_[static_cast<size_t>(route)];
+      b = &bundles_[slot.base + static_cast<size_t>(route)];
       idx = &b->index;
       // The wire is valid; from here the FLOW decides the status. Konst
       // answers are compiled into the method's vector; dynamic nodes -

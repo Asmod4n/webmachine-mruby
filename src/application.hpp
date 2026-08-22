@@ -53,9 +53,13 @@ void application_init(mrb_state* mrb, struct RClass* wm);
 // refused) lands in err by name.
 bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen);
 
-// The ONE application `main` registered. Null with a named reason:
-// none at all, or more than one (slice 2 owns several listeners).
-AppSpec* app_registered(char* err, size_t errlen);
+// Every application `main` registered, in registration order - that
+// order IS the listener order, and a connection's listener index is
+// how the writer finds its app again (#116 slice 2). False with a
+// named reason: none registered, more than the ring has listeners, or
+// one without a listener of its own.
+bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
+                        size_t errlen);
 
 // The app a server without --app serves: one splat route on
 // webmachine-ruby's unbound resource, which is exactly what this

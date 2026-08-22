@@ -161,11 +161,24 @@ class Http1 {
     ~Conn() { h2_free(h2); }
   };
 
-  // Builds every response every route can speak, once, and stamps the
-  // date. `table` is the app's route table (borrowed - the app owns
-  // it) and `resources` its resources, one per route, in the SAME
-  // order route.add registered them; the router's verdict is an index
-  // into both. From here on only the 29 date bytes ever change.
+  // ONE APPLICATION as this writer sees it (#116 slice 2): its route
+  // table (borrowed - the AppSpec owns it) and its resources, one per
+  // route, in the SAME order route.add registered them. The listener
+  // this app was bound to is its INDEX in the array handed to the
+  // constructor, which is also the index the Ring writes into every
+  // connection at accept - that is the whole of "whose connection is
+  // this".
+  struct AppInput {
+    const RouteTable* table = nullptr;
+    const Resource* const* resources = nullptr;
+    size_t nroutes = 0;
+  };
+
+  // Builds every response every route of every app can speak, once, and
+  // stamps the date. From here on only the 29 date bytes ever change.
+  Http1(const AppInput* apps, size_t napps, Assets* assets = nullptr);
+  // One app, one listener - the shape everything but a multi-app file
+  // has, spelled so a caller with a single table needs no array.
   Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
         Assets* assets = nullptr);
 
@@ -278,6 +291,8 @@ class Http1 {
     std::string h2_data200;
   };
 
+  // The one setup body both constructors run.
+  void build(const AppInput* apps, size_t napps);
   static void build_variants(Variants& v, uint16_t status, const char* extra,
                              const char* body, const char* date);
   void build_status(uint16_t status, const char* extra, const char* body);
@@ -332,12 +347,24 @@ class Http1 {
   bool h2_asset_answer(Conn& st, uint32_t stream_id, const AssetEntry& e, uint16_t status,
                        bool head_only, size_t win_off, size_t win_end, std::string& sink);
 
+  // One app's place in this writer (#116 slice 2): which table its
+  // requests walk, and where its bundles start in the ONE bundles_
+  // vector. Indexed by the connection's listener - the Ring wrote that
+  // number at accept, so the lookup is an array index and never a
+  // search. Bundles stay in one vector deliberately: the date patch is
+  // then ONE loop per second no matter how many apps a process serves.
+  struct AppSlot {
+    const RouteTable* table = nullptr;
+    uint16_t base = 0;   // first bundle index
+    uint16_t count = 0;  // how many (the router's verdict is < count)
+  };
+
   time_t sec_ = 0;
-  // The app's route table, borrowed. ONE walk per request decides
-  // which bundle answers; both protocols walk this same table in this
-  // same order (h1 in feed, h2 in h2_dispatch).
-  const RouteTable* router_ = nullptr;
-  std::vector<Bundle> bundles_;  // parallel to the table's routes
+  // Borrowed route tables, one per listener. ONE walk per request
+  // decides which bundle answers; both protocols walk the SAME table of
+  // the SAME app in the same order (h1 in feed, h2 in h2_dispatch).
+  std::vector<AppSlot> apps_;
+  std::vector<Bundle> bundles_;  // every app's routes, back to back
   // The generic status supply, one per app. It also holds a 200 and a
   // 405 slot, built neutrally so index_ stays total for any status the
   // flow tables can name - a MATCHED route never reads those two (its

@@ -50,7 +50,9 @@ void refuse(mrb_state* mrb, const char* msg) {
 // --- conf ------------------------------------------------------------
 
 // Exactly one of port / unix_path / url per app (RFC-free house rule:
-// a listener has one spelling). Slice 2 gives an app several listeners.
+// a listener has one spelling). Several APPS may each name their own
+// (#116 slice 2); several listeners for ONE app is what nothing has
+// asked for, so nothing here builds it.
 void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
   if (s->form != AppSpec::Form::kNone && s->form != f) {
     mrb_raisef(mrb, E_RUNTIME_ERROR,
@@ -76,13 +78,19 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
     // over the ring hard-refuses every level but SOL_SOCKET, which has
     // no local-address option to ask for either. The one bridge left
     // is FIXED_FD_INSTALL + getsockname(2) + close(2), i.e. a borrowed
-    // classic fd - the exact shape f8bd7b2 threw out for costing a
-    // ring round-trip per accept. So this refuses BY NAME instead of
-    // guessing or borrowing.
+    // classic fd.
+    //
+    // SETTLED in slice 2 (#116), which owned the question: it stays
+    // refused. At SETUP the install's cost would be nothing (once per
+    // listener, not per accept like the shape f8bd7b2 threw out), but
+    // the op does not exist in every implementation of the API this
+    // tree compiles against - slipstreamIO (#171) has bind and listen
+    // and no install - and #171's rule is one implementation, one path:
+    // no source here may need an op only one backend answers.
     refuse(mrb,
            "conf.port = 0 (let the OS choose) needs the bound port read back off the "
-           "listener, and io_uring has no getsockname - no borrowed classic fd here "
-           "(see f8bd7b2). Name a port; slice 2 of #116 owns this");
+           "listener: io_uring has no getsockname, and the one bridge (FIXED_FD_INSTALL) "
+           "is not in every backend this tree builds against (#171). Name a port");
   }
   if (p < 1 || p > 65535) {
     mrb_raisef(mrb, E_RUNTIME_ERROR, "conf.port = %d is outside 1..65535", (int)p);
@@ -273,9 +281,10 @@ mrb_value route_assets(mrb_state* mrb, mrb_value) {
 
 // --- application ------------------------------------------------------
 
-// Two applications may not name the same listener; the FIRST one owns
-// it. (Slice 2 gives one process several listeners at all - this
-// refusal is what keeps that honest until then.)
+// Two applications may not name the same listener. Since slice 2 a
+// process serves several apps, one listener each, so this is the
+// refusal that keeps them apart - two apps on one socket have no
+// answer to "whose request is this".
 void register_app(mrb_state* mrb, AppSpec* s) {
   // Compared on the LISTENER, not on the spelling: conf.port = 80 and
   // conf.url = "http://host:80" are two ways to say one socket, and a
@@ -450,21 +459,22 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   return true;
 }
 
-AppSpec* app_registered(char* err, size_t errlen) {
+bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
+                        size_t errlen) {
   if (registered_.empty()) {
     std::snprintf(err, errlen,
                   "main registered no application - Webmachine::Application.new takes a "
                   "block, and returning from it is what registers the app");
-    return nullptr;
+    return false;
   }
-  if (registered_.size() > 1) {
+  if (registered_.size() > max_listeners) {
     std::snprintf(err, errlen,
-                  "main registered %zu applications; this slice serves ONE app on ONE "
-                  "listener - several listeners are slice 2 of #116",
-                  registered_.size());
-    return nullptr;
+                  "main registered %zu applications and the ring holds %zu listeners",
+                  registered_.size(), max_listeners);
+    return false;
   }
-  return registered_[0];
+  out.assign(registered_.begin(), registered_.end());
+  return true;
 }
 
 AppSpec* app_default() {

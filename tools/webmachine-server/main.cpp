@@ -89,7 +89,8 @@ bool uring_present(mrb_state* mrb) {
 // performance cliff wearing a startup message.
 template <class App>
 int serve(const webmachine::RingConfig& cfg, App& app, const char* label, bool have_uring,
-          mrb_state* mrb = nullptr, webmachine::AppSpec* spec = nullptr) {
+          mrb_state* mrb = nullptr,
+          const std::vector<webmachine::AppSpec*>& specs = {}) {
 #ifdef SLIPSTREAM_IO
   (void)have_uring;
   std::fprintf(stderr,
@@ -124,19 +125,27 @@ int serve(const webmachine::RingConfig& cfg, App& app, const char* label, bool h
     std::fprintf(stderr, "webmachine: %s\n", err);
     return 1;
   }
-  // THE BIND HAS HAPPENED. conf.url now reads back where the listener
-  // really is, and the app's ready hook runs - after the bind, before
-  // the first accept, exactly once. A raise there stops the start.
-  if (spec != nullptr) {
-    webmachine::app_mark_bound(*spec, cfg.listeners[0].unix_path, cfg.listeners[0].port);
+  // THE BIND HAS HAPPENED - all of them, in listener order. Each app's
+  // conf.url now reads back where ITS listener really is, and its ready
+  // hook runs: after the bind, before the first accept, exactly once,
+  // in the order the apps registered. A raise there stops the start.
+  for (size_t i = 0; i < specs.size(); i++) {
+    webmachine::app_mark_bound(*specs[i], cfg.listeners[i].unix_path, cfg.listeners[i].port);
     char rerr[256] = "";
-    if (!webmachine::app_ready_run(mrb, *spec, rerr, sizeof(rerr))) {
+    if (!webmachine::app_ready_run(mrb, *specs[i], rerr, sizeof(rerr))) {
       std::fprintf(stderr, "webmachine: %s\n", rerr);
       return 1;
     }
   }
-  std::fprintf(stderr, "webmachine: %s up, pid %d, %s\n", label, getpid(),
-               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
+  std::fprintf(stderr, "webmachine: %s up, pid %d, %u listener(s)\n", label, getpid(),
+               cfg.nlisteners);
+  for (uint32_t i = 0; i < cfg.nlisteners; i++) {
+    if (cfg.listeners[i].unix_path != nullptr) {
+      std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i, cfg.listeners[i].unix_path);
+    } else {
+      std::fprintf(stderr, "webmachine:   [%u] tcp port %d\n", i, cfg.listeners[i].port);
+    }
+  }
   ring.run();
   return 0;
 }
@@ -197,7 +206,11 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  webmachine::AppSpec* spec = nullptr;
+  // EVERY application main registered, in registration order (#116
+  // slice 2). That order is the listener order and the listener index
+  // is what a connection carries, so this one vector decides both the
+  // ring's setup chain and which routes a request walks.
+  std::vector<webmachine::AppSpec*> specs;
   if (app_path != nullptr) {
     char err[512];
     if (!webmachine::app_load(mrb, app_path, err, sizeof(err))) {
@@ -205,8 +218,7 @@ int main(int argc, char** argv) {
       mrb_close(mrb);
       return 1;
     }
-    spec = webmachine::app_registered(err, sizeof(err));
-    if (spec == nullptr) {
+    if (!webmachine::app_registered_all(specs, webmachine::kMaxListeners, err, sizeof(err))) {
       std::fprintf(stderr, "webmachine: %s: %s\n", app_path, err);
       mrb_close(mrb);
       return 1;
@@ -214,29 +226,45 @@ int main(int argc, char** argv) {
   } else {
     // No app: one splat route on webmachine-ruby's unbound resource -
     // what this server answered everywhere before routes existed.
-    spec = webmachine::app_default();
+    specs.push_back(webmachine::app_default());
   }
 
   // The CLI overrides conf: a spec's listener is what the app WANTS,
   // --unix/--port is what this invocation gets (bintests and bench runs
-  // live on that override).
+  // live on that override). It names ONE socket, so it can only speak
+  // for a file that registered ONE app - with several, the override has
+  // no way to say which, and refusing is the only honest answer.
+  cfg.nlisteners = static_cast<uint32_t>(specs.size());
+  const bool cli_listener = cli_unix != nullptr || cli_port != 0;
+  if (cli_listener && specs.size() > 1) {
+    std::fprintf(stderr,
+                 "webmachine: --unix/--port names one listener and %s registered %zu "
+                 "applications - drop the override and let each app's conf speak\n",
+                 app_path, specs.size());
+    mrb_close(mrb);
+    return 2;
+  }
   if (cli_unix != nullptr) {
     cfg.listeners[0].unix_path = cli_unix;
   } else if (cli_port != 0) {
     cfg.listeners[0].port = cli_port;
   } else {
-    switch (spec->form) {
-      case webmachine::AppSpec::Form::kUnix:
-        cfg.listeners[0].unix_path = spec->unix_path.c_str();
-        break;
-      case webmachine::AppSpec::Form::kPort:
-      case webmachine::AppSpec::Form::kUrl: cfg.listeners[0].port = spec->port; break;
-      case webmachine::AppSpec::Form::kNone:
-        std::fprintf(stderr,
-                     "webmachine: no listener - the app's configure block names one "
-                     "(conf.port / conf.unix_path / conf.url), or pass --port/--unix\n");
-        mrb_close(mrb);
-        return 2;
+    for (size_t i = 0; i < specs.size(); i++) {
+      switch (specs[i]->form) {
+        case webmachine::AppSpec::Form::kUnix:
+          cfg.listeners[i].unix_path = specs[i]->unix_path.c_str();
+          break;
+        case webmachine::AppSpec::Form::kPort:
+        case webmachine::AppSpec::Form::kUrl: cfg.listeners[i].port = specs[i]->port; break;
+        case webmachine::AppSpec::Form::kNone:
+          std::fprintf(stderr,
+                       "webmachine: application %zu has no listener - its configure block "
+                       "names one (conf.port / conf.unix_path / conf.url), or pass "
+                       "--port/--unix for a file with a single app\n",
+                       i);
+          mrb_close(mrb);
+          return 2;
+      }
     }
   }
 
@@ -259,14 +287,22 @@ int main(int argc, char** argv) {
     Echo app;
     rc = serve(cfg, app, "echo floor", have_uring);
   } else {
-    // One Http1 for the whole app: every route's responses built here,
-    // once, and the router picks between them per request.
-    std::vector<const webmachine::Resource*> resources;
-    resources.reserve(spec->resources.size());
-    for (const auto& r : spec->resources) resources.push_back(r.get());
-    webmachine::Http1 app(spec->table, resources.data(), resources.size(),
+    // ONE Http1 for the whole process: every route of every app built
+    // here, once, and the connection's listener plus the router pick
+    // between them per request. The resource pointers are gathered per
+    // app into one vector each, kept alive until the constructor has
+    // copied what it needs.
+    std::vector<std::vector<const webmachine::Resource*>> resources(specs.size());
+    std::vector<webmachine::Http1::AppInput> inputs(specs.size());
+    for (size_t i = 0; i < specs.size(); i++) {
+      resources[i].reserve(specs[i]->resources.size());
+      for (const auto& r : specs[i]->resources) resources[i].push_back(r.get());
+      inputs[i] = webmachine::Http1::AppInput{&specs[i]->table, resources[i].data(),
+                                              resources[i].size()};
+    }
+    webmachine::Http1 app(inputs.data(), inputs.size(),
                           assets_path != nullptr ? &assets : nullptr);
-    rc = serve(cfg, app, "http/1.1", have_uring, mrb, spec);
+    rc = serve(cfg, app, "http/1.1", have_uring, mrb, specs);
   }
   mrb_close(mrb);
   return rc;

@@ -466,7 +466,7 @@ assert('application: port and unix_path together refuse by name') do
   assert_true out.include?('exactly one of port, unix_path or url'), out
 end
 
-assert('application: conf.port = 0 refuses by name and points at slice 2') do
+assert('application: conf.port = 0 refuses by name - no backend answers it') do
   out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.port = 0
@@ -474,7 +474,9 @@ assert('application: conf.port = 0 refuses by name and points at slice 2') do
     app.add_route [:*], R
   BODY
   assert_true out.include?('getsockname'), out
-  assert_true out.include?('slice 2'), out
+  # SETTLED in slice 2: the bridge exists but not in every backend
+  # this tree builds against (#171), so port 0 stays refused.
+  assert_true out.include?('#171'), out
 end
 
 assert('application: the ssl/certificate names refuse by name - no TLS in this tree') do
@@ -534,7 +536,79 @@ assert('application: two applications on the same listener refuse by name') do
   assert_true out.include?('same listener'), out
 end
 
-assert('application: two applications at all refuse, pointing at slice 2') do
+# SLICE 2 (#116): several applications, one ring. Each app names its
+# own listener, the ring binds them all, and the listener a connection
+# arrived on is what decides whose routes answer it - which is exactly
+# what this proves, on the wire, with two apps whose routes overlap in
+# name and differ in body.
+assert('application: two applications, two listeners, one ring - each answers its own') do
+  a = "/tmp/wm-ap-a-#{$$}.sock"
+  b = "/tmp/wm-ap-b-#{$$}.sock"
+  [a, b].each { |p| File.unlink(p) if File.exist?(p) }
+  src = <<~RUBY
+    class A < Webmachine::Resource
+      def self.to_html
+        'from-a'
+      end
+    end
+
+    class B < Webmachine::Resource
+      def self.to_html
+        'from-b'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{a}' }
+        app.routes do |route|
+          route.add ['only-a'], A
+        end
+      end
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{b}' }
+        app.routes do |route|
+          route.add ['only-b'], B
+        end
+      end
+    end
+  RUBY
+  app = ap_compile(src)
+  err = "/tmp/wm-ap-two-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  begin
+    100.times { break if File.socket?(a) && File.socket?(b); sleep 0.05 }
+    assert_true File.socket?(a) && File.socket?(b), (File.read(err) rescue '')
+
+    # Each app's own route answers on its own socket...
+    { a => 'from-a', b => 'from-b' }.each do |sock, body|
+      s = UNIXSocket.new(sock)
+      path = body == 'from-a' ? '/only-a' : '/only-b'
+      s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, got = ap_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal body, got
+      s.close
+    end
+
+    # ...and the OTHER app's route is a plain miss there: the tables
+    # never blend, the listener index is the whole of "whose app".
+    { a => '/only-b', b => '/only-a' }.each do |sock, path|
+      s = UNIXSocket.new(sock)
+      s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = ap_read(s)
+      assert_true head.start_with?('HTTP/1.1 404'), head
+      s.close
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    [a, b].each { |p| File.unlink(p) rescue nil }
+    app.unlink
+  end
+end
+
+assert('application: --unix cannot speak for a file with several apps') do
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html
@@ -554,7 +628,7 @@ assert('application: two applications at all refuse, pointing at slice 2') do
     end
   RUBY
   out = ap_refused(src)
-  assert_true out.include?('slice 2'), out
+  assert_true out.include?('names one listener'), out
 end
 
 assert('application: new WITHOUT a block builds nothing anybody serves') do

@@ -388,7 +388,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
   // survives into a parked stream is the index, never a pointer into
   // the decode buffer.
   RouteSpans spans;
-  const int r = router_->match(path_val, path_vlen, spans);
+  const int r = apps_[st0.listener].table->match(path_val, path_vlen, spans);
   const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
 
   if (end_stream) {
@@ -617,7 +617,9 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   if (route == kNoRoute) {
     status = 404;
   } else {
-    b = &bundles_[route];
+    // The route index is the APP's, so it needs the app's base - the
+    // listener says which app, exactly as in h1's feed.
+    b = &bundles_[apps_[st0.listener].base + route];
     idx = &b->index;
     if (b->bound) {
       status = resource_run(*b->res, facts, &body_, &have_body);
