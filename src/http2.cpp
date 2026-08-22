@@ -823,6 +823,20 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
   }
 }
 
+// Does this connection still owe bytes the Ring has not seen? Asked
+// BEFORE a send, so a segment with more behind it can carry MSG_MORE
+// rather than going out small and waiting out the peer's delayed ACK
+// (#168; the previous tree measured that stall at 44.30ms average).
+bool Http1::pending(const Conn& st) const {
+  if (st.h2 != nullptr) {
+    for (const H2Stream& s : st.h2->streams) {
+      if (s.src != nullptr || !s.pending.empty()) return true;
+    }
+    return false;
+  }
+  return st.xfer != nullptr;
+}
+
 // The continuation both protocols share (#168): the Ring calls this
 // when the connection's sink has fully drained. h1 pulls the active
 // transfer's next chunk - a splice request where the round is

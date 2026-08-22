@@ -2,6 +2,7 @@
 
 #include <picohttpparser.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "assets.hpp"
@@ -164,6 +165,15 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     build(err_prefix_.close, "Connection: close\r\n");
     // h2's exception answer: 500 in the negotiated type.
     h2_build_block(h2_err_, 500, &konst_.content_type, nullptr);
+  }
+
+  // The warm budget, read once (see kWarmBudgetDefault for the
+  // measurement behind the number). 0 is legal and means "never copy,
+  // always deliver" - it is one end of the sweep.
+  if (const char* w = std::getenv("WM_WARM_BUDGET")) {
+    char* end = nullptr;
+    const unsigned long v = std::strtoul(w, &end, 10);
+    if (end != w) warm_budget_ = static_cast<size_t>(v);
   }
 
   // The asset tier's h2 blocks (#170): per entry once, at setup, plus
@@ -424,7 +434,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
           } else if (rs == 206) {
             assets_->answer_206_head(*ae, av, rf, rl, date_, sink);
             const size_t rlen = rl - rf + 1;
-            if (rlen <= kDeliverChunk) {
+            if (rlen <= warm_budget_) {
               Assets::copy_wire(*ae, rf, rlen, sink);
             } else {
               st.xfer = ae;
@@ -435,14 +445,15 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
           } else {
             assets_->answer_head(*ae, as, av, date_, sec_, sink);
             if (as == 200 && !head_only) {
-              // Delivery (#168): a body within one round's budget is
-              // the degenerate one-append case - head and body
-              // together, today's fast path. Past it the entry becomes
-              // the connection's source and every body round goes
-              // through more(), where the splice choice lives; only
-              // the head leaves here.
+              // Delivery (#168): a body within the WARM BUDGET is
+              // copied and leaves with its head in one append - the
+              // degenerate case of the model, and the fast path. Above
+              // it the entry becomes the connection's source and every
+              // body round goes through more(), where the splice
+              // choice lives; only the head leaves here. The budget is
+              // a measured line, not the round size (kWarmBudgetDefault).
               const size_t wlen = Assets::wire_len(*ae);
-              if (wlen <= kDeliverChunk) {
+              if (wlen <= warm_budget_) {
                 Assets::copy_wire(*ae, 0, wlen, sink);
               } else {
                 st.xfer = ae;

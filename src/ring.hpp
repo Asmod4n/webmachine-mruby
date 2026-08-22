@@ -14,6 +14,11 @@
 //                  key to "whose connection is this")
 //   bool feed(Conn&, const char*, size_t, std::string& sink);
 //        false = close this connection once the sink has drained
+//   bool pending(const Conn&) const;
+//        does this connection still owe bytes the App has not handed
+//        over? Asked before each send: true makes it carry MSG_MORE
+//        (and a splice round SPLICE_F_MORE), so a small head does not
+//        go out alone and wait out the peer's delayed ACK.
 //   struct Splice { size_t off; size_t len; };       a splice request
 //   bool more(Conn&, std::string& sink, Splice&, bool splice_ok);
 //        the delivery continuation (#168): called when the sink has
@@ -109,6 +114,26 @@ inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0
   return static_cast<uint32_t>(n);
 }
 
+// NEVER PIN THIS PROCESS, and the reason is structural rather than a
+// number: the moment a server touches a FILE, io_uring spawns an io-wq
+// pool to carry that work (splice has no non-blocking fast path), and
+// io-wq workers INHERIT the issuing thread's affinity. Pinning
+// therefore locks the pool that exists to move bytes on OTHER cores
+// onto the one core the loop already occupies. A server that never
+// touches a file could be pinned - and would not be a web server.
+//
+// Measured here on 4 cpus, both halves of it:
+//   - the pool is 10 workers under load, and `taskset -c 0` put all
+//     ten plus the loop thread on one core: a 32 KiB asset collapsed
+//     to 0.07x its unspliced twin (2,903 vs 42,688 req/s), with the
+//     system at 49.3% sy against 10.3% us.
+//   - capping the pool to the core count was tried and REMOVED again:
+//     two runs of the identical configuration disagreed by 20%
+//     (2.79x vs 2.32x on a 256 KiB asset), so the container cannot
+//     resolve whether a cap helps, and an unmeasured knob does not
+//     get to exist. The kernel grows the pool on demand; it is left
+//     to do that.
+//
 // The pipe pool's derived size (#168): pipe-user-pages-soft divided by
 // the pages one full-size pipe holds (16 x 4K = 64K = kDeliverChunk's
 // worth). The soft limit is per USER - root (CAP_SYS_RESOURCE) is not
@@ -237,6 +262,7 @@ class Ring {
     if (!Io::setup(&ring_, err, errlen)) return false;
     ring_up_ = true;
     int rc = 0;
+
 
     // The splice pool (#168) claims its fixed-table slots BEFORE the
     // connection count falls out of the limit: one source slot plus
@@ -591,11 +617,21 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
   }
 
+  // MSG_MORE when the App still owes bytes behind this segment: a
+  // response is head-then-body, and a lone small head goes out and
+  // then WAITS for the peer's delayed ACK before the body may follow
+  // (measured in the previous tree: 44.30ms average, 1,118 req/s ->
+  // 31,077 once fixed). MSG_MORE rather than TCP_CORK deliberately -
+  // cork is connection state that needs an uncork afterwards, so a
+  // response failing between head and body would leave the connection
+  // corked; MSG_MORE is an argument to this one send and cannot
+  // outlive it.
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
+    const int flags = MSG_NOSIGNAL | (app_.pending(c.app) ? MSG_MORE : 0);
     io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.sent, c.out.size() - c.sent,
-                       MSG_NOSIGNAL);
+                       flags);
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kSend, c.gen, idx));
     c.sending = true;
@@ -833,12 +869,19 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kSpliceIn, c.gen, idx));
   }
 
+  // SPLICE_F_MORE is MSG_MORE for a splice, and it has to answer the
+  // WHOLE question: more of this transfer (splice_left), or another
+  // response queued behind it (the App's). Asking only the first is
+  // the bug the previous tree found - the LAST round of a body is
+  // exactly the one whose small trailing segment waits out the ACK.
   void arm_splice_out(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
+    unsigned flags = SPLICE_F_FD_IN_FIXED;
+    if (c.splice_left != 0 || app_.pending(c.app)) flags |= SPLICE_F_MORE;
     io_uring_prep_splice(s, static_cast<int>(pipe_base_ + 2 * c.pipe), -1,
                          static_cast<int>(idx), -1,
-                         static_cast<unsigned>(c.splice_owed), SPLICE_F_FD_IN_FIXED);
+                         static_cast<unsigned>(c.splice_owed), flags);
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kSpliceOut, c.gen, idx));
   }

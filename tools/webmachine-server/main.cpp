@@ -33,6 +33,7 @@ struct Echo {
   }
   // echo owes nothing between feeds and never splices
   bool more(Conn&, std::string&, Splice&, bool) { return true; }
+  bool pending(const Conn&) const { return false; }  // nothing is ever owed
   void on_tick() {}
 };
 

@@ -53,10 +53,50 @@ inline constexpr size_t kMaxHeaders = 64;
 // the Ring moves without copying - and small enough that a slow
 // consumer holds one chunk, not a whole file.
 inline constexpr size_t kDeliverChunk = 64u * 1024;
+
+// THE WARM BUDGET: at or below this a body is COPIED into the response
+// buffer and leaves with its head in one append; above it the body
+// becomes a source the Ring delivers (and splices where it can).
+//
+// The line is measured, not chosen, and the measurement is old enough
+// to have been forgotten once: the previous tree swept it on a
+// 70-asset page at -c48 and found the crossover at 4 KiB, with the
+// then-default 16 KiB already 17% behind (108,099 vs 92,505 req/s;
+// 64 KiB reached only 40,398, and p99 went 1.27ms -> 17.77ms). A
+// second measurement compared the two ways of sending the SAME asset:
+// at 8 KiB the arms were within noise, at 32 KiB splice won 2.8x, at
+// 64 KiB 3.4x.
+//
+// The reason the direction surprises: IORING_OP_SPLICE has no
+// non-blocking fast path, so io_uring hands it to an io-wq worker -
+// a SECOND CORE moving bytes while the loop thread parses the next
+// request. Copying takes that work back onto the one thread that must
+// never block. Which is also why a single-connection benchmark cannot
+// see any of this: with nothing to overlap, the worker hop is pure
+// latency (measured here: 880 vs 2543 req/s at -c1, the exact
+// inversion of the -c48 result).
+//
+// RE-MEASURED HERE, and the container could only answer half of it:
+// with real concurrency (-c32) a 256 KiB asset splices at 4.25x the
+// iovec arm (22,011 vs 5,184 req/s) - the direction the old numbers
+// predicted, and far outside the noise. But a sweep of THIS constant
+// at 32 KiB produced arms that disagreed by 2x with no ordering, and
+// disagreed even where the constant makes the two arms IDENTICAL by
+// construction. So the exact crossover is not answerable on a shared
+// 4-vCPU container with the client on the same machine (Gebot 10:
+// verdicts on real hardware), and the default stays where the earlier
+// hardware measurement put it rather than where container noise
+// suggests. bench/assets.sh sweeps it wherever the question is asked
+// seriously.
+//
+// Settable because the crossover belongs to the machine and the asset
+// mix rather than to this file - and because being settable is what
+// made the sweeps above possible at all (#166 will fold
+// WM_WARM_BUDGET into the config; the env knob is what exists today).
+inline constexpr size_t kWarmBudgetDefault = 4096;
 // Below this a splice round is not worth its two SQEs against one
-// memcpy; less than a page never is. Only ever reached by the tail of
-// a file span - whole bodies under kDeliverChunk never start a
-// transfer at all.
+// memcpy; less than a page never is. Reached by the tail of a file
+// span, and by bodies between the warm budget and a page.
 inline constexpr size_t kSpliceMin = 4096;
 
 class Http1 {
@@ -108,6 +148,14 @@ class Http1 {
   // The Ring's per-wake hook: patch the date bytes when the wall-clock
   // second changed. Never runs per request.
   void on_tick();
+
+  // True while this connection still owes bytes the Ring has not been
+  // handed yet (#168). The Ring asks BEFORE sending, so a send that
+  // has more behind it can carry MSG_MORE instead of putting a small
+  // segment on the wire and waiting out the peer's delayed ACK - the
+  // stall the previous tree measured at 44.30ms average, 1,118 ->
+  // 31,077 req/s once fixed. Const and cheap: two pointer tests.
+  bool pending(const Conn& st) const;
 
   // Feed wire bytes; responses land in sink (the connection's out/next,
   // whichever accumulates). False: the connection ends once everything
@@ -213,6 +261,8 @@ class Http1 {
   bool dynamic_nodes_ = false;
   bool dynamic_body_ = false;
   bool bound_ = false;  // any runtime tier at all
+  // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
+  size_t warm_budget_ = kWarmBudgetDefault;
   std::string body_;    // the run frame's rendered bytes; capacity survives
   // h2 blocks, parallel to store_ via index_; h2_err_ is 500 in the
   // negotiated type (the exception path). ONE 200 block serves konst
