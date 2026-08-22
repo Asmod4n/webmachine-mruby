@@ -11,6 +11,7 @@
 #include "http.hpp"
 #include "request.hpp"
 #include "resource.hpp"
+#include "websocket.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -252,6 +253,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
   bundles_.resize(total);
   apps_.resize(napps);
   size_t at = 0;
+  size_t ws_at = 0;
   for (size_t a = 0; a < napps; a++) {
     apps_[a].table = apps[a].table;
     apps_[a].base = static_cast<uint16_t>(at);
@@ -260,6 +262,15 @@ void Http1::build(const AppInput* apps, size_t napps) {
       build_bundle(bundles_[at + i], apps[a].resources[i]);
     }
     at += apps[a].nroutes;
+    // The websocket routes (#175): a second table, walked only when a
+    // head asks for an upgrade, and nothing built for it here - a
+    // websocket has no prebuilt status to speak.
+    apps_[a].ws_table = apps[a].ws_nroutes != 0 ? apps[a].ws_table : nullptr;
+    apps_[a].ws_base = static_cast<uint16_t>(ws_at);
+    for (size_t i = 0; i < apps[a].ws_nroutes; i++) {
+      ws_res_.push_back(apps[a].ws_resources[i]);
+    }
+    ws_at += apps[a].ws_nroutes;
   }
 
   // The warm budget, read once (see kWarmBudgetDefault for the
@@ -414,6 +425,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     return true;
   }
 
+  // Past the 101 this connection is not HTTP any more (#175): every
+  // byte belongs to the websocket half, which keeps its own carry.
+  if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, data, len, sink);
+
   // The hot path parses the receive buffer in place; only a head split
   // across receives pays for the carry copy.
   const bool in_place = st.carry.empty();
@@ -455,6 +470,13 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     size_t content_length = 0;
     bool have_cl = false, have_te = false, have_host = false;
     bool conn_close = false, conn_keep = false;
+    // The upgrade's four facts (RFC 6455 4.2.1), read in the same one
+    // switch every other wire name is read in - a head that asks for
+    // nothing costs the compare its length already implied.
+    bool up_ws = false, conn_upgrade = false;
+    const char* ws_key = nullptr;
+    size_t ws_key_len = 0;
+    int ws_version = 0;
     uint16_t wire_err = 0;  // first wire violation wins; the loop is bounded
     flow::ReqFacts facts;
     http::ReqValues vals;  // value borrows die with this request's answer
@@ -487,7 +509,12 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
                 break;
               case 17:
                 if (http::tok_eq(n, nl, "transfer-encoding", 17)) have_te = true;
+                else if (http::tok_eq(n, nl, "sec-websocket-key", 17)) {
+                  ws_key = v;
+                  ws_key_len = vl;
+                }
                 break;
+
               case 4:
                 if (http::tok_eq(n, nl, "host", 4)) {
                   if (WM_H1_UNLIKELY(have_host)) wire_err = 400;  // RFC 9112 §3.2: one
@@ -498,6 +525,27 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
                 if (http::tok_eq(n, nl, "connection", 10)) {
                   if (conn_has(v, vl, "close", 5)) conn_close = true;
                   else if (conn_has(v, vl, "keep-alive", 10)) conn_keep = true;
+                  // RFC 9110 7.8: Connection is a token LIST, and a
+                  // browser sends "keep-alive, Upgrade" - so this is a
+                  // third test on the same list, not an else.
+                  if (conn_has(v, vl, "upgrade", 7)) conn_upgrade = true;
+                }
+                break;
+              case 7:
+                // RFC 6455 4.2.1 step 3: "websocket", case-insensitive.
+                if (http::tok_eq(n, nl, "upgrade", 7)) {
+                  up_ws = http::tok_eq(v, vl, "websocket", 9);
+                }
+                break;
+
+              case 21:
+                if (http::tok_eq(n, nl, "sec-websocket-version", 21)) {
+                  ws_version = 0;
+                  for (size_t j = 0; j < vl; j++) {
+                    if (v[j] < '0' || v[j] > '9') { ws_version = -1; break; }
+                    ws_version = ws_version * 10 + (v[j] - '0');
+                    if (ws_version > 999) { ws_version = -1; break; }
+                  }
                 }
                 break;
               default:
@@ -517,6 +565,39 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
+
+    // THE UPGRADE (#175). RFC 6455 4.2.1: Upgrade: websocket AND
+    // upgrade in the Connection list. A path no websocket route claims
+    // falls straight through to the ordinary request path - RFC 9110
+    // 7.8 lets a server ignore an upgrade it does not offer, and that
+    // is exactly what happens then.
+    if (WM_H1_UNLIKELY(up_ws && conn_upgrade)) {
+      const AppSlot& wslot = apps_[st.listener];
+      RouteSpans wspans;
+      const int wr =
+          wslot.ws_table != nullptr ? wslot.ws_table->match(path, path_len, wspans) : -1;
+      if (wr >= 0) {
+        // 4.4: the version this endpoint speaks is 13, and a peer that
+        // asked for another one is told WHICH - that is what makes 426
+        // useful instead of merely negative.
+        if (ws_version != 13) {
+          sink.append("HTTP/1.1 426 Upgrade Required\r\nDate: ");
+          sink.append(date_, http::kDateLen);
+          sink.append(
+              "\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n"
+              "Content-Length: 0\r\n\r\n");
+          return false;
+        }
+        // 4.1: the handshake is a GET, and it carries a key.
+        if (facts.method != flow::Method::kGet || ws_key == nullptr) {
+          return fail(st, 400, sink);
+        }
+        const char* rest = view + off + static_cast<size_t>(ret);
+        const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
+        return ws_upgrade(st, wslot, wr, path, path_len, wspans, ws_key, ws_key_len, headers,
+                          num_headers, rest, rest_len, sink);
+      }
+    }
 
     // The asset tier (#170): a path naming a ZIP entry answers from
     // the table, before the flow - the first thing in this tree that
@@ -659,6 +740,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
         rv.table = slot.table;
         rv.route = route;
         rv.spans = spans;
+        // The head itself, lent off this frame: two stores, and only
+        // in the branch that was going to run a resource anyway.
+        rv.hdrs = headers;
+        rv.nhdr = num_headers;
         status = resource_run(*b->res, facts, &rv, &body_, &have_body);
       } else {
         status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
@@ -730,6 +815,65 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
     }
   }
   if (!in_place) st.carry.clear();
+  return true;
+}
+
+// THE HANDSHAKE'S ANSWER (#175, RFC 6455 4.2.2). Everything that could
+// be decided from the wire was decided by feed; what is left is the
+// resource's own say and 129 bytes of head.
+bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path,
+                       size_t path_len, const RouteSpans& spans, const char* key,
+                       size_t key_len, const void* hdrs, size_t nhdr, const char* rest,
+                       size_t rest_len, std::string& sink) {
+  char accept[28];
+  // 4.2.1 step 5.4: the key is 16 bytes base64'd. A key that is not
+  // that is the one thing the client half must get right.
+  if (!ws::accept_key(key, key_len, accept)) return fail(st, 400, sink);
+
+  const WsResource* res = ws_res_[slot.ws_base + static_cast<size_t>(route)];
+
+  // The resource's own say, with the handshake's head still LIVE: this
+  // is where a subprotocol is chosen, an Origin refused, a token in the
+  // query checked (#175's whole reason for request.headers).
+  ReqView rv;
+  rv.target = path;
+  rv.target_len = path_len;
+  rv.path_len = http::path_only(path, path_len);
+  rv.method = flow::Method::kGet;
+  rv.table = slot.ws_table;
+  rv.route = route;
+  rv.spans = spans;
+  rv.hdrs = hdrs;
+  rv.nhdr = nhdr;
+  request_bind(&rv);
+  std::string proto;
+  uint16_t refuse_status = 0;
+  const bool admit = ws_admit(res, proto, refuse_status);
+  request_bind(nullptr);
+  if (!admit) {
+    // The resource said no. It answers as HTTP, because nothing was
+    // upgraded - and it closes, because a refused handshake has
+    // nothing more to say on this connection.
+    return fail(st, refuse_status == 0 ? 403 : refuse_status, sink);
+  }
+
+  sink.append("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "
+              "Upgrade\r\nSec-WebSocket-Accept: ");
+  sink.append(accept, sizeof(accept));
+  if (!proto.empty()) {
+    // 4.2.2 step 5.5: at most one, and only one the client offered -
+    // which the resource read out of the head itself.
+    sink.append("\r\nSec-WebSocket-Protocol: ").append(proto);
+  }
+  sink.append("\r\n\r\n");
+
+  st.ws = ws_open(res);
+  st.carry.clear();     // the head is answered; nothing HTTP waits any more
+  st.body_skip = 0;
+  // Frames the client sent in the SAME receive as its handshake - a
+  // peer that does not wait for the 101 is not made to wait for
+  // another packet.
+  if (rest_len != 0) return ws_feed(st.ws, rest, rest_len, sink);
   return true;
 }
 

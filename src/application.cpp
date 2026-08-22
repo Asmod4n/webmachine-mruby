@@ -265,9 +265,55 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-mrb_value route_websocket(mrb_state* mrb, mrb_value) {
-  refuse(mrb, "route.websocket is reserved - websockets are #175/#87, not this slice");
-  return mrb_nil_value();  // unreachable: refuse raises
+// route.websocket [tokens], Klass - the SAME token forms as route.add,
+// walked out of the app's OWN websocket table (#175). A websocket
+// route shares nothing with the flow: it is matched at the upgrade or
+// not at all.
+mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
+  mrb_value toks, klass;
+  mrb_get_args(mrb, "Ao", &toks, &klass);
+  AppSpec* s = spec_of(mrb, self);
+
+  const mrb_int n = RARRAY_LEN(toks);
+  s->ws_table.open();
+  for (mrb_int i = 0; i < n; i++) {
+    const mrb_value t = mrb_ary_entry(toks, i);
+    if (s->ws_table.pending_splat()) {
+      s->ws_table.abandon();
+      refuse(mrb, "route.websocket: :* is the tail of a route - nothing may follow it");
+    }
+    if (mrb_string_p(t)) {
+      if (!s->ws_table.literal(RSTRING_PTR(t), static_cast<size_t>(RSTRING_LEN(t)))) {
+        s->ws_table.abandon();
+        refuse(mrb, "route.websocket: a literal token is too long");
+      }
+      continue;
+    }
+    if (mrb_symbol_p(t)) {
+      if (mrb_symbol(t) == MRB_OPSYM(mul)) {
+        s->ws_table.splat();
+        continue;
+      }
+      if (!s->ws_table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
+        s->ws_table.abandon();
+        refuse(mrb, "route.websocket: too many bindings in one route (16 is the width)");
+      }
+      continue;
+    }
+    s->ws_table.abandon();
+    refuse(mrb,
+           "route.websocket: a token is a String (literal), a Symbol (binding) or :* (tail)");
+  }
+
+  std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
+  char err[512] = "";
+  if (!ws_fold(mrb, klass, *res, err, sizeof(err))) {
+    s->ws_table.abandon();
+    mrb_raisef(mrb, E_RUNTIME_ERROR, "%s", err);
+  }
+  s->ws_table.commit();
+  s->ws_resources.push_back(std::move(res));
+  return self;
 }
 
 mrb_value route_sse(mrb_state* mrb, mrb_value) {

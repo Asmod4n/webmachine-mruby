@@ -34,6 +34,17 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const Re
                       std::string* body, bool* have_body);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
+// The websocket half (#175, wsconn.hpp owns both types and every line
+// of mruby behind them). This writer only ever holds the two pointers
+// and calls these four - it never learns what a websocket resource is,
+// exactly as it never learned what a Resource is.
+struct WsResource;
+struct WsConn;
+bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
+WsConn* ws_open(const WsResource* r);
+bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
+void ws_free(WsConn* c);
+
 // h2.hpp owns the definition (it pulls lshpack.h; this header stays
 // lean). A connection that never speaks the preface carries only the
 // null pointer. h2_free lives in http2.cpp where the type is complete.
@@ -147,6 +158,11 @@ class Http1 {
     // (Nutzer-Entscheid 2026-08-22, #147 Tor 1 revision): a unix
     // listener's answer is always false, the same as before.
     bool packetized = false;
+    // Past the 101 this connection is not HTTP any more (#175): every
+    // byte goes to the websocket half and nothing here reads a head
+    // again. Null is the whole cost for every connection that never
+    // upgrades.
+    WsConn* ws = nullptr;
     void reset(uint8_t li, bool pkt) {
       carry.clear();
       body_skip = 0;
@@ -155,11 +171,16 @@ class Http1 {
       fresh = true;
       h2_free(h2);
       h2 = nullptr;
+      ws_free(ws);
+      ws = nullptr;
       xfer = nullptr;
       xfer_off = 0;
       xfer_end = 0;
     }
-    ~Conn() { h2_free(h2); }
+    ~Conn() {
+      h2_free(h2);
+      ws_free(ws);
+    }
   };
 
   // ONE APPLICATION as this writer sees it (#116 slice 2): its route
@@ -173,6 +194,12 @@ class Http1 {
     const RouteTable* table = nullptr;
     const Resource* const* resources = nullptr;
     size_t nroutes = 0;
+    // The app's websocket routes, its own table (#175) - empty where
+    // the app has none, which is one null pointer at the upgrade and
+    // nothing anywhere else.
+    const RouteTable* ws_table = nullptr;
+    const WsResource* const* ws_resources = nullptr;
+    size_t ws_nroutes = 0;
   };
 
   // Builds every response every route of every app can speak, once, and
@@ -223,6 +250,10 @@ class Http1 {
   bool more(Conn& st, std::string& sink, Plan& plan);
 
  private:
+  // Defined below, next to the other per-app state; named here because
+  // ws_upgrade takes one.
+  struct AppSlot;
+
   // A prebuilt response whose date field sits at a fixed offset.
   struct Resp {
     std::string bytes;
@@ -312,6 +343,17 @@ class Http1 {
     return store_[index_[status]];  // every status here came from the tables
   }
   bool fail(Conn& st, uint16_t status, std::string& sink);
+  // The upgrade (#175): answers 101 (or the refusal the route earned)
+  // and switches the connection over. `rest`/`rest_len` are the bytes
+  // that came behind the handshake in the same receive - a client that
+  // sends its first frame immediately is not made to wait for another
+  // packet. False = this connection ends once the sink has drained.
+  // `hdrs` is the phr_header array off feed's own frame, passed as
+  // void* so this header stays free of picohttpparser (request.cpp is
+  // where that shape is known - request.hpp says the same).
+  bool ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path, size_t path_len,
+                  const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
+                  size_t nhdr, const char* rest, size_t rest_len, std::string& sink);
 
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
@@ -367,6 +409,11 @@ class Http1 {
     const RouteTable* table = nullptr;
     uint16_t base = 0;   // first bundle index
     uint16_t count = 0;  // how many (the router's verdict is < count)
+    // The websocket table and where this app's websocket resources
+    // start in ws_res_ - the same base-plus-verdict shape, for the
+    // same reason (#116 slice 2).
+    const RouteTable* ws_table = nullptr;
+    uint16_t ws_base = 0;
   };
 
   time_t sec_ = 0;
@@ -375,6 +422,9 @@ class Http1 {
   // the SAME app in the same order (h1 in feed, h2 in h2_dispatch).
   std::vector<AppSlot> apps_;
   std::vector<Bundle> bundles_;  // every app's routes, back to back
+  // Every app's websocket resources, back to back. Borrowed: the
+  // AppSpec owns them, like every table here.
+  std::vector<const WsResource*> ws_res_;
   // The generic status supply, one per app. It also holds a 200 and a
   // 405 slot, built neutrally so index_ stays total for any status the
   // flow tables can name - a MATCHED route never reads those two (its

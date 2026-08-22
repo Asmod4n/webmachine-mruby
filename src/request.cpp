@@ -7,6 +7,8 @@
 #include <mruby/presym.h>
 #include <mruby/string.h>
 
+#include <picohttpparser.h>
+
 namespace webmachine {
 namespace {
 
@@ -178,19 +180,47 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
   return h;
 }
 
+// The head's fields as a Hash, built ON DEMAND like everything else
+// here. Names are LOWERCASED, which is not a courtesy: h2 puts them on
+// the wire lowercase (RFC 9113 8.2) and h1 says they are
+// case-insensitive (RFC 9110 5.1), so lowercasing is what makes one
+// name mean one thing whichever wire carried it. A repeated field is
+// joined with ", " - the same value list the sender could have sent
+// (RFC 9110 5.3).
+//
+// A websocket resource is the standing caller (#175): the handshake's
+// own fields are what a subprotocol, an Origin check or a token in the
+// head are decided from, and this is where they arrive.
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
-  // NOT built. Header VALUES are the value tier's subject (#165), and
-  // on the h2 side they do not survive to here at all: a parked stream
-  // answers after its decode buffer is gone (h2.hpp says so at the
-  // stream struct, which is why the router's verdict is parked and not
-  // a pointer). Lending them from h1 only would make `headers` mean
-  // two different things depending on the wire, which is the one thing
-  // the router was built not to do.
-  mrb_raise(mrb, E_RUNTIME_ERROR,
-            "request.headers is not built: header values are #165's value tier, and on "
-            "HTTP/2 they do not outlive the decode buffer a parked request answers after. "
-            "The facts the flow decides on are already folded into the flow");
-  return mrb_nil_value();
+  const ReqView* v = live(mrb);
+  if (v->hdrs == nullptr) {
+    // Not "never": GONE. A parked h2 request answers after its decode
+    // buffer is gone (h2.hpp says so at the stream struct, which is
+    // why the router's verdict is parked and not a pointer), so there
+    // is nothing to lend and nothing will be invented.
+    mrb_raise(mrb, E_RUNTIME_ERROR,
+              "request.headers: this request's head is gone - an HTTP/2 request that "
+              "parked on its body answers after its decode buffer was reused, so its "
+              "fields cannot be lent. They are there on HTTP/1.1 and at a websocket "
+              "handshake");
+  }
+  const struct phr_header* hs = static_cast<const struct phr_header*>(v->hdrs);
+  mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->nhdr));
+  for (size_t i = 0; i < v->nhdr; i++) {
+    mrb_value name = mrb_str_new(mrb, hs[i].name, hs[i].name_len);
+    char* np = RSTRING_PTR(name);
+    for (mrb_int j = 0; j < RSTRING_LEN(name); j++) {
+      if (np[j] >= 'A' && np[j] <= 'Z') np[j] = static_cast<char>(np[j] + 32);
+    }
+    const mrb_value had = mrb_hash_get(mrb, h, name);
+    if (mrb_string_p(had)) {
+      mrb_str_cat_lit(mrb, had, ", ");
+      mrb_str_cat(mrb, had, hs[i].value, hs[i].value_len);
+      continue;
+    }
+    mrb_hash_set(mrb, h, name, mrb_str_new(mrb, hs[i].value, hs[i].value_len));
+  }
+  return h;
 }
 
 mrb_value req_body(mrb_state* mrb, mrb_value) {
@@ -232,6 +262,11 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
 
   struct RClass* res = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
   mrb_define_method_id(mrb, res, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
+  // A websocket resource is NOT a Resource (#175: no response, no
+  // flow, no negotiation survives the upgrade) - but the handshake's
+  // HEAD does, and it is the same object that lends it.
+  struct RClass* wsres = mrb_class_get_under_id(mrb, wm, MRB_SYM(WebsocketResource));
+  mrb_define_method_id(mrb, wsres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
 }
 
 }  // namespace webmachine

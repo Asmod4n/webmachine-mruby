@@ -45,6 +45,16 @@ struct ReqView {
   const RouteTable* table = nullptr;
   int route = -1;
   RouteSpans spans {};
+  // The head's fields, LENT where they still exist: h1 hands over the
+  // phr_header array off its own frame (two stores, and only in the
+  // branch that was going to run a resource anyway). Null is the
+  // honest state for a parked h2 request, whose decode buffer is gone
+  // by the time it answers - request.headers refuses BY NAME there
+  // rather than lending a dead pointer. `void*` because this header
+  // stays free of picohttpparser; request.cpp is where the shape is
+  // known.
+  const void* hdrs = nullptr;
+  size_t nhdr = 0;
 };
 
 // Webmachine::Request, and Webmachine::Resource#request. Defined once

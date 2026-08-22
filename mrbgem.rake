@@ -56,6 +56,13 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # on the Ruby side, std::chrono/timespec on the C side, converted at
   # the edge and nowhere else. Wall-clock/date stays plain C.
   spec.add_dependency 'mruby-chrono'
+  # simdutf, through the user's own gem: a websocket text message MUST
+  # be valid UTF-8 (RFC 6455 8.1), and validating a whole buffer with
+  # SIMD is a solved problem this tree is not going to solve worse.
+  # The gem installs simdutf.h into its include/, so this side calls
+  # simdutf::validate_utf8 on the frame's own bytes - no mruby String
+  # is built to ask the question.
+  spec.add_dependency 'mruby-string-is-utf8', github: 'Asmod4n/mruby-string-is-utf8'
 
   # ls-hpack: the HPACK codec for HTTP/2, and ONLY the codec - frames
   # and streams are this gem's own. The codec is reused rather than

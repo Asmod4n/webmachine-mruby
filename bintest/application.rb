@@ -503,9 +503,7 @@ assert('application: an https url refuses with the same TLS reason') do
   assert_true out.include?('no TLS in this tree'), out
 end
 
-assert('application: websocket, sse and assets are reserved and refuse by name') do
-  ws = ap_refused(ap_one_route("app.routes { |route| route.websocket ['ws'], R }"))
-  assert_true ws.include?('#175'), ws
+assert('application: sse and assets are reserved and refuse by name') do
   sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
   assert_true sse.include?('#102'), sse
   assets = ap_refused(ap_one_route("app.routes { |route| route.assets '/static' }"))
@@ -838,13 +836,12 @@ assert('application: request names what the route captured, per request') do
   end
 end
 
-assert('application: request.headers and request.body refuse by name') do
+assert('application: request.headers are the head, lowercased; body refuses by name') do
   src = <<~RUBY
     class Asks < Webmachine::Resource
       def to_html
-        request.headers
-      rescue RuntimeError => e
-        e.message
+        h = request.headers
+        "\#{h['x-one']}|\#{h['x-two']}|\#{h['host']}"
       end
     end
 
@@ -867,9 +864,13 @@ assert('application: request.headers and request.body refuse by name') do
   RUBY
   ap_server(src) do |sock|
     s = UNIXSocket.new(sock)
-    s.write("GET /h HTTP/1.1\r\nHost: x\r\n\r\n")
+    # Mixed case in, lowercase out (RFC 9110 5.1 says the name is
+    # case-insensitive; h2 puts it on the wire lowercase, so one name
+    # means one thing whichever wire carried it). A repeated field is
+    # the value list it could have been sent as.
+    s.write("GET /h HTTP/1.1\r\nHost: x\r\nX-One: a\r\nX-TWO: b\r\nX-One: c\r\n\r\n")
     _, body = ap_read(s)
-    assert_true body.include?('#165'), body
+    assert_equal 'a, c|b|x', body
     s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
     _, body2 = ap_read(s)
     assert_true body2.include?('request bodies'), body2

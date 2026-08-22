@@ -18,6 +18,7 @@
 
 #include "resource.hpp"
 #include "router.hpp"
+#include "wsconn.hpp"
 
 namespace webmachine {
 
@@ -40,6 +41,13 @@ struct AppSpec {
   // Parallel to table's routes, by index. unique_ptr because the run
   // frame's cfunc env borrows a Resource's ADDRESS (resource.hpp).
   std::vector<std::unique_ptr<Resource>> resources;
+  // WEBSOCKET ROUTES ARE THEIR OWN TABLE (#175). They share nothing
+  // with the flow: no status, no negotiation, no method test - a
+  // websocket route is matched before all of that or not at all, so
+  // giving it a second table costs one pointer compare on the upgrade
+  // path and keeps the flow's table exactly as wide as the flow.
+  RouteTable ws_table;
+  std::vector<std::unique_ptr<WsResource, void (*)(WsResource*)>> ws_resources;
   mrb_value ready = mrb_nil_value();
   bool have_ready = false;
   bool registered = false;

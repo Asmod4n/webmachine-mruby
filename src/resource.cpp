@@ -3,6 +3,7 @@
 #include "application.hpp"
 #include "request.hpp"
 #include "server.hpp"
+#include "wsconn.hpp"
 
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -567,6 +568,10 @@ extern "C" {
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
+  // The websocket's own base class (#175), BEFORE the request object:
+  // a websocket resource reads the handshake's head through the same
+  // one object, so that accessor is hung on both classes.
+  webmachine::ws_init(mrb, wm);
   webmachine::application_init(mrb, wm);
   // What a runtime callback sees of the request it is answering.
   webmachine::request_init(mrb, wm);
