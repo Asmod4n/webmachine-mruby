@@ -3,6 +3,7 @@
 #include <mruby/class.h>
 #include <mruby/dump.h>
 #include <mruby/error.h>
+#include <mruby/hash.h>
 #include <mruby/proc.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
@@ -216,7 +217,11 @@ const NamedSym kUnhonored[] = {
     {MRB_SYM(content_types_provided), "content_types_provided"},
     {MRB_SYM(languages_provided), "languages_provided"},
     {MRB_SYM(charsets_provided), "charsets_provided"},
-    {MRB_SYM(encodings_provided), "encodings_provided"},
+    // encodings_provided is honored (#147, gzip only) - see kKonstOnly
+    // and the read below content_type's. Still unhonored: real per-
+    // representation ETag support - generate_etag stays refused until
+    // that lands, so #147 cannot promise a distinct ETag per coding
+    // (see the report on this task for the reasoning).
     {MRB_SYM(generate_etag), "generate_etag"},
     {MRB_SYM(last_modified), "last_modified"},
     {MRB_SYM(options), "options"},
@@ -232,6 +237,7 @@ const NamedSym kKonstOnly[] = {
     {MRB_SYM(known_methods), "known_methods"},
     {MRB_SYM(allowed_methods), "allowed_methods"},
     {MRB_SYM(content_type), "content_type"},
+    {MRB_SYM(encodings_provided), "encodings_provided"},
     {MRB_SYM_Q(is_authorized), "is_authorized?"},
     {MRB_SYM_Q(moved_permanently), "moved_permanently?"},
     {MRB_SYM_Q(moved_temporarily), "moved_temporarily?"},
@@ -454,6 +460,35 @@ bool resource_setup(mrb_state* mrb, const char* path, Resource& out, char* err, 
       content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
     }
   }
+
+  // encodings_provided (#147): read once here, the same way as
+  // content_type just above - a class method, asked at setup, never
+  // again. webmachine-ruby's shape is a Hash of coding name -> encoder
+  // method; ONLY THE KEYS ARE READ. The values name a per-representation
+  // encoder callback and no tier honors that dispatch yet (gzip is
+  // built in, by zlib-ng, at answer time - see gzip.hpp) - documented
+  // here, at the one place the declaration is read, per #147's own
+  // requirement. Presence of "gzip" is the whole question; "identity"
+  // needs no key at all (RFC 9110 12.5.3: it is always available, and
+  // for a dynamic body this tree can always produce it, so F6/F7 never
+  // need to refuse - see flow_walk.hpp's F7 konst default).
+  {
+    const Resolved enc = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(encodings_provided));
+    if (enc.defined) {
+      const mrb_value v = call_resolved(mrb, enc, MRB_SYM(encodings_provided), klass,
+                                        mrb_class(mrb, klass));
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_hash_p(v))) {
+        mrb->exc == nullptr
+            ? static_cast<void>(
+                  std::snprintf(err, errlen, "encodings_provided must return a Hash"))
+            : exc_into(mrb, "encodings_provided", err, errlen);
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
+      }
+      out.gzip_offered = mrb_hash_key_p(mrb, v, mrb_str_new_lit(mrb, "gzip"));
+    }
+  }
+
   const Resolved body_k = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(to_html));
   const Resolved body_i = resolve(mrb, mrb_class_ptr(klass), MRB_SYM(to_html));
   if (body_k.defined) {

@@ -1,3 +1,6 @@
 [submodule "deps/ls-hpack"]
 	path = deps/ls-hpack
 	url = https://github.com/litespeedtech/ls-hpack
+[submodule "deps/zlib-ng"]
+	path = deps/zlib-ng
+	url = https://github.com/zlib-ng/zlib-ng

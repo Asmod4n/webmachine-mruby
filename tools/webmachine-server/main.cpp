@@ -25,6 +25,7 @@ namespace {
 struct Echo {
   struct Conn {
     void reset(uint8_t) {}
+    void set_mss(uint32_t) {}  // echo gates nothing on segment size
   };
   struct Plan {  // echo hands over no pointers; the shape is the Ring's
     struct iovec iov[4] = {};

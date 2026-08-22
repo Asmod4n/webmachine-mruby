@@ -47,6 +47,14 @@ struct Resource {
   mrb_sym body_sym = {};
   mrb_method_t body_m = {};
   bool body_fast = false;
+  // #147: does this resource's encodings_provided (class method, read
+  // once here like content_type) name "gzip" among its keys? The
+  // Hash's VALUES (encoder methods, webmachine-ruby's own dispatch)
+  // are not honored by any tier yet and are ignored on purpose - only
+  // key presence is read. Http1 combines this with the media-type
+  // table (its own setup-time decision) into the one bit a response
+  // actually gates on.
+  bool gzip_offered = false;
   // The run method's carrier object (hidden class - no constant, Ruby
   // code cannot reach or reopen it). Its cfunc finds this Resource
   // through the proc's env (a cptr), never through mrb->ud.

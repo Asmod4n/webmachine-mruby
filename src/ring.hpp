@@ -29,6 +29,11 @@
 //        Same close contract as feed. An App without sources appends
 //        nothing and returns true.
 //   void on_tick();                                   once per reactor wake
+//   void set_mss(uint32_t mss);
+//        the TCP_MAXSEG queried once at accept (#147), 0 if unknown
+//        (a unix listener never queries it - see on_accept). An App
+//        with nothing to gate on segment size takes the value and
+//        does nothing with it.
 //
 // EVERYTHING goes through the ring. The listener is born as a direct
 // descriptor (io_uring_prep_socket_direct), bound and set listening by
@@ -689,13 +694,13 @@ class Ring {
     c.out.clear();  // capacity survives: a warm slot allocates nothing
     c.next.clear();
     c.app.reset(static_cast<uint8_t>(li));  // whose listener, whose app
-    arm_recv(idx);
     // A server that writes complete responses has nothing for Nagle to
     // coalesce - only stalls to offer. Found the hard way (#168): a
     // response whose tail went out as its own small segment waited
     // ~43ms for the peer's delayed ACK, once per response. Best effort
     // through the ring; the CQE is ignored (kSetup has no handler arm,
-    // deliberately).
+    // deliberately) - unlike the MSS query below, nothing depends on
+    // TCP_NODELAY landing before the first byte is read.
     if (!unix_listener_[li]) {
       static const int kOne = 1;
       struct io_uring_sqe* s = sqe();
@@ -703,7 +708,86 @@ class Ring {
                              IPPROTO_TCP, TCP_NODELAY, const_cast<int*>(&kOne), sizeof(kOne));
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, idx));
+
+      // TCP_MAXSEG, ASKED not guessed (#147) - but NOT through
+      // SOCKET_URING_OP_GETSOCKOPT, unlike the SETSOCKOPT above.
+      // Verified against the kernel's own source
+      // (io_uring/cmd_net.c, io_uring_cmd_getsockopt): it hard-refuses
+      // every level but SOL_SOCKET -
+      //
+      //   level = READ_ONCE(sqe->level);
+      //   if (level != SOL_SOCKET)
+      //           return -EOPNOTSUPP;
+      //
+      // - unconditionally, with no protocol-level escape hatch
+      // anywhere in io_uring_cmd_sock's whole op switch (SIOCINQ,
+      // SIOCOUTQ, GETSOCKOPT, SETSOCKOPT, TX_TIMESTAMP, GETSOCKNAME -
+      // nothing else exists). Confirmed live against this exact
+      // kernel, not just read: SOCKET_URING_OP_GETSOCKOPT with
+      // IPPROTO_TCP/TCP_MAXSEG returns cqe->res == -EOPNOTSUPP every
+      // time. SETSOCKOPT above has no such restriction
+      // (do_sock_setsockopt takes any level) - which is why
+      // TCP_NODELAY works and this does not; the asymmetry is the
+      // kernel's, not this file's.
+      //
+      // A direct descriptor is not a process fd, so no classic
+      // getsockopt(2) can name it either - IORING_OP_FIXED_FD_INSTALL
+      // is the bridge: it installs a REGULAR fd into the process
+      // table that refers to the SAME socket, without touching the
+      // fixed slot connections otherwise live in. This is this file's
+      // SECOND exception to "everything through the ring, no classic
+      // syscalls" (mmap in Assets::open is the first, for the same
+      // reason: no ring op exists for what is needed). The syscall
+      // pair that follows (on_setup_mss) is getsockopt(2) itself -
+      // a bounded socket-state read, not a blocking network wait, the
+      // category "no classic syscalls" exists to keep off this
+      // thread - plus close(2) on the borrowed fd, which drops one of
+      // two references to the socket and returns immediately; the
+      // fixed-table reference is what keeps the connection alive.
+      //
+      // LINKED to the recv armed right after (IOSQE_IO_LINK: the next
+      // SQE submitted does not start until this one completes) -
+      // required, not a nicety. Measured without a link on the
+      // now-abandoned GETSOCKOPT attempt: a client that writes its
+      // request immediately after connect() routinely has its bytes
+      // ready before this op's CQE is even processed, so an unlinked
+      // recv could complete (and a response be built) before set_mss
+      // ever ran - not a rare window but the common case on loopback.
+      // The link makes "queried before answered" true by construction.
+      // A unix listener has no MSS at all and never reaches this
+      // branch - the App's set_mss is simply never called there, and
+      // its default (0) reads as "never compress", the same answer a
+      // failed query gives.
+      struct io_uring_sqe* sm = sqe();
+      io_uring_prep_fixed_fd_install(sm, static_cast<int>(idx), 0);
+      sm->flags |= IOSQE_IO_LINK;
+      io_uring_sqe_set_data64(sm, detail::tag(detail::kSetupTcp, c.gen, idx));
+      arm_recv(idx);  // the link's dependent SQE - must be the very next one submitted
+    } else {
+      arm_recv(idx);
     }
+  }
+
+  // The installed regular fd's landing (#147): cqe->res is the new fd
+  // on success (io_uring_prep_fixed_fd_install's own contract) - named
+  // borrowed because it names the SAME socket as the fixed slot and
+  // is given back (closed) before this function returns; it is never
+  // stored anywhere. A stale CQE (slot reused since) or any failure
+  // leaves the App's mss at its reset() default (0, "unknown") rather
+  // than guessing - #147 requires querying, not guessing, and 0
+  // already reads as "never compress" everywhere it is checked.
+  void on_setup_mss(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen) return;
+    if (cqe->res < 0) return;  // install failed: mss stays 0 ("unknown")
+    const int borrowed_fd = cqe->res;
+    int mss = 0;
+    socklen_t mss_len = sizeof(mss);
+    if (::getsockopt(borrowed_fd, IPPROTO_TCP, TCP_MAXSEG, &mss, &mss_len) == 0 && mss > 0) {
+      c.app.set_mss(static_cast<uint32_t>(mss));
+    }
+    ::close(borrowed_fd);
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
@@ -884,6 +968,7 @@ class Ring {
         }
         break;
       case detail::kShutdown: break;  // best effort; the linked close is the contract
+      case detail::kSetupTcp: on_setup_mss(idx, gen, cqe); break;
       case detail::kStop: stop_ = true; break;
       default: break;
     }

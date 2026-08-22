@@ -6,8 +6,10 @@
 #include <cstring>
 
 #include "assets.hpp"
+#include "gzip.hpp"
 #include "h2.hpp"
 #include "http.hpp"
+#include "resource.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -151,6 +153,30 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
     prefix(ok.keep, ok_prefix_.keep);
     prefix(ok.close, ok_prefix_.close);
   }
+  // #147: this resource's own answer to TOR 2 (media-type table) and
+  // "encodings_provided says gzip" - decided ONCE, here, never again.
+  // A resource that fails either test costs no branch beyond this bool
+  // at answer time. Built directly rather than sliced from variants(200)
+  // the way ok_prefix_ is above, because these carry headers (Vary,
+  // Content-Encoding) the konst 200 head never has.
+  gzip_ok_ = dynamic_body_ && res_ != nullptr && res_->gzip_offered &&
+            http::compressible_media_type(konst_.content_type);
+  if (gzip_ok_) {
+    const auto buildv = [&](Resp& r, const char* conn, const char* enc) {
+      r.bytes.clear();
+      r.bytes.append("HTTP/1.1 200 OK\r\nDate: ");
+      r.date_off = r.bytes.size();
+      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra).append(enc);
+    };
+    buildv(ok_prefix_vary_.plain, "", "Vary: Accept-Encoding\r\n");
+    buildv(ok_prefix_vary_.keep, "Connection: keep-alive\r\n", "Vary: Accept-Encoding\r\n");
+    buildv(ok_prefix_vary_.close, "Connection: close\r\n", "Vary: Accept-Encoding\r\n");
+    buildv(ok_prefix_gzip_.plain, "", "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+    buildv(ok_prefix_gzip_.keep, "Connection: keep-alive\r\n",
+           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+    buildv(ok_prefix_gzip_.close, "Connection: close\r\n",
+           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+  }
   // Exceptions answer as the negotiated type: a 500 head open for a
   // per-request body carrying the reason.
   if (bound_) {
@@ -209,6 +235,20 @@ void Http1::on_tick() {
     std::memcpy(ok_prefix_.keep.bytes.data() + ok_prefix_.keep.date_off, core, kDateLen);
     std::memcpy(ok_prefix_.close.bytes.data() + ok_prefix_.close.date_off, core, kDateLen);
   }
+  if (gzip_ok_) {
+    std::memcpy(ok_prefix_vary_.plain.bytes.data() + ok_prefix_vary_.plain.date_off, core,
+               kDateLen);
+    std::memcpy(ok_prefix_vary_.keep.bytes.data() + ok_prefix_vary_.keep.date_off, core,
+               kDateLen);
+    std::memcpy(ok_prefix_vary_.close.bytes.data() + ok_prefix_vary_.close.date_off, core,
+               kDateLen);
+    std::memcpy(ok_prefix_gzip_.plain.bytes.data() + ok_prefix_gzip_.plain.date_off, core,
+               kDateLen);
+    std::memcpy(ok_prefix_gzip_.keep.bytes.data() + ok_prefix_gzip_.keep.date_off, core,
+               kDateLen);
+    std::memcpy(ok_prefix_gzip_.close.bytes.data() + ok_prefix_gzip_.close.date_off, core,
+               kDateLen);
+  }
   if (bound_) {
     std::memcpy(err_prefix_.plain.bytes.data() + err_prefix_.plain.date_off, core, kDateLen);
     std::memcpy(err_prefix_.keep.bytes.data() + err_prefix_.keep.date_off, core, kDateLen);
@@ -224,6 +264,39 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
   char cl[40];
   sink.append(cl, http::spell_content_length(cl, len));
   if (!head_only) sink.append(body, len);
+}
+
+// #147: called only when gzip_ok_ - the caller already paid the one
+// branch that costs every other resource nothing.
+void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
+                             const http::ReqValues& vals, const Resp& prefix_id,
+                             const Resp& prefix_gz, bool head_only, std::string& sink) {
+  // RFC 9110 12.5.3: a missing Accept-Encoding accepts anything: the
+  // asset tier (#170) reads the SAME field the same way - the rule is
+  // pulled out, not duplicated, only in that http::gzip_acceptable is
+  // the shared code and "was the field even sent" is each caller's own
+  // one-line gate around it (h1 here, http/2 has no separate copy to
+  // duplicate against - it goes through this same function).
+  const bool accept_gzip =
+      !facts.has_accept_encoding || http::gzip_acceptable(vals.accept_encoding,
+                                                           vals.accept_encoding_len);
+  bool use_gzip = false;
+  // TOR 1: MSS asked at accept (ring.hpp), never guessed. 0 = unknown
+  // or no MSS at all (a unix listener, or the query has not landed
+  // yet) - identity, the same answer a known-small response gets.
+  if (accept_gzip && st.mss != 0) {
+    char cl[40];
+    const size_t cl_len = http::spell_content_length(cl, body_.size());
+    // The UNCOMPRESSED answer's total size - head (already carrying
+    // Vary) plus Content-Length line plus body - against one segment.
+    // Fits: compression cannot help a response that was always going
+    // out as a single packet, so identity stands (#147 Tor 1).
+    if (prefix_id.bytes.size() + cl_len + body_.size() > st.mss) {
+      use_gzip = gzip::compress(body_, gz_body_);  // false: fall back to identity, never fail
+    }
+  }
+  if (use_gzip) assemble(sink, prefix_gz, gz_body_.data(), gz_body_.size(), head_only);
+  else assemble(sink, prefix_id, body_.data(), body_.size(), head_only);
 }
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
@@ -509,9 +582,22 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       // Rendered inside the run frame, copied there while the frame
       // rooted it; HEAD renders too - its Content-Length must be the
       // GET's - but sends no body bytes (RFC 9110 9.3.2).
-      assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
-                                : (persist ? ok_prefix_.keep : ok_prefix_.close),
-               body_.data(), body_.size(), head_only);
+      if (gzip_ok_) {
+        // #147: deployment-stable like bound_ above - a resource either
+        // declared gzip or it never did, so no hint (see WM_H1_UNLIKELY's
+        // own rule: only for a branch that swings per request).
+        assemble_dynamic(
+            st, facts, vals,
+            minor >= 1 ? (persist ? ok_prefix_vary_.plain : ok_prefix_vary_.close)
+                       : (persist ? ok_prefix_vary_.keep : ok_prefix_vary_.close),
+            minor >= 1 ? (persist ? ok_prefix_gzip_.plain : ok_prefix_gzip_.close)
+                       : (persist ? ok_prefix_gzip_.keep : ok_prefix_gzip_.close),
+            head_only, sink);
+      } else {
+        assemble(sink, minor >= 1 ? (persist ? ok_prefix_.plain : ok_prefix_.close)
+                                  : (persist ? ok_prefix_.keep : ok_prefix_.close),
+                 body_.data(), body_.size(), head_only);
+      }
       answered = true;
     }
     if (WM_H1_UNLIKELY(!answered && status == 500 && bound_)) {

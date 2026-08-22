@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "flow_walk.hpp"
+#include "http.hpp"
 
 namespace webmachine {
 
@@ -107,6 +108,14 @@ class Http1 {
     // range - the SAME machinery walks both.
     size_t xfer_off = 0;
     size_t xfer_end = 0;
+    // TCP_MAXSEG, queried once at accept over the ring (#147) and never
+    // touched again - see ring.hpp's on_accept/on_setup_mss. 0 = not
+    // (yet) known, which reads as "never compress": a unix listener
+    // never queries it at all (no MSS behind a stream socket), and the
+    // brief window between accept and the query's CQE landing degrades
+    // the same way, never the other way - a response built before the
+    // answer arrives must not guess "big enough to compress".
+    uint32_t mss = 0;
     void reset(uint8_t li) {
       carry.clear();
       body_skip = 0;
@@ -117,7 +126,9 @@ class Http1 {
       xfer = nullptr;
       xfer_off = 0;
       xfer_end = 0;
+      mss = 0;
     }
+    void set_mss(uint32_t m) { mss = m; }
     ~Conn() { h2_free(h2); }
   };
 
@@ -185,6 +196,12 @@ class Http1 {
   // prefix + hand-spelled Content-Length + (unless HEAD) the lent body.
   static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                        bool head_only);
+  // #147: the one place a dynamic 200 body picks identity or gzip.
+  // Called only when gzip_ok_ - every other resource never reaches
+  // here, and pays nothing beyond that one bool test at the call site.
+  void assemble_dynamic(const Conn& st, const flow::ReqFacts& facts, const http::ReqValues& vals,
+                        const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
+                        std::string& sink);
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];  // every status here came from the tables
   }
@@ -239,6 +256,23 @@ class Http1 {
   // negotiated type (500).
   Variants ok_prefix_;
   Variants err_prefix_;
+  // #147: identity always carries the resource's own ok_prefix_; these
+  // two exist only for resources where gzip_ok_ is true - a 200 head
+  // ending, respectively, in "Vary: Accept-Encoding\r\n" alone
+  // (identity was chosen, but the resource DOES vary by coding - RFC
+  // 9110 12.5.5) or in "Content-Encoding: gzip\r\nVary: ...\r\n" (gzip
+  // was chosen). Prebuilt at construction like every other head; only
+  // the body bytes and which of these three prefixes get used are
+  // decided per request.
+  Variants ok_prefix_vary_;
+  Variants ok_prefix_gzip_;
+  // #147's setup-time decision, TOR 2: this resource's declared
+  // encodings (Resource::gzip_offered) AND its Content-Type both say
+  // yes (http::compressible_media_type). False for every resource that
+  // never declared encodings_provided, and false whenever it did but
+  // the media type table says no - "eine Ressource, die nicht
+  // komprimiert, kostet keine Verzweigung" beyond this one bool.
+  bool gzip_ok_ = false;
   // One konst vector per method, the method folded in at add_route
   // (B12/B10 never re-compare method strings per request).
   flow::KonstSet konst_;
@@ -249,6 +283,11 @@ class Http1 {
   // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
   size_t warm_budget_ = kWarmBudgetDefault;
   std::string body_;    // the run frame's rendered bytes; capacity survives
+  // #147: the gzip encoding of body_ for the current request, when
+  // gzip_ok_ chose to compress. Capacity survives across requests like
+  // body_ does - a warm connection reusing a resource that compresses
+  // every response allocates nothing after the first one.
+  std::string gz_body_;
   // h2 blocks, parallel to store_ via index_; h2_err_ is 500 in the
   // negotiated type (the exception path). ONE 200 block serves konst
   // and dynamic bodies alike - h2 has no Content-Length to differ in.

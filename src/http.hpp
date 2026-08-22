@@ -75,6 +75,64 @@ inline std::string with_charset(const std::string& type) {
   return type + "; charset=utf-8";
 }
 
+// #147's media-type table: worth compressing a dynamic body of this
+// Content-Type? Decided ONCE per resource at Http1's setup (the "8%
+// rule" - a media type this narrow gate lets through is the minority,
+// so a resource outside it costs no branch at answer time, only this
+// one bool). Structural, not a guess: text/* always compresses;
+// anything ending +json or +xml is a registered structured-syntax
+// suffix (RFC 6839) and inherits its base type's compressibility; a
+// short named list covers the common textual types that are neither -
+// application/json, application/javascript, application/xml,
+// application/wasm (a binary format, but one deflate reliably shrinks:
+// it is mostly small integer opcodes and LEB128, not entropy), and
+// image/svg+xml (XML, mislabeled as an image/ type by history).
+// EVERYTHING ELSE, including anything this table has never heard of,
+// answers false - conservative downward, because a wrong "yes" spends
+// CPU compressing bytes that gain nothing (already-compressed media:
+// image/png, video/*, application/zip, ...) while a wrong "no" only
+// ever costs bytes on the wire, never correctness. Any parameters
+// (";...", most commonly a charset) are ignored - the media type
+// itself answers the question, not what follows the semicolon.
+constexpr size_t clen(const char* s) {
+  size_t n = 0;
+  while (s[n] != '\0') n++;
+  return n;
+}
+constexpr bool compressible_media_type(const char* v, size_t n) {
+  size_t tn = 0;
+  while (tn < n && v[tn] != ';') tn++;
+  if (tn >= 5 && tok_eq(v, 5, "text/", 5)) return true;
+  if (tn >= 5 && tok_eq(v + tn - 5, 5, "+json", 5)) return true;  // RFC 6839
+  if (tn >= 4 && tok_eq(v + tn - 4, 4, "+xml", 4)) return true;   // RFC 6839
+  constexpr const char* kExact[] = {
+      "application/json", "application/javascript", "application/xml",
+      "application/wasm", "image/svg+xml",
+  };
+  for (const char* lit : kExact) {
+    if (tok_eq(v, tn, lit, clen(lit))) return true;
+  }
+  return false;
+}
+inline bool compressible_media_type(const std::string& v) {
+  return compressible_media_type(v.data(), v.size());
+}
+namespace proof {
+constexpr bool ct(const char* s) { return compressible_media_type(s, clen(s)); }
+static_assert(ct("text/html"), "text/* compresses");
+static_assert(ct("text/html; charset=utf-8"), "a parameter does not hide the media type");
+static_assert(ct("application/json"));
+static_assert(ct("application/javascript"));
+static_assert(ct("application/xml"));
+static_assert(ct("application/wasm"));
+static_assert(ct("image/svg+xml"));
+static_assert(ct("application/vnd.api+json"), "RFC 6839 +json suffix");
+static_assert(ct("application/rss+xml"), "RFC 6839 +xml suffix");
+static_assert(!ct("image/png"), "already-compressed media stays no");
+static_assert(!ct("application/octet-stream"), "unknown is conservative no");
+static_assert(!ct(""), "empty is no, not a crash");
+}  // namespace proof
+
 // The status names of RFC 9110 §15.
 constexpr const char* reason(uint16_t status) {
   switch (status) {
