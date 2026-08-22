@@ -195,3 +195,128 @@ harness: h2load -t1 -c1 -D10 reps=5 pin_srv=0 pin_cli=3 app=examples/hello.rb po
   finished in 10.00s, 797267.20 req/s, 53.98MB/s (steal +0 ticks)
   finished in 10.00s, 788793.60 req/s, 53.41MB/s (steal +0 ticks)
   median 791117 req/s (min 788794, max 797267)
+==== 2026-08-20T21:50Z repo=2bfb463 mruby=715993e ====
+harness: h2load -t4 -c400 -D10 reps=1 pin_srv=0 pin_cli=3 app=examples/hello.rb port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 10.06s, 147333.90 req/s, 19.67MB/s (steal +0 ticks)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 10.05s, 133306.90 req/s, 9.04MB/s (steal +0 ticks)
+== h2 -m32 ==
+==== 2026-08-20T21:50Z repo=2bfb463 mruby=715993e ====
+harness: h2load -t1 -c1 -D10 reps=1 pin_srv=0 pin_cli=3 app=examples/hello.rb port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 10.00s, 64834.00 req/s, 8.66MB/s (steal +0 ticks)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 10.00s, 60434.20 req/s, 4.09MB/s (steal +0 ticks)
+== h2 -m32 ==
+  finished in 10.00s, 649491.20 req/s, 43.98MB/s (steal +0 ticks)
+== h2 -m64 ==
+  finished in 10.00s, 769939.20 req/s, 52.13MB/s (steal +0 ticks)
+==== 2026-08-20T21:54Z repo=2bfb463 mruby=715993e ====
+harness: h2load -t4 -c400 -D10 reps=1 pin_srv=0 pin_cli=3 app=examples/hello.rb port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 10.05s, 147142.30 req/s, 19.65MB/s (steal +0 ticks)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 10.06s, 132764.10 req/s, 9.00MB/s (steal +0 ticks)
+== h2 -m32 ==
+  finished in 10.05s, 1103494.40 req/s, 74.73MB/s (steal +0 ticks)
+== h2 -m64 ==
+  finished in 10.06s, 1245440.00 req/s, 84.34MB/s (steal +0 ticks)
+==== 2026-08-20T21:56Z repo=2bfb463 mruby=715993e ====
+harness: h2load -t4 -c400 -D10 reps=1 pin_srv=no pin_cli=no app=examples/hello.rb port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 10.03s, 227039.10 req/s, 30.31MB/s (steal +0 ticks)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 10.03s, 213826.70 req/s, 14.49MB/s (steal +0 ticks)
+== h2 -m32 ==
+  finished in 10.04s, 2284348.80 req/s, 154.69MB/s (steal +0 ticks)
+== h2 -m64 ==
+  finished in 10.04s, 2666816.00 req/s, 180.58MB/s (steal +0 ticks)
+==== 2026-08-20T21:57Z repo=2bfb463 mruby=715993e ====
+harness: vm_floor google-benchmark v1.9.5 7.1.8-1-default x86_64
+BM_vm_entry                     0.070 us        0.070 us     40184708
+BM_copy_floor_small             0.162 us        0.162 us     17192693 bytes_per_second=158.82Mi/s
+BM_copy_floor_browser           0.158 us        0.158 us     17718043 bytes_per_second=2.97101Gi/s
+BM_copy_floor_cached_sym        0.114 us        0.114 us     24481135
+BM_flow_tier0_get                33.4 ns         33.4 ns     83948708
+BM_flow_tier0_304                27.6 ns         27.6 ns    101237216
+BM_flow_tier0_get_compiled       1.45 ns         1.45 ns   1929717560
+BM_flow_tier0_304_compiled       1.66 ns         1.66 ns   1681148773
+BM_runtime_1cb                  0.241 us        0.241 us     11675116
+BM_runtime_4cb                  0.300 us        0.300 us      9418401
+==== 2026-08-20T21:58Z repo=2bfb463 mruby=715993e ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=none WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+     50%  429.00us
+     99%  556.00us
+Requests/sec: 908434.98
+==== 2026-08-21T18:44Z repo=ebc6916 mruby=715993e ====
+harness: wrk -t4 -c400 -d10s PIPELINED depth=64 transport=unix app=examples/hello.rb pin_srv=no 7.1.8-1-default x86_64
+     50%    1.91ms
+     99%    0.00us
+Requests/sec: 10389013.53
+==== 2026-08-21T18:55Z repo=ce1483e mruby=715993e ====
+harness: wrk -t4 -c800 -d10s PIPELINED depth=128 transport=unix app=examples/hello.rb pin_srv=no 7.1.8-1-default x86_64
+  101949568 requests in 10.03s, 13.29GB read
+Requests/sec: 10168498.37
+Transfer/sec:      1.33GB
+  bytes/response: 140.0 (must equal the response size - a batch that lost answers still reports throughput)
+==== 2026-08-21T18:58Z repo=ce1483e mruby=715993e ====
+harness: wrk -t4 -c800 -d10s PIPELINED depth=128 transport=unix app=examples/hello.rb pin_srv=no 7.1.8-1-default x86_64
+  101919488 requests in 10.03s, 13.29GB read
+Requests/sec: 10162874.85
+Transfer/sec:      1.33GB
+  bytes/response: 140.0 (must equal the response size - a batch that lost answers still reports throughput)
+==== 2026-08-22T05:48Z repo=9c43552 mruby=715993e ====
+harness: assets h2load --h1 -m1 -t1 -c1 -D10 reps=5 size=1048576 pin_srv=0 pin_cli=3 port=8123 7.1.8-1-default x86_64
+== spliced (pool derived) ==
+  finished in 10.00s, 582.80 req/s, 583.01MB/s (steal +0 ticks)
+  finished in 10.00s, 591.10 req/s, 591.28MB/s (steal +0 ticks)
+  finished in 10.00s, 586.80 req/s, 586.99MB/s (steal +0 ticks)
+  finished in 10.00s, 580.80 req/s, 581.00MB/s (steal +0 ticks)
+  finished in 10.00s, 553.60 req/s, 553.73MB/s (steal +0 ticks)
+  median 583 req/s (min 554, max 591)
+== iovec baseline (--pipes 0) ==
+  finished in 10.00s, 4398.70 req/s, 4.30GB/s (steal +0 ticks)
+  finished in 10.00s, 4450.90 req/s, 4.35GB/s (steal +0 ticks)
+  finished in 10.00s, 4396.60 req/s, 4.29GB/s (steal +0 ticks)
+  finished in 10.00s, 4394.90 req/s, 4.29GB/s (steal +0 ticks)
+  finished in 10.00s, 4504.20 req/s, 4.40GB/s (steal +0 ticks)
+  median 4399 req/s (min 4395, max 4504)
+==== 2026-08-22T05:52Z repo=9c43552 mruby=715993e ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=5 size=1048576 pin_srv=0 pin_cli=3 port=8123 7.1.8-1-default x86_64
+== spliced (pool derived) ==
+  finished in 10.05s, 4704.10 req/s, 4.62GB/s (steal +0 ticks)
+  finished in 10.03s, 4987.00 req/s, 4.89GB/s (steal +0 ticks)
+  finished in 10.05s, 4373.10 req/s, 4.30GB/s (steal +0 ticks)
+  finished in 10.05s, 4492.90 req/s, 4.41GB/s (steal +0 ticks)
+  finished in 10.04s, 4401.40 req/s, 4.32GB/s (steal +0 ticks)
+  median 4493 req/s (min 4373, max 4987)
+== iovec baseline (--pipes 0) ==
+  finished in 10.04s, 4440.00 req/s, 4.35GB/s (steal +0 ticks)
+  finished in 10.04s, 4478.00 req/s, 4.38GB/s (steal +0 ticks)
+  finished in 10.04s, 4530.00 req/s, 4.44GB/s (steal +0 ticks)
+  finished in 10.04s, 4400.00 req/s, 4.31GB/s (steal +0 ticks)
+  finished in 10.04s, 4559.90 req/s, 4.47GB/s (steal +0 ticks)
+  median 4478 req/s (min 4400, max 4560)
+==== 2026-08-22T09:59Z repo=55eb897 mruby=715993e ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size        spliced     iovec(-p0)    ratio
+      4096         208441         208340    1.00x
+     32768          29543         134074    0.22x
+    262144          48873          18310    2.67x
+   1048576          17953           3661    4.90x
+steal +0 ticks over the whole sweep
+==== 2026-08-22T10:38Z repo=3abd01a mruby=715993e ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size        spliced     iovec(-p0)    ratio
+      4096         207825         209643    0.99x
+     32768         150596         149618    1.01x
+    262144          14606          23355    0.63x
+   1048576           3959           5037    0.79x
+steal +0 ticks over the whole sweep
+==== 2026-08-22T15:01Z repo=be16355 mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=none WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+    Req/Sec   234.30k     2.59k  240.01k    71.50%
+     50%  422.00us
+     99%  512.00us
+Requests/sec: 928489.63

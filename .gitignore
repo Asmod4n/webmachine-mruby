@@ -25,3 +25,4 @@ bench/idle_load
 /deps/*
 !/deps/ls-hpack
 !/deps/zlib-ng
+build_config.rb.lock
