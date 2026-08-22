@@ -67,7 +67,7 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
-      assert_true head.match?(%r{^Content-Type: text/html\r$}i)
+      assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i)
       assert_equal '<html><body>Hello, World!</body></html>', body
       # HEAD: the same head, Content-Length announced, no body bytes -
       # the pipelined GET's response must begin immediately after.
@@ -229,7 +229,7 @@ assert('resource: a raising callback answers 500 in the negotiated type, reason 
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 500')
-      assert_true head.match?(%r{^Content-Type: text/html\r$}i)
+      assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i)
       assert_true body.include?('boom'), body
     end
     UNIXSocket.open(sock) do |s|

@@ -58,6 +58,23 @@ inline flow::Method parse_method(const char* m, size_t n) {
   return flow::Method::kOther;
 }
 
+// text/* with no parameters gets "; charset=utf-8" appended - a
+// statement of fact, not a guess: mruby produces UTF-8 or bytes,
+// nothing else exists in this VM, and a text/plain response without a
+// charset decodes by the BROWSER'S locale default (windows-1252 in
+// Western locales). text/* only: application/json's registration has
+// no charset parameter (RFC 8259, JSON is UTF-8), adding one is noise.
+// A type already carrying parameters is left alone - a resource that
+// spelled its own charset wins. Setup-only; never runs per request.
+// EVERY writer goes through here (#146: this tree once shipped two
+// serializers that drifted): Http1's konst head + h2 blocks, and the
+// asset tier's extension table.
+inline std::string with_charset(const std::string& type) {
+  if (type.size() < 5 || !tok_eq(type.data(), 5, "text/", 5)) return type;
+  if (type.find(';') != std::string::npos) return type;
+  return type + "; charset=utf-8";
+}
+
 // The status names of RFC 9110 §15.
 constexpr const char* reason(uint16_t status) {
   switch (status) {

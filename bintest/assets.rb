@@ -97,7 +97,7 @@ assert('assets: a method-8 entry ships as gzip synthesized from the archive itse
       s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
-      assert_true head.match?(%r{^Content-Type: text/css\r$}i)
+      assert_true head.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
       assert_true head.match?(/^Vary: Accept-Encoding\r$/i)
       etag = format('"%08x"', Zlib.crc32(A_CSS))
@@ -342,7 +342,7 @@ assert('delivery h1: a body past the chunk budget arrives whole, in order') do
       assert_true h1.start_with?('HTTP/1.1 200 OK')
       assert_equal A_BIG.b, b1
       h2, b2 = a_read(s)
-      assert_true h2.match?(%r{^Content-Type: text/css\r$}i)
+      assert_true h2.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
       assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(b2)).read.b
       # HEAD on a big entry: the head announces the full length, no
       # transfer starts, the connection stays immediately usable.
@@ -475,7 +475,7 @@ assert('splice: big bodies over TCP arrive whole, interleaved with small ones, s
         assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(b1)).read.b
         s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
         h2a, b2 = a_read(s)
-        assert_true h2a.match?(%r{^Content-Type: text/css\r$}i)
+        assert_true h2a.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
         h3, b3 = a_read(s)
         assert_equal A_BIG.b, b3
         wire[args.empty? ? :spliced : :iovec] = [b1, b2, b3]

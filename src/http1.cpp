@@ -69,6 +69,11 @@ Http1::Http1(const flow::KonstSet& ks, const Resource* res, bool dynamic_nodes,
   // wire refusals - collected from the table, built ONCE. From here on
   // only the 29 date bytes ever change.
   store_.reserve(32);
+  // One transformation, at the ONE point every writer reads from:
+  // ok_extra, the h2 blocks and the exception head all spell whatever
+  // stands here (#146). The resource's own copy is untouched -
+  // negotiation never string-compares this.
+  konst_.content_type = http::with_charset(konst_.content_type);
   const std::string allow = "Allow: " + konst_.allow + "\r\n";
   // 200 carries the resource's rendered representation (RFC 9110 8.3:
   // a body announces its Content-Type).

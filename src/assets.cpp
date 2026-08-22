@@ -251,7 +251,7 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
 
   // Prebuild what every request would otherwise redo.
   for (AssetEntry& e : entries_) {
-    e.ctype = ctype_of(e.name);
+    e.ctype = http::with_charset(ctype_of(e.name));
     std::string f;
     f.append("Content-Type: ").append(e.ctype).append("\r\n");
     if (e.deflated) {
