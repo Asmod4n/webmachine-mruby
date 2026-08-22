@@ -656,3 +656,129 @@ assert('application: route.add refuses a token that is neither String nor Symbol
   out = ap_refused(ap_one_route('app.add_route [1], R'))
   assert_true out.include?('String (literal)'), out
 end
+
+# SLICE 3 (#116): the loop is a Ruby surface. `main` may serve itself -
+# Webmachine.run blocks like the tool's own loop, Webmachine.tick(3.ms)
+# does ONE bounded step for an embedder that owns its loop, and
+# Webmachine.fd is what such an embedder waits on in between.
+assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
+  sock = "/tmp/wm-ap-tick-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'ticked'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{sock}' }
+        app.add_route [:*], R
+      end
+      # The embedder's own loop: the DURATION crosses the boundary as
+      # mruby-chrono spells it, and nothing else in here knows seconds.
+      Webmachine.tick(3.ms) until Webmachine.stopped?
+    end
+  RUBY
+  app = ap_compile(src)
+  err = "/tmp/wm-ap-tick-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  begin
+    100.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock), (File.read(err) rescue '')
+    s = UNIXSocket.new(sock)
+    s.write("GET /anything HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, body = ap_read(s)
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    assert_equal 'ticked', body
+    s.close
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    app.unlink
+  end
+end
+
+assert('application: Webmachine.fd is pollable - idle costs nothing, a request wakes it') do
+  sock = "/tmp/wm-ap-fd-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'polled'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{sock}' }
+        app.add_route [:*], R
+      end
+      # The shape the fd exists for: wait on the descriptor, and only
+      # then spend a tick. An idle server costs its host nothing.
+      io = IO.new(Webmachine.fd)
+      until Webmachine.stopped?
+        IO.select([io], nil, nil, 0.05)
+        Webmachine.tick(3.ms)
+      end
+    end
+  RUBY
+  app = ap_compile(src)
+  err = "/tmp/wm-ap-fd-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  begin
+    100.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock), (File.read(err) rescue '')
+    s = UNIXSocket.new(sock)
+    s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, body = ap_read(s)
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    assert_equal 'polled', body
+    s.close
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    app.unlink
+  end
+end
+
+assert('application: Webmachine.run inside main serves like the tool loop') do
+  sock = "/tmp/wm-ap-run-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'ran'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.configure { |conf| conf.unix_path = '#{sock}' }
+        app.add_route [:*], R
+      end
+      Webmachine.run
+    end
+  RUBY
+  app = ap_compile(src)
+  err = "/tmp/wm-ap-run-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  begin
+    100.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock), (File.read(err) rescue '')
+    s = UNIXSocket.new(sock)
+    s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, body = ap_read(s)
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    assert_equal 'ran', body
+    s.close
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    app.unlink
+  end
+end

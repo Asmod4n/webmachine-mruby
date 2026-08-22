@@ -60,6 +60,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -390,8 +391,34 @@ class Ring {
   // Loops until the stop_fd CQE lands, then returns so the destructor
   // runs: that is what removes the unix socket path again.
   void run() {
-    while (!stop_) tick();
+    while (!stop_) tick(nullptr);
   }
+
+  // ONE bounded step (#116 slice 3, Gebot 18 as an API): with a budget
+  // the WAIT is at most that long AND the batch is interrupted between
+  // completions once it is spent - what is left stays in the CQ and the
+  // next tick continues it. Without one this is the loop's own step:
+  // block until at least one completion, then drain the batch.
+  // True = work was processed.
+  bool tick(const struct __kernel_timespec* budget) {
+    if (budget == nullptr) return step(nullptr, false);
+    // The deadline is read ONCE here and compared between completions
+    // against the coarse monotonic clock - a vDSO read, no syscall.
+    struct timespec now {};
+    ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+    int64_t deadline = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+    deadline += budget->tv_sec * 1000000000 + budget->tv_nsec;
+    return step(&deadline, true);
+  }
+
+  // The descriptor an embedder polls (#116 slice 3): readable exactly
+  // when this ring has completions to hand over, so an idle server
+  // costs its host nothing. -1 before init.
+  int fd() const { return ring_up_ ? ring_.ring_fd : -1; }
+
+  // Did the stop signal's completion land? The bounded tick's caller
+  // owns its own loop and has to be able to ask.
+  bool stopped() const { return stop_; }
 
   // The derived capacity - what the machine actually allows, the "thing
   // that says what max is". tools/webmachine-tune.sh prints the same
@@ -904,19 +931,50 @@ class Ring {
     }
   }
 
-  void tick() {
+  // deadline: CLOCK_MONOTONIC_COARSE nanoseconds, or null for "no
+  // bound". Everything the two callers share lives here; the ONLY
+  // difference is the wait and where the batch may stop.
+  bool step(const int64_t* deadline, bool bounded) {
     if (replenish_ != 0) {
       io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
       replenish_ = 0;
     }
-    io_uring_submit_and_wait(&ring_, 1);
+    if (bounded) {
+      // The rest of the budget is what the WAIT may take. Already
+      // spent: submit and take whatever is there, waiting for nothing.
+      struct timespec now {};
+      ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+      const int64_t left =
+          *deadline - (static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec);
+      struct io_uring_cqe* first = nullptr;
+      if (left <= 0) {
+        io_uring_submit(&ring_);
+      } else {
+        struct __kernel_timespec ts {left / 1000000000, left % 1000000000};
+        // -ETIME is the budget doing its job, not a failure.
+        io_uring_submit_and_wait_timeout(&ring_, &first, 1, &ts, nullptr);
+      }
+    } else {
+      io_uring_submit_and_wait(&ring_, 1);
+    }
     // Once per wake, never per request; the Ring does not know or care
     // what the App keeps fresh.
     app_.on_tick();
+    bool worked = false;
     struct io_uring_cqe* cqe = nullptr;
     while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
       handle(cqe);
       io_uring_cqe_seen(&ring_, cqe);
+      worked = true;
+      if (bounded) {
+        // Between completions, never inside one: a half-handled CQE
+        // has no resumable state. What is left stays in the CQ - the
+        // advance above only ever released what was HANDLED, so the
+        // next tick reads it as if nothing had happened.
+        struct timespec now {};
+        ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+        if (static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec >= *deadline) break;
+      }
     }
     if (!rearm_.empty()) {
       for (uint32_t idx : rearm_) {
@@ -926,6 +984,7 @@ class Ring {
       }
       rearm_.clear();
     }
+    return worked;
   }
 
   App& app_;

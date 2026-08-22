@@ -1,6 +1,7 @@
 #include "resource.hpp"
 
 #include "application.hpp"
+#include "server.hpp"
 
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -560,6 +561,9 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
   webmachine::application_init(mrb, wm);
+  // The loop itself (#116 slice 3): run / tick / fd, next to the
+  // Application that says WHAT is served.
+  webmachine::server_init(mrb, wm);
 }
 
 void mrb_webmachine_mruby_gem_final(mrb_state*) {}
