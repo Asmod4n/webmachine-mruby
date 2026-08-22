@@ -50,6 +50,31 @@ inline constexpr size_t kMaxHead = 8192;
 // bounds it - 413 past it (RFC 9110 §15.5.14).
 inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
+// #147 Tor 1, revised (Nutzer-Entscheid 2026-08-22): a fixed floor
+// replaces the per-connection TCP_MAXSEG query this tree used to make
+// at accept. The kernel would not give the answer through the ring at
+// all - io_uring_cmd_getsockopt (io_uring/cmd_net.c) hard-refuses
+// every level but SOL_SOCKET, confirmed live - and the only bridge
+// (IORING_OP_FIXED_FD_INSTALL + getsockopt(2) + close(2), see
+// ring.hpp's on_accept history) cost a whole extra ring round-trip of
+// latency on every TCP accept, paid before the connection's first
+// recv. 1280 is the IPv6 minimum MTU (RFC 8200 §5): the floor every
+// path MUST carry, the one a real fleet clamps to in practice (LTE
+// behind a VPN). One segment's payload at the narrowest legal MTU
+// runs ~1208-1240 bytes (1280 minus IP/TCP headers minus 12 bytes of
+// timestamp option), so head+body >= 1280 is safely >= 2 segments on
+// EVERY path - compression there can only ever save a packet. On a
+// wider path the band between 1280 and the real MSS spends a little
+// CPU compressing a response that still fits one segment; that is the
+// CHEAP direction to be wrong in, chosen deliberately.
+//
+// This is NOT a return to kAssumedMss=1460 (commit 7755820, "Measure
+// the MSS, never assume one") - that guess erred the EXPENSIVE way,
+// overestimating the segment and refusing compression that would have
+// saved packets. A floor errs harmlessly (a little wasted CPU, never
+// a missed saving); an assumed ceiling erred the other way. The two
+// are opposites, not a repeat.
+inline constexpr size_t kCompressFloor = 1280;
 // One delivery round's budget (#168, Gebot 18: bounded work per tick):
 // a source hands over at most this much per continuation, so a slow
 // consumer holds one round's worth of pointers, never a whole file.
@@ -108,27 +133,25 @@ class Http1 {
     // range - the SAME machinery walks both.
     size_t xfer_off = 0;
     size_t xfer_end = 0;
-    // TCP_MAXSEG, queried once at accept over the ring (#147) and never
-    // touched again - see ring.hpp's on_accept/on_setup_mss. 0 = not
-    // (yet) known, which reads as "never compress": a unix listener
-    // never queries it at all (no MSS behind a stream socket), and the
-    // brief window between accept and the query's CQE landing degrades
-    // the same way, never the other way - a response built before the
-    // answer arrives must not guess "big enough to compress".
-    uint32_t mss = 0;
-    void reset(uint8_t li) {
+    // Is this connection's transport packetized (TCP), or a unix
+    // stream behind a proxy (#147)? Set once at accept, from the
+    // Ring's own listener table - see ring.hpp's on_accept. Replaces
+    // the per-connection TCP_MAXSEG query this tree used to make
+    // (Nutzer-Entscheid 2026-08-22, #147 Tor 1 revision): a unix
+    // listener's answer is always false, the same as before.
+    bool packetized = false;
+    void reset(uint8_t li, bool pkt) {
       carry.clear();
       body_skip = 0;
       listener = li;
+      packetized = pkt;
       fresh = true;
       h2_free(h2);
       h2 = nullptr;
       xfer = nullptr;
       xfer_off = 0;
       xfer_end = 0;
-      mss = 0;
     }
-    void set_mss(uint32_t m) { mss = m; }
     ~Conn() { h2_free(h2); }
   };
 

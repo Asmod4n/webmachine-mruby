@@ -281,17 +281,19 @@ void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
       !facts.has_accept_encoding || http::gzip_acceptable(vals.accept_encoding,
                                                            vals.accept_encoding_len);
   bool use_gzip = false;
-  // TOR 1: MSS asked at accept (ring.hpp), never guessed. 0 = unknown
-  // or no MSS at all (a unix listener, or the query has not landed
-  // yet) - identity, the same answer a known-small response gets.
-  if (accept_gzip && st.mss != 0) {
+  // TOR 1, revised (Nutzer-Entscheid 2026-08-22): packetized (TCP, not
+  // unix behind a proxy - #147) is the first gate, kCompressFloor the
+  // second, replacing the per-connection MSS query this tree used to
+  // make at accept (see kCompressFloor's comment in http1.hpp for the
+  // full reasoning and the kernel finding that forced the retreat).
+  if (accept_gzip && st.packetized) {
     char cl[40];
     const size_t cl_len = http::spell_content_length(cl, body_.size());
     // The UNCOMPRESSED answer's total size - head (already carrying
-    // Vary) plus Content-Length line plus body - against one segment.
-    // Fits: compression cannot help a response that was always going
-    // out as a single packet, so identity stands (#147 Tor 1).
-    if (prefix_id.bytes.size() + cl_len + body_.size() > st.mss) {
+    // Vary) plus Content-Length line plus body - against the floor.
+    // Below it: identity, compression could not have saved a packet
+    // even on the narrowest legal path (#147 Tor 1).
+    if (prefix_id.bytes.size() + cl_len + body_.size() >= kCompressFloor) {
       use_gzip = gzip::compress(body_, gz_body_);  // false: fall back to identity, never fail
     }
   }

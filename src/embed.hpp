@@ -24,8 +24,14 @@ class Embedded {
  public:
   // The app belongs to the caller: ONE Http1 builds every response
   // once and serves any number of connections, exactly as it does
-  // under the Ring. `listener` is the App's "whose connection is this".
-  explicit Embedded(Http1& app, uint8_t listener = 0) : app_(app) { st_.reset(listener); }
+  // under the Ring. `listener` is the App's "whose connection is
+  // this". `packetized` is the #147 gate a real TCP accept would
+  // supply from the Ring's listener table; an embedder has no socket
+  // at all, so there is no proxy sitting behind it to make the unix
+  // case apply - true is the caller's normal case, but it is theirs to
+  // override.
+  explicit Embedded(Http1& app, uint8_t listener = 0, bool packetized = true)
+      : app_(app) { st_.reset(listener, packetized); }
 
   // Feed wire bytes; whatever the machine answers is APPENDED to out.
   // False = this connection is over once out has been written, which

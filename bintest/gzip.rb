@@ -3,17 +3,17 @@
 # tier bakes its coding into the ZIP at build time and is covered in
 # bintest/assets.rb - nothing here touches it).
 #
-# TOR 1 (MSS, asked not guessed) is the reason every TCP case here
-# sets TCP_MAXSEG on the CLIENT socket BEFORE connect(): loopback's
-# own MSS is close to 64 KiB, so without forcing it down no response
-# in a bintest-sized body would ever cross the "worth compressing"
-# line and the whole path would go untested by construction. Setting
-# TCP_MAXSEG on one side of a TCP handshake clamps the OTHER side's
-# outgoing segment size too - the peer must not send segments bigger
-# than what was advertised - so the low value the client asks for is
-# exactly the value the server's own accept-time query (ring.hpp,
-# IORING_OP_FIXED_FD_INSTALL + getsockopt(2) - SOCKET_URING_OP_
-# GETSOCKOPT cannot do this, see ring.hpp's own comment) reads back.
+# TOR 1 (size) used to be MSS asked at accept over the ring, and every
+# TCP case here forced the loopback MSS down with TCP_MAXSEG on the
+# CLIENT socket before connect() to get a response across that line
+# with a bintest-sized body. That query is gone (Nutzer-Entscheid
+# 2026-08-22, #147 Tor 1 revision): src/http1.hpp's kCompressFloor is
+# now a fixed 1280 bytes of head+body (the IPv6 minimum MTU), so the
+# cases below steer entirely through response SIZE - a body comfortably
+# over the floor (GZ_BODY, 11400 bytes), comfortably under it
+# (GZ_SMALL_RESOURCE, 2 bytes), or, for the boundary case, sized to
+# land exactly on 1280 and 1279 total bytes. No socket option involved
+# anywhere in this file any more.
 
 require 'socket'
 require 'stringio'
@@ -108,15 +108,8 @@ def gz_tcp_server(app_source)
   end
 end
 
-# TCP_MAXSEG set on THIS socket before connect() - see the file
-# comment for why that clamps the server's view of the connection's
-# MSS too. A plain TCPSocket.new cannot be used here: it connects
-# inside its own constructor, which is too late to set the option.
-def gz_low_mss_connect(port, mss)
-  s = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
-  s.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_MAXSEG, [mss].pack('i'))
-  s.connect(Socket.pack_sockaddr_in(port, '127.0.0.1'))
-  s
+def gz_tcp_connect(port)
+  TCPSocket.open('127.0.0.1', port)
 end
 
 GZ_ENC_RESOURCE = <<~RUBY unless defined?(GZ_ENC_RESOURCE)
@@ -151,19 +144,40 @@ RUBY
 
 GZ_BODY = ("Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 200).b unless defined?(GZ_BODY)
 
-# (a) encodings_provided + a gzip-accepting client + TCP_MAXSEG forced
-# low: the answer is gzip, and `gzip -dc` (Zlib::GzipReader here - the
-# same decoder, no reason to shell out) reproduces the body byte for
-# byte. Vary: Accept-Encoding is present.
+# A resource whose body is an exact byte count, sliced off GZ_BODY (the
+# same repetitive, gzip-friendly text every other case here uses) so
+# the boundary test below can steer head+body across kCompressFloor by
+# construction rather than by guessing a request size that happens to
+# land there.
+def gz_sized_resource(n)
+  body = GZ_BODY[0, n]
+  raise "GZ_BODY too short for #{n} bytes" if body.bytesize != n
+  <<~RUBY
+    class GzBoundaryResource < Webmachine::Resource
+      def self.encodings_provided
+        {"identity" => :encode_identity, "gzip" => :encode_gzip}
+      end
+      def to_html
+        #{body.inspect}
+      end
+    end
+  RUBY
+end
+
+# (a) encodings_provided + a gzip-accepting client + a body comfortably
+# over kCompressFloor (GZ_BODY, 11400 bytes): the answer is gzip, and
+# `gzip -dc` (Zlib::GzipReader here - the same decoder, no reason to
+# shell out) reproduces the body byte for byte. Vary: Accept-Encoding
+# is present.
 #
 # NOT asserted here, by name (#147's own report explains why): a
 # DISTINCT ETag per coding and a coding-aware 304. Dynamic resources
 # carry no ETag machinery at all yet - generate_etag stays refused at
 # setup (resource.cpp's kUnhonored) until a later tier lands it, so
 # there is no ETag for this test to compare, distinct or otherwise.
-assert('gzip: encodings_provided + Accept-Encoding: gzip + low MSS compresses, byte-identical') do
+assert('gzip: encodings_provided + Accept-Encoding: gzip + a body over the floor compresses, byte-identical') do
   gz_tcp_server(GZ_ENC_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
       head, body = gz_read(s)
@@ -179,9 +193,9 @@ assert('gzip: encodings_provided + Accept-Encoding: gzip + low MSS compresses, b
   end
 end
 
-# (b) the SAME resource, over a unix socket: unix has no MSS at all
-# (there is no TCP segment), so this tier never compresses there,
-# regardless of body size or Accept-Encoding.
+# (b) the SAME resource, over a unix socket: unix is never packetized
+# on this hop (a proxy sits behind it, #147), so this tier never
+# compresses there, regardless of body size or Accept-Encoding.
 assert('gzip: the same resource over a unix socket never compresses') do
   gz_unix_server(GZ_ENC_RESOURCE) do |s|
     s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
@@ -195,12 +209,13 @@ assert('gzip: the same resource over a unix socket never compresses') do
   end
 end
 
-# (c) a response that already fits in one segment: TOR 1 says identity
-# even though the resource offers gzip and the client accepts it -
-# compression cannot help a single-packet answer.
-assert('gzip: a response under one segment stays identity even with low MSS') do
+# (c) a response well under kCompressFloor (GZ_SMALL_RESOURCE, "hi" -
+# 2 bytes): TOR 1 says identity even though the resource offers gzip
+# and the client accepts it - compression cannot help a response this
+# small on any path.
+assert('gzip: a response under the compress floor stays identity') do
   gz_tcp_server(GZ_SMALL_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
       head, body = gz_read(s)
@@ -215,11 +230,11 @@ assert('gzip: a response under one segment stays identity even with low MSS') do
 end
 
 # (d) a resource that never declared encodings_provided: always
-# identity, no matter how large the body or how low the MSS - and no
-# Vary either (this resource never varies by coding at all).
+# identity, no matter how large the body - and no Vary either (this
+# resource never varies by coding at all).
 assert('gzip: a resource without encodings_provided is always identity') do
   gz_tcp_server(GZ_NOENC_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
       head, body = gz_read(s)
@@ -236,10 +251,10 @@ end
 # Negotiation is shared code (http::gzip_acceptable, pulled out of the
 # asset tier rather than duplicated - #147's own requirement): a
 # client that explicitly refuses gzip (q=0) gets identity even though
-# the response is well over the low MSS.
+# the response is well over the compress floor.
 assert('gzip: Accept-Encoding: gzip;q=0 refuses the coding, identity answers') do
   gz_tcp_server(GZ_ENC_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip;q=0\r\n\r\n")
       head, body = gz_read(s)
@@ -255,9 +270,9 @@ end
 # A missing Accept-Encoding accepts anything (RFC 9110 12.5.3): the
 # default negotiation still lets gzip through once the size gate says
 # yes.
-assert('gzip: a missing Accept-Encoding still compresses past the MSS gate') do
+assert('gzip: a missing Accept-Encoding still compresses past the size gate') do
   gz_tcp_server(GZ_ENC_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = gz_read(s)
@@ -275,7 +290,7 @@ end
 # body bytes.
 assert('gzip: HEAD reports the gzipped Content-Length and no body') do
   gz_tcp_server(GZ_ENC_RESOURCE) do |port|
-    s = gz_low_mss_connect(port, 536)
+    s = gz_tcp_connect(port)
     begin
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
       data = +''.b
@@ -299,4 +314,66 @@ assert('gzip: HEAD reports the gzipped Content-Length and no body') do
       s.close
     end
   end
+end
+
+# The exact edge of kCompressFloor (src/http1.hpp): head+body >= 1280
+# compresses, one byte short does not. The head's own byte count is
+# not hardcoded here - a calibration request measures it against a
+# known body length first, so this test tracks the real wire format
+# instead of a guess at it (and fails loudly, via the digit-count
+# check below, if that format ever changes shape).
+assert('gzip: exactly at the compress floor (1280B) compresses; 1279B does not') do
+  cal_n = 2000  # 4 digits, same band the two computed sizes land in
+  head_bytesize = nil
+  gz_tcp_server(gz_sized_resource(cal_n)) do |port|
+    s = gz_tcp_connect(port)
+    begin
+      # q=0 forces identity so the calibration body is exactly cal_n
+      # bytes on the wire - but the HEAD BYTES themselves are the same
+      # ok_prefix_vary_ head a real gzip-eligible request would also
+      # get (assemble_dynamic always sizes against that prefix,
+      # win or lose), so this measurement is valid for the gating
+      # decision too, not just for a forced-identity response.
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip;q=0\r\n\r\n")
+      head, body = gz_read(s)
+      assert_false head.match?(/^Content-Encoding:/i), head
+      assert_equal cal_n, body.bytesize
+      head_bytesize = head.bytesize
+    ensure
+      s.close
+    end
+  end
+
+  # total = head_bytesize + n holds for any n whose Content-Length
+  # digit count matches cal_n's - true here since both computed sizes
+  # land in the low thousands, same 4 digits as cal_n.
+  n_compress = 1280 - head_bytesize
+  n_identity = 1279 - head_bytesize
+  assert_equal cal_n.to_s.size, n_compress.to_s.size, 'digit count drifted - recheck cal_n'
+  assert_equal cal_n.to_s.size, n_identity.to_s.size, 'digit count drifted - recheck cal_n'
+
+  gz_tcp_server(gz_sized_resource(n_compress)) do |port|
+    s = gz_tcp_connect(port)
+    begin
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
+      head, body = gz_read(s)
+      assert_true head.match?(/^Content-Encoding: gzip\r$/i), head
+      assert_equal GZ_BODY[0, n_compress], Zlib::GzipReader.new(StringIO.new(body)).read
+    ensure
+      s.close
+    end
+  end
+
+  gz_tcp_server(gz_sized_resource(n_identity)) do |port|
+    s = gz_tcp_connect(port)
+    begin
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
+      head, body = gz_read(s)
+      assert_false head.match?(/^Content-Encoding:/i), head
+      assert_equal GZ_BODY[0, n_identity], body
+    ensure
+      s.close
+    end
+  end
+  true
 end
