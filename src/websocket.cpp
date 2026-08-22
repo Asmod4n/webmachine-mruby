@@ -1,119 +1,42 @@
 #include "websocket.hpp"
 
+// Silences OpenSSL 3's deprecation of the one-shot SHA1() - see above.
+#define OPENSSL_SUPPRESS_DEPRECATED 1
+#include <openssl/sha.h>
+#include <simdutf.h>
+
 #include <cstring>
 
 namespace webmachine {
 namespace ws {
 namespace {
 
-// SHA-1 (FIPS 180-4), written here because the handshake needs exactly
-// one hash of exactly one short string, once per connection, and every
-// way of getting it from elsewhere costs a dependency this tree would
-// carry for 60 lines. It is not a security primitive in this position:
-// RFC 6455 4.2.2 uses it as a fixed transform proving the peer read
-// the request, and the spec says so itself.
-struct Sha1 {
-  uint32_t h[5] = {0x67452301u, 0xefcdab89u, 0x98badcfeu, 0x10325476u, 0xc3d2e1f0u};
-  unsigned char buf[64] = {};
-  size_t n = 0;       // bytes in buf
-  uint64_t total = 0;  // bytes hashed
-
-  static uint32_t rol(uint32_t v, int s) { return (v << s) | (v >> (32 - s)); }
-
-  void block(const unsigned char* p) {
-    uint32_t w[80];
-    for (int i = 0; i < 16; i++) {
-      w[i] = (static_cast<uint32_t>(p[i * 4]) << 24) | (static_cast<uint32_t>(p[i * 4 + 1]) << 16) |
-             (static_cast<uint32_t>(p[i * 4 + 2]) << 8) | static_cast<uint32_t>(p[i * 4 + 3]);
-    }
-    for (int i = 16; i < 80; i++) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
-    for (int i = 0; i < 80; i++) {
-      uint32_t f, k;
-      if (i < 20) {
-        f = (b & c) | (~b & d);
-        k = 0x5a827999u;
-      } else if (i < 40) {
-        f = b ^ c ^ d;
-        k = 0x6ed9eba1u;
-      } else if (i < 60) {
-        f = (b & c) | (b & d) | (c & d);
-        k = 0x8f1bbcdcu;
-      } else {
-        f = b ^ c ^ d;
-        k = 0xca62c1d6u;
-      }
-      const uint32_t t = rol(a, 5) + f + e + k + w[i];
-      e = d;
-      d = c;
-      c = rol(b, 30);
-      b = a;
-      a = t;
-    }
-    h[0] += a;
-    h[1] += b;
-    h[2] += c;
-    h[3] += d;
-    h[4] += e;
-  }
-
-  void update(const char* p, size_t len) {
-    total += len;
-    while (len > 0) {
-      const size_t take = 64 - n < len ? 64 - n : len;
-      std::memcpy(buf + n, p, take);
-      n += take;
-      p += take;
-      len -= take;
-      if (n == 64) {
-        block(buf);
-        n = 0;
-      }
-    }
-  }
-
-  void finish(unsigned char out[20]) {
-    const uint64_t bits = total * 8;
-    const unsigned char one = 0x80;
-    update(reinterpret_cast<const char*>(&one), 1);
-    const unsigned char zero = 0;
-    while (n != 56) update(reinterpret_cast<const char*>(&zero), 1);
-    unsigned char len[8];
-    for (int i = 0; i < 8; i++) len[i] = static_cast<unsigned char>(bits >> (56 - i * 8));
-    // update() would count these into `total`; the length block is not
-    // message bytes, so it goes straight into the buffer.
-    std::memcpy(buf + n, len, 8);
-    block(buf);
-    for (int i = 0; i < 5; i++) {
-      out[i * 4] = static_cast<unsigned char>(h[i] >> 24);
-      out[i * 4 + 1] = static_cast<unsigned char>(h[i] >> 16);
-      out[i * 4 + 2] = static_cast<unsigned char>(h[i] >> 8);
-      out[i * 4 + 3] = static_cast<unsigned char>(h[i]);
-    }
-  }
-};
-
-const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-// 20 bytes -> 28 base64 characters, the ONE size this file encodes.
-// A general encoder would be simdutf's job (mruby-string-is-utf8 ships
-// binary_to_base64); this is six lines for a fixed shape.
+// SHA-1 and base64 both come from a library, and NEITHER is written
+// here any more (Nutzer-Entscheid 2026-08-22, on measured experience:
+// a hand-rolled SHA-1 was a bottleneck in an earlier tree). The
+// handshake is the only place this tree hashes anything at all - RFC
+// 6455 4.2.2 uses SHA-1 as a fixed transform proving the peer read the
+// request, not as a security primitive, and says so itself.
+//
+// <openssl/sha.h>, deliberately, and it is not a TLS dependency
+// sneaking back in: it is ONE function out of libcrypto, which is on
+// every server distribution (the standing rule: a stable ABI that is
+// everywhere gets used, not carried), and aws-lc - the crypto library
+// this stack will bring along when TLS returns through mruby-ktls/s2n
+// - answers the SAME API. So the day libcrypto here IS aws-lc, not a
+// line below changes.
+//
+// SHA1() is a low-level call OpenSSL 3 marks deprecated in favour of
+// EVP. Named here rather than obeyed: EVP would allocate a context per
+// handshake to hash sixty bytes, and aws-lc does not deprecate it at
+// all.
+// 20 bytes -> 28 base64 characters, through simdutf (the same library
+// that validates text frames, arriving through the user's own
+// mruby-string-is-utf8). Writing this by hand was six lines and it is
+// still gone: one base64 in the process, and it is the one that has
+// been fuzzed by somebody else.
 void b64_20(const unsigned char in[20], char out[28]) {
-  size_t o = 0;
-  for (size_t i = 0; i < 18; i += 3) {
-    const uint32_t v = (static_cast<uint32_t>(in[i]) << 16) |
-                       (static_cast<uint32_t>(in[i + 1]) << 8) | in[i + 2];
-    out[o++] = kB64[(v >> 18) & 63];
-    out[o++] = kB64[(v >> 12) & 63];
-    out[o++] = kB64[(v >> 6) & 63];
-    out[o++] = kB64[v & 63];
-  }
-  // The last two bytes: 16 bits -> three characters and one pad.
-  const uint32_t v = (static_cast<uint32_t>(in[18]) << 16) | (static_cast<uint32_t>(in[19]) << 8);
-  out[o++] = kB64[(v >> 18) & 63];
-  out[o++] = kB64[(v >> 12) & 63];
-  out[o++] = kB64[(v >> 6) & 63];
-  out[o] = '=';
+  simdutf::binary_to_base64(reinterpret_cast<const char*>(in), 20, out);
 }
 
 bool b64_char(char c) {
@@ -132,11 +55,12 @@ bool accept_key(const char* key, size_t key_len, char out[28]) {
   for (size_t i = 0; i < 24; i++) {
     if (!b64_char(key[i])) return false;
   }
-  Sha1 s;
-  s.update(key, 24);
-  s.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11", 36);  // 4.2.2, the fixed GUID
+  // 4.2.2: the key, then the fixed GUID - sixty bytes, one block.
+  unsigned char in[24 + 36];
+  std::memcpy(in, key, 24);
+  std::memcpy(in + 24, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", 36);
   unsigned char digest[20];
-  s.finish(digest);
+  SHA1(in, sizeof(in), digest);
   b64_20(digest, out);
   return true;
 }

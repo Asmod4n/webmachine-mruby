@@ -147,6 +147,32 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   end
   spec.linker.libraries << 'z'
 
+  # libcrypto, for ONE function: SHA1(), the fixed transform RFC 6455
+  # 4.2.2 puts in the websocket handshake (#175). Same standing rule as
+  # zlib above - a stable ABI that every server distribution already
+  # carries is used, not reimplemented - and the same measured reason
+  # the base64 next to it comes from simdutf: this tree had a
+  # hand-rolled SHA-1 once and it was a bottleneck.
+  #
+  # It is not TLS creeping back in. Nothing here opens a context, and
+  # aws-lc - the crypto library this stack brings when TLS returns
+  # through mruby-ktls/s2n - answers the same OpenSSL API, so that day
+  # is a link-line change and nothing else.
+  unless spec.cc.search_header('openssl/sha.h')
+    abort <<~MSG
+      webmachine-mruby: OpenSSL headers not found.
+
+      The websocket handshake (#175) needs SHA1() out of libcrypto -
+      one function, no TLS. The library is on every server
+      distribution; only its headers are a separate package:
+
+        Debian/Ubuntu   apt install libssl-dev
+        RHEL/Fedora     dnf install openssl-devel
+        Alpine          apk add openssl-dev
+    MSG
+  end
+  spec.linker.libraries << 'crypto'
+
   # test/flow_vectors.cpp drives src/flow_walk.hpp from outside the
   # product, the way a caller does. src/ is on the path for the gem's
   # own sources by convention, not for test/ - so say it.
