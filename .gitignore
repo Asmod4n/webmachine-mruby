@@ -27,3 +27,4 @@ bench/idle_load
 !/deps/zlib-ng
 build_config.rb.lock
 bench/vm/*.mrb
+build/fuzz/
