@@ -55,12 +55,6 @@
 namespace webmachine {
 namespace {
 
-uint16_t rd16(const unsigned char* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
-uint32_t rd32(const unsigned char* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-
 // Content-Type from the extension, decided at setup. Unknown speaks
 // octet-stream (RFC 9110 §8.3: no type claim is worse than a generic
 // one only when it lies; octet-stream never does).
@@ -129,9 +123,9 @@ void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
 }
 
 void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::string& fields) {
-  build_head(v[Assets::kPlain], status_line, "", fields);
-  build_head(v[Assets::kKeep], status_line, "Connection: keep-alive\r\n", fields);
-  build_head(v[Assets::kClose], status_line, "Connection: close\r\n", fields);
+  build_head(v[Assets::kPlain], status_line, Assets::kConn[Assets::kPlain], fields);
+  build_head(v[Assets::kKeep], status_line, Assets::kConn[Assets::kKeep], fields);
+  build_head(v[Assets::kClose], status_line, Assets::kConn[Assets::kClose], fields);
 }
 
 }  // namespace
@@ -229,12 +223,12 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
     // where they are, and the result is bounds-checked against the
     // mapping like everything that indexes into it.
     const size_t lho = static_cast<size_t>(st.m_local_header_ofs);
-    if (lho + 30 > map_len_ || rd32(base + lho) != 0x04034b50) {
+    if (lho + 30 > map_len_ || MZ_READ_LE32(base + lho) != 0x04034b50) {
       std::snprintf(err, errlen, "%s: %s has a broken local header", zip_path,
                     st.m_filename);
       return false;
     }
-    const size_t data_off = lho + 30 + rd16(base + lho + 26) + rd16(base + lho + 28);
+    const size_t data_off = lho + 30 + MZ_READ_LE16(base + lho + 26) + MZ_READ_LE16(base + lho + 28);
     const size_t comp = static_cast<size_t>(st.m_comp_size);
     if (data_off + comp > map_len_) {
       std::snprintf(err, errlen, "%s: %s data overruns the file", zip_path, st.m_filename);
@@ -393,23 +387,13 @@ void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* 
 
 namespace {
 
-// The connection spelling for a per-request head (no placeholder, the
-// date goes in directly - nothing patches these later).
-const char* conn_of(Assets::Variant v) {
-  switch (v) {
-    case Assets::kKeep: return "Connection: keep-alive\r\n";
-    case Assets::kClose: return "Connection: close\r\n";
-    default: return "";
-  }
-}
-
 }  // namespace
 
 void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
                              const char* date, std::string& sink) {
   sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
   sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(conn_of(v));
+  sink.append("\r\n").append(kConn[v]);
   sink.append("Content-Type: ").append(e.ctype).append("\r\n");
   if (e.deflated) {
     sink.append("Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
@@ -428,7 +412,7 @@ void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
                              std::string& sink) {
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
   sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(conn_of(v));
+  sink.append("\r\n").append(kConn[v]);
   if (e.deflated) sink.append("Vary: Accept-Encoding\r\n");
   // 15.5.17: the unsatisfied-range form names the complete length.
   sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e)));

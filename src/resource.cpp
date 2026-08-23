@@ -568,6 +568,12 @@ extern "C" {
 
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
+  // The refusals' classes FIRST - everything below can raise, and
+  // error.hpp's head says why they exist at all.
+  struct RClass* err =
+      mrb_define_class_under_id(mrb, wm, MRB_SYM(Error), mrb->eStandardError_class);
+  mrb_define_class_under_id(mrb, wm, MRB_SYM(ConfigError), err);
+  mrb_define_class_under_id(mrb, wm, MRB_SYM(RouteError), err);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
   // The websocket's own base class (#175), BEFORE the request object:
   // a websocket resource reads the handshake's head through the same

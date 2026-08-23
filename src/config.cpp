@@ -23,17 +23,22 @@ namespace {
 
 // Any raise on the way is the refusal's text: the parser's own words
 // name the line and the reason better than a paraphrase would.
+//
+// Read STRAIGHT from the field, never through a funcall: with an
+// exception pending the VM is not in a state to run Ruby, and calling
+// #message there is asking for a second failure on top of the first.
+// mruby/error.h says what the field is ("RException.mesg is NULL or
+// probably RString"); resource_exception_begin reads it the same way.
 bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   if (mrb->exc == nullptr) return false;
-  const mrb_value exc = mrb_obj_value(mrb->exc);
+  struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
   mrb->exc = nullptr;
-  const mrb_value msg = mrb_funcall_argv(mrb, exc, MRB_SYM(message), 0, nullptr);
-  if (mrb->exc == nullptr && mrb_string_p(msg)) {
+  if (e->mesg != nullptr && e->mesg->tt == MRB_TT_STRING) {
+    const mrb_value msg = mrb_obj_value(e->mesg);
     std::snprintf(err, errlen, "%s: %.*s", path, static_cast<int>(RSTRING_LEN(msg)),
                   RSTRING_PTR(msg));
   } else {
-    mrb->exc = nullptr;
-    std::snprintf(err, errlen, "%s: unreadable (exception while reading it)", path);
+    std::snprintf(err, errlen, "%s: refused, and the reason carries no message", path);
   }
   return true;
 }

@@ -351,35 +351,6 @@ assert('application: add_route on the app itself is route.add (webmachine-ruby s
   end
 end
 
-assert('application: conf.adapter is accepted and ignored - a webmachine-ruby file runs') do
-  src = <<~RUBY
-    class R < Webmachine::Resource
-      def self.to_html
-        'adapted'
-      end
-    end
-
-    def main
-      Webmachine::Application.new do |app|
-        app.configure do |conf|
-          conf.port = 8080
-          conf.adapter = :Webrick
-        end
-        app.routes do |route|
-          route.add [:*], R
-        end
-      end
-    end
-  RUBY
-  ap_server(src) do |sock|
-    UNIXSocket.open(sock) do |s|
-      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = ap_read(s)
-      assert_equal 'adapted', body
-    end
-  end
-end
-
 assert('application: conf.url names the listener when nothing overrides it') do
   # No --unix, no --port: the app's own conf.url is the listener. The
   # port is high and picked here, not by the OS - conf.port = 0 refuses
@@ -487,17 +458,33 @@ assert('application: conf.port = 0 is legal - the OS picks at bind time') do
   end
 end
 
-assert('application: the ssl/certificate names refuse by name - no TLS in this tree') do
+assert('application: conf.adapter does not exist - a swallowed setting is a lie') do
+  # This used to be the opposite test: adapter= was accepted and thrown
+  # away so a webmachine-ruby file "ran unchanged". It ran while doing
+  # nothing, which is the silent fallback this tree forbids everywhere
+  # else, so the setter is gone and Ruby says the true thing.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.conf.port = 8080
+    app.conf.adapter = :Webrick
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('adapter='), out
+  assert_true out.include?('NoMethodError'), out
+end
+
+assert('application: the ssl/certificate names do not exist at all') do
+  # They were reserved for a TLS this tree does not have - code on
+  # stock, with no second user. When TLS returns (#110/#112/#157) it
+  # brings its own setters; until then NoMethodError is the truth, and
+  # an https URL still refuses with the reason (next assert).
   %w[ssl ssl_options certificate certificate_key].each do |name|
     out = ap_refused(ap_one_route(<<~BODY))
-      app.configure do |conf|
-        conf.port = 8080
-        conf.#{name} = 'whatever'
-      end
+      app.conf.port = 8080
+      app.conf.#{name} = 'whatever'
       app.add_route [:*], R
     BODY
-    assert_true out.include?('no TLS in this tree'), "#{name}: #{out}"
-    assert_true out.include?('#110'), "#{name}: #{out}"
+    assert_true out.include?("#{name}="), "#{name}: #{out}"
+    assert_true out.include?('NoMethodError'), "#{name}: #{out}"
   end
 end
 
@@ -511,12 +498,16 @@ assert('application: an https url refuses with the same TLS reason') do
   assert_true out.include?('no TLS in this tree'), out
 end
 
-assert('application: sse and assets are reserved and refuse by name') do
-  sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
-  assert_true sse.include?('#102'), sse
+assert('application: route.assets points at the real thing, route.sse does not exist') do
+  # The difference is whether the feature EXISTS. Assets do - they are
+  # configured with --assets/[server].assets - so route.assets is a
+  # signpost, and a signpost is worth a method. SSE does not exist here
+  # at all (#102), so the name is not reserved for it: NoMethodError.
   assets = ap_refused(ap_one_route("app.routes { |route| route.assets '/static' }"))
   assert_true assets.include?('#170'), assets
   assert_true assets.include?('--assets'), assets
+  sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
+  assert_true sse.include?('NoMethodError'), sse
 end
 
 assert('application: two applications on the same listener refuse by name') do
@@ -1024,5 +1015,66 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
     app.unlink
     File.unlink(out) rescue nil
     File.unlink(err) rescue nil
+  end
+end
+
+assert('application: app.conf is ONE object, not a fresh one per read') do
+  # It is a view of the application's own spec; a view has no reason to
+  # be manufactured per access, and a reader that hands out a new
+  # object every time is not a reader.
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'x'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.port = 8080
+        app.add_route [:*], R
+        app.ready do
+          puts "same=\#{app.conf.equal?(app.conf)}"
+        end
+      end
+    end
+  RUBY
+  ap_server(src) do |_sock, out|
+    assert_true File.read(out).include?('same=true'), File.read(out)
+  end
+end
+
+assert('application: a refusal is catchable BY CLASS, not by luck') do
+  # Until #183 every refusal was a RuntimeError - indistinguishable
+  # from any RuntimeError an app raises itself. Now the class says who
+  # refused and about what.
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'x'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.port = 8080
+        begin
+          app.conf.port = 99999
+        rescue Webmachine::ConfigError => e
+          puts "config=\#{e.class}"
+        end
+        begin
+          app.add_route [:*], String
+        rescue Webmachine::RouteError => e
+          puts "route=\#{e.class}"
+        end
+        app.add_route [:*], R
+      end
+    end
+  RUBY
+  ap_server(src) do |_sock, out|
+    text = File.read(out)
+    assert_true text.include?('config=Webmachine::ConfigError'), text
+    assert_true text.include?('route=Webmachine::RouteError'), text
   end
 end

@@ -93,7 +93,16 @@ class Assets {
   // RFC 9112 §9.3 connection spellings, same shape as Http1's
   // Variants: a persistent 1.1 response carries no Connection header,
   // a persistent 1.0 echoes keep-alive, anything closing spells close.
+  // kKeep is 1.0-ONLY and only on request: RFC 9112 9.3 makes 1.1
+  // persistent by default (the header would be noise) and C.2.2 is the
+  // echo rule for 1.0. http1.cpp's picker is where that is decided.
   enum Variant : uint8_t { kPlain = 0, kKeep = 1, kClose = 2 };
+  // The three spellings, ONCE, indexed by the enum that names them -
+  // they used to stand twice in assets.cpp (prebuilt heads and a
+  // switch for per-request heads), which is how two spellings of one
+  // table drift apart (#146 paid for that lesson already).
+  static constexpr const char* kConn[3] = {"", "Connection: keep-alive\r\n",
+                                           "Connection: close\r\n"};
 
   Assets() = default;
   ~Assets();
