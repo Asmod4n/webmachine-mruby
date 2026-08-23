@@ -1,4 +1,4 @@
-# TWO builds, always (user decision):
+# THREE builds:
 #
 #   host   - no name, the SHIP build. No enable_test, no bintest, so
 #            no test-only gem ever rides into its libmruby (the
@@ -9,6 +9,15 @@
 #            MRB_DEBUG, which the coming error log needs for mruby
 #            backtraces, and the tracer after it builds on the same
 #            ground. Test gems (and their demands) live only here.
+#   portable - the same ship binary WITHOUT liburing: <liburing.h>
+#            resolves to slipstreamIO's select(2) implementation, on
+#            any host. It exists because io_uring can be forbidden to
+#            a PROCESS on a machine that has it - Debian/Ubuntu ship
+#            kernel.io_uring_disabled=2 hardening, Docker's default
+#            seccomp profile blocks the syscalls, SELinux/AppArmor
+#            can too - and a binary linked against liburing has
+#            nothing else to fall back on. CORRECT, NOT FAST: it is
+#            the way out, not the way.
 #
 # Shared shape lives in the lambdas; a difference between the two
 # builds should be a DECISION visible in the block below, never an
@@ -84,6 +93,21 @@ end
 
 MRuby::Build.new do |conf|
   conf.toolchain
+  WM_FLAGS.call(conf)
+  WM_GEMS.call(conf)
+end
+
+# The way out. One define is the whole declaration: webmachine's own
+# mrbgem.rake and slipstreamIO's both read it and drop mruby-io-uring
+# from THIS target's gem list - which is the only granularity mruby
+# has (a build's gems belong to its libmruby.a, and every spec.bins
+# entry links that same archive; there is no per-binary gem list).
+# src/server.cpp then takes the SLIPSTREAM_IO branch and says at
+# startup, in as many words, which implementation is serving.
+MRuby::Build.new('portable') do |conf|
+  conf.toolchain
+  conf.cc.defines  << 'SLIPSTREAM_IO_ONLY'
+  conf.cxx.defines << 'SLIPSTREAM_IO_ONLY'
   WM_FLAGS.call(conf)
   WM_GEMS.call(conf)
 end

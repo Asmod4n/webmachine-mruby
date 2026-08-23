@@ -7,6 +7,8 @@
 #   THREADS=4 CONNS=400 bench/floor.sh            # AF_UNIX (default)
 #   THREADS=4 CONNS=400 TRANSPORT=tcp bench/floor.sh
 #   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
+#   IMPL=portable ...  the emergency exit (slipstreamIO, select(2)) -
+#                      what the way out costs, on the same wire
 #   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
@@ -21,7 +23,8 @@ IMPL="${IMPL:-uring}"
 case "$IMPL" in
   uring) BIN=mruby/build/host/bin/webmachine-server ;;
   epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
-  *) echo "IMPL must be uring or epoll" >&2; exit 2 ;;
+  portable) BIN=mruby/build/portable/bin/webmachine-server ;;
+  *) echo "IMPL must be uring, epoll or portable" >&2; exit 2 ;;
 esac
 cd "$(dirname "$0")/.." || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }

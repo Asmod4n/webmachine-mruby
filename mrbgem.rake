@@ -8,17 +8,27 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.bins = ['webmachine-server', 'webmachine-floor-epoll', 'webmachine-logd']
 
 
-  spec.add_dependency 'mruby-io-uring'
+  # SLIPSTREAM_IO_ONLY is the `portable` target's whole declaration
+  # (build_config.rb): no liburing in this binary, on any host. mruby
+  # resolves the gem list per BUILD TARGET, never per spec.bins entry,
+  # so a target is the only place that decision can live - all three
+  # binaries of one build link the same libmruby.a.
+  portable = build.cc.defines.include?('SLIPSTREAM_IO_ONLY')
+
+  spec.add_dependency 'mruby-io-uring' unless portable
   spec.add_dependency 'mruby-slipstreamio'
 
   uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-io-uring/build/lib/liburing.a")
-  if spec.cc.search_header('sys/epoll.h') && !spec.cc.search_header('liburing.h') &&
-     !uring_built
+  if !portable && spec.cc.search_header('sys/epoll.h') &&
+     !spec.cc.search_header('liburing.h') && !uring_built
     abort <<~MSG
       webmachine-mruby: this is a Linux build with no liburing.
 
       liburing could not be built here (see mruby-io-uring's output above;
       it needs kernel headers and a working C compiler).
+
+      A target that WANTS to go without it says so - see the `portable`
+      build in build_config.rb.
     MSG
   end
 

@@ -84,7 +84,13 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
   std::fprintf(stderr,
                "webmachine: ================================================================\n"
                "webmachine: == IO: slipstreamIO - the ring API over select(2)\n"
+#ifdef SLIPSTREAM_IO_ONLY
+               "webmachine: == why: the `portable` target - built without liburing on\n"
+               "webmachine: ==   purpose, so a host that forbids io_uring to this process\n"
+               "webmachine: ==   (kernel.io_uring_disabled, seccomp, an LSM) still serves\n"
+#else
                "webmachine: == why: this build found no liburing to compile against\n"
+#endif
                "webmachine: == cost: CORRECT, NOT FAST. Every operation is readiness plus\n"
                "webmachine: ==   a classic syscall; recv bundles do not exist (one buffer\n"
                "webmachine: ==   per completion)\n");
@@ -95,16 +101,54 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
                static_cast<unsigned long long>(IO_URING_FD_CEILING));
 #endif
   std::fprintf(stderr,
+#ifdef SLIPSTREAM_IO_ONLY
+               "webmachine: == fast: the unnamed build, on a host that allows io_uring\n"
+#else
                "webmachine: == fix: build on Linux >= 6.11 against liburing\n"
+#endif
                "webmachine: ================================================================\n");
   return true;
 #else
   if (!have_uring) {
+    // Say WHICH of the reasons it is, when the machine will tell us.
+    // kernel.io_uring_disabled (Linux >= 6.6, and what a hardened
+    // Debian/Ubuntu ships) is the one an operator can act on: 1 means
+    // only members of kernel.io_uring_group may, 2 means nobody may.
+    // Anything else - an old kernel, seccomp, an LSM - leaves the
+    // file absent or at 0, and then the general sentence is the
+    // honest one.
+    char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
+    char buf[32] = "";
+    const int fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+      const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+      ::close(fd);
+      if (n > 0) {
+        buf[n] = '\0';
+        if (buf[0] == '2') {
+          std::snprintf(why, sizeof(why),
+                        "sysctl kernel.io_uring_disabled=2 - io_uring is off for every "
+                        "process on this machine");
+        } else if (buf[0] == '1') {
+          char grp[32] = "";
+          const int g = ::open("/proc/sys/kernel/io_uring_group", O_RDONLY | O_CLOEXEC);
+          if (g >= 0) {
+            const ssize_t m = ::read(g, grp, sizeof(grp) - 1);
+            ::close(g);
+            if (m > 0) grp[m] = '\0';
+          }
+          std::snprintf(why, sizeof(why),
+                        "sysctl kernel.io_uring_disabled=1 - only members of group %s "
+                        "(kernel.io_uring_group) may, and this process is not one",
+                        grp[0] != '\0' ? grp : "?");
+        }
+      }
+    }
     std::snprintf(err, errlen,
-                  "io_uring is not usable here (URING_AVAILABLE is false: the kernel is too "
-                  "old, or a seccomp profile or sysctl blocks it). This binary was built "
-                  "against liburing and carries no other implementation. Build against "
-                  "slipstreamIO to run anyway");
+                  "io_uring is not usable here: %s. This binary was built against liburing "
+                  "and carries no other implementation - the `portable` target "
+                  "(build_config.rb) is the one that runs anyway, on select(2)",
+                  why);
     return false;
   }
   return true;
