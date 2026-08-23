@@ -126,7 +126,7 @@ for sz in $SIZES; do
 done
 (cd "$WORK" && zip -q -0 -X assets.zip a*.bin && zip -q -9 -X assets.zip t*.txt)
 
-LOG="bench/results/$(hostname).log"
+RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 # utime+stime of a pid, in ticks. Split after the ") " that ends the
@@ -430,6 +430,13 @@ fi
   done
   s1=$(steal_ticks)
   echo "steal +$((s1 - s0)) ticks over the whole sweep"
+  # The rule, self-checked: with the log on, every answered request is
+  # a line - h2load's `done` counts plus the arm proofs' curls. The
+  # exact number varies with the proofs, so the check is "plausibly
+  # complete": the file exists and is within the sweep's request count.
+  if [ "$LOG" = 1 ]; then
+    echo "access log: $(wc -l < "$WORK/access.log" 2>/dev/null || echo 0) lines ($(du -h "$WORK/access.log" 2>/dev/null | cut -f1))"
+  fi
 
   if [ "$SETUP_ENTRIES" -gt 0 ]; then
     # Assets::open, the once-per-process half. One entry against many,
@@ -463,4 +470,4 @@ fi
            "Raise SETUP_ENTRIES until it is not."
     fi
   fi
-} | tee -a "$LOG"
+} | tee -a "$RESULTS"

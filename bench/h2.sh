@@ -92,7 +92,7 @@ grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
 
 
 URL="http://127.0.0.1:$PORT/"
-LOG="bench/results/$(hostname).log"
+RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
@@ -193,4 +193,4 @@ run() {  # run <label> <h2load flags...>
   run "h2 -m1 (expect: within noise of the anchor)" -m1
   run "h2 -m32" -m32
   run "h2 -m64" -m64
-} | tee -a "$LOG"
+} | tee -a "$RESULTS"

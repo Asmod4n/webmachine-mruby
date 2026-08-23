@@ -135,7 +135,7 @@ NGPID=$!
 sleep 0.5
 kill -0 "$NGPID" 2>/dev/null || { echo "nginx died:" >&2; cat "$WORK/error.log" >&2; exit 1; }
 
-LOG="bench/results/$(hostname).log"
+RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 cpu_ticks() {
@@ -357,4 +357,4 @@ fi
   done
   s1=$(steal_ticks)
   echo "steal +$((s1 - s0)) ticks over the whole sweep"
-} | tee -a "$LOG"
+} | tee -a "$RESULTS"
