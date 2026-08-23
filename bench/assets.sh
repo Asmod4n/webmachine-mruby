@@ -162,7 +162,7 @@ if [ -n "$SYSC_PERF" ]; then
   # of head-scratching already.
   SYSC_PROBE=$("$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null)
   if ! echo "$SYSC_PROBE" | grep -q '^[0-9]'; then
-    echo "rq/sc: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
+    echo "req/syscall: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
     echo "$SYSC_PROBE" | head -4 | sed 's/^/    /' >&2
     echo "  Usual causes: kernel.perf_event_paranoid > -1 without CAP_PERFMON, or" >&2
     echo "  /sys/kernel/tracing unreadable (sudo chmod -R o+rX /sys/kernel/tracing helps; 700 root-only is the distro default)." >&2
@@ -399,9 +399,9 @@ fi
   # cpu% = server CPU over the run, percent of ONE core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx
   # sweep: req/s per core is req/s * 100 / cpu%.
-  # rq/sc = completed requests per SERVER syscall over the run - the
+  # req/syscall = completed requests per SERVER syscall over the run - the
   # batching the ring buys, as a number. '-' = no perf to count with.
-  printf '%10s %8s %14s %12s %12s %8s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "rq/sc"
+  printf '%10s %8s %14s %12s %12s %8s %12s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "req/syscall"
   # A FRESH PORT PER SIZE. stop_srv reaps the process, but the listening
   # socket is not guaranteed gone by the time the next one binds, and
   # the server refuses a taken port by name (it does not fall back to
@@ -414,7 +414,7 @@ fi
       read -r rps mbs scpu rsc <<< "$(measure "$arm" "$sz")"
       stop_srv
       port=$((port + 1))
-      printf '%10s %8s %14s %12s %12s %8s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
+      printf '%10s %8s %14s %12s %12s %8s %12s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
     done
   done
   s1=$(steal_ticks)

@@ -180,7 +180,7 @@ if [ -n "$SYSC_PERF" ]; then
   # of head-scratching already.
   SYSC_PROBE=$("$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null)
   if ! echo "$SYSC_PROBE" | grep -q '^[0-9]'; then
-    echo "rq/sc: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
+    echo "req/syscall: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
     echo "$SYSC_PROBE" | head -4 | sed 's/^/    /' >&2
     echo "  Usual causes: kernel.perf_event_paranoid > -1 without CAP_PERFMON, or" >&2
     echo "  /sys/kernel/tracing unreadable (sudo chmod -R o+rX /sys/kernel/tracing helps; 700 root-only is the distro default)." >&2
@@ -340,12 +340,12 @@ fi
   # cpu% = server CPU over the run, in percent of ONE core - the
   # column that lets a workers=16 row sit honestly next to a
   # one-thread row: req/s per core is req/s * 100 / cpu%.
-  printf '%10s %8s %14s %12s %12s %8s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "rq/sc"
+  printf '%10s %8s %14s %12s %12s %8s %12s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "req/syscall"
   for sz in $SIZES; do
     for arm in $ARMS; do
       arm_setup "$arm" "$sz"
       read -r rps mbs scpu rsc <<< "$(measure "$arm" "$sz")"
-      printf '%10s %8s %14s %12s %12s %8s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
+      printf '%10s %8s %14s %12s %12s %8s %12s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
     done
   done
   s1=$(steal_ticks)

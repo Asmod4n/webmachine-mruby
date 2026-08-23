@@ -102,7 +102,7 @@ if [ -n "$SYSC_PERF" ]; then
   # of head-scratching already.
   SYSC_PROBE=$("$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null)
   if ! echo "$SYSC_PROBE" | grep -q '^[0-9]'; then
-    echo "rq/sc: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
+    echo "req/syscall: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
     echo "$SYSC_PROBE" | head -4 | sed 's/^/    /' >&2
     echo "  Usual causes: kernel.perf_event_paranoid > -1 without CAP_PERFMON, or" >&2
     echo "  /sys/kernel/tracing unreadable (sudo chmod -R o+rX /sys/kernel/tracing helps; 700 root-only is the distro default)." >&2
@@ -183,7 +183,7 @@ OUT=$(mktemp)
   NSYSC=$(sysc_read)
   NDONE=$(echo "$WRKOUT" | grep -o '[0-9]* requests in' | awk '{print $1}')
   if [ -n "$NSYSC" ] && [ "$NSYSC" -gt 0 ] && [ -n "$NDONE" ]; then
-    awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "rq/sc: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
+    awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "req/syscall: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
   fi
 } | tee "$OUT"
 # A failed run writes nothing: the log holds only numbers that existed.

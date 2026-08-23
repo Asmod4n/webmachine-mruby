@@ -121,7 +121,7 @@ if [ -n "$SYSC_PERF" ]; then
   # of head-scratching already.
   SYSC_PROBE=$("$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null)
   if ! echo "$SYSC_PROBE" | grep -q '^[0-9]'; then
-    echo "rq/sc: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
+    echo "req/syscall: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
     echo "$SYSC_PROBE" | head -4 | sed 's/^/    /' >&2
     echo "  Usual causes: kernel.perf_event_paranoid > -1 without CAP_PERFMON, or" >&2
     echo "  /sys/kernel/tracing unreadable (sudo chmod -R o+rX /sys/kernel/tracing helps; 700 root-only is the distro default)." >&2
@@ -167,7 +167,7 @@ run() {  # run <label> <h2load flags...>
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
     rps=$(echo "$line" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
-    echo "  $line (steal +$((s1 - s0)) ticks, rq/sc $rsc)"
+    echo "  $line (steal +$((s1 - s0)) ticks, req/syscall $rsc)"
     vals+=("$rps")
   done
   if [ "$REPS" -gt 1 ]; then
