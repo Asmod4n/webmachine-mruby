@@ -170,10 +170,11 @@ class Http1 {
     // again. Null is the whole cost for every connection that never
     // upgrades.
     WsConn* ws = nullptr;
-    // The peer's printable address, for the access log. The RING
-    // fills it (it owns the socket); empty spells "-". 46 covers
-    // INET6_ADDRSTRLEN.
-    char peer[46];
+    // The peer's RAW sockaddr bytes, for the access log. The RING
+    // fills both (it owns the socket and the storage); the record
+    // ships them raw and webmachine-logd spells the address at the
+    // operator's privacy level. 0 = unknown or unix, spelled "-".
+    const void* peer = nullptr;
     uint8_t peer_len = 0;
     void reset(uint8_t li, bool pkt) {
       peer_len = 0;

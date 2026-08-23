@@ -27,6 +27,8 @@ namespace {
 // because it is a test fixture, not a protocol.
 struct Echo {
   struct Conn {
+    const void* peer = nullptr;   // the Ring fills these when a log is
+    uint8_t peer_len = 0;         // on; echo has no log and no reader
     void reset(uint8_t, bool) {}
   };
   struct Plan {  // echo hands over no segments; the shape is the Ring's
@@ -100,6 +102,7 @@ int main(int argc, char** argv) {
   webmachine::ServerOptions opts;
   const char* cli_unix = nullptr;
   const char* log_path = nullptr;
+  const char* log_privacy = nullptr;
   int cli_port = 0;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
@@ -112,13 +115,15 @@ int main(int argc, char** argv) {
       opts.assets_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
       log_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--log-privacy") == 0 && i + 1 < argc) {
+      log_privacy = argv[++i];
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
-                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE] "
+                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE [--log-privacy full|anon|none]] "
                    "[--pidfile PATH] [--echo]\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
@@ -173,6 +178,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   opts.log_path = log_path;
+  opts.log_privacy = log_privacy;
   opts.have_uring = uring_present(mrb);
 
   if (echo) {

@@ -165,7 +165,8 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
       ::dup2(sp[0], 0);
       ::close(sp[0]);
       ::close(sp[1]);
-      ::execl(logd.c_str(), "webmachine-logd", opts_.log_path, (char*)nullptr);
+      ::execl(logd.c_str(), "webmachine-logd", opts_.log_path,
+              opts_.log_privacy != nullptr ? opts_.log_privacy : "full", (char*)nullptr);
       std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
       ::_exit(127);
     }

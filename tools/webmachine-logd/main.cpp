@@ -11,8 +11,11 @@
 // formatting it took off the serving core measured 71.5ns/line, and
 // batched write(2) moves 3.8M lines/s in the slowest container this
 // tree benches on.
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -91,10 +94,55 @@ static void spell_num(size_t v) {
   while (k != 0) out.push_back(tmp[--k]);
 }
 
+// %h from the record's RAW sockaddr, at the operator's privacy level:
+//   full  the address as-is
+//   anon  IPv4 with the last octet zeroed, IPv6 cut to its /48 - the
+//         common GDPR anonymization the apache/nginx modules apply
+//   none  every host spells "-"
+// The SERVER never sees a spelled address; the raw bytes exist only in
+// transit and, at anon/none, never reach the disk at all.
+enum class Privacy { kFull, kAnon, kNone };
+static Privacy privacy = Privacy::kFull;
+
+static void spell_peer(const char* sa, size_t salen) {
+  if (privacy == Privacy::kNone || salen < 2) { out.push_back('-'); return; }
+  const uint16_t fam = static_cast<uint16_t>(static_cast<unsigned char>(sa[0]) |
+                                             (static_cast<unsigned char>(sa[1]) << 8));
+  char txt[INET6_ADDRSTRLEN] = {};
+  if (fam == AF_INET && salen >= sizeof(struct sockaddr_in)) {
+    struct sockaddr_in v4;
+    std::memcpy(&v4, sa, sizeof v4);
+    if (privacy == Privacy::kAnon) {
+      v4.sin_addr.s_addr &= htonl(0xffffff00u);
+    }
+    inet_ntop(AF_INET, &v4.sin_addr, txt, sizeof txt);
+  } else if (fam == AF_INET6 && salen >= sizeof(struct sockaddr_in6)) {
+    struct sockaddr_in6 v6;
+    std::memcpy(&v6, sa, sizeof v6);
+    if (privacy == Privacy::kAnon) {
+      std::memset(v6.sin6_addr.s6_addr + 6, 0, 10);  // keep the /48
+    }
+    inet_ntop(AF_INET6, &v6.sin6_addr, txt, sizeof txt);
+  } else {
+    out.push_back('-');
+    return;
+  }
+  if (txt[0] == '\0') { out.push_back('-'); return; }
+  out.append(txt);
+}
+
 int main(int argc, char** argv) {
-  if (argc != 2) {
-    std::fprintf(stderr, "usage: webmachine-logd FILE  (records on fd 0)\n");
+  if (argc < 2 || argc > 3) {
+    std::fprintf(stderr, "usage: webmachine-logd FILE [full|anon|none]  (records on fd 0)\n");
     return 2;
+  }
+  if (argc == 3) {
+    if (std::strcmp(argv[2], "anon") == 0) privacy = Privacy::kAnon;
+    else if (std::strcmp(argv[2], "none") == 0) privacy = Privacy::kNone;
+    else if (std::strcmp(argv[2], "full") != 0) {
+      std::fprintf(stderr, "webmachine-logd: privacy '%s'? full, anon or none\n", argv[2]);
+      return 2;
+    }
   }
   log_fd = ::open(argv[1], O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
   if (log_fd < 0) {
@@ -139,7 +187,7 @@ int main(int argc, char** argv) {
       const char* ua = p;
 
       spell_ts(r.sec);
-      if (r.plen != 0) out.append(peer, r.plen); else out.push_back('-');
+      if (r.plen != 0) spell_peer(peer, r.plen); else out.push_back('-');
       out.append(" - - ", 5);
       out.append(ts, 28);
       out.append(" \"", 2);

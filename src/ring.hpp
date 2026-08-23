@@ -265,7 +265,7 @@ namespace detail {
 // against CQEs of the connection that owned it before.
 enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
-  kMeminfo = 8, kLog = 9
+  kMeminfo = 8, kLog = 9, kPeer = 10
 };
 
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
@@ -664,6 +664,14 @@ class Ring {
     static constexpr size_t kRoundFloor = 64u * 1024;
     size_t round_cap = kRoundFloor;
     uint32_t mi[SK_MEMINFO_VARS] = {};
+    // The peer's RAW sockaddr, for the access log alone - fetched at
+    // accept through the ring (SOCKET_URING_OP_GETSOCKNAME, peer form)
+    // and only when a log is on. The server never formats it; the
+    // record ships these bytes and webmachine-logd spells them, at
+    // whatever privacy level the operator chose. Both fields are the
+    // kernel's landing pad and must be stable memory.
+    struct sockaddr_storage peer_ss;
+    int peer_slen = 0;
 
     // Two buffers, not one: `out` is BORROWED by an in-flight send (its
     // pointer is in the SQE), so nothing may append to or clear it until
@@ -935,6 +943,11 @@ class Ring {
     // meminfo lands with this same batch, long before the peer's
     // first request arrives.
     arm_meminfo(idx);
+    // The peer's address for the log, same batch - its cmd completes
+    // inline at submit while the first recv still waits on the wire,
+    // so even the first request's line carries it. Only when someone
+    // is logging: without a log the bytes have no reader.
+    if (log_fd_ >= 0 && !unix_listener_[li]) arm_peer(idx);
     arm_recv(idx);
   }
 
@@ -1092,6 +1105,45 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kMeminfo, c.gen, idx));
   }
 
+  // The peer's address, at accept, through the ring - the cmd has no
+  // liburing helper yet, so the sqe is spelled by hand against
+  // cmd_net.c's contract: addr = the sockaddr buffer, optval (union
+  // addr3) = the length's in/out pointer, optlen = 1 for the PEER
+  // form; ioprio/len/rw_flags must be zero (prep_rw zeroes them).
+  void arm_peer(uint32_t idx) {
+    Conn& c = conns_[idx];
+    c.peer_slen = static_cast<int>(sizeof(c.peer_ss));
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(idx), nullptr, 0, 0);
+    s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
+    s->addr = reinterpret_cast<uint64_t>(&c.peer_ss);
+    s->optval = reinterpret_cast<uint64_t>(&c.peer_slen);
+    s->optlen = 1;  // getPEERname
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kPeer, c.gen, idx));
+  }
+  void on_peer(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (c.gen != gen) return;
+    if (WM_UNLIKELY(cqe->res < 0)) {
+      // %h stays "-" for this connection; say why ONCE, not per accept
+      // (an older kernel without the cmd would otherwise spam).
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        std::fprintf(stderr, "webmachine: peer address unavailable (%s); %%h logs '-'\n",
+                     std::strerror(-cqe->res));
+      }
+      return;
+    }
+    if (c.peer_slen > 0 && static_cast<size_t>(c.peer_slen) <= sizeof(c.peer_ss)) {
+      c.app.peer = &c.peer_ss;
+      c.app.peer_len = static_cast<uint8_t>(
+          c.peer_slen > 255 ? 255 : c.peer_slen);
+    }
+  }
+
   void on_meminfo(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
@@ -1204,6 +1256,7 @@ class Ring {
       case detail::kSend: on_send(idx, gen, cqe); break;
       case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
       case detail::kLog: on_log(cqe); break;
+      case detail::kPeer: on_peer(idx, gen, cqe); break;
       case detail::kClose:
         if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
           // The linked shutdown failed (peer reset first); the close is
