@@ -61,7 +61,7 @@ class Embedded {
   void drain(std::string& out) {
     for (;;) {
       const size_t had = out.size();
-      Http1::Plan plan {};
+      Http1::Plan plan;  // default-init: Plan's array is read only up to nseg
       if (!app_.more(st_, out, plan)) open_ = false;
       if (plan.nseg != 0) {
         // The plan carries the round's wire ORDER, and its sink

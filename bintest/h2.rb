@@ -628,19 +628,21 @@ assert('h2: two big assets share the rounds and arrive byte-exact (#168)') do
   # a plan assembled wrongly produces a frame header followed by the
   # NEXT frame's payload, which no unit test can see.
   #
-  # Two streams, because the round budget is the ROUND's and not each
-  # stream's: one stream must not be able to take every round until it
-  # is done. Both bodies are checked byte for byte AND the interleave
-  # is asserted - starvation would still deliver correct bytes.
-  a = ((0..250).to_a.pack('C*') * 800)[0, 200_000].b
-  b = ((5..255).to_a.pack('C*') * 800)[0, 200_000].b
+  # Two streams, and bodies LARGER than one round's plan capacity
+  # (~1 MiB, Plan::kSegs), because the fairness under test is the
+  # cursor's: a stream cut off by capacity must yield the next round's
+  # start to its neighbour instead of taking every round until done.
+  # Both bodies are checked byte for byte AND the interleave is
+  # asserted - starvation would still deliver correct bytes.
+  a = ((0..250).to_a.pack('C*') * 6000)[0, 1_500_000].b
+  b = ((5..255).to_a.pack('C*') * 6000)[0, 1_500_000].b
   h2_asset_server(h2_stored_zip([['a.bin', a], ['b.bin', b]])) do |sock|
     UNIXSocket.open(sock) do |s|
       # A big INITIAL_WINDOW_SIZE plus a connection-level credit, so
-      # what bounds a round is OUR budget and not the peer's window -
+      # what bounds a round is plan capacity and not the peer's window -
       # the park path already has its own test.
-      h2_handshake(s, [4, 1 << 20].pack('nN'))
-      s.write(h2_frame(8, 0, 0, [1 << 20].pack('N')))
+      h2_handshake(s, [4, 8 << 20].pack('nN'))
+      s.write(h2_frame(8, 0, 0, [16 << 20].pack('N')))
       s.write(h2_frame(1, 0x5, 1, h2_path_block('/a.bin')))
       s.write(h2_frame(1, 0x5, 3, h2_path_block('/b.bin')))
       got = { 1 => +''.b, 3 => +''.b }

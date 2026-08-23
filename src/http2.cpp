@@ -931,23 +931,24 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   RoundOut out{sink, plan};
   const size_t n_streams = h2.streams.size();
   if (n_streams == 0) return;
-  // kDeliverChunk is the ROUND's budget, not each stream's (Gebot 18).
-  // It used to be spent per stream, so a connection with 32 parked
-  // streams wrote 2 MiB in one go - which is also why the copy this
-  // replaces was worth 15.94% of a profile.
-  size_t round_left = kDeliverChunk;
+  // The round is bounded by plan CAPACITY and the peer's windows -
+  // there is no byte budget on top (see Plan::kSegs: the kernel paces
+  // via the sndbuf, a bound here only multiplied sends; 64 KiB a round
+  // cost -14.5% on forgecore, measured 2026-08-23). The cursor keeps
+  // the cut fair: a stream cut off by capacity yields the next round's
+  // start to its neighbour instead of taking every round until done.
   size_t walked = 0;
   for (; walked < n_streams; walked++) {
-    if (round_left == 0 || !out.room_for_frame()) break;
+    if (!out.room_for_frame()) break;
     H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
-    // A parked SOURCE drains by offset (#168) - budgeted per round,
-    // continued by WINDOW_UPDATE and every drained sink.
+    // A parked SOURCE drains by offset (#168), continued by
+    // WINDOW_UPDATE and every drained sink.
     if (stp.src != nullptr) {
       const int64_t budget =
           h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
       if (budget <= 0) continue;
       const size_t remaining = stp.src_len - stp.src_off;
-      size_t give = remaining < round_left ? remaining : round_left;
+      size_t give = remaining;
       if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
       size_t off = 0;
       while (off < give) {
@@ -962,13 +963,12 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
         out.span(*stp.src, stp.src_off + off, n);
         off += n;
       }
-      // `off`, not `give`: the frame loop can stop early when the plan
+      // `off`, not `give`: the frame loop stops early when the plan
       // fills up, and the windows must be debited by what actually
       // went out or the peer's accounting and ours drift apart.
       h2.send_window -= static_cast<int64_t>(off);
       stp.send_window -= static_cast<int64_t>(off);
       stp.src_off += off;
-      round_left -= off;
       if (stp.src_off == stp.src_len) stp.src = nullptr;
       continue;
     }
@@ -977,9 +977,12 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
         h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
     if (budget <= 0) continue;
     // Dynamic bodies have no durable backing to point into, so these
-    // bytes are copied as they always were - but they are sink bytes,
-    // so a round of them costs ONE segment however many streams sent.
-    size_t give = stp.pending.size() < round_left ? stp.pending.size() : round_left;
+    // bytes are copied as they always were - and for exactly that
+    // reason they keep a per-stream cap (Gebot 18: the copy IS work,
+    // per byte, unlike a pointer): kDeliverChunk each per round, the
+    // pre-plan behaviour. They are sink bytes, so a round of them
+    // costs ONE segment however many streams sent.
+    size_t give = stp.pending.size() < kDeliverChunk ? stp.pending.size() : kDeliverChunk;
     if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
     size_t off = 0;
     while (off < give) {
@@ -997,7 +1000,6 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
     h2.send_window -= static_cast<int64_t>(off);
     stp.send_window -= static_cast<int64_t>(off);
     stp.pending.erase(0, off);
-    round_left -= off;
   }
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   // Streams drained in the loop close outside it: close_stream
@@ -1040,12 +1042,13 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.xfer != nullptr) {
     const AssetEntry& e = *st.xfer;
     const size_t lim = st.xfer_end;  // full body or a 206 window alike
-    size_t take = lim - st.xfer_off;
-    if (take > kDeliverChunk) take = kDeliverChunk;
-    // POINTERS, not a copy: the deflate stream stays where it lies in
-    // the mapping and the kernel reads it there on send. h1 has no
-    // framing inside a body, so this plan is pure pointers - at most
-    // three, and never a sink range.
+    // The WHOLE remainder, in one plan. h1 has no framing inside a
+    // body, so this is at most three pointers however large the body -
+    // and pacing is not this layer's job: the kernel keeps what fits
+    // in the sndbuf, the short write says how much, and the Ring
+    // resumes from Conn::sent without asking here again. Chunking this
+    // (64 KiB per round, once) only multiplied sends and CQEs.
+    const size_t take = lim - st.xfer_off;
     struct iovec iv[3];
     const unsigned k = Assets::wire_iov(e, st.xfer_off, take, iv);
     for (unsigned i = 0; i < k; i++) {

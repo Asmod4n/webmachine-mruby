@@ -248,25 +248,41 @@ class Http1 {
     // to, so its address is not knowable while the plan is built; the
     // offset is. The Ring resolves it when it arms the send, by which
     // time the sink is final and nothing more will be appended.
+    //
+    // Seg is bare POD and callers write `Plan p;`, not `Plan p{}`:
+    // only [0, nseg) is ever read, and value-initializing the array
+    // would memset 3 KB on EVERY continuation - more() runs after
+    // every drained send, on hello as much as on a transfer.
     struct Seg {
-      const char* base = nullptr;  // null = a range of the sink
-      size_t off = 0;              // sink offset, when base is null
-      size_t len = 0;
+      const char* base;  // null = a range of the sink
+      size_t off;        // sink offset, when base is null
+      size_t len;
     };
-    // Sized so ONE round can carry four 16 KiB DATA frames - 16384 is
-    // the smallest SETTINGS_MAX_FRAME_SIZE a peer may name (RFC 9113
-    // 6.5.2), so four is the most frames kDeliverChunk can ever cut a
-    // round into. A frame costs at most four segments: its header (a
-    // sink run) plus up to three for the payload, because a deflated
-    // entry's wire body is gzip header + mapping + trailer. Consecutive
-    // sink bytes coalesce into the open run, so anything that is only
-    // sink - a dynamic body, a control frame - costs one segment for
-    // the whole round however many streams contribute.
-    // Per connection this array plus its rebuild twin is 512 bytes;
-    // that is the price of not copying, and it is paid by every
-    // connection including idle ones (h2.hpp's -12%/+58% warning).
-    static constexpr unsigned kSegs = 16;
-    Seg seg[kSegs] = {};
+    // THE ROUND'S ONLY BOUND - there is no byte budget on top. A round
+    // carries as much as there is work and window, and how much of it
+    // the socket takes is not guessed at: the kernel keeps what fits
+    // in the sndbuf and the short write says so, exactly the way
+    // -ENOBUFS speaks for the recv buffer ring. (Asking first was
+    // measured and buried: sndbuf - SIOCOUTQ overclaims by up to 2.4%
+    // on a big buffer and UNDERCLAIMS - negative remainder - on small
+    // ones, because tcp_sendmsg admits by sk_wmem_queued, overshoots
+    // sk_sndbuf by design, and SIOCOUTQ counts payload only. A number
+    // without a stable sign cannot be margined.) The remainder resumes
+    // from Conn::sent without the App being asked again.
+    //
+    // So capacity is what keeps one connection from taxing the rest
+    // (#138), and it is a bound with a reason, not an invented byte
+    // count: a DATA frame costs its header (one sink run) plus at most
+    // three payload segments (a deflated entry's wire body is gzip
+    // header + mapping + trailer; stored is one), and consecutive sink
+    // bytes coalesce into the open run, so anything that is only sink
+    // costs ONE segment for the whole round. 128 segments carry ~62
+    // DATA frames - about 1 MiB at the smallest SETTINGS_MAX_FRAME_SIZE
+    // a peer may name (16384, RFC 9113 6.5.2). h1 has no framing
+    // inside a body, so its transfer is at most three segments however
+    // large the body - capacity never cuts it.
+    static constexpr unsigned kSegs = 128;
+    Seg seg[kSegs];
     unsigned nseg = 0;
     size_t iov_len = 0;  // total across seg
   };

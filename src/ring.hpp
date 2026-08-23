@@ -626,31 +626,39 @@ class Ring {
     std::string out;
     std::string next;
 
-    // The App's PLAN for one round (#168), resolved: pointers into a
-    // mapping or into a table built at add_route, interleaved with
-    // ranges of `out` where the round had to spell bytes itself (h2's
-    // DATA frame headers). One sendmsg puts the whole round on the
-    // wire without a single body byte passing through this process.
-    // They must live until the CQE, which is why they sit here and not
-    // on a stack frame - and why this array is the one per-connection
-    // cost the plan model charges (h2.hpp's -12%/+58% warning).
     // One MORE than the plan can hold: a plan of pure pointers leaves
     // the sink to be sent ahead of it, and that prepend must always
     // have somewhere to go. Truncating instead would drop bytes off
     // the wire silently, which is the one failure this model must not
     // be able to have.
     static constexpr unsigned kIov = App::Plan::kSegs + 1;
-    struct iovec iov[kIov];
     unsigned niov = 0;    // 0 = plain send of `out`
     size_t plan_len = 0;  // total bytes across iov
-    // What the in-flight sendmsg actually points at: iov minus whatever
-    // an earlier partial send already consumed. Separate from iov so
-    // the plan itself stays intact across retries.
-    struct iovec msg_iov[kIov];
     struct msghdr msg {};
 
     // The App's per-connection state; the Ring only resets it.
     typename App::Conn app;
+
+    // The App's PLAN for one round (#168), resolved: pointers into a
+    // mapping or into a table built at add_route, interleaved with
+    // ranges of `out` where the round had to spell bytes itself (h2's
+    // DATA frame headers). One sendmsg puts the whole round on the
+    // wire without a single body byte passing through this process.
+    // They must live until the CQE, which is why they sit here and not
+    // on a stack frame. msg_iov is what the in-flight sendmsg actually
+    // points at - iov minus whatever a partial send consumed - kept
+    // separate so the plan stays intact across retries.
+    //
+    // LAST in the struct, DELIBERATELY, and with no initializer: at
+    // 128 segments these two arrays are 4 KB of a ~4.7 KB Conn, and
+    // conns_ holds max_conns_ of them (derived from RLIMIT_NOFILE -
+    // easily a million). Placed last and never written by the
+    // constructor, their pages stay zero-backed until a connection
+    // actually transfers something; only then does its slot's memory
+    // become real. Putting anything the constructor touches after them
+    // would fault every page of every slot at startup.
+    struct iovec iov[kIov];
+    struct iovec msg_iov[kIov];
   };
 
   // Never returns null: a full SQ is submitted and retried once, and a
@@ -969,7 +977,10 @@ class Ring {
       arm_send(idx);
       return;
     }
-    typename App::Plan req{};
+    // Default-init, NOT value-init: Plan's array is deliberately left
+    // indeterminate (only [0, nseg) is ever read), because this runs
+    // after EVERY drained send - hello pays it as often as a transfer.
+    typename App::Plan req;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     if (req.nseg != 0) {
       // RESOLVE the plan. A sink segment could not carry a pointer

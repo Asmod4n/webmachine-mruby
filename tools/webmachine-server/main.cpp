@@ -31,9 +31,9 @@ struct Echo {
   };
   struct Plan {  // echo hands over no segments; the shape is the Ring's
     struct Seg {
-      const char* base = nullptr;
-      size_t off = 0;
-      size_t len = 0;
+      const char* base;
+      size_t off;
+      size_t len;
     };
     static constexpr unsigned kSegs = 1;
     Seg seg[kSegs] = {};
