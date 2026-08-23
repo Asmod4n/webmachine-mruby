@@ -134,6 +134,20 @@ cpu_ticks() {
     "/proc/$1/stat" 2>/dev/null || echo 0
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+# The client's cpu comes from the shell's CHILD times, credited at
+# reap - reading the client's /proc after `wait` read a reaped pid as
+# 0 ticks, and the client-bound refusal never fired (found when a
+# 1-thread client at 100% produced a row at server cpu 47%). Two
+# rules keep it honest: `times` must run in THIS shell (bash resets
+# the counters inside a command substitution - measured, a reaped 1s
+# child read back as 0.00 through $()), so the snapshot writes a file
+# and only the parse forks; and the grep/ps helpers inside the window
+# add milliseconds against a 10s run.
+snap_times() { times > "$WORK/.times"; }
+parse_child_cpu() {
+  awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
+               printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
+}
 
 start_srv() {  # start_srv <port> [zip]
   local port=$1 zip=${2:-$WORK/assets.zip}
@@ -228,13 +242,15 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     h2load "${H2FLAGS[@]}" -D"$DURATION" -t"$THREADS" -c"$CONNS" "${ARM_HDRS[@]}" "$ARM_URL" \
       >"$WORK/cli.out" 2>&1 &
     cli=$!
-    c0=$(cpu_ticks "$cli")
+    snap_times
+    c0=$(parse_child_cpu)
     # One mid-run sample: a client on a single running thread is
     # measuring itself, whatever -t claimed.
     sleep 1
     threads_running=$(ps -L -p "$cli" -o stat= 2>/dev/null | grep -c '^R' || echo 0)
     wait "$cli" 2>/dev/null
-    c1=$(cpu_ticks "$cli")
+    snap_times
+    c1=$(parse_child_cpu)
     s1=$(cpu_ticks "$SRV")
     rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
     # h2load switches unit on its own (KB/MB/GB per second), so the
@@ -251,15 +267,17 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     # number - it looks like a verdict forever after. The bodyless arms
     # (304, and 206 at small sizes) hit this first: they are where the
     # server has least to do, so they need the most client threads.
-    local cu=$((c1 - c0)) su=$((s1 - s0))
+    local su=$((s1 - s0))
     local scpu=$((su * 100 / HZ / DURATION))
-    if [ "$su" -gt 0 ] && [ "$cu" -ge "$su" ]; then
+    local ccpu
+    ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
+    if [ "$su" -gt 0 ] && [ "$ccpu" -ge "$scpu" ]; then
       # The ARM is refused, the SWEEP continues: killing everything
       # after it once cost the whole large-size half of a run for a
       # marginal 304 arm. The guarantee is unchanged - no client-bound
       # figure is ever written, the row says REFUSED - but the arms
       # that pass still produce their rows.
-      echo "REFUSED on arm $arm, size $sz: the client spent $((cu * 100 / HZ / DURATION))% of a core against the server's $((su * 100 / HZ / DURATION))%, on $threads_running running client threads." >&2
+      echo "REFUSED on arm $arm, size $sz: the client spent ${ccpu}% of a core against the server's ${scpu}%, on $threads_running running client threads." >&2
       echo "  This measures h2load, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
       printf 'REFUSED client-bound'
       return
