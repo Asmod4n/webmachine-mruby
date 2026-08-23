@@ -29,9 +29,15 @@ struct Echo {
   struct Conn {
     void reset(uint8_t, bool) {}
   };
-  struct Plan {  // echo hands over no pointers; the shape is the Ring's
-    struct iovec iov[4] = {};
-    unsigned niov = 0;
+  struct Plan {  // echo hands over no segments; the shape is the Ring's
+    struct Seg {
+      const char* base = nullptr;
+      size_t off = 0;
+      size_t len = 0;
+    };
+    static constexpr unsigned kSegs = 1;
+    Seg seg[kSegs] = {};
+    unsigned nseg = 0;
     size_t iov_len = 0;
   };
   bool feed(Conn&, const char* data, size_t len, std::string& sink) {

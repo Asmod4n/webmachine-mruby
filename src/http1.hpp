@@ -240,19 +240,47 @@ class Http1 {
   // the sink as ONE sendmsg, so nothing is copied in this process.
   // niov == 0 means the round put its bytes in the sink instead.
   struct Plan {
-    struct iovec iov[4] = {};
-    unsigned niov = 0;
-    size_t iov_len = 0;  // total across iov
+    // A segment is either bytes that already exist somewhere stable -
+    // the mapping, the entry table - or a RANGE OF THE SINK. h2 needs
+    // both, ALTERNATING: a 9-byte DATA frame header out of the sink,
+    // that frame's payload straight out of the mapping, again and
+    // again. The sink is a std::string the round is still appending
+    // to, so its address is not knowable while the plan is built; the
+    // offset is. The Ring resolves it when it arms the send, by which
+    // time the sink is final and nothing more will be appended.
+    struct Seg {
+      const char* base = nullptr;  // null = a range of the sink
+      size_t off = 0;              // sink offset, when base is null
+      size_t len = 0;
+    };
+    // Sized so ONE round can carry four 16 KiB DATA frames - 16384 is
+    // the smallest SETTINGS_MAX_FRAME_SIZE a peer may name (RFC 9113
+    // 6.5.2), so four is the most frames kDeliverChunk can ever cut a
+    // round into. A frame costs at most four segments: its header (a
+    // sink run) plus up to three for the payload, because a deflated
+    // entry's wire body is gzip header + mapping + trailer. Consecutive
+    // sink bytes coalesce into the open run, so anything that is only
+    // sink - a dynamic body, a control frame - costs one segment for
+    // the whole round however many streams contribute.
+    // Per connection this array plus its rebuild twin is 512 bytes;
+    // that is the price of not copying, and it is paid by every
+    // connection including idle ones (h2.hpp's -12%/+58% warning).
+    static constexpr unsigned kSegs = 16;
+    Seg seg[kSegs] = {};
+    unsigned nseg = 0;
+    size_t iov_len = 0;  // total across seg
   };
 
   // The delivery model's continuation (#168): the Ring calls this when
   // the connection's sink has fully drained - the one signal BOTH
   // protocols produce (h1 has no window; its only backpressure is the
   // send CQE). h1 hands over the next slice of an active transfer as
-  // POINTERS; h2 re-runs the parked-stream flush (WINDOW_UPDATE
-  // remains its second trigger, and its DATA payload is copied because
-  // it interleaves with other streams). Same contract as feed: false
-  // ends the connection once everything queued has drained.
+  // POINTERS; h2 re-runs the parked-stream flush, which hands over the
+  // same way - its DATA frame headers are sink runs, its payloads are
+  // pointers, alternating (WINDOW_UPDATE remains its second trigger,
+  // and THAT one still copies: it is mid-parse, with other frames
+  // already in the round's sink). Same contract as feed: false ends
+  // the connection once everything queued has drained.
   bool more(Conn& st, std::string& sink, Plan& plan);
 
  private:
@@ -393,7 +421,11 @@ class Http1 {
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
                  uint16_t route, const ReqView* req, std::string& sink);
-  void h2_flush_pending(Conn& st, std::string& sink);
+  // plan == nullptr: every byte lands in the sink, which is what the
+  // WINDOW_UPDATE call site wants (it is mid-parse, the round's sink
+  // already holds other frames). With a plan, asset payload leaves as
+  // POINTERS and only the framing is copied.
+  void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   // The asset tier's h2 half (#170): per-entry never-indexed blocks
   // built at setup (the HPACK spelling lives in http2.cpp), answered
   // with the same window/park discipline h2_answer has - only the body

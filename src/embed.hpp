@@ -63,8 +63,24 @@ class Embedded {
       const size_t had = out.size();
       Http1::Plan plan {};
       if (!app_.more(st_, out, plan)) open_ = false;
-      for (unsigned i = 0; i < plan.niov; i++) {
-        out.append(static_cast<const char*>(plan.iov[i].iov_base), plan.iov[i].iov_len);
+      if (plan.nseg != 0) {
+        // The plan carries the round's wire ORDER, and its sink
+        // segments name bytes more() has already appended - so the
+        // round is laid out again here, from both sources, instead of
+        // pointed-at bytes being tacked on at the end (which would put
+        // an h2 DATA payload after the header of the frame AFTER it).
+        // This model copies by contract (#173: bytes in, bytes out);
+        // the Ring is where pointers stay pointers.
+        const std::string tail = out.substr(had);
+        out.resize(had);
+        for (unsigned i = 0; i < plan.nseg; i++) {
+          const Http1::Plan::Seg& sg = plan.seg[i];
+          if (sg.base != nullptr) {
+            out.append(sg.base, sg.len);
+          } else {
+            out.append(tail.data() + (sg.off - had), sg.len);
+          }
+        }
       }
       if (out.size() == had) return;
     }

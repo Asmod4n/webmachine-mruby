@@ -6,6 +6,7 @@
 
 require 'socket'
 require 'tempfile'
+require 'zlib'
 
 H2_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(H2_BIN)
 H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(H2_PREFACE)
@@ -114,8 +115,8 @@ end
 
 # Preface + empty client SETTINGS; consumes the server SETTINGS and the
 # SETTINGS ACK so the caller reads request frames only.
-def h2_handshake(s)
-  s.write(H2_PREFACE + h2_frame(4, 0, 0))
+def h2_handshake(s, settings = ''.b)
+  s.write(H2_PREFACE + h2_frame(4, 0, 0, settings))
   t, f, st, = h2_next(s)
   raise "expected server SETTINGS, got type #{t}" unless t == 4 && f == 0 && st == 0
   t, f, = h2_next(s)
@@ -571,6 +572,94 @@ assert('h2: a fumbled preface is GOAWAY, a foreign one is h1 400 (9113 3.4)') do
       head << wm_recv(s) until head.include?("\r\n\r\n")
       assert_true head.start_with?('HTTP/1.1 400 Bad Request'), head[0, 40]
       assert_true head.include?('Connection: close')
+    end
+  end
+end
+
+# A STORED-only ZIP, spelled here so this file owes bintest/assets.rb
+# nothing (load order between bintest files is not a contract). Method
+# 0 needs no zlib: the entry data IS the wire body.
+def h2_stored_zip(entries)
+  out = +''.b
+  cd = +''.b
+  dtime = (12 << 11) | (4 << 5) | 3
+  ddate = ((2025 - 1980) << 9) | (3 << 5) | 1
+  entries.each do |name, data|
+    crc = Zlib.crc32(data)
+    lho = out.bytesize
+    out << [0x04034b50, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
+            name.bytesize, 0].pack('VvvvvvVVVvv') << name.b << data.b
+    cd << [0x02014b50, 20, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
+           name.bytesize, 0, 0, 0, 0, 0, lho].pack('VvvvvvvVVVvvvvvVV') << name.b
+  end
+  cd_off = out.bytesize
+  out << cd
+  out << [0x06054b50, 0, 0, entries.size, entries.size, cd.bytesize, cd_off, 0].pack('VvvvvVVv')
+  out
+end
+
+def h2_asset_server(zip_bytes)
+  zf = Tempfile.new(['wm-h2assets', '.zip'])
+  zf.binmode
+  zf.write(zip_bytes)
+  zf.close
+  sock = "/tmp/wm-h2a-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-h2a-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, '--unix', sock, '--assets', zf.path,
+              out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "h2 asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    yield sock
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    zf.unlink
+  end
+end
+
+assert('h2: two big assets share the rounds and arrive byte-exact (#168)') do
+  # A body larger than kDeliverChunk leaves in MANY rounds, and each
+  # round is a plan: DATA frame headers are ranges of the sink, the
+  # payloads are pointers into the mapping, alternating. This is the
+  # test that the alternation lands in the right ORDER on the wire -
+  # a plan assembled wrongly produces a frame header followed by the
+  # NEXT frame's payload, which no unit test can see.
+  #
+  # Two streams, because the round budget is the ROUND's and not each
+  # stream's: one stream must not be able to take every round until it
+  # is done. Both bodies are checked byte for byte AND the interleave
+  # is asserted - starvation would still deliver correct bytes.
+  a = ((0..250).to_a.pack('C*') * 800)[0, 200_000].b
+  b = ((5..255).to_a.pack('C*') * 800)[0, 200_000].b
+  h2_asset_server(h2_stored_zip([['a.bin', a], ['b.bin', b]])) do |sock|
+    UNIXSocket.open(sock) do |s|
+      # A big INITIAL_WINDOW_SIZE plus a connection-level credit, so
+      # what bounds a round is OUR budget and not the peer's window -
+      # the park path already has its own test.
+      h2_handshake(s, [4, 1 << 20].pack('nN'))
+      s.write(h2_frame(8, 0, 0, [1 << 20].pack('N')))
+      s.write(h2_frame(1, 0x5, 1, h2_path_block('/a.bin')))
+      s.write(h2_frame(1, 0x5, 3, h2_path_block('/b.bin')))
+      got = { 1 => +''.b, 3 => +''.b }
+      done = {}
+      order = []
+      until done[1] && done[3]
+        type, flags, stream, payload = h2_next(s)
+        next unless type == 0  # DATA; HEADERS and control frames are other tests
+        got[stream] << payload
+        order << stream
+        done[stream] = true if (flags & 1) == 1
+      end
+      assert_equal a, got[1]
+      assert_equal b, got[3]
+      # Interleaved: stream 3 got bytes before stream 1 was finished.
+      first_3 = order.index(3)
+      last_1 = order.rindex(1)
+      assert_true !first_3.nil? && first_3 < last_1,
+                  "one stream took every round: #{order.chunk { |x| x }.map(&:first).inspect}"
     end
   end
 end

@@ -198,6 +198,13 @@ struct H2State {
   // two earn different errors. Keeping the number instead of the dead
   // streams is what makes that free.
   uint32_t highest_opened = 0;
+  // Where the next drain round starts walking the stream table. The
+  // round is bounded (it stops when the plan is full), so without a
+  // moving start the first parked stream would take every round until
+  // it finished and the last one would wait out all the others. A
+  // hint, not an index: close_stream reorders the table under it, and
+  // a stale value only costs a different starting point.
+  size_t flush_cursor = 0;
   bool goaway_sent = false;
   bool goaway_recv = false;  // the peer is done; finish and close
 

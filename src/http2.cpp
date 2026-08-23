@@ -870,33 +870,105 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   return true;
 }
 
-void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
+// One round's output, as segments (#168's successor). Sink bytes
+// coalesce into the OPEN sink run - so a whole round of framing costs
+// one segment, however many streams contributed to it - while asset
+// payload becomes pointers into the mapping and is never touched by
+// this process. Without a plan every byte lands in the sink, which is
+// exactly what this file did before, and what the WINDOW_UPDATE call
+// site still needs.
+namespace {
+struct RoundOut {
+  std::string& sink;
+  Http1::Plan* plan;
+
+  // Room for one more DATA frame: its header opens or extends a sink
+  // run, and its payload is up to three spans (a deflated entry's wire
+  // body is gzip header + mapping + trailer). Four is the worst case
+  // and the only one worth checking - guessing lower would truncate a
+  // round mid-frame, and a truncated frame is a corrupt stream.
+  bool room_for_frame() const {
+    return plan == nullptr || plan->nseg + 4 <= Http1::Plan::kSegs;
+  }
+
+  void bytes(const char* p, size_t n) {
+    if (plan == nullptr) {
+      sink.append(p, n);
+      return;
+    }
+    const size_t at = sink.size();
+    sink.append(p, n);
+    if (plan->nseg > 0) {
+      Http1::Plan::Seg& open = plan->seg[plan->nseg - 1];
+      if (open.base == nullptr && open.off + open.len == at) {
+        open.len += n;
+        plan->iov_len += n;
+        return;
+      }
+    }
+    plan->seg[plan->nseg++] = Http1::Plan::Seg{nullptr, at, n};
+    plan->iov_len += n;
+  }
+
+  void span(const AssetEntry& e, size_t off, size_t n) {
+    if (plan == nullptr) {
+      Assets::copy_wire(e, off, n, sink);
+      return;
+    }
+    struct iovec iv[3];
+    const unsigned k = Assets::wire_iov(e, off, n, iv);
+    for (unsigned i = 0; i < k; i++) {
+      plan->seg[plan->nseg++] =
+          Http1::Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+      plan->iov_len += iv[i].iov_len;
+    }
+  }
+};
+}  // namespace
+
+void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
-  for (H2Stream& stp : h2.streams) {
-    // A parked SOURCE drains by offset (#168) - chunk-capped per round
-    // (Gebot 18), continued by WINDOW_UPDATE and every drained sink.
+  RoundOut out{sink, plan};
+  const size_t n_streams = h2.streams.size();
+  if (n_streams == 0) return;
+  // kDeliverChunk is the ROUND's budget, not each stream's (Gebot 18).
+  // It used to be spent per stream, so a connection with 32 parked
+  // streams wrote 2 MiB in one go - which is also why the copy this
+  // replaces was worth 15.94% of a profile.
+  size_t round_left = kDeliverChunk;
+  size_t walked = 0;
+  for (; walked < n_streams; walked++) {
+    if (round_left == 0 || !out.room_for_frame()) break;
+    H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
+    // A parked SOURCE drains by offset (#168) - budgeted per round,
+    // continued by WINDOW_UPDATE and every drained sink.
     if (stp.src != nullptr) {
       const int64_t budget =
           h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
       if (budget <= 0) continue;
       const size_t remaining = stp.src_len - stp.src_off;
-      size_t give = remaining < kDeliverChunk ? remaining : kDeliverChunk;
+      size_t give = remaining < round_left ? remaining : round_left;
       if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
       size_t off = 0;
       while (off < give) {
+        if (!out.room_for_frame()) break;
         size_t n = give - off;
         if (n > h2.peer_max_frame) n = h2.peer_max_frame;
         const bool last = stp.src_off + off + n == stp.src_len;
         unsigned char fh[kH2FrameHeaderLen];
         h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
                             last ? kH2FlagEndStream : 0, stp.id);
-        sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-        Assets::copy_wire(*stp.src, stp.src_off + off, n, sink);
+        out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
+        out.span(*stp.src, stp.src_off + off, n);
         off += n;
       }
-      h2.send_window -= static_cast<int64_t>(give);
-      stp.send_window -= static_cast<int64_t>(give);
-      stp.src_off += give;
+      // `off`, not `give`: the frame loop can stop early when the plan
+      // fills up, and the windows must be debited by what actually
+      // went out or the peer's accounting and ours drift apart.
+      h2.send_window -= static_cast<int64_t>(off);
+      stp.send_window -= static_cast<int64_t>(off);
+      stp.src_off += off;
+      round_left -= off;
       if (stp.src_off == stp.src_len) stp.src = nullptr;
       continue;
     }
@@ -904,24 +976,30 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink) {
     const int64_t budget =
         h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
     if (budget <= 0) continue;
-    size_t give = stp.pending.size();
+    // Dynamic bodies have no durable backing to point into, so these
+    // bytes are copied as they always were - but they are sink bytes,
+    // so a round of them costs ONE segment however many streams sent.
+    size_t give = stp.pending.size() < round_left ? stp.pending.size() : round_left;
     if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
     size_t off = 0;
     while (off < give) {
+      if (!out.room_for_frame()) break;
       size_t n = give - off;
       if (n > h2.peer_max_frame) n = h2.peer_max_frame;
       const bool last = off + n == stp.pending.size();
       unsigned char fh[kH2FrameHeaderLen];
       h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
                           last ? kH2FlagEndStream : 0, stp.id);
-      sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-      sink.append(stp.pending.data() + off, n);
+      out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
+      out.bytes(stp.pending.data() + off, n);
       off += n;
     }
-    h2.send_window -= static_cast<int64_t>(give);
-    stp.send_window -= static_cast<int64_t>(give);
-    stp.pending.erase(0, give);
+    h2.send_window -= static_cast<int64_t>(off);
+    stp.send_window -= static_cast<int64_t>(off);
+    stp.pending.erase(0, off);
+    round_left -= off;
   }
+  h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   // Streams drained in the loop close outside it: close_stream
   // reorders the vector under the iterator.
   for (size_t i = 0; i < h2.streams.size();) {
@@ -956,7 +1034,7 @@ bool Http1::pending(const Conn& st) const {
 // contract.
 bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.h2 != nullptr) {
-    h2_flush_pending(st, sink);
+    h2_flush_pending(st, sink, &plan);
     return true;
   }
   if (st.xfer != nullptr) {
@@ -965,8 +1043,15 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     size_t take = lim - st.xfer_off;
     if (take > kDeliverChunk) take = kDeliverChunk;
     // POINTERS, not a copy: the deflate stream stays where it lies in
-    // the mapping and the kernel reads it there on send.
-    plan.niov = Assets::wire_iov(e, st.xfer_off, take, plan.iov);
+    // the mapping and the kernel reads it there on send. h1 has no
+    // framing inside a body, so this plan is pure pointers - at most
+    // three, and never a sink range.
+    struct iovec iv[3];
+    const unsigned k = Assets::wire_iov(e, st.xfer_off, take, iv);
+    for (unsigned i = 0; i < k; i++) {
+      plan.seg[plan.nseg++] =
+          Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+    }
     plan.iov_len = take;
     st.xfer_off += take;
     if (st.xfer_off == lim) {
@@ -1241,7 +1326,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
           // 5.1: an idle stream has no window to update.
           return h2_error(st0, kH2ProtocolError, sink);
         }
-        h2_flush_pending(st0, sink);
+        h2_flush_pending(st0, sink, nullptr);
         break;
       }
 

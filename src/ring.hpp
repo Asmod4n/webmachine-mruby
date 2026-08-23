@@ -22,13 +22,20 @@
 //        over? Asked before each send: true makes it carry MSG_MORE,
 //        so a small head does not go out alone and wait out the peer's
 //        delayed ACK.
-//   struct Plan { struct iovec iov[4]; unsigned niov; size_t iov_len; };
+//   struct Plan { struct Seg { const char* base; size_t off, len; };
+//                 static constexpr unsigned kSegs; Seg seg[kSegs];
+//                 unsigned nseg; size_t iov_len; };
 //   bool more(Conn&, std::string& sink, Plan&);
 //        the delivery continuation (#168): called when the sink has
 //        fully drained. The App either appends to the sink, or fills
-//        the Plan with POINTERS to bytes that already exist somewhere
-//        (a mapping, a table built at add_route) - those leave with
-//        the sink in ONE sendmsg, without a copy in this process.
+//        the Plan with SEGMENTS - `base` names bytes that already
+//        exist somewhere durable (a mapping, a table built at
+//        add_route), a null `base` names a RANGE OF THE SINK at `off`,
+//        for a round that has to spell some bytes itself and interleave
+//        them with the pointed-at ones (h2's DATA frame headers). An
+//        offset, not a pointer, because the sink is still being
+//        appended to while the plan is built. The whole round leaves in
+//        ONE sendmsg, without a body byte passing through this process.
 //        Same close contract as feed. An App without sources appends
 //        nothing and returns true.
 //   void on_tick();                                   once per reactor wake
@@ -619,19 +626,27 @@ class Ring {
     std::string out;
     std::string next;
 
-    // The App's PLAN for the bytes that do not live in `out` (#168):
-    // pointers into a mapping or into a table built at add_route,
-    // never copies. iov[0] is always `out` itself (the prebuilt head),
-    // so one sendmsg puts head and body on the wire together without a
-    // single byte passing through this process. They must live until
-    // the CQE, which is why they sit here and not on a stack frame.
-    struct iovec iov[5];
+    // The App's PLAN for one round (#168), resolved: pointers into a
+    // mapping or into a table built at add_route, interleaved with
+    // ranges of `out` where the round had to spell bytes itself (h2's
+    // DATA frame headers). One sendmsg puts the whole round on the
+    // wire without a single body byte passing through this process.
+    // They must live until the CQE, which is why they sit here and not
+    // on a stack frame - and why this array is the one per-connection
+    // cost the plan model charges (h2.hpp's -12%/+58% warning).
+    // One MORE than the plan can hold: a plan of pure pointers leaves
+    // the sink to be sent ahead of it, and that prepend must always
+    // have somewhere to go. Truncating instead would drop bytes off
+    // the wire silently, which is the one failure this model must not
+    // be able to have.
+    static constexpr unsigned kIov = App::Plan::kSegs + 1;
+    struct iovec iov[kIov];
     unsigned niov = 0;    // 0 = plain send of `out`
-    size_t plan_len = 0;  // total bytes across iov, `out` included
+    size_t plan_len = 0;  // total bytes across iov
     // What the in-flight sendmsg actually points at: iov minus whatever
     // an earlier partial send already consumed. Separate from iov so
     // the plan itself stays intact across retries.
-    struct iovec msg_iov[5];
+    struct iovec msg_iov[kIov];
     struct msghdr msg {};
 
     // The App's per-connection state; the Ring only resets it.
@@ -956,21 +971,37 @@ class Ring {
     }
     typename App::Plan req{};
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
-    if (req.niov != 0) {
-      // Take the plan: iov[0] is whatever the round also put in the
-      // sink (usually nothing here - the head left with an earlier
-      // round), then the source's own pointers.
+    if (req.nseg != 0) {
+      // RESOLVE the plan. A sink segment could not carry a pointer
+      // while it was built - `out` was still being appended to and
+      // every append may move it - so it carried an offset, and this
+      // is the first moment the address is final. A plan that has any
+      // sink segment describes the round's sink COMPLETELY; there is
+      // nothing to prepend.
       c.niov = 0;
       c.plan_len = 0;
-      if (!c.out.empty()) {
-        c.iov[c.niov].iov_base = c.out.data();
-        c.iov[c.niov].iov_len = c.out.size();
-        c.plan_len += c.out.size();
+      bool sink_covered = false;
+      for (unsigned i = 0; i < req.nseg; i++) {
+        const typename App::Plan::Seg& sg = req.seg[i];
+        if (sg.base != nullptr) {
+          c.iov[c.niov].iov_base = const_cast<char*>(sg.base);
+        } else {
+          c.iov[c.niov].iov_base = c.out.data() + sg.off;
+          sink_covered = true;
+        }
+        c.iov[c.niov].iov_len = sg.len;
+        c.plan_len += sg.len;
         c.niov++;
       }
-      for (unsigned i = 0; i < req.niov && c.niov < 5; i++) {
-        c.iov[c.niov++] = req.iov[i];
-        c.plan_len += req.iov[i].iov_len;
+      // A plan of pure pointers (h1's transfer) leaves the sink to be
+      // sent ahead of it, exactly as before. Prepending shifts the
+      // array by one, and kIov reserves the slot for it.
+      if (!sink_covered && !c.out.empty()) {
+        for (unsigned i = c.niov; i > 0; i--) c.iov[i] = c.iov[i - 1];
+        c.iov[0].iov_base = c.out.data();
+        c.iov[0].iov_len = c.out.size();
+        c.plan_len += c.out.size();
+        c.niov++;
       }
       c.sent = 0;
       arm_send(idx);
