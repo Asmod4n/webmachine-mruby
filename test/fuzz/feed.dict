@@ -82,3 +82,8 @@ hp_literal_none="\x00"
 hp_literal_never="\x10"
 hp_table_update="\x20"
 hp_huffman_len="\x80"
+
+# --- the asset fixture tools/fuzz.sh plants, so a request can name it.
+a_index="/index.html"
+a_small="/small.txt"
+a_miss="/nope.html"

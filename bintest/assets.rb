@@ -21,7 +21,7 @@ end
 # [name, data, method]; method 8 deflates via zlib (raw stream, the
 # same bytes any zip tool would store), 0 stores. DOS stamp fixed:
 # 2025-03-01 12:04:06.
-def a_build_zip(entries)
+def a_build_zip(entries, flags: 0)
   out = +''.b
   cd = +''.b
   dtime = (12 << 11) | (4 << 5) | 3
@@ -38,9 +38,9 @@ def a_build_zip(entries)
         data
       end
     lho = out.bytesize
-    out << [0x04034b50, 20, 0, method, dtime, ddate, crc, comp.bytesize, data.bytesize,
+    out << [0x04034b50, 20, flags, method, dtime, ddate, crc, comp.bytesize, data.bytesize,
             name.bytesize, 0].pack('VvvvvvVVVvv') << name.b << comp
-    cd << [0x02014b50, 20, 20, 0, method, dtime, ddate, crc, comp.bytesize, data.bytesize,
+    cd << [0x02014b50, 20, 20, flags, method, dtime, ddate, crc, comp.bytesize, data.bytesize,
            name.bytesize, 0, 0, 0, 0, 0, lho].pack('VvvvvvvVVVvvvvvVV') << name.b
   end
   cd_off = out.bytesize
@@ -604,4 +604,41 @@ assert('ranges over h2: 206 block and windowed DATA') do
       assert_equal A_BIG.b[10, 100], body
     end
   end
+end
+
+# The refusals, checked as refusals: the server must NOT come up, and it
+# must say which entry and why. Since #177 the finding is miniz's, the
+# sentence is this tier's - so both halves are pinned.
+def a_refusal(zip_bytes)
+  zf = Tempfile.new(['wm-assets-bad', '.zip'])
+  zf.binmode
+  zf.write(zip_bytes)
+  zf.close
+  sock = "/tmp/wm-assets-bad-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-assets-bad-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
+              out: File::NULL, err: err)
+  Process.wait(pid)
+  raise 'the server came up on a pack it should have refused' if File.socket?(sock)
+  File.read(err)
+ensure
+  File.unlink(sock) rescue nil
+  zf.unlink rescue nil
+end
+
+assert('assets: an encrypted entry is refused by name, not served') do
+  # General purpose bit 0. miniz reports m_is_encrypted; nothing is
+  # served from a pack this tree cannot read whole.
+  out = a_refusal(a_build_zip([['secret.css', A_CSS, 8]], flags: 0x1))
+  assert_true out.include?('secret.css'), out
+  assert_true out.downcase.include?('encrypted'), out
+end
+
+assert('assets: a method this tier cannot serve is refused by name') do
+  # 12 is bzip2: a legal ZIP method, and one whose bytes are not a
+  # deflate stream - so it can never become a gzip body (#170).
+  out = a_refusal(a_build_zip([['odd.css', A_CSS, 12]]))
+  assert_true out.include?('odd.css'), out
+  assert_true out.include?('method 12'), out
 end

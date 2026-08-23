@@ -307,6 +307,20 @@ plant_seeds() {
   esac
 }
 
+# The asset fixture: one deflate entry and one stored one, built by
+# zip(1) because the format's cross-references are not worth hand-
+# writing. feed's target opens it if it is there, which is what makes
+# the asset tier's answer path (h2_asset_answer alone is 271 edges)
+# reachable from a request at all.
+if command -v zip >/dev/null && [ ! -f "$OUT/fixture.zip" ]; then
+  d=$(mktemp -d)
+  printf '<!doctype html><title>x</title>%s' "$(head -c 400 /dev/zero | tr '\0' 'a')" > "$d/index.html"
+  printf 'plain' > "$d/small.txt"
+  (cd "$d" && zip -q -X fixture.zip index.html && zip -q -X -0 fixture.zip small.txt)
+  cp "$d/fixture.zip" "$OUT/fixture.zip"
+  rm -rf "$d"
+fi
+
 # --- build everything first: a campaign that dies on the third
 # target's compile error after two are already running is worse than
 # one that has not started.

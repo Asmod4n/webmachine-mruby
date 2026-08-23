@@ -16,6 +16,8 @@
 #include "../../src/http2.cpp"    // NOLINT
 #include "../../src/websocket.cpp"  // NOLINT
 
+#include <cstdio>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -41,7 +43,19 @@ webmachine::Http1& app() {
   }();
   static webmachine::Resource* res = new webmachine::Resource();
   static const webmachine::Resource* list[4] = {res, res, res, res};
-  static webmachine::Http1* a = new webmachine::Http1(*table, list, 4);
+  // The asset tier, when tools/fuzz.sh left its fixture there. Without
+  // it `assets_` stays null and the whole tier is unreachable - which
+  // it was: h2_asset_answer sat at 0 of 271 edges, and it is ours.
+  static webmachine::Assets* assets = [] {
+    auto* as = new webmachine::Assets();
+    char err[256];
+    if (as->open("build/fuzz/fixture.zip", err, sizeof(err))) return as;
+    std::fprintf(stderr, "feed_fuzz: no asset fixture (%s) - the asset tier is not covered\n",
+                 err);
+    delete as;
+    return static_cast<webmachine::Assets*>(nullptr);
+  }();
+  static webmachine::Http1* a = new webmachine::Http1(*table, list, 4, assets);
   return *a;
 }
 

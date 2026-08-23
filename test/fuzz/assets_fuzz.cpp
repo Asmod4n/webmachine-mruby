@@ -28,6 +28,14 @@
 // and a shared scratch file would have them overwriting each other's
 // input mid-parse.
 //
+// THE SPLIT WITH feed, since #177 and since feed grew an asset table:
+// feed drives the REQUEST path over the wire - find, verdict, the
+// answer heads, h2_asset_answer - with real requests. This target keeps
+// the CONTAINER: miniz's directory walk over a mutated archive, plus
+// the 30-byte Local Header skip that is still ours. The direct
+// request-side calls below stay because they reach entries a
+// well-formed archive would not produce.
+//
 //   tools/fuzz.sh   (every target; this one is 'assets')
 #include "../../src/assets.cpp"  // NOLINT: instrumented, not linked
 
