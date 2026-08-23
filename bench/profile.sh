@@ -27,7 +27,20 @@
 # (default 20 - profiling wants more samples than a throughput run),
 # FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default fp -
 # matches the frame pointers WM_PROFILE retains), # seen to swing 6% on its own, which reads as progress and is not),
-# CONNS (load mode, default 32), PORT, APP (default examples/hello.rb).
+# CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
+# ASSETS + ASSET_CODING + TARGET (see below).
+#
+# ASSETS profiles the ASSET TIER instead of an app. Give it a byte
+# count and a one-entry pack of that size is built here and hammered;
+# give it a path to a .zip and it is served as-is, with TARGET naming
+# the entry. ASSET_CODING (stored|gzip, default stored) picks which
+# shape the built pack has, and they are different code: stored is one
+# span straight out of the mapping, gzip is three segments around it
+# (constant header, the deflate bytes where they lie, the trailer).
+# With ASSETS set and no APP given, NO app is loaded - so the profile
+# is the tier and the reactor and nothing else. Both modes work: DIFF
+# answers "what does h2 pay for the same asset", LOAD answers "where
+# does the tier spend its time".
 # NO PINNING - measured twice, lost twice. The previous tree removed
 # every taskset it had ("handing the scheduler one core was slower than
 # letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
@@ -91,7 +104,12 @@ CALLGRAPH="${CALLGRAPH:-fp}"
 # multiplication entirely; -m stays the smaller, less surprising knob.
 PERF_MMAP="${PERF_MMAP:-8}"
 PORT="${PORT:-8123}"
-APP="${APP-examples/hello.rb}"
+ASSETS="${ASSETS:-}"
+ASSET_CODING="${ASSET_CODING:-stored}"
+TARGET="${TARGET:-/}"
+# An asset run has nothing to ask an app for; loading one anyway would
+# put mruby in the profile for no reason. An explicit APP= still wins.
+if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
 MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
 
@@ -112,9 +130,52 @@ if [ -n "${APP:-}" ]; then
   esac
 fi
 
+WORK=$(mktemp -d)
+ASSET_ARGS=()
+HDRS=()
+if [ -n "$ASSETS" ]; then
+  command -v curl >/dev/null || { echo "curl not found (needed to prove the asset before profiling it)" >&2; exit 1; }
+  case "$ASSETS" in
+    *[!0-9]*)
+      [ -f "$ASSETS" ] || { echo "ASSETS=$ASSETS is neither a byte count nor a file" >&2; exit 1; }
+      [ "$TARGET" != / ] || { echo "TARGET= must name an entry when ASSETS is a pack" >&2; exit 1; }
+      ZIP="$ASSETS"
+      ;;
+    *)
+      command -v zip >/dev/null || { echo "zip not found" >&2; exit 1; }
+      # The built pack holds exactly one entry and names it itself.
+      [ "$TARGET" = / ] || { echo "TARGET= only applies when ASSETS names a pack - the built one has one entry" >&2; exit 1; }
+      case "$ASSET_CODING" in
+        stored)
+          # urandom, forced stored: the body IS the file-backed span.
+          head -c "$ASSETS" /dev/urandom > "$WORK/a.bin"
+          (cd "$WORK" && zip -q -0 -X pack.zip a.bin) || exit 1
+          TARGET=/a.bin
+          ;;
+        gzip)
+          # This tree's own sources, repeated to length: real text, so
+          # the ratio is one an asset pack actually gets.
+          cat src/*.cpp src/*.hpp > "$WORK/corpus" 2>/dev/null
+          [ -s "$WORK/corpus" ] || { echo "no src/ corpus to build a compressible fixture from" >&2; exit 1; }
+          cl=$(wc -c < "$WORK/corpus")
+          for _ in $(seq $(( (ASSETS + cl - 1) / cl ))); do cat "$WORK/corpus"; done |
+            head -c "$ASSETS" > "$WORK/t.txt"
+          (cd "$WORK" && zip -q -9 -X pack.zip t.txt) || exit 1
+          TARGET=/t.txt
+          HDRS=(-H 'accept-encoding: gzip')
+          ;;
+        *) echo "ASSET_CODING must be stored or gzip" >&2; exit 1 ;;
+      esac
+      ZIP="$WORK/pack.zip"
+      ;;
+  esac
+  ASSET_ARGS=(--assets "$ZIP")
+fi
+
 OUT=bench/profile
 mkdir -p "$OUT"
-URL="http://127.0.0.1:$PORT/"
+URL="http://127.0.0.1:$PORT$TARGET"
+echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} target $TARGET coding ${ASSETS:+$ASSET_CODING}"
 
 # An io_uring ring is locked memory, so a LEAKED server costs more than
 # a pid: enough orphans and the next ring init fails with ENOMEM
@@ -127,6 +188,7 @@ cleanup() {
   [ -n "$SRVPID" ] && kill -TERM "$SRVPID" 2>/dev/null
   [ -n "$PERFPID" ] && kill "$PERFPID" 2>/dev/null
   wait 2>/dev/null
+  rm -rf "$WORK"
   return 0
 }
 trap cleanup EXIT INT TERM
@@ -144,7 +206,7 @@ leg() {
   shift 2
   echo "== recording $name -> $data =="
   "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
-    "$BIN" --port "$PORT" "${APP_ARGS[@]}" \
+    "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid
@@ -178,7 +240,25 @@ leg() {
     exit 1
   fi
   SRVPID=$srvpid
-  h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "$URL" 2>&1 | grep '^finished'
+  # PROVE THE TARGET, and not with the status code: a server started
+  # with --assets and no app answers 200 with a two-byte body for any
+  # name the pack does not hold, so a typo profiles the default
+  # resource and looks exactly like a hit. The ETag is the tell - only
+  # the asset tier sends one.
+  if [ -n "$ASSETS" ]; then
+    curl -s --max-time 10 -D "$WORK/hdr" -o /dev/null "${HDRS[@]}" "$URL"
+    grep -qi '^etag:' "$WORK/hdr" || {
+      echo "$URL did not come back from the asset tier (no ETag) - the pack does not hold that name" >&2
+      kill -TERM "$srvpid"; exit 1
+    }
+    if [ "$ASSET_CODING" = gzip ] && [ -z "${ASSETS%%[0-9]*}" ]; then
+      grep -qi '^content-encoding: *gzip' "$WORK/hdr" || {
+        echo "the entry did not come back gzip-coded - it was not stored as method 8" >&2
+        kill -TERM "$srvpid"; exit 1
+      }
+    fi
+  fi
+  h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1 | grep '^finished'
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
   SRVPID=""
