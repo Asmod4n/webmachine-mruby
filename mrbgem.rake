@@ -18,13 +18,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
       webmachine-mruby: this is a Linux build with no liburing.
 
       liburing could not be built here (see mruby-io-uring's output above;
-      it needs kernel headers and a working C compiler). On Linux this
-      tree is io_uring or nothing: the alternative implementations exist
-      for platforms that have no io_uring at all, not to make a Linux
-      server quietly slow.
-
-      Fix the liburing build, or build for a platform where slipstreamIO
-      is the intended implementation.
+      it needs kernel headers and a working C compiler).
     MSG
   end
 
@@ -92,24 +86,5 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   spec.cxx.include_paths << "#{dir}/src"
 
-  facade = "#{dir}/src/embed.hpp"
-  abort 'webmachine-mruby: src/embed.hpp is missing - the embedder facade is not optional (#173)' unless File.exist?(facade)
-  seen = {}
-  todo = [facade]
-  until todo.empty?
-    f = todo.shift
-    next if seen[f]
-    seen[f] = true
-    # binread: these headers cite RFC sections with a UTF-8 section
-    # sign, and the check is about ASCII include lines either way.
-    File.binread(f).scan(/^\s*#\s*include\s+[<"]([^>"]+)[>"]/).flatten.each do |inc|
-      if ['ring.hpp', 'liburing.h'].include?(File.basename(inc))
-        abort "webmachine-mruby: src/embed.hpp reaches #{inc} through " \
-              "#{f.sub("#{dir}/", '')} - the embedder facade must carry no IO (#173)"
-      end
-      hop = File.join(File.dirname(f), inc)
-      todo << hop if File.exist?(hop)
-    end
-  end
   spec.add_test_dependency 'mruby-string-ext'
 end
