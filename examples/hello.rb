@@ -25,13 +25,9 @@ end
 # command line override conf.
 def main
   Webmachine::Application.new do |app|
-    app.configure do |conf|
-      conf.port = 8080
-    end
-    app.routes do |route|
-      # :* is the tail: every path lands on this one resource, which is
-      # what a one-resource app has always meant here.
-      route.add [:*], HelloWorld
-    end
+    app.conf.port = 8080
+    # :* is the tail: every path lands on this one resource, which is
+    # what a one-resource app has always meant here.
+    app.add_route [:*], HelloWorld
   end
 end

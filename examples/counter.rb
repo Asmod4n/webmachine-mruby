@@ -18,11 +18,7 @@ end
 
 def main
   Webmachine::Application.new do |app|
-    app.configure do |conf|
-      conf.port = 8080
-    end
-    app.routes do |route|
-      route.add [:*], Counter
-    end
+    app.conf.port = 8080
+    app.add_route [:*], Counter
   end
 end

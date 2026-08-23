@@ -68,32 +68,15 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "i", &p);
   AppSpec* s = spec_of(mrb, self);
   claim_form(mrb, s, AppSpec::Form::kPort, "port");
-  if (p == 0) {
-    // Port 0 means "the OS picks", and the picked port can only be
-    // learned by asking the BOUND socket. This tree owns its listener
-    // as a ring DIRECT SLOT and never as a process fd, and the ring
-    // has no operation that answers the question: io_uring's socket
-    // command set is SIOCINQ / SIOCOUTQ / GETSOCKOPT / SETSOCKOPT
-    // (linux/io_uring.h) - there is no GETSOCKNAME, and getsockopt
-    // over the ring hard-refuses every level but SOL_SOCKET, which has
-    // no local-address option to ask for either. The one bridge left
-    // is FIXED_FD_INSTALL + getsockname(2) + close(2), i.e. a borrowed
-    // classic fd.
-    //
-    // SETTLED in slice 2 (#116), which owned the question: it stays
-    // refused. At SETUP the install's cost would be nothing (once per
-    // listener, not per accept like the shape f8bd7b2 threw out), but
-    // the op does not exist in every implementation of the API this
-    // tree compiles against - slipstreamIO (#171) has bind and listen
-    // and no install - and #171's rule is one implementation, one path:
-    // no source here may need an op only one backend answers.
-    refuse(mrb,
-           "conf.port = 0 (let the OS choose) needs the bound port read back off the "
-           "listener: io_uring has no getsockname, and the one bridge (FIXED_FD_INSTALL) "
-           "is not in every backend this tree builds against (#171). Name a port");
-  }
-  if (p < 1 || p > 65535) {
-    mrb_raisef(mrb, E_RUNTIME_ERROR, "conf.port = %d is outside 1..65535", (int)p);
+  // 0 means "the OS picks". Slice 2 refused it ("io_uring has no
+  // getsockname"); that world ended when the access log's %h brought
+  // SOCKET_URING_OP_GETSOCKNAME into the tree - the ring now asks the
+  // BOUND listener its local name at setup (local form of the same
+  // cmd arm_peer rides) and conf.url reads the pick back in ready.
+  // A kernel without the cmd refuses THE START by name, and only for
+  // a port-0 ask - fixed ports never ask the question.
+  if (p < 0 || p > 65535) {
+    mrb_raisef(mrb, E_RUNTIME_ERROR, "conf.port = %d is outside 0..65535", (int)p);
   }
   s->port = static_cast<int>(p);
   return mrb_nil_value();
@@ -137,12 +120,15 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const size_t colon = rest.rfind(':');
   if (colon != std::string::npos) {
     const std::string ps = rest.substr(colon + 1);
-    port = 0;
+    // :0 is legal - "the OS picks", same contract as conf.port = 0
+    // (the comment there says how the pick is read back). An EMPTY
+    // port ("http://h:") is not a zero, it is a malformed url.
+    port = ps.empty() ? -1 : 0;
     for (char c : ps) {
       if (c < '0' || c > '9') { port = -1; break; }
       port = port * 10 + (c - '0');
     }
-    if (port < 1 || port > 65535) {
+    if (port < 0 || port > 65535) {
       mrb_raisef(mrb, E_RUNTIME_ERROR, "conf.url = %s has no usable port", u.c_str());
     }
     rest.resize(colon);
@@ -353,7 +339,9 @@ void register_app(mrb_state* mrb, AppSpec* s) {
         mrb_raisef(mrb, E_RUNTIME_ERROR, "two applications claim the same listener: unix %s",
                    s->unix_path.c_str());
       }
-    } else if (s->port == other->port) {
+    } else if (s->port == other->port && s->port != 0) {
+      // Two port-0 asks are NOT one socket - the kernel picks a fresh
+      // ephemeral port for each bind, so they collide with nothing.
       mrb_raisef(mrb, E_RUNTIME_ERROR, "two applications claim the same listener: port %d",
                  s->port);
     }
@@ -375,6 +363,16 @@ mrb_value app_new(mrb_state* mrb, mrb_value self) {
   mrb_yield(mrb, blk, obj);
   register_app(mrb, s);
   return obj;
+}
+
+// The CANONICAL surface (user decision): app.conf.url = "...",
+// app.conf.port = 8080 - direct writes, no ceremony. The block forms
+// below (configure/config/routes) exist for webmachine-ruby
+// compatibility only: tests pin them, the README never shows them.
+// A block stays canonical exactly where it IS a callback: app.ready.
+mrb_value app_conf(mrb_state* mrb, mrb_value self) {
+  AppSpec* s = spec_of(mrb, self);
+  return mrb_obj_value(mrb_data_object_alloc(mrb, conf_class_, s, &app_type));
 }
 
 mrb_value app_configure(mrb_state* mrb, mrb_value self) {
@@ -417,11 +415,16 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
                                                                   MRB_ARGS_BLOCK());
   // configure is webmachine-ruby's name; config is the same method
   // under its other spelling, not a second one.
+  mrb_define_method_id(mrb, app, MRB_SYM(conf), app_conf, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, app, MRB_SYM(configure), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(config), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(routes), app_routes, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(ready), app_ready, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(add_route), route_add, MRB_ARGS_REQ(2));
+  // The canonical websocket spelling, parallel to add_route: the same
+  // C function route.websocket runs, because app and route objects
+  // carry the same AppSpec.
+  mrb_define_method_id(mrb, app, MRB_SYM(add_websocket), route_websocket, MRB_ARGS_REQ(2));
 
   // Hidden: no constant names either class, so an app file can neither
   // reopen nor instantiate them. Rooted by hand - a class nothing

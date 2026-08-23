@@ -280,7 +280,7 @@ inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
 
 // The setup chain's stages, carried in the idx half of the tag so a
 // failing CQE can name what failed.
-enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4 };
+enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
 
 inline const char* stage_name(uint32_t st) {
   switch (st) {
@@ -288,6 +288,7 @@ inline const char* stage_name(uint32_t st) {
     case kStSockopt: return "setsockopt";
     case kStBind: return "bind";
     case kStListen: return "listen";
+    case kStName: return "getsockname";
   }
   return "?";
 }
@@ -538,6 +539,10 @@ class Ring {
   // arithmetic without running a server.
   uint32_t max_conns() const { return max_conns_; }
 
+  // A TCP listener's REAL port once init returned: the configured one,
+  // or - for a port-0 ask - the kernel's pick, read back at setup.
+  int bound_port(uint32_t li) const { return li < kMaxListeners ? bound_port_[li] : 0; }
+
  private:
   // One listener, made entirely of ring ops: a stale unix path goes
   // first and UNLINKED from the chain (a linked op that fails - ENOENT
@@ -580,7 +585,9 @@ class Ring {
         io_uring_cqe_seen(&ring_, cqe);
       }
     } else {
-      if (spec.port <= 0 || spec.port > 65535) {
+      // 0 is legal here: "the OS picks", and the pick is read back off
+      // the bound listener below.
+      if (spec.port < 0 || spec.port > 65535) {
         std::snprintf(err, errlen, "listener %u: port %d out of range", li, spec.port);
         return false;
       }
@@ -656,6 +663,53 @@ class Ring {
     // TCP-only settings (TCP_NODELAY, SO_SNDBUF) are asked per accept;
     // a connection remembers which listener took it.
     unix_listener_[li] = is_unix;
+
+    if (!is_unix) {
+      bound_port_[li] = spec.port;
+      if (spec.port == 0) {
+        // The OS picked; ask the BOUND listener its local name - the
+        // same URING_CMD %h rides at accept (arm_peer), local form
+        // (optlen 0) instead of peer (1). Slice 2 refused port 0
+        // because "io_uring has no getsockname"; the cmd exists now
+        // and this is its second customer. A kernel without it turns
+        // ONLY a port-0 ask into a named refusal - fixed ports never
+        // ask the question.
+        struct sockaddr_storage ss {};
+        int slen = static_cast<int>(sizeof(ss));
+        struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+        if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+        io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(slot), nullptr, 0, 0);
+        s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
+        s->addr = reinterpret_cast<uint64_t>(&ss);
+        s->optval = reinterpret_cast<uint64_t>(&slen);
+        s->optlen = 0;  // the LOCAL name; 1 is the peer form
+        s->flags |= IOSQE_FIXED_FILE;
+        io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStName));
+        io_uring_submit_and_wait(&ring_, 1);
+        struct io_uring_cqe* cqe = nullptr;
+        int res = -EIO;
+        if (io_uring_peek_cqe(&ring_, &cqe) == 0) {
+          res = cqe->res;
+          io_uring_cqe_seen(&ring_, cqe);
+        }
+        if (res < 0) {
+          std::snprintf(err, errlen,
+                        "listener %u: port 0 needs the bound port read back and this kernel "
+                        "cannot (SOCKET_URING_OP_GETSOCKNAME: %s) - name a port",
+                        li, std::strerror(-res));
+          return false;
+        }
+        if (ss.ss_family == AF_INET) {
+          bound_port_[li] = ntohs(reinterpret_cast<struct sockaddr_in*>(&ss)->sin_port);
+        } else if (ss.ss_family == AF_INET6) {
+          bound_port_[li] = ntohs(reinterpret_cast<struct sockaddr_in6*>(&ss)->sin6_port);
+        } else {
+          std::snprintf(err, errlen, "listener %u: bound name family %d?", li,
+                        static_cast<int>(ss.ss_family));
+          return false;
+        }
+      }
+    }
     return true;
   }
 
@@ -1364,6 +1418,10 @@ class Ring {
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};
+  // TCP listeners' REAL ports after the bind: the spec's own number,
+  // or the kernel's pick when the spec said 0. What conf.url reads
+  // back through app_mark_bound. 0 for unix listeners.
+  int bound_port_[kMaxListeners] = {};
   std::vector<std::string> unix_paths_;  // owned copies: the destructor unlinks them
   uint32_t nlisteners_ = 0;
   bool listeners_closed_ = false;

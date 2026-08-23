@@ -57,12 +57,8 @@ end
 
 def main
   Webmachine::Application.new do |app|
-    app.configure do |conf|
-      conf.port = 8080
-    end
-    app.routes do |route|
-      route.websocket ['ws'], Echo
-      route.add [:*], Page
-    end
+    app.conf.port = 8080
+    app.add_websocket ['ws'], Echo
+    app.add_route [:*], Page
   end
 end

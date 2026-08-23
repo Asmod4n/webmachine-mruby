@@ -466,17 +466,25 @@ assert('application: port and unix_path together refuse by name') do
   assert_true out.include?('exactly one of port, unix_path or url'), out
 end
 
-assert('application: conf.port = 0 refuses by name - no backend answers it') do
-  out = ap_refused(ap_one_route(<<~BODY))
-    app.configure do |conf|
-      conf.port = 0
-    end
+assert('application: conf.port = 0 is legal - the OS picks at bind time') do
+  # Slice 2 refused this ("io_uring has no getsockname"); that world
+  # ended when the access log's %h brought SOCKET_URING_OP_GETSOCKNAME
+  # into the tree. The port question is asked AT THE BIND, and only
+  # then - here --unix overrides the listener, so the port is never
+  # even asked and the app simply comes up. (The bind-time half lives
+  # in the conf.url port 0 test below.)
+  sock = "/tmp/wm-ap-eph0-#{$$}.sock"
+  src = ap_one_route(<<~BODY)
+    app.conf.port = 0
     app.add_route [:*], R
   BODY
-  assert_true out.include?('getsockname'), out
-  # SETTLED in slice 2: the bridge exists but not in every backend
-  # this tree builds against (#171), so port 0 stays refused.
-  assert_true out.include?('#171'), out
+  ap_server(src, sock: sock) do |s, _out|
+    UNIXSocket.open(s) do |c|
+      c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _body = ap_read(c)
+      assert_include head, '200 OK'
+    end
+  end
 end
 
 assert('application: the ssl/certificate names refuse by name - no TLS in this tree') do
@@ -947,5 +955,74 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
     Process.wait(pid) rescue nil
     File.unlink(sock) rescue nil
     app.unlink
+  end
+end
+
+assert('application: conf.url port 0 - the kernel picks, ready reads the pick back') do
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'eph'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.url = 'http://0.0.0.0:0'
+        app.add_route [:*], R
+        app.ready do
+          puts "ready \#{app.conf.url}"
+        end
+      end
+    end
+  RUBY
+  app = ap_compile(src)
+  out = "/tmp/wm-ap-eph-out-#{$$}.log"
+  err = "/tmp/wm-ap-eph-err-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  port = nil
+  refused = false
+  100.times do
+    text = begin File.read(out) rescue '' end
+    if (m = text.match(%r{^ready http://0\.0\.0\.0:(\d+)$}))
+      port = m[1].to_i
+      break
+    end
+    etext = begin File.read(err) rescue '' end
+    if etext.include?('SOCKET_URING_OP_GETSOCKNAME')
+      refused = true
+      break
+    end
+    sleep 0.05
+  end
+  begin
+    if refused
+      # This kernel has no GETSOCKNAME uring cmd, so the START refused
+      # by name - and only because port 0 asked; every other test in
+      # this file binds a named listener and never asks. The green
+      # half of this assert runs where the cmd exists.
+      Process.wait(pid) rescue nil
+      assert_include (begin File.read(err) rescue '' end), 'name a port'
+    else
+      assert_false port.nil?
+      assert_true port > 0, "kernel picked #{port}?"
+      s = TCPSocket.new('127.0.0.1', port)
+      s.write "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+      resp = +''
+      loop do
+        resp << s.readpartial(4096)
+      rescue EOFError
+        break
+      end
+      s.close
+      assert_include resp, '200 OK'
+      assert_include resp, 'eph'
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    app.unlink
+    File.unlink(out) rescue nil
+    File.unlink(err) rescue nil
   end
 end

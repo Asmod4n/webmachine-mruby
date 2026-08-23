@@ -232,7 +232,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   // after the bind, before the first accept, exactly once, in the order
   // the apps registered. A raise there stops the start.
   for (size_t i = 0; i < specs_.size(); i++) {
-    app_mark_bound(*specs_[i], cfg.listeners[i].unix_path, cfg.listeners[i].port);
+    // The RING's port, not the spec's: a conf asking for port 0 gets
+    // the kernel's pick here, which is the whole point of asking.
+    app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,
+                   ring_->bound_port(static_cast<uint32_t>(i)));
     if (!app_ready_run(mrb, *specs_[i], err, errlen)) {
       ring_.reset();
       return false;
@@ -245,7 +248,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     if (cfg.listeners[i].unix_path != nullptr) {
       std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i, cfg.listeners[i].unix_path);
     } else {
-      std::fprintf(stderr, "webmachine:   [%u] tcp port %d\n", i, cfg.listeners[i].port);
+      std::fprintf(stderr, "webmachine:   [%u] tcp port %d\n", i, ring_->bound_port(i));
     }
   }
   built_ = true;
