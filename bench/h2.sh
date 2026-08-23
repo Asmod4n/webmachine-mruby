@@ -77,7 +77,10 @@ if [ -n "${APP:-}" ]; then
   esac
 fi
 
-"$BIN" --port "$PORT" "${APP_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+LOG="${LOG:-0}"
+LOG_ARGS=()
+[ "$LOG" = 1 ] && LOG_ARGS=(--log "/tmp/wm-h2bench-access.$$.log")
+"$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
 SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT
 sleep 0.5
@@ -185,7 +188,7 @@ run() {  # run <label> <h2load flags...>
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: h2load -t$THREADS -c$CONNS -D${DURATION} reps=$REPS app=${APP:-none} port=$PORT $(uname -mr)"
+  echo "harness: h2load -t$THREADS -c$CONNS -D${DURATION} reps=$REPS app=${APP:-none} log=${LOG} port=$PORT $(uname -mr)"
   run "h1 anchor: h2load --h1 -m1" --h1 -m1
   run "h2 -m1 (expect: within noise of the anchor)" -m1
   run "h2 -m32" -m32

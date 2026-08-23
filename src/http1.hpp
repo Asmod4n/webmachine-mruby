@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "accesslog.hpp"
 #include "flow_walk.hpp"
 #include "http.hpp"
 #include "router.hpp"
@@ -169,7 +170,13 @@ class Http1 {
     // again. Null is the whole cost for every connection that never
     // upgrades.
     WsConn* ws = nullptr;
+    // The peer's printable address, for the access log. The RING
+    // fills it (it owns the socket); empty spells "-". 46 covers
+    // INET6_ADDRSTRLEN.
+    char peer[46];
+    uint8_t peer_len = 0;
     void reset(uint8_t li, bool pkt) {
+      peer_len = 0;
       carry.clear();
       body_skip = 0;
       listener = li;
@@ -325,6 +332,12 @@ class Http1 {
   // the connection once everything queued has drained.
   bool more(Conn& st, std::string& sink, Plan& plan);
 
+  // The access log (accesslog.hpp): this writer FORMATS lines, the
+  // Ring flushes the buffer. Opt-in - enable_access_log() is the only
+  // way a line is ever built.
+  AccessLog* access_log() { return &alog_; }
+  void enable_access_log() { alog_.enabled = true; }
+
  private:
   // Defined below, next to the other per-app state; named here because
   // ws_upgrade takes one.
@@ -461,6 +474,7 @@ class Http1 {
   // target (http2.cpp says why the spans cannot be parked with it).
   // Null = no route, so nothing can ask.
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
+  void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
                  uint16_t route, const ReqView* req, std::string& sink);
   // plan == nullptr: every byte lands in the sink, which is what the
@@ -520,6 +534,11 @@ class Http1 {
   Assets* assets_ = nullptr;
   // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
   size_t warm_budget_ = kWarmBudgetDefault;
+  AccessLog alog_;
+  // The h2 answer functions record what they answered; h2_dispatch -
+  // where the :path bytes are still alive - writes the line.
+  uint16_t alog_status_ = 0;
+  size_t alog_bytes_ = 0;
   std::string body_;  // the run frame's rendered bytes; capacity survives
   // #147: the gzip encoding of body_ for the current request, when the
   // route's gzip_ok chose to compress. Capacity survives across

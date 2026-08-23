@@ -46,6 +46,7 @@ struct Echo {
     return true;
   }
   bool more(Conn&, std::string&, Plan&) { return true; }  // owes nothing between feeds
+  webmachine::AccessLog* access_log() { return nullptr; }  // echo logs nothing
   bool pending(const Conn&) const { return false; }  // nothing is ever owed
   void on_tick() {}
 };
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
   const char* pidfile = nullptr;
   webmachine::ServerOptions opts;
   const char* cli_unix = nullptr;
+  const char* log_path = nullptr;
   int cli_port = 0;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
@@ -108,13 +110,15 @@ int main(int argc, char** argv) {
       opts.app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       opts.assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+      log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
-                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] "
+                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE] "
                    "[--pidfile PATH] [--echo]\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
@@ -168,6 +172,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
+  opts.log_path = log_path;
   opts.have_uring = uring_present(mrb);
 
   if (echo) {

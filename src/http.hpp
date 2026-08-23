@@ -260,6 +260,15 @@ inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
 // filled them - presence lives in ReqFacts' has_* flags, these only
 // say where the bytes are while the answer is being made.
 struct ReqValues {
+  // For the access log alone (opt-in): the two combined-format fields
+  // that are neither facts nor wire framing. Captured in the same one
+  // header switch every request already pays; borrows die with the
+  // request's answer like every other value here.
+  const char* log_ref = nullptr;
+  size_t log_ref_len = 0;
+  const char* log_ua = nullptr;
+  size_t log_ua_len = 0;
+
   const char* accept_encoding = nullptr;
   size_t accept_encoding_len = 0;
   const char* if_match = nullptr;

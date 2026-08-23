@@ -301,6 +301,7 @@ void Http1::on_tick() {
   struct tm tm;
   gmtime_r(&now, &tm);
   http::date_core(date_, tm);
+  alog_.sec = static_cast<int64_t>(now);
   const char* core = date_;
 
   for (Variants& v : store_) patch_date(v, core);
@@ -365,6 +366,12 @@ void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
   // Wire invalidity: framing trust is gone, the connection always ends.
+  // The log line has no request to describe - the head never parsed -
+  // so every request field spells "-"; the status is the story.
+  if (alog_.enabled) {
+    alog_.line(st.peer, st.peer_len, nullptr, 0, "-", 1, false, status, 0, nullptr, 0,
+               nullptr, 0);
+  }
   sink.append(variants(status).close.bytes);
   st.carry.clear();
   st.body_skip = 0;
@@ -553,7 +560,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                 }
                 break;
               case 10:
-                if (http::tok_eq(n, nl, "connection", 10)) {
+                if (http::tok_eq(n, nl, "user-agent", 10)) {
+                  vals.log_ua = v;
+                  vals.log_ua_len = vl;
+                } else if (http::tok_eq(n, nl, "connection", 10)) {
                   if (conn_has(v, vl, "close", 5)) conn_close = true;
                   else if (conn_has(v, vl, "keep-alive", 10)) conn_keep = true;
                   // RFC 9110 7.8: Connection is a token LIST, and a
@@ -563,6 +573,11 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                 }
                 break;
               case 7:
+                if (http::tok_eq(n, nl, "referer", 7)) {
+                  vals.log_ref = v;
+                  vals.log_ref_len = vl;
+                  break;
+                }
                 // RFC 6455 4.2.1 step 3: "websocket", case-insensitive.
                 if (http::tok_eq(n, nl, "upgrade", 7)) {
                   up_ws = http::tok_eq(v, vl, "websocket", 9);
@@ -638,6 +653,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       if (AssetEntry* ae = assets_->find(path, path_len)) {
         const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
         bool started_xfer = false;
+        uint16_t alog_st = as;
+        size_t alog_by = 0;
         if (as == 412 || as == 501) {
           // Nothing asset-specific in these; the shared store answers.
           const Variants& sv = variants(as);
@@ -667,10 +684,13 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             }
           }
           if (rs == 416) {
+            alog_st = 416;
             assets_->answer_416_head(*ae, av, date_, sink);
           } else if (rs == 206) {
+            alog_st = 206;
             assets_->answer_206_head(*ae, av, rf, rl, date_, sink);
             const size_t rlen = rl - rf + 1;
+            alog_by = rlen;
             if (rlen <= warm_budget_) {
               Assets::copy_wire(*ae, rf, rlen, sink);
             } else {
@@ -682,6 +702,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           } else {
             assets_->answer_head(*ae, as, av, date_, sec_, sink);
             if (as == 200 && !head_only) {
+              alog_by = Assets::wire_len(*ae);
               // Delivery (#168): a body within the WARM BUDGET is
               // copied and leaves with its head in one append - the
               // degenerate case of the model, and the fast path. Above
@@ -699,6 +720,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
               }
             }
           }
+        }
+        if (alog_.enabled) {
+          alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, false, alog_st,
+                     alog_by, vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
         }
         off += static_cast<size_t>(ret);
         if (content_length != 0) {
@@ -861,6 +886,15 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
       sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                              : (persist ? sv.keep.bytes : sv.close.bytes));
+    }
+    if (alog_.enabled) {
+      // %b for the dynamic 200 is the identity length - the gzip arm's
+      // wire size is conneg's secret, and re-deciding it here for a
+      // log column would be work per line. Prebuilt-store answers log
+      // "-": their body lengths were baked into bytes at build.
+      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, false, status,
+                 (answered && !head_only) ? body_.size() : 0, vals.log_ref, vals.log_ref_len,
+                 vals.log_ua, vals.log_ua_len);
     }
 
     off += static_cast<size_t>(ret);

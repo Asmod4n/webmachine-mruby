@@ -87,6 +87,9 @@ SIZES="${SIZES:-4096 32768 262144 1048576}"
 ARMS="${ARMS:-stored gzip 304 206}"
 WARM="${WARM:-}"
 PORT="${PORT:-8123}"
+# LOG=1 turns the access log on (--log into the workdir): the cost of
+# a line per request, end to end, including the record daemon.
+LOG="${LOG:-0}"
 SETUP_ENTRIES="${SETUP_ENTRIES:-5000}"
 BIN=mruby/build/host/bin/webmachine-server
 command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
@@ -213,6 +216,7 @@ parse_child_cpu() {
 start_srv() {  # start_srv <port> [zip]
   local port=$1 zip=${2:-$WORK/assets.zip}
   local args=(--port "$port" --assets "$zip")
+  [ "$LOG" = 1 ] && args+=(--log "$WORK/access.log")
   local env_pfx=()
   [ -n "$WARM" ] && env_pfx=(env "WM_WARM_BUDGET=$WARM")
   "${env_pfx[@]}" "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
@@ -401,7 +405,7 @@ fi
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} $(uname -mr)"
+  echo "harness: assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} log=${LOG} $(uname -mr)"
   s0=$(steal_ticks)
   # cpu% = server CPU over the run, percent of ONE core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx

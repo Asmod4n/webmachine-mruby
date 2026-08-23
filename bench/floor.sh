@@ -41,6 +41,9 @@ fi
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
 # naming the .rb source. An .mrb APP (or none) passes through as-is.
+LOG="${LOG:-0}"
+LOG_ARGS=()
+[ "$LOG" = 1 ] && LOG_ARGS=(--log "/tmp/wm-floor-access.$$.log")
 APP_ARGS=()
 if [ -n "${APP:-}" ]; then
   case "$APP" in
@@ -59,7 +62,7 @@ SOCK=/tmp/wm-floor-bench.sock
 DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
   # The patched wrk routes every byte over WRK_UNIX but still validates
   # its URL with one probe connect() to the TCP port - something must
   # answer that handshake or wrk refuses to start.
@@ -70,7 +73,7 @@ s.bind(('127.0.0.1',$PORT)); s.listen(16)
 while True:
     c,_=s.accept(); c.close()" >/dev/null 2>&1 & DUMMY=$!
 else
-  "$BIN" --port "$PORT" "${APP_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT

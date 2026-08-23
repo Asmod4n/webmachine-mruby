@@ -279,11 +279,13 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
                            asset_end, sink)) {
         return false;
       }
+      h2_log(st0, facts, target.data(), target.size());
       return true;
     }
     ReqView rv;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
     if (!h2_answer(st0, stream_id, facts, head_only, route, rvp, sink)) return false;
+    h2_log(st0, facts, target.data(), target.size());
     return true;
   }
 
@@ -462,8 +464,12 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       return true;
     }
     if (asset != nullptr) {
-      return h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
-                             asset_end, sink);
+      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
+                           asset_end, sink)) {
+        return false;
+      }
+      h2_log(st0, facts, path_val, path_vlen);
+      return true;
     }
     // h2.hpp already claimed this ("A stream answered in full inside
     // its own dispatch never appears here"); it just was not true yet.
@@ -482,7 +488,11 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     rv.table = apps_[st0.listener].table;
     rv.route = r;
     rv.spans = spans;
-    return h2_answer(st0, stream_id, facts, head_only, route, r < 0 ? nullptr : &rv, sink);
+    if (!h2_answer(st0, stream_id, facts, head_only, route, r < 0 ? nullptr : &rv, sink)) {
+      return false;
+    }
+    h2_log(st0, facts, path_val, path_vlen);
+    return true;
   }
   // A body follows; THAT is what the stream has to be remembered for -
   // the facts wait on it, the bytes will not.
@@ -620,6 +630,10 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   const bool has_body = status == 200 || status == 206;
   const size_t blen = has_body ? win_end - win_off : 0;
   const bool no_data = head_only || blen == 0;
+  alog_status_ = status;
+  alog_bytes_ = no_data ? 0 : blen;
+  alog_status_ = status;
+  alog_bytes_ = no_data ? 0 : blen;
 
   // The date rides the encoder lane, as everywhere.
   unsigned char dbuf[64];
@@ -950,6 +964,33 @@ struct RoundOut {
 };
 }  // namespace
 
+// The access log's method column for h2, where the wire bytes are
+// gone by answer time: the enum spells itself. kOther logs "-" - the
+// name was never kept, and inventing one would be a lie in a log.
+// One h2 response, one line - referer and user-agent are "-" by
+// honesty: an h2 answer can run after its decode buffer died, and the
+// two fields were never worth copying per stream for a log column.
+#define WM_H2_LOG_DEFINED
+static const char* alog_method(flow::Method m, size_t* n) {
+  switch (m) {
+    case flow::Method::kGet: *n = 3; return "GET";
+    case flow::Method::kHead: *n = 4; return "HEAD";
+    case flow::Method::kPost: *n = 4; return "POST";
+    case flow::Method::kPut: *n = 3; return "PUT";
+    case flow::Method::kDelete: *n = 6; return "DELETE";
+    case flow::Method::kOptions: *n = 7; return "OPTIONS";
+    default: *n = 1; return "-";
+  }
+}
+
+void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen) {
+  if (!alog_.enabled) return;
+  size_t mn = 0;
+  const char* m = alog_method(facts.method, &mn);
+  alog_.line(st.peer, st.peer_len, m, mn, target, tlen, true, alog_status_, alog_bytes_,
+             nullptr, 0, nullptr, 0);
+}
+
 void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
   RoundOut out{sink, plan};
@@ -1197,6 +1238,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           ReqView rv;
           const ReqView* rvp = h2_parked_view(st0, target, rv);
           if (!h2_answer(st0, stream, facts, head_only, route, rvp, sink)) return false;
+          h2_log(st0, facts, target.data(), target.size());
         }
         break;
       }

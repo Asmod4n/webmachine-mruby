@@ -32,6 +32,7 @@ namespace webmachine {
 // the CLI would make the command line a suggestion.
 struct ServerOptions {
   const char* assets_path = nullptr;  // --assets, null = no asset tier
+  const char* log_path = nullptr;     // --log, null = no access log (opt-in)
   int stop_fd = -1;                   // the signalfd the ring polls
   const char* cli_unix = nullptr;     // --unix override
   int cli_port = 0;                   // --port override

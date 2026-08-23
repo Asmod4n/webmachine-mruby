@@ -666,3 +666,51 @@ assert('assets: a body above the warm budget arrives byte-exact behind its head'
     end
   end
 end
+
+assert('access log: --log writes combined lines through the record daemon') do
+  # Opt-in end to end: server ships LogRec records over the socketpair,
+  # webmachine-logd formats Combined Log Format. Asserted at line level
+  # because the CONTRACT is "what existing readers parse": a combined
+  # regex must match every line, the escape must defuse a quote in the
+  # target, and nothing may be missing after the server exits (the
+  # daemon drains to EOF - the one rule is that every line lands).
+  zip = a_build_zip([['img.bin', A_RAW, 0]])
+  zf = Tempfile.new(['wm-logzip', '.zip'])
+  zf.binmode
+  zf.write(zip)
+  zf.close
+  logf = "/tmp/wm-access-#{$$}.log"
+  File.unlink(logf) if File.exist?(logf)
+  sock = "/tmp/wm-log-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
+              '--log', logf, out: File::NULL, err: File::NULL)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  begin
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /img.bin HTTP/1.1\r\nHost: x\r\nUser-Agent: probe/1\r\n" \
+              "Referer: http://r.example/\"q\r\n\r\n")
+      a_read(s)
+      s.write("GET /miss HTTP/1.1\r\nHost: x\r\n\r\n")
+      a_read(s)
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+  end
+  # The daemon drains and exits AFTER the server; give it a beat.
+  20.times { break if File.exist?(logf) && File.readlines(logf).size >= 2; sleep 0.1 }
+  lines = File.readlines(logf)
+  assert_equal 2, lines.size
+  combined = %r{\A\S+ \S+ \S+ \[\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}\] "[^"]*(?:\\.[^"]*)*" \d{3} (?:\d+|-) "[^"]*(?:\\.[^"]*)*" "[^"]*(?:\\.[^"]*)*"\n\z}
+  lines.each { |l| assert_true l.match?(combined), "not combined: #{l.inspect}" }
+  assert_true lines[0].include?('"GET /img.bin HTTP/1.1" 200 768'), lines[0]
+  assert_true lines[0].include?('probe/1'), lines[0]
+  # The quote in the Referer arrives ESCAPED - it cannot close the column.
+  assert_true lines[0].include?('http://r.example/\\"q'), lines[0]
+  assert_true lines[1].include?(' 200 '), lines[1]  # /miss = default resource today
+ensure
+  File.unlink(logf) rescue nil
+  File.unlink(sock) rescue nil
+  zf&.unlink
+end

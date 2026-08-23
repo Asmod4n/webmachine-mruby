@@ -47,6 +47,16 @@
 //        Same close contract as feed. An App without sources appends
 //        nothing and returns true.
 //   void on_tick();                                   once per reactor wake
+//   AccessLog* access_log();
+//        the App's access-log buffers (accesslog.hpp), or null for an
+//        App that never logs. The App FORMATS; the Ring flushes: at
+//        the end of every round a filled buffer leaves as one write
+//        SQE riding the submit that was happening anyway - zero added
+//        syscalls, and io-wq makes the page-cache copy off this
+//        thread. The rule the flush serves: every line formatted MUST
+//        land - the in-flight buffer is the kernel's until its CQE, a
+//        short write resumes, a write error is a named refusal that
+//        stops the process rather than a silent hole in the log.
 //
 // EVERYTHING goes through the ring. The listener is born as a direct
 // descriptor (io_uring_prep_socket_direct), bound and set listening by
@@ -80,6 +90,8 @@
 
 #include <memory>
 #include <string>
+
+#include "accesslog.hpp"
 
 // SO_MEMINFO (Linux 4.12) is SOL_SOCKET, which is exactly why it works
 // where TCP_INFO does not: io_uring's getsockopt cmd refuses every
@@ -237,6 +249,9 @@ struct ListenerSpec {
 struct RingConfig {
   ListenerSpec listeners[kMaxListeners] = {};
   uint32_t nlisteners = 0;
+  // The access log's fd (O_APPEND), or -1 for no log. main owns the
+  // open; the Ring owns every write.
+  int log_fd = -1;
   // A signalfd main owns (signals blocked, so they land there). The
   // ring polls it: the stop signal arrives as a CQE like everything
   // else - a handler flag would race the wait (checked, then the signal
@@ -250,7 +265,7 @@ namespace detail {
 // against CQEs of the connection that owned it before.
 enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
-  kMeminfo = 8
+  kMeminfo = 8, kLog = 9
 };
 
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
@@ -360,6 +375,7 @@ class Ring {
     // The limit is set ONCE, here, and never touched again. The
     // capacity falls out of whatever finally stands.
     const uint64_t nofile = raise_nofile();
+    log_fd_ = cfg.log_fd;
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
@@ -705,6 +721,45 @@ class Ring {
       std::exit(1);
     }
     return s;
+  }
+
+  // The access-log flush (see the contract block up top). Called once
+  // per round, right before the submit the SQE rides.
+  void flush_log() {
+    if (log_fd_ < 0) return;
+    AccessLog* al = app_.access_log();
+    if (al == nullptr || al->in_flight || al->buf.empty()) return;
+    al->buf.swap(al->flight);
+    al->in_flight = true;
+    arm_log_write(al);
+  }
+  void arm_log_write(AccessLog* al) {
+    struct io_uring_sqe* s = sqe();
+    // send, not write: the log fd is the daemon's socketpair, and a
+    // dead daemon must come back as -EPIPE in the CQE (the named
+    // refusal in on_log), not as a SIGPIPE that kills silently.
+    io_uring_prep_send(s, log_fd_, al->flight.data(), al->flight.size(), MSG_NOSIGNAL);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, 0));
+  }
+  void on_log(struct io_uring_cqe* cqe) {
+    AccessLog* al = app_.access_log();
+    if (al == nullptr) return;
+    if (WM_UNLIKELY(cqe->res < 0)) {
+      // THE RULE: every line formatted lands. A log the disk refuses
+      // is a promise this process can no longer keep - refuse by name
+      // instead of dropping silently.
+      std::fprintf(stderr, "webmachine: access log write failed: %s - refusing to drop lines\n",
+                   std::strerror(-cqe->res));
+      std::exit(1);
+    }
+    const size_t took = static_cast<size_t>(cqe->res);
+    if (WM_UNLIKELY(took < al->flight.size())) {
+      al->flight.erase(0, took);
+      arm_log_write(al);  // the remainder still lands; rides the next submit
+      return;
+    }
+    al->flight.clear();
+    al->in_flight = false;
   }
 
   // The listeners leave through the ring, like everything else. Called
@@ -1148,6 +1203,7 @@ class Ring {
       case detail::kRecv: on_recv(idx, gen, cqe); break;
       case detail::kSend: on_send(idx, gen, cqe); break;
       case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
+      case detail::kLog: on_log(cqe); break;
       case detail::kClose:
         if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
           // The linked shutdown failed (peer reset first); the close is
@@ -1171,6 +1227,7 @@ class Ring {
       io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
       replenish_ = 0;
     }
+    flush_log();
     if (bounded) {
       // The rest of the budget is what the WAIT may take. Already
       // spent: submit and take whatever is there, waiting for nothing.
@@ -1233,6 +1290,7 @@ class Ring {
   // Derived at init from the raised RLIMIT_NOFILE (#169); 0 only
   // before init. listener_base_ = max_conns_: the listeners sit behind
   // the connection slots.
+  int log_fd_ = -1;
   unsigned sq_entries_ = 0;  // what the SQ finally settled at
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;

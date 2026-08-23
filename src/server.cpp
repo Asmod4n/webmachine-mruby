@@ -1,5 +1,10 @@
 #include "server.hpp"
 
+#include <cstring>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <mruby/chrono.hpp>
 #include <mruby/class.h>
 #include <mruby/presym.h>
@@ -25,6 +30,7 @@ ServerOptions opts_;
 std::vector<AppSpec*> specs_;
 std::vector<std::vector<const Resource*>> resources_;
 std::vector<std::vector<const WsResource*>> ws_resources_;
+int log_fd_ = -1;
 Assets assets_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
@@ -126,6 +132,51 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     return false;
   }
 
+  // The access log (opt-in, accesslog.hpp's head says why the shape
+  // is two processes): --log forks webmachine-logd over a socketpair,
+  // BEFORE the ring exists so the child inherits none of it. This
+  // core ships records; the sibling formats and writes the file. A
+  // daemon that cannot start refuses the start by name - a server
+  // told to log that cannot is already breaking its one rule.
+  if (opts_.log_path != nullptr) {
+    int sp[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
+      std::snprintf(err, errlen, "--log socketpair: %s", std::strerror(errno));
+      return false;
+    }
+    // The daemon lives next to this binary; argv0-relative, resolved
+    // through /proc/self/exe so a PATH-relative start still finds it.
+    char self[4096];
+    const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
+    std::string logd = "webmachine-logd";
+    if (sl > 0) {
+      self[sl] = '\0';
+      if (char* slash = std::strrchr(self, '/')) {
+        *slash = '\0';
+        logd = std::string(self) + "/webmachine-logd";
+      }
+    }
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+      std::snprintf(err, errlen, "--log fork: %s", std::strerror(errno));
+      return false;
+    }
+    if (pid == 0) {
+      ::dup2(sp[0], 0);
+      ::close(sp[0]);
+      ::close(sp[1]);
+      ::execl(logd.c_str(), "webmachine-logd", opts_.log_path, (char*)nullptr);
+      std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
+      ::_exit(127);
+    }
+    ::close(sp[0]);
+    // A logd that dies must surface as the write's -EPIPE (a named
+    // refusal), never as a zombie in the process table.
+    ::signal(SIGCHLD, SIG_IGN);
+    log_fd_ = sp[1];
+    cfg.log_fd = log_fd_;
+  }
+
   // ONE Http1 for the whole process: every route of every app built
   // here, once. The resource pointers are gathered per app and KEPT -
   // AppInput borrows the arrays only for the constructor's duration,
@@ -147,6 +198,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         opts_.assets_path != nullptr ? &assets_ : nullptr));
+  if (opts_.log_path != nullptr) http_->enable_access_log();
 
   ring_.reset(new Ring<Http1>(*http_));
   if (!ring_->init(cfg, err, errlen)) {
