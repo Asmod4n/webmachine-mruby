@@ -1,0 +1,66 @@
+# The ZIP file format, for test/fuzz/assets_fuzz.cpp (#88).
+#
+# libFuzzer's dictionary parser knows THREE escapes and no more:
+# \\, \" and \xNN. \r and \n are a parse error that aborts the
+# whole file, so every control byte below is spelled in hex.
+#
+# A zip is found BACKWARDS - the End of Central Directory record is
+# located by scanning for its signature from the end - so without the
+# four bytes "PK\x05\x06" in the input there is nothing to parse and
+# the whole target returns on its first check. That signature is the
+# gate this dictionary exists to open; the rest are the records it
+# then points at.
+
+# --- APPNOTE 4.3: the record signatures, little-endian.
+sig_local="PK\x03\x04"
+sig_central="PK\x01\x02"
+sig_eocd="PK\x05\x06"
+sig_eocd64="PK\x06\x06"
+sig_eocd64_loc="PK\x06\x07"
+sig_data_desc="PK\x07\x08"
+sig_spanned="PK\x30\x30"
+
+# --- a whole EMPTY End of Central Directory: signature, four zero
+# 16-bit fields, two zero 32-bit fields, zero comment length. This is
+# the smallest legal zip there is, and the shortest path to the
+# parser having something to disagree with.
+eocd_empty="PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+# --- 4.4.5: the compression methods this tree accepts, and the ones
+# it refuses by name.
+method_stored="\x00\x00"
+method_shrunk="\x01\x00"
+method_deflate="\x08\x00"
+method_deflate64="\x09\x00"
+method_bzip2="\x0c\x00"
+method_lzma="\x0e\x00"
+method_zstd="\x5d\x00"
+method_xz="\x5f\x00"
+
+# --- 4.4.4: the general purpose bit flag. Bit 0 is encryption, which
+# is a named refusal; bit 3 moves the sizes into a data descriptor.
+flag_none="\x00\x00"
+flag_encrypted="\x01\x00"
+flag_data_descriptor="\x08\x00"
+flag_utf8="\x00\x08"
+flag_strong_enc="\x40\x00"
+
+# --- 4.5.3: the Zip64 extra field header id, and the 32-bit sentinel
+# that says "the real value is in it" - the pair that turns every
+# size and offset in the record into a redirection.
+zip64_extra_id="\x01\x00"
+sentinel_32="\xff\xff\xff\xff"
+sentinel_16="\xff\xff"
+zero_32="\x00\x00\x00\x00"
+one_32="\x01\x00\x00\x00"
+huge_32="\x00\x00\x00\x80"
+
+# --- entry names, because find() is a byte compare against them and
+# a table nothing can be looked up in tests half the target.
+name_index="index.html"
+name_css="app.css"
+name_js="app.js"
+name_dir="assets/"
+name_dotdot="../etc/passwd"
+name_absolute="/etc/passwd"
+name_nul="a\x00b"

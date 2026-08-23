@@ -1,0 +1,96 @@
+# The 9110 value grammars, for test/fuzz/http_fuzz.cpp (#88).
+#
+# libFuzzer's dictionary parser knows THREE escapes and no more:
+# \\, \" and \xNN. \r and \n are a parse error that aborts the
+# whole file, so every control byte below is spelled in hex.
+#
+# This target splits its input into a NAME half and a VALUE half, so
+# the entries come in both kinds: field names for the length-switch to
+# dispatch on, and the value grammars each of them then parses.
+
+# --- the names this layer owns (9110) and the framer's (9112).
+n_range="range"
+n_if_range="if-range"
+n_if_match="if-match"
+n_if_none_match="if-none-match"
+n_if_modified="if-modified-since"
+n_if_unmodified="if-unmodified-since"
+n_accept="accept"
+n_accept_enc="accept-encoding"
+n_accept_lang="accept-language"
+n_accept_charset="accept-charset"
+n_content_length="content-length"
+n_content_md5="content-md5"
+n_te="te"
+n_host="host"
+n_connection="connection"
+n_transfer_encoding="transfer-encoding"
+
+# --- 9110 14.1.2: the range unit and all three window forms, plus the
+# spellings that must degrade to "no range" rather than to a window.
+r_prefix="bytes="
+r_closed="bytes=0-499"
+r_open="bytes=500-"
+r_suffix="bytes=-500"
+r_zero_suffix="bytes=-0"
+r_reversed="bytes=9-0"
+r_multi="bytes=0-1,3-4"
+r_foreign="items=0-1"
+r_huge="bytes=18446744073709551615-"
+r_overflow="bytes=99999999999999999999999999-1"
+r_space="bytes= 0 - 9 "
+r_nodigits="bytes=-"
+r_junk="bytes=0-9x"
+
+# --- 13.1.1/13.1.2: entity tags, strong and weak, and the star that
+# never reaches the list walk.
+e_strong="\"abc\""
+e_weak="W/\"abc\""
+e_list="\"a\", \"b\", W/\"c\""
+e_star="*"
+e_quoted_star="\"*\""
+e_unterminated="\"abc"
+e_empty="\"\""
+
+# --- 12.5.3: Accept-Encoding, where q decides and * is the fallback.
+a_gzip="gzip"
+a_xgzip="x-gzip"
+a_star="*"
+a_gzip_q0="gzip;q=0"
+a_gzip_q1="gzip;q=1.0"
+a_gzip_q000="gzip;q=0.000"
+a_star_q0="*;q=0"
+a_identity="identity;q=0, *;q=0"
+a_list="deflate, gzip;q=0.8, *;q=0.1"
+a_semicolons=";;;;"
+
+# --- 9112 6.2 / 9110 8.6: decimal fields, at and past the edges.
+c_zero="0"
+c_leading_zero="007"
+c_max="18446744073709551615"
+c_overflow="99999999999999999999999999"
+c_negative="-1"
+c_plus="+1"
+c_space=" 1 "
+
+# --- 5.6.7: an IMF-fixdate, which the conditional fields carry.
+d_imf="Sun, 06 Nov 1994 08:49:37 GMT"
+d_rfc850="Sunday, 06-Nov-94 08:49:37 GMT"
+d_asctime="Sun Nov  6 08:49:37 1994"
+
+# --- 9110 9.1: the methods parse_method names, and one it does not.
+m_get="GET"
+m_head="HEAD"
+m_post="POST"
+m_put="PUT"
+m_delete="DELETE"
+m_options="OPTIONS"
+m_patch="PATCH"
+
+# --- the punctuation all of the above are cut on.
+p_comma=","
+p_semi=";"
+p_eq="="
+p_quote="\""
+p_ws=" "
+p_tab="\x09"
