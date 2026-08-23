@@ -1,4 +1,4 @@
-#include "wsconn.hpp"
+#include "webmachine.hpp"
 
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <cstring>
 
-#include "websocket.hpp"
 
 // mruby computes a method's arity itself (src/proc.c); the declaration
 // lives in mruby/internal.h, which is a C header with no extern "C"

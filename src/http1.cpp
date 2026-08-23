@@ -1,18 +1,10 @@
-#include "http1.hpp"
+#include "webmachine.hpp"
 
 #include <picohttpparser.h>
 
 #include <cstdlib>
 #include <cstring>
 
-#include "assets.hpp"
-#include "gzip.hpp"
-#include "h2.hpp"
-#include "http.hpp"
-#include "request.hpp"
-#include "resource.hpp"
-#include "websocket.hpp"
-#include "wsdeflate.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)

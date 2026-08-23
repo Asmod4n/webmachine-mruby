@@ -17,10 +17,8 @@
 #include <cstring>
 #include <string>
 
-#include "../../src/application.hpp"
-#include "../../src/config.hpp"
-#include "../../src/ring.hpp"
-#include "../../src/server.hpp"
+#include "../../src/webmachine.hpp"
+
 
 namespace {
 

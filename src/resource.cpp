@@ -1,9 +1,4 @@
-#include "resource.hpp"
-
-#include "application.hpp"
-#include "request.hpp"
-#include "server.hpp"
-#include "wsconn.hpp"
+#include "webmachine.hpp"
 
 #include <mruby/class.h>
 #include <mruby/error.h>

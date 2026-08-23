@@ -11,13 +11,10 @@
 // exactly the tier the h1 framer is at (no consumer until the
 // POST/PUT tier delivers bodies).
 
+#include "webmachine.hpp"
+
 #include <cstring>
 
-#include "assets.hpp"
-#include "h2.hpp"
-#include "http.hpp"
-#include "http1.hpp"
-#include "request.hpp"
 
 namespace webmachine {
 namespace {

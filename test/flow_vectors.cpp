@@ -31,7 +31,8 @@
 #include <mruby.h>
 #include <mruby/array.h>
 
-#include "flow_walk.hpp"
+#include "../src/webmachine.hpp"
+
 
 namespace {
 

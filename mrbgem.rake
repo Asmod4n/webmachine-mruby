@@ -61,7 +61,12 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   File.write("#{mnz_gen}/miniz_export.h", "#pragma once\n#define MINIZ_EXPORT\n")
   spec.cc.include_paths  << mnz << mnz_gen
   spec.cxx.include_paths << mnz << mnz_gen
-  %w[MINIZ_NO_STDIO MINIZ_NO_DEFLATE_APIS].each do |d|
+  # MINIZ_NO_ZLIB_COMPATIBLE_NAMES: miniz otherwise claims zlib's own
+  # names (voidpc, alloc_func, inflateInit_ ...), and since src/ speaks
+  # through ONE header both libraries now meet in every translation
+  # unit. Nothing here uses the compat layer - the ZIP reader is called
+  # by its mz_ names, and zlib itself serves gzip and permessage-deflate.
+  %w[MINIZ_NO_STDIO MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_COMPATIBLE_NAMES].each do |d|
     spec.cc.defines  << d
     spec.cxx.defines << d
   end
@@ -83,8 +88,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     MSG
   end
   spec.linker.libraries << 'crypto'
-
-  spec.cxx.include_paths << "#{dir}/src"
 
   spec.add_test_dependency 'mruby-string-ext'
 end

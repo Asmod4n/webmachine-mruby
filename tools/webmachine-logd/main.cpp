@@ -25,7 +25,8 @@
 #include <cstdlib>
 #include <string>
 
-#include "../../src/accesslog.hpp"
+#include "../../src/webmachine.hpp"
+
 
 using webmachine::LogRec;
 using webmachine::kLogH2;

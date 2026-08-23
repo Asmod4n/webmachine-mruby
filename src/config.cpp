@@ -4,7 +4,8 @@
 // returns a Document, and a section read through #[] arrives as a
 // plain Hash - Ruby values this side walks with the C API and copies
 // out of before the arena closes.
-#include "config.hpp"
+
+#include "webmachine.hpp"
 
 #include <mruby/array.h>
 #include <mruby/chrono.hpp>

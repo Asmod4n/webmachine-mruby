@@ -1,6 +1,4 @@
-#include "application.hpp"
-
-#include "error.hpp"
+#include "webmachine.hpp"
 
 #include <mruby/array.h>
 #include <mruby/class.h>

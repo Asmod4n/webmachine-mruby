@@ -1,4 +1,4 @@
-#include "server.hpp"
+#include "webmachine.hpp"
 
 #include <cstring>
 #include <fcntl.h>
@@ -15,10 +15,6 @@
 #include <memory>
 #include <vector>
 
-#include "application.hpp"
-#include "assets.hpp"
-#include "http1.hpp"
-#include "ring.hpp"
 
 namespace webmachine {
 namespace {

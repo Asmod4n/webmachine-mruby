@@ -13,8 +13,8 @@
 #include <cstdio>
 #include <cstring>
 
-#include "../../src/flow_walk.hpp"
-#include "../../src/resource.hpp"
+#include "../../src/webmachine.hpp"
+
 
 namespace {
 

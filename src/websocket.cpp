@@ -1,7 +1,7 @@
-#include "websocket.hpp"
-
 // Silences OpenSSL 3's deprecation of the one-shot SHA1() - see above.
 #define OPENSSL_SUPPRESS_DEPRECATED 1
+#include "webmachine.hpp"
+
 #include <openssl/sha.h>
 #include <simdutf.h>
 

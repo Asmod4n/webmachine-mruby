@@ -147,18 +147,16 @@ roundtrip_blocks(mrb_state *mrb, mrb_value self)
   return out;
 }
 
-/* test/flow_vectors.cpp, test/embed_vectors.cpp - the gem gets ONE
+/* test/flow_vectors.cpp and friends - the gem gets ONE
  * gem_test entry point, so the other test surfaces are registered from
  * here rather than each growing one. */
 void mrb_webmachine_flow_vectors_init(mrb_state *mrb);
-void mrb_webmachine_embed_vectors_init(mrb_state *mrb);
 void mrb_webmachine_ws_vectors_init(mrb_state *mrb);
 
 void
 mrb_webmachine_mruby_gem_test(mrb_state *mrb)
 {
   mrb_webmachine_flow_vectors_init(mrb);
-  mrb_webmachine_embed_vectors_init(mrb);
   mrb_webmachine_ws_vectors_init(mrb);
 
   struct RClass *m = mrb_define_module(mrb, "HPackVectors");

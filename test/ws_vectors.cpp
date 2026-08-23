@@ -29,8 +29,8 @@
 #include <string>
 #include <vector>
 
-#include "websocket.hpp"
-#include "wsdeflate.hpp"
+#include "../src/webmachine.hpp"
+
 
 namespace {
 

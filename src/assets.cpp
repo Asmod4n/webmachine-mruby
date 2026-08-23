@@ -39,7 +39,8 @@
 // differ from the directory's, so they must be read locally - a
 // signature check and two uint16 at +26 and +28. Five lines against
 // the directory walk that is gone.
-#include "assets.hpp"
+
+#include "webmachine.hpp"
 
 #include <miniz.h>
 
