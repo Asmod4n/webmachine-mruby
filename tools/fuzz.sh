@@ -112,6 +112,25 @@ SECONDS_TO_RUN="${1:-0}"
 WORKERS="${WORKERS:-1}"
 RSS_LIMIT="${RSS_LIMIT:-4096}"
 UNIT_TIMEOUT="${UNIT_TIMEOUT:-25}"
+# HOW LONG IS TOO QUIET, and WHAT COUNTS AS QUIET - the second half
+# matters more than the first.
+#
+# A PLATEAU IS NOT A SLOW RUN. Coverage (cov: basic blocks) flattens
+# early and then sits still for hours while the run is very much
+# still learning: what keeps moving is FEATURES (ft: edge counters
+# bucketed by hit count, plus the value profile) and the CORPUS that
+# grows with them. A target grinding through deep, expensive inputs
+# at four thousand exec/s with flat cov and climbing ft is working,
+# not stuck, and waking somebody for it is how an alert gets ignored.
+#
+# So staleness here means NONE of the three moved - not cov, not ft,
+# not the corpus. That is a plateau: the mutator is producing nothing
+# the target has not already seen.
+#
+# Twenty minutes: long enough that a deep target is not interrupted
+# for catching its breath, short enough that a dead harness does not
+# burn a night.
+STALE_ALERT="${STALE_ALERT:-1200}"
 
 LIBMRUBY=mruby/build/host/lib/libmruby.a
 [ -f "$LIBMRUBY" ] || { echo "$LIBMRUBY missing - run: rake compile" >&2; exit 1; }
@@ -225,10 +244,15 @@ plant_seeds() {
     if command -v zip >/dev/null; then
       d=$(mktemp -d)
       printf '<!doctype html><title>x</title>' > "$d/index.html"
-      (cd "$d" && zip -q -X - index.html) > "$c/seed-one-entry" 2>/dev/null || \
-        rm -f "$c/seed-one-entry"
-      (cd "$d" && zip -q -X -0 - index.html) > "$c/seed-stored" 2>/dev/null || \
-        rm -f "$c/seed-stored"
+      # zip writes the archive, then it is COPIED - not piped. Not
+      # because a pipe breaks it (measured: the general-purpose flags
+      # come out 0x0000 either way, so zip does not fall back to a
+      # data descriptor here), but because an archive that arrives
+      # through a pipe invites exactly that question, and the answer
+      # cost an hour once. A file is a file.
+      (cd "$d" && zip -q -X one.zip index.html && zip -q -X -0 stored.zip index.html)
+      cp "$d/one.zip" "$c/seed-one-entry" 2>/dev/null || true
+      cp "$d/stored.zip" "$c/seed-stored" 2>/dev/null || true
       rm -rf "$d"
     fi
     ;;
@@ -279,38 +303,216 @@ done
 stop() { kill $pids 2>/dev/null || true; }
 trap stop INT TERM
 
-# ONE STATUS LINE PER TARGET, not five interleaved streams. The full
-# output of each is in its own log; what belongs on a screen somebody
-# watches for hours is the three numbers that decide whether to keep
-# going: coverage, corpus size, and the findings counter.
-status() {
-  printf '\n%-11s %8s %8s %8s   %s\n' TARGET COV CORPUS EXEC/S 'oom/timeout/crash'
+# WHAT A CAMPAIGN LOOKS LIKE WHILE IT RUNS. Five interleaved
+# libFuzzer streams are unreadable and a table appended every thirty
+# seconds is just a slower log - after six hours it is four hundred
+# tables nobody scrolls back through. So on a terminal this draws ONE
+# table IN PLACE and keeps it current.
+#
+# The columns answer the one question a long run actually asks: is it
+# still learning? NEW says what moved since the last refresh - c for
+# coverage, f for features, + for a corpus entry - and STALE is how
+# long since ANY of them did. Watching cov alone would call a healthy
+# run stuck, because cov flattens early and stays flat while ft
+# climbs for hours; watching all three is what makes STALE mean
+# plateau instead of "this target is expensive".
+#
+# A target that really has plateaued is telling you one of two things
+# and they look identical in a log: it is done, or its harness cannot
+# reach further. That ambiguity is what made the ws target's
+# 62-of-137 blocks read as saturation for an afternoon - so past
+# STALE_ALERT the tool stops watching and goes and asks
+# (see stall_report).
+#
+# Piped or redirected (nohup, CI, tee), it falls back to appending -
+# cursor motion into a file is noise.
+declare -A prev_cov prev_ft prev_corp last_new seen_crash alerted
+pending_stall=""
+now() { date +%s; }
+START=$(now)
+
+read_stat() {  # $1 target -> sets R_EXEC R_COV R_FT R_CORP R_EPS R_OTC
+  # The last progress line, whichever shape it has: -fork prints
+  # "oom/timeout/crash", a single process does not, and both carry
+  # "cov: ". The final-stats block at the end carries neither, so
+  # anchoring on tail -1 would go blank exactly when it matters.
+  local line
+  line=$(grep -a 'cov: ' "$OUT/$1.log" 2>/dev/null | tail -1)
+  R_EXEC=$(printf '%s' "$line" | sed -n 's/^#\([0-9]*\).*/\1/p')
+  R_COV=$(printf '%s' "$line" | sed -n 's/.*cov: \([0-9]*\).*/\1/p')
+  R_FT=$(printf '%s' "$line" | sed -n 's/.*ft: \([0-9]*\).*/\1/p')
+  R_CORP=$(printf '%s' "$line" | sed -n 's/.*corp: \([0-9]*\).*/\1/p')
+  R_EPS=$(printf '%s' "$line" | sed -n 's/.*exec\/s: \([0-9]*\).*/\1/p')
+  R_OTC=$(printf '%s' "$line" | sed -n 's/.*oom\/timeout\/crash: \([0-9\/]*\).*/\1/p')
+}
+
+human() {  # seconds -> 4m12s
+  local s=$1
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else printf '%dh%02dm' $((s / 3600)) $(((s % 3600) / 60)); fi
+}
+
+# A finding is the entire reason the machine is running. It does not
+# get a row in a table - it gets the screen, once, with the bytes.
+announce_crashes() {
+  local t f
   for t in $TARGETS; do
-    # The last progress line, whichever shape it has: -fork prints
-    # "oom/timeout/crash", a single process does not, and both carry
-    # "cov: ". The final-stats block at the end of a run carries
-    # neither, so anchoring on tail -1 would show nothing exactly when
-    # the numbers matter most.
-    line=$(grep -a 'cov: ' "$OUT/$t.log" 2>/dev/null | tail -1)
-    cov=$(printf '%s' "$line" | sed -n 's/.*cov: \([0-9]*\).*/\1/p')
-    corp=$(printf '%s' "$line" | sed -n 's/.*corp: \([0-9]*\).*/\1/p')
-    eps=$(printf '%s' "$line" | sed -n 's/.*exec\/s: \([0-9]*\).*/\1/p')
-    otc=$(printf '%s' "$line" | sed -n 's/.*oom\/timeout\/crash: \([0-9\/]*\).*/\1/p')
-    found=$(ls "$OUT/crashes-$t" 2>/dev/null | wc -l)
-    [ "$found" -gt 0 ] && otc="$otc  <-- $found FILE(S) IN crashes-$t/"
-    printf '%-11s %8s %8s %8s   %s\n' "$t" "${cov:--}" "${corp:--}" "${eps:--}" "${otc:--}"
+    for f in "$OUT/crashes-$t"/*; do
+      [ -e "$f" ] || continue
+      [ -n "${seen_crash[$f]:-}" ] && continue
+      seen_crash[$f]=1
+      printf '\n\033[1;31m=== FINDING: %s (%s) ===\033[0m\n' "$t" "$f"
+      head -c 256 "$f" | od -An -tx1z | head -8
+      printf 'reproduce: %s %s\n\n' "$OUT/$t" "$f"
+    done
   done
 }
 
-while :; do
-  sleep 30
-  alive=0
-  for p in $pids; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done
-  status
-  [ "$alive" -eq 0 ] && break
-done
+# WHY IT STOPPED, asked instead of guessed. A target that has gone
+# STALE_ALERT without a new edge, a new feature OR a new corpus entry
+# is saying one of exactly two things, and they look identical from
+# the outside:
+#
+#   1. it is done - every branch the harness can reach is reached;
+#   2. the HARNESS cannot reach any further, and no number of cores
+#      will change that.
+#
+# libFuzzer can tell them apart: -print_coverage=1 replays the corpus
+# and NAMES the functions, covered and not, with the fraction of each
+# one's edges taken. That is the difference between "coverage
+# plateaued" and "half this file is not being tested" - which is
+# exactly the reading that took an afternoon to notice on the ws
+# target by eye.
+#
+# It runs on a COPY of the work already done: -runs=0 over the
+# existing corpus, one short process, nothing mutated and the
+# campaign untouched.
+stall_report() {
+  local t=$1 for_secs=$2 probe
+  probe=$(timeout 120 "$OUT/$t" "$OUT/corpus-$t" -runs=0 -print_coverage=1 \
+            -rss_limit_mb="$RSS_LIMIT" 2>&1 || true)
+  printf '\n\033[1;33m=== %s: PLATEAU - no new coverage, feature or corpus entry in %s ===\033[0m\n' \
+    "$t" "$(human "$for_secs")"
+  printf '%s\n' "$probe" | grep -a 'inline 8-bit counters' | head -1
+
+  # OUR OWN SOURCES ONLY. An uninstrumented run reports every
+  # std::vector and basic_string method the target dragged in, and
+  # forty lines of libstdc++ bury the two lines that matter. What is
+  # asked here is whether THIS TREE's code is reached, so the filter
+  # is src/ and test/fuzz/ and nothing else.
+  local mine='(/src/|/test/fuzz/)'
+  local short='s@[^ ]*/(src|test)/@\1/@'
+
+  # Functions the corpus never entered at all. The caveat is real and
+  # is printed with them: at -O1 a small function called once gets
+  # INLINED, and its out-of-line copy is then legitimately dead - so a
+  # name here means "look", not "bug".
+  local unc
+  unc=$(printf '%s\n' "$probe" | grep -aE "^UNCOVERED_FUNC.*$mine" \
+        | sed -E "s/^UNCOVERED_FUNC: hits: [0-9]+ edges: 0\/([0-9]+) /\1 edges  /; $short")
+  if [ -n "$unc" ]; then
+    printf '\nnever entered (some of these are just inlined - check the source):\n'
+    printf '%s\n' "$unc" | sort -rn | head -10 | sed 's/^/  /'
+  fi
+
+  # Covered, but with branches left. Sorted by how much is still
+  # unexplored, because that is where more cores would actually go.
+  printf '\nleast-explored (edges taken of edges present):\n'
+  printf '%s\n' "$probe" | grep -aE "^COVERED_FUNC.*$mine" \
+    | sed -E 's/^COVERED_FUNC: hits: [0-9]+ edges: ([0-9]+)\/([0-9]+) /\1 \2 /' \
+    | awk '{ pct = ($2 > 0) ? int($1 * 100 / $2) : 100
+             if (pct < 90) { name = ""
+                             for (i = 3; i <= NF; i++) name = name (i > 3 ? " " : "") $i
+                             printf "%3d%% %5s/%-5s %s\n", pct, $1, $2, name } }' \
+    | sort -n | head -10 | sed -E "$short" | sed 's/^/  /'
+
+  if [ -n "$unc" ]; then
+    printf '\nreading: a function nothing entered is a HARNESS question, not a\n'
+    printf 'core question - more workers will not reach it. Widen the target.\n\n'
+  else
+    printf '\nreading: everything is entered; what is left are branches inside\n'
+    printf 'functions the corpus does reach. That is what more time buys.\n\n'
+  fi
+}
+
+render() {
+  local t elapsed stale
+  elapsed=$(( $(now) - START ))
+  printf '%-11s %8s %9s %8s %7s %8s %9s %9s   %s\n' \
+    TARGET COV FEATURES CORPUS NEW STALE EXEC/S TOTAL 'oom/to/crash'
+  for t in $TARGETS; do
+    read_stat "$t"
+    local cov=${R_COV:-0} ft=${R_FT:-0} corp=${R_CORP:-0}
+    # ANY of the three moving is progress. cov alone is the coarse
+    # one and it is flat most of the time on a healthy run.
+    local moved=''
+    [ "$cov"  -gt "${prev_cov[$t]:-0}"  ] && moved="${moved}c"
+    [ "$ft"   -gt "${prev_ft[$t]:-0}"   ] && moved="${moved}f"
+    [ "$corp" -gt "${prev_corp[$t]:-0}" ] && moved="${moved}+"
+    prev_cov[$t]=$cov; prev_ft[$t]=$ft; prev_corp[$t]=$corp
+    if [ -n "$moved" ]; then
+      last_new[$t]=$(now)
+      alerted[$t]=''
+    fi
+    local stale_secs=$(( $(now) - ${last_new[$t]:-$START} ))
+    stale=$(human "$stale_secs")
+    # Once per quiet spell, not once per refresh: any progress re-arms.
+    if [ "$stale_secs" -ge "$STALE_ALERT" ] && [ -z "${alerted[$t]:-}" ]; then
+      alerted[$t]=1
+      pending_stall="$pending_stall $t:$stale_secs"
+    fi
+    printf '%-11s %8s %9s %8s %7s %8s %9s %9s   %s\n' \
+      "$t" "${R_COV:--}" "${R_FT:--}" "${R_CORP:--}" "${moved:--}" "$stale" \
+      "${R_EPS:--}" "${R_EXEC:--}" "${R_OTC:--}"
+  done
+  printf '\nrunning %s   %d targets x %d workers   findings -> %s/crashes-<target>/\n' \
+    "$(human "$elapsed")" "$n" "$per" "$OUT"
+}
+
+rows=$((n + 3))
+if [ -t 1 ]; then
+  printf '\033[?25l'                       # the cursor has nothing to say here
+  trap 'printf "\033[?25h"; stop' INT TERM EXIT
+  first=1
+  while :; do
+    announce_crashes
+    [ "$first" -eq 1 ] || printf '\033[%dA' "$rows"
+    first=0
+    pending_stall=""
+    render
+    # Reports print BELOW the table and then the table starts fresh -
+    # a stall report is something to read, not something to overwrite
+    # two seconds later.
+    if [ -n "$pending_stall" ]; then
+      for entry in $pending_stall; do
+        stall_report "${entry%%:*}" "${entry##*:}"
+      done
+      first=1
+    fi
+    alive=0
+    for p in $pids; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done
+    [ "$alive" -eq 0 ] && break
+    sleep 2
+  done
+  printf '\033[?25h'
+else
+  while :; do
+    sleep 30
+    announce_crashes
+    echo
+    pending_stall=""
+    render
+    for entry in $pending_stall; do
+      stall_report "${entry%%:*}" "${entry##*:}"
+    done
+    alive=0
+    for p in $pids; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done
+    [ "$alive" -eq 0 ] && break
+  done
+fi
 
 wait || true
-status
+announce_crashes
 echo
 echo "done. Findings, if any, are in $OUT/crashes-<target>/ - and a file there is the run's whole point."
