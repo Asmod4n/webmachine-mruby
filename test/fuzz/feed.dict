@@ -1,0 +1,84 @@
+# The wire alphabet of both HTTP versions, for test/fuzz/feed_fuzz.cpp
+# (#88). The target eats TWO control bytes first (byte 0 picks h1 or
+# h2, byte 1 is the chunk width), so every token below is something the
+# mutator splices into the bytes AFTER those two.
+#
+# libFuzzer's dictionary parser knows THREE escapes and no more:
+# \\, \" and \xNN. \r and \n are a parse error that aborts the
+# whole file, so every control byte below is spelled in hex.
+
+# --- RFC 9112 3: the request line. A framer's first decision.
+m_get="GET "
+m_head="HEAD "
+m_post="POST "
+m_put="PUT "
+m_delete="DELETE "
+m_options="OPTIONS "
+m_trace="TRACE "
+m_connect="CONNECT "
+v_11=" HTTP/1.1\x0d\x0a"
+v_10=" HTTP/1.0\x0d\x0a"
+v_20=" HTTP/2.0\x0d\x0a"
+crlf="\x0d\x0a"
+crlfcrlf="\x0d\x0a\x0d\x0a"
+target_root="/"
+target_star="*"
+target_absolute="http://x/"
+
+# --- RFC 9112 6 / 9110 7: the header names this tree actually
+# branches on, each with the colon-space a field line has.
+h_host="Host: x\x0d\x0a"
+h_cl="Content-Length: "
+h_te="Transfer-Encoding: chunked\x0d\x0a"
+h_conn_close="Connection: close\x0d\x0a"
+h_conn_keep="Connection: keep-alive\x0d\x0a"
+h_conn_upgrade="Connection: keep-alive, Upgrade\x0d\x0a"
+h_upgrade="Upgrade: websocket\x0d\x0a"
+h_ws_key="Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\x0d\x0a"
+h_ws_version="Sec-WebSocket-Version: 13\x0d\x0a"
+h_ws_ext="Sec-WebSocket-Extensions: permessage-deflate\x0d\x0a"
+h_accept="Accept: text/html\x0d\x0a"
+h_accept_enc="Accept-Encoding: gzip\x0d\x0a"
+h_accept_lang="Accept-Language: en\x0d\x0a"
+h_if_match="If-Match: \"x\"\x0d\x0a"
+h_if_none="If-None-Match: *\x0d\x0a"
+h_if_mod="If-Modified-Since: Sun, 06 Nov 1994 08:49:37 GMT\x0d\x0a"
+h_range="Range: bytes=0-9\x0d\x0a"
+h_te_trailers="te: trailers\x0d\x0a"
+
+# --- RFC 9113 3.4 and 4.1: the preface, and a frame header is nine
+# bytes of which the fourth is the type and the fifth the flags.
+h2_preface="PRI * HTTP/2.0\x0d\x0a\x0d\x0aSM\x0d\x0a\x0d\x0a"
+h2_data="\x00\x00\x00\x00\x00\x00\x00\x00\x01"
+h2_headers_end="\x00\x00\x00\x01\x05\x00\x00\x00\x01"
+h2_priority="\x00\x00\x05\x02\x00\x00\x00\x00\x01"
+h2_rst="\x00\x00\x04\x03\x00\x00\x00\x00\x01"
+h2_settings="\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+h2_settings_ack="\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+h2_push="\x00\x00\x04\x05\x00\x00\x00\x00\x01"
+h2_ping="\x00\x00\x08\x06\x00\x00\x00\x00\x00"
+h2_goaway="\x00\x00\x08\x07\x00\x00\x00\x00\x00"
+h2_window="\x00\x00\x04\x08\x00\x00\x00\x00\x00"
+h2_continuation="\x00\x00\x00\x09\x00\x00\x00\x00\x01"
+
+# --- RFC 9113 6.5.2: the settings identifiers, big-endian.
+set_header_table="\x00\x01"
+set_enable_push="\x00\x02"
+set_max_streams="\x00\x03"
+set_initial_window="\x00\x04"
+set_max_frame="\x00\x05"
+set_max_header_list="\x00\x06"
+
+# --- RFC 7541: HPACK. Appendix A's indexed fields for the pseudo
+# headers a request must carry, plus the three literal prefixes.
+hp_method_get="\x82"
+hp_method_post="\x83"
+hp_path_root="\x84"
+hp_scheme_http="\x86"
+hp_scheme_https="\x87"
+hp_status_200="\x88"
+hp_literal_incremental="\x40"
+hp_literal_none="\x00"
+hp_literal_never="\x10"
+hp_table_update="\x20"
+hp_huffman_len="\x80"
