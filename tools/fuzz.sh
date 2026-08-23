@@ -448,8 +448,14 @@ stall_report() {
     printf '\nreading: a function nothing entered is a HARNESS question, not a\n'
     printf 'core question - more workers will not reach it. Widen the target.\n\n'
   else
-    printf '\nreading: everything is entered; what is left are branches inside\n'
-    printf 'functions the corpus does reach. That is what more time buys.\n\n'
+    printf '\nreading: everything is entered. A LOW FRACTION IS NOT AUTOMATICALLY\n'
+    printf 'a missing branch - counters get attributed to a function from code\n'
+    printf 'inlined into it, so a straight-line function can sit at 4 of 14 no\n'
+    printf 'matter what it is fed (measured: spell_content_length does exactly\n'
+    printf 'that). Before widening the target, check the SOURCE for a branch\n'
+    printf 'that could take the missing edges, and test the guess on a handful\n'
+    printf 'of crafted inputs with -runs=0 -print_coverage=1. If they reach\n'
+    printf 'less than the corpus already does, the corpus was not the problem.\n\n'
   fi
 }
 
