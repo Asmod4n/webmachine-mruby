@@ -78,6 +78,11 @@ cd "$(dirname "$0")/.." || exit 1
 }
 DURATION="${DURATION:-10}"
 REPS="${REPS:-1}"
+# PROTO=h1 (default: h2load --h1 -m1, the historical rows) or h2
+# (prior knowledge, MULTI streams per connection - the delivery-plan
+# path, where DATA frames interleave and rounds are capacity-bound).
+PROTO="${PROTO:-h1}"
+MULTI="${MULTI:-32}"
 SIZES="${SIZES:-4096 32768 262144 1048576}"
 ARMS="${ARMS:-stored gzip 304 206}"
 WARM="${WARM:-}"
@@ -88,6 +93,7 @@ command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2;
 command -v zip >/dev/null || { echo "zip not found" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not found" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
+case "$PROTO" in h1|h2) ;; *) echo "PROTO must be h1 or h2" >&2; exit 2 ;; esac
 for a in $ARMS; do
   case "$a" in
     stored|gzip|304|206) ;;
@@ -219,7 +225,7 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
   for _ in $(seq "$REPS"); do
     local rps s0 s1 c0 c1 cli threads_running
     s0=$(cpu_ticks "$SRV")
-    h2load --h1 -m1 -D"$DURATION" -t"$THREADS" -c"$CONNS" "${ARM_HDRS[@]}" "$ARM_URL" \
+    h2load "${H2FLAGS[@]}" -D"$DURATION" -t"$THREADS" -c"$CONNS" "${ARM_HDRS[@]}" "$ARM_URL" \
       >"$WORK/cli.out" 2>&1 &
     cli=$!
     c0=$(cpu_ticks "$cli")
@@ -247,9 +253,15 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     # server has least to do, so they need the most client threads.
     local cu=$((c1 - c0)) su=$((s1 - s0))
     if [ "$su" -gt 0 ] && [ "$cu" -ge "$su" ]; then
+      # The ARM is refused, the SWEEP continues: killing everything
+      # after it once cost the whole large-size half of a run for a
+      # marginal 304 arm. The guarantee is unchanged - no client-bound
+      # figure is ever written, the row says REFUSED - but the arms
+      # that pass still produce their rows.
       echo "REFUSED on arm $arm, size $sz: the client spent $((cu * 100 / HZ / DURATION))% of a core against the server's $((su * 100 / HZ / DURATION))%, on $threads_running running client threads." >&2
       echo "  This measures h2load, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
-      exit 1
+      printf 'REFUSED client-bound'
+      return
     fi
     vals+=("$rps $mbs")
   done
@@ -284,9 +296,17 @@ boot_ns() {
   echo "$lo $hi"
 }
 
+if [ "$PROTO" = h2 ]; then
+  H2FLAGS=(-m"$MULTI")
+  PROTO_SPELL="h2 -m$MULTI"
+else
+  H2FLAGS=(--h1 -m1)
+  PROTO_SPELL="--h1 -m1"
+fi
+
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: assets h2load --h1 -m1 -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} $(uname -mr)"
+  echo "harness: assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} $(uname -mr)"
   s0=$(steal_ticks)
   printf '%10s %8s %14s %12s %12s\n' "size" "arm" "req/s" "MB/s" "wire"
   # A FRESH PORT PER SIZE. stop_srv reaps the process, but the listening
