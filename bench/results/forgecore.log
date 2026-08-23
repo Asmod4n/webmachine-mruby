@@ -718,3 +718,94 @@ harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default 
 steal +0 ticks over the whole sweep
 setup: 1 entry 4220us, 5000 entries 21547us (boot floor, min of 5; floor jitter 730us)
 setup: => 3466ns per entry
+==== 2026-08-23T14:14Z repo=9d3ad71 mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        REFUSED client-bound         4096        -        -
+==== 2026-08-23T14:14Z repo=9d3ad71 mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t4 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        REFUSED client-bound         4096        -        -
+==== 2026-08-23T14:17Z repo=94b1b9a mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        1349294      5396.48         4096       98        -
+      4096     gzip        1771078      3399.68         1888       97        -
+==== 2026-08-23T14:18Z repo=94b1b9a mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        1312052      5253.12         4096       98        -
+==== 2026-08-23T14:19Z repo=94b1b9a mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        1257608      5027.84         4096       98        -
+==== 2026-08-23T14:20Z repo=59cd242 mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+==== 2026-08-23T14:21Z repo=59cd242 mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%    rq/sc
+      4096   stored        1269651      5079.04         4096       98     82.3
+      4096     gzip        1717059      3297.28         1888       97     61.4
+      4096      304        2693738        61.65            0       99     84.9
+      4096      206        1318450      2672.64         2048       99    116.0
+     32768   stored         300505      9420.80        32768       99    159.5
+     32768     gzip         741376      7331.84        10242       99    120.9
+     32768      304        2885459        66.04            0       99     89.7
+     32768      206         505128      7936.00        16384       99    149.2
+    262144   stored          39803      9963.52       262144       99     57.8
+    262144     gzip         132391      9840.64        77786       99    164.4
+    262144      304        2708765        62.00            0       99     88.0
+    262144      206          78094      9768.96       131072       99    170.7
+   1048576   stored           9965      9973.76      1048576      100     14.7
+   1048576     gzip          30736      9410.56       320706       99     47.2
+   1048576      304        2661802        60.92            0       99     92.4
+   1048576      206          20001     10004.48       524288      100     27.3
+steal +0 ticks over the whole sweep
+setup: 1 entry 4742us, 5000 entries 20612us (boot floor, min of 5; floor jitter 488us)
+setup: => 3174ns per entry
+==== 2026-08-23T15:08Z repo=ac42cad mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default log=bench/results/forgecore.log 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored        1426106      5703.68         4096       99            -
+      4096     gzip        1816089      3491.84         1888       99            -
+      4096      304        2861699        65.50            0       99            -
+      4096      206        1341616      2723.84         2048       99            -
+     32768   stored         289460      9072.64        32768      100            -
+     32768     gzip         761341      7526.40        10242      100            -
+     32768      304        2859808        65.46            0       99            -
+     32768      206         498060      7823.36        16384      100            -
+    262144   stored          39450      9871.36       262144       99            -
+    262144     gzip         135578     10178.56        78554       99            -
+    262144      304        2829491        64.76            0       99            -
+    262144      206          80327     10055.68       131072       99            -
+   1048576   stored           9748      9758.72      1048576       99            -
+   1048576     gzip          32454      9984.00       322126      100            -
+   1048576      304        2820893        64.57            0       99            -
+   1048576      206          19876      9943.04       524288      100            -
+steal +0 ticks over the whole sweep
+setup: 1 entry 4172us, 5000 entries 20227us (boot floor, min of 5; floor jitter 1109us)
+setup: => 3211ns per entry
+==== 2026-08-23T15:13Z repo=1474ee2 mruby=06ed794 ====
+harness: assets h2load h2 -m32 -t3 -c8 -D10 reps=1 warm=default log=1 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored        1466746      5867.52         4096       99            -
+      4096     gzip        1798208      3450.88         1888       99            -
+      4096      304        2696086        61.71            0       99            -
+      4096      206        1293136      2621.44         2048      100            -
+     32768   stored         280713      8806.40        32768       99            -
+     32768     gzip         738605      7301.12        10242       99            -
+     32768      304        2646502        60.57            0       99            -
+     32768      206         478461      7516.16        16384      100            -
+    262144   stored          40489     10127.36       262144      100            -
+    262144     gzip         126662      9512.96        78554      100            -
+    262144      304        2673018        61.18            0      100            -
+    262144      206          77988      9758.72       131072      100            -
+   1048576   stored           9660      9666.56      1048576      100            -
+   1048576     gzip          31866      9799.68       322126       99            -
+   1048576      304        2635322        60.32            0       99            -
+   1048576      206          19597      9809.92       524288      100            -
+steal +0 ticks over the whole sweep
+access log: 170134010 lines (12G)
+setup: 1 entry 4437us, 5000 entries 20304us (boot floor, min of 5; floor jitter 716us)
+setup: => 3174ns per entry
