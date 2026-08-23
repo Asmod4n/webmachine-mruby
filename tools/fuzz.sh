@@ -175,7 +175,17 @@ plant_seeds
 
 # -fno-sanitize=alignment: ls-hpack and phr read unaligned on purpose,
 # and they are not what this run is about.
-clang++ -g -O1 -std=c++20 \
+#
+# -no-pie, and it is the LINKER's problem not the compiler's: libmruby.a
+# is built by the tree's gcc without -fPIE (a static library for a
+# non-PIE binary has no reason to be), while clang defaults to PIE on
+# most distributions - so the link fails with "relocation R_X86_64_32
+# against `.rodata' can not be used when making a PIE object" on the
+# first archive member that has one, which is simdutf.o. The narrow
+# fix belongs here: this is the only consumer that links that archive
+# with clang, and making the PRODUCT build position-independent to
+# please a test tool would be paying for it on every request.
+clang++ -g -O1 -std=c++20 -no-pie \
   -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
   -fno-sanitize=alignment \
   -Imruby/include -Imruby/build/host/include \
