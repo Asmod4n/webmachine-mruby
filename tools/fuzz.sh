@@ -193,6 +193,8 @@ build_target() {
     -Imruby/include -Imruby/build/host/include \
     -Imruby/build/repos/host/mruby-phr/deps/picohttpparser \
     -Ideps/ls-hpack -Imruby/build/repos/host/mruby-string-is-utf8/include \
+    -Ideps/miniz -Imruby/build/host/mrbgems/webmachine-mruby/miniz \
+    -DMINIZ_NO_STDIO -DMINIZ_NO_DEFLATE_APIS \
     "test/fuzz/${t}_fuzz.cpp" "$LIBMRUBY" \
     mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a \
     -lz -lcrypto -lpthread -lm -o "$OUT/$t"
