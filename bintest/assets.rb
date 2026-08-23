@@ -642,3 +642,27 @@ assert('assets: a method this tier cannot serve is refused by name') do
   assert_true out.include?('odd.css'), out
   assert_true out.include?('method 12'), out
 end
+
+assert('assets: a body above the warm budget arrives byte-exact behind its head') do
+  # Above WM_WARM_BUDGET (default 64 KiB) the body is never copied: the
+  # head goes into the sink, the mapping bytes ride the same sendmsg as
+  # plan segments (#168 at the feed boundary). The one failure mode of
+  # that plan is ORDER - head and body swapped, or body bytes before
+  # the blank line - and only a wire read can see it. 200 KB of
+  # rotating bytes would expose any offset slip.
+  big = ((0..255).to_a.pack('C*') * 800).byteslice(0, 200_000)
+  a_server(a_build_zip([['big.bin', big, 0]])) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK')
+      assert_equal big.bytesize, body.bytesize
+      assert_equal big, body
+      # The connection survives: a pipelined request behind the
+      # transfer parses out of the carry and answers.
+      s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, body2 = a_read(s)
+      assert_equal big, body2
+    end
+  end
+end

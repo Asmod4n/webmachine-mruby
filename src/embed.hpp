@@ -41,7 +41,10 @@ class Embedded {
   bool feed(const char* data, size_t len, std::string& out) {
     if (!open_) return false;
     app_.on_tick();  // the Ring's per-wake hook; a feed is this loop's wake
-    open_ = app_.feed(st_, data, len, out);
+    // No plan: this model copies by contract (#173, bytes in, bytes
+    // out), so feed keeps the classic park-and-more() shape and drain
+    // lays the plans out below.
+    open_ = app_.feed(st_, data, len, out, nullptr);
     drain(out);
     return open_;
   }

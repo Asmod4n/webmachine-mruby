@@ -231,8 +231,6 @@ class Http1 {
   // Feed wire bytes; responses land in sink (the connection's out/next,
   // whichever accumulates). False: the connection ends once everything
   // queued has drained - wire-invalidity paths and Connection: close.
-  bool feed(Conn& st, const char* data, size_t len, std::string& sink);
-
   // What a source hands the Ring for one round (#168: "eine Quelle
   // liefert einen Plan, kein Byte"): POINTERS to bytes that already
   // exist - the deflate stream where it lies in the mapping, the 18
@@ -286,6 +284,13 @@ class Http1 {
     unsigned nseg = 0;
     size_t iov_len = 0;  // total across seg
   };
+
+  // plan: nullable. Non-null only when the Ring can arm a plan in this
+  // very round (no send in flight) - then an asset body leaves WITH
+  // its head in one sendmsg, as pointers. Null keeps the classic
+  // shape: bodies above the warm budget park and more() delivers.
+  bool feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+
 
   // The delivery model's continuation (#168): the Ring calls this when
   // the connection's sink has fully drained - the one signal BOTH
@@ -419,7 +424,7 @@ class Http1 {
   // answers; only the serialization differs - HPACK + HEADERS/DATA
   // frames into the same sink. Return value = feed's contract.
   bool h2_begin(Conn& st, std::string& sink);
-  bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink);
+  bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
   void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
   bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, std::string& sink);

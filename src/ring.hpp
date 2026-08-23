@@ -15,8 +15,13 @@
 //                 this" - and whether that listener is TCP, #147: a
 //                 unix listener sits behind a proxy and is never
 //                 packetized on this hop)
-//   bool feed(Conn&, const char*, size_t, std::string& sink);
-//        false = close this connection once the sink has drained
+//   bool feed(Conn&, const char*, size_t, std::string& sink, Plan*);
+//        false = close this connection once the sink has drained. The
+//        Plan is nullable: the Ring passes one only when it could arm
+//        it in this very round (no send in flight, last segment of a
+//        recv bundle) - then feed may hand bytes over as segments the
+//        same way more() does, and they leave WITH the sink in one
+//        sendmsg. A null plan asks for the classic copy/park shape.
 //   bool pending(const Conn&) const;
 //        does this connection still owe bytes the App has not handed
 //        over? Asked before each send: true makes it carry MSG_MORE,
@@ -899,6 +904,13 @@ class Ring {
     bool closing = false;
     size_t left = total;
     uint32_t bid = bid0;
+    // The plan is offered on the LAST feed of the bundle alone, and
+    // only when nothing is in flight (an in-flight sendmsg owns the
+    // iovec arrays, and a plan against `next` would resolve against
+    // the wrong string). Earlier segments park; the last one's flush
+    // delivers everything parked by the whole bundle - so nothing is
+    // lost to the split, it only rides one call later.
+    typename App::Plan req;
     while (left > 0) {
       const size_t n = left < kBufSize ? left : kBufSize;
       size_t off = 0;
@@ -907,13 +919,22 @@ class Ring {
         begin_close(idx);
         return;
       }
-      if (!closing) closing = !app_.feed(c.app, pool_ + off, n, sink);
+      const bool last = left <= kBufSize;
+      typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
+      if (!closing) closing = !app_.feed(c.app, pool_ + off, n, sink, plan);
       left -= n;
       bid = (bid + 1) & (kBufCount - 1);
       replenish_++;
     }
 
-    if (!c.sending && !c.out.empty()) arm_send(idx);
+    if (!c.sending) {
+      if (req.nseg != 0) {
+        take_plan(c, req);
+        arm_send(idx);
+      } else if (!c.out.empty()) {
+        arm_send(idx);
+      }
+    }
     if (WM_UNLIKELY(closing)) {
       // Everything queued still drains; on_send finishes the close.
       if (c.sending) c.close_after_send = true;
@@ -964,6 +985,40 @@ class Ring {
     continue_conn(idx);
   }
 
+  // RESOLVE a plan into the connection's iovecs. A sink segment could
+  // not carry a pointer while the plan was built - `out` was still
+  // being appended to and every append may move it - so it carried an
+  // offset, and this is the first moment the address is final. A plan
+  // that names any sink range describes the round's sink COMPLETELY;
+  // one of pure pointers (h1's transfer out of more()) leaves the sink
+  // to be sent ahead of it - the prepend shifts the array by one, and
+  // Conn::kIov reserves the slot.
+  void take_plan(Conn& c, const typename App::Plan& req) {
+    c.niov = 0;
+    c.plan_len = 0;
+    bool sink_covered = false;
+    for (unsigned i = 0; i < req.nseg; i++) {
+      const typename App::Plan::Seg& sg = req.seg[i];
+      if (sg.base != nullptr) {
+        c.iov[c.niov].iov_base = const_cast<char*>(sg.base);
+      } else {
+        c.iov[c.niov].iov_base = c.out.data() + sg.off;
+        sink_covered = true;
+      }
+      c.iov[c.niov].iov_len = sg.len;
+      c.plan_len += sg.len;
+      c.niov++;
+    }
+    if (!sink_covered && !c.out.empty()) {
+      for (unsigned i = c.niov; i > 0; i--) c.iov[i] = c.iov[i - 1];
+      c.iov[0].iov_base = c.out.data();
+      c.iov[0].iov_len = c.out.size();
+      c.plan_len += c.out.size();
+      c.niov++;
+    }
+    c.sent = 0;
+  }
+
   // The delivery continuation (#168): a fully drained sink is the one
   // signal every protocol produces. Backlog first - bytes queued in
   // `out` while a chain flew belong to EARLIER wire order than any new
@@ -983,38 +1038,7 @@ class Ring {
     typename App::Plan req;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     if (req.nseg != 0) {
-      // RESOLVE the plan. A sink segment could not carry a pointer
-      // while it was built - `out` was still being appended to and
-      // every append may move it - so it carried an offset, and this
-      // is the first moment the address is final. A plan that has any
-      // sink segment describes the round's sink COMPLETELY; there is
-      // nothing to prepend.
-      c.niov = 0;
-      c.plan_len = 0;
-      bool sink_covered = false;
-      for (unsigned i = 0; i < req.nseg; i++) {
-        const typename App::Plan::Seg& sg = req.seg[i];
-        if (sg.base != nullptr) {
-          c.iov[c.niov].iov_base = const_cast<char*>(sg.base);
-        } else {
-          c.iov[c.niov].iov_base = c.out.data() + sg.off;
-          sink_covered = true;
-        }
-        c.iov[c.niov].iov_len = sg.len;
-        c.plan_len += sg.len;
-        c.niov++;
-      }
-      // A plan of pure pointers (h1's transfer) leaves the sink to be
-      // sent ahead of it, exactly as before. Prepending shifts the
-      // array by one, and kIov reserves the slot for it.
-      if (!sink_covered && !c.out.empty()) {
-        for (unsigned i = c.niov; i > 0; i--) c.iov[i] = c.iov[i - 1];
-        c.iov[0].iov_base = c.out.data();
-        c.iov[0].iov_len = c.out.size();
-        c.plan_len += c.out.size();
-        c.niov++;
-      }
-      c.sent = 0;
+      take_plan(c, req);
       arm_send(idx);
       return;
     }

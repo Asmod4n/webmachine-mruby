@@ -40,7 +40,7 @@ struct Echo {
     unsigned nseg = 0;
     size_t iov_len = 0;
   };
-  bool feed(Conn&, const char* data, size_t len, std::string& sink) {
+  bool feed(Conn&, const char* data, size_t len, std::string& sink, Plan*) {
     sink.append(data, len);
     return true;
   }

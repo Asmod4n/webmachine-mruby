@@ -641,47 +641,23 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
     return true;
   }
 
-  H2Stream* stp = h2.find(stream_id);
-  const bool had_stream = stp != nullptr;
-  const int64_t swin = had_stream ? stp->send_window : h2.peer_initial_window;
-  const int64_t budget = h2.send_window < swin ? h2.send_window : swin;
-  // Two bounds, two owners: the window is the peer's, the chunk is
-  // ours (Gebot 18 - one round never writes more than kDeliverChunk;
-  // the drained sink and WINDOW_UPDATE both continue the rest).
-  size_t give = blen < kDeliverChunk ? blen : kDeliverChunk;
-  if (budget <= 0) give = 0;
-  else if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
-
-  size_t off = 0;
-  while (off < give) {
-    size_t n = give - off;
-    if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-    const bool last = win_off + off + n == win_end;
-    h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
-                        stream_id);
-    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    Assets::copy_wire(e, win_off + off, n, sink);
-    off += n;
-  }
-  // Debit BEFORE any open() can move the stream vector (h2_answer's
-  // hard-won ordering).
-  h2.send_window -= static_cast<int64_t>(give);
-  if (had_stream) stp->send_window -= static_cast<int64_t>(give);
-  if (give < blen) {
-    // No byte lies in the park, an offset does (#168): the remainder
-    // is three numbers, drained by h2_flush_pending on WINDOW_UPDATE
-    // and on every drained sink. src_off/src_len are absolute wire
-    // offsets, so a 206 window parks exactly like a full body.
-    H2Stream& keep = h2.open(stream_id);
-    keep.src = &e;
-    keep.src_off = win_off + give;
-    keep.src_len = win_end;
-    keep.headers_done = true;
-    keep.half_closed_remote = true;
-    if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
-    return true;
-  }
-  h2.close_stream(stream_id);
+  // The body is PARKED, never copied - not even a first chunk. Three
+  // numbers (#168: no byte lies in the park, an offset does; absolute
+  // wire offsets, so a 206 window parks exactly like a full body), and
+  // h2_flush_pending delivers them as a plan: frame headers as sink
+  // runs, payload as pointers into the mapping. When h2_feed holds a
+  // plan the flush runs at ITS end, so the body leaves in the SAME
+  // sendmsg as these headers; otherwise (a send in flight) the next
+  // drained sink or WINDOW_UPDATE picks it up. All window accounting
+  // lives in the flush - nothing is debited here, because nothing is
+  // sent here (RFC 9113 6.9: debits follow DATA, and this function no
+  // longer emits any).
+  H2Stream& keep = h2.open(stream_id);
+  keep.src = &e;
+  keep.src_off = win_off;
+  keep.src_len = win_end;
+  keep.headers_done = true;
+  keep.half_closed_remote = true;
   return true;
 }
 
@@ -882,6 +858,18 @@ struct RoundOut {
   std::string& sink;
   Http1::Plan* plan;
 
+  // The resolver treats a plan that names any sink range as a COMPLETE
+  // description of the sink, so bytes that were already in it when the
+  // flush started - feed's HEADERS frames - must be claimed before the
+  // first thing this round emits. Lazily, on first emission: a flush
+  // that finds nothing to send leaves the plan empty and the Ring
+  // takes the plain-send path.
+  void prime() {
+    if (plan == nullptr || plan->nseg != 0 || sink.empty()) return;
+    plan->seg[plan->nseg++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
+    plan->iov_len += sink.size();
+  }
+
   // Room for one more DATA frame: its header opens or extends a sink
   // run, and its payload is up to three spans (a deflated entry's wire
   // body is gzip header + mapping + trailer). Four is the worst case
@@ -896,6 +884,7 @@ struct RoundOut {
       sink.append(p, n);
       return;
     }
+    prime();
     const size_t at = sink.size();
     sink.append(p, n);
     if (plan->nseg > 0) {
@@ -915,6 +904,7 @@ struct RoundOut {
       Assets::copy_wire(e, off, n, sink);
       return;
     }
+    prime();
     struct iovec iv[3];
     const unsigned k = Assets::wire_iov(e, off, n, iv);
     for (unsigned i = 0; i < k; i++) {
@@ -1076,10 +1066,12 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // connection's verdict.
   std::string held;
   held.swap(st.carry);
-  return feed(st, held.data(), held.size(), sink);
+  // The plan rides along: a pipelined asset request parsed out of the
+  // carry can hand its body over in this same round.
+  return feed(st, held.data(), held.size(), sink, &plan);
 }
 
-bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) {
+bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
   // The carry is the frame buffer; the hot path parses the receive in
   // place and only a frame split across receives pays the copy.
@@ -1344,6 +1336,12 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink) 
   } else {
     st0.carry.erase(0, off);
   }
+  // Everything this receive parked leaves NOW, with its headers, in
+  // one sendmsg - as a plan when the Ring handed one in (no send in
+  // flight), as parked state otherwise, drained on the next sink
+  // drain. This is the h2 asset path's only body delivery: the answer
+  // parks, this flushes.
+  h2_flush_pending(st0, sink, plan);
   // A peer that said GOAWAY is finished once the sink drains.
   return !h2.goaway_recv;
 }

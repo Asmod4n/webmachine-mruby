@@ -371,10 +371,10 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
   return false;
 }
 
-bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
+bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   // A connection that spoke the client preface routes its bytes to the
   // frame layer forever after (RFC 9113 3.4); everything below is h1.
-  if (st.h2 != nullptr) return h2_feed(st, data, len, sink);
+  if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
     // Decided on the first bytes: GET diverges at byte 0, POST/PUT at
     // byte 1 - the h1 path pays for this compare exactly once per
@@ -386,7 +386,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
       st.fresh = false;
       st.carry.clear();
       if (!h2_begin(st, sink)) return false;
-      return h2_feed(st, data + i, len - i, sink);
+      return h2_feed(st, data + i, len - i, sink, plan);
     }
     if (i == len) {  // every byte so far matches: wait for the verdict
       st.carry.append(data, len);
@@ -719,6 +719,27 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink) {
           const size_t rest = viewlen - off;
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
+          // When the Ring handed a plan in, the transfer leaves WITH
+          // its head in this very round: the sink (head + everything
+          // before it) is one leading segment, the wire body follows
+          // as pointers, and the head-only round this used to cost is
+          // gone. Without a plan (a send in flight) the park stands
+          // and more() delivers, as before.
+          if (plan != nullptr) {
+            plan->seg[plan->nseg++] = Plan::Seg{nullptr, 0, sink.size()};
+            plan->iov_len += sink.size();
+            const size_t take = st.xfer_end - st.xfer_off;
+            struct iovec iv[3];
+            const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
+            for (unsigned i = 0; i < k; i++) {
+              plan->seg[plan->nseg++] =
+                  Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+            }
+            plan->iov_len += take;
+            st.xfer = nullptr;
+            st.xfer_off = 0;
+            st.xfer_end = 0;
+          }
           return true;
         }
         continue;
