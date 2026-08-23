@@ -145,10 +145,17 @@ HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
 # perf_event_paranoid low enough for tracepoints); without one the
 # column prints '-' rather than a guess.
-SYSC_PERF="${PERF:-}"
-if [ -z "$SYSC_PERF" ]; then
-  if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
-  else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+# OPT-IN via SYSCALLS=1: counting needs perf, tracefs access and a
+# paranoid setting most machines don't have lying around - a default
+# that probes and warns on every run is noise for anyone not asking
+# the question. Off, the column prints '-' and nothing is touched.
+SYSC_PERF=""
+if [ "${SYSCALLS:-0}" = 1 ]; then
+  SYSC_PERF="${PERF:-}"
+  if [ -z "$SYSC_PERF" ]; then
+    if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
+    else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+  fi
 fi
 if [ -n "$SYSC_PERF" ]; then
   # Preflight, once: tracepoints are gated separately from cpu events
