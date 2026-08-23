@@ -376,3 +376,16 @@ env: runnable=1/1445 busy=0% (200ms sample)
      50%  424.00us
      99%  522.00us
 Requests/sec: 923285.89
+==== 2026-08-23T09:20Z repo=f549fed mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1069 busy=0% (200ms sample)
+    Req/Sec   231.41k     3.31k  240.15k    75.50%
+     50%  426.00us
+     99%  526.00us
+Requests/sec: 918900.89
+==== 2026-08-23T09:20Z repo=f549fed mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1064 busy=0% (200ms sample)
+     50%  537.00us
+     99%  566.00us
+Requests/sec: 729479.08
