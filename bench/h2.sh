@@ -94,19 +94,61 @@ mkdir -p bench/results
 
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 
+# --- requests per syscall -------------------------------------------
+# The point of a ring server is syscall AMORTIZATION - one enter
+# carries a whole batch of rounds - and this makes it a NUMBER: the
+# server's syscalls over the run (raw_syscalls:sys_enter, a counting
+# tracepoint: no sampling, negligible overhead), divided into the
+# requests the client completed. The window is the client's run plus
+# edges; an idle server sits BLOCKED in one enter, so edges add
+# ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
+# perf_event_paranoid low enough for tracepoints); without one the
+# column prints '-' rather than a guess.
+SYSC_PERF="${PERF:-}"
+if [ -z "$SYSC_PERF" ]; then
+  if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
+  else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+fi
+SYSC_PID=
+SYSC_OUT="${WORK:-/tmp}/wm-sysc.$$"
+sysc_begin() {  # <pid[,pid...]> <seconds>
+  [ -n "$SYSC_PERF" ] || return 0
+  "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -p "$1" -o "$SYSC_OUT" \
+    -- sleep "$2" >/dev/null 2>&1 &
+  SYSC_PID=$!
+}
+# Split like snap_times, for the same reason: the WAIT must run in the
+# shell that backgrounded perf (a $() subshell is not its parent, its
+# wait returns at once while the output file is still being written);
+# only the read may fork.
+sysc_wait() {
+  [ -n "$SYSC_PID" ] && wait "$SYSC_PID" 2>/dev/null
+  SYSC_PID=
+}
+sysc_read() {
+  awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
+}
+
 run() {  # run <label> <h2load flags...>
   local label=$1
   shift
   echo "== $label =="
   local vals=()
   for _ in $(seq "$REPS"); do
-    local s0 s1 line rps
+    local s0 s1 out line rps nsysc ndone rsc="-"
     s0=$(steal_ticks)
-    line=$(h2load -D"$DURATION" -t"$THREADS" -c"$CONNS" "$@" "$URL" 2>&1 |
-      grep '^finished')
+    sysc_begin "$SRV" "$DURATION"
+    out=$(h2load -D"$DURATION" -t"$THREADS" -c"$CONNS" "$@" "$URL" 2>&1)
     s1=$(steal_ticks)
+    sysc_wait
+    nsysc=$(sysc_read)
+    line=$(echo "$out" | grep '^finished')
+    ndone=$(echo "$out" | grep '^requests:' | awk '{print $6}')
+    if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
+      rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
+    fi
     rps=$(echo "$line" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
-    echo "  $line (steal +$((s1 - s0)) ticks)"
+    echo "  $line (steal +$((s1 - s0)) ticks, rq/sc $rsc)"
     vals+=("$rps")
   done
   if [ "$REPS" -gt 1 ]; then

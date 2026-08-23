@@ -134,6 +134,41 @@ cpu_ticks() {
     "/proc/$1/stat" 2>/dev/null || echo 0
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+
+# --- requests per syscall -------------------------------------------
+# The point of a ring server is syscall AMORTIZATION - one enter
+# carries a whole batch of rounds - and this makes it a NUMBER: the
+# server's syscalls over the run (raw_syscalls:sys_enter, a counting
+# tracepoint: no sampling, negligible overhead), divided into the
+# requests the client completed. The window is the client's run plus
+# edges; an idle server sits BLOCKED in one enter, so edges add
+# ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
+# perf_event_paranoid low enough for tracepoints); without one the
+# column prints '-' rather than a guess.
+SYSC_PERF="${PERF:-}"
+if [ -z "$SYSC_PERF" ]; then
+  if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
+  else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+fi
+SYSC_PID=
+SYSC_OUT="${WORK:-/tmp}/wm-sysc.$$"
+sysc_begin() {  # <pid[,pid...]> <seconds>
+  [ -n "$SYSC_PERF" ] || return 0
+  "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -p "$1" -o "$SYSC_OUT" \
+    -- sleep "$2" >/dev/null 2>&1 &
+  SYSC_PID=$!
+}
+# Split like snap_times, for the same reason: the WAIT must run in the
+# shell that backgrounded perf (a $() subshell is not its parent, its
+# wait returns at once while the output file is still being written);
+# only the read may fork.
+sysc_wait() {
+  [ -n "$SYSC_PID" ] && wait "$SYSC_PID" 2>/dev/null
+  SYSC_PID=
+}
+sysc_read() {
+  awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
+}
 # The client's cpu comes from the shell's CHILD times, credited at
 # reap - reading the client's /proc after `wait` read a reaped pid as
 # 0 ticks, and the client-bound refusal never fired (found when a
@@ -244,6 +279,7 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     cli=$!
     snap_times
     c0=$(parse_child_cpu)
+    sysc_begin "$SRV" "$DURATION"
     # One mid-run sample: a client on a single running thread is
     # measuring itself, whatever -t claimed.
     sleep 1
@@ -252,6 +288,13 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     snap_times
     c1=$(parse_child_cpu)
     s1=$(cpu_ticks "$SRV")
+    sysc_wait
+    local nsysc ndone rsc="-"
+    nsysc=$(sysc_read)
+    ndone=$(grep '^requests:' "$WORK/cli.out" | awk '{print $6}')
+    if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
+      rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
+    fi
     rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
     # h2load switches unit on its own (KB/MB/GB per second), so the
     # column would silently go blank at exactly the sizes it matters
@@ -282,12 +325,12 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
       printf 'REFUSED client-bound'
       return
     fi
-    vals+=("$rps $mbs $scpu")
+    vals+=("$rps $mbs $scpu $rsc")
   done
   # median by req/s, carrying its own MB/s and cpu% along - the three
   # belong to the same run and must not be medianed apart.
   printf '%s\n' "${vals[@]}" | sort -n -k1 | \
-    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s", $1, ($2 == "" ? "-" : $2), $3}'
+    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s %s", $1, ($2 == "" ? "-" : $2), $3, $4}'
 }
 
 # boot_ns <zip> <port> - "min max" nanoseconds from exec to the first
@@ -330,7 +373,9 @@ fi
   # cpu% = server CPU over the run, percent of ONE core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx
   # sweep: req/s per core is req/s * 100 / cpu%.
-  printf '%10s %8s %14s %12s %12s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%"
+  # rq/sc = completed requests per SERVER syscall over the run - the
+  # batching the ring buys, as a number. '-' = no perf to count with.
+  printf '%10s %8s %14s %12s %12s %8s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "rq/sc"
   # A FRESH PORT PER SIZE. stop_srv reaps the process, but the listening
   # socket is not guaranteed gone by the time the next one binds, and
   # the server refuses a taken port by name (it does not fall back to
@@ -340,10 +385,10 @@ fi
     for arm in $ARMS; do
       start_srv "$port"
       arm_setup "$port" "$arm" "$sz"
-      read -r rps mbs scpu <<< "$(measure "$arm" "$sz")"
+      read -r rps mbs scpu rsc <<< "$(measure "$arm" "$sz")"
       stop_srv
       port=$((port + 1))
-      printf '%10s %8s %14s %12s %12s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}"
+      printf '%10s %8s %14s %12s %12s %8s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
     done
   done
   s1=$(steal_ticks)

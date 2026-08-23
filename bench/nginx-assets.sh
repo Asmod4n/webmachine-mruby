@@ -152,6 +152,46 @@ srv_ticks() {
   echo "$sum"
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+
+# --- requests per syscall -------------------------------------------
+# The point of a ring server is syscall AMORTIZATION - one enter
+# carries a whole batch of rounds - and this makes it a NUMBER: the
+# server's syscalls over the run (raw_syscalls:sys_enter, a counting
+# tracepoint: no sampling, negligible overhead), divided into the
+# requests the client completed. The window is the client's run plus
+# edges; an idle server sits BLOCKED in one enter, so edges add
+# ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
+# perf_event_paranoid low enough for tracepoints); without one the
+# column prints '-' rather than a guess.
+SYSC_PERF="${PERF:-}"
+if [ -z "$SYSC_PERF" ]; then
+  if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
+  else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+fi
+SYSC_PID=
+SYSC_OUT="${WORK:-/tmp}/wm-sysc.$$"
+sysc_begin() {  # <pid[,pid...]> <seconds>
+  [ -n "$SYSC_PERF" ] || return 0
+  "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -p "$1" -o "$SYSC_OUT" \
+    -- sleep "$2" >/dev/null 2>&1 &
+  SYSC_PID=$!
+}
+# Split like snap_times, for the same reason: the WAIT must run in the
+# shell that backgrounded perf (a $() subshell is not its parent, its
+# wait returns at once while the output file is still being written);
+# only the read may fork.
+sysc_wait() {
+  [ -n "$SYSC_PID" ] && wait "$SYSC_PID" 2>/dev/null
+  SYSC_PID=
+}
+sysc_read() {
+  awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
+}
+nginx_pids() {
+  local pids=$NGPID
+  for w in $(pgrep -P "$NGPID" 2>/dev/null); do pids="$pids,$w"; done
+  echo "$pids"
+}
 # The client's cpu comes from the shell's CHILD times, credited at
 # reap - reading the client's /proc after `wait` read a reaped pid as
 # 0 ticks, and the client-bound refusal never fired (found when a
@@ -225,6 +265,7 @@ measure() {
     cli=$!
     snap_times
     c0=$(parse_child_cpu)
+    sysc_begin "$(nginx_pids)" "$DURATION"
     # One mid-run sample: a client on a single running thread is
     # measuring itself, whatever -t claimed.
     sleep 1
@@ -233,6 +274,13 @@ measure() {
     snap_times
     c1=$(parse_child_cpu)
     s1=$(srv_ticks)
+    sysc_wait
+    local nsysc ndone rsc="-"
+    nsysc=$(sysc_read)
+    ndone=$(grep '^requests:' "$WORK/cli.out" | awk '{print $6}')
+    if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
+      rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
+    fi
     rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
     mbs=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]*[KMG]B/s' |
       awk '{ u = substr($0, length($0) - 3, 1); v = substr($0, 1, length($0) - 4) + 0;
@@ -249,10 +297,10 @@ measure() {
       printf 'REFUSED client-bound'
       return
     fi
-    vals+=("$rps $mbs $scpu")
+    vals+=("$rps $mbs $scpu $rsc")
   done
   printf '%s\n' "${vals[@]}" | sort -n -k1 | \
-    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s", $1, ($2 == "" ? "-" : $2), $3}'
+    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s %s", $1, ($2 == "" ? "-" : $2), $3, $4}'
 }
 
 if [ "$PROTO" = h2 ]; then
@@ -270,12 +318,12 @@ fi
   # cpu% = server CPU over the run, in percent of ONE core - the
   # column that lets a workers=16 row sit honestly next to a
   # one-thread row: req/s per core is req/s * 100 / cpu%.
-  printf '%10s %8s %14s %12s %12s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%"
+  printf '%10s %8s %14s %12s %12s %8s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "rq/sc"
   for sz in $SIZES; do
     for arm in $ARMS; do
       arm_setup "$arm" "$sz"
-      read -r rps mbs scpu <<< "$(measure "$arm" "$sz")"
-      printf '%10s %8s %14s %12s %12s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}"
+      read -r rps mbs scpu rsc <<< "$(measure "$arm" "$sz")"
+      printf '%10s %8s %14s %12s %12s %8s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}" "${rsc:--}"
     done
   done
   s1=$(steal_ticks)

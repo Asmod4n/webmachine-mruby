@@ -74,6 +74,41 @@ else
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
+
+# --- requests per syscall -------------------------------------------
+# The point of a ring server is syscall AMORTIZATION - one enter
+# carries a whole batch of rounds - and this makes it a NUMBER: the
+# server's syscalls over the run (raw_syscalls:sys_enter, a counting
+# tracepoint: no sampling, negligible overhead), divided into the
+# requests the client completed. The window is the client's run plus
+# edges; an idle server sits BLOCKED in one enter, so edges add
+# ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
+# perf_event_paranoid low enough for tracepoints); without one the
+# column prints '-' rather than a guess.
+SYSC_PERF="${PERF:-}"
+if [ -z "$SYSC_PERF" ]; then
+  if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
+  else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
+fi
+SYSC_PID=
+SYSC_OUT="${WORK:-/tmp}/wm-sysc.$$"
+sysc_begin() {  # <pid[,pid...]> <seconds>
+  [ -n "$SYSC_PERF" ] || return 0
+  "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -p "$1" -o "$SYSC_OUT" \
+    -- sleep "$2" >/dev/null 2>&1 &
+  SYSC_PID=$!
+}
+# Split like snap_times, for the same reason: the WAIT must run in the
+# shell that backgrounded perf (a $() subshell is not its parent, its
+# wait returns at once while the output file is still being written);
+# only the read may fork.
+sysc_wait() {
+  [ -n "$SYSC_PID" ] && wait "$SYSC_PID" 2>/dev/null
+  SYSC_PID=
+}
+sysc_read() {
+  awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
+}
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
 grep -q "select(2) SHIM" /tmp/wm-floor-srv.log 2>/dev/null && {
@@ -116,12 +151,20 @@ OUT=$(mktemp)
   TOTAL=$(( BUSY + (I2-I1)+(IO2-IO1) ))
   [ "$TOTAL" -gt 0 ] && BUSYPCT=$((100*BUSY/TOTAL)) || BUSYPCT=0
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
+  sysc_begin "$SRV" "$DURATION"
   if [ "$TRANSPORT" = unix ]; then
-    WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
+    WRKOUT=$(WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/")
   else
-    "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/" | grep -E "Requests/sec|50%|99%"
+    WRKOUT=$("$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/")
+  fi
+  echo "$WRKOUT" | grep -E "Requests/sec|50%|99%"
+  sysc_wait
+  NSYSC=$(sysc_read)
+  NDONE=$(echo "$WRKOUT" | grep -o '[0-9]* requests in' | awk '{print $1}')
+  if [ -n "$NSYSC" ] && [ "$NSYSC" -gt 0 ] && [ -n "$NDONE" ]; then
+    awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "rq/sc: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
   fi
 } | tee "$OUT"
 # A failed run writes nothing: the log holds only numbers that existed.
