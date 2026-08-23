@@ -156,10 +156,16 @@ if [ -n "$SYSC_PERF" ]; then
   # open only the cpu side, which is why perf record works while this
   # counter stays empty). A column of silent '-' hides that; say it.
   # perf stat's -x CSV goes to STDERR; the probe must read that side.
-  if ! "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null | \
-       grep -q '^[0-9]'; then
-    echo "rq/sc: '-' - $SYSC_PERF may not count tracepoints here." >&2
-    echo "  Unprivileged needs kernel.perf_event_paranoid=-1 (or CAP_PERFMON); cpu events alone (0/1) do not cover tracepoints." >&2
+  # On failure, RELAY perf's own words - there are two separate locks
+  # (perf_event_paranoid gates the syscall, tracefs permissions gate
+  # resolving the event name) and guessing which one bit cost a round
+  # of head-scratching already.
+  SYSC_PROBE=$("$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null)
+  if ! echo "$SYSC_PROBE" | grep -q '^[0-9]'; then
+    echo "rq/sc: '-' - $SYSC_PERF cannot count raw_syscalls:sys_enter. Its own words:" >&2
+    echo "$SYSC_PROBE" | head -4 | sed 's/^/    /' >&2
+    echo "  Usual causes: kernel.perf_event_paranoid > -1 without CAP_PERFMON, or" >&2
+    echo "  /sys/kernel/tracing unreadable (sudo chmod -R o+rX /sys/kernel/tracing helps; 700 root-only is the distro default)." >&2
     SYSC_PERF=""
   fi
 fi
