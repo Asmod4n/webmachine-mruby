@@ -102,7 +102,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   {
     mrb_value server{}, log{}, tune{};
     bool have_server = false, have_log = false, have_tune = false;
-    mrb_int port = 0, backlog = 0, sq = 0;
+    mrb_int port = 0, backlog = 0, sq = 0, to_h = 0, to_s = 0, to_i = 0;
     if (!section(mrb, doc, "server", &server, &have_server, path, err, errlen)) goto done;
     if (!section(mrb, doc, "log", &log, &have_log, path, err, errlen)) goto done;
     if (!section(mrb, doc, "tune", &tune, &have_tune, path, err, errlen)) goto done;
@@ -148,8 +148,21 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       // 32768 is IORING_MAX_ENTRIES, the kernel's own ceiling - more
       // is not "more headroom", it is -EINVAL at init.
       if (!take_int(mrb, tune, "tune", "sq_entries", 1, 32768, &sq, path, err, errlen)) goto done;
+      // The #180 clocks, in seconds; a day is the sanity ceiling.
+      if (!take_int(mrb, tune, "tune", "header_timeout", 1, 86400, &to_h, path, err, errlen)) {
+        goto done;
+      }
+      if (!take_int(mrb, tune, "tune", "send_timeout", 1, 86400, &to_s, path, err, errlen)) {
+        goto done;
+      }
+      if (!take_int(mrb, tune, "tune", "idle_timeout", 1, 86400, &to_i, path, err, errlen)) {
+        goto done;
+      }
       out.backlog = static_cast<int>(backlog);
       out.sq_entries = static_cast<unsigned>(sq);
+      out.header_timeout = static_cast<int>(to_h);
+      out.send_timeout = static_cast<int>(to_s);
+      out.idle_timeout = static_cast<int>(to_i);
     }
 
     ok = true;

@@ -94,3 +94,40 @@ assert('a bad config refuses the start by name') do
     cfg.unlink
   end
 end
+
+assert('[tune] timeouts: the reaper closes what never speaks and what fell silent') do
+  sock = "/tmp/wm-cfg-to-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  cfg = cfg_write(<<~TOML)
+    [server]
+    unix = "#{sock}"
+
+    [tune]
+    header_timeout = 1
+    send_timeout = 1
+    idle_timeout = 1
+  TOML
+  err = "/tmp/wm-cfg-to-stderr-#{$$}.log"
+  pid = cfg_spawn(['--config', cfg.path], err)
+  begin
+    cfg_await(sock, err)
+    # A connection that never says a word dies on the header clock
+    # (1s here, plus up to a second of reap granularity).
+    c = UNIXSocket.new(sock)
+    t0 = Time.now
+    got = begin
+      c.wait_readable(5) ? c.read : :open
+    rescue StandardError
+      ''
+    end
+    c.close rescue nil
+    assert_true got != :open, 'naked connection survived the header clock'
+    assert_true Time.now - t0 < 4.5, 'reaper took too long'
+    # An ACTIVE connection lives: ask, get answered, ask again.
+    assert_include cfg_get(sock, '/'), '200 OK'
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    cfg.unlink
+  end
+end

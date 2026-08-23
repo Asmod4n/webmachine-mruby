@@ -126,6 +126,9 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;  // 0 stays "the ring's default"
   cfg.backlog = opts_.backlog;
+  cfg.to_header = opts_.to_header;
+  cfg.to_send = opts_.to_send;
+  cfg.to_idle = opts_.to_idle;
   if (!build_listeners(cfg, err, errlen)) return false;
 
   // The asset table is built ONCE, before any listener exists; a bad

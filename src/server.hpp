@@ -46,6 +46,9 @@ struct ServerOptions {
   // the config file in before speaking, so these already carry it.
   unsigned sq_entries = 0;
   int backlog = 0;
+  int to_header = 0;  // #180 timeout clocks, seconds
+  int to_send = 0;
+  int to_idle = 0;
 };
 void server_options(const ServerOptions& opts);
 

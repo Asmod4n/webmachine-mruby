@@ -258,6 +258,14 @@ struct RingConfig {
   // into the kernel.
   unsigned sq_entries = 0;  // first ask of the halving SQ init (default 32768)
   int backlog = 0;          // listen(2) backlog (default 511)
+  // The three timeout clocks, in seconds; 0 = the nginx-twin defaults
+  // every server converged on. header is TOTAL for a request head
+  // (the Slowloris brake), send is BETWEEN progresses, idle is the
+  // keep-alive quiet time (75 is nginx's "we talk to browsers
+  // directly" number; Apache/Node's 5 is the behind-a-proxy world).
+  int to_header = 0;  // default 60
+  int to_send = 0;    // default 60
+  int to_idle = 0;    // default 75
   // A signalfd main owns (signals blocked, so they land there). The
   // ring polls it: the stop signal arrives as a CQE like everything
   // else - a handler flag would race the wait (checked, then the signal
@@ -389,6 +397,9 @@ class Ring {
     const uint64_t nofile = raise_nofile();
     log_fd_ = cfg.log_fd;
     backlog_ = cfg.backlog != 0 ? cfg.backlog : 511;
+    to_header_ = cfg.to_header != 0 ? cfg.to_header : 60;
+    to_send_ = cfg.to_send != 0 ? cfg.to_send : 60;
+    to_idle_ = cfg.to_idle != 0 ? cfg.to_idle : 75;
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
@@ -718,6 +729,20 @@ class Ring {
     bool live = false;
     bool sending = false;          // `out` is borrowed by the kernel
     bool close_after_send = false;
+    // The timeout clock (#180). idle marks a connection owing nothing
+    // (between requests); deadline_s is the coarse second this
+    // connection dies at unless something moves it. Transitions:
+    // accept and idle->first-byte set now+header (TOTAL for the head -
+    // later recvs do NOT extend it, that is the Slowloris brake), a
+    // send's progress sets now+send, a full drain with nothing owed
+    // sets now+idle. Priced: one store on paths that already run.
+    // KNOWN EDGE, stated not hidden: a peer that only ever SENDS
+    // (streaming upload, a websocket client that pushes and never
+    // hears) dies at the header clock unless the server writes
+    // something back within it - revisit when #165 gives bodies a
+    // consumer and #175's websocket tier answers pings.
+    bool idle = false;
+    int64_t deadline_s = 0;
     uint8_t li = 0;    // which listener accepted - the App's key
     uint16_t gen = 0;  // stale-CQE guard: slot reuse bumps it, old ops miss
     size_t sent = 0;   // bytes of `out` the kernel has taken so far
@@ -976,6 +1001,8 @@ class Ring {
     live_++;
     c.sending = false;
     c.close_after_send = false;
+    c.idle = false;
+    c.deadline_s = now_s_ + to_header_;  // the whole first head, within this
     c.li = static_cast<uint8_t>(li);
     c.sent = 0;
     c.out.clear();  // capacity survives: a warm slot allocates nothing
@@ -1042,6 +1069,13 @@ class Ring {
       // 0 = EOF; everything else ends the connection the same way.
       begin_close(idx);
       return;
+    }
+    // Between requests the first byte opens the header clock; while a
+    // head is being received, later bytes deliberately do NOT touch it
+    // (the clock is TOTAL for the head - Conn's comment says why).
+    if (c.idle) {
+      c.idle = false;
+      c.deadline_s = now_s_ + to_header_;
     }
 
     if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
@@ -1134,6 +1168,9 @@ class Ring {
       return;
     }
     c.sent = new_sent;
+    // Progress on the wire: the send clock counts BETWEEN progresses
+    // (nginx's send_timeout semantics), so it restarts here.
+    c.deadline_s = now_s_ + to_send_;
     if (c.sent < offered) {
       arm_send(idx);  // partial: the rebuilt iovecs skip what already went
       return;
@@ -1312,7 +1349,12 @@ class Ring {
     if (c.close_after_send) {
       c.close_after_send = false;
       begin_close(idx);
+      return;
     }
+    // Nothing owed, nothing in flight: the connection is BETWEEN
+    // requests, and the idle clock owns it until the next first byte.
+    c.idle = true;
+    c.deadline_s = now_s_ + to_idle_;
   }
   void handle(struct io_uring_cqe* cqe) {
     const uint64_t ud = io_uring_cqe_get_data64(cqe);
@@ -1366,7 +1408,18 @@ class Ring {
         io_uring_submit_and_wait_timeout(&ring_, &first, 1, &ts, nullptr);
       }
     } else {
-      io_uring_submit_and_wait(&ring_, 1);
+      // Bounded to a second even without a budget: the timeout clocks
+      // (#180) need a wake when NOTHING completes - an idle server
+      // wakes once a second, which is the whole cost of having
+      // deadlines at all. -ETIME is the clock, not a failure.
+      struct __kernel_timespec ts {1, 0};
+      struct io_uring_cqe* first = nullptr;
+      io_uring_submit_and_wait_timeout(&ring_, &first, 1, &ts, nullptr);
+    }
+    {
+      struct timespec now {};
+      ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+      now_s_ = static_cast<int64_t>(now.tv_sec);
     }
     // Once per wake, never per request; the Ring does not know or care
     // what the App keeps fresh.
@@ -1395,6 +1448,34 @@ class Ring {
       }
       rearm_.clear();
     }
+    // The reaper (#180): once per second, one compare per live
+    // connection - at the derived max that is thousands of compares a
+    // second, which is noise, and it is the cost #138 said a slow
+    // connection may impose on the fast ones: a bounded, counted one.
+    // AFTER the batch, so work that just happened has moved its
+    // deadline; a connection mid-close is already spoken for.
+    if (now_s_ != last_reap_s_) {
+      last_reap_s_ = now_s_;
+      for (uint32_t i = 0; i < max_conns_; i++) {
+        Conn& c = conns_[i];
+        if (!c.live || c.deadline_s >= now_s_) continue;
+        if (c.sending) {
+          // The stuck-send case: the SQE is parked on a peer that
+          // reads nothing, so waiting for its CQE waits forever.
+          // shutdown breaks it - the send completes with an error and
+          // on_send finishes the close. Once: the flag remembers.
+          if (!c.close_after_send) {
+            c.close_after_send = true;
+            struct io_uring_sqe* s = sqe();
+            io_uring_prep_shutdown(s, static_cast<int>(i), SHUT_RDWR);
+            s->flags |= IOSQE_FIXED_FILE;
+            io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, i));
+          }
+        } else {
+          begin_close(i);
+        }
+      }
+    }
     if (WM_UNLIKELY(draining_) && !stop_) {
       struct timespec now {};
       ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
@@ -1415,6 +1496,13 @@ class Ring {
   int log_fd_ = -1;
   unsigned sq_entries_ = 0;  // what the SQ finally settled at
   int backlog_ = 511;        // listen(2) backlog; cfg.backlog overrides (#166)
+  // #180's clocks (seconds; RingConfig names the defaults) and the
+  // coarse now they compare against, refreshed once per wake.
+  int to_header_ = 60;
+  int to_send_ = 60;
+  int to_idle_ = 75;
+  int64_t now_s_ = 0;
+  int64_t last_reap_s_ = 0;
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};

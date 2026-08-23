@@ -183,8 +183,11 @@ int main(int argc, char** argv) {
     if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
     if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
-    opts.sq_entries = fc.sq_entries;  // no CLI twin; 0 = default
+    opts.sq_entries = fc.sq_entries;  // no CLI twins; 0 = default
     opts.backlog = fc.backlog;
+    opts.to_header = fc.header_timeout;
+    opts.to_send = fc.send_timeout;
+    opts.to_idle = fc.idle_timeout;
   }
 
   opts.cli_unix = cli_unix;
@@ -230,6 +233,9 @@ int main(int argc, char** argv) {
     cfg.stop_fd = opts.stop_fd;
     cfg.sq_entries = opts.sq_entries;  // [tune] reaches the floor too
     cfg.backlog = opts.backlog;
+    cfg.to_header = opts.to_header;
+    cfg.to_send = opts.to_send;
+    cfg.to_idle = opts.to_idle;
     if (cli_unix != nullptr) {
       cfg.listeners[0].unix_path = cli_unix;
     } else if (cli_port != 0) {

@@ -53,6 +53,9 @@ struct Config {
   // [tune] - setup-only ring knobs; 0 = the tree's default
   int backlog = 0;           // listen backlog (default 511, ring.hpp)
   unsigned sq_entries = 0;   // SQ size first ask (default 32768, halves on refusal)
+  int header_timeout = 0;    // #180: whole head, seconds (default 60)
+  int send_timeout = 0;      // #180: between wire progresses (default 60)
+  int idle_timeout = 0;      // #180: keep-alive quiet time (default 75)
 };
 
 // Parses and validates PATH into out, through the given VM. False
