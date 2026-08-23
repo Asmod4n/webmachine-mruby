@@ -950,9 +950,12 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   request_bind(&rv);
   std::string proto;
   uint16_t refuse_status = 0;
-  const bool admit = ws_admit(res, proto, refuse_status);
+  // The peer's own resource is built here and its initialize decides
+  // (#181); what comes back IS this peer's connection, owning that
+  // object until ws_free.
+  WsConn* wsc = ws_admit(res, proto, refuse_status);
   request_bind(nullptr);
-  if (!admit) {
+  if (wsc == nullptr) {
     // The resource said no. It answers as HTTP, because nothing was
     // upgraded - and it closes, because a refused handshake has
     // nothing more to say on this connection.
@@ -987,7 +990,8 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   if (dparams.on) sink.append("\r\nSec-WebSocket-Extensions: ").append(ext_answer);
   sink.append("\r\n\r\n");
 
-  st.ws = ws_open(res, dparams);
+  ws_open(wsc, dparams);
+  st.ws = wsc;
   st.carry.clear();     // the head is answered; nothing HTTP waits any more
   st.body_skip = 0;
   // Frames the client sent in the SAME receive as its handshake - a

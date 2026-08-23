@@ -25,6 +25,15 @@
 # later), and pays whatever that costs against a native build - which
 # is a measurement, and belongs in bench/results/ like every other.
 WM_FLAGS = lambda do |conf|
+  # WM_MARCH also buys the way OUT of a broken toolchain, found the
+  # hard way in this tree's own container (gcc 13.3, -march=native
+  # resolving to cascadelake): gcc emitted `vmovw` - an AVX512-FP16
+  # instruction, EVEX MAP5 - into three objects (ours, mruby-io's,
+  # mruby's fp_uscale) although its own `-Q --help=target` reports
+  # -mavx512fp16 as disabled, and the CPU traps it with SIGILL at
+  # startup. A compiler bug, not a tree bug; `WM_MARCH=x86-64-v3 rake`
+  # sidesteps it, and `rake clean` first, because the build system
+  # does not rebuild on a flags-only change.
   march = ENV['WM_MARCH'] || 'native'
   conf.cc.flags << '-O3' << "-march=#{march}"
   conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'

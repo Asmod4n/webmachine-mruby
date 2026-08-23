@@ -46,9 +46,13 @@ struct WsConn;
 // handshake to the peer, so the NAME is enough here and the zlib
 // header stays out of every translation unit that includes this one.
 namespace wsdeflate { struct Params; }
-bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
+// ws_admit builds the peer's connection when the resource admits it
+// (#181: the object it carries is that peer's own, for as long as the
+// socket lives) - null means refused, and status says how. No
+// mrb_value crosses this header; it stays mruby-free.
+WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
 bool ws_wants_deflate(const WsResource* r);
-WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate);
+void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
 void ws_free(WsConn* c);
 

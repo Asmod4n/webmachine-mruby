@@ -7,11 +7,13 @@
 #include "config.hpp"
 
 #include <mruby/array.h>
+#include <mruby/chrono.hpp>
 #include <mruby/error.h>
 #include <mruby/hash.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -87,6 +89,36 @@ bool take_int(mrb_state* mrb, mrb_value h, const char* where, const char* key, m
   return true;
 }
 
+// A DURATION crossing the Ruby<->C boundary goes through mruby-chrono
+// and through nothing else (standing rule): ONE convention for every
+// timeout this tree will ever take, which is also why `0.5` is a
+// correct half second here instead of a parse error - the API reads
+// Integer and Float alike.
+//
+// The target is seconds because that is what the ring can ENFORCE:
+// #180's deadlines are whole seconds and its reaper runs once a
+// second. A sub-second ask is therefore rounded UP (ceil), never
+// down - the one direction that cannot cut a connection earlier than
+// the operator asked for.
+bool take_seconds(mrb_state* mrb, mrb_value h, const char* where, const char* key, int* out,
+                  const char* path, char* err, size_t errlen) {
+  const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
+  if (mrb_nil_p(v)) return true;
+  if (!mrb_integer_p(v) && !mrb_float_p(v)) {
+    std::snprintf(err, errlen, "%s: %s.%s takes a duration in seconds (60, or 0.5)", path,
+                  where, key);
+    return false;
+  }
+  const auto secs = mrb_chrono::ceil<std::chrono::seconds>(mrb, v);
+  if (secs.count() < 1 || secs.count() > 86400) {
+    std::snprintf(err, errlen, "%s: %s.%s is %lld seconds - the range is 1..86400", path, where,
+                  key, static_cast<long long>(secs.count()));
+    return false;
+  }
+  *out = static_cast<int>(secs.count());
+  return true;
+}
+
 }  // namespace
 
 bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen) {
@@ -102,7 +134,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   {
     mrb_value server{}, log{}, tune{};
     bool have_server = false, have_log = false, have_tune = false;
-    mrb_int port = 0, backlog = 0, sq = 0, to_h = 0, to_s = 0, to_i = 0;
+    mrb_int port = 0, backlog = 0, sq = 0;
     if (!section(mrb, doc, "server", &server, &have_server, path, err, errlen)) goto done;
     if (!section(mrb, doc, "log", &log, &have_log, path, err, errlen)) goto done;
     if (!section(mrb, doc, "tune", &tune, &have_tune, path, err, errlen)) goto done;
@@ -148,21 +180,23 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       // 32768 is IORING_MAX_ENTRIES, the kernel's own ceiling - more
       // is not "more headroom", it is -EINVAL at init.
       if (!take_int(mrb, tune, "tune", "sq_entries", 1, 32768, &sq, path, err, errlen)) goto done;
-      // The #180 clocks, in seconds; a day is the sanity ceiling.
-      if (!take_int(mrb, tune, "tune", "header_timeout", 1, 86400, &to_h, path, err, errlen)) {
+      // The #180 clocks are DURATIONS, so they take the chrono road
+      // (take_seconds says why); backlog and sq_entries stay integers
+      // because they are COUNTS, and a count is not a duration.
+      if (!take_seconds(mrb, tune, "tune", "header_timeout", &out.header_timeout, path, err,
+                        errlen)) {
         goto done;
       }
-      if (!take_int(mrb, tune, "tune", "send_timeout", 1, 86400, &to_s, path, err, errlen)) {
+      if (!take_seconds(mrb, tune, "tune", "send_timeout", &out.send_timeout, path, err,
+                        errlen)) {
         goto done;
       }
-      if (!take_int(mrb, tune, "tune", "idle_timeout", 1, 86400, &to_i, path, err, errlen)) {
+      if (!take_seconds(mrb, tune, "tune", "idle_timeout", &out.idle_timeout, path, err,
+                        errlen)) {
         goto done;
       }
       out.backlog = static_cast<int>(backlog);
       out.sq_entries = static_cast<unsigned>(sq);
-      out.header_timeout = static_cast<int>(to_h);
-      out.send_timeout = static_cast<int>(to_s);
-      out.idle_timeout = static_cast<int>(to_i);
     }
 
     ok = true;

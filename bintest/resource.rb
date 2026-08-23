@@ -241,13 +241,14 @@ assert('resource: an instance body renders per request through the VM') do
 end
 
 assert('resource: an instance decision is asked per request (state changes answers)') do
+  # The counter is APP state, so it lives outside the instance (#181):
+  # the resource itself is built fresh per request, which is exactly
+  # what the next assert proves.
   src = <<~RUBY
     class Flaky < Webmachine::Resource
-      def initialize
-        @n = 0
-      end
       def resource_exists?
-        (@n += 1).odd?
+        $flaky = ($flaky || 0) + 1
+        $flaky.odd?
       end
     end
   RUBY
@@ -377,14 +378,13 @@ assert('run frame: bodies survive a full GC per request, 200 requests exact') do
   # body swept too early answers with corrupted bytes here.
   src = <<~RUBY
     class Churn < Webmachine::Resource
-      def initialize
-        @n = 0
-      end
+      HITS = [0]
       def to_html
         GC.start
         junk = Array.new(64) { |i| 'x' * (65 + (i % 31)) }
         GC.start
-        "<html><body>hit \#{@n += 1} of \#{junk.size}</body></html>"
+        HITS[0] += 1
+        "<html><body>hit \#{HITS[0]} of \#{junk.size}</body></html>"
       end
     end
   RUBY
@@ -444,6 +444,36 @@ assert('run frame: RSS stays flat across 8000 runtime requests') do
       run.call(8000)
       grew = rss.call - before
       assert_true grew < 512, "RSS grew #{grew}KB over 8000 requests"
+    end
+  end
+end
+
+assert('resource: the instance is the REQUEST\'s - ivars never cross, always carry') do
+  # Two things at once, and they are the whole point of #181:
+  #   - an ivar written by one request is GONE for the next (HTTP is
+  #     stateless, so its resource is),
+  #   - an ivar written by one CALLBACK is there for the next callback
+  #     of that SAME request (that is what request scope buys).
+  src = <<~RUBY
+    class Scope < Webmachine::Resource
+      def resource_exists?
+        @seen = (@seen || 0) + 1
+        true
+      end
+      def to_html
+        # resource_exists? ran first in this same request, so @seen is
+        # 1 here - and 1 again on the next request, never 2.
+        "seen=\#{@seen}"
+      end
+    end
+  RUBY
+  resource_server(wm_app('Scope', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      3.times do
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        _, body = resource_read(s)
+        assert_equal 'seen=1', body
+      end
     end
   end
 end

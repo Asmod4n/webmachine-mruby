@@ -282,10 +282,10 @@ assert('ws: a Symbol answer is a close by name; a String is a message') do
   end
 end
 
-assert('ws: on_open reads the handshake head and picks the subprotocol') do
+assert('ws: initialize reads the handshake head and picks the subprotocol') do
   src = <<~RUBY
     class Picky < Webmachine::WebsocketResource
-      def on_open
+      def initialize
         offered = request.headers['sec-websocket-protocol'].to_s
         return :forbidden unless request.path_info[:room] == 'lobby'
         'chat.v1' if offered.split(',').map(&:strip).include?('chat.v1')
@@ -777,5 +777,50 @@ assert('ws: an uncompressed message on a compressed connection is still a messag
     assert_true rsv1, 'the server still answers compressed'
     assert_equal 'plain', ws_inflate(ws_inflator, payload)
     s.close
+  end
+end
+
+assert('ws: the resource is THE PEER\'S - two connections keep separate state') do
+  # #181's whole point on this side: a websocket is a session, so its
+  # resource is one object per peer. Each connection counts only its
+  # own messages, and initialize is where the count starts.
+  src = <<~RUBY
+    class Counted < Webmachine::WebsocketResource
+      def initialize
+        @n = 0
+      end
+
+      def on_data(data, binary)
+        @n += 1
+        "\#{data}:\#{@n}"
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_websocket ['ws'], Counted
+      end
+    end
+  RUBY
+  ws_server(src) do |sock|
+    a = UNIXSocket.new(sock)
+    ws_handshake(a, '/ws')
+    b = UNIXSocket.new(sock)
+    ws_handshake(b, '/ws')
+
+    a.write(ws_frame(0x1, 'a'))
+    _, _, r = ws_read_frame(a)
+    assert_equal 'a:1', r
+    a.write(ws_frame(0x1, 'a'))
+    _, _, r = ws_read_frame(a)
+    assert_equal 'a:2', r
+
+    # B has its own object: still at one, whatever A did.
+    b.write(ws_frame(0x1, 'b'))
+    _, _, r = ws_read_frame(b)
+    assert_equal 'b:1', r
+
+    a.close
+    b.close
   end
 end

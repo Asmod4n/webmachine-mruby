@@ -255,18 +255,24 @@ const NamedSym kKonstOnly[] = {
 // memory model. The Resource arrives through the proc's env.
 mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
   const Resource& res = *static_cast<const Resource*>(mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0)));
+  // THIS REQUEST'S resource (#181). One allocation, inside the frame
+  // that already exists, rooted by its arena - and the app's own
+  // initialize (if it wrote one) runs here, per request, exactly like
+  // webmachine-ruby. A raise in it is a raise in the frame: the 500
+  // path every other callback already uses.
+  res.live = mrb_obj_new(mrb, res.klass, 0, nullptr);
   const flow::ReqFacts& facts = *res.run_facts;
   const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
   const auto naked = [&](mrb_method_t m, bool fast, mrb_sym sym) -> mrb_value {
-    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.self)->c != res.klass)) {
+    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.live)->c != res.klass)) {
       // cfunc, or a singleton class grew on the instance: full funcall.
-      return mrb_funcall_argv(mrb, res.self, sym, 0, nullptr);
+      return mrb_funcall_argv(mrb, res.live, sym, 0, nullptr);
     }
     mrb_callinfo* ci = mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value r = mrb_yield_with_class(
-        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), 0, nullptr, res.self,
+        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), 0, nullptr, res.live,
         res.klass);
     ci->mid = saved;
     return r;
@@ -454,20 +460,12 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   // redefined, so every method_t resolved above stays true forever.
   mrb_obj_freeze(mrb, klass);
 
-  // The instance dynamic callbacks are asked on: created once, pinned
-  // against GC, holding whatever state the app's initialize gave it.
-  // Plus the run carrier: a HIDDEN class (no constant - unreachable
-  // from Ruby) whose one method is the run cfunc, the Resource wired
-  // in through the proc's env as a cptr.
+  // NO instance is built here (#181): a resource's instance belongs to
+  // a REQUEST, and run_cfunc builds it inside the frame that serves
+  // one. What setup builds is the run carrier: a HIDDEN class (no
+  // constant - unreachable from Ruby) whose one method is the run
+  // cfunc, the Resource wired in through the proc's env as a cptr.
   if (out.dynamic != 0 || out.dynamic_body) {
-    out.self = mrb_obj_new(mrb, mrb_class_ptr(klass), 0, nullptr);
-    if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-      exc_into(mrb, "resource initialize raised", err, errlen);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
-    }
-    mrb_gc_register(mrb, out.self);
-
     struct RClass* hidden = mrb_class_new(mrb, mrb->object_class);
     const mrb_value env = mrb_cptr_value(mrb, &out);
     struct RProc* run_proc = mrb_proc_new_cfunc_with_env(mrb, run_cfunc, 1, &env);
@@ -531,8 +529,11 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const Re
   // its exit restores - one entry pays for everything inside.
   mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
   // The view's bytes belong to the receive buffer and to this frame;
-  // nothing may reach them once it is over.
+  // nothing may reach them once it is over. The request's resource
+  // goes the same way: the arena has unwound, so the value is stale -
+  // it must not stay readable through the struct.
   request_bind(nullptr);
+  res.live = mrb_nil_value();
   if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
     *have_body = false;
     return 500;  // exception stays pending for the answering path

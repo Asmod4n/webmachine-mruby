@@ -13,16 +13,17 @@
 // the route's own bindings included). A base class that inherited the
 // flow's would have promised all the rest.
 //
-// It is instantiated ONCE, like every other resource in this tree, and
-// then FED - methods, no block, no proc:
+// It is instantiated ONCE PER CONNECTION (#181) and then FED -
+// methods, no block, no proc:
 //
 //     class Echo < Webmachine::WebsocketResource
-//       def on_open                     # optional
-//         # `request` is live here - the handshake's head: the subprotocol,
-//         # an Origin check, a token in the query are decided from the
-//         # handshake's own head. nil accepts; a String accepts AND is
-//         # the Sec-WebSocket-Protocol answer; a Symbol refuses the
-//         # upgrade with an HTTP status.
+//       def initialize                  # optional - the CONNECT hook
+//         # This object is THIS peer's, so ivars set here live for the
+//         # whole connection. `request` is live too - the handshake's
+//         # head: the subprotocol, an Origin check, a token in the
+//         # query are decided from it. nil accepts; a String accepts
+//         # AND is the Sec-WebSocket-Protocol answer; a Symbol refuses
+//         # the upgrade with an HTTP status.
 //       end
 //
 //       def on_data(data, binary)       # required
@@ -77,12 +78,25 @@
 // stderr: a return value nobody can spell is a bug in the resource,
 // not a message to guess at.
 //
-// Per-connection Ruby state: NONE. The resource is one instance for
-// the whole process, the message is one String per delivery, and a
-// connection costs this layer a carry buffer and a few bytes of
-// assembly state. Http1 knows only the two opaque pointers below - it
-// never learns what a resource is, exactly as it never learned what a
-// Resource is (http1.hpp declares resource_run and nothing else).
+// PER-CONNECTION RUBY STATE IS THE POINT (#181, Nutzer-Entscheid:
+// "you make Websockets stateless in the WebsocketResource class -
+// reverse that"). A websocket connection IS a session, so its
+// resource is one object per peer: `initialize` opens it, ivars carry
+// whatever the session needs across messages, on_close ends it, and
+// the object is released with the socket. (HTTP went the other way in
+// the same breath: there a resource lives ONE REQUEST, because HTTP
+// is stateless - resource.hpp's head says it.)
+//
+// What that costs, where it is paid: one mruby object per open
+// websocket, plus whatever the app's initialize builds. h2.hpp's head
+// measured what eager per-connection objects cost at scale (-12%
+// throughput, +58% p99 at 7000 idle connections) - the difference is
+// that this object is the FEATURE, and only a peer that actually
+// upgraded gets one.
+//
+// Http1 knows only the two opaque pointers below - it never learns
+// what a resource is, exactly as it never learned what a Resource is
+// (http1.hpp declares resource_run and nothing else).
 #ifndef WEBMACHINE_WSCONN_HPP
 #define WEBMACHINE_WSCONN_HPP
 
@@ -118,8 +132,10 @@ namespace webmachine {
 inline constexpr size_t kMaxWsMessageDefault = 64u * 1024;
 
 // The route's resource, folded ONCE at route.websocket: the class
-// frozen, its one instance built, on_data resolved. Nothing is looked
-// up per message and nothing can be redefined behind an open socket.
+// frozen, on_data resolved, the route's own konst answers read.
+// Nothing is looked up per message and nothing can be redefined
+// behind an open socket. It holds no Ruby object - the CONNECTION
+// does (#181).
 struct WsResource;
 
 // One peer: what is left of a connection that stopped being HTTP.
@@ -127,7 +143,7 @@ struct WsConn;
 
 // Folds a resource class for a websocket route. False leaves the
 // reason in err by name (not a Webmachine::WebsocketResource, no
-// on_data, a raise while instantiating).
+// on_data).
 bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen);
 
 // Does this route accept RFC 7692 at all? Asked by the handshake
@@ -147,12 +163,20 @@ void ws_init(mrb_state* mrb, struct RClass* wm);
 // upgrade happens. True with `proto` empty = plain upgrade; non-empty
 // = that is the Sec-WebSocket-Protocol answer. False leaves in
 // `status` the HTTP status the resource named instead of an upgrade.
-bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
+// The handshake's decision AND the peer's connection in one step
+// (#181): this builds THIS peer's resource object and runs its
+// `initialize`, whose return value is the answer - nil admits, a
+// String admits and names the subprotocol, a Symbol refuses with an
+// HTTP status. Admitted, the WsConn that owns the object comes back;
+// refused, the object is dropped here and null comes back with the
+// status. (Returning the connection is also what keeps the mrb_value
+// out of http1.hpp, which is mruby-free by contract.)
+WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
 
 // The upgrade is answered: build the peer, with whatever
 // permessage-deflate negotiation settled on (wsdeflate.hpp). Params
 // with `on` false is a plain RFC 6455 connection and costs nothing.
-WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate);
+void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 
 // Wire bytes for an upgraded connection. False = this connection ends
 // once the sink has drained, exactly like Http1::feed's contract.

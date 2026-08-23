@@ -27,8 +27,10 @@ namespace webmachine {
 struct WsResource {
   mrb_state* mrb = nullptr;
   struct RClass* klass = nullptr;
-  mrb_value self = {};  // THE instance - built once, gc_registered
-  bool have_open = false;
+  // NO instance here (#181): a websocket resource belongs to a PEER,
+  // not to a process. What the route folds is the CLASS and the
+  // answers that are the route's own (below); the object lives on the
+  // WsConn and dies with the socket.
   bool have_close = false;
   // How many arguments each callback ASKED for, read once from its own
   // signature. `def on_data(data)` and `def on_data(data, binary)` are
@@ -67,6 +69,20 @@ struct WsResource {
 // frame's payload, which RFC 6455 5.5 caps at 125 bytes.
 struct WsConn {
   const WsResource* res = nullptr;
+  // THE PEER'S OWN resource object (#181): built when the handshake
+  // is admitted (its `initialize` IS the connect hook), receiver of
+  // every on_data/on_close of THIS connection, released when the
+  // connection is freed. Ivars are therefore session scope - which is
+  // what a websocket is. Registered against the GC for exactly that
+  // span, because unlike an HTTP request there is no frame to root it.
+  //
+  // The price, stated where it is paid: one mruby object per open
+  // websocket (plus whatever the app's initialize builds). h2.hpp's
+  // head measured what EAGER per-connection objects cost at scale
+  // (-12% throughput, +58% p99 at 7000 idle connections); the
+  // difference here is that this object IS the feature, and only a
+  // peer that actually upgraded ever gets one.
+  mrb_value self = mrb_nil_value();
 
   // --- the header being read
   unsigned char hbuf[14] = {};
@@ -270,7 +286,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
   mrb_value argv[2];
   argv[0] = mrb_fixnum_value(code);
   argv[1] = mrb_str_new(mrb, reason == nullptr ? "" : reason, reason_len);
-  mrb_funcall_argv(mrb, c->res->self, MRB_SYM(on_close), c->res->close_argc, argv);
+  mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), c->res->close_argc, argv);
   if (mrb->exc != nullptr) {
     mrb_print_error(mrb);
     mrb->exc = nullptr;
@@ -299,7 +315,7 @@ bool deliver(WsConn* c, std::string& sink) {
   mrb_value argv[2];
   argv[0] = c->msg;
   argv[1] = mrb_bool_value(binary);
-  const mrb_value out = mrb_funcall_argv(mrb, r->self, MRB_SYM(on_data), r->data_argc, argv);
+  const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), r->data_argc, argv);
   drop_msg(c);
   if (mrb->exc != nullptr) {
     // A raising callback is a 1011, said once, with the reason on
@@ -643,8 +659,7 @@ WsResource* ws_resource_new() { return new WsResource(); }
 
 void ws_resource_free(WsResource* r) {
   if (r == nullptr) return;
-  if (r->mrb != nullptr && !mrb_nil_p(r->self)) mrb_gc_unregister(r->mrb, r->self);
-  delete r;
+  delete r;  // the route holds no Ruby object any more (#181)
 }
 
 bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen) {
@@ -700,8 +715,12 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
                   "method a websocket resource IS (on_data(data) or on_data(data, binary))");
     return false;
   }
-  int open_argc = 0;
-  out.have_open = argc_of(MRB_SYM(on_open), 0, &open_argc);
+  // on_open is gone (#181): the resource is built PER CONNECTION, so
+  // its `initialize` IS the connect hook - one concept instead of two,
+  // and the object exists from its first line onward. Nothing is
+  // resolved for it here: every class has an initialize (Object's, if
+  // the app wrote none), and it is called once per handshake, which is
+  // not a hot path.
   out.have_close = argc_of(MRB_SYM(on_close), 2, &out.close_argc);
 
   // RFC 6455 8.1's check, on or off per route - asked ONCE, like every
@@ -773,32 +792,36 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
   // open socket.
   mrb_obj_freeze(mrb, klass);
 
-  // THE instance, built once (Nutzer-Entscheid: "einmal instanziert").
-  out.self = mrb_obj_new(mrb, out.klass, 0, nullptr);
-  if (mrb->exc != nullptr) {
-    std::snprintf(err, errlen,
-                  "route.websocket: the resource raised while being built (exception below)");
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    return false;
-  }
-  mrb_gc_register(mrb, out.self);
+  // No instance is built here (#181): every PEER gets its own, at the
+  // handshake, in ws_admit.
   return true;
 }
 
-bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
+// The handshake's own step: build THIS peer's resource and let its
+// `initialize` decide (#181). The return-value contract is the one
+// on_open had, unchanged - nil accepts, a String is the subprotocol,
+// a Symbol refuses with an HTTP status - which is why the object is
+// allocated and initialized in two steps: `new` would swallow the
+// answer. An admitted object is handed to ws_open, which owns it for
+// the connection; a refused one is dropped here.
+WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
   proto.clear();
   status = 0;
-  if (!r->have_open) return true;
   mrb_state* mrb = r->mrb;
   const int ai = mrb_gc_arena_save(mrb);
-  const mrb_value out = mrb_funcall_argv(mrb, r->self, MRB_SYM(on_open), 0, nullptr);
+  const mrb_value obj =
+      mrb_obj_value(mrb_obj_alloc(mrb, MRB_INSTANCE_TT(r->klass), r->klass));
+  // Registered BEFORE anything else can allocate: the arena is
+  // restored on every exit below, and this object must outlive it.
+  mrb_gc_register(mrb, obj);
+  const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
     mrb_print_error(mrb);
     mrb->exc = nullptr;
+    mrb_gc_unregister(mrb, obj);
     mrb_gc_arena_restore(mrb, ai);
     status = 500;
-    return false;
+    return nullptr;
   }
   bool admit = true;
   if (mrb_string_p(out)) {
@@ -814,15 +837,25 @@ bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
     else status = 403;
     admit = false;
   }
+  if (!admit) {
+    mrb_gc_unregister(mrb, obj);
+    mrb_gc_arena_restore(mrb, ai);
+    return nullptr;
+  }
   mrb_gc_arena_restore(mrb, ai);
-  return admit;
+  // Admitted: the peer gets its connection, and the connection owns
+  // the object from here (ws_free releases it).
+  WsConn* c = new WsConn();
+  c->res = r;
+  c->self = obj;
+  return c;
 }
 
 bool ws_wants_deflate(const WsResource* r) { return r->want_deflate; }
 
-WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate) {
-  WsConn* c = new WsConn();
-  c->res = r;
+// The connection already exists (ws_admit built it with the peer's
+// resource); this only settles what the handshake negotiated.
+void ws_open(WsConn* c, const wsdeflate::Params& deflate) {
   // The codec exists only where a peer negotiated one, and even then
   // its zlib streams are not built until the first message needs them
   // (wsdeflate.hpp). A connection that never compresses anything
@@ -831,7 +864,6 @@ WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate) {
     c->codec = new wsdeflate::Codec();
     c->codec->configure(deflate);
   }
-  return c;
 }
 
 void ws_free(WsConn* c) {
@@ -842,6 +874,12 @@ void ws_free(WsConn* c) {
   // was seen", which is precisely this path.
   report_close(c, 1006, nullptr, 0);
   drop_msg(c);
+  // The peer's resource dies with the peer: nothing outlives the
+  // socket it belonged to.
+  if (c->res != nullptr && c->res->mrb != nullptr && !mrb_nil_p(c->self)) {
+    mrb_gc_unregister(c->res->mrb, c->self);
+    c->self = mrb_nil_value();
+  }
   delete c->codec;  // ~Codec ends the zlib streams it actually built
   delete c;
 }

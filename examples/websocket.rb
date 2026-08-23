@@ -16,11 +16,13 @@
 # which must answer 101 with Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 #
 # A websocket resource is NOT a Webmachine::Resource: no response, no
-# status, no flow survives the upgrade. It is instantiated once and
-# then fed. What on_data RETURNS is the whole protocol - a String is a
-# message back in the same kind that arrived, a Symbol is a close by
-# name (:close, :going_away, :protocol_error, :unsupported, :invalid,
-# :policy, :too_big, :internal_error), nil says nothing.
+# status, no flow survives the upgrade. It is instantiated ONCE PER
+# CONNECTION (#181) - a websocket is a session, so `initialize` is the
+# connect hook and ivars live as long as the socket does. What on_data
+# RETURNS is the whole protocol - a String is a message back in the
+# same kind that arrived, a Symbol is a close by name (:close,
+# :going_away, :protocol_error, :unsupported, :invalid, :policy,
+# :too_big, :internal_error), nil says nothing.
 class Echo < Webmachine::WebsocketResource
   # permessage-deflate (RFC 7692), which every browser offers and this
   # tree accepts only where a route asks for it. It costs about 296 KiB
@@ -33,12 +35,18 @@ class Echo < Webmachine::WebsocketResource
     true
   end
 
+  # This peer's own state, for this peer's own lifetime.
+  def initialize
+    @seen = 0
+  end
+
   def on_data(data, binary)
     # chomp: a line typed into websocat arrives WITH its newline, and a
     # message is bytes - nothing strips anything for you here.
     return :close if data.chomp == 'bye'
 
-    data
+    @seen += 1
+    "#{@seen}: #{data}"
   end
 
   def on_close(code, reason)

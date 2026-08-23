@@ -5,6 +5,17 @@
 //   instance methods (def x)    - runtime: answered through the VM on
 //                                 EVERY request, inside ONE frame
 //
+// LIFETIME (#181, Nutzer-Entscheid): the instance lives ONE REQUEST.
+// HTTP is stateless, so its resource is: the run frame builds the
+// object, the request's callbacks share it, and it dies with the
+// frame. Ivars are therefore REQUEST scope - what one callback of a
+// request leaves, the next callback of that same request finds, and
+// no other request ever sees it. (webmachine-ruby instantiates per
+// request for the same reason; this tree did not, and cross-request
+// state could leak between strangers.) APPLICATION state lives where
+// application state belongs: a mutable object a constant names, or a
+// global - never a class ivar, because add_route FREEZES the class.
+//
 // The runtime tier runs the WHOLE flow inside one VM method (a hidden
 // class carries it): within that frame mrb->jmp is armed and the arena
 // lives until exit, so callbacks are naked yields, values one callback
@@ -30,9 +41,6 @@ namespace webmachine {
 struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
-  // The one shared instance dynamic callbacks are asked on (resources
-  // hold no per-request state; dynamic answers come from the world).
-  mrb_value self = {};
   // The class, FROZEN at add_route: nobody can redefine a method after
   // routes are added, so everything resolved below stays true forever.
   struct RClass* klass = nullptr;
@@ -61,6 +69,11 @@ struct Resource {
   // through the proc's env (a cptr), never through mrb->ud.
   mrb_value run_self = {};
   // The run frame's in/out slots, valid for one resource_run call.
+  // `live` is THE REQUEST'S resource instance (#181): built at the top
+  // of the frame, receiver of every callback in it, dropped when it
+  // returns. No mrb_gc_register: the frame's arena roots it, which is
+  // the whole reason the flow runs inside one frame.
+  mutable mrb_value live = {};
   mutable const flow::ReqFacts* run_facts = nullptr;
   mutable std::string* run_body = nullptr;
   mutable bool run_have_body = false;
