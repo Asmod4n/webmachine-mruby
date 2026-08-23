@@ -29,7 +29,10 @@
 //        delayed ACK.
 //   struct Plan { struct Seg { const char* base; size_t off, len; };
 //                 static constexpr unsigned kSegs; Seg seg[kSegs];
-//                 unsigned nseg; size_t iov_len; };
+//                 unsigned nseg; size_t iov_len; size_t byte_cap; };
+//        byte_cap is set by the Ring before feed/more: the round's
+//        byte bound, from the socket's own free space (SO_MEMINFO).
+//        The App builds within it; 0 means unbounded.
 //   bool more(Conn&, std::string& sink, Plan&);
 //        the delivery continuation (#168): called when the sink has
 //        fully drained. The App either appends to the sink, or fills
@@ -73,8 +76,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <linux/sock_diag.h>  // SK_MEMINFO_*: the kernel's own sndbuf accounting
+
 #include <memory>
 #include <string>
+
+// SO_MEMINFO (Linux 4.12) is SOL_SOCKET, which is exactly why it works
+// where TCP_INFO does not: io_uring's getsockopt cmd refuses every
+// level but SOL_SOCKET. Older libcs may lack the name.
+#ifndef SO_MEMINFO
+#define SO_MEMINFO 55
+#endif
 #include <vector>
 
 // Prediction hints ONLY where the taken side is terminal - an exit, a
@@ -237,7 +249,8 @@ namespace detail {
 // user_data: kind(8) | gen(16) | idx(32). gen guards a reused slot
 // against CQEs of the connection that owned it before.
 enum : uint8_t {
-  kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7
+  kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
+  kMeminfo = 8
 };
 
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
@@ -624,6 +637,18 @@ class Ring {
     uint16_t gen = 0;  // stale-CQE guard: slot reuse bumps it, old ops miss
     size_t sent = 0;   // bytes of `out` the kernel has taken so far
 
+    // The round's byte bound, from the socket's own books (SO_MEMINFO:
+    // sndbuf minus queued, the arithmetic sk_stream_wspace uses - the
+    // SIOCOUTQ route was measured and buried, it counts payload while
+    // admission counts truesize). Refreshed by a getsockopt riding the
+    // batch whenever a drained send leaves work pending; until the
+    // first answer lands, a conservative floor. `mi` is the kernel's
+    // landing pad and must be stable memory, which is why it lives
+    // here.
+    static constexpr size_t kRoundFloor = 64u * 1024;
+    size_t round_cap = kRoundFloor;
+    uint32_t mi[SK_MEMINFO_VARS] = {};
+
     // Two buffers, not one: `out` is BORROWED by an in-flight send (its
     // pointer is in the SQE), so nothing may append to or clear it until
     // the send's CQE - appends land in `next`, the swap happens when the
@@ -851,6 +876,10 @@ class Ring {
       // the query with a fixed floor (1280B, the IPv6 minimum MTU) that
       // needs nothing from the kernel at accept time.
     }
+    // The first response should not run on the blind floor: the
+    // meminfo lands with this same batch, long before the peer's
+    // first request arrives.
+    arm_meminfo(idx);
     arm_recv(idx);
   }
 
@@ -911,6 +940,7 @@ class Ring {
     // delivers everything parked by the whole bundle - so nothing is
     // lost to the split, it only rides one call later.
     typename App::Plan req;
+    req.byte_cap = c.round_cap;
     while (left > 0) {
       const size_t n = left < kBufSize ? left : kBufSize;
       size_t off = 0;
@@ -982,6 +1012,58 @@ class Ring {
       arm_send(idx);
       return;
     }
+    if (app_.pending(c.app)) {
+      // Work is owed: measure before building the next round, so the
+      // round fits what the socket can take (Plan::byte_cap's story).
+      // A connection owing nothing skips the beat entirely - hello
+      // never pays it.
+      arm_meminfo(idx);
+      return;
+    }
+    continue_conn(idx);
+  }
+
+  // Ask the socket how much room it has, through the ring. The CQE
+  // (kMeminfo) computes the round bound and THEN continues the
+  // connection - the beat between send and next round that gives the
+  // buffer a moment to drain and the answer a moment to land. One
+  // extra SQE+CQE per pending round, riding the same submit.
+  void arm_meminfo(uint32_t idx) {
+    Conn& c = conns_[idx];
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(idx), SOL_SOCKET,
+                           SO_MEMINFO, c.mi, sizeof(c.mi));
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kMeminfo, c.gen, idx));
+  }
+
+  void on_meminfo(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (c.gen != gen) return;
+    size_t cap = Conn::kRoundFloor;
+    if (WM_LIKELY(cqe->res >= 0)) {
+      // TCP admits against wmem_queued, datagram-style sockets (unix
+      // included) against wmem_alloc - the larger of the two is the
+      // honest "used" on either family.
+      const uint32_t used = c.mi[SK_MEMINFO_WMEM_QUEUED] > c.mi[SK_MEMINFO_WMEM_ALLOC]
+                                ? c.mi[SK_MEMINFO_WMEM_QUEUED]
+                                : c.mi[SK_MEMINFO_WMEM_ALLOC];
+      const uint32_t buf = c.mi[SK_MEMINFO_SNDBUF];
+      const size_t free_b = buf > used ? buf - used : 0;
+      // Below the floor, send the floor anyway: the socket is full and
+      // the ring's own poll is the right waiter - a shorter round
+      // would only add beats to the same wait.
+      if (free_b > cap) cap = free_b;
+    }
+    c.round_cap = cap;
+    // A recv processed between the send's CQE and this one may have
+    // armed a new send already - `out` is then the KERNEL's, and
+    // continuing here would arm it a second time (measured as h2
+    // frame corruption: duplicated bytes, 30 req/s of retries). The
+    // cap is stored either way; the in-flight send's own completion
+    // is the continuation.
+    if (c.sending) return;
     continue_conn(idx);
   }
 
@@ -1040,6 +1122,7 @@ class Ring {
     // indeterminate (only [0, nseg) is ever read), because this runs
     // after EVERY drained send - hello pays it as often as a transfer.
     typename App::Plan req;
+    req.byte_cap = c.round_cap;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     if (req.nseg != 0) {
       take_plan(c, req);
@@ -1064,6 +1147,7 @@ class Ring {
       case detail::kAccept: on_accept(idx, cqe); break;
       case detail::kRecv: on_recv(idx, gen, cqe); break;
       case detail::kSend: on_send(idx, gen, cqe); break;
+      case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
       case detail::kClose:
         if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
           // The linked shutdown failed (peer reset first); the close is

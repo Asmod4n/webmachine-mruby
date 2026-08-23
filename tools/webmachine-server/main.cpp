@@ -39,6 +39,7 @@ struct Echo {
     Seg seg[kSegs] = {};
     unsigned nseg = 0;
     size_t iov_len = 0;
+    size_t byte_cap = 0;
   };
   bool feed(Conn&, const char* data, size_t len, std::string& sink, Plan*) {
     sink.append(data, len);

@@ -726,19 +726,31 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           // gone. Without a plan (a send in flight) the park stands
           // and more() delivers, as before.
           if (plan != nullptr) {
-            plan->seg[plan->nseg++] = Plan::Seg{nullptr, 0, sink.size()};
-            plan->iov_len += sink.size();
-            const size_t take = st.xfer_end - st.xfer_off;
-            struct iovec iv[3];
-            const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
-            for (unsigned i = 0; i < k; i++) {
-              plan->seg[plan->nseg++] =
-                  Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+            // The head counts against the round's byte bound too - it
+            // rides the same sendmsg. No room past it: plan nothing,
+            // the head goes as a plain send and the park stands.
+            const size_t room = plan->byte_cap == 0 ? st.xfer_end - st.xfer_off
+                                : plan->byte_cap > sink.size() ? plan->byte_cap - sink.size()
+                                                               : 0;
+            size_t take = st.xfer_end - st.xfer_off;
+            if (take > room) take = room;
+            if (take > 0) {
+              plan->seg[plan->nseg++] = Plan::Seg{nullptr, 0, sink.size()};
+              plan->iov_len += sink.size();
+              struct iovec iv[3];
+              const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
+              for (unsigned i = 0; i < k; i++) {
+                plan->seg[plan->nseg++] =
+                    Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+              }
+              plan->iov_len += take;
+              st.xfer_off += take;
+              if (st.xfer_off == st.xfer_end) {
+                st.xfer = nullptr;
+                st.xfer_off = 0;
+                st.xfer_end = 0;
+              }
             }
-            plan->iov_len += take;
-            st.xfer = nullptr;
-            st.xfer_off = 0;
-            st.xfer_end = 0;
           }
           return true;
         }

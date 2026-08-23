@@ -857,6 +857,10 @@ namespace {
 struct RoundOut {
   std::string& sink;
   Http1::Plan* plan;
+  // Bytes this round emitted on the COPY path (plan == nullptr). That
+  // path is per-byte work, so it keeps Gebot 18's round bound
+  // (kDeliverChunk) that the pointer path replaced with byte_cap.
+  size_t emitted = 0;
 
   // The resolver treats a plan that names any sink range as a COMPLETE
   // description of the sink, so bytes that were already in it when the
@@ -875,13 +879,21 @@ struct RoundOut {
   // body is gzip header + mapping + trailer). Four is the worst case
   // and the only one worth checking - guessing lower would truncate a
   // round mid-frame, and a truncated frame is a corrupt stream.
+  // Three gates, one per resource a frame consumes: segments, the
+  // round's byte cap (Plan::byte_cap says why), and - on the copy
+  // path - kDeliverChunk, because copies are per-byte work. Every
+  // gate sits BEFORE the frame, so a cap is overshot by at most one
+  // frame, never split across one.
   bool room_for_frame() const {
-    return plan == nullptr || plan->nseg + 4 <= Http1::Plan::kSegs;
+    if (plan == nullptr) return emitted < kDeliverChunk;
+    if (plan->nseg + 4 > Http1::Plan::kSegs) return false;
+    return plan->byte_cap == 0 || plan->iov_len < plan->byte_cap;
   }
 
   void bytes(const char* p, size_t n) {
     if (plan == nullptr) {
       sink.append(p, n);
+      emitted += n;
       return;
     }
     prime();
@@ -899,15 +911,32 @@ struct RoundOut {
     plan->iov_len += n;
   }
 
+  // Below this, a piece is COPIED into the open sink run instead of
+  // becoming an iovec of its own. The kernel pays a setup-and-walk
+  // cost per iovec that a small memcpy undercuts: a 4 KiB gzip
+  // response is three tiny pieces (10-byte header, ~1.9K deflate,
+  // 8-byte trailer), and as three iovecs it measured 14% SLOWER than
+  // its stored twin's one (forgecore, h2 -m32, 2026-08-23). The 18%
+  // memmove this file removed came from 64 KiB pieces - LARGE spans,
+  // which stay pointers. DATA payload spans are frame-capped at
+  // 16 KiB, so this floor splits at the memcpy-vs-iovec crossover,
+  // not at a body size.
+  static constexpr size_t kCopyFloor = 8192;
+
   void span(const AssetEntry& e, size_t off, size_t n) {
     if (plan == nullptr) {
       Assets::copy_wire(e, off, n, sink);
+      emitted += n;
       return;
     }
     prime();
     struct iovec iv[3];
     const unsigned k = Assets::wire_iov(e, off, n, iv);
     for (unsigned i = 0; i < k; i++) {
+      if (iv[i].iov_len < kCopyFloor) {
+        bytes(static_cast<const char*>(iv[i].iov_base), iv[i].iov_len);
+        continue;
+      }
       plan->seg[plan->nseg++] =
           Http1::Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
       plan->iov_len += iv[i].iov_len;
@@ -1032,13 +1061,17 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.xfer != nullptr) {
     const AssetEntry& e = *st.xfer;
     const size_t lim = st.xfer_end;  // full body or a 206 window alike
-    // The WHOLE remainder, in one plan. h1 has no framing inside a
+    // As much of the remainder as the round's byte bound allows
+    // (Plan::byte_cap says why; both fixed bounds were tried and
+    // lost - 64 KiB multiplied sends, unbounded slept out the
+    // one-third wake past the sndbuf). h1 has no framing inside a
     // body, so this is at most three pointers however large the body -
     // and pacing is not this layer's job: the kernel keeps what fits
     // in the sndbuf, the short write says how much, and the Ring
     // resumes from Conn::sent without asking here again. Chunking this
     // (64 KiB per round, once) only multiplied sends and CQEs.
-    const size_t take = lim - st.xfer_off;
+    size_t take = lim - st.xfer_off;
+    if (plan.byte_cap != 0 && take > plan.byte_cap) take = plan.byte_cap;
     struct iovec iv[3];
     const unsigned k = Assets::wire_iov(e, st.xfer_off, take, iv);
     for (unsigned i = 0; i < k; i++) {

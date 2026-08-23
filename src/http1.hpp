@@ -293,6 +293,17 @@ class Http1 {
     Seg seg[kSegs];
     unsigned nseg = 0;
     size_t iov_len = 0;  // total across seg
+    // The round's BYTE bound, set by the Ring from the socket's own
+    // accounting (SO_MEMINFO: sndbuf minus what is queued, the same
+    // arithmetic sk_stream_wspace uses). 0 = unbounded. A round built
+    // within it is accepted inline by the kernel; one built past it
+    // short-writes and then WAITS - a full TCP socket signals
+    // writability only at one-third free, so the remainder sleeps out
+    // a third of the buffer's drain (measured: 1 MiB responses at
+    // 8 MiB rounds ran at 0.6x their 1 MiB-round speed on forgecore,
+    // 0.3x in the container). Soft: overshooting by one frame is a
+    // race the short write corrects, not a fault.
+    size_t byte_cap = 0;
   };
 
   // plan: nullable. Non-null only when the Ring can arm a plan in this
