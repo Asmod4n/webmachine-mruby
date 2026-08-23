@@ -48,7 +48,10 @@ static void flush_out() {
 // "[23/Aug/2026:14:30:00 +0000]" - cached per second; records arrive
 // in near-time order, so this hits almost always.
 static int64_t ts_sec = -1;
-static char ts[29];
+// 28 bytes are ever read (the append below says so); the size gives
+// snprintf its worst case - a five-digit year would truncate inside
+// 29, and gcc rightly refuses to promise it cannot happen.
+static char ts[40];
 static void spell_ts(int64_t sec) {
   if (sec == ts_sec) return;
   ts_sec = sec;
