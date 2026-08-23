@@ -389,3 +389,51 @@ env: runnable=1/1064 busy=0% (200ms sample)
      50%  537.00us
      99%  566.00us
 Requests/sec: 729479.08
+==== 2026-08-23T09:24Z repo=cdec742 mruby=06ed794 ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size          req/s         MB/s
+      4096         210751       864.25
+     32768         143156      4505.60
+    262144          24697      6184.96
+   1048576           5240      5253.12
+steal +0 ticks over the whole sweep
+==== 2026-08-23T09:38Z repo=176aed8 mruby=06ed794 ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire
+      4096   stored         212399       871.01         4096
+      4096     gzip         215882       440.59         1888
+      4096      304         227970        18.26            0
+      4096      206         213724       459.21         2048
+     32768   stored         151348      4761.60        32768
+     32768     gzip         193445      1935.36        10242
+     32768      304         228162        18.28            0
+     32768      206         179581      2836.48        16384
+    262144   stored          25040      6266.88       262144
+    262144     gzip          70062      5160.96        77053
+    262144      304         226752        18.16            0
+    262144      206          52390      6563.84       131072
+   1048576   stored           5259      5273.60      1048576
+   1048576     gzip          22681      6860.80       316889
+   1048576      304         227463        18.22            0
+   1048576      206          11000      5509.12       524288
+steal +0 ticks over the whole sweep
+setup: 1 entry 4166us, 5000 entries 20628us (boot floor, min of 5; floor jitter 515us)
+setup: => 3293ns per entry
+==== 2026-08-23T11:47Z repo=4bb5a8d mruby=06ed794 ====
+harness: assets h2load --h1 -m1 -t4 -c400 -D10 reps=1 warm=default 7.1.8-1-default x86_64
+      size      arm          req/s         MB/s         wire
+      4096   stored         212387       870.95         4096
+      4096     gzip         216591       442.03         1888
+==== 2026-08-23T11:48Z repo=4bb5a8d mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1443 busy=0% (200ms sample)
+     50%  534.00us
+     99%  567.00us
+Requests/sec: 733143.55
+==== 2026-08-23T11:48Z repo=4bb5a8d mruby=06ed794 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1433 busy=0% (200ms sample)
+    Req/Sec   230.73k     4.02k  242.37k    78.50%
+     50%  426.00us
+     99%  549.00us
+Requests/sec: 914848.90
