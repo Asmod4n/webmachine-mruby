@@ -291,8 +291,11 @@ measure() {
     local scpu=$((su * 100 / HZ / DURATION))
     local ccpu
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    if [ "$su" -gt 0 ] && [ "$ccpu" -ge "$scpu" ]; then
-      echo "REFUSED on arm $arm, size $sz: client ${ccpu}% vs server ${scpu}% of a core, $threads_running running client threads." >&2
+    # Client-bound = the server had headroom against its BUDGET
+    # (WORKERS cores) while the client was pegged - see bench/assets.sh
+    # for why comparing totals was wrong.
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt $((WORKERS * 90)) ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
+      echo "REFUSED on arm $arm, size $sz: nginx had headroom (${scpu}% of ${WORKERS}00%) while the client was pegged (${ccpu}% across $THREADS threads, $threads_running running)." >&2
       echo "  This measures h2load, not nginx. Raise THREADS or use a second machine." >&2
       printf 'REFUSED client-bound'
       return

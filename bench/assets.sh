@@ -314,13 +314,20 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     local scpu=$((su * 100 / HZ / DURATION))
     local ccpu
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    if [ "$su" -gt 0 ] && [ "$ccpu" -ge "$scpu" ]; then
+    # Client-bound is a CONJUNCTION, not a comparison: the server had
+    # headroom AND the client was pegged. Comparing totals was wrong
+    # twice over - first it read a reaped pid (always 0), then, fixed,
+    # it refused every SERVER-SATURATED run, because a client that
+    # needs three cores to fill our one lawfully spends more total CPU
+    # than we do. A server at >=90% of its one core is the thing being
+    # measured, whatever the client burned to get it there.
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
       # The ARM is refused, the SWEEP continues: killing everything
       # after it once cost the whole large-size half of a run for a
       # marginal 304 arm. The guarantee is unchanged - no client-bound
       # figure is ever written, the row says REFUSED - but the arms
       # that pass still produce their rows.
-      echo "REFUSED on arm $arm, size $sz: the client spent ${ccpu}% of a core against the server's ${scpu}%, on $threads_running running client threads." >&2
+      echo "REFUSED on arm $arm, size $sz: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% across $THREADS threads, $threads_running running)." >&2
       echo "  This measures h2load, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
       printf 'REFUSED client-bound'
       return
