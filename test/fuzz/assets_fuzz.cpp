@@ -9,20 +9,29 @@
 // 8, a truncated directory - and this asks whether it answers them
 // for EVERY malformed directory rather than the ones it was shown.
 //
-// The bytes are a file because Assets::open takes a path and mmaps
-// it, which is the right shape for a table built once at setup - so
-// the target writes the input out and hands over the name. One file
-// per PROCESS (the pid is in it), because -fork runs thirty of these
-// at once and they must not share a scratch file.
+// The bytes have to be a FILE because Assets::open takes a path and
+// mmaps it - the right shape for a table built once at setup. The
+// first version wrote /tmp/wm-assets-fuzz-<pid>.zip on every input,
+// and strace said what that cost: two openat, two close, two fstat, a
+// write, an mmap and an munmap per run, about 135 microseconds of
+// syscall against a 118-microsecond budget. The target was spending
+// essentially all of its time in the filesystem and none of it in the
+// parser under test.
 //
-// After a directory that parsed, the REQUEST half runs too: find() is
-// a byte compare against the table's names, and verdict() turns
-// Range/If-Match/If-None-Match into a status. Both take strings the
-// same input chose.
+// So the file is a memfd, created ONCE per process and rewound per
+// input, and the path handed over is /proc/self/fd/N - which is a
+// real path to a file that never touches a filesystem. Assets::open
+// still does its own open/fstat/mmap, and it should: that is the code
+// being tested. What is gone is this target's own half.
+//
+// One memfd per PROCESS, because -fork runs thirty of these at once
+// and a shared scratch file would have them overwriting each other's
+// input mid-parse.
 //
 //   tools/fuzz.sh   (every target; this one is 'assets')
 #include "../../src/assets.cpp"  // NOLINT: instrumented, not linked
 
+#include <sys/mman.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -38,10 +47,16 @@ using namespace webmachine;  // NOLINT: a test binary, one translation unit
 
 namespace {
 
+// The memfd and the path that names it, both built on first use.
+int scratch_fd() {
+  static int fd = ::memfd_create("wm-assets-fuzz", MFD_CLOEXEC);
+  return fd;
+}
+
 const char* scratch_path() {
   static std::string p = [] {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "/tmp/wm-assets-fuzz-%d.zip", static_cast<int>(::getpid()));
+    std::snprintf(buf, sizeof(buf), "/proc/self/fd/%d", scratch_fd());
     return std::string(buf);
   }();
   return p.c_str();
@@ -54,12 +69,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   // and Assets::open refuses anything below it by fstat alone.
   if (size < 22 || size > (1u << 20)) return 0;
 
+  const int fd = scratch_fd();
+  if (fd < 0) return 0;
+  // Rewound and retruncated rather than reopened: one pwrite and one
+  // ftruncate where there used to be a whole file lifetime.
+  if (::ftruncate(fd, 0) != 0) return 0;
+  if (::pwrite(fd, data, size, 0) != static_cast<ssize_t>(size)) return 0;
   const char* path = scratch_path();
-  std::FILE* f = std::fopen(path, "wbe");
-  if (f == nullptr) return 0;
-  const bool wrote = std::fwrite(data, 1, size, f) == size;
-  std::fclose(f);
-  if (!wrote) return 0;
 
   Assets a;
   char err[256];
