@@ -147,6 +147,36 @@ UNIT_TIMEOUT="${UNIT_TIMEOUT:-25}"
 # for catching its breath, short enough that a dead harness does not
 # burn a night.
 STALE_ALERT="${STALE_ALERT:-1200}"
+# VALUE PROFILE: libFuzzer tracks the OPERANDS of comparisons and
+# feeds the distance between them back as coverage, so it can solve a
+# magic value incrementally instead of having to guess it whole. That
+# is exactly this tree's shape - "permessage-deflate", "bytes=",
+# "PK\x05\x06" - which is why it is a knob and not a refusal.
+#
+# It is OFF by default, and the measurement is why (wsdeflate, 30s,
+# cold, same dictionary):
+#
+#              cov   features  corpus  exec/s
+#   off        292     1162      688    254k
+#   on         287     3925     1404     77k
+#
+# Three times the features and twice the corpus, but three times
+# slower and, inside that window, no more blocks. The dictionary
+# already carries every magic value in this tree, which is the other
+# way to solve the same problem - so VP's marginal value here is
+# smaller than it would be against a codec whose constants nobody can
+# write down in advance.
+#
+# WHERE IT IS WORTH TURNING ON: assets. A zip cross-references sizes,
+# offsets and a CRC32 that no dictionary can anticipate, and that
+# target is the one stuck at a third of its counters.
+#
+#   VALUE_PROFILE=1 WORKERS=30 tools/fuzz.sh
+VALUE_PROFILE="${VALUE_PROFILE:-0}"
+# libFuzzer caps generated inputs at 4096 bytes unless told otherwise.
+# That is plenty for a frame or a header value and NOT plenty for a
+# zip with several entries or a pipelined h1 head, so it is raisable.
+MAX_LEN="${MAX_LEN:-0}"
 
 LIBMRUBY=mruby/build/host/lib/libmruby.a
 [ -f "$LIBMRUBY" ] || { echo "$LIBMRUBY missing - run: rake compile" >&2; exit 1; }
@@ -293,6 +323,10 @@ per=$((WORKERS / n))
 fork_flag=""
 [ "$per" -gt 1 ] && fork_flag="-fork=$per"
 
+extra_flags=""
+[ "$VALUE_PROFILE" != "0" ] && extra_flags="$extra_flags -use_value_profile=1"
+[ "$MAX_LEN" -gt 0 ] && extra_flags="$extra_flags -max_len=$MAX_LEN"
+
 time_flag=""
 if [ "$SECONDS_TO_RUN" -gt 0 ]; then
   time_flag="-max_total_time=$SECONDS_TO_RUN"
@@ -307,7 +341,7 @@ echo
 pids=""
 for t in $TARGETS; do
   # shellcheck disable=SC2086  # each flag is empty or one word, on purpose
-  "$OUT/$t" "$OUT/corpus-$t" -dict="test/fuzz/$t.dict" $fork_flag $time_flag \
+  "$OUT/$t" "$OUT/corpus-$t" -dict="test/fuzz/$t.dict" $fork_flag $time_flag $extra_flags \
     -artifact_prefix="$OUT/crashes-$t/" -timeout="$UNIT_TIMEOUT" \
     -print_final_stats=1 -rss_limit_mb="$RSS_LIMIT" > "$OUT/$t.log" 2>&1 &
   pids="$pids $!"
