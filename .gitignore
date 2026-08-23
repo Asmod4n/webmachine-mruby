@@ -19,12 +19,13 @@ bench/tmp/
 bench/idle_load
 /tmp/
 # Dependency checkouts fetched on demand, like /mruby/ above. Only
-# deps/ls-hpack and deps/zlib-ng are real submodules (.gitmodules
-# behind them) and stay tracked - anything else under deps/ arrived by
-# hand and belongs to the checkout, not the repo.
+# deps/ls-hpack, deps/zlib-ng and deps/miniz are real submodules
+# (.gitmodules behind them) and stay tracked - anything else under
+# deps/ arrived by hand and belongs to the checkout, not the repo.
 /deps/*
 !/deps/ls-hpack
 !/deps/zlib-ng
+!/deps/miniz
 build_config.rb.lock
 bench/vm/*.mrb
 build/fuzz/

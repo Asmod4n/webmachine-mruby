@@ -1,8 +1,47 @@
-// The ZIP side of the asset tier (#170): Central Directory in, entry
-// table + prebuilt responses out. Runs ONCE at setup - classic
-// open/mmap is fine here (ring.hpp exempts mmap by name: memory, not
-// IO). The fd does not outlive setup: the mapping is what serves.
+// The ZIP side of the asset tier (#170, corrected by #177): archive
+// in, entry table + prebuilt responses out. Runs ONCE at setup -
+// classic open/mmap is fine here (ring.hpp exempts mmap by name:
+// memory, not IO). The fd does not outlive setup: the mapping is what
+// serves, and it keeps serving - a request's bytes are an iovec into
+// these pages, never a copy.
+//
+// THE ARCHIVE IS PARSED BY miniz, NOT BY THIS FILE (Nutzer-Entscheid:
+// ".zip ist ne riesen Angriffsflaeche, da was selbst zu rollen schreit
+// danach CVEs zu wollen"). What used to live here was an end record
+// scanned backwards over 64 KiB, 46-byte central directory rows with
+// four variable-length fields each, Zip64 escapes, an encryption flag,
+// and a bounds check against the mapping behind every one of them -
+// 137 instrumented edges of hand-written foreign-format parsing, which
+// is the shape every ZIP CVE has ever had.
+//
+// WHY miniz AND NOT libzip, which the standing rule would prefer (a
+// stable ABI that every distribution carries): libzip cannot answer
+// the question this tier asks. It hands over BYTES - zip_fopen_index
+// plus zip_fread - and has no public API for an entry's POSITION;
+// zip_source_seek_compute_offset is a helper for source
+// implementations, not that. Taking it would mean copying every served
+// byte into an arena at setup and losing the mapping: file-backed
+// pages the kernel faults in on demand and can evict would become
+// anonymous RSS that must all stay resident. The delivery model (#155,
+// #168 - an iovec into the mapping, sendmsg, no copy) is not something
+// to trade for a packaging preference.
+//
+// miniz answers it: mz_zip_reader_init_mem parses OUR mapping with no
+// IO at all (MINIZ_NO_STDIO is a first-class build switch, not a
+// workaround), and mz_zip_archive_file_stat carries m_local_header_ofs
+// - a position - next to the metadata HTTP needs: m_comp_size,
+// m_uncomp_size, m_crc32, m_method, m_time as a time_t (so the DOS
+// date arithmetic goes with the parser), m_is_directory,
+// m_is_encrypted, m_is_supported.
+//
+// WHAT THIS FILE STILL READS OF THE FORMAT, and it is the whole of it:
+// the 30-byte Local Header, to skip it. Its name and extra lengths may
+// differ from the directory's, so they must be read locally - a
+// signature check and two uint16 at +26 and +28. Five lines against
+// the directory walk that is gone.
 #include "assets.hpp"
+
+#include <miniz.h>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -53,25 +92,17 @@ const char* ctype_of(const std::string& name) {
   return "application/octet-stream";
 }
 
-// DOS date/time (ZIP appnote 4.4.6) to IMF-fixdate. The zone is
-// unknowable (DOS times are "local" with no zone recorded); read as
-// UTC, which every tool in the chain also pretends.
-bool dos_to_imf(uint16_t ddate, uint16_t dtime, char out[http::kDateLen]) {
-  struct tm tm {};
-  const int day = ddate & 0x1f;
-  const int mon = (ddate >> 5) & 0x0f;
-  const int year = ((ddate >> 9) & 0x7f) + 1980;
-  if (day < 1 || mon < 1 || mon > 12) return false;  // 0 = "no date recorded"
-  tm.tm_mday = day;
-  tm.tm_mon = mon - 1;
-  tm.tm_year = year - 1900;
-  tm.tm_hour = (dtime >> 11) & 0x1f;
-  tm.tm_min = (dtime >> 5) & 0x3f;
-  tm.tm_sec = (dtime & 0x1f) * 2;
-  const time_t t = timegm(&tm);
-  if (t == static_cast<time_t>(-1)) return false;
+// The archive's mtime to IMF-fixdate. miniz has already read whichever
+// of the DOS date/time fields (appnote 4.4.6) or the extended-timestamp
+// extra field the archive carried, and hands over a time_t - so the bit
+// arithmetic that used to live here went with the parser. The zone is
+// unknowable for a DOS date (they are "local" with no zone recorded);
+// read as UTC, which every tool in the chain also pretends. Zero means
+// "no date recorded" and serves no Last-Modified.
+bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
+  if (t <= 0) return false;
   struct tm norm;
-  gmtime_r(&t, &norm);  // fills tm_wday, normalizes a 31st of a short month
+  if (gmtime_r(&t, &norm) == nullptr) return false;
   http::date_core(out, norm);
   return true;
 }
@@ -136,110 +167,90 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
   map_ = static_cast<const char*>(m);
   const unsigned char* base = reinterpret_cast<const unsigned char*>(map_);
 
-  // End of Central Directory: last 0x06054b50 within the final 64K+22
-  // (the trailing comment's maximum reach, appnote 4.3.16).
-  size_t eocd = SIZE_MAX;
-  {
-    const size_t lo = map_len_ > 65557 ? map_len_ - 65557 : 0;
-    for (size_t i = map_len_ - 22 + 1; i-- > lo;) {
-      if (rd32(base + i) == 0x06054b50) {
-        eocd = i;
-        break;
-      }
-    }
-  }
-  if (eocd == SIZE_MAX) {
-    std::snprintf(err, errlen, "%s: no end-of-central-directory record", zip_path);
+  // miniz over OUR mapping: no fd, no read, no seek - it walks the
+  // Central Directory in the pages already faulted in.
+  mz_zip_archive za;
+  std::memset(&za, 0, sizeof(za));
+  if (!mz_zip_reader_init_mem(&za, map_, map_len_, 0)) {
+    std::snprintf(err, errlen, "%s: not a readable ZIP (%s)", zip_path,
+                  mz_zip_get_error_string(mz_zip_get_last_error(&za)));
     return false;
   }
-  const uint16_t disk = rd16(base + eocd + 4);
-  const uint16_t cd_disk = rd16(base + eocd + 6);
-  const uint16_t n_here = rd16(base + eocd + 8);
-  const uint16_t n_total = rd16(base + eocd + 10);
-  const uint32_t cd_size = rd32(base + eocd + 12);
-  const uint32_t cd_off = rd32(base + eocd + 16);
-  if (disk != 0 || cd_disk != 0 || n_here != n_total) {
-    std::snprintf(err, errlen, "%s: multi-disk archive - not supported", zip_path);
-    return false;
-  }
-  // 0xffff/0xffffffff are the Zip64 escape values (appnote 4.4.1.4).
-  // Excluded, not postponed: Explorer's Zip64 support is not there.
-  if (n_total == 0xffff || cd_size == 0xffffffff || cd_off == 0xffffffff) {
-    std::snprintf(err, errlen, "%s: Zip64 - excluded by design (Explorer compatibility)",
-                  zip_path);
-    return false;
-  }
-  if (static_cast<size_t>(cd_off) + cd_size > eocd) {
-    std::snprintf(err, errlen, "%s: central directory overruns the end record", zip_path);
-    return false;
-  }
+  struct Ender {
+    mz_zip_archive* z;
+    ~Ender() { mz_zip_reader_end(z); }
+  } ender{&za};
 
-  entries_.reserve(n_total);
-  size_t p = cd_off;
-  for (uint32_t i = 0; i < n_total; i++) {
-    if (p + 46 > cd_off + cd_size || rd32(base + p) != 0x02014b50) {
-      std::snprintf(err, errlen, "%s: central directory truncated at entry %u", zip_path, i);
+  const mz_uint n = mz_zip_reader_get_num_files(&za);
+  // #170's Explorer requirement as a number: under 65535 entries and
+  // under 4 GB, so no Zip64 record is needed anywhere. Refused by name
+  // rather than half-supported.
+  if (n >= 0xffff) {
+    std::snprintf(err, errlen, "%s: %u entries - Zip64 territory, excluded by design",
+                  zip_path, n);
+    return false;
+  }
+  entries_.reserve(n);
+
+  for (mz_uint i = 0; i < n; i++) {
+    mz_zip_archive_file_stat st;
+    if (!mz_zip_reader_file_stat(&za, i, &st)) {
+      std::snprintf(err, errlen, "%s: entry %u: %s", zip_path, i,
+                    mz_zip_get_error_string(mz_zip_get_last_error(&za)));
       return false;
     }
-    const uint16_t flags = rd16(base + p + 8);
-    const uint16_t method = rd16(base + p + 10);
-    const uint16_t dtime = rd16(base + p + 12);
-    const uint16_t ddate = rd16(base + p + 14);
-    const uint32_t crc = rd32(base + p + 16);
-    const uint32_t comp = rd32(base + p + 20);
-    const uint32_t uncomp = rd32(base + p + 24);
-    const uint16_t nlen = rd16(base + p + 28);
-    const uint16_t xlen = rd16(base + p + 30);
-    const uint16_t clen = rd16(base + p + 32);
-    const uint32_t lho = rd32(base + p + 42);
-    const char* nm = reinterpret_cast<const char*>(base + p + 46);
-    if (p + 46 + nlen > cd_off + cd_size) {
-      std::snprintf(err, errlen, "%s: entry %u name overruns the directory", zip_path, i);
-      return false;
-    }
-    p += 46u + nlen + xlen + clen;
+    const size_t nlen = std::strlen(st.m_filename);
 
     // Directory rows carry no bytes to serve.
-    if (nlen != 0 && nm[nlen - 1] == '/' && uncomp == 0) continue;
-    if ((flags & 0x1) != 0) {
-      std::snprintf(err, errlen, "%s: %.*s is encrypted - not supported", zip_path, nlen, nm);
+    if (st.m_is_directory) continue;
+    // Both refusals are miniz's own findings, restated in this tier's
+    // words - m_is_supported covers the methods and the patch-file bit
+    // it will not read.
+    if (st.m_is_encrypted) {
+      std::snprintf(err, errlen, "%s: %s is encrypted - not supported", zip_path,
+                    st.m_filename);
       return false;
     }
-    if (method != 0 && method != 8) {
+    if (st.m_method != 0 && st.m_method != MZ_DEFLATED) {
       std::snprintf(err, errlen,
-                    "%s: %.*s uses method %u - only stored (0) and deflate (8) are served",
-                    zip_path, nlen, nm, method);
+                    "%s: %s uses method %u - only stored (0) and deflate (8) are served",
+                    zip_path, st.m_filename, static_cast<unsigned>(st.m_method));
       return false;
     }
-    if (comp == 0xffffffff || uncomp == 0xffffffff) {
-      std::snprintf(err, errlen, "%s: %.*s carries Zip64 sizes - excluded by design",
-                    zip_path, nlen, nm);
+    if (st.m_comp_size > 0xffffffffULL || st.m_uncomp_size > 0xffffffffULL) {
+      std::snprintf(err, errlen, "%s: %s is 4 GB or larger - Zip64, excluded by design",
+                    zip_path, st.m_filename);
       return false;
     }
-    // Skip the local header ONCE, here; its extra field's length may
-    // differ from the directory's, so it must be read locally.
-    if (static_cast<size_t>(lho) + 30 > map_len_ || rd32(base + lho) != 0x04034b50) {
-      std::snprintf(err, errlen, "%s: %.*s has a broken local header", zip_path, nlen, nm);
+
+    // THE ONLY ZIP BYTES THIS FILE STILL READS. miniz gives the Local
+    // Header's offset, not the data's, and the header's own name and
+    // extra lengths may differ from the directory's - so they are read
+    // where they are, and the result is bounds-checked against the
+    // mapping like everything that indexes into it.
+    const size_t lho = static_cast<size_t>(st.m_local_header_ofs);
+    if (lho + 30 > map_len_ || rd32(base + lho) != 0x04034b50) {
+      std::snprintf(err, errlen, "%s: %s has a broken local header", zip_path,
+                    st.m_filename);
       return false;
     }
-    const uint16_t lnlen = rd16(base + lho + 26);
-    const uint16_t lxlen = rd16(base + lho + 28);
-    const size_t data_off = static_cast<size_t>(lho) + 30 + lnlen + lxlen;
+    const size_t data_off = lho + 30 + rd16(base + lho + 26) + rd16(base + lho + 28);
+    const size_t comp = static_cast<size_t>(st.m_comp_size);
     if (data_off + comp > map_len_) {
-      std::snprintf(err, errlen, "%s: %.*s data overruns the file", zip_path, nlen, nm);
+      std::snprintf(err, errlen, "%s: %s data overruns the file", zip_path, st.m_filename);
       return false;
     }
 
     AssetEntry e;
-    e.name.assign(nm, nlen);
+    e.name.assign(st.m_filename, nlen);
     e.data = map_ + data_off;
     e.comp_size = comp;
-    e.uncomp_size = uncomp;
-    e.crc = crc;
-    e.deflated = method == 8;
-    e.lm_valid = dos_to_imf(ddate, dtime, e.lm);
+    e.uncomp_size = static_cast<size_t>(st.m_uncomp_size);
+    e.crc = st.m_crc32;
+    e.deflated = st.m_method == MZ_DEFLATED;
+    e.lm_valid = mtime_to_imf(st.m_time, e.lm);
     e.etag[0] = '"';
-    spell_hex8(e.etag + 1, crc);
+    spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
     entries_.push_back(std::move(e));
   }

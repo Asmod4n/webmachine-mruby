@@ -1,3 +1,5 @@
+require 'fileutils'
+
 MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.license = 'Apache-2'
   spec.author  = 'Hendrik Beskow'
@@ -156,6 +158,42 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     MSG
   end
   spec.linker.libraries << 'z'
+
+  # miniz: the ZIP container reader for the asset tier (#177). The
+  # format stays ZIP (#170 wants Explorer to open, read and change the
+  # pack); this tree stopped parsing it - 137 instrumented edges of
+  # Central Directory walking, which is the shape every ZIP CVE has.
+  #
+  # libzip would have been the packaged choice and links our libz and
+  # libcrypto, but it hands over BYTES and never a POSITION. Copying
+  # every served byte into an arena would turn file-backed pages into
+  # anonymous RSS and give up #155/#168's iovec-into-the-mapping.
+  # miniz's m_local_header_ofs is the offset that keeps it.
+  #
+  # The price, named: MINIZ_NO_INFLATE_APIS cannot be set - miniz.h:162
+  # turns it into MINIZ_NO_ARCHIVE_APIS, because mz_zip_archive embeds a
+  # tinfl_decompressor. So ~15 KB of a second DEFLATE rides along
+  # uncalled; the codec on the serving path is and stays the system
+  # zlib. Pinned at 3.1.2; deps-upstream.yml watches for newer tags.
+  mnz = "#{dir}/deps/miniz"
+  abort 'webmachine-mruby: deps/miniz is empty - run: git submodule update --init' unless File.exist?("#{mnz}/miniz_zip.h")
+  # miniz_export.h is CMake's and decorates symbols for a SHARED build.
+  # This one is static in the same binary, so it is empty.
+  mnz_gen = "#{build_dir}/miniz"
+  FileUtils.mkdir_p(mnz_gen)
+  File.write("#{mnz_gen}/miniz_export.h", "#pragma once\n#define MINIZ_EXPORT\n")
+  spec.cc.include_paths  << mnz << mnz_gen
+  spec.cxx.include_paths << mnz << mnz_gen
+  # No stdio: the archive is OUR mmap (mz_zip_reader_init_mem), so miniz
+  # must not know what a file is. No deflate: nothing here compresses,
+  # and it implies MINIZ_NO_ARCHIVE_WRITING_APIS.
+  %w[MINIZ_NO_STDIO MINIZ_NO_DEFLATE_APIS].each do |d|
+    spec.cc.defines  << d
+    spec.cxx.defines << d
+  end
+  spec.objs += %W(#{mnz}/miniz.c #{mnz}/miniz_tinfl.c #{mnz}/miniz_zip.c).map { |f|
+    f.relative_path_from(dir).pathmap("#{build_dir}/%X#{spec.exts.object}")
+  }
 
   # libcrypto, for ONE function: SHA1(), the fixed transform RFC 6455
   # 4.2.2 puts in the websocket handshake (#175). Same standing rule as

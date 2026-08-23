@@ -1,3 +1,6 @@
 [submodule "deps/ls-hpack"]
 	path = deps/ls-hpack
 	url = https://github.com/litespeedtech/ls-hpack
+[submodule "deps/miniz"]
+	path = deps/miniz
+	url = https://github.com/richgel999/miniz
