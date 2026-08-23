@@ -918,10 +918,15 @@ struct RoundOut {
   // 8-byte trailer), and as three iovecs it measured 14% SLOWER than
   // its stored twin's one (forgecore, h2 -m32, 2026-08-23). The 18%
   // memmove this file removed came from 64 KiB pieces - LARGE spans,
-  // which stay pointers. DATA payload spans are frame-capped at
-  // 16 KiB, so this floor splits at the memcpy-vs-iovec crossover,
-  // not at a body size.
-  static constexpr size_t kCopyFloor = 8192;
+  // which stay pointers.
+  //
+  // THE VALUE IS BRACKETED BY TWO MEASUREMENTS, same host, same day:
+  // a 4096-byte span is faster as a POINTER (1.42M req/s against
+  // 1.30M when an 8192 floor copied it), a ~1.9K deflate span is
+  // faster COPIED (its response rose 1.79M -> 1.87M when it stopped
+  // being three iovecs). The crossover sits between; one page is the
+  // natural line. Strictly below: a 4096 piece stays a pointer.
+  static constexpr size_t kCopyFloor = 4096;
 
   void span(const AssetEntry& e, size_t off, size_t n) {
     if (plan == nullptr) {
