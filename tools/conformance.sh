@@ -25,6 +25,7 @@ cd "$(dirname "$0")/.."
 
 SUITE="${1:-}"
 PORT="${PORT:-9977}"
+CASES="${CASES:-\"*\"}"
 BIN=mruby/build/host/bin/webmachine-server
 MRBC=mruby/build/host/mrbc/bin/mrbc
 OUT=build/conformance
@@ -67,22 +68,31 @@ h2)
 ws)
   start_server test/conformance/ws_echo.rb
   trap stop_server EXIT INT TERM
+  # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
+  # answers in seconds where the full suite answers in minutes, which is
+  # the difference between finding a stall and waiting one out.
   cat > "$OUT/fuzzingclient.json" <<JSON
 { "servers": [{ "url": "ws://127.0.0.1:$PORT/echo" }],
   "outdir": "/reports",
-  "cases": ["*"],
-  "exclude-cases": ["12.*", "13.*"],
+  "cases": [$CASES],
+  "exclude-cases": [],
   "exclude-agent-cases": {} }
 JSON
-  # 12.x/13.x are permessage-deflate: no extension is negotiated yet
-  # (round two, #175), and an unnegotiated extension is a refusal, not
-  # a failure to measure.
+  # Everything, 12.x and 13.x included: those are permessage-deflate
+  # (RFC 7692), which round two of #175 negotiates and speaks. The
+  # fixture (test/conformance/ws_echo.rb) is what turns it on - the
+  # tree's default is off, and wsconn.hpp says why in bytes.
   mkdir -p "$OUT/reports"
-  podman run --rm --network host \
+  # PYTHONUNBUFFERED, and it is not cosmetic: wstest is Python, Python
+  # block-buffers stdout when it is a pipe, and a suite whose progress
+  # only appears at the END is indistinguishable from a suite that
+  # hung. That mistake cost half an hour of waiting on a run that was
+  # working the whole time. With this, the case it is on is on screen.
+  podman run --rm --network host -e PYTHONUNBUFFERED=1 \
     -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
     -v "$PWD/$OUT/reports:/reports:z" \
     crossbario/autobahn-testsuite \
-    wstest -m fuzzingclient -s /fuzzingclient.json 2>&1 | tail -20
+    wstest -m fuzzingclient -s /fuzzingclient.json 2>&1 | tee "$OUT/autobahn.log"
   echo "report: $OUT/reports/index.html"
   ;;
 *)

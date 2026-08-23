@@ -12,6 +12,7 @@
 #include "request.hpp"
 #include "resource.hpp"
 #include "websocket.hpp"
+#include "wsdeflate.hpp"
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -887,6 +888,23 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
     return fail(st, refuse_status == 0 ? 403 : refuse_status, sink);
   }
 
+  // permessage-deflate (#175 round two, RFC 7692), and only for a route
+  // that said it wants it: the offer list is walked here, where the
+  // parsed head still lies, so the extension costs a route that
+  // declined it exactly one bool. A field may appear more than once
+  // (RFC 9110 5.3 makes a list one field or many); the FIRST offer
+  // anywhere in them that this endpoint can accept wins, which is
+  // 7692 5.1's "the server selects one".
+  wsdeflate::Params dparams;
+  std::string ext_answer;
+  if (ws_wants_deflate(res)) {
+    const struct phr_header* hs = static_cast<const struct phr_header*>(hdrs);
+    for (size_t i = 0; i < nhdr && !dparams.on; i++) {
+      if (!http::tok_eq(hs[i].name, hs[i].name_len, "sec-websocket-extensions", 24)) continue;
+      wsdeflate::negotiate(hs[i].value, hs[i].value_len, dparams, ext_answer);
+    }
+  }
+
   sink.append("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "
               "Upgrade\r\nSec-WebSocket-Accept: ");
   sink.append(accept, sizeof(accept));
@@ -895,9 +913,10 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
     // which the resource read out of the head itself.
     sink.append("\r\nSec-WebSocket-Protocol: ").append(proto);
   }
+  if (dparams.on) sink.append("\r\nSec-WebSocket-Extensions: ").append(ext_answer);
   sink.append("\r\n\r\n");
 
-  st.ws = ws_open(res);
+  st.ws = ws_open(res, dparams);
   st.carry.clear();     // the head is answered; nothing HTTP waits any more
   st.body_skip = 0;
   // Frames the client sent in the SAME receive as its handshake - a

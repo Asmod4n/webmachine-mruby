@@ -42,15 +42,26 @@
 // endpoint's duty and not an application decision; an incoming pong is
 // silent. A resource never sees either.
 //
-// Two more konst answers, asked once at fold and free per message:
+// Three more konst answers, asked once at fold and free per message:
 //
 //     def self.max_message = 8 * 1024 * 1024   # default 64 KiB
 //     def self.validate_text? = false          # default true
+//     def self.permessage_deflate? = true      # default false
 //
 // validate_text? off means this endpoint stops checking incoming TEXT
 // messages against RFC 6455 8.1 - faster on a link whose payloads are
 // known good, and a peer sending broken text then gets an answer
 // instead of the 1007 the RFC asks for.
+//
+// permessage_deflate? on means this route ACCEPTS RFC 7692 when a
+// client offers it. Off by default, and the default is the honest one:
+// the extension costs about 296 KiB of zlib per compressing peer
+// (wsdeflate.hpp does the arithmetic), on a tree whose connection
+// capacity is derived in the tens of thousands. A route that talks to
+// browsers over a metered link wants it; a route fanning out to
+// thousands of idle sockets does not, and neither should have to find
+// that out from a memory graph. Nothing else about the route changes:
+// on_data still gets the message, whole and decompressed.
 //
 // What the method RETURNS is the whole protocol between Ruby and this
 // layer:
@@ -79,6 +90,8 @@
 
 #include <cstddef>
 #include <string>
+
+#include "wsdeflate.hpp"
 
 namespace webmachine {
 
@@ -116,6 +129,11 @@ struct WsConn;
 // reason in err by name (not a Webmachine::WebsocketResource, no
 // on_data, a raise while instantiating).
 bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen);
+
+// Does this route accept RFC 7692 at all? Asked by the handshake
+// BEFORE it parses a Sec-WebSocket-Extensions offer, so a route that
+// says no never pays for the parse.
+bool ws_wants_deflate(const WsResource* r);
 WsResource* ws_resource_new();
 void ws_resource_free(WsResource* r);
 
@@ -131,8 +149,10 @@ void ws_init(mrb_state* mrb, struct RClass* wm);
 // `status` the HTTP status the resource named instead of an upgrade.
 bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
 
-// The upgrade is answered: build the peer.
-WsConn* ws_open(const WsResource* r);
+// The upgrade is answered: build the peer, with whatever
+// permessage-deflate negotiation settled on (wsdeflate.hpp). Params
+// with `on` false is a plain RFC 6455 connection and costs nothing.
+WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate);
 
 // Wire bytes for an upgraded connection. False = this connection ends
 // once the sink has drained, exactly like Http1::feed's contract.

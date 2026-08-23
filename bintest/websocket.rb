@@ -95,7 +95,9 @@ def ws_frame(opcode, payload, fin: true, mask: "\x21\x09\x8f\x3c".b)
   out + mask + masked
 end
 
-# One server frame off the wire: [opcode, fin, payload].
+# One server frame off the wire: [opcode, fin, payload, rsv1]. RSV1 is
+# appended rather than inserted - round one's cases destructure this
+# positionally and permessage-deflate is round two's news, not theirs.
 def ws_read_frame(s)
   b = ws_recv(s, 2)
   b0 = b.getbyte(0)
@@ -110,7 +112,7 @@ def ws_read_frame(s)
     len = 0
     8.times { |i| len = (len << 8) | eight.getbyte(i) }
   end
-  [b0 & 0x0f, (b0 & 0x80) != 0, len.zero? ? ''.b : ws_recv(s, len)]
+  [b0 & 0x0f, (b0 & 0x80) != 0, len.zero? ? ''.b : ws_recv(s, len), (b0 & 0x40) != 0]
 end
 
 WS_ECHO = <<~RUBY unless defined?(WS_ECHO)
@@ -478,5 +480,302 @@ assert('ws: on_close hears the client going away, with its code and reason') do
       sleep 0.05
     end
     assert_true seen, (File.read(errlog) rescue '')
+  end
+end
+
+# ---------------------------------------------------------------------
+# Round two (#175, RFC 7692): permessage-deflate over the wire. The
+# negotiation's own vectors are in test/ws.rb; these are the cases only
+# a real socket can answer - that the zlib streams on both ends stay in
+# step across messages, and that a compressed message is bounded by the
+# size it BECOMES.
+
+require 'zlib'
+
+# The client half of 7692 7.2.1: deflate with a sync flush, then drop
+# the four bytes the flush ends with.
+def ws_deflate(z, str)
+  out = z.deflate(str, Zlib::SYNC_FLUSH)
+  out[0, out.bytesize - 4]
+end
+
+# 7.2.2 step 1: put them back.
+def ws_inflate(z, payload)
+  z.inflate(payload + "\x00\x00\xff\xff".b)
+end
+
+def ws_deflator(bits = 15)
+  Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -bits)
+end
+
+def ws_inflator(bits = 15)
+  Zlib::Inflate.new(-bits)
+end
+
+# A compressed data frame: RSV1 on the FIRST frame of the message.
+def ws_dframe(opcode, payload, fin: true, rsv1: true)
+  f = ws_frame(opcode, payload, fin: fin)
+  f.setbyte(0, f.getbyte(0) | 0x40) if rsv1
+  f
+end
+
+WS_DEFLATE_ECHO = <<~RUBY unless defined?(WS_DEFLATE_ECHO)
+  class DeflateEcho < Webmachine::WebsocketResource
+    def self.permessage_deflate?
+      true
+    end
+
+    def on_data(data, binary)
+      data
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.websocket ['ws'], DeflateEcho }
+    end
+  end
+RUBY
+
+assert('ws: a route that never asked for 7692 declines the offer, and RSV1 stays illegal') do
+  ws_server(WS_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    head = ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    # 7692 5.1: a server may ignore an offer, and the handshake is then
+    # a perfectly good plain websocket - nothing in the 101 says
+    # otherwise, so the client knows not to set the bit.
+    assert_false head.downcase.include?('sec-websocket-extensions'), head
+    # And setting it anyway is 6455 5.2's protocol error.
+    s.write(ws_dframe(0x1, 'x'))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1002, (payload.getbyte(0) << 8) | payload.getbyte(1)
+    s.close
+  end
+end
+
+assert('ws: an accepted offer is answered, and a compressed message comes back compressed') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    head = ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    assert_true head.include?('Sec-WebSocket-Extensions: permessage-deflate'), head
+
+    z = ws_deflator
+    zi = ws_inflator
+    body = 'the quick brown fox ' * 40
+    s.write(ws_dframe(0x1, ws_deflate(z, body)))
+    op, fin, payload, rsv1 = ws_read_frame(s)
+    assert_equal [0x1, true, true], [op, fin, rsv1]
+    assert_equal body, ws_inflate(zi, payload)
+    # It really was compressed, not merely flagged.
+    assert_true payload.bytesize < body.bytesize, "#{payload.bytesize} vs #{body.bytesize}"
+    s.close
+  end
+end
+
+assert('ws: context takeover carries the window between messages (7692 7.1.1)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    z = ws_deflator
+    zi = ws_inflator
+    body = 'context takeover proves the window survives a message boundary. ' * 8
+    first = nil
+    second = nil
+    2.times do |i|
+      s.write(ws_dframe(0x1, ws_deflate(z, body)))
+      _, _, payload, rsv1 = ws_read_frame(s)
+      assert_true rsv1
+      # The SAME inflater across both: a client that reset here would
+      # decode garbage, which is exactly what context takeover means.
+      assert_equal body, ws_inflate(zi, payload)
+      i.zero? ? first = payload.bytesize : second = payload.bytesize
+    end
+    # The second answer is smaller because the server's window still
+    # holds the first - the whole point of not resetting.
+    assert_true second < first, "#{second} not smaller than #{first}"
+    s.close
+  end
+end
+
+assert('ws: server_no_context_takeover is honoured, not just echoed (7692 7.1.1.1)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    head = ws_handshake(
+      s, '/ws',
+      "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n"
+    )
+    assert_true head.include?('permessage-deflate; server_no_context_takeover'), head
+    z = ws_deflator
+    body = 'no context takeover means every message starts from nothing. ' * 8
+    sizes = []
+    2.times do
+      s.write(ws_dframe(0x1, ws_deflate(z, body)))
+      _, _, payload, rsv1 = ws_read_frame(s)
+      assert_true rsv1
+      # A FRESH inflater per message is the client half of the promise,
+      # and it only works because the server really did reset.
+      assert_equal body, ws_inflate(ws_inflator, payload)
+      sizes << payload.bytesize
+    end
+    assert_equal sizes[0], sizes[1]  # nothing was carried over
+    s.close
+  end
+end
+
+assert('ws: server_max_window_bits is honoured, so a small window still decodes') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    head = ws_handshake(
+      s, '/ws',
+      "Sec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=9\r\n"
+    )
+    assert_true head.include?('permessage-deflate; server_max_window_bits=9'), head
+    z = ws_deflator
+    # A 9-bit window is 512 bytes; a body several times that proves the
+    # server compressed inside it (an inflater built that small cannot
+    # follow a stream that reached further back).
+    body = (0...4000).map { |i| (97 + (i % 26)).chr }.join
+    s.write(ws_dframe(0x1, ws_deflate(z, body)))
+    _, _, payload, rsv1 = ws_read_frame(s)
+    assert_true rsv1
+    assert_equal body, ws_inflate(ws_inflator(9), payload)
+    s.close
+  end
+end
+
+assert('ws: a compressed message may be fragmented, with RSV1 only on the first frame') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    z = ws_deflator
+    whole = ws_deflate(z, 'one two three four five six seven eight')
+    cut = whole.bytesize / 2
+    s.write(ws_dframe(0x1, whole[0, cut], fin: false))
+    s.write(ws_dframe(0x0, whole[cut..-1], fin: true, rsv1: false))
+    _, _, payload, = ws_read_frame(s)
+    assert_equal 'one two three four five six seven eight', ws_inflate(ws_inflator, payload)
+
+    # 7692 6: the bit belongs to the message, so a CONTINUATION
+    # carrying it is the peer confusing a message with a frame.
+    s.write(ws_dframe(0x1, whole[0, cut], fin: false))
+    s.write(ws_dframe(0x0, whole[cut..-1], fin: true, rsv1: true))
+    op, _, close_payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1002, (close_payload.getbyte(0) << 8) | close_payload.getbyte(1)
+    s.close
+  end
+end
+
+assert('ws: max_message bounds what a message BECOMES, not what it arrived as') do
+  src = <<~RUBY
+    class Small < Webmachine::WebsocketResource
+      def self.permessage_deflate?
+        true
+      end
+
+      def self.max_message
+        4096
+      end
+
+      def on_data(data, binary)
+        data
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.websocket ['ws'], Small }
+      end
+    end
+  RUBY
+  ws_server(src) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    z = ws_deflator
+    # A megabyte of one byte deflates to a few hundred: the frame this
+    # sends is far UNDER the route's limit and what it becomes is two
+    # hundred times over it. A compressed-length cap would wave it
+    # through, which is the whole reason the cap sits in the inflate
+    # sink instead.
+    bomb = ws_deflate(z, 'a' * 1_000_000)
+    assert_true bomb.bytesize < 4096, "the bomb must arrive small (#{bomb.bytesize})"
+    s.write(ws_dframe(0x1, bomb))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1009, (payload.getbyte(0) << 8) | payload.getbyte(1)  # 7.4.1: too big
+    s.close
+  end
+end
+
+assert('ws: a payload that is not a DEFLATE stream fails the connection (7692 7.2.2)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    s.write(ws_dframe(0x1, "\xff\xff\xff\xff\xff\xff".b))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1002, (payload.getbyte(0) << 8) | payload.getbyte(1)
+    s.close
+  end
+end
+
+assert('ws: text is checked for UTF-8 after it decompresses (6455 8.1)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    z = ws_deflator
+    # Valid compressed framing, invalid text inside it - the only place
+    # 8.1 can be asked at all is on the decompressed bytes.
+    s.write(ws_dframe(0x1, ws_deflate(z, "hello \xff\xfe world".b)))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1007, (payload.getbyte(0) << 8) | payload.getbyte(1)
+    s.close
+  end
+end
+
+assert('ws: an empty compressed message is one byte on the wire and empty in the resource') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    z = ws_deflator
+    empty = ws_deflate(z, '')
+    assert_equal 1, empty.bytesize          # 7.2.1: the empty stored block, tail removed
+    s.write(ws_dframe(0x1, empty))
+    op, fin, payload, rsv1 = ws_read_frame(s)
+    assert_equal [0x1, true, true], [op, fin, rsv1]
+    assert_equal '', ws_inflate(ws_inflator, payload)
+    s.close
+  end
+end
+
+assert('ws: control frames are never compressed, whatever was negotiated (7692 6)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    s.write(ws_frame(0x9, 'beat'))
+    op, fin, payload, rsv1 = ws_read_frame(s)
+    assert_equal [0xa, true, 'beat', false], [op, fin, payload, rsv1]
+    s.write(ws_frame(0x8, ws_be16(1000) + 'bye'))
+    cop, _, cpayload, crsv1 = ws_read_frame(s)
+    assert_equal 0x8, cop
+    assert_false crsv1
+    assert_equal 1000, (cpayload.getbyte(0) << 8) | cpayload.getbyte(1)
+    s.close
+  end
+end
+
+assert('ws: an uncompressed message on a compressed connection is still a message (7692 6)') do
+  ws_server(WS_DEFLATE_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
+    # RSV1 clear: 7692 6 lets either end skip compression per message,
+    # and a client that does must not disturb the other direction.
+    s.write(ws_frame(0x1, 'plain'))
+    _, _, payload, rsv1 = ws_read_frame(s)
+    assert_true rsv1, 'the server still answers compressed'
+    assert_equal 'plain', ws_inflate(ws_inflator, payload)
+    s.close
   end
 end

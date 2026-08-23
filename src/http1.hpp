@@ -40,8 +40,14 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
 // exactly as it never learned what a Resource is.
 struct WsResource;
 struct WsConn;
+// Round two's permessage-deflate (#175, RFC 7692) is wsdeflate.hpp's
+// entirely; this writer only carries the settlement from the
+// handshake to the peer, so the NAME is enough here and the zlib
+// header stays out of every translation unit that includes this one.
+namespace wsdeflate { struct Params; }
 bool ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
-WsConn* ws_open(const WsResource* r);
+bool ws_wants_deflate(const WsResource* r);
+WsConn* ws_open(const WsResource* r, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
 void ws_free(WsConn* c);
 

@@ -10,12 +10,18 @@
 // allocator, or its own buffer discipline, each of which is a thing
 // this tree already owns and only owns once.
 //
-// What round one deliberately does NOT do: text-frame UTF-8
-// validation (round one's caller does it through
-// mruby-string-is-utf8, whose simdutf validates a whole buffer with
-// SIMD - reimplementing that here would be the slow variant of a
-// solved problem), permessage-deflate (round two, the system zlib), and any
-// policy about who may open a socket (that is the route's).
+// What this file deliberately does NOT do: text-frame UTF-8
+// validation (its caller does it through mruby-string-is-utf8, whose
+// simdutf validates a whole buffer with SIMD - reimplementing that
+// here would be the slow variant of a solved problem), and any policy
+// about who may open a socket (that is the route's).
+//
+// Round two (#175, RFC 7692) added exactly one bit to this file: RSV1
+// stopped being unconditionally illegal. The extension ITSELF - its
+// negotiation and its zlib streams - is wsdeflate.hpp; what belongs
+// here is only that a frame may now carry the bit, and only where 7692
+// 6 puts it (the FIRST frame of a data message, never a continuation,
+// never a control frame).
 #ifndef WEBMACHINE_WEBSOCKET_HPP
 #define WEBMACHINE_WEBSOCKET_HPP
 
@@ -62,6 +68,10 @@ bool accept_key(const char* key, size_t key_len, char out[28]);
 struct Frame {
   uint8_t opcode = 0;
   bool fin = false;
+  // RFC 7692 6: "the message is compressed". Only ever true when the
+  // caller passed allow_rsv1 - i.e. when permessage-deflate was
+  // negotiated for this connection.
+  bool rsv1 = false;
   const char* payload = nullptr;
   size_t len = 0;
   size_t consumed = 0;  // bytes of the input this frame occupied
@@ -81,14 +91,21 @@ enum class Parse : uint8_t {
 // `max_payload` bounds what this side is willing to hold; past it the
 // answer is kError with 1009 rather than an allocation the peer chose
 // the size of.
-Parse parse(char* data, size_t len, size_t max_payload, Frame& out, uint16_t& code);
+//
+// `allow_rsv1` is the permessage-deflate negotiation, and nothing
+// else: false and RSV1 is the protocol error RFC 6455 5.2 makes it,
+// true and it is legal on a first data frame and STILL an error on a
+// continuation or a control frame (RFC 7692 6).
+Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& out,
+            uint16_t& code);
 
 // A SERVER frame: never masked (5.1), FIN set unless the caller is
-// fragmenting on purpose. Returns the header length written into
-// `head` (at most 10 bytes); the payload follows unchanged, which is
-// why this writes a header instead of a buffer - the body goes out
-// where it already lies.
-size_t build_header(uint8_t opcode, bool fin, size_t payload_len, char head[10]);
+// fragmenting on purpose, RSV1 set when the payload is a
+// permessage-deflate stream (RFC 7692 6). Returns the header length
+// written into `head` (at most 10 bytes); the payload follows
+// unchanged, which is why this writes a header instead of a buffer -
+// the body goes out where it already lies.
+size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]);
 
 // A close frame's payload: the code big-endian, then the reason (7.1.6
 // - at most 123 bytes of it, so the frame stays a legal control

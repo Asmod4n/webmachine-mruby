@@ -65,18 +65,21 @@ bool accept_key(const char* key, size_t key_len, char out[28]) {
   return true;
 }
 
-Parse parse(char* data, size_t len, size_t max_payload, Frame& out, uint16_t& code) {
+Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& out,
+            uint16_t& code) {
   code = kCloseProtocolError;
   if (len < 2) return Parse::kNeedMore;
   const unsigned char b0 = static_cast<unsigned char>(data[0]);
   const unsigned char b1 = static_cast<unsigned char>(data[1]);
   const bool fin = (b0 & 0x80) != 0;
-  const uint8_t rsv = static_cast<uint8_t>(b0 & 0x70);
+  const bool rsv1 = (b0 & 0x40) != 0;
   const uint8_t opcode = static_cast<uint8_t>(b0 & 0x0f);
   // RSV1-3 must be zero unless an extension negotiated them (5.2).
-  // Round one negotiates none, so any of them is a protocol error -
-  // round two's permessage-deflate is what makes RSV1 legal.
-  if (rsv != 0) return Parse::kError;
+  // RSV2 and RSV3 name extensions this tree does not offer, so they
+  // are refusals for good; RSV1 is permessage-deflate's, legal exactly
+  // when it was negotiated.
+  if ((b0 & 0x30) != 0) return Parse::kError;
+  if (rsv1 && !allow_rsv1) return Parse::kError;
   switch (opcode) {
     case kContinuation:
     case kText:
@@ -87,6 +90,10 @@ Parse parse(char* data, size_t len, size_t max_payload, Frame& out, uint16_t& co
     default: return Parse::kError;  // 5.2: every other opcode is reserved
   }
   const bool control = (opcode & 0x08) != 0;
+  // RFC 7692 6: the bit belongs to the message, so it rides its FIRST
+  // frame. A continuation carrying it, or a control frame carrying it,
+  // is the peer confusing a message with a frame.
+  if (rsv1 && (control || opcode == kContinuation)) return Parse::kError;
   const bool masked = (b1 & 0x80) != 0;
   uint64_t plen = static_cast<uint64_t>(b1 & 0x7f);
   size_t at = 2;
@@ -130,14 +137,15 @@ Parse parse(char* data, size_t len, size_t max_payload, Frame& out, uint16_t& co
 
   out.opcode = opcode;
   out.fin = fin;
+  out.rsv1 = rsv1;
   out.payload = payload;
   out.len = n;
   out.consumed = at + n;
   return Parse::kOk;
 }
 
-size_t build_header(uint8_t opcode, bool fin, size_t payload_len, char head[10]) {
-  head[0] = static_cast<char>((fin ? 0x80 : 0x00) | (opcode & 0x0f));
+size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]) {
+  head[0] = static_cast<char>((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | (opcode & 0x0f));
   // 5.1: a server frame is never masked, so the mask bit stays 0 and
   // there are no mask bytes to write.
   if (payload_len < 126) {

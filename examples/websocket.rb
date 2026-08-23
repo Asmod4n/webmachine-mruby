@@ -22,6 +22,17 @@
 # name (:close, :going_away, :protocol_error, :unsupported, :invalid,
 # :policy, :too_big, :internal_error), nil says nothing.
 class Echo < Webmachine::WebsocketResource
+  # permessage-deflate (RFC 7692), which every browser offers and this
+  # tree accepts only where a route asks for it. It costs about 296 KiB
+  # of zlib per compressing peer, so the default is off and saying yes
+  # is one line - here, because a browser talking to this example
+  # should get what it asked for. There is nothing else to do: on_data
+  # still gets the message whole and decompressed, and a client that
+  # does not offer the extension is served exactly as before.
+  def self.permessage_deflate?
+    true
+  end
+
   def on_data(data, binary)
     # chomp: a line typed into websocat arrives WITH its newline, and a
     # message is bytes - nothing strips anything for you here.
