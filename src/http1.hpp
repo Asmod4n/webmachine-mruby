@@ -274,12 +274,22 @@ class Http1 {
     // three payload segments (a deflated entry's wire body is gzip
     // header + mapping + trailer; stored is one), and consecutive sink
     // bytes coalesce into the open run, so anything that is only sink
-    // costs ONE segment for the whole round. 128 segments carry ~62
-    // DATA frames - about 1 MiB at the smallest SETTINGS_MAX_FRAME_SIZE
-    // a peer may name (16384, RFC 9113 6.5.2). h1 has no framing
-    // inside a body, so its transfer is at most three segments however
-    // large the body - capacity never cuts it.
-    static constexpr unsigned kSegs = 128;
+    // costs ONE segment for the whole round.
+    //
+    // THE NUMBER IS IOV_MAX'S, not ours: 1023 plus the Ring's prepend
+    // slot is exactly the 1024 iovecs one sendmsg may carry (Linux
+    // UIO_MAXIOV) - the kernel's ceiling is the capacity, nothing
+    // invented sits below it. It has to be this large because a -m32
+    // batch of MEDIUM bodies must fit one round: at 128 segments a
+    // 256 KiB response cost ~33 segments, so a 32-stream batch was cut
+    // into 8 rounds where the old inline copy had needed one, and
+    // forgecore measured that cut as -26% (2026-08-23, the second
+    // round-count regression of this file's history - the first was a
+    // byte budget). A 4 KiB gzip response is 4 segments, so 32 of
+    // them sat exactly AT the old 128 and split into two rounds: -15%.
+    // h1 has no framing inside a body, so its transfer is at most
+    // three segments however large the body - capacity never cuts it.
+    static constexpr unsigned kSegs = 1023;
     Seg seg[kSegs];
     unsigned nseg = 0;
     size_t iov_len = 0;  // total across seg

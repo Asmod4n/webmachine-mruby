@@ -628,21 +628,26 @@ assert('h2: two big assets share the rounds and arrive byte-exact (#168)') do
   # a plan assembled wrongly produces a frame header followed by the
   # NEXT frame's payload, which no unit test can see.
   #
-  # Two streams, and bodies LARGER than one round's plan capacity
-  # (~1 MiB, Plan::kSegs), because the fairness under test is the
-  # cursor's: a stream cut off by capacity must yield the next round's
-  # start to its neighbour instead of taking every round until done.
+  # Two streams, and bodies LARGER than one round's plan capacity,
+  # because the fairness under test is the cursor's: a stream cut off
+  # by capacity must yield the next round's start to its neighbour
+  # instead of taking every round until done. Capacity is Plan::kSegs
+  # = 1023 segments = ~511 16 KiB DATA frames = ~8.3 MiB of stored
+  # entry per round, so the bodies are 9 MB - the smallest size the
+  # cut can even happen at. (They grew twice: every time the plan
+  # learned to carry more per round, the old size fit one round and
+  # this test lost its subject.)
   # Both bodies are checked byte for byte AND the interleave is
   # asserted - starvation would still deliver correct bytes.
-  a = ((0..250).to_a.pack('C*') * 6000)[0, 1_500_000].b
-  b = ((5..255).to_a.pack('C*') * 6000)[0, 1_500_000].b
+  a = ((0..250).to_a.pack('C*') * 35_857)[0, 9_000_000].b
+  b = ((5..255).to_a.pack('C*') * 35_857)[0, 9_000_000].b
   h2_asset_server(h2_stored_zip([['a.bin', a], ['b.bin', b]])) do |sock|
     UNIXSocket.open(sock) do |s|
       # A big INITIAL_WINDOW_SIZE plus a connection-level credit, so
       # what bounds a round is plan capacity and not the peer's window -
       # the park path already has its own test.
-      h2_handshake(s, [4, 8 << 20].pack('nN'))
-      s.write(h2_frame(8, 0, 0, [16 << 20].pack('N')))
+      h2_handshake(s, [4, 16 << 20].pack('nN'))
+      s.write(h2_frame(8, 0, 0, [1 << 30].pack('N')))
       s.write(h2_frame(1, 0x5, 1, h2_path_block('/a.bin')))
       s.write(h2_frame(1, 0x5, 3, h2_path_block('/b.bin')))
       got = { 1 => +''.b, 3 => +''.b }

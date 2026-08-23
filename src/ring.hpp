@@ -73,6 +73,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -649,21 +650,20 @@ class Ring {
     // ranges of `out` where the round had to spell bytes itself (h2's
     // DATA frame headers). One sendmsg puts the whole round on the
     // wire without a single body byte passing through this process.
-    // They must live until the CQE, which is why they sit here and not
-    // on a stack frame. msg_iov is what the in-flight sendmsg actually
-    // points at - iov minus whatever a partial send consumed - kept
-    // separate so the plan stays intact across retries.
+    // They must live until the CQE, which is why they hang off the
+    // Conn and not a stack frame. msg_iov is what the in-flight
+    // sendmsg actually points at - iov minus whatever a partial send
+    // consumed - kept separate so the plan stays intact across
+    // retries.
     //
-    // LAST in the struct, DELIBERATELY, and with no initializer: at
-    // 128 segments these two arrays are 4 KB of a ~4.7 KB Conn, and
-    // conns_ holds max_conns_ of them (derived from RLIMIT_NOFILE -
-    // easily a million). Placed last and never written by the
-    // constructor, their pages stay zero-backed until a connection
-    // actually transfers something; only then does its slot's memory
-    // become real. Putting anything the constructor touches after them
-    // would fault every page of every slot at startup.
-    struct iovec iov[kIov];
-    struct iovec msg_iov[kIov];
+    // ON THE HEAP, LAZILY: at kIov = 1024 (IOV_MAX) the pair is 32 KB,
+    // and conns_ holds max_conns_ slots (RLIMIT_NOFILE-derived, easily
+    // a million). A connection that never hands over a plan - every
+    // idle one, every hello - pays two null pointers; the first plan
+    // allocates once and the block stays for the slot's lifetime, warm
+    // like the strings above.
+    std::unique_ptr<struct iovec[]> iov;
+    std::unique_ptr<struct iovec[]> msg_iov;
   };
 
   // Never returns null: a full SQ is submitted and retried once, and a
@@ -772,7 +772,7 @@ class Ring {
         n++;
       }
       c.msg = msghdr{};
-      c.msg.msg_iov = c.msg_iov;
+      c.msg.msg_iov = c.msg_iov.get();
       c.msg.msg_iovlen = n;
       io_uring_prep_sendmsg(s, static_cast<int>(idx), &c.msg, flags);
     }
@@ -994,6 +994,10 @@ class Ring {
   // to be sent ahead of it - the prepend shifts the array by one, and
   // Conn::kIov reserves the slot.
   void take_plan(Conn& c, const typename App::Plan& req) {
+    if (!c.iov) {
+      c.iov = std::make_unique<struct iovec[]>(Conn::kIov);
+      c.msg_iov = std::make_unique<struct iovec[]>(Conn::kIov);
+    }
     c.niov = 0;
     c.plan_len = 0;
     bool sink_covered = false;
