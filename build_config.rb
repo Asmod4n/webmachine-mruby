@@ -1,32 +1,33 @@
-MRuby::Build.new do |conf|
-  conf.toolchain
+# TWO builds, always (user decision):
+#
+#   host   - no name, the SHIP build. No enable_test, no bintest, so
+#            no test-only gem ever rides into its libmruby (the
+#            enable_test door below) - mruby-fast-json/simdjson and
+#            the MRB_UTF8_STRING it demands simply do not exist here.
+#            This is the binary bench/ measures and operators run.
+#   debug  - where the tests run, WITH debug: enable_debug sets
+#            MRB_DEBUG, which the coming error log needs for mruby
+#            backtraces, and the tracer after it builds on the same
+#            ground. Test gems (and their demands) live only here.
+#
+# Shared shape lives in the lambdas; a difference between the two
+# builds should be a DECISION visible in the block below, never an
+# accident of copy drift.
 
-  conf.enable_bintest
-  conf.enable_test
-
-  # march=native: every machine compiles its own binary, so every
-  # recorded number is bound to the host that measured it.
-  #
-  # WM_MARCH overrides it, and exists for ONE caller: a container image,
-  # which is built on one machine and run on another. `native` there
-  # bakes the BUILDER's CPU into the binary, and the first host with an
-  # older one dies on an illegal instruction. An image build names a
-  # baseline instead (x86-64-v3 is the sane fleet floor: AVX2, ~2015 and
-  # later), and pays whatever that costs against a native build - which
-  # is a measurement, and belongs in bench/results/ like every other.
+# march=native: every machine compiles its own binary, so every
+# recorded number is bound to the host that measured it.
+#
+# WM_MARCH overrides it, and exists for ONE caller: a container image,
+# which is built on one machine and run on another. `native` there
+# bakes the BUILDER's CPU into the binary, and the first host with an
+# older one dies on an illegal instruction. An image build names a
+# baseline instead (x86-64-v3 is the sane fleet floor: AVX2, ~2015 and
+# later), and pays whatever that costs against a native build - which
+# is a measurement, and belongs in bench/results/ like every other.
+WM_FLAGS = lambda do |conf|
   march = ENV['WM_MARCH'] || 'native'
   conf.cc.flags << '-O3' << "-march=#{march}"
   conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
-
-  # mruby-toml's test suite rides in mruby-fast-json (the enable_test
-  # door described at the gembox block below), which requires UTF-8
-  # strings in core. The serving path reads Ruby strings only through
-  # RSTRING_PTR/RSTRING_LEN - byte views, indifferent to this - so the
-  # cost lands on Ruby-side String INDEXING, which no hot path does.
-  # The forgecore window judges it like every flag (#176 remains the
-  # durable answer to test-dep riders).
-  conf.cc.defines  << 'MRB_UTF8_STRING'
-  conf.cxx.defines << 'MRB_UTF8_STRING'
 
   # WM_PROFILE=1: symbols (-g) and retained frame pointers, for perf -
   # never the shape a req/s number is taken through. -g only adds a
@@ -38,25 +39,27 @@ MRuby::Build.new do |conf|
     conf.cc.flags << '-g' << '-fno-omit-frame-pointer'
     conf.cxx.flags << '-g' << '-fno-omit-frame-pointer'
   end
+end
 
-  # Not 'default': that box also adds mirb/mruby/mrdb/mruby-strip (each
-  # pulling mruby-compiler in for its own REPL/eval needs) and the
-  # metaprog box (which adds mruby-compiler directly, "to build other
-  # mrbgems" - a build-time job the toolchain does for itself either
-  # way, not a reason for the shipped binary to carry a parser). This
-  # server loads precompiled .mrb only (#100) and touches none of
-  # eval/binding/Method/UnboundMethod, so metaprog's whole box is
-  # skipped too - stdlib/stdlib-ext/stdlib-io/math cover everything the
-  # product and its tests use.
-  #
-  # mrbc itself is NOT listed here. Every build named "host" gets one
-  # for free: the toolchain bootstraps an isolated host/mrbc build
-  # (mruby-compiler and all) to compile the tree's own mrblib, and
-  # exposes it as this build's `mrbcfile` - a separate artifact,
-  # nothing here links against it. Adding the mruby-bin-mrbc gem HERE
-  # too, as 'default' did, would build a second mrbc redundantly and,
-  # worse, pull mruby-compiler into THIS build's own gem list, i.e.
-  # into webmachine-server's libmruby.
+# Not 'default': that box also adds mirb/mruby/mrdb/mruby-strip (each
+# pulling mruby-compiler in for its own REPL/eval needs) and the
+# metaprog box (which adds mruby-compiler directly, "to build other
+# mrbgems" - a build-time job the toolchain does for itself either
+# way, not a reason for the shipped binary to carry a parser). This
+# server loads precompiled .mrb only (#100) and touches none of
+# eval/binding/Method/UnboundMethod, so metaprog's whole box is
+# skipped too - stdlib/stdlib-ext/stdlib-io/math cover everything the
+# product and its tests use.
+#
+# mrbc itself is NOT listed here. Every build named "host" gets one
+# for free: the toolchain bootstraps an isolated host/mrbc build
+# (mruby-compiler and all) to compile the tree's own mrblib, and
+# exposes it as this build's `mrbcfile` - a separate artifact,
+# nothing here links against it. Adding the mruby-bin-mrbc gem HERE
+# too, as 'default' did, would build a second mrbc redundantly and,
+# worse, pull mruby-compiler into THIS build's own gem list, i.e.
+# into webmachine-server's libmruby.
+WM_GEMS = lambda do |conf|
   conf.gembox 'stdlib'
   conf.gembox 'stdlib-ext'
   conf.gembox 'stdlib-io'
@@ -69,21 +72,42 @@ MRuby::Build.new do |conf|
   # includes <liburing.h> and nothing else).
   conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem mgem: 'mruby-phr'
-  # conf.enable_test/enable_bintest above (needed for `rake test` to
-  # run at all, on this same build) turn every add_test_dependency in
-  # the whole gem graph into a real dependency of THIS one target:
-  # mruby's add_test_dependency is add_dependency guarded only by
-  # test_enabled? (lib/mruby/gem.rb) - there is no separate mrbtest
-  # gem set, so a test-only gem's objects land in the same libmruby.a
-  # every binary links. That is a property of this tree's one-target
-  # build, not a defect in any gem's declaration. mruby-compiler used
-  # to reach the shipped binary through exactly this door, via
-  # mruby-c-ext-helpers' (correctly declared) test dependency; that
-  # gem's tests need no compiler since 7d582c5, so the binary is clean
-  # today - proven by A/B builds toggling only enable_test, and by
-  # `nm` below. Any future gem's add_test_dependency would ride in the
-  # same way; the durable fix, if ever wanted, is a shipping target
-  # without enable_test (#176).
   conf.gem mgem: 'mruby-chrono'
   conf.gem File.expand_path(File.dirname(__FILE__))
+end
+
+MRuby::Build.new do |conf|
+  conf.toolchain
+  WM_FLAGS.call(conf)
+  WM_GEMS.call(conf)
+end
+
+MRuby::Build.new('debug') do |conf|
+  conf.toolchain
+  # MRB_DEBUG (and -g): mruby keeps the debug hooks the error log's
+  # backtraces and the tracer need. Only this build carries them.
+  conf.enable_debug
+
+  # enable_test here turns every add_test_dependency in the whole gem
+  # graph into a real dependency of THIS build: mruby's
+  # add_test_dependency is add_dependency guarded only by
+  # test_enabled? (lib/mruby/gem.rb) - there is no separate mrbtest
+  # gem set, so a test-only gem's objects land in this build's
+  # libmruby. That is exactly why the SHIP build above enables
+  # nothing: what rides in here (mruby-fast-json via mruby-toml's
+  # tests, and the MRB_UTF8_STRING it requires below) never reaches
+  # the shipped binary (#176, first half; the compiler half is the
+  # remaining task).
+  conf.enable_bintest
+  conf.enable_test
+
+  WM_FLAGS.call(conf)
+
+  # mruby-toml's test suite rides in mruby-fast-json, which requires
+  # UTF-8 strings in core. Test build only - the ship build has
+  # neither the gem nor the define.
+  conf.cc.defines  << 'MRB_UTF8_STRING'
+  conf.cxx.defines << 'MRB_UTF8_STRING'
+
+  WM_GEMS.call(conf)
 end
