@@ -252,6 +252,7 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     # (304, and 206 at small sizes) hit this first: they are where the
     # server has least to do, so they need the most client threads.
     local cu=$((c1 - c0)) su=$((s1 - s0))
+    local scpu=$((su * 100 / HZ / DURATION))
     if [ "$su" -gt 0 ] && [ "$cu" -ge "$su" ]; then
       # The ARM is refused, the SWEEP continues: killing everything
       # after it once cost the whole large-size half of a run for a
@@ -263,12 +264,12 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
       printf 'REFUSED client-bound'
       return
     fi
-    vals+=("$rps $mbs")
+    vals+=("$rps $mbs $scpu")
   done
-  # median by req/s, carrying its own MB/s along - the two belong to
-  # the same run and must not be medianed apart.
+  # median by req/s, carrying its own MB/s and cpu% along - the three
+  # belong to the same run and must not be medianed apart.
   printf '%s\n' "${vals[@]}" | sort -n -k1 | \
-    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s", $1, ($2 == "" ? "-" : $2)}'
+    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s", $1, ($2 == "" ? "-" : $2), $3}'
 }
 
 # boot_ns <zip> <port> - "min max" nanoseconds from exec to the first
@@ -308,7 +309,10 @@ fi
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
   echo "harness: assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} $(uname -mr)"
   s0=$(steal_ticks)
-  printf '%10s %8s %14s %12s %12s\n' "size" "arm" "req/s" "MB/s" "wire"
+  # cpu% = server CPU over the run, percent of ONE core - what lets a
+  # row here sit honestly next to a multi-worker row in the nginx
+  # sweep: req/s per core is req/s * 100 / cpu%.
+  printf '%10s %8s %14s %12s %12s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%"
   # A FRESH PORT PER SIZE. stop_srv reaps the process, but the listening
   # socket is not guaranteed gone by the time the next one binds, and
   # the server refuses a taken port by name (it does not fall back to
@@ -318,10 +322,10 @@ fi
     for arm in $ARMS; do
       start_srv "$port"
       arm_setup "$port" "$arm" "$sz"
-      read -r rps mbs <<< "$(measure "$arm" "$sz")"
+      read -r rps mbs scpu <<< "$(measure "$arm" "$sz")"
       stop_srv
       port=$((port + 1))
-      printf '%10s %8s %14s %12s %12s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE"
+      printf '%10s %8s %14s %12s %12s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}"
     done
   done
   s1=$(steal_ticks)

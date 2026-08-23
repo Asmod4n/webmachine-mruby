@@ -41,7 +41,11 @@ PROTO="${PROTO:-h1}"
 MULTI="${MULTI:-32}"
 PORT="${PORT:-8123}"
 WORKERS="${WORKERS:-1}"
-NGINX="${NGINX:-nginx}"
+# NGINX_BIN, not NGINX: nginx itself uses the NGINX environment
+# variable for binary-upgrade socket inheritance, and a path in it
+# produces "[emerg] invalid socket number". The old name still works -
+# it is scrubbed from the environment before exec either way.
+NGINX="${NGINX_BIN:-${NGINX:-nginx}}"
 command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exit 1; }
 command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
@@ -93,6 +97,7 @@ worker_processes $WORKERS;
 daemon off;
 pid $WORK/nginx.pid;
 error_log $WORK/error.log warn;
+worker_rlimit_nofile 16384;
 events { worker_connections 8192; }
 http {
   access_log off;
@@ -117,12 +122,15 @@ http {
   }
 }
 CONF
-"$NGINX" -t -c "$WORK/nginx.conf" >/dev/null 2>&1 || {
+# -e: without it nginx opens its COMPILED-IN error log path before
+# reading the config - a permission alert on any system nginx. env -u:
+# see the NGINX_BIN note above.
+env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >/dev/null 2>&1 || {
   echo "nginx refused the config:" >&2
-  "$NGINX" -t -c "$WORK/nginx.conf" >&2
+  env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >&2
   exit 1
 }
-"$NGINX" -c "$WORK/nginx.conf" &
+env -u NGINX "$NGINX" -e "$WORK/error.log" -c "$WORK/nginx.conf" &
 NGPID=$!
 sleep 0.5
 kill -0 "$NGPID" 2>/dev/null || { echo "nginx died:" >&2; cat "$WORK/error.log" >&2; exit 1; }
@@ -214,16 +222,17 @@ measure() {
              printf "%.2f", v }')
     [ -n "$rps" ] || { echo "h2load produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
     local cu=$((c1 - c0)) su=$((s1 - s0))
+    local scpu=$((su * 100 / HZ / DURATION))
     if [ "$su" -gt 0 ] && [ "$cu" -ge "$su" ]; then
       echo "REFUSED on arm $arm, size $sz: client $((cu * 100 / HZ / DURATION))% vs server $((su * 100 / HZ / DURATION))% of a core, $threads_running running client threads." >&2
       echo "  This measures h2load, not nginx. Raise THREADS or use a second machine." >&2
       printf 'REFUSED client-bound'
       return
     fi
-    vals+=("$rps $mbs")
+    vals+=("$rps $mbs $scpu")
   done
   printf '%s\n' "${vals[@]}" | sort -n -k1 | \
-    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s", $1, ($2 == "" ? "-" : $2)}'
+    awk -v n="$REPS" 'NR==int((n+1)/2){printf "%.0f %s %s", $1, ($2 == "" ? "-" : $2), $3}'
 }
 
 if [ "$PROTO" = h2 ]; then
@@ -238,12 +247,15 @@ fi
   echo "==== $(date -u +%FT%RZ) nginx/$("$NGINX" -v 2>&1 | grep -o '[0-9][0-9.]*' | head -1) gzip_static ===="
   echo "harness: nginx-assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS workers=$WORKERS sendfile=on $(uname -mr)"
   s0=$(steal_ticks)
-  printf '%10s %8s %14s %12s %12s\n' "size" "arm" "req/s" "MB/s" "wire"
+  # cpu% = server CPU over the run, in percent of ONE core - the
+  # column that lets a workers=16 row sit honestly next to a
+  # one-thread row: req/s per core is req/s * 100 / cpu%.
+  printf '%10s %8s %14s %12s %12s %8s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%"
   for sz in $SIZES; do
     for arm in $ARMS; do
       arm_setup "$arm" "$sz"
-      read -r rps mbs <<< "$(measure "$arm" "$sz")"
-      printf '%10s %8s %14s %12s %12s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE"
+      read -r rps mbs scpu <<< "$(measure "$arm" "$sz")"
+      printf '%10s %8s %14s %12s %12s %8s\n' "$sz" "$arm" "$rps" "$mbs" "$ARM_WIRE" "${scpu:--}"
     done
   done
   s1=$(steal_ticks)
