@@ -105,6 +105,19 @@ inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 // = fixed-table slots something other than connections and listeners
 // claims; nothing does today. 0 = the limit leaves no room, a named
 // refusal for the caller to spell out.
+// The OTHER limit a ring is charged against: its SQ/CQ pages are
+// locked memory, accounted per USER. Soft to hard, once, before the
+// ring exists - #169's shape for RLIMIT_NOFILE applied here. Failure
+// is deliberately silent: not being allowed to raise it is no reason
+// not to start, it only means the ring below settles smaller.
+inline void raise_memlock() {
+  struct rlimit rl {};
+  if (::getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return;
+  if (rl.rlim_cur == rl.rlim_max) return;
+  struct rlimit want {rl.rlim_max, rl.rlim_max};
+  (void)::setrlimit(RLIMIT_MEMLOCK, &want);
+}
+
 inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0) {
   const uint64_t taken = static_cast<uint64_t>(kFdReserve) + kMaxListeners + extra_slots;
   if (nofile_limit <= taken) return 0;
@@ -279,12 +292,40 @@ class Ring {
   // performance cliff wearing a startup message.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
     int rc = 0;
+    // The SQ is a SHARED, fixed resource - every in-flight operation of
+    // every connection sits in it, and one response can claim many
+    // (a body split into frames is one SQE per segment). 32768 is the
+    // kernel's own ceiling, IORING_MAX_ENTRIES; the SQ array costs
+    // 64 bytes an entry and the CQ 16 at twice the count, so the full
+    // ask is ~3 MiB once per process.
+    //
+    // A machine that will not give that gets less, not a refusal: a
+    // smaller ring is smaller HEADROOM, not a wrong ring, and the same
+    // rule already governs max_conns_ ("the capacity falls out of
+    // whatever finally stands", #169). Halve until one takes; the
+    // floor is what stood here before this loop existed, so this can
+    // only ever end at least as well as it used to.
+    raise_memlock();
+    constexpr unsigned kSqWanted = 32768;
+    constexpr unsigned kSqFloor = 1024;
+    constexpr unsigned kSetupFlags =
+        IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
     struct io_uring_params p {};
-    p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
-    rc = io_uring_queue_init_params(1024, &ring_, &p);
-    if (rc != 0) {
-      std::snprintf(err, errlen, "io_uring_queue_init: %s", std::strerror(-rc));
-      return false;
+    for (sq_entries_ = kSqWanted;; sq_entries_ /= 2) {
+      // queue_init_params WRITES its result into p (sq/cq entries,
+      // features), so a retry starts from a clean one.
+      p = io_uring_params{};
+      p.flags = kSetupFlags;
+      rc = io_uring_queue_init_params(sq_entries_, &ring_, &p);
+      if (rc == 0) {
+        sq_entries_ = p.sq_entries;  // what the KERNEL gave, not what was asked
+        break;
+      }
+      if (sq_entries_ <= kSqFloor) {
+        std::snprintf(err, errlen, "io_uring_queue_init(%u): %s", sq_entries_,
+                      std::strerror(-rc));
+        return false;
+      }
     }
     // One fewer fd-table lookup per enter(2); nothing else shares this fd.
     io_uring_register_ring_fd(&ring_);
@@ -606,7 +647,8 @@ class Ring {
     io_uring_submit(&ring_);
     s = io_uring_get_sqe(&ring_);
     if (WM_UNLIKELY(s == nullptr)) {
-      std::fprintf(stderr, "webmachine: SQ stuck after submit; ring is broken\n");
+      std::fprintf(stderr, "webmachine: SQ (%u entries) stuck after submit; ring is broken\n",
+                   sq_entries_);
       std::exit(1);
     }
     return s;
@@ -1037,6 +1079,7 @@ class Ring {
   // Derived at init from the raised RLIMIT_NOFILE (#169); 0 only
   // before init. listener_base_ = max_conns_: the listeners sit behind
   // the connection slots.
+  unsigned sq_entries_ = 0;  // what the SQ finally settled at
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};
