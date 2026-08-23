@@ -5,7 +5,16 @@
 #   tools/fuzz.sh wsdeflate [seconds]  RFC 7692's negotiation and codec
 #   tools/fuzz.sh feed [seconds]       h1 heads and h2 frames through Http1::feed
 #
-#   WORKERS=24 tools/fuzz.sh wsdeflate 28800    a real campaign
+# NO SECONDS MEANS NO LIMIT - it runs until Ctrl-C, and that is the
+# default on purpose. A campaign is the normal way to use this and a
+# stopwatch is the exception: the calibration below says findings
+# arrive after HOURS, so a script whose default quits after a minute
+# is a script that answers the wrong question by default. libFuzzer
+# handles the interrupt itself and writes the corpus out before it
+# goes, so stopping one is a Ctrl-C and nothing else.
+#
+#   WORKERS=30 tools/fuzz.sh wsdeflate        the campaign
+#   tools/fuzz.sh wsdeflate 60                the smoke test
 #
 # clang, not the tree's gcc: libFuzzer is clang's. The targets INCLUDE
 # the sources they test (see their heads) so ASan instruments them,
@@ -52,7 +61,9 @@ set -eu
 cd "$(dirname "$0")/.."
 
 TARGET="${1:-ws}"
-SECONDS_TO_RUN="${2:-60}"
+# 0 = no -max_total_time at all. See the head: unlimited is the
+# default, a number is the exception.
+SECONDS_TO_RUN="${2:-0}"
 # ONE PROCESS FINDS NOTHING IN AN AFTERNOON. A real run is every core
 # for a working day, and libFuzzer's own answer to that is -fork: N
 # children, one shared corpus, and a child that crashes or runs out of
@@ -210,7 +221,15 @@ if [ "$WORKERS" -gt 1 ]; then
   echo "$WORKERS workers, ~$((WORKERS / 5 + 1)) GB expected (0.2 GB/child measured)"
 fi
 
-# shellcheck disable=SC2086  # fork_flag is empty or one word, on purpose
-"$OUT/$TARGET" "$CORPUS" -dict="$DICT" $fork_flag \
+time_flag=""
+if [ "$SECONDS_TO_RUN" -gt 0 ]; then
+  time_flag="-max_total_time=$SECONDS_TO_RUN"
+  echo "capped at ${SECONDS_TO_RUN}s - a smoke test, not a campaign (see the head)"
+else
+  echo "no time limit: runs until Ctrl-C. Findings -> $CRASHES/, corpus kept in $CORPUS/"
+fi
+
+# shellcheck disable=SC2086  # each flag is empty or one word, on purpose
+"$OUT/$TARGET" "$CORPUS" -dict="$DICT" $fork_flag $time_flag \
   -artifact_prefix="$CRASHES/" -timeout="$UNIT_TIMEOUT" \
-  -max_total_time="$SECONDS_TO_RUN" -print_final_stats=1 -rss_limit_mb="$RSS_LIMIT"
+  -print_final_stats=1 -rss_limit_mb="$RSS_LIMIT"
