@@ -168,6 +168,19 @@ if [ -z "$SYSC_PERF" ]; then
   if perf --version >/dev/null 2>&1; then SYSC_PERF=perf
   else SYSC_PERF=$(ls /usr/lib/linux-tools-*/perf 2>/dev/null | head -1); fi
 fi
+if [ -n "$SYSC_PERF" ]; then
+  # Preflight, once: tracepoints are gated separately from cpu events
+  # (unprivileged needs perf_event_paranoid = -1 or CAP_PERFMON; 0/1
+  # open only the cpu side, which is why perf record works while this
+  # counter stays empty). A column of silent '-' hides that; say it.
+  # perf stat's -x CSV goes to STDERR; the probe must read that side.
+  if ! "$SYSC_PERF" stat -e raw_syscalls:sys_enter -x, -- /bin/true 2>&1 >/dev/null | \
+       grep -q '^[0-9]'; then
+    echo "rq/sc: '-' - $SYSC_PERF may not count tracepoints here." >&2
+    echo "  Unprivileged needs kernel.perf_event_paranoid=-1 (or CAP_PERFMON); cpu events alone (0/1) do not cover tracepoints." >&2
+    SYSC_PERF=""
+  fi
+fi
 SYSC_PID=
 SYSC_OUT="${WORK:-/tmp}/wm-sysc.$$"
 sysc_begin() {  # <pid[,pid...]> <seconds>
