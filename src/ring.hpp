@@ -252,6 +252,12 @@ struct RingConfig {
   // The access log's fd (O_APPEND), or -1 for no log. main owns the
   // open; the Ring owns every write.
   int log_fd = -1;
+  // #166 tunables, setup-only reads. The defaults are the tree's own
+  // measured choices; a config file may override them, and 0 means
+  // "the default" so an uninitialized field cannot smuggle a zero
+  // into the kernel.
+  unsigned sq_entries = 0;  // first ask of the halving SQ init (default 32768)
+  int backlog = 0;          // listen(2) backlog (default 511)
   // A signalfd main owns (signals blocked, so they land there). The
   // ring polls it: the stop signal arrives as a CQE like everything
   // else - a handler flag would race the wait (checked, then the signal
@@ -351,8 +357,13 @@ class Ring {
     constexpr unsigned kSqFloor = 1024;
     constexpr unsigned kSetupFlags =
         IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
+    // A configured ask below the floor IS the floor for this run: the
+    // operator asked for a small ring on purpose, one try, named
+    // refusal if the machine will not even give that.
+    const unsigned sq_wanted = cfg.sq_entries != 0 ? cfg.sq_entries : kSqWanted;
+    const unsigned sq_floor = sq_wanted < kSqFloor ? sq_wanted : kSqFloor;
     struct io_uring_params p {};
-    for (sq_entries_ = kSqWanted;; sq_entries_ /= 2) {
+    for (sq_entries_ = sq_wanted;; sq_entries_ /= 2) {
       // queue_init_params WRITES its result into p (sq/cq entries,
       // features), so a retry starts from a clean one.
       p = io_uring_params{};
@@ -362,7 +373,7 @@ class Ring {
         sq_entries_ = p.sq_entries;  // what the KERNEL gave, not what was asked
         break;
       }
-      if (sq_entries_ <= kSqFloor) {
+      if (sq_entries_ <= sq_floor) {
         std::snprintf(err, errlen, "io_uring_queue_init(%u): %s", sq_entries_,
                       std::strerror(-rc));
         return false;
@@ -376,6 +387,7 @@ class Ring {
     // capacity falls out of whatever finally stands.
     const uint64_t nofile = raise_nofile();
     log_fd_ = cfg.log_fd;
+    backlog_ = cfg.backlog != 0 ? cfg.backlog : 511;
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
@@ -610,7 +622,10 @@ class Ring {
 
       s = io_uring_get_sqe(&ring_);
       if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
-      io_uring_prep_listen(s, slot, 511);
+      // 511 is the shared default half the servers on the net use
+      // (nginx's own); somaxconn still caps it silently, which
+      // tools/webmachine-tune.sh points out on the machine itself.
+      io_uring_prep_listen(s, slot, backlog_);
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStListen));
       chain++;
@@ -1345,6 +1360,7 @@ class Ring {
   // the connection slots.
   int log_fd_ = -1;
   unsigned sq_entries_ = 0;  // what the SQ finally settled at
+  int backlog_ = 511;        // listen(2) backlog; cfg.backlog overrides (#166)
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};

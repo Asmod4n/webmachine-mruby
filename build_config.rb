@@ -18,6 +18,16 @@ MRuby::Build.new do |conf|
   conf.cc.flags << '-O3' << "-march=#{march}"
   conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
 
+  # mruby-toml's test suite rides in mruby-fast-json (the enable_test
+  # door described at the gembox block below), which requires UTF-8
+  # strings in core. The serving path reads Ruby strings only through
+  # RSTRING_PTR/RSTRING_LEN - byte views, indifferent to this - so the
+  # cost lands on Ruby-side String INDEXING, which no hot path does.
+  # The forgecore window judges it like every flag (#176 remains the
+  # durable answer to test-dep riders).
+  conf.cc.defines  << 'MRB_UTF8_STRING'
+  conf.cxx.defines << 'MRB_UTF8_STRING'
+
   # WM_PROFILE=1: symbols (-g) and retained frame pointers, for perf -
   # never the shape a req/s number is taken through. -g only adds a
   # debug section (zero runtime cost); -fno-omit-frame-pointer costs a

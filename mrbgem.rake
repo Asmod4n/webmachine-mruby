@@ -75,6 +75,12 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # simdutf::validate_utf8 on the frame's own bytes - no mruby String
   # is built to ask the question.
   spec.add_dependency 'mruby-string-is-utf8', github: 'Asmod4n/mruby-string-is-utf8'
+  # The config file's parser (#166): TOML through the VM the process
+  # already carries. Config is read ONCE at startup, never on a
+  # request path, so the Ruby-side surface (TOML.load -> Document,
+  # tables as plain Hashes) is exactly enough - no vendored C parser,
+  # no second TOML implementation in the binary.
+  spec.add_dependency 'mruby-toml', github: 'Asmod4n/mruby-toml', branch: 'main'
 
   # ls-hpack: the HPACK codec for HTTP/2, and ONLY the codec - frames
   # and streams are this gem's own. The codec is reused rather than

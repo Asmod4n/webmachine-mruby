@@ -18,6 +18,7 @@
 #include <string>
 
 #include "../../src/application.hpp"
+#include "../../src/config.hpp"
 #include "../../src/ring.hpp"
 #include "../../src/server.hpp"
 
@@ -103,6 +104,7 @@ int main(int argc, char** argv) {
   const char* cli_unix = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
+  const char* config_path = nullptr;
   int cli_port = 0;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
@@ -119,12 +121,18 @@ int main(int argc, char** argv) {
       log_privacy = argv[++i];
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
+    } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+      config_path = argv[++i];
     } else if (std::strcmp(argv[i], "--echo") == 0) {
       echo = true;
     } else {
       std::fprintf(stderr,
-                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE [--log-privacy none|anon|full]] "
+                   "usage: %s [--config FILE.toml] [--unix PATH | --port N] [--app FILE.mrb] "
+                   "[--assets FILE.zip] [--log FILE [--log-privacy none|anon|full]] "
                    "[--pidfile PATH] [--echo]\n"
+                   "  --config reads the same choices from a TOML file; typed flags beat it,\n"
+                   "  and both beat the app's conf. Without --config, a ./webmachine.toml is\n"
+                   "  used when present (and announced).\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
                    "  --pidfile writes this process's pid and removes the file on the way out.\n",
@@ -136,6 +144,49 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "at most one of --unix or --port\n");
     return 2;
   }
+
+  // The VM boots with the process and holds the resources. Class
+  // methods are asked ONCE at route.add and become constants; instance
+  // methods are the runtime tier, asked through the VM on every request
+  // (the budgeted entry - the copy floor prices one at ~0.1-0.3us).
+  // Booted BEFORE the config file: mruby-toml parses it through this
+  // same VM (config is once-per-start, no hot path, no second parser).
+  mrb_state* mrb = mrb_open();
+  if (mrb == nullptr) {
+    std::fprintf(stderr, "webmachine: mrb_open failed\n");
+    return 1;
+  }
+
+  // The file speaks after the flags (config.hpp's head owns the
+  // precedence sentence). An explicit --config that cannot be read is
+  // a refusal; without one, ./webmachine.toml is used when present -
+  // and ANNOUNCED, so an invisible file never silently steers a
+  // server. `fc` owns the strings for the whole run.
+  webmachine::Config fc;
+  if (config_path == nullptr && ::access("webmachine.toml", R_OK) == 0) {
+    config_path = "webmachine.toml";
+  }
+  if (config_path != nullptr) {
+    char cerr[512];
+    if (!webmachine::config_load(mrb, config_path, fc, cerr, sizeof(cerr))) {
+      std::fprintf(stderr, "webmachine: %s\n", cerr);
+      mrb_close(mrb);
+      return 2;
+    }
+    std::fprintf(stderr, "webmachine: config %s\n", config_path);
+    if (cli_unix == nullptr && cli_port == 0) {
+      if (!fc.unix_path.empty()) cli_unix = fc.unix_path.c_str();
+      else if (fc.port != 0) cli_port = fc.port;
+    }
+    if (opts.app_path == nullptr && !fc.app.empty()) opts.app_path = fc.app.c_str();
+    if (opts.assets_path == nullptr && !fc.assets.empty()) opts.assets_path = fc.assets.c_str();
+    if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
+    if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
+    if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
+    opts.sq_entries = fc.sq_entries;  // no CLI twin; 0 = default
+    opts.backlog = fc.backlog;
+  }
+
   opts.cli_unix = cli_unix;
   opts.cli_port = cli_port;
 
@@ -152,6 +203,7 @@ int main(int argc, char** argv) {
     FILE* pf = std::fopen(pidfile, "we");
     if (pf == nullptr) {
       std::fprintf(stderr, "webmachine: cannot write pidfile %s\n", pidfile);
+      mrb_close(mrb);
       return 1;
     }
     std::fprintf(pf, "%d\n", getpid());
@@ -168,15 +220,6 @@ int main(int argc, char** argv) {
   sigprocmask(SIG_BLOCK, &mask, nullptr);
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
-  // The VM boots with the process and holds the resources. Class
-  // methods are asked ONCE at route.add and become constants; instance
-  // methods are the runtime tier, asked through the VM on every request
-  // (the budgeted entry - the copy floor prices one at ~0.1-0.3us).
-  mrb_state* mrb = mrb_open();
-  if (mrb == nullptr) {
-    std::fprintf(stderr, "webmachine: mrb_open failed\n");
-    return 1;
-  }
   opts.log_path = log_path;
   opts.log_privacy = log_privacy;
   opts.have_uring = uring_present(mrb);
@@ -185,6 +228,8 @@ int main(int argc, char** argv) {
     webmachine::RingConfig cfg;
     cfg.nlisteners = 1;
     cfg.stop_fd = opts.stop_fd;
+    cfg.sq_entries = opts.sq_entries;  // [tune] reaches the floor too
+    cfg.backlog = opts.backlog;
     if (cli_unix != nullptr) {
       cfg.listeners[0].unix_path = cli_unix;
     } else if (cli_port != 0) {

@@ -42,6 +42,10 @@ struct ServerOptions {
   int cli_port = 0;                   // --port override
   const char* app_path = nullptr;     // only ever named in messages
   bool have_uring = false;            // URING_AVAILABLE, asked once in the tool
+  // #166 [tune] knobs; 0 = the ring's own default. The tool merges
+  // the config file in before speaking, so these already carry it.
+  unsigned sq_entries = 0;
+  int backlog = 0;
 };
 void server_options(const ServerOptions& opts);
 
