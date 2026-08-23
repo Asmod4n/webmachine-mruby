@@ -364,12 +364,13 @@ void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
   else assemble(sink, prefix_id, body_.data(), body_.size(), head_only);
 }
 
-bool Http1::fail(Conn& st, uint16_t status, std::string& sink) {
+bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
   // Wire invalidity: framing trust is gone, the connection always ends.
-  // The log line has no request to describe - the head never parsed -
-  // so every request field spells "-"; the status is the story.
+  // The log line has no request to describe - most callers never got a
+  // parsed head - so every request field spells "-"; the status is the
+  // story. Callers past the header loop pass the peer's no-track ask.
   if (alog_.enabled) {
-    alog_.line(st.peer, st.peer_len, nullptr, 0, "-", 1, false, status, 0, nullptr, 0,
+    alog_.line(st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
                nullptr, 0);
   }
   sink.append(variants(status).close.bytes);
@@ -599,13 +600,16 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             }
           });
     }
-    if (WM_H1_UNLIKELY(wire_err != 0)) return fail(st, wire_err, sink);
+    // The head parsed, so the peer's "do not track" ask is known -
+    // every log line below this point carries it, refusals included.
+    const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
+    if (WM_H1_UNLIKELY(wire_err != 0)) return fail(st, wire_err, sink, lflags);
     // Transfer-Encoding alongside Content-Length is the classic
     // smuggling vector (RFC 9112 §6.3.3); chunked alone is refused with
     // 411 as §6.1 sanctions until a body consumer exists.
-    if (WM_H1_UNLIKELY(have_te)) return fail(st, have_cl ? 400 : 411, sink);
-    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink);  // RFC 9112 §3.2
-    if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink);
+    if (WM_H1_UNLIKELY(have_te)) return fail(st, have_cl ? 400 : 411, sink, lflags);
+    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink, lflags);  // §3.2
+    if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink, lflags);
 
     // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
     // asked (§C.2.2), and the asked-for keep-alive is echoed.
@@ -636,7 +640,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         }
         // 4.1: the handshake is a GET, and it carries a key.
         if (facts.method != flow::Method::kGet || ws_key == nullptr) {
-          return fail(st, 400, sink);
+          return fail(st, 400, sink, lflags);
         }
         const char* rest = view + off + static_cast<size_t>(ret);
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
@@ -722,7 +726,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           }
         }
         if (alog_.enabled) {
-          alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, false, alog_st,
+          alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, alog_st,
                      alog_by, vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
         }
         off += static_cast<size_t>(ret);
@@ -892,7 +896,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       // wire size is conneg's secret, and re-deciding it here for a
       // log column would be work per line. Prebuilt-store answers log
       // "-": their body lengths were baked into bytes at build.
-      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, false, status,
+      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
                  (answered && !head_only) ? body_.size() : 0, vals.log_ref, vals.log_ref_len,
                  vals.log_ua, vals.log_ua_len);
     }

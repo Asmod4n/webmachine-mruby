@@ -43,6 +43,12 @@ struct ReqFacts {
   // and h2 already share. It is what lets `answer` skip the graph:
   // with nothing set, the outcome was decided at add_route.
   bool plain = true;
+  // NOT a flow fact - no node reads it and it never clears `plain`.
+  // The peer said "do not track" (DNT: 1 / Sec-GPC: 1); the access
+  // log caps this request's %h at anon. It lives here because facts
+  // is the one struct that survives h2's stream parking, and the log
+  // line is written when the parked stream finally answers.
+  bool no_track = false;
 };
 
 // One konst answer per node, resolved per resource class x method.

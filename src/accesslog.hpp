@@ -32,7 +32,7 @@ namespace webmachine {
 // (target, referer, user-agent) and plen peer bytes.
 struct LogRec {
   uint8_t version;   // kLogRecVersion, checked by the daemon
-  uint8_t h2;        // 1 = "HTTP/2", 0 = "HTTP/1.1"
+  uint8_t flags;     // kLogH2 | kLogNoTrack
   uint16_t status;
   uint32_t bytes;    // %b; 0 spells "-"
   int64_t sec;       // unix time of the answer; the daemon spells it
@@ -42,7 +42,13 @@ struct LogRec {
   uint16_t rlen;
   uint16_t ulen;
 };
-inline constexpr uint8_t kLogRecVersion = 2;
+inline constexpr uint8_t kLogRecVersion = 3;
+inline constexpr uint8_t kLogH2 = 1;  // spell "HTTP/2", not "HTTP/1.1"
+// The peer sent DNT: 1 or Sec-GPC: 1 - "do not track me". Respected:
+// the daemon caps this record's %h at anon even when the operator
+// chose privacy `none`. (A future debug build with tracing active
+// will log everything by design - the user's stated exception.)
+inline constexpr uint8_t kLogNoTrack = 2;
 
 struct AccessLog {
   bool enabled = false;
@@ -52,7 +58,7 @@ struct AccessLog {
   int64_t sec = 0;  // refreshed once per second by on_tick
 
   void line(const void* peer, size_t plen, const char* method, size_t mlen, const char* target,
-            size_t tlen, bool h2, uint16_t status, size_t body_bytes, const char* ref,
+            size_t tlen, uint8_t flags, uint16_t status, size_t body_bytes, const char* ref,
             size_t rlen, const char* ua, size_t ulen) {
     // Truncation caps are the wire fields' widths; a 64K header is
     // kMaxHead-bounded before it ever gets here.
@@ -63,7 +69,7 @@ struct AccessLog {
     if (ulen > 65535) ulen = 65535;
     LogRec r;
     r.version = kLogRecVersion;
-    r.h2 = h2 ? 1 : 0;
+    r.flags = flags;
     r.status = status;
     r.bytes = body_bytes > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(body_bytes);
     r.sec = sec;

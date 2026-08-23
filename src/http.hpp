@@ -448,6 +448,17 @@ template <class OnWire>
 inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
                           flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
   switch (nlen) {
+    case 3:
+      // DNT is formally discontinued but still widely sent; Sec-GPC
+      // (below) is its successor. "1" is the only defined opt-out
+      // value - "0" is explicit consent and stays false. Neither is
+      // a flow fact: `plain` is untouched, the graph decides nothing
+      // by it; only the access log reads no_track.
+      if (tok_eq(name, nlen, "dnt", 3)) {
+        if (vlen == 1 && value[0] == '1') facts.no_track = true;
+        return;
+      }
+      break;
     case 5:
       if (tok_eq(name, nlen, "range", 5)) {
         vals.range = value;  // no fact, no plain: the graph has no range node
@@ -459,6 +470,15 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "accept", 6)) {
         facts.has_accept = true;
         facts.plain = false;
+        return;
+      }
+      break;
+    case 7:
+      // Sec-GPC: 1 (Global Privacy Control) - same meaning, same
+      // single defined value as DNT above. Other 7-byte names
+      // (referer, upgrade) fall through to the framer's functor.
+      if (tok_eq(name, nlen, "sec-gpc", 7)) {
+        if (vlen == 1 && value[0] == '1') facts.no_track = true;
         return;
       }
       break;

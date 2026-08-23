@@ -432,7 +432,7 @@ class Http1 {
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];  // every status here came from the tables
   }
-  bool fail(Conn& st, uint16_t status, std::string& sink);
+  bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // The upgrade (#175): answers 101 (or the refusal the route earned)
   // and switches the connection over. `rest`/`rest_len` are the bytes
   // that came behind the handshake in the same receive - a client that

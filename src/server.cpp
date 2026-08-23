@@ -139,6 +139,24 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   // daemon that cannot start refuses the start by name - a server
   // told to log that cannot is already breaking its one rule.
   if (opts_.log_path != nullptr) {
+    // The level names the amount of PRIVACY, so `none` means full
+    // client addresses on disk - personal data under the GDPR (art.
+    // 4(1); ECJ C-582/14 said so even for dynamic IPs). That is a
+    // legal choice, not a technical one, so the server says out loud
+    // what the operator just took on. Precisely: no cookie banner is
+    // forced by a server log (that duty is ePrivacy, about the
+    // client's DEVICE) - what full addresses need is an art. 6 basis
+    // and disclosure. Default: anon, which the authorities treat as
+    // no longer personal.
+    if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
+      std::fprintf(stderr,
+                   "webmachine: --log-privacy none writes FULL client addresses to the log.\n"
+                   "webmachine: an IP address is personal data (GDPR art. 4(1)); logging it\n"
+                   "webmachine: needs a legal basis (art. 6). Security logging with short\n"
+                   "webmachine: retention usually rides legitimate interest plus a privacy\n"
+                   "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
+                   "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
+    }
     int sp[2];
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
       std::snprintf(err, errlen, "--log socketpair: %s", std::strerror(errno));
@@ -166,7 +184,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
       ::close(sp[0]);
       ::close(sp[1]);
       ::execl(logd.c_str(), "webmachine-logd", opts_.log_path,
-              opts_.log_privacy != nullptr ? opts_.log_privacy : "full", (char*)nullptr);
+              opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", (char*)nullptr);
       std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
       ::_exit(127);
     }

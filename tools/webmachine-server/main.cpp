@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
       echo = true;
     } else {
       std::fprintf(stderr,
-                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE [--log-privacy full|anon|none]] "
+                   "usage: %s [--unix PATH | --port N] [--app FILE.mrb] [--assets FILE.zip] [--log FILE [--log-privacy none|anon|full]] "
                    "[--pidfile PATH] [--echo]\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"

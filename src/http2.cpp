@@ -632,8 +632,6 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   const bool no_data = head_only || blen == 0;
   alog_status_ = status;
   alog_bytes_ = no_data ? 0 : blen;
-  alog_status_ = status;
-  alog_bytes_ = no_data ? 0 : blen;
 
   // The date rides the encoder lane, as everywhere.
   unsigned char dbuf[64];
@@ -739,6 +737,12 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // HEAD answers with the head and no DATA; its render already ran for
   // parity with h1 (the Content-Length h1 announces is the GET's).
   const bool no_data = head_only || blen == 0;
+
+  // For h2_log, which runs right after this answer returns. %b is the
+  // full body length even when the peer's window parks a remainder -
+  // the same "what the answer says, not what this round sent" h1 logs.
+  alog_status_ = status;
+  alog_bytes_ = no_data ? 0 : blen;
 
   // The cache is rebuilt when the status changes or the second rolls -
   // so a MISS is the rare case, not the per-response default, and the
@@ -987,8 +991,9 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
   if (!alog_.enabled) return;
   size_t mn = 0;
   const char* m = alog_method(facts.method, &mn);
-  alog_.line(st.peer, st.peer_len, m, mn, target, tlen, true, alog_status_, alog_bytes_,
-             nullptr, 0, nullptr, 0);
+  alog_.line(st.peer, st.peer_len, m, mn, target, tlen,
+             static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0)), alog_status_,
+             alog_bytes_, nullptr, 0, nullptr, 0);
 }
 
 void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
