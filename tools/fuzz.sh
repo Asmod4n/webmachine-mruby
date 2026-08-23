@@ -80,16 +80,32 @@
 # number. The weak row is here too; a measurement that only gets
 # published when it flatters is not one.
 #
-# MEMORY, measured rather than guessed, and the two modes differ by
-# more than three times: a long single process peaks at 466-625 MB, a
-# -fork child sits at ~183 MB, because a child is short-lived and
-# never accumulates the corpus and the quarantine. Budget ~0.2 GB per
-# worker: 30 workers is about 7 GB no matter how they are split across
-# targets. RSS_LIMIT stays at 4 GB per process and is deliberately not
-# a knob to turn up - a child that crosses it is an OOM FINDING, so
-# raising it hides what it should show. UNIT_TIMEOUT makes a hang a
-# finding too, instead of something indistinguishable from a slow
-# input.
+# MEMORY IS SHOWN, NOT PREDICTED. It was predicted once and the
+# prediction was wrong by half: ~183 MB per -fork child, measured on
+# wsdeflate alone - the SMALLEST target - and then generalised to all
+# five. A real 30-worker run across all of them came back at ~400 MB
+# per worker, because feed and assets carry far more instrumented
+# code and therefore far more shadow map. The estimate also cannot
+# know the toolchain: what a child costs depends on the clang and the
+# ASan defaults it was built with.
+#
+# So the footer sums the RSS of this run's own processes every
+# refresh. A number on the screen from the machine it is running on
+# beats an estimate in a comment, and it is the same rule the rest of
+# this tree lives by.
+#
+# Rough planning figure, and it is a PEAK not an average because
+# fork-mode RSS breathes (children are replaced, the parent merges
+# between rounds): about 0.5 GB per worker. Two measurements agree on
+# the order - 292 MB/worker peak in a container across all five
+# targets, 400-500 MB/worker reported on a 32-thread host running
+# thirty. So thirty workers wants ~15 GB with room to breathe.
+# Check the footer, not this line.
+#
+# RSS_LIMIT stays at 4 GB per PROCESS and is deliberately not a knob
+# to turn up - a child that crosses it is an OOM FINDING, so raising
+# it hides what it should show. UNIT_TIMEOUT makes a hang a finding
+# too, instead of something indistinguishable from a slow input.
 #
 # AND WHAT A SHORT RUN PROVES, written down because it is less than it
 # looks: the calibration this project has is a CBOR decoder in a
@@ -284,7 +300,7 @@ if [ "$SECONDS_TO_RUN" -gt 0 ]; then
 else
   echo "no time limit: runs until Ctrl-C"
 fi
-echo "$n targets x $per workers = $((n * per)), ~$(((n * per) / 5 + 1)) GB expected (0.2 GB/child measured)"
+echo "$n targets x $per workers = $((n * per)) (~$(((n * per) / 2)) GB at 0.5 GB/worker peak - the footer measures the real figure)"
 echo "findings -> $OUT/crashes-<target>/   corpus -> $OUT/corpus-<target>/   logs -> $OUT/<target>.log"
 echo
 
@@ -329,6 +345,7 @@ trap stop INT TERM
 declare -A prev_cov prev_ft prev_corp last_new seen_crash alerted
 pending_stall=""
 now() { date +%s; }
+PEAK_KIB=0
 START=$(now)
 
 read_stat() {  # $1 target -> sets R_EXEC R_COV R_FT R_CORP R_EPS R_OTC
@@ -466,11 +483,26 @@ render() {
       "$t" "${R_COV:--}" "${R_FT:--}" "${R_CORP:--}" "${moved:--}" "$stale" \
       "${R_EPS:--}" "${R_EXEC:--}" "${R_OTC:--}"
   done
-  printf '\nrunning %s   %d targets x %d workers   findings -> %s/crashes-<target>/\n' \
-    "$(human "$elapsed")" "$n" "$per" "$OUT"
+  # This run's own footprint, from the machine it is on. Everything
+  # libFuzzer forked lives under $OUT/, so the binary path is the
+  # whole filter.
+  # RSS BREATHES in fork mode - children are replaced as they go and
+  # the parent runs a merge between rounds - so the momentary figure
+  # is not the one to reserve against. The PEAK is, and it is kept.
+  local kib procs
+  kib=$(ps -eo rss,cmd 2>/dev/null | grep -a "[ ]*[0-9]* $OUT/" | awk '{s += $1} END {print s + 0}')
+  procs=$(ps -eo rss,cmd 2>/dev/null | grep -ac "[ ]*[0-9]* $OUT/" || true)
+  [ "$kib" -gt "$PEAK_KIB" ] && PEAK_KIB=$kib
+  printf '\nrunning %s   %d x %d workers   memory %s now, %s peak   (%s procs, %s per worker at peak)\n' \
+    "$(human "$elapsed")" "$n" "$per" \
+    "$(awk -v k="$kib" 'BEGIN{printf "%.1f GB", k/1048576}')" \
+    "$(awk -v k="$PEAK_KIB" 'BEGIN{printf "%.1f GB", k/1048576}')" \
+    "$procs" \
+    "$(awk -v k="$PEAK_KIB" -v w=$((n * per)) 'BEGIN{printf "%.0f MB", (w ? k/w/1024 : 0)}')"
+  printf 'findings -> %s/crashes-<target>/\n' "$OUT"
 }
 
-rows=$((n + 3))
+rows=$((n + 4))
 if [ -t 1 ]; then
   printf '\033[?25l'                       # the cursor has nothing to say here
   trap 'printf "\033[?25h"; stop' INT TERM EXIT
