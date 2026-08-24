@@ -47,6 +47,26 @@ WM_FLAGS = lambda do |conf|
   conf.cc.flags << '-O3' << "-march=#{march}"
   conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
 
+  # THE 23 MB WERE DWARF (#184). mruby's gcc toolchain hardcodes -g
+  # into its compiler_flags (tasks/toolchains/gcc.rake:3), so every
+  # object carried full debug info and the shipped binary was 23.4 MB
+  # of which 20.1 MB was .debug_*: `strip` alone took it to 3.38 MB
+  # without touching one instruction. Nobody asked for it, nothing
+  # reads it, and it rode into every container image.
+  #
+  # So it is removed at the SOURCE rather than stripped off the end -
+  # the objects stop carrying what they never needed. Two callers keep
+  # theirs, and both say so out loud:
+  #   WM_PROFILE=1 below, which adds -g back for perf;
+  #   the debug build, whose enable_debug appends its own -g3 (and
+  #   that is a DIFFERENT flag, so this delete leaves it alone).
+  # Nothing about the code generated changes: -g emits sections, not
+  # instructions.
+  [conf.cc, conf.cxx, conf.objc, conf.asm].each do |c|
+    c.flags.each { |f| f.delete('-g') if f.is_a?(Array) }
+    c.flags.delete('-g')
+  end
+
   # WM_PROFILE=1: symbols (-g) and retained frame pointers, for perf -
   # never the shape a req/s number is taken through. -g only adds a
   # debug section (zero runtime cost); -fno-omit-frame-pointer costs a
