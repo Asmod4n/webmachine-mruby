@@ -26,6 +26,7 @@ ServerOptions opts_;
 std::vector<AppSpec*> specs_;
 std::vector<std::vector<const Resource*>> resources_;
 std::vector<std::vector<const WsResource*>> ws_resources_;
+std::vector<std::vector<const SseResource*>> sse_resources_;
 int log_fd_ = -1;
 Assets assets_;
 MimeDb mime_;
@@ -255,18 +256,24 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   // but keeping them costs one vector per app and no thought.
   resources_.resize(specs_.size());
   ws_resources_.resize(specs_.size());
+  sse_resources_.resize(specs_.size());
   std::vector<Http1::AppInput> inputs(specs_.size());
   for (size_t i = 0; i < specs_.size(); i++) {
     resources_[i].reserve(specs_[i]->resources.size());
     for (const auto& r : specs_[i]->resources) resources_[i].push_back(r.get());
     ws_resources_[i].reserve(specs_[i]->ws_resources.size());
     for (const auto& r : specs_[i]->ws_resources) ws_resources_[i].push_back(r.get());
+    sse_resources_[i].reserve(specs_[i]->sse_resources.size());
+    for (const auto& r : specs_[i]->sse_resources) sse_resources_[i].push_back(r.get());
     inputs[i] = Http1::AppInput{&specs_[i]->table,
                                 resources_[i].data(),
                                 resources_[i].size(),
                                 &specs_[i]->ws_table,
                                 ws_resources_[i].data(),
-                                ws_resources_[i].size()};
+                                ws_resources_[i].size(),
+                                &specs_[i]->sse_table,
+                                sse_resources_[i].data(),
+                                sse_resources_[i].size()};
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         opts_.assets_path != nullptr ? &assets_ : nullptr));

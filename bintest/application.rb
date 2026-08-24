@@ -498,16 +498,19 @@ assert('application: an https url refuses with the same TLS reason') do
   assert_true out.include?('no TLS in this tree'), out
 end
 
-assert('application: route.assets points at the real thing, route.sse does not exist') do
-  # The difference is whether the feature EXISTS. Assets do - they are
-  # configured with --assets/[server].assets - so route.assets is a
-  # signpost, and a signpost is worth a method. SSE does not exist here
-  # at all (#102), so the name is not reserved for it: NoMethodError.
+assert('application: route.assets is a signpost, route.sse is a real route kind') do
+  # route.assets points at a feature configured elsewhere
+  # (--assets/[server].assets, #170), so it refuses with directions -
+  # a signpost is worth a method.
   assets = ap_refused(ap_one_route("app.routes { |route| route.assets '/static' }"))
   assert_true assets.include?('#170'), assets
   assert_true assets.include?('--assets'), assets
+  # route.sse now EXISTS (#102): its own table, like websockets, and it
+  # validates the class the same way - a plain Resource is not a
+  # Webmachine::SseResource and is refused by name, not with a
+  # NoMethodError for a missing method.
   sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
-  assert_true sse.include?('NoMethodError'), sse
+  assert_true sse.include?('SseResource'), sse
 end
 
 assert('application: two applications on the same listener refuse by name') do

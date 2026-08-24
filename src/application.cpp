@@ -168,6 +168,50 @@ mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
 //   setters; until then NoMethodError says exactly what is the case.
 // --- routes ----------------------------------------------------------
 
+// THE TOKEN ARRAY CROSSES THIS BOUNDARY ONCE, and it does it here for
+// all three route kinds (#102 made it three): from this point a route
+// is bytes and offsets in a flat table (router.hpp), and no Ruby
+// object is looked at again on any request path. `who` names the
+// method in every refusal, because "route.add" and "route.sse" are
+// different mistakes to make.
+void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* who) {
+  const mrb_int n = RARRAY_LEN(toks);
+  table.open();
+  for (mrb_int i = 0; i < n; i++) {
+    const mrb_value t = mrb_ary_entry(toks, i);
+    if (table.pending_splat()) {
+      table.abandon();
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "%s: :* is the tail of a route - nothing may follow it", who);
+    }
+    if (mrb_string_p(t)) {
+      if (!table.literal(RSTRING_PTR(t), static_cast<size_t>(RSTRING_LEN(t)))) {
+        table.abandon();
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s: a literal token is too long", who);
+      }
+      continue;
+    }
+    if (mrb_symbol_p(t)) {
+      if (mrb_symbol(t) == MRB_OPSYM(mul)) {
+        table.splat();
+        continue;
+      }
+      // The Symbol's own id rides into the table: the request object
+      // names what the span captured, and this is the only moment the
+      // name exists.
+      if (!table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
+        table.abandon();
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "%s: too many bindings in one route (16 is the table's width)", who);
+      }
+      continue;
+    }
+    table.abandon();
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "%s: a token is a String (literal), a Symbol (binding) or :* (tail)", who);
+  }
+}
+
 // route.add [tokens], Klass - the ONE route form this slice builds.
 // Also app.add_route, webmachine-ruby's own spelling: same C function,
 // same mechanics, because both objects carry the same AppSpec.
@@ -193,41 +237,7 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
                klass);
   }
 
-  // The token array crosses this boundary ONCE: from here the route is
-  // bytes and offsets in a flat table (router.hpp), and no Ruby object
-  // is looked at again on any request path.
-  const mrb_int n = RARRAY_LEN(toks);
-  s->table.open();
-  for (mrb_int i = 0; i < n; i++) {
-    const mrb_value t = mrb_ary_entry(toks, i);
-    if (s->table.pending_splat()) {
-      s->table.abandon();
-      mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: :* is the tail of a route - nothing may follow it");
-    }
-    if (mrb_string_p(t)) {
-      if (!s->table.literal(RSTRING_PTR(t), static_cast<size_t>(RSTRING_LEN(t)))) {
-        s->table.abandon();
-        mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: a literal token is too long");
-      }
-      continue;
-    }
-    if (mrb_symbol_p(t)) {
-      if (mrb_symbol(t) == MRB_OPSYM(mul)) {
-        s->table.splat();
-        continue;
-      }
-      // The Symbol's own id rides into the table: slice 4's request
-      // object names what the span captured, and this is the only
-      // moment the name exists.
-      if (!s->table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
-        s->table.abandon();
-        mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: too many bindings in one route (16 is the table's width)");
-      }
-      continue;
-    }
-    s->table.abandon();
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: a token is a String (literal), a Symbol (binding) or :* (tail)");
-  }
+  walk_tokens(mrb, s->table, toks, "route.add");
 
   // The resource is folded and FROZEN right here: every method the
   // flow will ever ask is resolved now, so nothing can be redefined
@@ -252,36 +262,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "Ao", &toks, &klass);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
-  const mrb_int n = RARRAY_LEN(toks);
-  s->ws_table.open();
-  for (mrb_int i = 0; i < n; i++) {
-    const mrb_value t = mrb_ary_entry(toks, i);
-    if (s->ws_table.pending_splat()) {
-      s->ws_table.abandon();
-      mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.websocket: :* is the tail of a route - nothing may follow it");
-    }
-    if (mrb_string_p(t)) {
-      if (!s->ws_table.literal(RSTRING_PTR(t), static_cast<size_t>(RSTRING_LEN(t)))) {
-        s->ws_table.abandon();
-        mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.websocket: a literal token is too long");
-      }
-      continue;
-    }
-    if (mrb_symbol_p(t)) {
-      if (mrb_symbol(t) == MRB_OPSYM(mul)) {
-        s->ws_table.splat();
-        continue;
-      }
-      if (!s->ws_table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
-        s->ws_table.abandon();
-        mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.websocket: too many bindings in one route (16 is the width)");
-      }
-      continue;
-    }
-    s->ws_table.abandon();
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
-           "route.websocket: a token is a String (literal), a Symbol (binding) or :* (tail)");
-  }
+  walk_tokens(mrb, s->ws_table, toks, "route.websocket");
 
   std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
   char err[512] = "";
@@ -291,6 +272,31 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   }
   s->ws_table.commit();
   s->ws_resources.push_back(std::move(res));
+  return self;
+}
+
+// route.sse [tokens], Klass - the same token forms again, walked out
+// of the app's OWN event-stream table (#102). Like a websocket route
+// it never reaches the flow: an SSE path is matched before the graph
+// or not at all, because there is nothing there to decide - the media
+// type is fixed, there is no representation to compare and no length
+// to declare.
+mrb_value route_sse(mrb_state* mrb, mrb_value self) {
+  mrb_value toks, klass;
+  mrb_get_args(mrb, "Ao", &toks, &klass);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+
+  walk_tokens(mrb, s->sse_table, toks, "route.sse");
+
+  std::unique_ptr<SseResource, void (*)(SseResource*)> res(sse_resource_new(),
+                                                           sse_resource_free);
+  char err[512] = "";
+  if (!sse_fold(mrb, klass, *res, err, sizeof(err))) {
+    s->sse_table.abandon();
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
+  }
+  s->sse_table.commit();
+  s->sse_resources.push_back(std::move(res));
   return self;
 }
 
@@ -417,6 +423,7 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   // C function route.websocket runs, because app and route objects
   // carry the same AppSpec.
   mrb_define_method_id(mrb, app, MRB_SYM(add_websocket), route_websocket, MRB_ARGS_REQ(2));
+  mrb_define_method_id(mrb, app, MRB_SYM(add_sse), route_sse, MRB_ARGS_REQ(2));
 
   // Hidden: no constant names either class, so an app file can neither
   // reopen nor instantiate them. Rooted by hand - a class nothing
@@ -434,6 +441,7 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   MRB_SET_INSTANCE_TT(route_class_, MRB_TT_CDATA);
   mrb_gc_register(mrb, mrb_obj_value(route_class_));
   mrb_define_method_id(mrb, route_class_, MRB_SYM(add), route_add, MRB_ARGS_REQ(2));
+  mrb_define_method_id(mrb, route_class_, MRB_SYM(sse), route_sse, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, route_class_, MRB_SYM(websocket), route_websocket,
                        MRB_ARGS_ANY());
   mrb_define_method_id(mrb, route_class_, MRB_SYM(assets), route_assets, MRB_ARGS_ANY());

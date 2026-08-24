@@ -247,6 +247,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
   apps_.resize(napps);
   size_t at = 0;
   size_t ws_at = 0;
+  size_t sse_at = 0;
   for (size_t a = 0; a < napps; a++) {
     apps_[a].table = apps[a].table;
     apps_[a].base = static_cast<uint16_t>(at);
@@ -264,6 +265,15 @@ void Http1::build(const AppInput* apps, size_t napps) {
       ws_res_.push_back(apps[a].ws_resources[i]);
     }
     ws_at += apps[a].ws_nroutes;
+    // The event-stream routes (#102): a third table, walked once per
+    // request BEFORE the flow, and nothing prebuilt for it either - a
+    // stream's head is one constant string plus the date.
+    apps_[a].sse_table = apps[a].sse_nroutes != 0 ? apps[a].sse_table : nullptr;
+    apps_[a].sse_base = static_cast<uint16_t>(sse_at);
+    for (size_t i = 0; i < apps[a].sse_nroutes; i++) {
+      sse_res_.push_back(apps[a].sse_resources[i]);
+    }
+    sse_at += apps[a].sse_nroutes;
   }
 
   // The warm budget, read once (see kWarmBudgetDefault for the
@@ -459,6 +469,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
   // Past the 101 this connection is not HTTP any more (#175): every
   // byte belongs to the websocket half, which keeps its own carry.
   if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, data, len, sink);
+  // An event stream is one-way (#102). Whatever a client sends after
+  // its request has no answer here, so it is read and dropped rather
+  // than parsed as a head that could never be served.
+  if (WM_H1_UNLIKELY(st.sse != nullptr)) return true;
 
   // The hot path parses the receive buffer in place; only a head split
   // across receives pays for the carry copy.
@@ -638,6 +652,22 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
         return ws_upgrade(st, wslot, wr, path, path_len, wspans, ws_key, ws_key_len, headers,
                           num_headers, rest, rest_len, sink);
+      }
+    }
+
+    // THE EVENT STREAM (#102). Its own table, like the websocket one,
+    // and matched here - before the assets and long before the flow -
+    // because a path that names a stream is not a representation to
+    // negotiate. No upgrade marker exists to gate it on, so the table
+    // is walked once per request; an app without SSE routes has a null
+    // pointer here and pays one compare.
+    if (WM_H1_UNLIKELY(apps_[st.listener].sse_table != nullptr)) {
+      const AppSlot& sslot = apps_[st.listener];
+      RouteSpans sspans;
+      const int sr = sslot.sse_table->match(path, path_len, sspans);
+      if (sr >= 0) {
+        return sse_begin(st, sslot, sr, method, method_len, path, path_len, sspans, headers,
+                         num_headers, minor, facts.method, vals, lflags, sink);
       }
     }
 
@@ -990,6 +1020,84 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   // peer that does not wait for the 101 is not made to wait for
   // another packet.
   if (rest_len != 0) return ws_feed(st.ws, rest, rest_len, sink);
+  return true;
+}
+
+// The event stream's head (#102). Everything about it is decided
+// here, once, and then this connection never reads another head: what
+// leaves from now on is what the SECOND produces (the reactor's own,
+// which it already wakes on for the timeout clocks).
+bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
+                      size_t method_len, const char* path, size_t path_len,
+                      const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
+                      flow::Method m, const http::ReqValues& vals, uint8_t lflags,
+                      std::string& sink) {
+  const auto log = [&](uint16_t status) {
+    if (alog_.enabled) {
+      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
+                 vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
+    }
+  };
+  // GET only. A stream has one representation and no other method has
+  // a meaning here, so anything else is 405 with the Allow that says
+  // so - the same answer the flow would have given, spelled by the
+  // tier that owns the route.
+  if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
+    log(405);
+    sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
+    sink.append(date_, http::kDateLen);
+    sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return false;
+  }
+  // HTTP/1.0 has no chunked framing and no EventSource, and a stream
+  // delimited by the connection's end is a message this tree cannot
+  // frame honestly. Refused by name rather than served badly.
+  if (WM_H1_UNLIKELY(minor < 1)) {
+    log(505);
+    sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
+    sink.append(date_, http::kDateLen);
+    sink.append("\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return false;
+  }
+
+  // The resource's own say, with the head still LIVE - Last-Event-ID,
+  // an Origin check, a token in the query are all decided from it.
+  ReqView rv;
+  rv.target = path;
+  rv.target_len = path_len;
+  rv.path_len = http::path_only(path, path_len);
+  rv.method = flow::Method::kGet;
+  rv.table = slot.sse_table;
+  rv.route = route;
+  rv.spans = spans;
+  rv.hdrs = hdrs;
+  rv.nhdr = nhdr;
+  request_bind(&rv);
+  uint16_t refused = 0;
+  SseStream* s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(route)], refused);
+  request_bind(nullptr);
+  if (s == nullptr) {
+    log(refused == 0 ? 403 : refused);
+    return fail(st, refused == 0 ? 403 : refused, sink, lflags);
+  }
+
+  log(200);
+  // Cache-Control: no-store because a stream is not a representation
+  // anything may keep (RFC 9111 5.2.2.5), and chunked because it is
+  // the only framing that lets a message stay legal without knowing
+  // its own length (RFC 9112 7.1). No Connection header: 1.1 persists
+  // by default and this one persists until somebody ends it.
+  sink.append("HTTP/1.1 200 OK\r\nDate: ");
+  sink.append(date_, http::kDateLen);
+  sink.append(
+      "\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
+      "Transfer-Encoding: chunked\r\n\r\n");
+  st.sse = s;
+  // Whatever the peer pipelined behind this request is discarded with
+  // the carry: this connection is a stream now, and a second request
+  // on it has nowhere to be answered.
+  st.carry.clear();
+  st.body_skip = 0;
   return true;
 }
 

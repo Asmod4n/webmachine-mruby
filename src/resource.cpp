@@ -574,6 +574,9 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   // a websocket resource reads the handshake's head through the same
   // one object, so that accessor is hung on both classes.
   webmachine::ws_init(mrb, wm);
+  // The event stream's base class (#102), here for the same reason:
+  // its resource reads the head that asked, through the same object.
+  webmachine::sse_init(mrb, wm);
   webmachine::application_init(mrb, wm);
   // What a runtime callback sees of the request it is answering.
   webmachine::request_init(mrb, wm);

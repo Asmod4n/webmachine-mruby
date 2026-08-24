@@ -49,6 +49,7 @@ struct Echo {
   bool more(Conn&, std::string&, Plan&) { return true; }  // owes nothing between feeds
   webmachine::AccessLog* access_log() { return nullptr; }  // echo logs nothing
   bool pending(const Conn&) const { return false; }  // nothing is ever owed
+  bool timed(const Conn&) const { return false; }    // echo has no source of its own
   void on_tick() {}
 };
 

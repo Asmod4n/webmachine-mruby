@@ -1102,6 +1102,10 @@ bool Http1::pending(const Conn& st) const {
 // the source is exhausted; h2 re-runs the parked-stream flush. feed's
 // contract.
 bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
+  // An event stream owes nothing between seconds (#102): the Ring
+  // asks it again on the second, which is what sse_second answers.
+  // Nothing here reads a carry - a stream has no next request.
+  if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);
     return true;

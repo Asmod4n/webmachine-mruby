@@ -267,6 +267,11 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   // HEAD does, and it is the same object that lends it.
   struct RClass* wsres = mrb_class_get_under_id(mrb, wm, MRB_SYM(WebsocketResource));
   mrb_define_method_id(mrb, wsres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
+  // An SSE resource is not a Resource either (#102), and for the same
+  // reason it still reads the head that asked - Last-Event-ID lives
+  // there, and so do the route's own bindings.
+  struct RClass* sseres = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
+  mrb_define_method_id(mrb, sseres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
 }
 
 }  // namespace webmachine

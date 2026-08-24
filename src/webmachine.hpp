@@ -2775,6 +2775,118 @@ void ws_free(WsConn* c);
 }  // namespace webmachine
 
 // ------------------------------------------------------------------
+// SERVER-SENT EVENTS (#102), the WHATWG spec's text/event-stream. Its
+// own route table, like websockets and for the same reason: an SSE
+// route is matched before the flow or not at all. Nothing of the
+// decision graph applies - there is no conneg (the media type is
+// fixed), no precondition (there is no representation to compare), no
+// Content-Length (the body has no end until somebody ends it).
+//
+// WHAT MAKES IT DIFFERENT FROM EVERY OTHER TIER HERE: it is the first
+// source in this tree that produces on ITS OWN SCHEDULE. Everything
+// else answers bytes with bytes. An event stream is a request that is
+// answered once, at the head, and then goes quiet for as long as the
+// application likes. So the reactor's own second - the one it already
+// wakes on for the timeout clocks (#180) - is the clock the stream
+// runs on: once a second, per open stream, the resource is asked what
+// it has. That costs one VM call per second per stream and not one
+// timer anywhere.
+//
+// THE SURFACE, deliberately the WebsocketResource one (a stream is a
+// session, so #181's rule holds): a Webmachine::SseResource stands on
+// its own, is instantiated ONCE PER STREAM, and is fed by methods.
+//
+//     class Clock < Webmachine::SseResource
+//       def initialize                  # optional - the OPEN hook
+//         # This object is THIS stream's; ivars live as long as the
+//         # connection. `request` is live - the head that asked, its
+//         # headers and the route's bindings included, Last-Event-ID
+//         # among them. nil accepts; a Symbol refuses with an HTTP
+//         # status and the stream never opens.
+//         @n = 0
+//       end
+//
+//       def on_tick                     # required - once a second
+//         @n += 1
+//         return nil if @n % 5 != 0     # nothing to say this second
+//         { event: 'tick', data: @n.to_s, id: @n.to_s }
+//       end
+//
+//       def on_close                    # optional
+//       end
+//     end
+//
+// What on_tick RETURNS is the whole protocol:
+//   nil / false - nothing this second. The stream stays open and
+//                 costs nothing but the heartbeat below.
+//   String      - one event's `data`. A String with newlines becomes
+//                 several data: lines, which is what the spec says
+//                 they mean.
+//   Hash        - the fields by name: :data, :event, :id, :retry.
+//                 :data may be a String or an Array of them.
+//   Array       - several of the above, in one round.
+//   :close      - the stream ends here, the connection closes.
+// Anything else closes the stream and says why on stderr: a return
+// value nobody can spell is a bug in the resource, not a message to
+// guess at.
+//
+// THE HEARTBEAT is the server's, not the application's. A stream that
+// says nothing for long enough is indistinguishable from a dead one
+// to every proxy in between, so a bare comment (":\n\n", which the
+// spec defines as ignorable) goes out when nothing else has. The
+// route names the interval, as a DURATION through mruby-chrono like
+// every other duration that crosses this boundary:
+//
+//     def self.heartbeat = 15.s     # default 15 seconds; 0 = never
+//
+// HTTP/1.1 ONLY, and refused by name elsewhere. The h1 answer is
+// chunked (RFC 9112 7.1: each event is one chunk, and the stream ends
+// with the terminal chunk), which is the only framing that lets the
+// connection stay legal without knowing its own length. An HTTP/1.0
+// client gets 505 - it has no chunked and no EventSource. HTTP/2 gets
+// 501 for now: an unbounded DATA stream is stream-lifetime work that
+// belongs with #172, and pretending otherwise would ship a half
+// answer.
+
+
+namespace webmachine {
+
+// The route's resource, folded ONCE at route.sse: the class frozen,
+// on_tick resolved, the heartbeat read. Holds no Ruby object - the
+// STREAM does.
+struct SseResource;
+
+// One open stream: the resource instance, its heartbeat clock, and
+// what the last second produced.
+struct SseStream;
+
+// Folds a resource class for an SSE route. False leaves the reason in
+// err by name (not a Webmachine::SseResource, no on_tick).
+bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size_t errlen);
+SseResource* sse_resource_new();
+void sse_resource_free(SseResource* r);
+
+// Webmachine::SseResource, defined at gem init beside the other two.
+void sse_init(mrb_state* mrb, struct RClass* wm);
+
+// The head is parsed and the route matched: build THIS stream's
+// resource object and run its initialize, whose return value is the
+// answer - nil opens the stream, a Symbol refuses with an HTTP
+// status. Opened, the stream comes back; refused, null comes back and
+// `status` says how. `request` must be bound by the caller.
+SseStream* sse_open(const SseResource* r, uint16_t& status);
+
+// One second has passed on this stream: ask the resource, and append
+// whatever it said as chunked event bytes. False = the stream ends
+// (the resource said :close, or said something nobody can spell).
+// Appends nothing at all in the common quiet second.
+bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
+
+void sse_free(SseStream* s);
+
+}  // namespace webmachine
+
+// ------------------------------------------------------------------
 // WebSocket (#175), round one: the HANDSHAKE key and the FRAMING, and
 // nothing else. No IO, no mruby, no connection state - bytes in, bytes
 // out, the way embed.hpp cut h1 (#173). Everything here is protocol
@@ -2942,6 +3054,15 @@ void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
 void ws_free(WsConn* c);
 
+// The event stream (#102), the same mruby-free shape: sse_open builds
+// the stream when the resource opens it (null = refused, status says
+// how), sse_second asks it what this second holds, sse_free ends it.
+struct SseResource;
+struct SseStream;
+SseStream* sse_open(const SseResource* r, uint16_t& status);
+bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
+void sse_free(SseStream* s);
+
 // h2.hpp owns the definition (it pulls lshpack.h; this header stays
 // lean). A connection that never speaks the preface carries only the
 // null pointer. h2_free lives in http2.cpp where the type is complete.
@@ -3060,6 +3181,12 @@ class Http1 {
     // again. Null is the whole cost for every connection that never
     // upgrades.
     WsConn* ws = nullptr;
+    // An open event stream (#102). Like `ws`, this connection stopped
+    // being a request/response pair the moment the head was answered:
+    // nothing here reads another head, and the bytes that leave come
+    // from the SECOND, not from anything the peer sends. Null is the
+    // whole cost for every connection that never asked for one.
+    SseStream* sse = nullptr;
     // The peer's RAW sockaddr bytes, for the access log. The RING
     // fills both (it owns the socket and the storage); the record
     // ships them raw and webmachine-logd spells the address at the
@@ -3077,6 +3204,8 @@ class Http1 {
       h2 = nullptr;
       ws_free(ws);
       ws = nullptr;
+      sse_free(sse);
+      sse = nullptr;
       xfer = nullptr;
       xfer_off = 0;
       xfer_end = 0;
@@ -3084,6 +3213,7 @@ class Http1 {
     ~Conn() {
       h2_free(h2);
       ws_free(ws);
+      sse_free(sse);
     }
   };
 
@@ -3104,6 +3234,10 @@ class Http1 {
     const RouteTable* ws_table = nullptr;
     const WsResource* const* ws_resources = nullptr;
     size_t ws_nroutes = 0;
+    // The app's event-stream routes (#102), same shape again.
+    const RouteTable* sse_table = nullptr;
+    const SseResource* const* sse_resources = nullptr;
+    size_t sse_nroutes = 0;
   };
 
   // Builds every response every route of every app can speak, once, and
@@ -3125,6 +3259,10 @@ class Http1 {
   // stall the previous tree measured at 44.30ms average, 1,118 ->
   // 31,077 req/s once fixed. Const and cheap: two pointer tests.
   bool pending(const Conn& st) const;
+
+  // Does this connection carry an event stream (#102)? The Ring asks
+  // once per second per connection, so it is one pointer test.
+  bool timed(const Conn& st) const { return st.sse != nullptr; }
 
   // Feed wire bytes; responses land in sink (the connection's out/next,
   // whichever accumulates). False: the connection ends once everything
@@ -3335,6 +3473,16 @@ class Http1 {
                   const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
                   size_t nhdr, const char* rest, size_t rest_len, std::string& sink);
 
+  // The event stream's own head (#102): answers 200 with the chunked
+  // framing and switches the connection over to the second, or
+  // answers the refusal the route earned. False = this connection
+  // ends once the sink has drained.
+  bool sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
+                 size_t method_len, const char* path, size_t path_len,
+                 const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
+                 flow::Method m, const http::ReqValues& vals, uint8_t lflags,
+                 std::string& sink);
+
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
   // Lane 2: whatever CHANGES goes through ls-hpack's encoder and the
@@ -3399,6 +3547,8 @@ class Http1 {
     // same reason (#116 slice 2).
     const RouteTable* ws_table = nullptr;
     uint16_t ws_base = 0;
+    const RouteTable* sse_table = nullptr;
+    uint16_t sse_base = 0;
   };
 
   time_t sec_ = 0;
@@ -3410,6 +3560,9 @@ class Http1 {
   // Every app's websocket resources, back to back. Borrowed: the
   // AppSpec owns them, like every table here.
   std::vector<const WsResource*> ws_res_;
+  // Every app's event-stream resources, back to back, borrowed the
+  // same way.
+  std::vector<const SseResource*> sse_res_;
   // The generic status supply, one per app. It also holds a 200 and a
   // 405 slot, built neutrally so index_ stays total for any status the
   // flow tables can name - a MATCHED route never reads those two (its
@@ -3485,6 +3638,12 @@ struct AppSpec {
   // path and keeps the flow's table exactly as wide as the flow.
   RouteTable ws_table;
   std::vector<std::unique_ptr<WsResource, void (*)(WsResource*)>> ws_resources;
+  // EVENT-STREAM ROUTES ARE THEIR OWN TABLE TOO (#102), for exactly
+  // the reason the websocket ones are: an SSE path is matched before
+  // the flow or not at all, so a third table costs one pointer
+  // compare on a path the flow would have had to widen for.
+  RouteTable sse_table;
+  std::vector<std::unique_ptr<SseResource, void (*)(SseResource*)>> sse_resources;
   mrb_value ready = mrb_nil_value();
   bool have_ready = false;
   bool registered = false;
@@ -3740,6 +3899,14 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
 //        ONE sendmsg, without a body byte passing through this process.
 //        Same close contract as feed. An App without sources appends
 //        nothing and returns true.
+//   bool timed(const Conn&) const;
+//        does this connection carry a source that produces on its OWN
+//        schedule rather than in answer to bytes (#102, server-sent
+//        events)? The per-second sweep continues such a connection -
+//        it asks more() - and the idle clock is not its owner: a
+//        stream that says nothing for an hour is doing its job, not
+//        hanging. An App without such sources answers false and the
+//        sweep is exactly the one compare it already was.
 //   void on_tick();                                   once per reactor wake
 //   AccessLog* access_log();
 //        the App's access-log buffers (accesslog.hpp), or null for an
@@ -5127,7 +5294,18 @@ class Ring {
       last_reap_s_ = now_s_;
       for (uint32_t i = 0; i < max_conns_; i++) {
         Conn& c = conns_[i];
-        if (!c.live || c.deadline_s >= now_s_) continue;
+        if (!c.live) continue;
+        // A timed source (#102) is asked here, and the idle clock is
+        // not what owns it - silence is what an event stream mostly
+        // is. While a send is in flight it is left alone: the send
+        // deadline owns it then, and a peer that stopped reading is
+        // still a peer that gets reaped.
+        if (!c.sending && app_.timed(c.app)) {
+          c.deadline_s = now_s_ + to_idle_;
+          continue_conn(i);
+          continue;
+        }
+        if (c.deadline_s >= now_s_) continue;
         if (c.sending) {
           // The stuck-send case: the SQE is parked on a peer that
           // reads nothing, so waiting for its CQE waits forever.
