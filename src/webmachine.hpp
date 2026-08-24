@@ -5323,7 +5323,7 @@ class Ring {
         }
       }
     }
-    if (WM_UNLIKELY(draining_) && !stop_) {
+    if (draining_ && !stop_) {
       struct timespec now {};
       ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
       const int64_t at = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
