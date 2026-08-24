@@ -1,10 +1,29 @@
-// webmachine-logd: the access log's prose half. Reads LogRec records
-// (accesslog.hpp, the wire contract) from fd 0 - the socketpair the
-// server forked us with - formats Combined Log Format, and batches to
-// the file named in argv[1]. Lives on its own core, dies on the
-// socket's EOF after draining everything, and NEVER drops a record:
-// a write error is a named refusal with a nonzero exit the server's
-// operator can see.
+// webmachine-logd: the logs' prose half. Reads records from fd 0 - the
+// socketpair the server forked us with - formats them, and batches to
+// the file named on the command line. Lives on its own core, dies on
+// the socket's EOF after draining everything, and NEVER drops a
+// record: a write error is a named refusal with a nonzero exit the
+// server's operator can see.
+//
+// TWO MODES, because there are two streams and they share no field
+// (webmachine.hpp's log contract). One process per stream, each with
+// its own socket and its own file:
+//
+//   webmachine-logd access FILE MAXBYTES [full|anon|none]
+//   webmachine-logd error  FILE MAXBYTES
+//
+// MAXBYTES is a HARD ceiling on the file, not a rotation: at the cap
+// the OLDEST lines are dropped and the newest are kept, in place. The
+// reason is the one the user named - a server under load can write
+// faster than anyone reads, and a log that only ever grows fills the
+// disk and takes the machine with it. Rotation would only move the
+// ceiling to twice the number and keep growing. 0 means no ceiling,
+// which is the old behaviour and is the operator saying they watch it
+// themselves.
+//
+// This does NOT weaken the one rule. Every line the server decided to
+// write still lands on disk; what the cap governs is how long it
+// STAYS there, which is retention and the operator's choice.
 //
 // Deliberately dumb: blocking reads, write(2) per filled batch, no
 // ring, no threads. Its budget is enormous next to its load - the
@@ -28,13 +47,85 @@
 #include "../../src/webmachine.hpp"
 
 
+using webmachine::ErrRec;
 using webmachine::LogRec;
+using webmachine::kErrRecVersion;
 using webmachine::kLogH2;
 using webmachine::kLogNoTrack;
 using webmachine::kLogRecVersion;
 
 static std::string out;
 static int log_fd = -1;
+// The hard ceiling and where the file currently stands. 0 = no cap.
+static size_t max_bytes = 0;
+static size_t on_disk = 0;
+
+// THE CAP, and the whole of it: keep the NEWEST bytes, drop the oldest
+// ones, in place. Called after a batch landed, so the file is only
+// ever briefly over. The cut is moved forward to the start of the next
+// whole ENTRY - a log whose first line is half a line, or the tail of
+// a record whose head is gone, is worse than one that lost a few bytes
+// more.
+//
+// Amortised cost: keeping half the cap means this runs once per
+// max_bytes/2 written and copies max_bytes/2, so one extra byte moved
+// per byte logged. That is the price of a bounded file, and it is paid
+// on the daemon's core, not the server's.
+static void enforce_cap() {
+  if (max_bytes == 0 || on_disk <= max_bytes) return;
+  const size_t keep = max_bytes / 2;
+  std::string tail;
+  tail.resize(keep);
+  const off_t from = static_cast<off_t>(on_disk - keep);
+  size_t got = 0;
+  while (got < keep) {
+    const ssize_t n = ::pread(log_fd, &tail[got], keep - got, from + static_cast<off_t>(got));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      std::fprintf(stderr, "webmachine-logd: pread while capping: %s\n", std::strerror(errno));
+      std::exit(1);
+    }
+    if (n == 0) break;
+    got += static_cast<size_t>(n);
+  }
+  tail.resize(got);
+  // Start at a line boundary; if this chunk holds no break at all the
+  // whole of it is one enormous line and it goes as it is.
+  const size_t nl = tail.find('\n');
+  size_t start = nl == std::string::npos ? 0 : nl + 1;
+  // ...and then past any CONTINUATION lines, which is what makes the
+  // cut land on a whole ENTRY and not just a whole line. An error
+  // entry's backtrace frames are indented with a tab; a file that
+  // opens with three orphaned frames of an entry that is gone reads
+  // like a bug. No access line ever starts with a tab, so this is a
+  // no-op on that stream rather than a second rule for it.
+  while (start < tail.size() && tail[start] == '\t') {
+    const size_t next = tail.find('\n', start);
+    if (next == std::string::npos) { start = tail.size(); break; }
+    start = next + 1;
+  }
+  const size_t len = tail.size() - start;
+  size_t off = 0;
+  while (off < len) {
+    const ssize_t n = ::pwrite(log_fd, tail.data() + start + off, len - off,
+                               static_cast<off_t>(off));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      std::fprintf(stderr, "webmachine-logd: pwrite while capping: %s\n", std::strerror(errno));
+      std::exit(1);
+    }
+    off += static_cast<size_t>(n);
+  }
+  if (::ftruncate(log_fd, static_cast<off_t>(len)) != 0) {
+    std::fprintf(stderr, "webmachine-logd: ftruncate while capping: %s\n", std::strerror(errno));
+    std::exit(1);
+  }
+  if (::lseek(log_fd, 0, SEEK_END) < 0) {
+    std::fprintf(stderr, "webmachine-logd: lseek while capping: %s\n", std::strerror(errno));
+    std::exit(1);
+  }
+  on_disk = len;
+}
 
 static void flush_out() {
   size_t off = 0;
@@ -48,7 +139,9 @@ static void flush_out() {
     }
     off += static_cast<size_t>(n);
   }
+  on_disk += out.size();
   out.clear();
+  enforce_cap();
 }
 
 // "[23/Aug/2026:14:30:00 +0000]" - cached per second; records arrive
@@ -142,26 +235,8 @@ static void spell_peer(const char* sa, size_t salen, bool no_track) {
   out.append(txt);
 }
 
-int main(int argc, char** argv) {
-  if (argc < 2 || argc > 3) {
-    std::fprintf(stderr, "usage: webmachine-logd FILE [full|anon|none]  (records on fd 0)\n");
-    return 2;
-  }
-  if (argc == 3) {
-    if (std::strcmp(argv[2], "anon") == 0) privacy = Privacy::kAnon;
-    else if (std::strcmp(argv[2], "none") == 0) privacy = Privacy::kNone;
-    else if (std::strcmp(argv[2], "full") == 0) privacy = Privacy::kFull;
-    else {
-      std::fprintf(stderr, "webmachine-logd: privacy '%s'? none, anon or full\n", argv[2]);
-      return 2;
-    }
-  }
-  log_fd = ::open(argv[1], O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-  if (log_fd < 0) {
-    std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[1], std::strerror(errno));
-    return 1;
-  }
-
+// --- access: one line per response, Combined Log Format ------------
+static void run_access() {
   std::string in;
   char rbuf[256 * 1024];
   out.reserve(1u << 20);
@@ -171,11 +246,11 @@ int main(int argc, char** argv) {
       if (errno == EINTR) continue;
       std::fprintf(stderr, "webmachine-logd: read: %s\n", std::strerror(errno));
       flush_out();
-      return 1;
+      std::exit(1);
     }
     if (n == 0) {  // the server is gone; everything received still lands
       flush_out();
-      return 0;
+      std::exit(0);
     }
     in.append(rbuf, static_cast<size_t>(n));
 
@@ -184,10 +259,10 @@ int main(int argc, char** argv) {
       LogRec r;
       std::memcpy(&r, in.data() + off, sizeof r);
       if (r.version != kLogRecVersion) {
-        std::fprintf(stderr, "webmachine-logd: record version %u, built for %u - refusing\n",
+        std::fprintf(stderr, "webmachine-logd: access record version %u, built for %u - refusing\n",
                      r.version, kLogRecVersion);
         flush_out();
-        return 1;
+        std::exit(1);
       }
       const size_t need = sizeof(LogRec) + r.mlen + r.plen + r.tlen + r.rlen + r.ulen;
       if (in.size() - off < need) break;
@@ -225,4 +300,167 @@ int main(int argc, char** argv) {
     }
     in.erase(0, off);
   }
+}
+
+// --- error: one block per raise ------------------------------------
+//
+// The header line carries what identifies the failure - when, who
+// asked, what they were answered, what they asked for, and which class
+// raised what. The backtrace follows as one indented line per frame,
+// because a trace read sideways is a trace nobody reads. Frames are
+// escaped like every other request-touched field, so a raise carrying
+// "\n" in its message cannot forge one.
+//
+// There is NO privacy switch on this stream: an error line spells the
+// peer at `anon` and that is the whole of its choice. A trace is a
+// debugging aid, and debugging never needed the last octet; an
+// operator who wants full addresses asks for them on the access log,
+// where the GDPR warning is attached to the asking.
+static void run_error() {
+  std::string in;
+  char rbuf[64 * 1024];
+  out.reserve(1u << 16);
+  for (;;) {
+    const ssize_t n = ::read(0, rbuf, sizeof rbuf);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      std::fprintf(stderr, "webmachine-logd: read: %s\n", std::strerror(errno));
+      flush_out();
+      std::exit(1);
+    }
+    if (n == 0) {
+      flush_out();
+      std::exit(0);
+    }
+    in.append(rbuf, static_cast<size_t>(n));
+
+    size_t off = 0;
+    while (in.size() - off >= sizeof(ErrRec)) {
+      ErrRec r;
+      std::memcpy(&r, in.data() + off, sizeof r);
+      if (r.version != kErrRecVersion) {
+        std::fprintf(stderr, "webmachine-logd: error record version %u, built for %u - refusing\n",
+                     r.version, kErrRecVersion);
+        flush_out();
+        std::exit(1);
+      }
+      // dyn is what the second send carried; the five lengths are what
+      // it is made of. The server computes both from the same numbers,
+      // so a disagreement is a desynced stream and not a bad record -
+      // every following byte would be misread. Refuse by name.
+      const size_t parts = size_t(r.plen) + r.klen + r.tlen + r.mlen + r.blen;
+      if (parts != r.dyn) {
+        std::fprintf(stderr, "webmachine-logd: error record says %u dynamic bytes, its fields add "
+                             "up to %zu - stream desynced, refusing\n", r.dyn, parts);
+        flush_out();
+        std::exit(1);
+      }
+      const size_t need = sizeof(ErrRec) + r.dyn;
+      if (in.size() - off < need) break;
+      const char* p = in.data() + off + sizeof(ErrRec);
+      const char* peer = p;                 p += r.plen;
+      const char* klass = p;                p += r.klen;
+      const char* target = p;               p += r.tlen;
+      const char* mesg = p;                 p += r.mlen;
+      const char* trace = p;
+
+      spell_ts(r.sec);
+      out.append(ts, 28);
+      out.push_back(' ');
+      if (r.plen != 0) spell_peer(peer, r.plen, false); else out.push_back('-');
+      out.push_back(' ');
+      if (r.status != 0) {
+        out.push_back(char('0' + r.status / 100));
+        out.push_back(char('0' + r.status / 10 % 10));
+        out.push_back(char('0' + r.status % 10));
+      } else {
+        out.push_back('-');
+      }
+      out.push_back(' ');
+      if (r.tlen != 0) esc(target, r.tlen); else out.push_back('-');
+      out.push_back(' ');
+      if (r.klen != 0) esc(klass, r.klen); else out.push_back('-');
+      out.append(": ", 2);
+      if (r.mlen != 0) esc(mesg, r.mlen); else out.push_back('-');
+      out.push_back('\n');
+      // The frames, as the server packed them: "\n" between, none
+      // after. An empty trace is a release build, not a lost one.
+      for (size_t i = 0; i < r.blen;) {
+        size_t j = i;
+        while (j < r.blen && trace[j] != '\n') j++;
+        out.append("\tfrom ", 6);
+        esc(trace + i, j - i);
+        out.push_back('\n');
+        i = j + 1;
+      }
+
+      off += need;
+      // Per record, not per megabyte: errors are rare and someone is
+      // waiting to read this one.
+      flush_out();
+    }
+    in.erase(0, off);
+  }
+}
+
+int main(int argc, char** argv) {
+  if (argc < 4) {
+    std::fprintf(stderr,
+                 "usage: webmachine-logd access FILE MAXBYTES [full|anon|none]  (records on fd 0)\n"
+                 "       webmachine-logd error  FILE MAXBYTES\n");
+    return 2;
+  }
+  const bool err_mode = std::strcmp(argv[1], "error") == 0;
+  if (!err_mode && std::strcmp(argv[1], "access") != 0) {
+    std::fprintf(stderr, "webmachine-logd: mode '%s'? access or error\n", argv[1]);
+    return 2;
+  }
+  if (err_mode ? argc != 4 : argc > 5) {
+    std::fprintf(stderr, "webmachine-logd: %s takes FILE MAXBYTES%s\n", argv[1],
+                 err_mode ? "" : " [full|anon|none]");
+    return 2;
+  }
+  {
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long v = std::strtoull(argv[3], &end, 10);
+    if (errno != 0 || end == argv[3] || *end != '\0') {
+      std::fprintf(stderr, "webmachine-logd: MAXBYTES '%s'? a byte count, 0 for no ceiling\n",
+                   argv[3]);
+      return 2;
+    }
+    max_bytes = static_cast<size_t>(v);
+  }
+  if (argc == 5) {
+    if (std::strcmp(argv[4], "anon") == 0) privacy = Privacy::kAnon;
+    else if (std::strcmp(argv[4], "none") == 0) privacy = Privacy::kNone;
+    else if (std::strcmp(argv[4], "full") == 0) privacy = Privacy::kFull;
+    else {
+      std::fprintf(stderr, "webmachine-logd: privacy '%s'? none, anon or full\n", argv[4]);
+      return 2;
+    }
+  }
+  // O_RDWR because the cap reads the tail back; NOT O_APPEND, which on
+  // Linux drags pwrite(2) to the end of the file whatever offset it is
+  // given - the cap writes to offset 0 and would silently append
+  // instead. One process writes this file, so the seek position is
+  // ours alone and append semantics buy nothing.
+  log_fd = ::open(argv[2], O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (log_fd < 0) {
+    std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[2], std::strerror(errno));
+    return 1;
+  }
+  // Seek to the end: this is where writing continues, and where the
+  // file already stands. The cap governs the FILE, not this process's
+  // share of it, so a restart into an existing log inherits its size
+  // instead of pretending it starts at zero.
+  const off_t at = ::lseek(log_fd, 0, SEEK_END);
+  if (at < 0) {
+    std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[2], std::strerror(errno));
+    return 1;
+  }
+  on_disk = static_cast<size_t>(at);
+
+  if (err_mode) run_error(); else run_access();
+  return 0;  // both loops leave through exit(); this keeps the compiler happy
 }

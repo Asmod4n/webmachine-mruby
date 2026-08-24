@@ -304,6 +304,7 @@ void Http1::on_tick() {
   gmtime_r(&now, &tm);
   http::date_core(date_, tm);
   alog_.sec = static_cast<int64_t>(now);
+  elog_.sec = static_cast<int64_t>(now);
   const char* core = date_;
 
   for (Variants& v : store_) patch_date(v, core);
@@ -372,7 +373,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   // parsed head - so every request field spells "-"; the status is the
   // story. Callers past the header loop pass the peer's no-track ask.
   if (alog_.enabled) {
-    alog_.line(st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
+    log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
                nullptr, 0);
   }
   sink.append(variants(status).close.bytes);
@@ -748,7 +749,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           }
         }
         if (alog_.enabled) {
-          alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, alog_st,
+          log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, alog_st,
                      alog_by, vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
         }
         off += static_cast<size_t>(ret);
@@ -893,6 +894,12 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       // A raising callback answers in the negotiated type, the reason
       // as body - the exception was left pending for exactly this.
       // Copied before any mruby call can run.
+      if (elog_.enabled) {
+        // The error log, BEFORE the exception is consumed for the body:
+        // the peer only ever learns "500", the operator learns which
+        // class raised what, and where.
+        log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
+      }
       const char* bp = nullptr;
       size_t blen = 0;
       if (resource_exception_begin(*b->res, &bp, &blen)) {
@@ -918,7 +925,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       // wire size is conneg's secret, and re-deciding it here for a
       // log column would be work per line. Prebuilt-store answers log
       // "-": their body lengths were baked into bytes at build.
-      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
+      log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
                  (answered && !head_only) ? body_.size() : 0, vals.log_ref, vals.log_ref_len,
                  vals.log_ua, vals.log_ua_len);
     }
@@ -975,7 +982,7 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   // The peer's own resource is built here and its initialize decides
   // (#181); what comes back IS this peer's connection, owning that
   // object until ws_free.
-  WsConn* wsc = ws_admit(res, proto, refuse_status);
+  WsConn* wsc = ws_admit(res, elog_.enabled ? &elog_ : nullptr, proto, refuse_status);
   request_bind(nullptr);
   if (wsc == nullptr) {
     // The resource said no. It answers as HTTP, because nothing was
@@ -1034,7 +1041,7 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
                       std::string& sink) {
   const auto log = [&](uint16_t status) {
     if (alog_.enabled) {
-      alog_.line(st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
+      log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
                  vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
     }
   };
@@ -1074,7 +1081,8 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
   rv.nhdr = nhdr;
   request_bind(&rv);
   uint16_t refused = 0;
-  SseStream* s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(route)], refused);
+  SseStream* s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(route)],
+                        elog_.enabled ? &elog_ : nullptr, refused);
   request_bind(nullptr);
   if (s == nullptr) {
     log(refused == 0 ? 403 : refused);

@@ -793,15 +793,13 @@ class RouteTable {
 }  // namespace webmachine
 
 // ------------------------------------------------------------------
-// The access log (opt-in): the HOT CORE writes RECORDS, a sibling
-// process writes PROSE. Formatting a combined-log line in-process
-// measured 71.5ns each - date and number spelling plus an escape scan
-// over every request byte; filling a fixed header and memcpying the
-// raw strings measures 17ns. So the server ships records over a unix
-// socketpair to webmachine-logd (forked by --log, dies with the
-// socket), which formats Combined Log Format - the dialect every
-// existing reader parses - escapes, and batches to disk on its own
-// core, where its 70ns cost nobody.
+// The logs (opt-in): the HOT CORE writes RECORDS, a sibling process
+// writes PROSE. Formatting a combined-log line in-process measured
+// 71.5ns each - date and number spelling plus an escape scan over
+// every request byte; filling a fixed header and memcpying the raw
+// strings measures 17ns. So the server ships records over a unix
+// socketpair to webmachine-logd, which formats, escapes, and batches
+// to disk on its own core, where its 70ns cost nobody.
 //
 // THE ONE RULE, from the user, verbatim: every line we decide to
 // write MUST land on disk. No drop path exists on either side: the
@@ -810,15 +808,36 @@ class RouteTable {
 // resumes, a dead daemon is a named refusal), and the daemon's only
 // job is to drain, format and write.
 //
-// This file owns the WIRE CONTRACT between the two: same machine,
-// same build, so the struct is the format - no endianness ceremony,
-// one version byte so a mismatch refuses instead of misparsing.
+// TWO STREAMS, TWO SOCKETS, TWO CODE PATHS (Nutzer-Entscheid): an
+// access line and an error line share NO field - not one - so nothing
+// is shared but what is 1:1 identical, which is the transport below.
+// Each stream has its own socketpair, its own daemon, its own file and
+// its own record struct with its own version byte. Reusing one record
+// for both would have meant fields that lie about what they hold.
+//
+// This file owns both WIRE CONTRACTS: same machine, same build, so the
+// struct is the format - no endianness ceremony, one version byte per
+// stream so a mismatch refuses instead of misparsing.
 
 
 namespace webmachine {
 
-// One response. Followed on the wire by tlen+rlen+ulen raw bytes
-// (target, referer, user-agent) and plen peer bytes.
+// THE SHARED HALF, and the only one: a buffer that grows until the
+// kernel has taken it, the flight buffer an in-flight SQE borrows, and
+// the second records are stamped with. What a record MEANS is not here
+// - that is per stream, below.
+struct Logger {
+  bool enabled = false;
+  std::string buf;
+  std::string flight;
+  bool in_flight = false;
+  int64_t sec = 0;  // refreshed once per second by on_tick
+};
+
+// --- stream 1: the access log ----------------------------------------
+//
+// One response. Followed on the wire by mlen+plen+tlen+rlen+ulen raw
+// bytes: method, the peer's RAW sockaddr, target, referer, user-agent.
 struct LogRec {
   uint8_t version;   // kLogRecVersion, checked by the daemon
   uint8_t flags;     // kLogH2 | kLogNoTrack
@@ -839,42 +858,125 @@ inline constexpr uint8_t kLogH2 = 1;  // spell "HTTP/2", not "HTTP/1.1"
 // will log everything by design - the user's stated exception.)
 inline constexpr uint8_t kLogNoTrack = 2;
 
-struct AccessLog {
-  bool enabled = false;
-  std::string buf;
-  std::string flight;
-  bool in_flight = false;
-  int64_t sec = 0;  // refreshed once per second by on_tick
+inline void log_access(Logger& lg, const void* peer, size_t plen, const char* method, size_t mlen,
+                       const char* target, size_t tlen, uint8_t flags, uint16_t status,
+                       size_t body_bytes, const char* ref, size_t rlen, const char* ua,
+                       size_t ulen) {
+  // Truncation caps are the wire fields' widths; a 64K header is
+  // kMaxHead-bounded before it ever gets here.
+  if (mlen > 255) mlen = 255;
+  if (plen > 255) plen = 255;
+  if (tlen > 65535) tlen = 65535;
+  if (rlen > 65535) rlen = 65535;
+  if (ulen > 65535) ulen = 65535;
+  LogRec r;
+  r.version = kLogRecVersion;
+  r.flags = flags;
+  r.status = status;
+  r.bytes = body_bytes > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(body_bytes);
+  r.sec = lg.sec;
+  r.mlen = static_cast<uint8_t>(mlen);
+  r.plen = static_cast<uint8_t>(plen);
+  r.tlen = static_cast<uint16_t>(tlen);
+  r.rlen = static_cast<uint16_t>(rlen);
+  r.ulen = static_cast<uint16_t>(ulen);
+  lg.buf.append(reinterpret_cast<const char*>(&r), sizeof r);
+  if (mlen != 0) lg.buf.append(method, mlen);
+  if (plen != 0) lg.buf.append(static_cast<const char*>(peer), plen);
+  if (tlen != 0) lg.buf.append(target, tlen);
+  if (rlen != 0) lg.buf.append(ref, rlen);
+  if (ulen != 0) lg.buf.append(ua, ulen);
+}
 
-  void line(const void* peer, size_t plen, const char* method, size_t mlen, const char* target,
-            size_t tlen, uint8_t flags, uint16_t status, size_t body_bytes, const char* ref,
-            size_t rlen, const char* ua, size_t ulen) {
-    // Truncation caps are the wire fields' widths; a 64K header is
-    // kMaxHead-bounded before it ever gets here.
-    if (mlen > 255) mlen = 255;
-    if (plen > 255) plen = 255;
-    if (tlen > 65535) tlen = 65535;
-    if (rlen > 65535) rlen = 65535;
-    if (ulen > 65535) ulen = 65535;
-    LogRec r;
-    r.version = kLogRecVersion;
-    r.flags = flags;
-    r.status = status;
-    r.bytes = body_bytes > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(body_bytes);
-    r.sec = sec;
-    r.mlen = static_cast<uint8_t>(mlen);
-    r.plen = static_cast<uint8_t>(plen);
-    r.tlen = static_cast<uint16_t>(tlen);
-    r.rlen = static_cast<uint16_t>(rlen);
-    r.ulen = static_cast<uint16_t>(ulen);
-    buf.append(reinterpret_cast<const char*>(&r), sizeof r);
-    if (mlen != 0) buf.append(method, mlen);
-    if (plen != 0) buf.append(static_cast<const char*>(peer), plen);
-    if (tlen != 0) buf.append(target, tlen);
-    if (rlen != 0) buf.append(ref, rlen);
-    if (ulen != 0) buf.append(ua, ulen);
-  }
+// --- stream 2: the error log -----------------------------------------
+//
+// One thing that went wrong INSIDE the app - a callback that raised.
+// Not a refusal the server decided (those are named on stderr at
+// startup and are the operator's own doing), and not a status: a 404
+// is an answer, not an error.
+//
+// TWO SENDS, and the first one is FIXED (Nutzer-Entscheid). The header
+// below goes out whole, and its LAST field says how many bytes the
+// second send carries - so the daemon reads sizeof(ErrRec), learns the
+// number, and reads exactly that many. No scanning, no partial-record
+// guessing, and a bound the reader knows before it allocates. The
+// access stream batches instead, because its records are small and
+// constant-shaped; an error's are neither. That difference is the
+// reason these are two code paths and not one with a flag.
+//
+// The dynamic half is plen+klen+tlen+mlen+blen raw bytes, in that
+// order: the peer's RAW sockaddr, the resource class, the request
+// target, the exception's message, and its backtrace with "\n" between
+// frames. The daemon spells what it is given and invents nothing.
+struct ErrRec {
+  uint8_t version;   // kErrRecVersion, checked by the daemon
+  uint8_t flags;     // reserved; 0
+  uint16_t status;   // what the peer was answered (500), 0 if nothing was
+  int64_t sec;
+  uint8_t plen;      // the peer's RAW sockaddr (0 = none/unix)
+  uint8_t klen;      // the resource class that raised
+  uint16_t tlen;     // the request target, where there was one
+  uint16_t mlen;     // the exception's message
+  uint16_t blen;     // its backtrace
+  // LAST, and the point of the split: the size of the second send.
+  // Equals plen+klen+tlen+mlen+blen; the daemon trusts this one and
+  // splits it with the five above.
+  uint32_t dyn;
 };
+inline constexpr uint8_t kErrRecVersion = 1;
+
+inline void log_error(Logger& lg, const void* peer, size_t plen, const char* klass, size_t klen,
+                      const char* target, size_t tlen, uint16_t status, const char* mesg,
+                      size_t mlen, const char* trace, size_t blen) {
+  if (plen > 255) plen = 255;
+  if (klen > 255) klen = 255;
+  if (tlen > 65535) tlen = 65535;
+  if (mlen > 65535) mlen = 65535;
+  if (blen > 65535) blen = 65535;
+  ErrRec r;
+  r.version = kErrRecVersion;
+  r.flags = 0;
+  r.status = status;
+  r.sec = lg.sec;
+  r.plen = static_cast<uint8_t>(plen);
+  r.klen = static_cast<uint8_t>(klen);
+  r.tlen = static_cast<uint16_t>(tlen);
+  r.mlen = static_cast<uint16_t>(mlen);
+  r.blen = static_cast<uint16_t>(blen);
+  // The second send's size, and the only number the daemon needs
+  // before it reads. Always non-zero in practice: even a release
+  // build, which carries no backtrace, carries a message whose length
+  // nobody knows in advance.
+  r.dyn = static_cast<uint32_t>(plen + klen + tlen + mlen + blen);
+  lg.buf.append(reinterpret_cast<const char*>(&r), sizeof r);
+  if (plen != 0) lg.buf.append(static_cast<const char*>(peer), plen);
+  if (klen != 0) lg.buf.append(klass, klen);
+  if (tlen != 0) lg.buf.append(target, tlen);
+  if (mlen != 0) lg.buf.append(mesg, mlen);
+  if (blen != 0) lg.buf.append(trace, blen);
+}
+
+// ONE raise, appended as one record: the class that raised, its
+// message and its backtrace, read straight off the exception mruby has
+// pending. Everything above this line is pure bytes; this one needs a
+// VM, so it is DEFINED in resource.cpp, where the mruby side of this
+// tree lives - the flow, the websocket and the event stream all raise
+// in their own callbacks and all three log the same way.
+//
+// It LEAVES mrb->exc ALONE. The HTTP path still owes the peer a body
+// spelled from that same exception (resource_exception_begin), and
+// every caller clears it itself the moment it is done - a log must not
+// decide when an error stops existing.
+//
+// WHAT A TRACE CONTAINS is decided by the .mrb, not by this binary,
+// and it was measured rather than assumed: `mrbc -g app.rb` puts the
+// locations in the bytecode, and then BOTH the ship build and the
+// debug build spell real frames ("app.rb:3:in to_html"); `mrbc` with
+// no -g leaves one "(unknown):0" and nothing can recover it. The
+// server's own conf.enable_debug governs frames from mruby's core,
+// not from the app. Nothing is invented to fill the gap.
+void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
+                   size_t tlen, uint16_t status);
 
 }  // namespace webmachine
 
@@ -2757,7 +2859,12 @@ void ws_init(mrb_state* mrb, struct RClass* wm);
 // refused, the object is dropped here and null comes back with the
 // status. (Returning the connection is also what keeps the mrb_value
 // out of http1.hpp, which is mruby-free by contract.)
-WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
+// `elog` is the error log a raising callback lands in, for this
+// connection's whole life - null where none was asked for. A websocket
+// callback that raises kills the CONNECTION, never the process, so
+// without a log there is nothing to read afterwards but a line on
+// stderr.
+WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status);
 
 // The upgrade is answered: build the peer, with whatever
 // permessage-deflate negotiation settled on (wsdeflate.hpp). Params
@@ -2874,7 +2981,9 @@ void sse_init(mrb_state* mrb, struct RClass* wm);
 // answer - nil opens the stream, a Symbol refuses with an HTTP
 // status. Opened, the stream comes back; refused, null comes back and
 // `status` says how. `request` must be bound by the caller.
-SseStream* sse_open(const SseResource* r, uint16_t& status);
+// `elog` as in ws_admit, and for the same reason: a stream's callback
+// runs once a second with nobody watching.
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status);
 
 // One second has passed on this stream: ask the resource, and append
 // whatever it said as chunked event bytes. False = the stream ends
@@ -3048,7 +3157,7 @@ namespace wsdeflate { struct Params; }
 // (#181: the object it carries is that peer's own, for as long as the
 // socket lives) - null means refused, and status says how. No
 // mrb_value crosses this header; it stays mruby-free.
-WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status);
+WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status);
 bool ws_wants_deflate(const WsResource* r);
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
@@ -3059,7 +3168,7 @@ void ws_free(WsConn* c);
 // how), sse_second asks it what this second holds, sse_free ends it.
 struct SseResource;
 struct SseStream;
-SseStream* sse_open(const SseResource* r, uint16_t& status);
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status);
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
 void sse_free(SseStream* s);
 
@@ -3364,8 +3473,11 @@ class Http1 {
   // The access log (accesslog.hpp): this writer FORMATS lines, the
   // Ring flushes the buffer. Opt-in - enable_access_log() is the only
   // way a line is ever built.
-  AccessLog* access_log() { return &alog_; }
+  Logger* access_log() { return &alog_; }
   void enable_access_log() { alog_.enabled = true; }
+  // The second stream (its own socket, its own daemon, its own file).
+  Logger* error_log() { return &elog_; }
+  void enable_error_log() { elog_.enabled = true; }
 
  private:
   // Defined below, next to the other per-app state; named here because
@@ -3578,7 +3690,8 @@ class Http1 {
   Assets* assets_ = nullptr;
   // Read once at construction from WM_WARM_BUDGET (see kWarmBudgetDefault).
   size_t warm_budget_ = kWarmBudgetDefault;
-  AccessLog alog_;
+  Logger alog_;
+  Logger elog_;
   // The h2 answer functions record what they answered; h2_dispatch -
   // where the :path bytes are still alive - writes the line.
   uint16_t alog_status_ = 0;
@@ -3720,6 +3833,16 @@ struct ServerOptions {
   // gets (none = full addresses + GDPR warning; default anon; logd
   // validates the word).
   const char* log_privacy = nullptr;
+  // --error-log, null = no error log (opt-in, like the access log). Its
+  // own file, its own daemon, its own socket: an error line and an
+  // access line share no field.
+  const char* error_log_path = nullptr;
+  // --log-max-bytes: the HARD ceiling on EACH log file - at the cap the
+  // daemon drops the oldest lines and keeps the newest, in place. One
+  // switch for both files, because it answers one question ("how much
+  // disk may logging cost me?") and two numbers would only ask the
+  // operator to do the addition themselves. 0 = no ceiling.
+  unsigned long long log_max_bytes = 0;
   int stop_fd = -1;                   // the signalfd the ring polls
   const char* cli_unix = nullptr;     // --unix override
   int cli_port = 0;                   // --port override
@@ -3807,6 +3930,13 @@ struct Config {
   // [log]
   std::string log_file;     // file = "PATH" (the log is opt-in, as ever)
   std::string log_privacy;  // privacy = "none" | "anon" | "full"
+  // error_file = "PATH" - the SECOND stream, its own file and its own
+  // writer. Opt-in separately: an operator may want raises on disk and
+  // no access log at all, or the other way round.
+  std::string error_log_file;
+  // max_bytes = N - the hard ceiling on EACH log file. 0 (the default)
+  // is no ceiling.
+  unsigned long long log_max_bytes = 0;
 
   // [tune] - setup-only ring knobs; 0 = the tree's default
   int backlog = 0;           // listen backlog (default 511, ring.hpp)
@@ -3908,7 +4038,13 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
 //        hanging. An App without such sources answers false and the
 //        sweep is exactly the one compare it already was.
 //   void on_tick();                                   once per reactor wake
-//   AccessLog* access_log();
+//   Logger* error_log();
+//        the App's ERROR-log buffer, or null for an App that never
+//        logs one. Its own socket and its own daemon: an error line
+//        and an access line share no field, so they share no record
+//        and no stream. One record leaves as TWO LINKED sends - a
+//        fixed header whose last number is the size of the second.
+//   Logger* access_log();
 //        the App's access-log buffers (accesslog.hpp), or null for an
 //        App that never logs. The App FORMATS; the Ring flushes: at
 //        the end of every round a filled buffer leaves as one write
@@ -4088,6 +4224,8 @@ struct RingConfig {
   // The access log's fd (O_APPEND), or -1 for no log. main owns the
   // open; the Ring owns every write.
   int log_fd = -1;
+  // The error stream's own socket (#the error log): -1 = no error log.
+  int err_fd = -1;
   // #166 tunables, setup-only reads. The defaults are the tree's own
   // measured choices; a config file may override them, and 0 means
   // "the default" so an uninitialized field cannot smuggle a zero
@@ -4232,6 +4370,7 @@ class Ring {
     // capacity falls out of whatever finally stands.
     const uint64_t nofile = raise_nofile();
     log_fd_ = cfg.log_fd;
+    err_fd_ = cfg.err_fd;
     backlog_ = cfg.backlog != 0 ? cfg.backlog : 511;
     to_header_ = cfg.to_header != 0 ? cfg.to_header : 60;
     to_send_ = cfg.to_send != 0 ? cfg.to_send : 60;
@@ -4661,43 +4800,104 @@ class Ring {
     return s;
   }
 
-  // The access-log flush (see the contract block up top). Called once
-  // per round, right before the submit the SQE rides.
+  // The log flush (see the contract block up top). Called once per
+  // round, right before the submit the SQEs ride. TWO streams, two
+  // sockets, and the tag's index says which a completion belongs to.
+  static constexpr uint32_t kStreamAccess = 0;
+  static constexpr uint32_t kStreamError = 1;
+
   void flush_log() {
+    flush_access();
+    flush_error();
+  }
+
+  void flush_access() {
     if (log_fd_ < 0) return;
-    AccessLog* al = app_.access_log();
+    Logger* al = app_.access_log();
     if (al == nullptr || al->in_flight || al->buf.empty()) return;
+    // The whole batch in ONE send: these records are small and
+    // constant-shaped, so the daemon can walk them itself.
     al->buf.swap(al->flight);
     al->in_flight = true;
-    arm_log_write(al);
+    arm_access_write(al);
   }
-  void arm_log_write(AccessLog* al) {
+  void arm_access_write(Logger* al) {
     struct io_uring_sqe* s = sqe();
     // send, not write: the log fd is the daemon's socketpair, and a
     // dead daemon must come back as -EPIPE in the CQE (the named
     // refusal in on_log), not as a SIGPIPE that kills silently.
     io_uring_prep_send(s, log_fd_, al->flight.data(), al->flight.size(), MSG_NOSIGNAL);
-    io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, 0));
+    io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, kStreamAccess));
   }
-  void on_log(struct io_uring_cqe* cqe) {
-    AccessLog* al = app_.access_log();
-    if (al == nullptr) return;
+
+  // ONE RECORD per flush, as TWO LINKED SENDS (Nutzer-Entscheid): the
+  // fixed header first, whose last field is the size of the second,
+  // then exactly that many bytes. IOSQE_IO_LINK keeps the pair in
+  // order - two independent sends on one socket may complete in either
+  // order, and a header that overtakes its own body would desync the
+  // stream for good. Errors are rare, so one record per round costs
+  // nothing worth batching for.
+  void flush_error() {
+    if (err_fd_ < 0) return;
+    Logger* el = app_.error_log();
+    if (el == nullptr || el->in_flight || el->buf.size() < sizeof(ErrRec)) return;
+    ErrRec r;
+    std::memcpy(&r, el->buf.data(), sizeof r);
+    const size_t whole = sizeof(ErrRec) + r.dyn;
+    if (el->buf.size() < whole) return;  // still being written; next round
+    el->flight.assign(el->buf, 0, whole);
+    el->buf.erase(0, whole);
+    el->in_flight = true;
+    arm_error_write(el);
+  }
+  // MSG_WAITALL is what makes the LINK safe. IOSQE_IO_LINK only breaks
+  // a chain on FAILURE, and a short send is not a failure - so without
+  // it a header that went out half would be followed by a body sent
+  // from the right offset regardless, and the daemon's framing would
+  // desync permanently, one record after the next. With MSG_WAITALL
+  // each half is all-or-error, and the pair is either whole or a named
+  // refusal in on_log.
+  void arm_error_write(Logger* el) {
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_send(s, err_fd_, el->flight.data(), sizeof(ErrRec),
+                       MSG_NOSIGNAL | MSG_WAITALL);
+    s->flags |= IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 1, kStreamError));
+    s = sqe();
+    io_uring_prep_send(s, err_fd_, el->flight.data() + sizeof(ErrRec),
+                       el->flight.size() - sizeof(ErrRec), MSG_NOSIGNAL | MSG_WAITALL);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, kStreamError));
+  }
+
+  void on_log(uint16_t gen, uint32_t stream, struct io_uring_cqe* cqe) {
+    Logger* lg = stream == kStreamError ? app_.error_log() : app_.access_log();
+    if (lg == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
       // THE RULE: every line formatted lands. A log the disk refuses
       // is a promise this process can no longer keep - refuse by name
-      // instead of dropping silently.
-      std::fprintf(stderr, "webmachine: access log write failed: %s - refusing to drop lines\n",
-                   std::strerror(-cqe->res));
+      // instead of dropping silently. -ECANCELED here is the linked
+      // body after a header that failed: one refusal, not two.
+      if (stream == kStreamError && cqe->res == -ECANCELED) return;
+      std::fprintf(stderr, "webmachine: %s log write failed: %s - refusing to drop lines\n",
+                   stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
       std::exit(1);
     }
-    const size_t took = static_cast<size_t>(cqe->res);
-    if (WM_UNLIKELY(took < al->flight.size())) {
-      al->flight.erase(0, took);
-      arm_log_write(al);  // the remainder still lands; rides the next submit
+    if (stream == kStreamError) {
+      // gen 1 is the header, gen 0 the body. MSG_WAITALL means neither
+      // can be short, so the body's completion IS the record's end.
+      if (gen == 1) return;
+      lg->flight.clear();
+      lg->in_flight = false;
       return;
     }
-    al->flight.clear();
-    al->in_flight = false;
+    const size_t took = static_cast<size_t>(cqe->res);
+    if (WM_UNLIKELY(took < lg->flight.size())) {
+      lg->flight.erase(0, took);
+      arm_access_write(lg);  // the remainder still lands; rides the next submit
+      return;
+    }
+    lg->flight.clear();
+    lg->in_flight = false;
   }
 
   // The listeners leave through the ring, like everything else. Called
@@ -5202,7 +5402,7 @@ class Ring {
       case detail::kRecv: on_recv(idx, gen, cqe); break;
       case detail::kSend: on_send(idx, gen, cqe); break;
       case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
-      case detail::kLog: on_log(cqe); break;
+      case detail::kLog: on_log(gen, idx, cqe); break;
       case detail::kPeer: on_peer(idx, gen, cqe); break;
       case detail::kClose:
         if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
@@ -5341,6 +5541,7 @@ class Ring {
   // before init. listener_base_ = max_conns_: the listeners sit behind
   // the connection slots.
   int log_fd_ = -1;
+  int err_fd_ = -1;
   unsigned sq_entries_ = 0;  // what the SQ finally settled at
   int backlog_ = 511;        // listen(2) backlog; cfg.backlog overrides (#166)
   // #180's clocks (seconds; RingConfig names the defaults) and the

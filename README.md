@@ -51,13 +51,21 @@ A String is a literal segment, a Symbol binds one, `:*` is the tail.
 ```
 webmachine-server [--config FILE.toml] [--unix PATH | --port N]
                   [--app FILE.mrb] [--assets FILE.zip] [--mime-types FILE]
-                  [--log FILE [--log-privacy none|anon|full]] [--pidfile PATH]
+                  [--log FILE [--log-privacy none|anon|full]]
+                  [--error-log FILE] [--log-max-bytes N] [--pidfile PATH]
 ```
 
 Precedence is CLI > `webmachine.toml` > the app's `conf`. Static files
 are served from a ZIP (`--assets`), gzip synthesized from the archive's
-own deflate stream. The access log is opt-in and anonymizes addresses
-by default.
+own deflate stream.
+
+Both logs are opt-in and separate — separate files, separate writers,
+no field in common. `--log` is the access log and anonymizes addresses
+by default; `--error-log` is what a callback *raised*: class, message
+and backtrace, while the peer still sees only a 500. Compile the app
+with `mrbc -g` for frames that name a file and a line.
+`--log-max-bytes` is a hard ceiling on each file — at the cap the
+oldest lines go, in place, so a busy server cannot fill the disk.
 
 ## Building
 

@@ -710,6 +710,14 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     // A raising callback answers in the negotiated type, the reason as
     // body; the lent bytes are appended (copied) before any next mruby
     // call can run.
+    if (elog_.enabled) {
+      // The error log, BEFORE the exception is consumed for the body:
+      // the peer only ever learns "500", the operator learns which
+      // class raised what, and where.
+      log_exception(elog_, b->res->mrb, st0.peer, st0.peer_len,
+                    req != nullptr ? req->target : nullptr,
+                    req != nullptr ? req->target_len : 0, 500);
+    }
     const char* bp = nullptr;
     size_t bl = 0;
     if (resource_exception_begin(*b->res, &bp, &bl)) {
@@ -988,7 +996,7 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
   if (!alog_.enabled) return;
   size_t mn = 0;
   const char* m = alog_method(facts.method, &mn);
-  alog_.line(st.peer, st.peer_len, m, mn, target, tlen,
+  log_access(alog_, st.peer, st.peer_len, m, mn, target, tlen,
              static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0)), alog_status_,
              alog_bytes_, nullptr, 0, nullptr, 0);
 }

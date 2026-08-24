@@ -140,7 +140,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   {
     mrb_value server{}, log{}, tune{};
     bool have_server = false, have_log = false, have_tune = false;
-    mrb_int port = 0, backlog = 0, sq = 0;
+    mrb_int port = 0, backlog = 0, sq = 0, maxb = 0;
     if (!section(mrb, doc, "server", &server, &have_server, path, err, errlen)) goto done;
     if (!section(mrb, doc, "log", &log, &have_log, path, err, errlen)) goto done;
     if (!section(mrb, doc, "tune", &tune, &have_tune, path, err, errlen)) goto done;
@@ -180,6 +180,17 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
         std::snprintf(err, errlen, "%s: log.privacy without log.file decides nothing", path);
         goto done;
       }
+      if (!take_string(mrb, log, "log", "error_file", out.error_log_file, path, err, errlen)) {
+        goto done;
+      }
+      // The ceiling is a COUNT of bytes, not a duration - take_int,
+      // like backlog and sq_entries. Its floor is 4096: a cap smaller
+      // than a line keeps nothing, and half of it (what the daemon
+      // keeps) has to hold at least one whole entry to be a log.
+      if (!take_int(mrb, log, "log", "max_bytes", 4096, 1LL << 40, &maxb, path, err, errlen)) {
+        goto done;
+      }
+      out.log_max_bytes = static_cast<unsigned long long>(maxb);
     }
 
     if (have_tune) {

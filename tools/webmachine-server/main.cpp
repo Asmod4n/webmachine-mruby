@@ -47,7 +47,8 @@ struct Echo {
     return true;
   }
   bool more(Conn&, std::string&, Plan&) { return true; }  // owes nothing between feeds
-  webmachine::AccessLog* access_log() { return nullptr; }  // echo logs nothing
+  webmachine::Logger* access_log() { return nullptr; }  // echo logs nothing
+  webmachine::Logger* error_log() { return nullptr; }   // and nothing in it can raise
   bool pending(const Conn&) const { return false; }  // nothing is ever owed
   bool timed(const Conn&) const { return false; }    // echo has no source of its own
   void on_tick() {}
@@ -103,6 +104,10 @@ int main(int argc, char** argv) {
   const char* cli_unix = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
+  const char* error_log_path = nullptr;
+  // -1 = nothing typed, so the config file may still speak. 0 is a
+  // real answer ("no ceiling"), which is why this is not just 0.
+  long long log_max_bytes = -1;
   const char* config_path = nullptr;
   int cli_port = 0;
   for (int i = 1; i < argc; i++) {
@@ -120,6 +125,14 @@ int main(int argc, char** argv) {
       log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log-privacy") == 0 && i + 1 < argc) {
       log_privacy = argv[++i];
+    } else if (std::strcmp(argv[i], "--error-log") == 0 && i + 1 < argc) {
+      error_log_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--log-max-bytes") == 0 && i + 1 < argc) {
+      log_max_bytes = std::atoll(argv[++i]);
+      if (log_max_bytes < 0) {
+        std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
+        return 2;
+      }
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
@@ -130,7 +143,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "usage: %s [--config FILE.toml] [--unix PATH | --port N] [--app FILE.mrb] "
                    "[--assets FILE.zip] [--mime-types FILE] "
-                   "[--log FILE [--log-privacy none|anon|full]] "
+                   "[--log FILE [--log-privacy none|anon|full]] [--error-log FILE] "
+                   "[--log-max-bytes N] "
                    "[--pidfile PATH] [--echo]\n"
                    "  --config reads the same choices from a TOML file; typed flags beat it,\n"
                    "  and both beat the app's conf. Without --config, a ./webmachine.toml is\n"
@@ -141,6 +155,14 @@ int main(int argc, char** argv) {
                    "  instead of hunting for the machine's own (/etc/mime.types, the apache\n"
                    "  paths, /usr/share/mime/globs2, then the list built in). The startup\n"
                    "  always says which one answered.\n"
+                   "  --error-log is the SECOND log: what an app's callback raised, with\n"
+                   "  the class, the message and the backtrace. Its own file and its own\n"
+                   "  writer - an error line and an access line share no field. Compile the\n"
+                   "  app with `mrbc -g` for frames that name a file and a line; without it\n"
+                   "  the trace is one (unknown):0 and no build can recover it.\n"
+                   "  --log-max-bytes is a hard ceiling on EACH log file: at the cap the\n"
+                   "  oldest lines are dropped and the newest kept, in place. 0 (the\n"
+                   "  default) means no ceiling and the operator watches the disk.\n"
                    "  --pidfile writes this process's pid and removes the file on the way out.\n",
                    argv[0]);
       return 2;
@@ -191,6 +213,12 @@ int main(int argc, char** argv) {
     }
     if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
     if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
+    if (error_log_path == nullptr && !fc.error_log_file.empty()) {
+      error_log_path = fc.error_log_file.c_str();
+    }
+    if (log_max_bytes < 0 && fc.log_max_bytes != 0) {
+      log_max_bytes = static_cast<long long>(fc.log_max_bytes);
+    }
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
     opts.sq_entries = fc.sq_entries;  // no CLI twins; 0 = default
     opts.backlog = fc.backlog;
@@ -234,6 +262,8 @@ int main(int argc, char** argv) {
 
   opts.log_path = log_path;
   opts.log_privacy = log_privacy;
+  opts.error_log_path = error_log_path;
+  opts.log_max_bytes = log_max_bytes < 0 ? 0ull : static_cast<unsigned long long>(log_max_bytes);
   opts.have_uring = uring_present(mrb);
 
   if (echo) {

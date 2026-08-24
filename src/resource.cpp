@@ -1,5 +1,6 @@
 #include "webmachine.hpp"
 
+#include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
@@ -14,6 +15,12 @@
 
 // Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_RES_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
+// mruby decodes a packed backtrace itself (src/backtrace.c); the
+// declaration lives in mruby/internal.h, a C header with no extern "C"
+// wrapper - including it from C++ yields a mangled symbol nothing
+// defines. Declared here instead, next to the one place that uses it.
+extern "C" mrb_value mrb_exc_backtrace(mrb_state* mrb, mrb_value exc);
 
 namespace webmachine {
 namespace {
@@ -550,6 +557,48 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
   *ptr = RSTRING_PTR(mesg);
   *len = static_cast<size_t>(RSTRING_LEN(mesg));
   return true;
+}
+
+void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
+                   size_t tlen, uint16_t status) {
+  if (mrb->exc == nullptr) return;
+  const mrb_value exc = mrb_obj_value(mrb->exc);
+  // The class name is a symbol's bytes: interned for the VM's
+  // lifetime, so there is nothing here to root and nothing to free.
+  const char* kn = mrb_obj_classname(mrb, exc);
+  const char* mp = nullptr;
+  size_t mlen = 0;
+  // Straight from the field (mruby/error.h: RException.mesg is "NULL
+  // or probably RString"), the same read the body path makes.
+  struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
+  if (e->mesg != nullptr && e->mesg->tt == MRB_TT_STRING) {
+    const mrb_value mesg = mrb_obj_value(e->mesg);
+    mp = RSTRING_PTR(mesg);
+    mlen = static_cast<size_t>(RSTRING_LEN(mesg));
+  }
+  // The frames, joined with "\n" - the shape the daemon splits on. The
+  // exception is still PENDING here, which is why nothing below is a
+  // funcall: mrb_exc_backtrace is the C entry mruby's own printer
+  // uses, and what it hands back is an Array of plain Strings.
+  //
+  // The join allocates, and that is deliberate: this runs when
+  // something already went wrong, which is the one path in this tree
+  // that has no throughput to protect.
+  std::string trace;
+  const int ai = mrb_gc_arena_save(mrb);
+  const mrb_value bt = mrb_exc_backtrace(mrb, exc);
+  if (mrb_array_p(bt)) {
+    const mrb_int n = RARRAY_LEN(bt);
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_value f = RARRAY_PTR(bt)[i];
+      if (!mrb_string_p(f)) continue;
+      if (!trace.empty()) trace.push_back('\n');
+      trace.append(RSTRING_PTR(f), static_cast<size_t>(RSTRING_LEN(f)));
+    }
+  }
+  mrb_gc_arena_restore(mrb, ai);
+  log_error(lg, peer, plen, kn, std::strlen(kn), target, tlen, status, mp, mlen, trace.data(),
+            trace.size());
 }
 
 }  // namespace webmachine

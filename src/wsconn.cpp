@@ -68,6 +68,11 @@ struct WsResource {
 // frame's payload, which RFC 6455 5.5 caps at 125 bytes.
 struct WsConn {
   const WsResource* res = nullptr;
+  // Where a raising callback lands, or null if no error log was asked
+  // for. Held for the connection's life: a websocket's callbacks run
+  // long after the request that opened it is gone, so the log cannot
+  // be reached through anything but this pointer.
+  Logger* elog = nullptr;
   // THE PEER'S OWN resource object (#181): built when the handshake
   // is admitted (its `initialize` IS the connect hook), receiver of
   // every on_data/on_close of THIS connection, released when the
@@ -287,6 +292,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
   argv[1] = mrb_str_new(mrb, reason == nullptr ? "" : reason, reason_len);
   mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), c->res->close_argc, argv);
   if (mrb->exc != nullptr) {
+    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
   }
@@ -317,8 +323,10 @@ bool deliver(WsConn* c, std::string& sink) {
   const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), r->data_argc, argv);
   drop_msg(c);
   if (mrb->exc != nullptr) {
-    // A raising callback is a 1011, said once, with the reason on
-    // stderr - the connection dies, the server does not.
+    // A raising callback is a 1011, said once, with the reason in the
+    // error log and on stderr - the connection dies, the server does
+    // not.
+    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
@@ -829,7 +837,7 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
 // allocated and initialized in two steps: `new` would swallow the
 // answer. An admitted object is handed to ws_open, which owns it for
 // the connection; a refused one is dropped here.
-WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
+WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status) {
   proto.clear();
   status = 0;
   mrb_state* mrb = r->mrb;
@@ -841,6 +849,7 @@ WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
   mrb_gc_register(mrb, obj);
   const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
+    if (elog != nullptr) log_exception(*elog, mrb, nullptr, 0, nullptr, 0, 500);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_unregister(mrb, obj);
@@ -872,6 +881,7 @@ WsConn* ws_admit(const WsResource* r, std::string& proto, uint16_t& status) {
   // the object from here (ws_free releases it).
   WsConn* c = new WsConn();
   c->res = r;
+  c->elog = elog;
   c->self = obj;
   return c;
 }
@@ -921,7 +931,8 @@ bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink) {
   // to take the process down by asking for memory.
   const mrb_value r = mrb_protect_error(mrb, feed_body, &call, &raised);
   if (raised) {
-    mrb->exc = mrb_obj_ptr(r);
+    mrb->exc = mrb_obj_ptr(r);  // protect_error cleared it; re-arm so both readers see it
+    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     return fail(c, sink, ws::kCloseInternalError);

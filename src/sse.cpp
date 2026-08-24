@@ -29,6 +29,10 @@ struct SseResource {
 // One open stream.
 struct SseStream {
   const SseResource* res = nullptr;
+  // Where a raising callback lands, or null if no error log was asked
+  // for. Held for the stream's life: on_tick runs once a second long
+  // after the request that opened it is gone.
+  Logger* elog = nullptr;
   mrb_value self = mrb_nil_value();
   // The wall second this stream last put BYTES on the wire, event or
   // heartbeat alike - the heartbeat measures silence, not events.
@@ -114,8 +118,9 @@ void report_close(SseStream* s) {
   const int ai = mrb_gc_arena_save(mrb);
   mrb_funcall_argv(mrb, s->self, MRB_SYM(on_close), 0, nullptr);
   if (mrb->exc != nullptr) {
-    // The stream is already over; a raising close handler is printed
+    // The stream is already over; a raising close handler is logged
     // and swallowed, exactly as the websocket one is.
+    if (s->elog != nullptr) log_exception(*s->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
   }
@@ -203,7 +208,7 @@ bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size
   return true;
 }
 
-SseStream* sse_open(const SseResource* r, uint16_t& status) {
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status) {
   status = 0;
   mrb_state* mrb = r->mrb;
   const int ai = mrb_gc_arena_save(mrb);
@@ -215,6 +220,7 @@ SseStream* sse_open(const SseResource* r, uint16_t& status) {
   // answer IS the decision.
   const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
+    if (elog != nullptr) log_exception(*elog, mrb, nullptr, 0, nullptr, 0, 500);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_unregister(mrb, obj);
@@ -236,6 +242,7 @@ SseStream* sse_open(const SseResource* r, uint16_t& status) {
   }
   auto* s = new SseStream();
   s->res = r;
+  s->elog = elog;
   s->self = obj;
   mrb_gc_arena_restore(mrb, ai);
   return s;
@@ -250,6 +257,7 @@ bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value out = mrb_funcall_argv(mrb, s->self, MRB_SYM(on_tick), 0, nullptr);
   if (mrb->exc != nullptr) {
+    if (s->elog != nullptr) log_exception(*s->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);

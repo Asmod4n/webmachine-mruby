@@ -28,12 +28,66 @@ std::vector<std::vector<const Resource*>> resources_;
 std::vector<std::vector<const WsResource*>> ws_resources_;
 std::vector<std::vector<const SseResource*>> sse_resources_;
 int log_fd_ = -1;
+int err_fd_ = -1;
 Assets assets_;
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
+
+// Fork one webmachine-logd over a socketpair and hand back OUR end.
+// The daemon is spawned BEFORE the ring exists, so the child inherits
+// none of it. Two streams take this road, and everything on it is 1:1
+// identical between them - the socketpair, where the binary lives, the
+// fork, the reaped-child signal - so it is written once and the mode
+// word is the argument. Returns -1 with a named reason in err: a
+// server told to log that cannot log is already breaking its one rule.
+int spawn_logd(const char* mode, const char* path, const char* privacy, char* err, size_t errlen) {
+  int sp[2];
+  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
+    std::snprintf(err, errlen, "--%s log socketpair: %s", mode, std::strerror(errno));
+    return -1;
+  }
+  // The daemon lives next to this binary; argv0-relative, resolved
+  // through /proc/self/exe so a PATH-relative start still finds it.
+  char self[4096];
+  const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
+  std::string logd = "webmachine-logd";
+  if (sl > 0) {
+    self[sl] = '\0';
+    if (char* slash = std::strrchr(self, '/')) {
+      *slash = '\0';
+      logd = std::string(self) + "/webmachine-logd";
+    }
+  }
+  // The ceiling, spelled once here so both daemons get the same words.
+  char cap[24];
+  std::snprintf(cap, sizeof cap, "%llu", opts_.log_max_bytes);
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    std::snprintf(err, errlen, "--%s log fork: %s", mode, std::strerror(errno));
+    ::close(sp[0]);
+    ::close(sp[1]);
+    return -1;
+  }
+  if (pid == 0) {
+    ::dup2(sp[0], 0);
+    ::close(sp[0]);
+    ::close(sp[1]);
+    // A null privacy IS the argument list's end - execl stops at the
+    // first null, so the error daemon is exec'd with four words and
+    // the access daemon with five. One call, two shapes, no branch.
+    ::execl(logd.c_str(), "webmachine-logd", mode, path, cap, privacy, (char*)nullptr);
+    std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
+    ::_exit(127);
+  }
+  ::close(sp[0]);
+  // A logd that dies must surface as the write's -EPIPE (a named
+  // refusal), never as a zombie in the process table.
+  ::signal(SIGCHLD, SIG_IGN);
+  return sp[1];
+}
 
 // The listener table, straight out of the registry: registration order
 // IS listener order, and the listener index is what a connection
@@ -211,43 +265,19 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
                    "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
                    "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
     }
-    int sp[2];
-    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
-      std::snprintf(err, errlen, "--log socketpair: %s", std::strerror(errno));
-      return false;
-    }
-    // The daemon lives next to this binary; argv0-relative, resolved
-    // through /proc/self/exe so a PATH-relative start still finds it.
-    char self[4096];
-    const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
-    std::string logd = "webmachine-logd";
-    if (sl > 0) {
-      self[sl] = '\0';
-      if (char* slash = std::strrchr(self, '/')) {
-        *slash = '\0';
-        logd = std::string(self) + "/webmachine-logd";
-      }
-    }
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-      std::snprintf(err, errlen, "--log fork: %s", std::strerror(errno));
-      return false;
-    }
-    if (pid == 0) {
-      ::dup2(sp[0], 0);
-      ::close(sp[0]);
-      ::close(sp[1]);
-      ::execl(logd.c_str(), "webmachine-logd", opts_.log_path,
-              opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", (char*)nullptr);
-      std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
-      ::_exit(127);
-    }
-    ::close(sp[0]);
-    // A logd that dies must surface as the write's -EPIPE (a named
-    // refusal), never as a zombie in the process table.
-    ::signal(SIGCHLD, SIG_IGN);
-    log_fd_ = sp[1];
+    log_fd_ = spawn_logd("access", opts_.log_path,
+                         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", err, errlen);
+    if (log_fd_ < 0) return false;
     cfg.log_fd = log_fd_;
+  }
+  // The second stream, and a second process for it: --error-log. Same
+  // machinery, a different daemon, a different file. It carries no
+  // privacy switch - the daemon spells an error's peer at anon and
+  // that is the whole of its choice (its head says why).
+  if (opts_.error_log_path != nullptr) {
+    err_fd_ = spawn_logd("error", opts_.error_log_path, nullptr, err, errlen);
+    if (err_fd_ < 0) return false;
+    cfg.err_fd = err_fd_;
   }
 
   // ONE Http1 for the whole process: every route of every app built
@@ -278,6 +308,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         opts_.assets_path != nullptr ? &assets_ : nullptr));
   if (opts_.log_path != nullptr) http_->enable_access_log();
+  if (opts_.error_log_path != nullptr) http_->enable_error_log();
 
   ring_.reset(new Ring<Http1>(*http_));
   if (!ring_->init(cfg, err, errlen)) {
