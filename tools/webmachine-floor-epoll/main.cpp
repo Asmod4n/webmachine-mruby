@@ -34,12 +34,14 @@ struct Floor {
   std::vector<Conn> conns;
 
   // The measuring stick's connection table.
+  // .DESIGN.md #floor "The floor binary"
   Conn& conn(int fd) {
     if (static_cast<size_t>(fd) >= conns.size()) conns.resize(static_cast<size_t>(fd) + 1);
     return conns[static_cast<size_t>(fd)];
   }
 
   // The measuring stick: close and forget.
+  // .DESIGN.md #floor "The floor binary"
   void drop(int fd) {
     Conn& c = conns[static_cast<size_t>(fd)];
     c.live = false;
@@ -51,6 +53,7 @@ struct Floor {
   }
 
   // The measuring stick: push `out`; what it refuses waits for EPOLLOUT.
+  // .DESIGN.md #floor "The floor binary"
   void flush(int fd) {
     Conn& c = conns[static_cast<size_t>(fd)];
     while (c.sent < c.out.size()) {
@@ -90,6 +93,7 @@ struct Floor {
   }
 
   // The measuring stick: edge-triggered, read until EAGAIN or the edge is lost.
+  // .DESIGN.md #floor "The floor binary"
   void on_readable(int fd) {
     Conn& c = conn(fd);
     char buf[65536];
@@ -113,6 +117,7 @@ struct Floor {
   }
 
   // The measuring stick: accept4 until EAGAIN.
+  // .DESIGN.md #floor "The floor binary"
   void on_accept() {
     for (;;) {
       const int fd = ::accept4(lfd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -133,6 +138,7 @@ struct Floor {
 
 // The measuring stick, not a product: the same floor protocol on epoll(7).
 // The distance to the ring floor IS what io_uring buys on this hardware.
+// .DESIGN.md #floor "The floor binary"
 int main(int argc, char** argv) {
   const char* unix_path = nullptr;
   int port = 0;

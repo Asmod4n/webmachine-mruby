@@ -53,8 +53,10 @@ struct Target {
   uint16_t status;
 };
 // The graph as data: an edge that continues to a node.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr Target to(Node n) { return {n, 0}; }
 // The graph as data: an edge that halts with a status.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr Target halt(uint16_t s) { return {Node::kCount, s}; }
 
 struct FlowNode {
@@ -202,6 +204,7 @@ inline constexpr size_t kNodeCount = sizeof(kFlow) / sizeof(kFlow[0]);
 static_assert(kNodeCount == static_cast<size_t>(Node::kCount), "one entry per node");
 
 // Proof: the table is indexed by its own ids.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool ids_in_order() {
   for (size_t i = 0; i < kNodeCount; i++) {
     if (kFlow[i].id != static_cast<Node>(i)) return false;
@@ -211,11 +214,13 @@ constexpr bool ids_in_order() {
 static_assert(ids_in_order(), "kFlow order must match Node order");
 
 // Proof: an edge names a real node or a real status.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool edge_valid(const Target& t) {
   if (t.status == 0) return t.node < Node::kCount;
   return t.status >= 100 && t.status <= 599;
 }
 // Proof: every edge of every node.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool edges_valid() {
   for (size_t i = 0; i < kNodeCount; i++) {
     if (!edge_valid(kFlow[i].on_true) || !edge_valid(kFlow[i].on_false)) return false;
@@ -225,6 +230,7 @@ constexpr bool edges_valid() {
 static_assert(edges_valid(), "every edge continues or halts");
 
 // Proof: every path from here halts within the node count - no cycle.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool terminates(Node n, size_t depth) {
   if (depth > kNodeCount) return false;
   const FlowNode& f = kFlow[static_cast<size_t>(n)];
@@ -235,6 +241,7 @@ constexpr bool terminates(Node n, size_t depth) {
 static_assert(terminates(Node::kB13, 0), "the flow is acyclic from B13");
 
 // Proof: reachability, both branches from every node.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr void mark(Node n, bool (&seen)[kNodeCount]) {
   const size_t i = static_cast<size_t>(n);
   if (seen[i]) return;
@@ -244,6 +251,7 @@ constexpr void mark(Node n, bool (&seen)[kNodeCount]) {
   if (f.on_false.status == 0) mark(f.on_false.node, seen);
 }
 // Proof: no dead entry - a dead node would be an untested lie.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool all_reachable() {
   bool seen[kNodeCount] = {};
   mark(Node::kB13, seen);
@@ -286,6 +294,7 @@ struct KonstAnswers {
 
 // RFC 9110: the kRequest nodes - decided from the parsed request alone,
 // never from the VM.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr bool eval_request(Node id, const ReqFacts& r) {
   switch (id) {
     case Node::kB9: return r.has_content_md5;
@@ -319,6 +328,7 @@ constexpr bool eval_request(Node id, const ReqFacts& r) {
 
 // RFC 9110: the graph, run with this request's facts and a resource's
 // konst answers. Zero VM entries.
+// .DESIGN.md #flow-graph "The decision graph"
 constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
   Node n = Node::kB13;
   for (;;) {
@@ -338,6 +348,7 @@ struct Shortcut {
 
 // Does any reachable node read the request? Explores BOTH branches at a
 // kRequest node, since either may be taken.
+// .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
 constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
   if (seen[static_cast<size_t>(n)]) return false;
   seen[static_cast<size_t>(n)] = true;
@@ -350,6 +361,7 @@ constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
 
 // RFC 9110: what the graph would say when it has nothing to decide -
 // from the SAME walk, run once with every header fact false.
+// .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
 constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
   Shortcut s;
   ReqFacts plain_facts;
@@ -362,6 +374,7 @@ constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
 
 // RFC 9110: the one entry point the request path calls. Two integer tests
 // where the graph could not have said anything else.
+// .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
 constexpr uint16_t answer(const ReqFacts& req, const KonstAnswers& k, const Shortcut& s) {
   if (s.always || req.plain) return s.status;
   return walk(req, k);
@@ -371,6 +384,7 @@ namespace detail {
 template <KonstAnswers K, Node N>
 // RFC 9110: the compiled walk's one node, konst vector as a template
 // parameter so the compiler folds it away.
+// .DESIGN.md #flow-bitset "A bitset walk was measured and removed"
 constexpr uint16_t step(const ReqFacts& req) {
   constexpr FlowNode f = kFlow[static_cast<size_t>(N)];
   if constexpr (f.kind != Kind::kRequest) {
@@ -391,11 +405,13 @@ constexpr uint16_t step(const ReqFacts& req) {
 
 template <KonstAnswers K>
 // RFC 9110: the compiled walk, measured against the interpreted one.
+// .DESIGN.md #flow-bitset "A bitset walk was measured and removed"
 constexpr uint16_t walk_compiled(const ReqFacts& req) {
   return detail::step<K, Node::kB13>(req);
 }
 
 // RFC 9110: webmachine-ruby's Resource defaults, folded per method.
+// .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
 constexpr KonstAnswers default_konst(Method m) {
   KonstAnswers k{};
   const auto set = [&](Node n, bool v) { k.ans[static_cast<size_t>(n)] = v; };
@@ -429,12 +445,14 @@ struct KonstSet {
   std::string body = "OK";
   std::string content_type;
   // RFC 9110: a resource that overrides nothing - webmachine-ruby's defaults.
+  // .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
   KonstSet() {
     for (uint8_t m = 0; m < 7; m++) per_method[m] = default_konst(static_cast<Method>(m));
     resolve_shortcuts();
   }
   // RFC 9110: the shortcuts are derived from per_method; whoever changes
   // one must call this.
+  // .DESIGN.md #flow-shortcut "Run only what cannot be predicted"
   void resolve_shortcuts() {
     for (uint8_t m = 0; m < 7; m++) {
       shortcut[m] = shortcut_for(static_cast<Method>(m), per_method[m]);
@@ -508,6 +526,7 @@ class RouteTable {
   enum Kind : uint8_t { kLiteral, kBinding, kSplat };
 
   // route.add: begin a route. abandon() rolls it back whole.
+  // .DESIGN.md #app-routes "The routes"
   void open() {
     pending_first_ = toks_.size();
     pending_blob_ = blob_.size();
@@ -515,6 +534,7 @@ class RouteTable {
     pending_splat_ = false;
   }
   // RFC 9110 4.2.1: a String token is a literal segment.
+  // .DESIGN.md #app-routes "The routes"
   bool literal(const char* p, size_t n) {
     if (n > 0xffffu) return false;
     RouteToken t;
@@ -527,6 +547,7 @@ class RouteTable {
   }
   // RFC 9110 4.2.1: a Symbol token binds one segment; its id rides along
   // so the request object can NAME what a span captured.
+  // .DESIGN.md #app-routes "The routes"
   bool binding(uint32_t sym) {
     if (pending_binds_ >= kMaxRouteBindings) return false;
     pending_binds_++;
@@ -535,6 +556,8 @@ class RouteTable {
   }
 
   // The name of a route's i-th binding, in the order match() captured them.
+  // .DESIGN.md #app-spans
+  //   "What a match captures, and why it captures it at all"
   uint32_t binding_sym(int route, uint8_t i) const {
     const Route& rt = routes_[static_cast<size_t>(route)];
     uint8_t seen = 0;
@@ -547,13 +570,16 @@ class RouteTable {
     return 0;
   }
   // RFC 9110 4.2.1: :* is the tail, and by construction the last token.
+  // .DESIGN.md #app-routes "The routes"
   void splat() {
     pending_splat_ = true;
     toks_.push_back(RouteToken{kSplat, 0, 0});
   }
   // Is the route under construction already splatted?
+  // .DESIGN.md #app-routes "The routes"
   bool pending_splat() const { return pending_splat_; }
   // route.add: the route stands.
+  // .DESIGN.md #app-routes "The routes"
   void commit() {
     Route r;
     r.first = static_cast<uint32_t>(pending_first_);
@@ -561,18 +587,23 @@ class RouteTable {
     routes_.push_back(r);
   }
   // route.add: a route that failed validation leaves NOTHING registered.
+  // .DESIGN.md #app-routes "The routes"
   void abandon() {
     toks_.resize(pending_first_);
     blob_.resize(pending_blob_);
   }
 
   // How many routes this table holds.
+  // .DESIGN.md #app-routes "The routes"
   size_t size() const { return routes_.size(); }
   // Has this app any route of this kind at all?
+  // .DESIGN.md #app-routes "The routes"
   bool empty() const { return routes_.empty(); }
 
   // RFC 9110 4.2.1: the FIRST route that matches wins (registration order).
   // -1 is a miss, and a miss answers 404 before B13.
+  // .DESIGN.md #app-spans
+  //   "What a match captures, and why it captures it at all"
   int match(const char* path, size_t len, RouteSpans& out) const {
     size_t plen = len;
     for (size_t i = 0; i < len; i++) {
@@ -675,6 +706,7 @@ inline constexpr uint8_t kLogNoTrack = 2;
 
 // Combined Log Format: one response as one record. Truncation caps are the
 // wire fields' widths.
+// .DESIGN.md #log-two-processes "Why it is two processes"
 inline void log_access(Logger& lg, const void* peer, size_t plen, const char* method, size_t mlen,
                        const char* target, size_t tlen, uint8_t flags, uint16_t status,
                        size_t body_bytes, const char* ref, size_t rlen, const char* ua,
@@ -719,6 +751,7 @@ inline constexpr uint8_t kErrRecVersion = 1;
 
 // One raise as one record: a FIXED header whose last field is the size of
 // the second send, then that many bytes.
+// .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
 inline void log_error(Logger& lg, const void* peer, size_t plen, const char* klass, size_t klen,
                       const char* target, size_t tlen, uint16_t status, const char* mesg,
                       size_t mlen, const char* trace, size_t blen) {
@@ -746,12 +779,15 @@ inline void log_error(Logger& lg, const void* peer, size_t plen, const char* kla
   if (blen != 0) lg.buf.append(trace, blen);
 }
 
+// One raise as one error record. Defined in resource.cpp - it needs a VM.
+// .DESIGN.md #log-error "What is an error, and what is not"
 void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
                    size_t tlen, uint16_t status);
 }
 
 namespace webmachine::http {
 // RFC 9110 5.1: case-insensitive equality against a lowercase literal.
+// .DESIGN.md #h-field-names "5.1 - field names are case-insensitive"
 constexpr bool tok_eq(const char* s, size_t n, const char* lit, size_t litn) {
   if (n != litn) return false;
   for (size_t i = 0; i < n; i++) {
@@ -763,12 +799,14 @@ constexpr bool tok_eq(const char* s, size_t n, const char* lit, size_t litn) {
 }
 
 // RFC 9110 13.1.1/13.1.2: If-Match / If-None-Match spell "any" as *.
+// .DESIGN.md #h-etag-lists "13.1.1 / 13.1.2 - If-Match and If-None-Match"
 constexpr bool star_value(const char* v, size_t n) {
   if (n == 1 && v[0] == '*') return true;
   return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
 }
 
 // RFC 9110 4.2.1: the query is not part of the path.
+// .DESIGN.md #h-target "4.2.1 - the query is not part of the path"
 inline size_t path_only(const char* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     if (p[i] == '?') return i;
@@ -777,6 +815,7 @@ inline size_t path_only(const char* p, size_t n) {
 }
 
 // RFC 9110 9.1: methods are case-sensitive tokens.
+// .DESIGN.md #flow-graph "The decision graph"
 inline flow::Method parse_method(const char* m, size_t n) {
   switch (n) {
     case 3:
@@ -801,6 +840,7 @@ inline flow::Method parse_method(const char* m, size_t n) {
 
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and EVERY writer goes through here.
+// .DESIGN.md #h-charset "charset, and why only text/*"
 inline std::string with_charset(const std::string& type) {
   if (type.size() < 5 || !tok_eq(type.data(), 5, "text/", 5)) return type;
   if (type.find(';') != std::string::npos) return type;
@@ -808,6 +848,7 @@ inline std::string with_charset(const std::string& type) {
 }
 
 // A literal's length, at compile time.
+// .DESIGN.md #gz-media-types "Which media types are worth compressing"
 constexpr size_t clen(const char* s) {
   size_t n = 0;
   while (s[n] != '\0') n++;
@@ -815,6 +856,7 @@ constexpr size_t clen(const char* s) {
 }
 // RFC 6839 / RFC 9110 8.3: is a body of this type worth compressing?
 // Structural, conservative downward, decided once per resource.
+// .DESIGN.md #gz-media-types "Which media types are worth compressing"
 constexpr bool compressible_media_type(const char* v, size_t n) {
   size_t tn = 0;
   while (tn < n && v[tn] != ';') tn++;
@@ -831,11 +873,13 @@ constexpr bool compressible_media_type(const char* v, size_t n) {
   return false;
 }
 // RFC 6839: the same question, from a std::string.
+// .DESIGN.md #gz-media-types "Which media types are worth compressing"
 inline bool compressible_media_type(const std::string& v) {
   return compressible_media_type(v.data(), v.size());
 }
 namespace proof {
 // The table's own self-check, at compile time.
+// .DESIGN.md #gz-media-types "Which media types are worth compressing"
 constexpr bool ct(const char* s) { return compressible_media_type(s, clen(s)); }
 static_assert(ct("text/html"), "text/* compresses");
 static_assert(ct("text/html; charset=utf-8"), "a parameter does not hide the media type");
@@ -852,6 +896,7 @@ static_assert(!ct(""), "empty is no, not a crash");
 }
 
 // RFC 9110 15: the status names.
+// .DESIGN.md #h-status "15 - status codes"
 constexpr const char* reason(uint16_t status) {
   switch (status) {
     case 200: return "OK";
@@ -890,6 +935,7 @@ inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
+// .DESIGN.md #h-date "5.6.7 - the Date field"
 inline void date_core(char out[kDateLen], const struct tm& tm) {
   static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -919,6 +965,7 @@ inline void date_core(char out[kDateLen], const struct tm& tm) {
 }
 
 // RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
+// .DESIGN.md #h-content-length "8.6 - Content-Length"
 inline size_t spell_content_length(char (&buf)[40], size_t len) {
   std::memcpy(buf, "Content-Length: ", 16);
   size_t at = 16;
@@ -939,6 +986,7 @@ inline size_t spell_content_length(char (&buf)[40], size_t len) {
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
+// .DESIGN.md #h-content-length "8.6 - Content-Length"
 inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
   if (n == 0) return ClStatus::kBad;
   size_t v = 0;
@@ -976,6 +1024,7 @@ struct ReqValues {
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // RFC 9110 14.1.2: ONE range over the SELECTED representation's octets.
 // kNone means act as if the field were absent (14.2 permits it).
+// .DESIGN.md #h-range "14 - Range"
 inline RangeParse parse_range(const char* v, size_t n, size_t complete, size_t* first,
                               size_t* last) {
   if (n < 7 || !tok_eq(v, 6, "bytes=", 6)) return RangeParse::kNone;
@@ -1019,6 +1068,7 @@ inline RangeParse parse_range(const char* v, size_t n, size_t complete, size_t* 
 }
 
 // RFC 9110 14.2: ONE validator, compared strongly; a date reads as no match.
+// .DESIGN.md #h-range "14 - Range"
 inline bool if_range_matches(const char* v, size_t n, const char* tag, size_t taglen) {
   size_t i = 0;
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
@@ -1029,6 +1079,7 @@ inline bool if_range_matches(const char* v, size_t n, const char* tag, size_t ta
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
 // never reaches this parse.
+// .DESIGN.md #h-accept-encoding "12.5.3 - Accept-Encoding, asked one question"
 inline bool gzip_acceptable(const char* v, size_t n) {
   bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
   size_t i = 0;
@@ -1075,6 +1126,7 @@ inline bool gzip_acceptable(const char* v, size_t n) {
 }
 
 // RFC 9110 13.1.1/13.1.2: strong for If-Match, weak for If-None-Match.
+// .DESIGN.md #h-etag-lists "13.1.1 / 13.1.2 - If-Match and If-None-Match"
 inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t taglen,
                             bool weak) {
   size_t i = 0;
@@ -1107,6 +1159,7 @@ inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t tag
 template <class OnWire>
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // every name this layer does not own falls through to the framer's functor.
+// .DESIGN.md #cpp "The C++ this tree allows"
 inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
                           flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
   switch (nlen) {
@@ -1265,6 +1318,7 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 
 // RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
 // identity - compression never fails a response.
+// .DESIGN.md #gz-dynamic "Dynamic bodies: level 1, raw deflate"
 inline bool compress(const std::string& in, std::string& out) {
   if (in.size() >= std::numeric_limits<uint32_t>::max()) return false;
   z_stream strm{};
@@ -1307,8 +1361,12 @@ class MimeDb {
  public:
   bool load(const char* configured, char* err, size_t errlen);
   // RFC 9110 8.3: which media-type database answered.
+  // .DESIGN.md #zip-mime
+  //   "Media types come off the machine, not out of this source"
   const std::string& source() const { return source_; }
   // RFC 9110 8.3: how many extensions it holds.
+  // .DESIGN.md #zip-mime
+  //   "Media types come off the machine, not out of this source"
   size_t size() const { return by_ext_.size(); }
   const char* type_of(const std::string& name) const;
 
@@ -1375,6 +1433,7 @@ class Assets {
 
   // RFC 1952: the wire body's length - deflate plus 18 framing bytes, or
   // the stored bytes alone.
+  // .DESIGN.md #zip-method "The ZIP method encodes the delivery decision"
   static size_t wire_len(const AssetEntry& e) {
     return e.deflated ? e.comp_size + 18 : e.comp_size;
   }
@@ -1382,6 +1441,7 @@ class Assets {
   static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
 
   // ZIP (APPNOTE): the entry table, for the h2 setup half.
+  // .DESIGN.md #zip "ZIP (APPNOTE) - the asset archive"
   std::vector<AssetEntry>& entries() { return entries_; }
 
  private:
@@ -1450,6 +1510,7 @@ inline constexpr uint32_t kH2MaxConcurrentStreams = 256;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
 
 // RFC 9113 4.1: the 9-byte frame header; stream id at offset 5.
+// .DESIGN.md #h2-frames "6 - frames"
 inline void h2_put_frame_header(unsigned char* p, uint32_t len, uint8_t type,
                                 uint8_t flags, uint32_t stream) {
   p[0] = static_cast<unsigned char>(len >> 16);
@@ -1464,6 +1525,7 @@ inline void h2_put_frame_header(unsigned char* p, uint32_t len, uint8_t type,
 }
 
 // RFC 9113 4.1: the 4 stream-id bytes of an already-emitted frame header.
+// .DESIGN.md #h2-cache "The per-connection response cache"
 inline void h2_patch_stream_id(unsigned char* p, uint32_t stream) {
   p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
   p[6] = static_cast<unsigned char>(stream >> 16);
@@ -1472,17 +1534,21 @@ inline void h2_patch_stream_id(unsigned char* p, uint32_t stream) {
 }
 
 // RFC 9113 4.1: a frame's length field.
+// .DESIGN.md #h2-frames "6 - frames"
 inline uint32_t h2_u24(const unsigned char* p) {
   return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2];
 }
 // RFC 9113 4.1: a 32-bit field, network order.
+// .DESIGN.md #h2-frames "6 - frames"
 inline uint32_t h2_u32(const unsigned char* p) {
   return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
          (static_cast<uint32_t>(p[2]) << 8) | p[3];
 }
 // RFC 9113 4.1: a stream id, reserved bit masked off.
+// .DESIGN.md #h2-frames "6 - frames"
 inline uint32_t h2_u31(const unsigned char* p) { return h2_u32(p) & 0x7fffffff; }
 // RFC 9113 6.5.1: a settings identifier.
+// .DESIGN.md #h2-frames "6 - frames"
 inline uint16_t h2_u16(const unsigned char* p) {
   return static_cast<uint16_t>((p[0] << 8) | p[1]);
 }
@@ -1543,11 +1609,13 @@ struct H2State {
   } head_cache;
 
   // RFC 9113: allocated only when the preface was spoken, never before.
+  // .DESIGN.md #h2-eager-objects "Eager per-connection objects, measured"
   H2State() {
     lshpack_enc_init(&enc);
     lshpack_dec_init(&dec);
   }
   // RFC 9113: the decoder dies with the connection.
+  // .DESIGN.md #h2-eager-objects "Eager per-connection objects, measured"
   ~H2State() {
     lshpack_enc_cleanup(&enc);
     lshpack_dec_cleanup(&dec);
@@ -1556,12 +1624,16 @@ struct H2State {
   H2State& operator=(const H2State&) = delete;
 
   // RFC 9113 5.1: a stream in the table is open or half-closed.
+  // .DESIGN.md #h2-streams
+  //   "5.1 - the stream state machine, out of two numbers"
   H2Stream* find(uint32_t id) {
     for (H2Stream& st : streams)
       if (st.id == id) return &st;
     return nullptr;
   }
   // RFC 9113 5.1: a stream the connection must remember.
+  // .DESIGN.md #h2-streams
+  //   "5.1 - the stream state machine, out of two numbers"
   H2Stream& open(uint32_t id) {
     if (H2Stream* st = find(id)) return *st;
     streams.emplace_back();
@@ -1571,6 +1643,8 @@ struct H2State {
     return st;
   }
   // RFC 9113 5.1: the number stays, the entry goes.
+  // .DESIGN.md #h2-streams
+  //   "5.1 - the stream state machine, out of two numbers"
   void close_stream(uint32_t id) {
     for (size_t i = 0; i < streams.size(); i++) {
       if (streams[i].id == id) {
@@ -1599,9 +1673,11 @@ struct Params {
 
 namespace detail {
 // RFC 9110 5.6.3: optional whitespace.
+// .DESIGN.md #h-token "5.6.2 - token"
 constexpr bool is_ows(char c) { return c == ' ' || c == '\t'; }
 
 // RFC 9110 5.6.2: token, which is what 7692 4.2's params are.
+// .DESIGN.md #h-token "5.6.2 - token"
 constexpr bool is_tchar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
          c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' ||
@@ -1610,6 +1686,7 @@ constexpr bool is_tchar(char c) {
 }
 
 // RFC 9110 5.1: case-insensitive equality for an extension parameter name.
+// .DESIGN.md #h-field-names "5.1 - field names are case-insensitive"
 inline bool ci_eq(const char* s, size_t n, const char* lit, size_t litn) {
   if (n != litn) return false;
   for (size_t i = 0; i < n; i++) {
@@ -1621,6 +1698,8 @@ inline bool ci_eq(const char* s, size_t n, const char* lit, size_t litn) {
 }
 
 // RFC 7692 7.1.2.1: 8..15, no leading zeroes - "08" is a refusal.
+// .DESIGN.md #pmd-window-bits
+//   "7.1.2.1 / 7.1.2.2 - the window parameters, and zlib's 8-bit bug"
 inline bool window_bits(const char* v, size_t n, uint8_t& out) {
   if (n == 0 || n > 2) return false;
   if (v[0] == '0') return false;
@@ -1637,6 +1716,7 @@ inline bool window_bits(const char* v, size_t n, uint8_t& out) {
 
 // RFC 7692 4.2/5.1: one Sec-WebSocket-Extensions value, answered with the
 // FIRST offer this endpoint can accept. Declining is never an error.
+// .DESIGN.md #pmd-negotiate "5.1 - declining is never an error"
 inline bool negotiate(const char* v, size_t len, Params& out, std::string& answer) {
   size_t i = 0;
   while (i < len) {
@@ -1741,19 +1821,25 @@ class Codec {
   Codec(const Codec&) = delete;
   Codec& operator=(const Codec&) = delete;
   // RFC 7692: both zlib streams die with the connection.
+  // .DESIGN.md #pmd-cost
+  //   "What it costs, in bytes, because that is what decides the default"
   ~Codec() {
     if (inf_on_) inflateEnd(&inf_);
     if (def_on_) deflateEnd(&def_);
   }
 
   // RFC 7692 7.1.2: what the negotiation settled on.
+  // .DESIGN.md #pmd-window-bits
+  //   "7.1.2.1 / 7.1.2.2 - the window parameters, and zlib's 8-bit bug"
   void configure(const Params& p) { p_ = p; }
   // RFC 7692: what this connection agreed to.
+  // .DESIGN.md #pmd-negotiate "5.1 - declining is never an error"
   const Params& params() const { return p_; }
 
   template <class Sink>
   // RFC 7692 7.2.2: payload bytes as they arrive; the SINK is the only
   // bound, which is the whole decompression-bomb answer.
+  // .DESIGN.md #ws-max-message "max_message"
   int inflate_some(const char* in, size_t n, Sink&& sink) {
     if (!inflate_ready()) return -1;
     inf_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in));
@@ -1763,6 +1849,7 @@ class Codec {
 
   template <class Sink>
   // RFC 7692 7.2.2 step 1: the four bytes the sender stripped go back on.
+  // .DESIGN.md #pmd-four-bytes "7.2.1 / 7.2.2 - the four bytes"
   int inflate_finish(Sink&& sink) {
     if (!inflate_ready()) return -1;
     inf_.next_in = const_cast<Bytef*>(kSyncTail);
@@ -1778,6 +1865,8 @@ class Codec {
 
   // RFC 7692 7.2.1: one whole message; false means send it uncompressed,
   // and then never compress on this connection again.
+  // .DESIGN.md #pmd-fallback
+  //   "The decision is made before compressing, never after"
   bool compress(const char* in, size_t n, std::string& out) {
     if (n > std::numeric_limits<uInt>::max()) return false;
     if (def_broken_ || !deflate_ready()) return false;
@@ -1810,6 +1899,8 @@ class Codec {
  private:
   // RFC 7692 7.1.2.1: never below 9 bits - no zlib can produce an 8-bit
   // window, and larger than promised is always safe.
+  // .DESIGN.md #pmd-window-bits
+  //   "7.1.2.1 / 7.1.2.2 - the window parameters, and zlib's 8-bit bug"
   bool inflate_ready() {
     if (inf_on_) return true;
     const int bits = p_.client_max_window_bits < kMinRawWindowBits
@@ -1821,6 +1912,8 @@ class Codec {
   }
 
   // RFC 7692 7.1.2.1: raw deflate, the negotiated window, Z_BEST_SPEED.
+  // .DESIGN.md #pmd-window-bits
+  //   "7.1.2.1 / 7.1.2.2 - the window parameters, and zlib's 8-bit bug"
   bool deflate_ready() {
     if (def_on_) return true;
     if (deflateInit2(&def_, Z_BEST_SPEED, Z_DEFLATED,
@@ -1835,6 +1928,7 @@ class Codec {
 
   template <class Sink>
   // RFC 7692 7.2.2: inflate until zlib stops producing.
+  // .DESIGN.md #pmd-four-bytes "7.2.1 / 7.2.2 - the four bytes"
   int pump(Sink& sink) {
     unsigned char buf[8192];
     for (;;) {
@@ -2012,6 +2106,7 @@ class Http1 {
     uint8_t peer_len = 0;
     // The Ring resets this; `li` is the App's key to "whose connection is
     // this", `pkt` says whether that listener is TCP.
+    // .DESIGN.md #ring-app "The App contract"
     void reset(uint8_t li, bool pkt) {
       peer_len = 0;
       carry.clear();
@@ -2030,6 +2125,7 @@ class Http1 {
       xfer_end = 0;
     }
     // The websocket, the stream and the h2 state die with the connection.
+    // .DESIGN.md #ring-app "The App contract"
     ~Conn() {
       h2_free(h2);
       ws_free(ws);
@@ -2058,6 +2154,7 @@ class Http1 {
   bool pending(const Conn& st) const;
 
   // WHATWG HTML: does this connection carry a source with its own schedule?
+  // .DESIGN.md #sse "WHATWG HTML - server-sent events"
   bool timed(const Conn& st) const { return st.sse != nullptr; }
 
   struct Plan {
@@ -2078,12 +2175,16 @@ class Http1 {
   bool more(Conn& st, std::string& sink, Plan& plan);
 
   // The App FORMATS lines; the Ring flushes the buffer. Opt-in.
+  // .DESIGN.md #log-two-processes "Why it is two processes"
   Logger* access_log() { return &alog_; }
   // The only way an access line is ever built.
+  // .DESIGN.md #log-rule "The one rule"
   void enable_access_log() { alog_.enabled = true; }
   // The second stream: its own socket, its own daemon, its own file.
+  // .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
   Logger* error_log() { return &elog_; }
   // The only way an error record is ever built.
+  // .DESIGN.md #log-error "What is an error, and what is not"
   void enable_error_log() { elog_.enabled = true; }
 
  private:
@@ -2128,6 +2229,7 @@ class Http1 {
                         const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
                         std::string& sink);
   // RFC 9112 9.3: one prebuilt status in its three connection spellings.
+  // .DESIGN.md #h1-connection "9.3 - Connection semantics"
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];
   }
@@ -2305,6 +2407,7 @@ inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 
 // A ring's SQ/CQ pages are locked memory; failing to raise is not a
 // reason not to start.
+// .DESIGN.md #ring-sq "The SQ ring: halve until one takes"
 inline void raise_memlock() {
   struct rlimit rl {};
   if (::getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return;
@@ -2315,6 +2418,7 @@ inline void raise_memlock() {
 
 // The one arithmetic with two consumers: the server sizes itself with it,
 // webmachine-tune.sh only prints it.
+// .DESIGN.md #ring-capacity "The connection table is derived, never guessed"
 inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0) {
   const uint64_t taken = static_cast<uint64_t>(kFdReserve) + kMaxListeners + extra_slots;
   if (nofile_limit <= taken) return 0;
@@ -2334,6 +2438,7 @@ static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
 
 // Soft to hard, ceiling fs.nr_open, ONCE at init - the capacity falls out
 // of whatever finally stands.
+// .DESIGN.md #ring-capacity "The connection table is derived, never guessed"
 inline uint64_t raise_nofile() {
   struct rlimit rl {};
   if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
@@ -2392,6 +2497,7 @@ enum : uint8_t {
 };
 
 // user_data: kind(8) | gen(16) | idx(32); gen guards a reused slot.
+// .DESIGN.md #ring-tag "user_data"
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
 }
@@ -2399,6 +2505,7 @@ inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
 enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
 
 // Which stage of the setup chain a failing CQE belongs to.
+// .DESIGN.md #ring-setup "Everything goes through the ring"
 inline const char* stage_name(uint32_t st) {
   switch (st) {
     case kStSocket: return "socket";
@@ -2415,12 +2522,14 @@ template <class App>
 class Ring {
  public:
   // One reactor, one io backend, no globals.
+  // .DESIGN.md #ring "The reactor"
   explicit Ring(App& app) : app_(app) {}
   Ring(const Ring&) = delete;
   Ring& operator=(const Ring&) = delete;
 
   // The ring exit is what ends surviving connections, and what unlinks a
   // unix listener's path.
+  // .DESIGN.md #ring-drain "Drain, then forget"
   ~Ring() {
     if (ring_up_) {
       close_listeners();
@@ -2441,6 +2550,7 @@ class Ring {
 
   // Everything through the ring: unlink, socket_direct, setsockopt, bind,
   // listen as ONE linked chain, every CQE checked, a failure naming its stage.
+  // .DESIGN.md #ring-setup "Everything goes through the ring"
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
     int rc = 0;
     raise_memlock();
@@ -2549,12 +2659,14 @@ class Ring {
   }
 
   // Loop until the stop signal's completion lands.
+  // .DESIGN.md #ring "The reactor"
   void run() {
     while (!stop_) tick(nullptr);
   }
 
   // ONE bounded step: the budget bounds the WORK, not just the wait, and
   // the batch is interrupted BETWEEN completions.
+  // .DESIGN.md #ring-tick "The bounded tick"
   bool tick(const struct __kernel_timespec* budget) {
     if (budget == nullptr) return step(nullptr, false);
     struct timespec now {};
@@ -2565,13 +2677,16 @@ class Ring {
   }
 
   // Readable exactly when this ring has completions to hand over.
+  // .DESIGN.md #ring-tick "The bounded tick"
   int fd() const { return ring_up_ ? ring_.ring_fd : -1; }
 
   // Did the stop signal's completion land?
+  // .DESIGN.md #ring-drain "Drain, then forget"
   bool stopped() const { return stop_; }
 
   // Drain, then FORGET: the listeners close at once, and what survives the
   // grace is ended by the destructor's ring exit.
+  // .DESIGN.md #ring-drain "Drain, then forget"
   void drain(int64_t grace_ns) {
     if (draining_) return;
     draining_ = true;
@@ -2583,17 +2698,21 @@ class Ring {
   }
 
   // How many accepted connections are still being served.
+  // .DESIGN.md #ring-drain "Drain, then forget"
   uint32_t live_conns() const { return live_; }
 
   // The derived capacity - what this machine actually allows.
+  // .DESIGN.md #ring-capacity "The connection table is derived, never guessed"
   uint32_t max_conns() const { return max_conns_; }
 
   // A TCP listener's REAL port, including the kernel's pick for port 0.
+  // .DESIGN.md #ring-setup "Everything goes through the ring"
   int bound_port(uint32_t li) const { return li < kMaxListeners ? bound_port_[li] : 0; }
 
  private:
   // One listener as one linked chain; a stale unix path is unlinked OUTSIDE
   // the chain, because ENOENT there is normal.
+  // .DESIGN.md #ring-setup "Everything goes through the ring"
   bool setup_listener(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
     const uint32_t slot = listener_base_ + li;
     const bool is_unix = spec.unix_path != nullptr;
@@ -2771,6 +2890,7 @@ class Ring {
 
   // Never null: a full SQ is submitted and retried once, and a ring that
   // still cannot take an SQE is a broken ring.
+  // .DESIGN.md #ring-sq "The SQ ring: halve until one takes"
   struct io_uring_sqe* sqe() {
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (WM_LIKELY(s != nullptr)) return s;
@@ -2788,12 +2908,14 @@ class Ring {
   static constexpr uint32_t kStreamError = 1;
 
   // Both streams, once per round, riding the submit that was happening anyway.
+  // .DESIGN.md #log-rule "The one rule"
   void flush_log() {
     flush_access();
     flush_error();
   }
 
   // The whole batch in ONE send: small, constant-shaped records.
+  // .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
   void flush_access() {
     if (log_fd_ < 0) return;
     Logger* al = app_.access_log();
@@ -2803,6 +2925,7 @@ class Ring {
     arm_access_write(al);
   }
   // send, not write: a dead daemon must be -EPIPE in a CQE, not a SIGPIPE.
+  // .DESIGN.md #log-rule "The one rule"
   void arm_access_write(Logger* al) {
     struct io_uring_sqe* s = sqe();
     io_uring_prep_send(s, log_fd_, al->flight.data(), al->flight.size(), MSG_NOSIGNAL);
@@ -2810,6 +2933,7 @@ class Ring {
   }
 
   // ONE record per flush, as two linked sends.
+  // .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
   void flush_error() {
     if (err_fd_ < 0) return;
     Logger* el = app_.error_log();
@@ -2825,6 +2949,7 @@ class Ring {
   }
   // MSG_WAITALL is what makes the LINK safe: IO_LINK breaks only on FAILURE,
   // and a short send is not one.
+  // .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
   void arm_error_write(Logger* el) {
     struct io_uring_sqe* s = sqe();
     io_uring_prep_send(s, err_fd_, el->flight.data(), sizeof(ErrRec),
@@ -2838,6 +2963,7 @@ class Ring {
   }
 
   // THE RULE: every line formatted lands. A refused write is a named refusal.
+  // .DESIGN.md #log-rule "The one rule"
   void on_log(uint16_t gen, uint32_t stream, struct io_uring_cqe* cqe) {
     Logger* lg = stream == kStreamError ? app_.error_log() : app_.access_log();
     if (lg == nullptr) return;
@@ -2865,6 +2991,7 @@ class Ring {
 
   // The listeners leave through the ring; idempotent, or a later accept
   // would lose its slot.
+  // .DESIGN.md #ring-drain "Drain, then forget"
   void close_listeners() {
     if (listeners_closed_) return;
     listeners_closed_ = true;
@@ -2878,6 +3005,7 @@ class Ring {
   }
 
   // Multishot accept_direct against the fixed listener slot.
+  // .DESIGN.md #ring-setup "Everything goes through the ring"
   void arm_accept(uint32_t li) {
     if (draining_) return;
     struct io_uring_sqe* s = sqe();
@@ -2887,6 +3015,8 @@ class Ring {
   }
 
   // Multishot recv out of the buffer ring, bundles where the kernel offers them.
+  // .DESIGN.md #ring-bundles
+  //   "WM_BUNDLE - the one env knob left, and only ever narrowing"
   void arm_recv(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
@@ -2898,6 +3028,7 @@ class Ring {
   }
 
   // One sendmsg for the whole round; MSG_MORE when the App still owes bytes.
+  // .DESIGN.md #deliver-msg-more "MSG_MORE, not TCP_CORK"
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
@@ -2930,6 +3061,7 @@ class Ring {
 
   // shutdown BEFORE close_direct, linked: close_direct alone leaves the
   // socket open and the peer never sees FIN.
+  // .DESIGN.md #ring-close "Closing a connection"
   void begin_close(uint32_t idx) {
     Conn& c = conns_[idx];
     if (!c.live) return;
@@ -2950,6 +3082,7 @@ class Ring {
   }
 
   // A new peer: its slot, its clocks, and the setsockopts TCP wants.
+  // .DESIGN.md #ring-setup "Everything goes through the ring"
   void on_accept(uint32_t li, struct io_uring_cqe* cqe) {
     if (!(cqe->flags & IORING_CQE_F_MORE)) arm_accept(li);
     if (cqe->res < 0) return;
@@ -2983,6 +3116,8 @@ class Ring {
 
   // Wire bytes to the App. Kernel-supplied ids and lengths are checked
   // before use; ENOBUFS re-arms rather than hanging the connection.
+  // .DESIGN.md #ring-bundles
+  //   "WM_BUNDLE - the one env knob left, and only ever narrowing"
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
@@ -3056,6 +3191,7 @@ class Ring {
   }
 
   // What the kernel took, and what is still owed.
+  // .DESIGN.md #deliver-byte-cap "The byte cap, from the socket's own books"
   void on_send(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
@@ -3097,6 +3233,7 @@ class Ring {
   }
 
   // SO_MEMINFO through the ring - SOL_SOCKET is the only level it allows.
+  // .DESIGN.md #deliver-byte-cap "The byte cap, from the socket's own books"
   void arm_meminfo(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
@@ -3108,6 +3245,8 @@ class Ring {
 
   // SOCKET_URING_OP_GETSOCKNAME, peer form, spelled by hand against
   // cmd_net.c's contract. Only when someone is logging.
+  // .DESIGN.md #log-privacy
+  //   "Privacy is a level of privacy, not a level of address"
   void arm_peer(uint32_t idx) {
     Conn& c = conns_[idx];
     c.peer_slen = static_cast<int>(sizeof(c.peer_ss));
@@ -3122,6 +3261,8 @@ class Ring {
   }
   // The peer's RAW sockaddr for the log; "-" and one line if the kernel
   // has no such cmd.
+  // .DESIGN.md #log-privacy
+  //   "Privacy is a level of privacy, not a level of address"
   void on_peer(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
@@ -3143,6 +3284,7 @@ class Ring {
   }
 
   // The round's byte bound, from the socket's own books.
+  // .DESIGN.md #deliver-byte-cap "The byte cap, from the socket's own books"
   void on_meminfo(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
@@ -3163,6 +3305,7 @@ class Ring {
 
   // RESOLVE a plan into iovecs: a sink segment carried an OFFSET, and this
   // is the first moment the address is final.
+  // .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
   void take_plan(Conn& c, const typename App::Plan& req) {
     if (!c.iov) {
       c.iov = std::make_unique<struct iovec[]>(Conn::kIov);
@@ -3195,6 +3338,7 @@ class Ring {
 
   // The delivery continuation: a fully drained sink is the one signal every
   // protocol produces. Backlog first, then the App.
+  // .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
   void continue_conn(uint32_t idx) {
     Conn& c = conns_[idx];
     if (!c.out.empty()) {
@@ -3222,6 +3366,7 @@ class Ring {
     c.deadline_s = now_s_ + to_idle_;
   }
   // One completion, by tag.
+  // .DESIGN.md #ring-tag "user_data"
   void handle(struct io_uring_cqe* cqe) {
     const uint64_t ud = io_uring_cqe_get_data64(cqe);
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
@@ -3249,6 +3394,7 @@ class Ring {
 
   // One wait and one batch; bounded to a second even without a budget, so
   // the timeout clocks get a wake when nothing completes.
+  // .DESIGN.md #ring-clocks "The timeout clocks"
   bool step(const int64_t* deadline, bool bounded) {
     if (replenish_ != 0) {
       io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));

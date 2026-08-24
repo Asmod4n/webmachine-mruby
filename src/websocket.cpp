@@ -10,11 +10,13 @@ namespace webmachine {
 namespace ws {
 namespace {
 // RFC 6455 4.2.2 step 5.4: the 20-byte digest as 28 base64 characters.
+// .DESIGN.md #ws-sha1 "SHA-1 and base64 come from libraries"
 void b64_20(const unsigned char in[20], char out[28]) {
   simdutf::binary_to_base64(reinterpret_cast<const char*>(in), 20, out);
 }
 
 // RFC 6455 4.2.1 step 5: the alphabet a Sec-WebSocket-Key is spelled in.
+// .DESIGN.md #ws-handshake "4.2 - the handshake"
 bool b64_char(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' ||
          c == '/' || c == '=';
@@ -22,6 +24,7 @@ bool b64_char(char c) {
 }
 
 // RFC 6455 4.2.2 step 5.4: key + GUID, SHA-1, base64.
+// .DESIGN.md #ws-handshake "4.2 - the handshake"
 bool accept_key(const char* key, size_t key_len, char out[28]) {
   if (key_len != 24) return false;
   for (size_t i = 0; i < 24; i++) {
@@ -103,6 +106,7 @@ Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& 
 }
 
 // RFC 6455 5.1/5.2: a server frame header (never masked, RSV1 per 7692 6).
+// .DESIGN.md #ws-frames "5.1 / 5.2 / 5.3 - frames"
 size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]) {
   head[0] = static_cast<char>((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | (opcode & 0x0f));
   if (payload_len < 126) {

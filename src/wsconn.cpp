@@ -61,6 +61,7 @@ struct WsConn {
 
 namespace {
 // RFC 6455 7.4.1: a Symbol answer by name. This IS the vocabulary.
+// .DESIGN.md #ws-resource "The resource surface"
 bool symbol_code(mrb_sym s, uint16_t& code) {
   if (s == MRB_SYM(close) || s == MRB_SYM(normal)) code = ws::kCloseNormal;
   else if (s == MRB_SYM(going_away)) code = ws::kCloseGoingAway;
@@ -75,6 +76,7 @@ bool symbol_code(mrb_sym s, uint16_t& code) {
 }
 
 // RFC 6455 5.1: one frame into the sink - header here, payload where it lies.
+// .DESIGN.md #ws-frames "5.1 / 5.2 / 5.3 - frames"
 void emit(std::string& sink, uint8_t opcode, const char* p, size_t n, bool rsv1 = false) {
   char head[10];
   const size_t hn = ws::build_header(opcode, true, rsv1, n, head);
@@ -83,6 +85,8 @@ void emit(std::string& sink, uint8_t opcode, const char* p, size_t n, bool rsv1 
 }
 
 // RFC 6455 5.6 / RFC 7692 6: a DATA message, compressed where negotiated.
+// .DESIGN.md #pmd-no-floor
+//   "Every data message is compressed, with no size floor"
 void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size_t n) {
   if (c->codec != nullptr) {
     static std::string scratch;
@@ -95,6 +99,7 @@ void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size
 }
 
 // RFC 6455 5.5.1: the close handshake's own half, sent at most once.
+// .DESIGN.md #ws-close "The close handshake, and the bug it cost"
 void emit_close(WsConn* c, std::string& sink, uint16_t code, const char* reason,
                 size_t reason_len) {
   if (c->sent_close) return;
@@ -105,6 +110,7 @@ void emit_close(WsConn* c, std::string& sink, uint16_t code, const char* reason,
 }
 
 // RFC 3629: can these 1-3 bytes still BECOME a valid sequence?
+// .DESIGN.md #ws-utf8 "8.1 - UTF-8 in text messages"
 bool valid_prefix(const unsigned char* p, size_t n) {
   if (n == 0) return true;
   const unsigned char b0 = p[0];
@@ -129,6 +135,7 @@ bool valid_prefix(const unsigned char* p, size_t n) {
 }
 
 // RFC 6455 8.1: UTF-8 over a message that is still arriving.
+// .DESIGN.md #ws-utf8 "8.1 - UTF-8 in text messages"
 bool utf8_ok(WsConn* c, bool final) {
   if (!c->res->validate_text) return true;
   const char* p = RSTRING_PTR(c->msg);
@@ -151,6 +158,7 @@ bool utf8_ok(WsConn* c, bool final) {
 }
 
 // RFC 6455 5.4: the message under construction is released.
+// .DESIGN.md #ws-reader "The reader: one copy, and no payload buffer at all"
 void drop_msg(WsConn* c) {
   if (!c->msg_live) return;
   mrb_gc_unregister(c->res->mrb, c->msg);
@@ -162,6 +170,7 @@ void drop_msg(WsConn* c) {
 }
 
 // RFC 6455 7.1.5: on_close, once, however the connection ended.
+// .DESIGN.md #ws-close-codes "7.1.5 / 7.1.6 / 7.4.1 - close codes"
 void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_len) {
   if (c->closed_reported || !c->res->have_close) return;
   c->closed_reported = true;
@@ -180,6 +189,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
 }
 
 // RFC 6455 5.5.1: this side found something wrong - close with the code.
+// .DESIGN.md #ws-close "The close handshake, and the bug it cost"
 bool fail(WsConn* c, std::string& sink, uint16_t code) {
   emit_close(c, sink, code, nullptr, 0);
   report_close(c, code, nullptr, 0);
@@ -188,6 +198,7 @@ bool fail(WsConn* c, std::string& sink, uint16_t code) {
 }
 
 // RFC 6455 5.6: a complete message to the resource, and act on the answer.
+// .DESIGN.md #ws-resource "The resource surface"
 bool deliver(WsConn* c, std::string& sink) {
   const WsResource* r = c->res;
   mrb_state* mrb = r->mrb;
@@ -236,6 +247,7 @@ bool deliver(WsConn* c, std::string& sink) {
 }
 
 // RFC 6455 5.5/5.6: a frame whose payload is now complete.
+// .DESIGN.md #ws-control "5.5 - control frames"
 bool finish_frame(WsConn* c, std::string& sink) {
   switch (c->opcode) {
     case ws::kPing:
@@ -285,6 +297,7 @@ bool finish_frame(WsConn* c, std::string& sink) {
 }
 
 // RFC 6455 5.2/5.5, RFC 7692 6: everything the header must satisfy.
+// .DESIGN.md #ws-frames "5.1 / 5.2 / 5.3 - frames"
 bool begin_frame(WsConn* c, std::string& sink) {
   const unsigned char b0 = c->hbuf[0];
   const unsigned char b1 = c->hbuf[1];
@@ -355,6 +368,7 @@ bool begin_frame(WsConn* c, std::string& sink) {
 }
 
 // RFC 6455 5.2: how many header bytes the next decision needs.
+// .DESIGN.md #ws-frames "5.1 / 5.2 / 5.3 - frames"
 uint8_t header_need(const WsConn* c) {
   if (c->hlen < 2) return 2;
   const uint8_t len7 = static_cast<uint8_t>(c->hbuf[1] & 0x7f);
@@ -370,6 +384,7 @@ struct FeedCall {
 };
 
 // RFC 6455 5.3: the reader - unmasked straight into the mruby String.
+// .DESIGN.md #ws-reader "The reader: one copy, and no payload buffer at all"
 mrb_value feed_body(mrb_state* mrb, void* ud) {
   FeedCall* f = static_cast<FeedCall*>(ud);
   WsConn* c = f->c;
@@ -456,14 +471,17 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
 }
 
 // RFC 6455: Webmachine::WebsocketResource, the class a route may name.
+// .DESIGN.md #ws-resource "The resource surface"
 void ws_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_class_under_id(mrb, wm, MRB_SYM(WebsocketResource), mrb->object_class);
 }
 
 // RFC 6455: one route's folded resource.
+// .DESIGN.md #ws-resource "The resource surface"
 WsResource* ws_resource_new() { return new WsResource(); }
 
 // RFC 6455: unique_ptr's deleter across the TU boundary.
+// .DESIGN.md #cpp "The C++ this tree allows"
 void ws_resource_free(WsResource* r) {
   if (r == nullptr) return;
   delete r;
@@ -471,6 +489,7 @@ void ws_resource_free(WsResource* r) {
 
 // RFC 6455: fold a resource class for a websocket route, once, at
 // route.websocket - arities read, konst answers asked, the class frozen.
+// .DESIGN.md #ws-resource "The resource surface"
 bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen) {
   if (!mrb_class_p(klass)) {
     std::snprintf(err, errlen,
@@ -583,6 +602,7 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
 
 // RFC 6455 4.2.2: build THIS peer's resource; its initialize is the
 // connect hook and its return value is the answer.
+// .DESIGN.md #ws-session "Per-connection Ruby state is the point"
 WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status) {
   proto.clear();
   status = 0;
@@ -626,9 +646,13 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t
 }
 
 // RFC 7692: does this route accept the extension at all?
+// .DESIGN.md #pmd-cost
+//   "What it costs, in bytes, because that is what decides the default"
 bool ws_wants_deflate(const WsResource* r) { return r->want_deflate; }
 
 // RFC 7692: settle what the handshake negotiated; the codec is lazy.
+// .DESIGN.md #pmd-cost
+//   "What it costs, in bytes, because that is what decides the default"
 void ws_open(WsConn* c, const wsdeflate::Params& deflate) {
   if (deflate.on) {
     c->codec = new wsdeflate::Codec();
@@ -637,6 +661,7 @@ void ws_open(WsConn* c, const wsdeflate::Params& deflate) {
 }
 
 // RFC 6455 7.4.1: 1006 where no close frame was ever seen.
+// .DESIGN.md #ws-close-codes "7.1.5 / 7.1.6 / 7.4.1 - close codes"
 void ws_free(WsConn* c) {
   if (c == nullptr) return;
   report_close(c, 1006, nullptr, 0);
@@ -650,6 +675,7 @@ void ws_free(WsConn* c) {
 }
 
 // RFC 6455 5.3: wire bytes for an upgraded connection, under protection.
+// .DESIGN.md #ws-reader "The reader: one copy, and no payload buffer at all"
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink) {
   if (len == 0) return true;
   mrb_state* mrb = c->res->mrb;

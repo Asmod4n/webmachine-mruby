@@ -9,6 +9,7 @@ constexpr size_t kH2FragBudget = kMaxHead * 2;
 constexpr size_t kH2MergeBody = 1024;
 
 // RFC 9113 4.1: a 32-bit field, network order.
+// .DESIGN.md #h2-frames "6 - frames"
 void put_u32(unsigned char* p, uint32_t v) {
   p[0] = static_cast<unsigned char>(v >> 24);
   p[1] = static_cast<unsigned char>(v >> 16);
@@ -17,6 +18,7 @@ void put_u32(unsigned char* p, uint32_t v) {
 }
 
 // RFC 9113 6: one control frame, header + fixed payload, into the sink.
+// .DESIGN.md #h2-frames "6 - frames"
 void emit_control(std::string& sink, uint8_t type, uint8_t flags, uint32_t stream,
                   const unsigned char* payload, uint32_t len) {
   unsigned char fh[kH2FrameHeaderLen];
@@ -26,6 +28,7 @@ void emit_control(std::string& sink, uint8_t type, uint8_t flags, uint32_t strea
 }
 
 // RFC 7541 5.2: a string length, 7-bit prefix, H bit 0 - no Huffman out.
+// .DESIGN.md #rfc7541 "RFC 7541 - HPACK"
 void hp_len(std::string& out, size_t n) {
   if (n < 127) {
     out.push_back(static_cast<char>(n));
@@ -41,6 +44,7 @@ void hp_len(std::string& out, size_t n) {
 }
 
 // RFC 7541 6.2.2: literal without indexing, indexed name, 4-bit prefix.
+// .DESIGN.md #rfc7541 "RFC 7541 - HPACK"
 void hp_name_idx(std::string& out, uint32_t idx) {
   if (idx < 15) {
     out.push_back(static_cast<char>(idx));
@@ -57,10 +61,13 @@ void hp_name_idx(std::string& out, uint32_t idx) {
 }
 
 // RFC 9113: the connection's state dies with the connection.
+// .DESIGN.md #h2-eager-objects "Eager per-connection objects, measured"
 void h2_free(H2State* h2) { delete h2; }
 
 // RFC 9110 4.2.1: a PARKED request's view - its bytes are the stream's own
 // copy, so the spans have to be captured again.
+// .DESIGN.md #mruby-request
+//   "The request object is lazy, and there is one of it"
 const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqView& out) {
   if (target.empty()) return nullptr;
   const AppSlot& slot = apps_[st0.listener];
@@ -75,6 +82,7 @@ const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqVi
 }
 
 // RFC 7541: lane 2 - one per-request field through ls-hpack's encoder.
+// .DESIGN.md #h2-lanes "Sending: two lanes"
 bool Http1::h2_enc_field(void* encp, unsigned char*& ep, unsigned char* eend,
                          const char* name, size_t nlen, const char* val, size_t vlen) {
   struct lshpack_enc* enc = static_cast<struct lshpack_enc*>(encp);
@@ -93,6 +101,7 @@ bool Http1::h2_enc_field(void* encp, unsigned char*& ep, unsigned char* eend,
 }
 
 // RFC 7541 6.1/6.2.2: lane 1 - a precomputed block of what never changes.
+// .DESIGN.md #h2-lanes "Sending: two lanes"
 void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                            const std::string* allow) {
   b.bytes.clear();
@@ -130,6 +139,8 @@ void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype
 }
 
 // RFC 9113 3.4: this side's half of the preface, a SETTINGS frame.
+// .DESIGN.md #h2-preface
+//   "3.4 - the connection preface, and the one h2spec case this tree fails"
 bool Http1::h2_begin(Conn& st, std::string& sink) {
   st.h2 = new H2State();
   unsigned char payload[6];
@@ -141,6 +152,7 @@ bool Http1::h2_begin(Conn& st, std::string& sink) {
 }
 
 // RFC 9113 6.8: GOAWAY, and the connection is done.
+// .DESIGN.md #h2-frames "6 - frames"
 bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
   H2State& h2 = *st.h2;
   st.carry.clear();
@@ -155,9 +167,11 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
 }
 
 // RFC 9113 5.1: an id above everything ever accepted is IDLE.
+// .DESIGN.md #h2-streams "5.1 - the stream state machine, out of two numbers"
 static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_opened; }
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
+// .DESIGN.md #h2-streams "5.1 - the stream state machine, out of two numbers"
 void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink) {
   unsigned char payload[4];
   put_u32(payload, code);
@@ -167,6 +181,7 @@ void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sin
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
 // either answer or park the facts on the stream.
+// .DESIGN.md #h2-pseudo-fields "8.2 / 8.2.2 / 8.3 - the pseudo-fields"
 bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::string& sink) {
   H2State& h2 = *st0.h2;
 
@@ -395,6 +410,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
 }
 
 // RFC 7541 Appendix A: never-indexed blocks per asset entry, at setup.
+// .DESIGN.md #rfc7541 "RFC 7541 - HPACK"
 void Http1::h2_build_asset_blocks(AssetEntry& e) {
   std::string& b = e.h2_200;
   b.clear();
@@ -436,6 +452,7 @@ void Http1::h2_build_asset_blocks(AssetEntry& e) {
 }
 
 // RFC 7541: the asset tier's shared 405 and 406 blocks.
+// .DESIGN.md #rfc7541 "RFC 7541 - HPACK"
 void Http1::h2_build_asset_shared() {
   static const std::string kAllow = "GET, HEAD";
   h2_build_block(h2_asset405_, 405, nullptr, &kAllow);
@@ -447,6 +464,7 @@ void Http1::h2_build_asset_shared() {
 
 // RFC 9113 6.1/6.9: the asset answer - body as segments over the mapping,
 // window-refused remainder parked.
+// .DESIGN.md #h2-frames "6 - frames"
 bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
                             uint16_t status, bool head_only, size_t win_off, size_t win_end,
                             std::string& sink) {
@@ -538,6 +556,7 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 
 // RFC 9113 6.2/6.9.1: HEADERS and DATA for one stream; DATA beyond
 // min(connection, stream) is PARKED, never written.
+// .DESIGN.md #h2-cache "The per-connection response cache"
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
                       bool head_only, uint16_t route, const ReqView* req,
                       std::string& sink) {
@@ -686,6 +705,7 @@ struct RoundOut {
 
   // RFC 9113: claim the sink bytes this round started with - a plan naming
   // any sink range describes the sink COMPLETELY.
+  // .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
   void prime() {
     if (plan == nullptr || plan->nseg != 0 || sink.empty()) return;
     plan->seg[plan->nseg++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
@@ -694,6 +714,7 @@ struct RoundOut {
 
   // RFC 9113 6.1: room for one more DATA frame - its header plus up to three
   // payload spans. Every gate sits BEFORE the frame, never inside one.
+  // .DESIGN.md #deliver-capacity "The round's only bound is segment capacity"
   bool room_for_frame() const {
     if (plan == nullptr) return emitted < kDeliverChunk;
     if (plan->nseg + 4 > Http1::Plan::kSegs) return false;
@@ -701,6 +722,8 @@ struct RoundOut {
   }
 
   // RFC 9113: framing bytes, coalesced into the open sink run.
+  // .DESIGN.md #deliver-page-line
+  //   "Small pieces are copied, large spans stay pointers"
   void bytes(const char* p, size_t n) {
     if (plan == nullptr) {
       sink.append(p, n);
@@ -726,6 +749,8 @@ struct RoundOut {
 
   // RFC 1952: asset payload as POINTERS into the mapping; small pieces are
   // copied instead (one page is the measured line).
+  // .DESIGN.md #deliver-page-line
+  //   "Small pieces are copied, large spans stay pointers"
   void span(const AssetEntry& e, size_t off, size_t n) {
     if (plan == nullptr) {
       Assets::copy_wire(e, off, n, sink);
@@ -750,6 +775,7 @@ struct RoundOut {
 
 #define WM_H2_LOG_DEFINED
 // RFC 9113 8.3: the method column, from the enum - the wire bytes are gone.
+// .DESIGN.md #log-h2 "What the h2 log cannot say"
 static const char* alog_method(flow::Method m, size_t* n) {
   switch (m) {
     case flow::Method::kGet: *n = 3; return "GET";
@@ -763,6 +789,7 @@ static const char* alog_method(flow::Method m, size_t* n) {
 }
 
 // RFC 9113: one answer, one access line, written where :path still lives.
+// .DESIGN.md #log-h2 "What the h2 log cannot say"
 void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen) {
   if (!alog_.enabled) return;
   size_t mn = 0;
@@ -774,6 +801,7 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
 
 // RFC 9113 6.9: one round of parked streams, as segments; the cursor keeps
 // the cut fair between them.
+// .DESIGN.md #h2-drain-cursor "The drain cursor"
 void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
   RoundOut out{sink, plan};
@@ -845,6 +873,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
 }
 
 // Does this connection still owe bytes? Asked before a send, for MSG_MORE.
+// .DESIGN.md #deliver-msg-more "MSG_MORE, not TCP_CORK"
 bool Http1::pending(const Conn& st) const {
   if (st.h2 != nullptr) {
     for (const H2Stream& s : st.h2->streams) {
@@ -856,6 +885,7 @@ bool Http1::pending(const Conn& st) const {
 }
 
 // The continuation both protocols share: the sink has fully drained.
+// .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
 bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
@@ -890,6 +920,7 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
 
 // RFC 9113 4/6: the frame loop. A header block owns the connection until
 // END_HEADERS (6.10).
+// .DESIGN.md #h2-frames "6 - frames"
 bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
   const bool in_place = st0.carry.empty();

@@ -82,6 +82,24 @@ Needs Linux ≥ 6.11 with liburing (the `portable` target does not),
 plus zlib and OpenSSL headers. `rake test` runs the unit tests, the
 bintests and a smoke of both shipped binaries.
 
+## Why it is shaped this way
+
+The source carries one line above each function - which RFC it serves -
+and then points at the section of [`.DESIGN.md`](.DESIGN.md) that holds
+the reasoning:
+
+```cpp
+// RFC 9113 6.9.1: DATA beyond min(connection, stream) is PARKED.
+// .DESIGN.md #h2-cache "The per-connection response cache"
+```
+
+Path, anchor and heading, because no single one of them works in every
+editor; `.DESIGN.md`'s own "Following a link from the source" says what
+does what, and where it was measured.
+
+Every measurement this tree acted on is in that file with its harness
+line, including the ones that buried an idea.
+
 ## Licence
 
 Apache-2.0.

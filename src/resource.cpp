@@ -25,6 +25,8 @@ using flow::Node;
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
 // mruby: a setup raise becomes a named refusal, printed by the VM itself.
+// .DESIGN.md #mruby-protect
+//   "Setup calls run under protection, request calls do not"
 void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
   std::snprintf(err, errlen, "%s (exception below)", what);
   mrb_print_error(mrb);
@@ -32,6 +34,7 @@ void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
 }
 
 // mruby: unwrap MRB_PROC_ALIAS once, at fold, instead of at every call.
+// .DESIGN.md #mruby-resolve "One resolution, one call path"
 mrb_method_t resolve_alias(mrb_method_t m) {
   if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) return m;
   const struct RProc* p = MRB_METHOD_PROC(m);
@@ -49,6 +52,7 @@ struct Resolved {
 };
 
 // mruby: where does this symbol answer, and may we enter its proc directly?
+// .DESIGN.md #mruby-resolve "One resolution, one call path"
 Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
   Resolved r;
   struct RClass* owner = c;
@@ -59,6 +63,7 @@ Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
 }
 
 // mruby: is this a runtime callback? A direct look into the method table.
+// .DESIGN.md #mruby-two-kinds "Two kinds of method, by declaration"
 bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
   return resolve(mrb, mrb_class_ptr(klass), sym).defined;
 }
@@ -71,6 +76,8 @@ struct SetupCall {
 };
 
 // mruby: the yield body a setup call runs under mrb_protect_error.
+// .DESIGN.md #mruby-protect
+//   "Setup calls run under protection, request calls do not"
 mrb_value setup_call_body(mrb_state* mrb, void* ud) {
   const SetupCall* c = static_cast<const SetupCall*>(ud);
   mrb_callinfo* ci = mrb->c->ci;
@@ -83,6 +90,8 @@ mrb_value setup_call_body(mrb_state* mrb, void* ud) {
 }
 
 // mruby: invoke a resolved method at SETUP time; a raise stays pending.
+// .DESIGN.md #mruby-protect
+//   "Setup calls run under protection, request calls do not"
 mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_value self,
                         struct RClass* c) {
   if (!r.fast) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
@@ -98,6 +107,7 @@ mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_valu
 }
 
 // RFC 9110: one konst flow callback, asked once on the class.
+// .DESIGN.md #mruby-two-kinds "Two kinds of method, by declaration"
 bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool defv, bool* out,
          char* err, size_t errlen) {
   const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
@@ -115,6 +125,8 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
 }
 
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens.
+// .DESIGN.md #mruby-refusals
+//   "What a resource may not do yet, and says so by name"
 bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
                  char* err, size_t errlen) {
   const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
@@ -209,6 +221,7 @@ const NamedSym kKonstOnly[] = {
 };
 
 // RFC 9110: THE runtime tier - the whole flow inside one VM frame.
+// .DESIGN.md #mruby-run-frame "The run frame is the memory model"
 mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
   const Resource& res = *static_cast<const Resource*>(mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0)));
   res.live = mrb_obj_new(mrb, res.klass, 0, nullptr);
@@ -263,6 +276,7 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
 
 // RFC 9110: fold one resource class - every konst callback asked once,
 // every dynamic callback resolved, the class frozen.
+// .DESIGN.md #mruby-lifetime "Resource lifetime: one request"
 bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
   out = Resource{};
@@ -434,6 +448,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 }
 
 // RFC 9110: decision + render for one request; a raise leaves 500 pending.
+// .DESIGN.md #mruby-run-frame "The run frame is the memory model"
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
                       std::string* body, bool* have_body) {
   request_bind(req);
@@ -453,6 +468,7 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const Re
 }
 
 // RFC 9110 15.6.1: the pending exception's message, lent for the 500 body.
+// .DESIGN.md #mruby-exception "With an exception pending, no funcall"
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len) {
   if (res.mrb->exc == nullptr) return false;
   struct RException* e = reinterpret_cast<struct RException*>(res.mrb->exc);
@@ -465,6 +481,7 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
 }
 
 // mruby: one raise as one error-log record - class, message, backtrace.
+// .DESIGN.md #log-error "What is an error, and what is not"
 void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
                    size_t tlen, uint16_t status) {
   if (mrb->exc == nullptr) return;
@@ -498,6 +515,7 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, co
 
 extern "C" {
 // mruby: the gem's Ruby surface - the base classes and the loop's three doors.
+// .DESIGN.md #app "The application surface"
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
   struct RClass* err =
@@ -513,5 +531,6 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
 }
 
 // mruby: nothing outlives the VM here.
+// .DESIGN.md #mruby "mruby: the VM as a guest"
 void mrb_webmachine_mruby_gem_final(mrb_state*) {}
 }

@@ -14,6 +14,7 @@
 namespace webmachine {
 namespace {
 // RFC 9110 5.6.7: the archive's mtime as Last-Modified; 0 serves none.
+// .DESIGN.md #zip-mtime "The archive's mtime"
 bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
   if (t <= 0) return false;
   struct tm norm;
@@ -23,6 +24,7 @@ bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
 }
 
 // RFC 9110 8.8.3: the CRC-32 an ETag is spelled from.
+// .DESIGN.md #h-etag "8.8.3.3 - ETag"
 void spell_hex8(char* out, uint32_t v) {
   static const char kHex[] = "0123456789abcdef";
   for (int i = 7; i >= 0; i--) {
@@ -32,6 +34,7 @@ void spell_hex8(char* out, uint32_t v) {
 }
 
 // RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
+// .DESIGN.md #h1-connection "9.3 - Connection semantics"
 void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
                 const std::string& fields) {
   r.bytes.clear();
@@ -44,6 +47,7 @@ void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
 }
 
 // RFC 9112 9.3: the same head in all three connection spellings.
+// .DESIGN.md #h1-connection "9.3 - Connection semantics"
 void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::string& fields) {
   build_head(v[Assets::kPlain], status_line, Assets::kConn[Assets::kPlain], fields);
   build_head(v[Assets::kKeep], status_line, Assets::kConn[Assets::kKeep], fields);
@@ -52,12 +56,14 @@ void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::
 }
 
 // The mapping is what serves, and it serves until the process ends.
+// .DESIGN.md #zip "ZIP (APPNOTE) - the asset archive"
 Assets::~Assets() {
   if (map_ != nullptr) ::munmap(const_cast<char*>(map_), map_len_);
 }
 
 // ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
 // parses; this reads only the 30-byte Local Header, to skip it.
+// .DESIGN.md #zip-miniz "The archive is parsed by miniz, not by this tree"
 bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen) {
   const int fd = ::open(zip_path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
@@ -91,6 +97,7 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
   struct Ender {
     mz_zip_archive* z;
     // miniz's reader is a setup tool and ends with this scope.
+    // .DESIGN.md #zip-miniz "The archive is parsed by miniz, not by this tree"
     ~Ender() { mz_zip_reader_end(z); }
   } ender{&za};
 
@@ -205,6 +212,7 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
 }
 
 // RFC 9110 4.2.1: the target names a table row, byte for byte, or nothing.
+// .DESIGN.md #zip-traversal "Path traversal is structurally impossible"
 AssetEntry* Assets::find(const char* path, size_t len) {
   if (len == 0 || path[0] != '/') return nullptr;
   path++;
@@ -233,6 +241,8 @@ AssetEntry* Assets::find(const char* path, size_t len) {
 
 // RFC 9110: the asset tier's whole decision, in the graph's own order -
 // 405/501, 406 (12.5.3+15.5.7), 412 (13.1.1), 304 (13.1.2), else 200.
+// .DESIGN.md #zip-verdict
+//   "The asset tier's whole decision, in the graph's own order"
 uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
                          const http::ReqValues& vals) const {
   switch (m) {
@@ -263,6 +273,7 @@ uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFac
 
 // RFC 9110 5.6.7: the date, patched lazily - an entry nobody asks for
 // is never patched.
+// .DESIGN.md #h-date "5.6.7 - the Date field"
 void Assets::patch_date(AssetEntry::Resp& r, const char* date, time_t sec) {
   if (r.sec == sec) return;
   std::memcpy(r.bytes.data() + r.date_off, date, http::kDateLen);
@@ -270,6 +281,8 @@ void Assets::patch_date(AssetEntry::Resp& r, const char* date, time_t sec) {
 }
 
 // RFC 9112: the header section for a verdict this tier owns. Never body bytes.
+// .DESIGN.md #zip-verdict
+//   "The asset tier's whole decision, in the graph's own order"
 void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date,
                          time_t sec, std::string& sink) {
   AssetEntry::Resp* r;
@@ -287,6 +300,7 @@ namespace {
 }
 
 // RFC 9110 14.4/15.3.7: the satisfied range and the complete length.
+// .DESIGN.md #h-range "14 - Range"
 void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
                              const char* date, std::string& sink) {
   sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
@@ -305,6 +319,7 @@ void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_
 }
 
 // RFC 9110 15.5.17: the unsatisfied form names the complete length.
+// .DESIGN.md #h-range "14 - Range"
 void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
                              std::string& sink) {
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
@@ -317,6 +332,7 @@ void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
 
 // RFC 1952: [off, off+n) of the wire body as POINTERS - gzip header,
 // the deflate stream where it lies in the mapping, the trailer.
+// .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
 unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov) {
   struct Seg {
     const char* p;
@@ -349,6 +365,7 @@ unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iove
 }
 
 // RFC 1952: the same window, copied, for the paths that must own their bytes.
+// .DESIGN.md #deliver "Delivery: a source hands over a plan, not a byte"
 void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {
   struct Seg {
     const char* p;

@@ -11,6 +11,7 @@ namespace webmachine {
 namespace {
 // RFC 9110 7.6.1: Connection is a token LIST - a substring match would
 // accept "not-close".
+// .DESIGN.md #h-connection-list "7.6.1 / 7.8 - Connection is a token list"
 bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
   size_t i = 0;
   while (i < n) {
@@ -27,6 +28,7 @@ using http::kDatePlaceholder;
 }
 
 // RFC 9112 9.3: one status prebuilt in all three connection spellings.
+// .DESIGN.md #h1-connection "9.3 - Connection semantics"
 void Http1::build_variants(Variants& v, uint16_t status, const char* extra, const char* body,
                            const char* date) {
   const auto build = [&](Resp& r, const char* conn) {
@@ -47,6 +49,7 @@ void Http1::build_variants(Variants& v, uint16_t status, const char* extra, cons
 }
 
 // RFC 9110 15: one status into the shared store, date offset kept.
+// .DESIGN.md #h-status "15 - status codes"
 void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   Variants v;
   build_variants(v, status, extra, body, kDatePlaceholder);
@@ -55,6 +58,7 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
 }
 
 // RFC 9110 5.6.7: the 29 date bytes, once a second, in place.
+// .DESIGN.md #h-date "5.6.7 - the Date field"
 void Http1::patch_date(Variants& v, const char* core) {
   std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
   std::memcpy(v.keep.bytes.data() + v.keep.date_off, core, kDateLen);
@@ -63,6 +67,7 @@ void Http1::patch_date(Variants& v, const char* core) {
 
 // RFC 9110: ONE route's whole voice - its 200 in every shape, its Allow
 // (10.2.1), its negotiated type (8.3), its gzip decision, its h2 blocks.
+// .DESIGN.md #app-bundles "One writer, N apps"
 void Http1::build_bundle(Bundle& b, const Resource* res) {
   b.res = res;
   b.konst = res->konst;
@@ -157,6 +162,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
 }
 
 // One app, one listener - the shape everything but a multi-app file has.
+// .DESIGN.md #app-bundles "One writer, N apps"
 Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
              Assets* assets)
     : assets_(assets) {
@@ -165,11 +171,13 @@ Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t n
 }
 
 // Every response every route of every app can speak, built once.
+// .DESIGN.md #app-bundles "One writer, N apps"
 Http1::Http1(const AppInput* apps, size_t napps, Assets* assets) : assets_(assets) {
   build(apps, napps);
 }
 
 // RFC 9110 15: the status supply, the bundles and the asset blocks, at setup.
+// .DESIGN.md #app-bundles "One writer, N apps"
 void Http1::build(const AppInput* apps, size_t napps) {
   store_.reserve(32);
   bool have[600] = {};
@@ -237,6 +245,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
 }
 
 // RFC 9110 5.6.7: the wall-clock second changed - patch every prebuilt date.
+// .DESIGN.md #h-date "5.6.7 - the Date field"
 void Http1::on_tick() {
   const time_t now = ::time(nullptr);
   if (now == sec_) return;
@@ -261,6 +270,7 @@ void Http1::on_tick() {
 }
 
 // RFC 9110 8.6: prefix + hand-spelled Content-Length + (unless HEAD) the body.
+// .DESIGN.md #h-content-length "8.6 - Content-Length"
 void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                      bool head_only) {
   sink.append(prefix.bytes);
@@ -271,6 +281,7 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
 
 // RFC 9110 12.5.3/12.5.5: identity or gzip for a dynamic 200, and the Vary
 // that says the resource varies either way.
+// .DESIGN.md #h-vary "12.5.5 - Vary"
 void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
                              const http::ReqValues& vals, const Resp& prefix_id,
                              const Resp& prefix_gz, bool head_only, std::string& sink) {
@@ -290,6 +301,7 @@ void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
+// .DESIGN.md #h1-framer "The framer's own shapes"
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
   if (alog_.enabled) {
     log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
@@ -304,6 +316,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
+// .DESIGN.md #h1-framer "The framer's own shapes"
 bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
@@ -712,6 +725,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 }
 
 // RFC 6455 4.2.2: the handshake's answer, 101 or the refusal the route earned.
+// .DESIGN.md #ws-handshake "4.2 - the handshake"
 bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path,
                        size_t path_len, const RouteSpans& spans, const char* key,
                        size_t key_len, const void* hdrs, size_t nhdr, const char* rest,
@@ -769,6 +783,7 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
 
 // WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111
 // 5.2.2.5 no-store, and this connection never reads another head.
+// .DESIGN.md #sse-framing "HTTP/1.1 only, refused by name elsewhere"
 bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
                       size_t method_len, const char* path, size_t path_len,
                       const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
