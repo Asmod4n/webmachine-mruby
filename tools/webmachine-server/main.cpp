@@ -105,8 +105,9 @@ int main(int argc, char** argv) {
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
   const char* error_log_path = nullptr;
-  // -1 = nothing typed, so the config file may still speak. 0 is a
-  // real answer ("no ceiling"), which is why this is not just 0.
+  // -1 = nothing typed, so the config file may still speak and, after
+  // it, the 500 MB default. 0 is a real answer ("no ceiling"), which
+  // is why this is not just 0.
   long long log_max_bytes = -1;
   const char* config_path = nullptr;
   int cli_port = 0;
@@ -161,8 +162,8 @@ int main(int argc, char** argv) {
                    "  app with `mrbc -g` for frames that name a file and a line; without it\n"
                    "  the trace is one (unknown):0 and no build can recover it.\n"
                    "  --log-max-bytes is a hard ceiling on EACH log file: at the cap the\n"
-                   "  oldest lines are dropped and the newest kept, in place. 0 (the\n"
-                   "  default) means no ceiling and the operator watches the disk.\n"
+                   "  oldest lines are dropped and the newest kept, in place. The default\n"
+                   "  is 500 MB; 0 means no ceiling and the operator watches the disk.\n"
                    "  --pidfile writes this process's pid and removes the file on the way out.\n",
                    argv[0]);
       return 2;
@@ -263,7 +264,9 @@ int main(int argc, char** argv) {
   opts.log_path = log_path;
   opts.log_privacy = log_privacy;
   opts.error_log_path = error_log_path;
-  opts.log_max_bytes = log_max_bytes < 0 ? 0ull : static_cast<unsigned long long>(log_max_bytes);
+  // Untyped and unconfigured leaves ServerOptions' own 500 MB
+  // standing; a typed 0 overrides it with "no ceiling".
+  if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
   opts.have_uring = uring_present(mrb);
 
   if (echo) {

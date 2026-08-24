@@ -64,8 +64,9 @@ no field in common. `--log` is the access log and anonymizes addresses
 by default; `--error-log` is what a callback *raised*: class, message
 and backtrace, while the peer still sees only a 500. Compile the app
 with `mrbc -g` for frames that name a file and a line.
-`--log-max-bytes` is a hard ceiling on each file — at the cap the
-oldest lines go, in place, so a busy server cannot fill the disk.
+`--log-max-bytes` is a hard ceiling on each file, 500 MB by default —
+at the cap the oldest lines go, in place, so a busy server cannot fill
+the disk. `0` turns the ceiling off.
 
 ## Building
 

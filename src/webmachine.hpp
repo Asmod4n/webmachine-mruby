@@ -3841,8 +3841,14 @@ struct ServerOptions {
   // daemon drops the oldest lines and keeps the newest, in place. One
   // switch for both files, because it answers one question ("how much
   // disk may logging cost me?") and two numbers would only ask the
-  // operator to do the addition themselves. 0 = no ceiling.
-  unsigned long long log_max_bytes = 0;
+  // operator to do the addition themselves.
+  //
+  // 500 MB is the DEFAULT, not "no ceiling": a server that logs and
+  // was never told a number would otherwise write until the disk is
+  // full, and taking the machine down is a worse failure than losing
+  // the oldest requests. 0 is still a legal answer and means no
+  // ceiling - the operator saying they watch it themselves.
+  unsigned long long log_max_bytes = 500ull * 1024 * 1024;
   int stop_fd = -1;                   // the signalfd the ring polls
   const char* cli_unix = nullptr;     // --unix override
   int cli_port = 0;                   // --port override
