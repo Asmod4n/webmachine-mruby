@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <mruby/array.h>
@@ -14,7 +15,6 @@
 namespace webmachine {
 namespace {
 // TOML: the parser's own words become the refusal's text.
-// .DESIGN.md #cfg "The config file"
 bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   if (mrb->exc == nullptr) return false;
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
@@ -30,7 +30,6 @@ bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
 }
 
 // TOML: one top-level section; an absent one means the CLI or conf speaks.
-// .DESIGN.md #cfg "The config file"
 bool section(mrb_state* mrb, mrb_value doc, const char* name, mrb_value* out, bool* present,
              const char* path, char* err, size_t errlen) {
   *present = false;
@@ -53,7 +52,6 @@ bool section(mrb_state* mrb, mrb_value doc, const char* name, mrb_value* out, bo
 }
 
 // TOML: a present key must have the right type; absent is always fine.
-// .DESIGN.md #cfg "The config file"
 bool take_string(mrb_state* mrb, mrb_value h, const char* where, const char* key,
                  std::string& out, const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -67,7 +65,6 @@ bool take_string(mrb_state* mrb, mrb_value h, const char* where, const char* key
 }
 
 // TOML: a count, in range. Counts are not durations.
-// .DESIGN.md #cfg "The config file"
 bool take_int(mrb_state* mrb, mrb_value h, const char* where, const char* key, mrb_int lo,
               mrb_int hi, mrb_int* out, const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -82,8 +79,6 @@ bool take_int(mrb_state* mrb, mrb_value h, const char* where, const char* key, m
 }
 
 // TOML: a DURATION, through mruby-chrono and nothing else; rounded up.
-// .DESIGN.md #mruby-chrono
-//   "Durations cross the boundary through mruby-chrono, and nothing else"
 bool take_seconds(mrb_state* mrb, mrb_value h, const char* where, const char* key, int* out,
                   const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -105,7 +100,6 @@ bool take_seconds(mrb_state* mrb, mrb_value h, const char* where, const char* ke
 }
 
 // TOML: parse and validate webmachine.toml through the VM the process carries.
-// .DESIGN.md #cfg "The config file"
 bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
   bool ok = false;

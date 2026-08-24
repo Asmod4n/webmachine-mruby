@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <mruby/array.h>
@@ -25,7 +26,6 @@ struct RClass* conf_class_ = nullptr;
 struct RClass* route_class_ = nullptr;
 
 // Exactly one listener spelling per app; a second refuses by name.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
   if (s->form != AppSpec::Form::kNone && s->form != f) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
@@ -37,7 +37,6 @@ void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
 }
 
 // conf.port = N. 0 means the OS picks, read back after the bind.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   mrb_int p;
   mrb_get_args(mrb, "i", &p);
@@ -51,7 +50,6 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
 }
 
 // conf.unix_path = PATH.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
@@ -64,7 +62,6 @@ mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
 }
 
 // conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
@@ -109,7 +106,6 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
 }
 
 // conf.url reads both ways: the ask before the bind, the truth after it.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   if (s->bound) return mrb_str_new(mrb, s->bound_url.data(), s->bound_url.size());
@@ -131,7 +127,6 @@ mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
 }
 
 // The token array crosses the boundary ONCE, here, for all three route kinds.
-// .DESIGN.md #app-routes "The routes"
 void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* who) {
   const mrb_int n = RARRAY_LEN(toks);
   table.open();
@@ -168,7 +163,6 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* 
 }
 
 // route.add / app.add_route: the flow's table. Folds and FREEZES the class.
-// .DESIGN.md #app-routes "The routes"
 mrb_value route_add(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -205,7 +199,6 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
 }
 
 // RFC 6455: route.websocket - the app's own second table.
-// .DESIGN.md #app-routes "The routes"
 mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -225,7 +218,6 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
 }
 
 // WHATWG HTML: route.sse - the app's own third table.
-// .DESIGN.md #app-routes "The routes"
 mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -246,7 +238,6 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
 }
 
 // A signpost: assets are configured with --assets and serve unchanged.
-// .DESIGN.md #app-removed "What was removed, and why"
 mrb_value route_assets(mrb_state* mrb, mrb_value) {
   mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
          "route.assets is reserved - the asset mount is #170/#115. Assets are configured "
@@ -255,7 +246,6 @@ mrb_value route_assets(mrb_state* mrb, mrb_value) {
 }
 
 // Two applications may not name the same listener - compared on the SOCKET.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 void register_app(mrb_state* mrb, AppSpec* s) {
   if (s->form == AppSpec::Form::kNone) {
     s->registered = true;
@@ -282,7 +272,6 @@ void register_app(mrb_state* mrb, AppSpec* s) {
 }
 
 // Webmachine::Application.new { |app| ... } - the app's whole surface.
-// .DESIGN.md #app "The application surface"
 mrb_value app_new(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -301,7 +290,6 @@ mrb_value app_new(mrb_state* mrb, mrb_value self) {
 }
 
 // webmachine-ruby compatibility: configure / config yield the one conf facade.
-// .DESIGN.md #app-facades "The facades are built once"
 mrb_value app_configure(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -311,7 +299,6 @@ mrb_value app_configure(mrb_state* mrb, mrb_value self) {
 }
 
 // webmachine-ruby compatibility: routes yields the one route facade.
-// .DESIGN.md #app-facades "The facades are built once"
 mrb_value app_routes(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -321,7 +308,6 @@ mrb_value app_routes(mrb_state* mrb, mrb_value self) {
 }
 
 // The hook that runs after the bind and before the first accept.
-// .DESIGN.md #app "The application surface"
 mrb_value app_ready(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -336,7 +322,6 @@ mrb_value app_ready(mrb_state* mrb, mrb_value self) {
 }
 
 // Webmachine::Application and its two hidden facade classes.
-// .DESIGN.md #app-facades "The facades are built once"
 void application_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* app = mrb_define_class_under_id(mrb, wm, MRB_SYM(Application),
                                                  mrb->object_class);
@@ -371,7 +356,6 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
 }
 
 // Load the app's bytecode and call its `main`. A .rb is refused by name.
-// .DESIGN.md #app "The application surface"
 bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   const size_t path_len = std::strlen(path);
   if (path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0) {
@@ -418,7 +402,6 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
 }
 
 // Every application `main` registered - registration order IS listener order.
-// .DESIGN.md #app-registry "The registry"
 bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
                         size_t errlen) {
   if (registered_.empty()) {
@@ -438,7 +421,6 @@ bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* 
 }
 
 // No --app: one splat route on webmachine-ruby's unbound resource.
-// .DESIGN.md #app "The application surface"
 AppSpec* app_default() {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
@@ -452,7 +434,6 @@ AppSpec* app_default() {
 }
 
 // What the listener REALLY became; this is what conf.url reads back.
-// .DESIGN.md #app-listener "Exactly one listener spelling per app"
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
   char buf[300];
   if (unix_path != nullptr) std::snprintf(buf, sizeof(buf), "unix://%s", unix_path);
@@ -466,8 +447,6 @@ void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
 }
 
 // Run the ready hook from the TOOL, outside any VM frame - so, funcall.
-// .DESIGN.md #mruby-protect
-//   "Setup calls run under protection, request calls do not"
 bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen) {
   if (!spec.have_ready) return true;
   const int ai = mrb_gc_arena_save(mrb);

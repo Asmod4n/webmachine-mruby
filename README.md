@@ -85,20 +85,15 @@ bintests and a smoke of both shipped binaries.
 ## Why it is shaped this way
 
 The source carries one line above each function - which RFC it serves -
-and then points at the section of [`.DESIGN.md`](.DESIGN.md) that holds
-the reasoning:
+and one line at the top of each file saying where the reasoning is:
 
 ```cpp
-// RFC 9113 6.9.1: DATA beyond min(connection, stream) is PARKED.
-// .DESIGN.md #h2-cache "The per-connection response cache"
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 ```
 
-Path, anchor and heading, because no single one of them works in every
-editor; `.DESIGN.md`'s own "Following a link from the source" says what
-does what, and where it was measured.
-
-Every measurement this tree acted on is in that file with its harness
-line, including the ones that buried an idea.
+[`.DESIGN.md`](.DESIGN.md) is that file. Every measurement this tree
+acted on is in it with its harness line, including the ones that buried
+an idea.
 
 ## Licence
 

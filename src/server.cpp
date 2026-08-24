@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <cstring>
@@ -33,7 +34,6 @@ bool entered_ = false;
 
 // One webmachine-logd over a socketpair, before the ring exists. Two
 // streams take this road; only the mode word differs.
-// .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
 int spawn_logd(const char* mode, const char* path, const char* privacy, char* err, size_t errlen) {
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
@@ -74,7 +74,6 @@ int spawn_logd(const char* mode, const char* path, const char* privacy, char* er
 
 // The listener table, straight out of the registry: registration order
 // IS listener order.
-// .DESIGN.md #app-registry "The registry"
 bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
@@ -116,7 +115,6 @@ bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
 
 // Is io_uring usable on THIS machine? Names the reason when the machine
 // will tell us (kernel.io_uring_disabled).
-// .DESIGN.md #ring-backend "Which backend, and how that is decided"
 bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
 #ifdef SLIPSTREAM_IO
   (void)have_uring;
@@ -191,7 +189,6 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
 
 namespace {
 // Everything between "main returned" and "the first accept", once.
-// .DESIGN.md #app "The application surface"
 bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (built_) return true;
   if (!server_backend_ok(opts_.have_uring, err, errlen)) return false;
@@ -288,7 +285,6 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
 }
 
 // The Ruby doors all need the server standing; a failure to build raises.
-// .DESIGN.md #app "The application surface"
 void ensure(mrb_state* mrb) {
   char err[512] = "";
   if (!build(mrb, err, sizeof(err))) mrb_raisef(mrb, E_RUNTIME_ERROR, "webmachine: %s", err);
@@ -296,7 +292,6 @@ void ensure(mrb_state* mrb) {
 }
 
 // Webmachine.run: block, serve, return when the stop signal lands.
-// .DESIGN.md #ring "The reactor"
 mrb_value wm_run(mrb_state* mrb, mrb_value self) {
   ensure(mrb);
   ring_->run();
@@ -304,7 +299,6 @@ mrb_value wm_run(mrb_state* mrb, mrb_value self) {
 }
 
 // Webmachine.tick(budget): ONE bounded step - the budget bounds the WORK.
-// .DESIGN.md #ring-tick "The bounded tick"
 mrb_value wm_tick(mrb_state* mrb, mrb_value) {
   mrb_value budget = mrb_nil_value();
   mrb_get_args(mrb, "|o", &budget);
@@ -319,7 +313,6 @@ mrb_value wm_tick(mrb_state* mrb, mrb_value) {
 }
 
 // Webmachine.fd: what an embedder polls between ticks.
-// .DESIGN.md #ring-tick "The bounded tick"
 mrb_value wm_fd(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   const int fd = ring_->fd();
@@ -332,7 +325,6 @@ mrb_value wm_fd(mrb_state* mrb, mrb_value) {
 }
 
 // Webmachine.stop(grace): drain, then forget. Process-wide, and named so.
-// .DESIGN.md #ring-drain "Drain, then forget"
 mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
   mrb_value grace = mrb_nil_value();
   mrb_get_args(mrb, "|o", &grace);
@@ -349,7 +341,6 @@ mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
 }
 
 // Did the stop signal's completion land?
-// .DESIGN.md #ring-drain "Drain, then forget"
 mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   return mrb_bool_value(ring_->stopped());
@@ -357,15 +348,12 @@ mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
 }
 
 // What the INVOCATION decides; not reachable from Ruby, deliberately.
-// .DESIGN.md #cfg "The config file"
 void server_options(const ServerOptions& opts) { opts_ = opts; }
 
 // Did `main` serve already through run or tick?
-// .DESIGN.md #app "The application surface"
 bool server_entered() { return entered_; }
 
 // Webmachine.run / .tick / .fd / .stop, next to the Application.
-// .DESIGN.md #ring "The reactor"
 void server_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_module_function_id(mrb, wm, MRB_SYM(run), wm_run, MRB_ARGS_NONE());
   mrb_define_module_function_id(mrb, wm, MRB_SYM(tick), wm_tick, MRB_ARGS_OPT(1));
@@ -377,7 +365,6 @@ void server_init(mrb_state* mrb, struct RClass* wm) {
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.
-// .DESIGN.md #ring "The reactor"
 int server_run(mrb_state* mrb, char* err, size_t errlen) {
   if (!build(mrb, err, errlen)) return 1;
   entered_ = true;

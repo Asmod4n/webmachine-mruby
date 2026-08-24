@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <mruby/array.h>
@@ -32,7 +33,6 @@ struct SseStream {
 namespace {
 // WHATWG HTML: one "field: value" line; a value with newlines is
 // several lines of the same field.
-// .DESIGN.md #sse-resource "The surface"
 void field(std::string& out, const char* name, size_t nlen, const char* v, size_t vlen) {
   size_t i = 0;
   do {
@@ -47,14 +47,12 @@ void field(std::string& out, const char* name, size_t nlen, const char* v, size_
 }
 
 // WHATWG HTML: the same line, from a Ruby value.
-// .DESIGN.md #sse-resource "The surface"
 void field(std::string& out, const char* name, const mrb_value& v) {
   if (!mrb_string_p(v)) return;
   field(out, name, std::strlen(name), RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
 }
 
 // WHATWG HTML: one event out of what on_tick returned.
-// .DESIGN.md #sse-resource "The surface"
 bool spell_event(mrb_state* mrb, const mrb_value& v, std::string& out) {
   if (mrb_string_p(v)) {
     field(out, "data", 4, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
@@ -85,7 +83,6 @@ bool spell_event(mrb_state* mrb, const mrb_value& v, std::string& out) {
 }
 
 // RFC 9112 7.1: one chunk - size in hex, CRLF around the data.
-// .DESIGN.md #sse-framing "HTTP/1.1 only, refused by name elsewhere"
 void chunk(std::string& sink, const std::string& body) {
   if (body.empty()) return;
   char hdr[24];
@@ -96,7 +93,6 @@ void chunk(std::string& sink, const std::string& body) {
 }
 
 // WHATWG HTML: on_close, once, however the stream ended.
-// .DESIGN.md #sse-resource "The surface"
 void report_close(SseStream* s) {
   if (!s->res->have_close) return;
   mrb_state* mrb = s->res->mrb;
@@ -112,21 +108,17 @@ void report_close(SseStream* s) {
 }
 
 // WHATWG HTML: Webmachine::SseResource, the class a route may name.
-// .DESIGN.md #sse-resource "The surface"
 void sse_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_class_under_id(mrb, wm, MRB_SYM(SseResource), mrb->object_class);
 }
 
 // WHATWG HTML: one route's folded resource.
-// .DESIGN.md #sse-resource "The surface"
 SseResource* sse_resource_new() { return new SseResource(); }
 
 // WHATWG HTML: unique_ptr's deleter across the TU boundary.
-// .DESIGN.md #sse-resource "The surface"
 void sse_resource_free(SseResource* r) { delete r; }
 
 // WHATWG HTML: fold a resource class for an SSE route, once, at route.sse.
-// .DESIGN.md #sse-resource "The surface"
 bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size_t errlen) {
   if (!mrb_class_p(klass)) {
     std::snprintf(err, errlen, "route.sse wants a class inheriting Webmachine::SseResource");
@@ -191,7 +183,6 @@ bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size
 }
 
 // WHATWG HTML: build THIS stream's resource; its initialize is the open hook.
-// .DESIGN.md #sse-resource "The surface"
 SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status) {
   status = 0;
   mrb_state* mrb = r->mrb;
@@ -227,8 +218,6 @@ SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status) {
 }
 
 // WHATWG HTML: one second has passed - ask the resource, frame what it said.
-// .DESIGN.md #sse-heartbeat
-//   "The heartbeat is the server's, not the application's"
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
   const SseResource* r = s->res;
   mrb_state* mrb = r->mrb;
@@ -286,7 +275,6 @@ bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
 }
 
 // WHATWG HTML: the stream ends; the resource hears about it once.
-// .DESIGN.md #sse-resource "The surface"
 void sse_free(SseStream* s) {
   if (s == nullptr) return;
   report_close(s);

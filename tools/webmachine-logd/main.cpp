@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -28,7 +29,6 @@ static size_t on_disk = 0;
 
 // The hard ceiling: keep the NEWEST bytes, drop the oldest, in place.
 // The cut lands on a whole ENTRY, never mid-record.
-// .DESIGN.md #log-cap "The size ceiling"
 static void enforce_cap() {
   if (max_bytes == 0 || on_disk <= max_bytes) return;
   const size_t keep = max_bytes / 2;
@@ -78,7 +78,6 @@ static void enforce_cap() {
 }
 
 // One write(2) per filled batch. A write error is a named refusal.
-// .DESIGN.md #log-rule "The one rule"
 static void flush_out() {
   size_t off = 0;
   while (off < out.size()) {
@@ -99,7 +98,6 @@ static void flush_out() {
 static int64_t ts_sec = -1;
 static char ts[40];
 // Combined Log Format: "[23/Aug/2026:14:30:00 +0000]", cached per second.
-// .DESIGN.md #log-two-processes "Why it is two processes"
 static void spell_ts(int64_t sec) {
   if (sec == ts_sec) return;
   ts_sec = sec;
@@ -113,7 +111,6 @@ static void spell_ts(int64_t sec) {
 }
 
 // Escaping happens HERE: an attacker's header must not forge log columns.
-// .DESIGN.md #log-escaping "Escaping happens in the daemon"
 static void esc(const char* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     const unsigned char c = static_cast<unsigned char>(p[i]);
@@ -132,7 +129,6 @@ static void esc(const char* p, size_t n) {
 }
 
 // Combined Log Format: %b, by hand.
-// .DESIGN.md #log-two-processes "Why it is two processes"
 static void spell_num(size_t v) {
   char tmp[20];
   size_t k = 0;
@@ -145,8 +141,6 @@ static Privacy privacy = Privacy::kAnon;
 
 // Combined Log Format %h, at the operator's PRIVACY level; DNT/Sec-GPC
 // can only ever add privacy.
-// .DESIGN.md #log-privacy
-//   "Privacy is a level of privacy, not a level of address"
 static void spell_peer(const char* sa, size_t salen, bool no_track) {
   Privacy level = privacy;
   if (no_track && level == Privacy::kNone) level = Privacy::kAnon;
@@ -177,7 +171,6 @@ static void spell_peer(const char* sa, size_t salen, bool no_track) {
 }
 
 // Combined Log Format: one line per response, batched.
-// .DESIGN.md #log-two-streams "Two streams, two sockets, two code paths"
 static void run_access() {
   std::string in;
   char rbuf[256 * 1024];
@@ -245,7 +238,6 @@ static void run_access() {
 }
 
 // One block per raise: a header line, then one indented line per frame.
-// .DESIGN.md #log-error "What is an error, and what is not"
 static void run_error() {
   std::string in;
   char rbuf[64 * 1024];
@@ -326,7 +318,6 @@ static void run_error() {
 }
 
 // Two modes, two streams: access FILE MAXBYTES [privacy] | error FILE MAXBYTES.
-// .DESIGN.md #log-two-processes "Why it is two processes"
 int main(int argc, char** argv) {
   if (argc < 4) {
     std::fprintf(stderr,

@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <fcntl.h>
@@ -11,8 +12,6 @@
 namespace webmachine {
 namespace {
 // POSIX read(2): a whole file into memory. Setup only.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 bool slurp(const char* path, std::string& out) {
   const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return false;
@@ -32,19 +31,13 @@ bool slurp(const char* path, std::string& out) {
 }
 
 // Apache mime.types / shared-mime-info globs2: field separators.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 bool blank(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
 // RFC 9110 8.3: a media type's extension key is case-insensitive.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 char lower(char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; }
 }
 
 // RFC 9110 8.3: one extension, one media type.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 void MimeDb::take(const char* type, size_t tlen, const char* ext, size_t elen) {
   if (tlen == 0 || elen == 0) return;
   std::string key(elen, '\0');
@@ -53,8 +46,6 @@ void MimeDb::take(const char* type, size_t tlen, const char* ext, size_t elen) {
 }
 
 // Apache mime.types format: "type ext ext ...", '#' comments.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 void MimeDb::parse_types(const char* p, const char* end) {
   while (p < end) {
     const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
@@ -77,8 +68,6 @@ void MimeDb::parse_types(const char* p, const char* end) {
 }
 
 // shared-mime-info globs2 format: "weight:type:*.ext".
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 void MimeDb::parse_globs2(const char* p, const char* end) {
   while (p < end) {
     const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
@@ -106,8 +95,6 @@ void MimeDb::parse_globs2(const char* p, const char* end) {
 }
 
 // RFC 9110 8.3: the machine's own media-type database, first that exists.
-// .DESIGN.md #zip-mime
-//   "Media types come off the machine, not out of this source"
 bool MimeDb::load(const char* configured, char* err, size_t errlen) {
   static const char* const kTypesPaths[] = {
       "/etc/mime.types", "/etc/apache2/mime.types", "/etc/httpd/conf/mime.types",
@@ -166,7 +153,6 @@ bool MimeDb::load(const char* configured, char* err, size_t errlen) {
 }
 
 // RFC 9110 8.3: the type a filename claims; octet-stream when unknown.
-// .DESIGN.md #h-content-type "8.3 - a body announces its Content-Type"
 const char* MimeDb::type_of(const std::string& name) const {
   static const char kOctets[] = "application/octet-stream";
   const size_t dot = name.rfind('.');

@@ -1,3 +1,4 @@
+// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <mruby.h>
 #include <mruby/variable.h>
 #include <sys/signalfd.h>
@@ -19,7 +20,6 @@ struct Echo {
     const void* peer = nullptr;
     uint8_t peer_len = 0;
     // Echo keeps no per-connection state.
-    // .DESIGN.md #floor "The floor binary"
     void reset(uint8_t, bool) {}
   };
   struct Plan {
@@ -35,34 +35,26 @@ struct Echo {
     size_t byte_cap = 0;
   };
   // The byte proof: what arrived goes back, nothing else.
-  // .DESIGN.md #floor "The floor binary"
   bool feed(Conn&, const char* data, size_t len, std::string& sink, Plan*) {
     sink.append(data, len);
     return true;
   }
   // Echo owes nothing between feeds.
-  // .DESIGN.md #floor "The floor binary"
   bool more(Conn&, std::string&, Plan&) { return true; }
   // Echo logs nothing.
-  // .DESIGN.md #floor "The floor binary"
   webmachine::Logger* access_log() { return nullptr; }
   // And nothing in echo can raise.
-  // .DESIGN.md #floor "The floor binary"
   webmachine::Logger* error_log() { return nullptr; }
   // Nothing is ever owed.
-  // .DESIGN.md #floor "The floor binary"
   bool pending(const Conn&) const { return false; }
   // Echo has no source of its own.
-  // .DESIGN.md #floor "The floor binary"
   bool timed(const Conn&) const { return false; }
   // Echo keeps nothing fresh.
-  // .DESIGN.md #floor "The floor binary"
   void on_tick() {}
 };
 
 // Does io_uring exist on THIS machine? Read from URING_AVAILABLE, which
 // mruby-io-uring already answered during mrb_open().
-// .DESIGN.md #ring-backend "Which backend, and how that is decided"
 bool uring_present(mrb_state* mrb) {
   const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
   const mrb_value obj = mrb_obj_value(mrb->object_class);
@@ -71,7 +63,6 @@ bool uring_present(mrb_state* mrb) {
 }
 
 // The echo floor's own loop; the HTTP server's lives in src/server.cpp.
-// .DESIGN.md #floor "The floor binary"
 int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
   char err[512] = "";
   if (!webmachine::server_backend_ok(have_uring, err, sizeof(err))) {
@@ -92,7 +83,6 @@ int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
 }
 
 // The CLI states what this INVOCATION decides; `main` states what is served.
-// .DESIGN.md #cfg "The config file"
 int main(int argc, char** argv) {
   bool echo = false;
   const char* pidfile = nullptr;
