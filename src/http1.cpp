@@ -25,6 +25,30 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
 
 using http::kDateLen;
 using http::kDatePlaceholder;
+
+// RFC 9112 3/9.3: the head ONE bound run spelled for itself - status line,
+// Date, its own field lines, the framing this connection asked for. No
+// prebuilt head can take this shape, so it is spelled byte by byte.
+void spell_head(std::string& sink, uint16_t status, const char* date, const std::string& ctype,
+                const std::string& rhdrs, int minor, bool persist, bool bodyless, size_t len) {
+  char line[4];
+  line[0] = static_cast<char>('0' + status / 100);
+  line[1] = static_cast<char>('0' + (status / 10) % 10);
+  line[2] = static_cast<char>('0' + status % 10);
+  line[3] = '\0';
+  sink.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
+  sink.append("\r\nDate: ").append(date, kDateLen).append("\r\n");
+  if (!ctype.empty()) sink.append("Content-Type: ").append(ctype).append("\r\n");
+  sink.append(rhdrs);
+  if (!persist) sink.append("Connection: close\r\n");
+  else if (minor < 1) sink.append("Connection: keep-alive\r\n");
+  if (bodyless) {
+    sink.append("\r\n");
+    return;
+  }
+  char cl[40];
+  sink.append(cl, http::spell_content_length(cl, len));
+}
 }
 
 // RFC 9112 9.3: one status prebuilt in all three connection spellings.
@@ -299,6 +323,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   sink.append(variants(status).close.bytes);
   st.carry.clear();
   st.body_skip = 0;
+  st.body_need = 0;
   return false;
 }
 
@@ -308,6 +333,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
 bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
+    st.body_need = 0;
     const size_t seen = st.carry.size();
     size_t i = 0;
     while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
@@ -337,6 +363,18 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     data += take;
     len -= take;
     if (len == 0) return true;
+  }
+
+  // RFC 9110 6.4: a bound route's head waits in the carry until the whole
+  // body is here - the run READS the body, so it cannot answer before the
+  // last byte. Nothing is parsed again until body_need is paid off.
+  if (WM_H1_UNLIKELY(st.body_need != 0)) {
+    if (len < st.body_need) {
+      st.body_need -= len;
+      st.carry.append(data, len);
+      return true;
+    }
+    st.body_need = 0;
   }
 
   if (WM_H1_UNLIKELY(st.xfer != nullptr)) {
@@ -628,12 +666,21 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     const std::array<uint16_t, 600>* idx = &index_;
     uint16_t status;
     bool have_body = false;
+    bool answered = false;
     if (WM_H1_UNLIKELY(route < 0)) {
       status = 404;
     } else {
       b = &bundles_[slot.base + static_cast<size_t>(route)];
       idx = &b->index;
       if (b->bound) {
+        const size_t head_len = static_cast<size_t>(ret);
+        if (content_length != 0 && viewlen - off - head_len < content_length) {
+          st.body_need = content_length - (viewlen - off - head_len);
+          const size_t rest = viewlen - off;
+          if (in_place) st.carry.assign(view + off, rest);
+          else st.carry.erase(0, off);
+          return true;
+        }
         ReqView rv;
         rv.target = path;
         rv.target_len = path_len;
@@ -646,14 +693,33 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         rv.spans = spans;
         rv.hdrs = headers;
         rv.nhdr = num_headers;
-        status = resource_run(*b->res, facts, &rv, &body_, &have_body);
+        if (content_length != 0) {
+          rv.body = view + off + head_len;
+          rv.body_len = content_length;
+        }
+        status = resource_run(*b->res, facts, &vals, &rv, &body_, &have_body, &rhdrs_);
+        // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
+        // this run spells its own. 500 stays on the exception path below.
+        if (WM_H1_UNLIKELY((b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500)) {
+          const bool bodyless = status == 204 || status == 304;
+          if (bodyless || !have_body) body_.clear();
+          std::string ctype;
+          if (!bodyless) {
+            if (!b->res->run_ctype.empty()) ctype = http::with_charset(b->res->run_ctype);
+            else if (have_body) ctype = b->konst.content_type;
+          }
+          spell_head(sink, status, date_, ctype, rhdrs_, minor, persist, bodyless,
+                     body_.size());
+          if (!bodyless && !head_only) sink.append(body_);
+          have_body = false;
+          answered = true;
+        }
       } else {
         status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                              b->konst.shortcut[static_cast<size_t>(facts.method)]);
       }
     }
 
-    bool answered = false;
     if (have_body && status == 200) {
       if (b->gzip_ok) {
         assemble_dynamic(

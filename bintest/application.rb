@@ -838,7 +838,7 @@ assert('application: request names what the route captured, per request') do
   end
 end
 
-assert('application: request.headers are the head, lowercased; body refuses by name') do
+assert('application: request.headers are the head, lowercased; request.body is the entity') do
   src = <<~RUBY
     class Asks < Webmachine::Resource
       def to_html
@@ -848,10 +848,17 @@ assert('application: request.headers are the head, lowercased; body refuses by n
     end
 
     class AsksBody < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
       def to_html
-        request.body
-      rescue RuntimeError => e
-        e.message
+        request.has_body? ? request.body : 'none'
+      end
+
+      def process_post
+        response.body = request.body
+        true
       end
     end
 
@@ -873,9 +880,14 @@ assert('application: request.headers are the head, lowercased; body refuses by n
     s.write("GET /h HTTP/1.1\r\nHost: x\r\nX-One: a\r\nX-TWO: b\r\nX-One: c\r\n\r\n")
     _, body = ap_read(s)
     assert_equal 'a, c|b|x', body
+    # RFC 9110 6.4: no entity means request.body is nil; a POST's
+    # entity is the body, byte for byte.
     s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
     _, body2 = ap_read(s)
-    assert_true body2.include?('request bodies'), body2
+    assert_equal 'none', body2
+    s.write("POST /b HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nding")
+    _, body3 = ap_read(s)
+    assert_equal 'ding', body3
     s.close
   end
 end

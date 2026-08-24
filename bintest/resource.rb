@@ -206,15 +206,18 @@ assert('resource: a missing resource speaks 404/412 like the graph says') do
   end
 end
 
-assert('resource: later-tier callbacks refuse the start by name') do
+assert('resource: i18n callbacks refuse the start by name') do
+  # generate_etag and friends RUN now (the 1:1 tier); what remains
+  # refused is what this tree does not have at all - i18n and charset
+  # conversion.
   src = <<~RUBY
-    class EtagResource < Webmachine::Resource
-      def self.generate_etag
-        'v1'
+    class LangResource < Webmachine::Resource
+      def self.languages_provided
+        ['en', 'de']
       end
     end
   RUBY
-  assert_true resource_refused(wm_app('EtagResource', src)).include?('generate_etag')
+  assert_true resource_refused(wm_app('LangResource', src)).include?('languages_provided')
 end
 
 assert('resource: an instance body renders per request through the VM') do

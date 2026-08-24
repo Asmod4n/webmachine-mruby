@@ -215,9 +215,14 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       h2_log(st0, facts, target.data(), target.size());
       return true;
     }
+    std::string body;
+    body.swap(existing->body);
     ReqView rv;
+    rv.method = facts.method;
+    rv.body = body.empty() ? nullptr : body.data();
+    rv.body_len = body.size();
     const ReqView* rvp = h2_parked_view(st0, target, rv);
-    if (!h2_answer(st0, stream_id, facts, head_only, route, rvp, sink)) return false;
+    if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, sink)) return false;
     h2_log(st0, facts, target.data(), target.size());
     return true;
   }
@@ -374,7 +379,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
     rv.table = apps_[st0.listener].table;
     rv.route = r;
     rv.spans = spans;
-    if (!h2_answer(st0, stream_id, facts, head_only, route, r < 0 ? nullptr : &rv, sink)) {
+    if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv, sink)) {
       return false;
     }
     h2_log(st0, facts, path_val, path_vlen);
@@ -540,21 +545,25 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 // RFC 9113 6.2/6.9.1: HEADERS and DATA for one stream; DATA beyond
 // min(connection, stream) is PARKED, never written.
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
-                      bool head_only, uint16_t route, const ReqView* req,
-                      std::string& sink) {
+                      const http::ReqValues* vals, bool head_only, uint16_t route,
+                      const ReqView* req, std::string& sink) {
   H2State& h2 = *st0.h2;
 
   const Bundle* b = nullptr;
   const std::array<uint16_t, 600>* idx = &index_;
   uint16_t status;
   bool have_body = false;
+  bool dynamic = false;
   if (route == kNoRoute) {
     status = 404;
   } else {
     b = &bundles_[apps_[st0.listener].base + route];
     idx = &b->index;
     if (b->bound) {
-      status = resource_run(*b->res, facts, req, &body_, &have_body);
+      // The Values die with the frame that carried them, so a run reached
+      // from here - parked or not - gets none.
+      status = resource_run(*b->res, facts, vals, req, &body_, &have_body, &rhdrs_);
+      dynamic = (b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500;
     } else {
       status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                            b->konst.shortcut[static_cast<size_t>(facts.method)]);
@@ -564,7 +573,20 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   const char* body = nullptr;
   size_t blen = 0;
   const H2Block* blk;
-  if (have_body && status == 200) {
+  H2Block dynblk;
+  if (dynamic) {
+    const bool bodyless = status == 204 || status == 304;
+    if (bodyless || !have_body) body_.clear();
+    std::string ctype;
+    if (!bodyless) {
+      if (!b->res->run_ctype.empty()) ctype = http::with_charset(b->res->run_ctype);
+      else if (have_body) ctype = b->konst.content_type;
+    }
+    h2_build_block(dynblk, status, ctype.empty() ? nullptr : &ctype, nullptr);
+    body = body_.data();
+    blen = body_.size();
+    blk = &dynblk;
+  } else if (have_body && status == 200) {
     body = body_.data();
     blen = body_.size();
     blk = &h2_store_[(*idx)[200]];
@@ -596,49 +618,87 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   alog_status_ = status;
   alog_bytes_ = no_data ? 0 : blen;
 
-  if (h2.head_cache.status != status || h2.head_cache.route != route ||
-      h2.head_cache.sec != sec_) {
-    unsigned char dbuf[64];
-    unsigned char* dp = dbuf;
-    if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
-      return h2_error(st0, kH2InternalError, sink);
-    }
-    const size_t dlen = static_cast<size_t>(dp - dbuf);
-    unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
-                        kH2FlagEndHeaders, 0);
-    h2.head_cache.bytes.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-    h2.head_cache.bytes.append(blk->bytes);
-    h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
-    h2.head_cache.head_len = h2.head_cache.bytes.size();
-    h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
-                             !b->konst.body.empty() &&
-                             b->konst.body.size() <= kH2MergeBody;
-    if (h2.head_cache.has_data) h2.head_cache.bytes.append(b->h2_data200);
-    h2.head_cache.status = status;
-    h2.head_cache.route = route;
-    h2.head_cache.sec = sec_;
-  }
-
   H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
   int64_t budget = 0;
   if (!no_data) {
     const int64_t swin = stp != nullptr ? stp->send_window : h2.peer_initial_window;
     budget = h2.send_window < swin ? h2.send_window : swin;
   }
-  const bool merged = !no_data && h2.head_cache.has_data &&
-                      budget >= static_cast<int64_t>(blen) && blen <= h2.peer_max_frame;
 
-  const size_t hoff = sink.size();
-  if (merged) {
-    sink.append(h2.head_cache.bytes);
+  bool merged = false;
+  if (dynamic) {
+    // RFC 7541: lane 1 spells :status and Content-Type, lane 2 the Date and
+    // every field line this run produced. A per-request head is never cached.
+    unsigned char ebuf[2048];
+    unsigned char* ep = ebuf;
+    unsigned char* const eend = ebuf + sizeof(ebuf);
+    if (!h2_enc_field(&h2.enc, ep, eend, "date", 4, date_, sizeof(date_))) {
+      return h2_error(st0, kH2InternalError, sink);
+    }
+    std::string name;
+    size_t at = 0;
+    while (at < rhdrs_.size()) {
+      const size_t eol = rhdrs_.find("\r\n", at);
+      if (eol == std::string::npos) break;
+      const size_t colon = rhdrs_.find(':', at);
+      if (colon != std::string::npos && colon < eol) {
+        size_t vs = colon + 1;
+        while (vs < eol && (rhdrs_[vs] == ' ' || rhdrs_[vs] == '\t')) vs++;
+        name.assign(rhdrs_, at, colon - at);
+        for (char& c : name) {
+          if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+        }
+        if (!h2_enc_field(&h2.enc, ep, eend, name.data(), name.size(), rhdrs_.data() + vs,
+                          eol - vs)) {
+          return h2_error(st0, kH2InternalError, sink);
+        }
+      }
+      at = eol + 2;
+    }
+    const size_t elen = static_cast<size_t>(ep - ebuf);
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + elen), kH2Headers,
+                        kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
+    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+    sink.append(blk->bytes);
+    sink.append(reinterpret_cast<const char*>(ebuf), elen);
   } else {
-    sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
+    if (h2.head_cache.status != status || h2.head_cache.route != route ||
+        h2.head_cache.sec != sec_) {
+      unsigned char dbuf[64];
+      unsigned char* dp = dbuf;
+      if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+        return h2_error(st0, kH2InternalError, sink);
+      }
+      const size_t dlen = static_cast<size_t>(dp - dbuf);
+      unsigned char fh[kH2FrameHeaderLen];
+      h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
+                          kH2FlagEndHeaders, 0);
+      h2.head_cache.bytes.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+      h2.head_cache.bytes.append(blk->bytes);
+      h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
+      h2.head_cache.head_len = h2.head_cache.bytes.size();
+      h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
+                               !b->konst.body.empty() &&
+                               b->konst.body.size() <= kH2MergeBody;
+      if (h2.head_cache.has_data) h2.head_cache.bytes.append(b->h2_data200);
+      h2.head_cache.status = status;
+      h2.head_cache.route = route;
+      h2.head_cache.sec = sec_;
+    }
+    merged = !no_data && h2.head_cache.has_data &&
+             budget >= static_cast<int64_t>(blen) && blen <= h2.peer_max_frame;
+    const size_t hoff = sink.size();
+    if (merged) {
+      sink.append(h2.head_cache.bytes);
+    } else {
+      sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
+    }
+    unsigned char* hp = reinterpret_cast<unsigned char*>(&sink[hoff]);
+    hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+    h2_patch_stream_id(hp, stream_id);
+    if (merged) h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
   }
-  unsigned char* hp = reinterpret_cast<unsigned char*>(&sink[hoff]);
-  hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
-  h2_patch_stream_id(hp, stream_id);
-  if (merged) h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
 
   size_t give = 0;
   if (!no_data) {
@@ -946,6 +1006,13 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           break;
         }
         stp->body_len += dlen;
+        // Stored only where a bound resource will read them - a konst
+        // route's or a miss's bytes are counted and dropped, so idle
+        // streams cannot hold megabytes nobody will ever ask for.
+        if (stp->route != kNoRoute &&
+            bundles_[apps_[st0.listener].base + stp->route].bound) {
+          stp->body.append(reinterpret_cast<const char*>(dp), dlen);
+        }
         if (flen != 0) {
           unsigned char inc[4];
           put_u32(inc, flen);
@@ -962,9 +1029,16 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           const bool head_only = stp->head_only;
           const uint16_t route = stp->route;
           const std::string target = stp->target;
+          std::string body;
+          body.swap(stp->body);
           ReqView rv;
+          // h2_parked_view only knows the target - the method and the DATA
+          // bytes come from the stream that carried them.
+          rv.method = facts.method;
+          rv.body = body.empty() ? nullptr : body.data();
+          rv.body_len = body.size();
           const ReqView* rvp = h2_parked_view(st0, target, rv);
-          if (!h2_answer(st0, stream, facts, head_only, route, rvp, sink)) return false;
+          if (!h2_answer(st0, stream, facts, nullptr, head_only, route, rvp, sink)) return false;
           h2_log(st0, facts, target.data(), target.size());
         }
         break;

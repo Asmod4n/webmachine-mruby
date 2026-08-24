@@ -973,6 +973,28 @@ struct ReqValues {
   size_t range_len = 0;
   const char* if_range = nullptr;
   size_t if_range_len = 0;
+
+  // Handed to a callback that declared the parameter: b8 gets
+  // Authorization (RFC 9110 11.6.2), b5 gets Content-Type (8.3).
+  const char* authorization = nullptr;
+  size_t authorization_len = 0;
+  const char* content_type = nullptr;
+  size_t content_type_len = 0;
+  // The values the 1:1 runtime reads: c4 negotiates against Accept
+  // (12.5.1), b9a checks Content-MD5 (RFC 1864), request.base_uri and
+  // request.cookies read Host (7.2) and Cookie (RFC 6265).
+  const char* accept = nullptr;
+  size_t accept_len = 0;
+  const char* content_md5 = nullptr;
+  size_t content_md5_len = 0;
+  const char* host = nullptr;
+  size_t host_len = 0;
+  const char* cookie = nullptr;
+  size_t cookie_len = 0;
+  // If-Unmodified-Since / If-Modified-Since, parsed at the switch
+  // (5.6.7); valid only when the facts' ius_valid/ims_valid bit says.
+  int64_t ius_epoch = 0;
+  int64_t ims_epoch = 0;
 };
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
@@ -1106,6 +1128,236 @@ inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t tag
   return false;
 }
 
+// RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
+// ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
+// ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
+// ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
+inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
+  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  const auto num = [&](size_t at, size_t k) -> int {
+    int v = 0;
+    for (size_t i = 0; i < k; i++) {
+      if (!digit(p[at + i])) return -1;
+      v = v * 10 + (p[at + i] - '0');
+    }
+    return v;
+  };
+  const auto month = [&](size_t at) -> int {
+    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    for (int m = 0; m < 12; m++) {
+      if (std::memcmp(p + at, kMon[m], 3) == 0) return m + 1;
+    }
+    return -1;
+  };
+  // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
+  const auto epoch_of = [](int y, int m, int d, int hh, int mm, int ss) -> int64_t {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = y - era * 400;
+    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = int64_t{era} * 146097 + doe - 719468;
+    return days * 86400 + hh * 3600 + mm * 60 + ss;
+  };
+  int y, mo, d, hh, mm, ss;
+  if (n == 29 && p[3] == ',' && p[4] == ' ') {  // IMF-fixdate
+    d = num(5, 2);
+    mo = month(8);
+    y = num(12, 4);
+    hh = num(17, 2);
+    mm = num(20, 2);
+    ss = num(23, 2);
+    if (std::memcmp(p + 25, " GMT", 4) != 0) return false;
+  } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
+             static_cast<const char*>(std::memchr(p, ',', n)) != nullptr) {  // RFC 850
+    const char* c = static_cast<const char*>(std::memchr(p, ',', n));
+    const size_t at = static_cast<size_t>(c - p) + 2;
+    if (at + 18 + 4 != n || at + 18 > n) return false;
+    d = num(at, 2);
+    if (p[at + 2] != '-' || p[at + 6] != '-') return false;
+    mo = month(at + 3);
+    y = num(at + 7, 2);
+    if (y >= 0) y += y < 70 ? 2000 : 1900;  // 5.6.7's two-digit rule
+    hh = num(at + 10, 2);
+    mm = num(at + 13, 2);
+    ss = num(at + 16, 2);
+  } else if (n == 24 && p[3] == ' ' && p[7] == ' ') {  // asctime
+    mo = month(4);
+    d = p[8] == ' ' ? num(9, 1) : num(8, 2);
+    hh = num(11, 2);
+    mm = num(14, 2);
+    ss = num(17, 2);
+    y = num(20, 4);
+  } else {
+    return false;
+  }
+  if (y < 0 || mo < 0 || d <= 0 || d > 31 || hh < 0 || hh > 23 || mm < 0 || mm > 59 ||
+      ss < 0 || ss > 60) {
+    return false;
+  }
+  *out = epoch_of(y, mo, d, hh, mm, ss);
+  return true;
+}
+
+// RFC 9110 12.5.1: choose among the provided types given an Accept
+// value - q-values and both wildcard forms, most specific match per
+// type, highest q wins, the provided ORDER breaks ties (webmachine
+// conneg semantics). -1 = nothing acceptable (406). `types` may carry
+// parameters; matching reads only the type/subtype half.
+inline int choose_media_type(const std::string* types, size_t ntypes, const char* av,
+                             size_t alen) {
+  struct Range {
+    const char* t;
+    size_t tn;
+    const char* sub;
+    size_t sn;
+    int q1000;
+  };
+  Range ranges[32];
+  size_t nr = 0;
+  size_t i = 0;
+  while (i < alen && nr < 32) {
+    while (i < alen && (av[i] == ' ' || av[i] == '\t' || av[i] == ',')) i++;
+    if (i >= alen) break;
+    const size_t start = i;
+    while (i < alen && av[i] != ',') i++;
+    const size_t end = i;
+    int q = 1000;
+    size_t semi = start;
+    while (semi < end && av[semi] != ';') semi++;
+    size_t tend = semi;
+    while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t')) tend--;
+    size_t pi = semi;
+    while (pi < end) {
+      pi++;
+      while (pi < end && (av[pi] == ' ' || av[pi] == '\t')) pi++;
+      if (pi + 2 <= end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
+        size_t v = pi + 2;
+        int whole = 0, frac = 0, fdig = 0;
+        if (v < end && (av[v] >= '0' && av[v] <= '9')) {
+          whole = av[v] - '0';
+          v++;
+        }
+        if (v < end && av[v] == '.') {
+          v++;
+          while (v < end && (av[v] >= '0' && av[v] <= '9') && fdig < 3) {
+            frac = frac * 10 + (av[v] - '0');
+            fdig++;
+            v++;
+          }
+        }
+        while (fdig < 3) {
+          frac *= 10;
+          fdig++;
+        }
+        q = whole * 1000 + frac;
+        if (q > 1000) q = 1000;
+      }
+      while (pi < end && av[pi] != ';') pi++;
+    }
+    const char* slash = static_cast<const char*>(std::memchr(av + start, '/', tend - start));
+    if (slash != nullptr) {
+      ranges[nr].t = av + start;
+      ranges[nr].tn = static_cast<size_t>(slash - (av + start));
+      ranges[nr].sub = slash + 1;
+      ranges[nr].sn = tend - static_cast<size_t>(slash + 1 - av);
+      ranges[nr].q1000 = q;
+      nr++;
+    }
+  }
+  int best = -1;
+  int best_q = 0;
+  int best_spec = -1;
+  for (size_t t = 0; t < ntypes; t++) {
+    const std::string& full = types[t];
+    size_t tn = full.find(';');
+    if (tn == std::string::npos) tn = full.size();
+    while (tn > 0 && full[tn - 1] == ' ') tn--;
+    const char* tp = full.data();
+    const size_t sl = full.find('/');
+    if (sl == std::string::npos || sl >= tn) continue;
+    const size_t main_n = sl;
+    const char* sub_p = tp + sl + 1;
+    const size_t sub_n = tn - sl - 1;
+    int q = -1;
+    int spec = -1;
+    for (size_t r = 0; r < nr; r++) {
+      const Range& rg = ranges[r];
+      int this_spec;
+      if (rg.tn == 1 && rg.t[0] == '*') {
+        this_spec = 0;
+      } else if (!tok_eq(rg.t, rg.tn, tp, main_n)) {
+        continue;
+      } else if (rg.sn == 1 && rg.sub[0] == '*') {
+        this_spec = 1;
+      } else if (tok_eq(rg.sub, rg.sn, sub_p, sub_n)) {
+        this_spec = 2;
+      } else {
+        continue;
+      }
+      if (this_spec > spec) {
+        spec = this_spec;
+        q = rg.q1000;
+      }
+    }
+    if (spec < 0 || q == 0) continue;
+    if (q > best_q || (q == best_q && spec > best_spec)) {
+      best = static_cast<int>(t);
+      best_q = q;
+      best_spec = spec;
+    }
+  }
+  return best;
+}
+
+// RFC 9110 8.8.3: spell an application-supplied ETag for the wire - an
+// already-quoted or weak form passes verbatim, bare bytes are quoted
+// (webmachine ETag.new semantics).
+inline void etag_spell(const char* raw, size_t n, std::string& out) {
+  out.clear();
+  if ((n >= 2 && raw[0] == '"') || (n >= 3 && raw[0] == 'W' && raw[1] == '/')) {
+    out.append(raw, n);
+    return;
+  }
+  out.push_back('"');
+  out.append(raw, n);
+  out.push_back('"');
+}
+
+// RFC 3986 5.3, the n11 subset: join create_path onto a base. A full
+// URI passes verbatim; an absolute-path ref replaces the base's path;
+// a relative segment appends after the base's last '/'.
+inline void uri_join(const char* base, size_t blen, const char* path, size_t plen,
+                     std::string& out) {
+  out.clear();
+  if (plen >= 8 && std::memcmp(path, "http", 4) == 0) {
+    const char* colon = static_cast<const char*>(std::memchr(path, ':', plen));
+    if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
+      out.append(path, plen);
+      return;
+    }
+  }
+  if (plen > 0 && path[0] == '/') {
+    size_t slashes = 0, i = 0;
+    for (; i < blen; i++) {
+      if (base[i] == '/') {
+        slashes++;
+        if (slashes == 3) break;
+      }
+    }
+    out.append(base, i);
+    out.append(path, plen);
+    return;
+  }
+  size_t cut = blen;
+  while (cut > 0 && base[cut - 1] != '/') cut--;
+  if (cut == 0) cut = blen;
+  out.append(base, cut);
+  if (!out.empty() && out.back() != '/') out.push_back('/');
+  out.append(path, plen);
+}
+
 template <class OnWire>
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // every name this layer does not own falls through to the framer's functor.
@@ -1116,6 +1368,17 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "dnt", 3)) {
         if (vlen == 1 && value[0] == '1') facts.no_track = true;
         return;
+      }
+      break;
+    case 4:
+      if (tok_eq(name, nlen, "host", 4)) {
+        // The VALUE is 9110's (request.base_uri reads it); the
+        // presence check stays the framer's (9112 requires Host), so
+        // this arm both keeps the bytes AND falls through to the wire
+        // functor.
+        vals.host = value;
+        vals.host_len = vlen;
+        break;
       }
       break;
     case 5:
@@ -1129,6 +1392,13 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "accept", 6)) {
         facts.has_accept = true;
         facts.plain = false;
+        vals.accept = value;
+        vals.accept_len = vlen;
+        return;
+      }
+      if (tok_eq(name, nlen, "cookie", 6)) {
+        vals.cookie = value;
+        vals.cookie_len = vlen;
         return;
       }
       break;
@@ -1157,10 +1427,26 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "content-md5", 11)) {
         facts.has_content_md5 = true;
         facts.plain = false;
+        vals.content_md5 = value;
+        vals.content_md5_len = vlen;
+        return;
+      }
+      break;
+    case 12:
+      if (tok_eq(name, nlen, "content-type", 12)) {
+        // RFC 9110 8.3: b5's argument and accept_helper's key.
+        vals.content_type = value;
+        vals.content_type_len = vlen;
         return;
       }
       break;
     case 13:
+      if (tok_eq(name, nlen, "authorization", 13)) {
+        // RFC 9110 11.6.2: b8's argument.
+        vals.authorization = value;
+        vals.authorization_len = vlen;
+        return;
+      }
       if (tok_eq(name, nlen, "if-none-match", 13)) {
         facts.has_if_none_match = true;
         facts.plain = false;
@@ -1195,6 +1481,10 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "if-modified-since", 17)) {
         facts.has_if_modified_since = true;
         facts.plain = false;
+        // 13.1.3: an unparseable date reads as "field absent" (l14).
+        facts.ims_valid = parse_http_date(value, vlen, &vals.ims_epoch);
+        // 13.1.3: a date in the future is ignored (l15).
+        if (facts.ims_valid) facts.ims_future = vals.ims_epoch > ::time(nullptr);
         return;
       }
       break;
@@ -1202,6 +1492,8 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "if-unmodified-since", 19)) {
         facts.has_if_unmodified_since = true;
         facts.plain = false;
+        // 13.1.4: same rule as IMS (h11).
+        facts.ius_valid = parse_http_date(value, vlen, &vals.ius_epoch);
         return;
       }
       break;
@@ -1225,11 +1517,20 @@ struct ReqView {
   RouteSpans spans {};
   const void* hdrs = nullptr;
   size_t nhdr = 0;
+  // The request body, LENT for the frame like everything else here -
+  // the framer collected it (bounded by its own 413) and it dies with
+  // the dispatch. Null = no body arrived.
+  const char* body = nullptr;
+  size_t body_len = 0;
 };
 
 void request_init(mrb_state* mrb, struct RClass* wm);
 
 void request_bind(const ReqView* view);
+
+// RFC 9110: n11's create_path names a new disp_path for THIS run;
+// request_bind clears the override. request.cpp owns the storage.
+void request_disp_override(const char* p, size_t n);
 }
 
 namespace webmachine {
@@ -1252,14 +1553,111 @@ struct Resource {
   mutable std::string* run_body = nullptr;
   mutable bool run_have_body = false;
   mutable uint16_t run_status = 0;
+
+  // How many arguments each node's callback ASKED for, read once at
+  // fold from its own signature. webmachine-ruby hands several of them
+  // one - is_authorized?(header), uri_too_long?(uri),
+  // known_content_type?(type), valid_content_headers?(headers),
+  // valid_entity_length?(length) - and a method that declared the
+  // parameter must not be called with nothing.
+  uint8_t node_argc[flow::kNodeCount] = {};
+
+  // A VALUE callback: it answers with a String/Array/Time/Hash the
+  // engine marshals into C++ right after the yield, not with a
+  // truthiness the graph consumes. Resolved at fold like every other
+  // callback; `has` false = webmachine-ruby's default stands in C++.
+  struct ValueCb {
+    bool has = false;
+    mrb_sym sym = {};
+    mrb_method_t m = {};
+    bool fast = false;
+    uint8_t argc = 0;
+  };
+  ValueCb cb_known_methods;   // instance-level; class-level folds konst
+  ValueCb cb_allowed_methods;
+  ValueCb cb_ct_provided;     // instance content_types_provided
+  ValueCb cb_ct_accepted;     // content_types_accepted (accept_helper)
+  ValueCb cb_options;         // b3: Hash of extra response fields
+  ValueCb cb_variances;       // Vary's tail (helpers.rb variances)
+  ValueCb cb_etag;            // generate_etag
+  ValueCb cb_last_modified;
+  ValueCb cb_expires;
+  ValueCb cb_moved_perm;      // i4/k5: String/URI = Location + 301
+  ValueCb cb_moved_temp;      // l5: String/URI = Location + 307
+  ValueCb cb_post_is_create;  // n11's fork
+  ValueCb cb_create_path;
+  ValueCb cb_base_uri;
+  ValueCb cb_process_post;
+  ValueCb cb_finish_request;  // after the walk, ALWAYS (fsm.rb ensure)
+  ValueCb cb_handle_exception;
+
+  // Konst-folded content_types_provided: [type, handler] in the
+  // resource's own order, [0] the default choice (c3 with no Accept).
+  // Never empty after fold - the default is [["text/html", :to_html]].
+  struct TypedHandler {
+    std::string type;
+    mrb_sym handler = {};
+    mrb_method_t m = {};
+    bool fast = false;
+  };
+  std::vector<TypedHandler> ct_provided;
+
+  // Per-request slots for the RUNTIME tier, all reset by resource_run
+  // at frame entry. `run_headers` takes the field lines this request
+  // produced; the writer appends it between the prebuilt head and
+  // Content-Length, which is exactly where the prebuilt head stops, so
+  // no prebuilt byte moves.
+  mutable std::string* run_headers = nullptr;
+  mutable const http::ReqValues* run_vals = nullptr;
+  mutable const ReqView* run_req = nullptr;
+  // response.code= / response.do_redirect (response.cpp writes these;
+  // the flow's halt seeds run_resp_code, finish_request may change it
+  // - fsm.rb's respond order).
+  mutable uint16_t run_resp_code = 0;
+  mutable bool run_redirect = false;
+  // The conneg choice when the head cannot stay prebuilt: non-empty
+  // means the writer spells THIS Content-Type in a dynamic head
+  // instead of using the baked prefix. Empty = prebuilt path,
+  // byte-identical to today.
+  mutable std::string run_ctype;
+  mutable bool run_head_dynamic = false;
+  // n11: create_path's override of request.disp_path.
+  mutable std::string run_disp_path;
+  mutable bool run_disp_set = false;
+  // Once-per-run memos: generate_etag / last_modified / expires are
+  // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share
+  // last_modified), whatever the graph visits.
+  mutable bool etag_asked = false;
+  mutable bool etag_present = false;
+  mutable std::string etag_value;  // spelled, quoted form
+  mutable bool lastmod_asked = false;
+  mutable bool lastmod_present = false;
+  mutable int64_t lastmod_epoch = 0;
+  mutable bool expires_asked = false;
+  mutable bool expires_present = false;
+  mutable int64_t expires_epoch = 0;
+  // Marshalled once per run where the app answered dynamically;
+  // capacity survives across requests.
+  mutable std::vector<TypedHandler> run_ct;
+  mutable std::vector<std::string> run_methods;
+  mutable std::vector<std::string> run_variances;
 };
 
 bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen);
 
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
-                      std::string* body, bool* have_body);
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
+                      const http::ReqValues* vals, const ReqView* req, std::string* body,
+                      bool* have_body, std::string* headers);
 
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
+
+// RFC 9110: Webmachine::Response - the object a runtime callback
+// writes to. Handles over the run slots above, nothing owns storage;
+// response.cpp owns every line. response_bind mirrors request_bind:
+// the run frame points it at THIS run's Resource, and at nothing
+// after it.
+void response_init(mrb_state* mrb, struct RClass* wm);
+void response_bind(const Resource* res);
 }
 
 namespace webmachine::gzip {
@@ -1495,6 +1893,9 @@ struct H2Stream {
   uint32_t id = 0;
   int64_t send_window = kH2DefaultWindow;
   size_t body_len = 0;
+  // RFC 9110 6.4: the DATA bytes, kept for a bound resource (counted
+  // AND stored now - request.body reads them at END_STREAM).
+  std::string body;
   size_t content_length = 0;
   bool have_content_length = false;
   std::string pending;
@@ -1961,8 +2362,9 @@ bool read_close(const char* payload, size_t len, uint16_t& code, const char** re
 namespace webmachine {
 struct Resource;
 struct ReqView;
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
-                      std::string* body, bool* have_body);
+uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
+                      const http::ReqValues* vals, const ReqView* req, std::string* body,
+                      bool* have_body, std::string* headers);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
 
 struct WsResource;
@@ -2001,6 +2403,10 @@ class Http1 {
   struct Conn {
     std::string carry;
     size_t body_skip = 0;
+    // RFC 9110 6.4: what a bound route's request body still owes -
+    // the bytes themselves collect in `carry` behind the head, which
+    // keeps the hand-off zero-copy. A konst route keeps skipping.
+    size_t body_need = 0;
     uint8_t listener = 0;
     bool fresh = true;
     H2State* h2 = nullptr;
@@ -2018,6 +2424,7 @@ class Http1 {
       peer_len = 0;
       carry.clear();
       body_skip = 0;
+      body_need = 0;
       listener = li;
       packetized = pkt;
       fresh = true;
@@ -2156,8 +2563,9 @@ class Http1 {
   bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
-  bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts, bool head_only,
-                 uint16_t route, const ReqView* req, std::string& sink);
+  bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts,
+                 const http::ReqValues* vals, bool head_only, uint16_t route,
+                 const ReqView* req, std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();
@@ -2192,6 +2600,9 @@ class Http1 {
   size_t alog_bytes_ = 0;
   std::string body_;
   std::string gz_body_;
+  // RFC 9110 6.3: the field lines one bound run produced (resource_run
+  // fills it); empty keeps every prebuilt path byte-identical.
+  std::string rhdrs_;
   char date_[29] = {};
 };
 }

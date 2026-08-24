@@ -18,6 +18,11 @@ mrb_value obj_ = mrb_nil_value();
 
 const struct mrb_data_type request_type = {"webmachine.request", nullptr};
 
+// RFC 9110 9.3.3: n11's create_path names a new disp_path for THIS run
+// only; request_bind clears it again on the way in and on the way out.
+std::string disp_override_;
+bool disp_override_set_ = false;
+
 // RFC 9110: the request being answered, or a named refusal outside a run frame.
 const ReqView* live(mrb_state* mrb) {
   if (view_ == nullptr) {
@@ -64,9 +69,11 @@ mrb_value req_path(mrb_state* mrb, mrb_value) {
   return lend(mrb, v->target, v->path_len);
 }
 
-// RFC 9110 4.2.1: what is left of the path for the resource to dispatch on.
+// RFC 9110 4.2.1: what is left of the path for the resource to dispatch
+// on - n11's create_path override wins when this run set one.
 mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
+  if (disp_override_set_) return lend(mrb, disp_override_.data(), disp_override_.size());
   if (v->spans.has_splat) return lend(mrb, v->spans.splat.p, v->spans.splat.n);
   return lend(mrb, v->target, v->path_len);
 }
@@ -165,10 +172,10 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// RFC 9110 5.1/5.3, RFC 9113 8.2: the head's fields, names lowercased,
-// repeats joined with ", ".
-mrb_value req_headers(mrb_state* mrb, mrb_value) {
-  const ReqView* v = live(mrb);
+// RFC 9110 5.1/5.3, RFC 9113 8.2: the parsed header array, or a named
+// refusal when this request's head is gone (a parked HTTP/2 body) -
+// every field-by-name accessor below shares this one refusal.
+const struct phr_header* live_hdrs(mrb_state* mrb, const ReqView* v) {
   if (v->hdrs == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR,
               "request.headers: this request's head is gone - an HTTP/2 request that "
@@ -176,7 +183,14 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
               "fields cannot be lent. They are there on HTTP/1.1 and at a websocket "
               "handshake");
   }
-  const struct phr_header* hs = static_cast<const struct phr_header*>(v->hdrs);
+  return static_cast<const struct phr_header*>(v->hdrs);
+}
+
+// RFC 9110 5.1/5.3, RFC 9113 8.2: the head's fields, names lowercased,
+// repeats joined with ", ".
+mrb_value req_headers(mrb_state* mrb, mrb_value) {
+  const ReqView* v = live(mrb);
+  const struct phr_header* hs = live_hdrs(mrb, v);
   mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->nhdr));
   for (size_t i = 0; i < v->nhdr; i++) {
     mrb_value name = mrb_str_new(mrb, hs[i].name, hs[i].name_len);
@@ -195,12 +209,138 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// RFC 9110 6.4: refused by name until a body tier exists.
+// RFC 9110 6.4: the request body, lent like everything else here; nil
+// when none arrived.
 mrb_value req_body(mrb_state* mrb, mrb_value) {
-  mrb_raise(mrb, E_RUNTIME_ERROR,
-            "request.body is not built: this tree skips request bodies at the framer "
-            "(they are counted and discarded), so there is nothing to hand over yet");
+  const ReqView* v = live(mrb);
+  if (v->body == nullptr) return mrb_nil_value();
+  return lend(mrb, v->body, v->body_len);
+}
+
+// RFC 9110 6.4: is there a body worth reading? An empty body counts as none.
+mrb_value req_has_body(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->body_len > 0);
+}
+
+// RFC 9110 5.1: one field, by its (already-lowercase) name; nil when absent.
+mrb_value req_header(mrb_state* mrb, const char* name, size_t nlen) {
+  const ReqView* v = live(mrb);
+  const struct phr_header* hs = live_hdrs(mrb, v);
+  for (size_t i = 0; i < v->nhdr; i++) {
+    if (http::tok_eq(hs[i].name, hs[i].name_len, name, nlen)) {
+      return lend(mrb, hs[i].value, hs[i].value_len);
+    }
+  }
   return mrb_nil_value();
+}
+
+// RFC 9110 8.3: the entity's media type.
+mrb_value req_content_type(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "content-type", 12);
+}
+// RFC 9110 8.6: the entity's length, as webmachine-ruby hands it back -
+// a String the caller is expected to .to_i.
+mrb_value req_content_length(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "content-length", 14);
+}
+// RFC 9110 11.6.2: the credentials b8 decides on.
+mrb_value req_authorization(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "authorization", 13);
+}
+// RFC 9110 12.5.1: the media types c4 negotiates against.
+mrb_value req_accept(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "accept", 6);
+}
+// RFC 9110 12.5.3: the codings f7 negotiates against.
+mrb_value req_accept_encoding(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "accept-encoding", 15);
+}
+// RFC 9110 13.1.1: the validator g8/g9/h7 read.
+mrb_value req_if_match(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "if-match", 8);
+}
+// RFC 9110 13.1.2: the validator i12/i13/k13 read.
+mrb_value req_if_none_match(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "if-none-match", 13);
+}
+// RFC 9110 13.1.3: the date l13/l14/l15 read.
+mrb_value req_if_modified_since(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "if-modified-since", 17);
+}
+// RFC 9110 13.1.4: the date h10/h11 read.
+mrb_value req_if_unmodified_since(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "if-unmodified-since", 19);
+}
+// RFC 1864: the checksum b9a validates.
+mrb_value req_content_md5(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "content-md5", 11);
+}
+// RFC 9110 7.2: the authority this request named.
+mrb_value req_host(mrb_state* mrb, mrb_value) {
+  return req_header(mrb, "host", 4);
+}
+
+// RFC 6265 5.4: the Cookie header's k=v pairs, lazily parsed into a
+// Hash. No Cookie field: an empty Hash, same as webmachine-ruby.
+mrb_value req_cookies(mrb_state* mrb, mrb_value) {
+  mrb_value h = mrb_hash_new(mrb);
+  const mrb_value raw = req_header(mrb, "cookie", 6);
+  if (mrb_nil_p(raw)) return h;
+  const char* p = RSTRING_PTR(raw);
+  const size_t n = static_cast<size_t>(RSTRING_LEN(raw));
+  size_t at = 0;
+  while (at < n) {
+    while (at < n && (p[at] == ' ' || p[at] == '\t')) at++;
+    const size_t start = at;
+    while (at < n && p[at] != ';') at++;
+    size_t end = at;
+    while (end > start && (p[end - 1] == ' ' || p[end - 1] == '\t')) end--;
+    if (at < n) at++;  // skip ';'
+    if (end <= start) continue;
+    size_t eq = start;
+    while (eq < end && p[eq] != '=') eq++;
+    if (eq >= end) continue;
+    mrb_hash_set(mrb, h, mrb_str_new(mrb, p + start, eq - start),
+                 mrb_str_new(mrb, p + eq + 1, end - eq - 1));
+  }
+  return h;
+}
+
+// RFC 9110 4.2.1: base_uri as webmachine-ruby spells it - scheme and
+// Host only, no port/query normalization, no URI object.
+mrb_value req_base_uri(mrb_state* mrb, mrb_value) {
+  const mrb_value host = req_header(mrb, "host", 4);
+  mrb_value s = mrb_str_new_lit(mrb, "http://");
+  if (!mrb_nil_p(host)) {
+    mrb_str_cat(mrb, s, RSTRING_PTR(host), static_cast<size_t>(RSTRING_LEN(host)));
+  }
+  mrb_str_cat_lit(mrb, s, "/");
+  return s;
+}
+
+// RFC 9110 9.3.1: is this a GET?
+mrb_value req_is_get(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kGet);
+}
+// RFC 9110 9.3.2: is this a HEAD?
+mrb_value req_is_head(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kHead);
+}
+// RFC 9110 9.3.3: is this a POST?
+mrb_value req_is_post(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kPost);
+}
+// RFC 9110 9.3.4: is this a PUT?
+mrb_value req_is_put(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kPut);
+}
+// RFC 9110 9.3.5: is this a DELETE?
+mrb_value req_is_delete(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kDelete);
+}
+// RFC 9110 9.3.7: is this an OPTIONS?
+mrb_value req_is_options(mrb_state* mrb, mrb_value) {
+  return mrb_bool_value(live(mrb)->method == flow::Method::kOptions);
 }
 
 // RFC 9110: Resource#request - the one object, never a new one.
@@ -210,8 +350,21 @@ mrb_value resource_request(mrb_state* mrb, mrb_value) {
 }
 }
 
-// RFC 9110: point the one object at this request, or at nothing.
-void request_bind(const ReqView* view) { view_ = view; }
+// RFC 9110: point the one object at this request, or at nothing - and
+// drop any create_path override, which belongs to the run that is
+// ending, never to the next one.
+void request_bind(const ReqView* view) {
+  view_ = view;
+  disp_override_.clear();
+  disp_override_set_ = false;
+}
+
+// RFC 9110 9.3.3: n11's create_path names a new disp_path for THIS run;
+// the next request_bind (in or out) clears it again.
+void request_disp_override(const char* p, size_t n) {
+  disp_override_.assign(p, n);
+  disp_override_set_ = true;
+}
 
 // RFC 9110: Webmachine::Request, defined once at gem init.
 void request_init(mrb_state* mrb, struct RClass* wm) {
@@ -228,6 +381,28 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, req, MRB_SYM(query_string), req_query_string, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(headers), req_headers, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(body), req_body, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(has_body), req_has_body, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(content_type), req_content_type, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(content_length), req_content_length, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(authorization), req_authorization, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(accept), req_accept, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(accept_encoding), req_accept_encoding, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(if_match), req_if_match, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(if_none_match), req_if_none_match, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(if_modified_since), req_if_modified_since,
+                       MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(if_unmodified_since), req_if_unmodified_since,
+                       MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(content_md5), req_content_md5, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(host), req_host, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(cookies), req_cookies, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(base_uri), req_base_uri, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(get), req_is_get, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(head), req_is_head, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(post), req_is_post, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(put), req_is_put, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(delete), req_is_delete, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM_Q(options), req_is_options, MRB_ARGS_NONE());
 
   obj_ = mrb_obj_value(mrb_data_object_alloc(mrb, req, nullptr, &request_type));
   mrb_gc_register(mrb, obj_);

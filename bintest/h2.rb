@@ -501,9 +501,12 @@ assert('h2: a parked request still names what its route captured') do
         'GET HEAD POST'
       end
 
-      def to_html
+      # RFC 9110 9.3.3: a POST is answered by process_post - which is
+      # where a parked request's captures get read.
+      def process_post
         r = request
-        "\#{r.path}|\#{r.path_info[:id]}|\#{r.disp_path}"
+        response.body = "\#{r.path}|\#{r.path_info[:id]}|\#{r.disp_path}"
+        true
       end
     end
   RUBY
