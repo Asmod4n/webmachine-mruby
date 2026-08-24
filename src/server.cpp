@@ -15,13 +15,8 @@
 #include <memory>
 #include <vector>
 
-
 namespace webmachine {
 namespace {
-
-// ONE server per process, like there is one ring and one VM. Built on
-// first use - by the tool, or by the app file itself if it called run
-// or tick inside `main`.
 ServerOptions opts_;
 std::vector<AppSpec*> specs_;
 std::vector<std::vector<const Resource*>> resources_;
@@ -36,21 +31,14 @@ std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
 
-// Fork one webmachine-logd over a socketpair and hand back OUR end.
-// The daemon is spawned BEFORE the ring exists, so the child inherits
-// none of it. Two streams take this road, and everything on it is 1:1
-// identical between them - the socketpair, where the binary lives, the
-// fork, the reaped-child signal - so it is written once and the mode
-// word is the argument. Returns -1 with a named reason in err: a
-// server told to log that cannot log is already breaking its one rule.
+// One webmachine-logd over a socketpair, before the ring exists. Two
+// streams take this road; only the mode word differs.
 int spawn_logd(const char* mode, const char* path, const char* privacy, char* err, size_t errlen) {
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
     std::snprintf(err, errlen, "--%s log socketpair: %s", mode, std::strerror(errno));
     return -1;
   }
-  // The daemon lives next to this binary; argv0-relative, resolved
-  // through /proc/self/exe so a PATH-relative start still finds it.
   char self[4096];
   const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
   std::string logd = "webmachine-logd";
@@ -61,7 +49,6 @@ int spawn_logd(const char* mode, const char* path, const char* privacy, char* er
       logd = std::string(self) + "/webmachine-logd";
     }
   }
-  // The ceiling, spelled once here so both daemons get the same words.
   char cap[24];
   std::snprintf(cap, sizeof cap, "%llu", opts_.log_max_bytes);
   const pid_t pid = ::fork();
@@ -75,23 +62,17 @@ int spawn_logd(const char* mode, const char* path, const char* privacy, char* er
     ::dup2(sp[0], 0);
     ::close(sp[0]);
     ::close(sp[1]);
-    // A null privacy IS the argument list's end - execl stops at the
-    // first null, so the error daemon is exec'd with four words and
-    // the access daemon with five. One call, two shapes, no branch.
     ::execl(logd.c_str(), "webmachine-logd", mode, path, cap, privacy, (char*)nullptr);
     std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
     ::_exit(127);
   }
   ::close(sp[0]);
-  // A logd that dies must surface as the write's -EPIPE (a named
-  // refusal), never as a zombie in the process table.
   ::signal(SIGCHLD, SIG_IGN);
   return sp[1];
 }
 
 // The listener table, straight out of the registry: registration order
-// IS listener order, and the listener index is what a connection
-// carries (#116 slice 2).
+// IS listener order.
 bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
@@ -129,9 +110,10 @@ bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
   }
   return true;
 }
+}
 
-}  // namespace
-
+// Is io_uring usable on THIS machine? Names the reason when the machine
+// will tell us (kernel.io_uring_disabled).
 bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
 #ifdef SLIPSTREAM_IO
   (void)have_uring;
@@ -166,13 +148,6 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
   return true;
 #else
   if (!have_uring) {
-    // Say WHICH of the reasons it is, when the machine will tell us.
-    // kernel.io_uring_disabled (Linux >= 6.6, and what a hardened
-    // Debian/Ubuntu ships) is the one an operator can act on: 1 means
-    // only members of kernel.io_uring_group may, 2 means nobody may.
-    // Anything else - an old kernel, seccomp, an LSM - leaves the
-    // file absent or at 0, and then the general sentence is the
-    // honest one.
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
     char buf[32] = "";
     const int fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
@@ -212,7 +187,6 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
 }
 
 namespace {
-
 // Everything between "main returned" and "the first accept", once.
 bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (built_) return true;
@@ -220,19 +194,13 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
 
   if (!app_registered_all(specs_, kMaxListeners, err, errlen)) return false;
   RingConfig cfg;
-  cfg.sq_entries = opts_.sq_entries;  // 0 stays "the ring's default"
+  cfg.sq_entries = opts_.sq_entries;
   cfg.backlog = opts_.backlog;
   cfg.to_header = opts_.to_header;
   cfg.to_send = opts_.to_send;
   cfg.to_idle = opts_.to_idle;
   if (!build_listeners(cfg, err, errlen)) return false;
 
-  // The asset table is built ONCE, before any listener exists; a bad
-  // archive refuses the start by name (#170). The media types come
-  // first, because every entry's Content-Type is decided while that
-  // table is built - and they come off the MACHINE, so the startup
-  // says which database answered rather than reaching into a file
-  // nobody expected.
   if (opts_.assets_path != nullptr) {
     if (!mime_.load(opts_.mime_path, err, errlen)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
@@ -240,22 +208,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     if (!assets_.open(opts_.assets_path, mime_, err, errlen)) return false;
   }
 
-  // The access log (opt-in, accesslog.hpp's head says why the shape
-  // is two processes): --log forks webmachine-logd over a socketpair,
-  // BEFORE the ring exists so the child inherits none of it. This
-  // core ships records; the sibling formats and writes the file. A
-  // daemon that cannot start refuses the start by name - a server
-  // told to log that cannot is already breaking its one rule.
   if (opts_.log_path != nullptr) {
-    // The level names the amount of PRIVACY, so `none` means full
-    // client addresses on disk - personal data under the GDPR (art.
-    // 4(1); ECJ C-582/14 said so even for dynamic IPs). That is a
-    // legal choice, not a technical one, so the server says out loud
-    // what the operator just took on. Precisely: no cookie banner is
-    // forced by a server log (that duty is ePrivacy, about the
-    // client's DEVICE) - what full addresses need is an art. 6 basis
-    // and disclosure. Default: anon, which the authorities treat as
-    // no longer personal.
     if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
       std::fprintf(stderr,
                    "webmachine: --log-privacy none writes FULL client addresses to the log.\n"
@@ -270,20 +223,12 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     if (log_fd_ < 0) return false;
     cfg.log_fd = log_fd_;
   }
-  // The second stream, and a second process for it: --error-log. Same
-  // machinery, a different daemon, a different file. It carries no
-  // privacy switch - the daemon spells an error's peer at anon and
-  // that is the whole of its choice (its head says why).
   if (opts_.error_log_path != nullptr) {
     err_fd_ = spawn_logd("error", opts_.error_log_path, nullptr, err, errlen);
     if (err_fd_ < 0) return false;
     cfg.err_fd = err_fd_;
   }
 
-  // ONE Http1 for the whole process: every route of every app built
-  // here, once. The resource pointers are gathered per app and KEPT -
-  // AppInput borrows the arrays only for the constructor's duration,
-  // but keeping them costs one vector per app and no thought.
   resources_.resize(specs_.size());
   ws_resources_.resize(specs_.size());
   sse_resources_.resize(specs_.size());
@@ -316,13 +261,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     return false;
   }
 
-  // THE BINDS HAVE HAPPENED, in listener order. Each app's conf.url now
-  // reads back where ITS listener really is, and its ready hook runs:
-  // after the bind, before the first accept, exactly once, in the order
-  // the apps registered. A raise there stops the start.
   for (size_t i = 0; i < specs_.size(); i++) {
-    // The RING's port, not the spec's: a conf asking for port 0 gets
-    // the kernel's pick here, which is the whole point of asking.
     app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,
                    ring_->bound_port(static_cast<uint32_t>(i)));
     if (!app_ready_run(mrb, *specs_[i], err, errlen)) {
@@ -344,30 +283,26 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   return true;
 }
 
-// The Ruby doors all need the server standing; a failure to build is
-// this machine refusing this configuration, so it raises with the
-// reason rather than answering nil.
+// The Ruby doors all need the server standing; a failure to build raises.
 void ensure(mrb_state* mrb) {
   char err[512] = "";
   if (!build(mrb, err, sizeof(err))) mrb_raisef(mrb, E_RUNTIME_ERROR, "webmachine: %s", err);
   entered_ = true;
 }
 
+// Webmachine.run: block, serve, return when the stop signal lands.
 mrb_value wm_run(mrb_state* mrb, mrb_value self) {
   ensure(mrb);
   ring_->run();
   return self;
 }
 
+// Webmachine.tick(budget): ONE bounded step - the budget bounds the WORK.
 mrb_value wm_tick(mrb_state* mrb, mrb_value) {
   mrb_value budget = mrb_nil_value();
   mrb_get_args(mrb, "|o", &budget);
   ensure(mrb);
   if (mrb_nil_p(budget)) return mrb_bool_value(ring_->tick(nullptr));
-  // EVERY duration crossing this boundary goes through mruby-chrono,
-  // once, at the edge - there is no second seconds convention in this
-  // tree (the date patch in http1 is wall-clock, not a duration, and
-  // stays plain C).
   const auto ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, budget);
   if (ns.count() < 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.tick wants a duration, not a negative one");
@@ -376,13 +311,11 @@ mrb_value wm_tick(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(ring_->tick(&ts));
 }
 
+// Webmachine.fd: what an embedder polls between ticks.
 mrb_value wm_fd(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   const int fd = ring_->fd();
   if (fd < 0) {
-    // A backend whose completions are not a descriptor cannot be
-    // polled, and pretending otherwise would hand the embedder a
-    // number that never becomes readable.
     mrb_raise(mrb, E_RUNTIME_ERROR,
               "this io backend has no pollable descriptor - drive it with "
               "Webmachine.tick(budget) instead of waiting on an fd");
@@ -390,21 +323,10 @@ mrb_value wm_fd(mrb_state* mrb, mrb_value) {
   return mrb_fixnum_value(fd);
 }
 
-// DRAIN, THEN FORGET (#116 slice 5). The listeners close at once, and
-// the loop turns until the last accepted connection is gone or the
-// grace runs out - whichever comes first. No argument = stop now.
-//
-// This is process-wide, and the name says as much: there is ONE ring
-// and ONE loop, so a second application's connections stop with the
-// first's. Application#stop is this same method under webmachine-ruby's
-// spelling, not a second, narrower one - a per-app stop would have to
-// mean a listener closing while the loop kept turning, which nothing
-// has asked for and which this would only pretend to do.
+// Webmachine.stop(grace): drain, then forget. Process-wide, and named so.
 mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
   mrb_value grace = mrb_nil_value();
   mrb_get_args(mrb, "|o", &grace);
-  // Never BUILDS the server: stopping one that was never started is
-  // not an error, it is a no-op with nothing to drain.
   if (!built_) return self;
   int64_t ns = 0;
   if (!mrb_nil_p(grace)) {
@@ -417,38 +339,36 @@ mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// Did the stop signal's completion land?
 mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   return mrb_bool_value(ring_->stopped());
 }
+}
 
-}  // namespace
-
+// What the INVOCATION decides; not reachable from Ruby, deliberately.
 void server_options(const ServerOptions& opts) { opts_ = opts; }
 
+// Did `main` serve already through run or tick?
 bool server_entered() { return entered_; }
 
+// Webmachine.run / .tick / .fd / .stop, next to the Application.
 void server_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_module_function_id(mrb, wm, MRB_SYM(run), wm_run, MRB_ARGS_NONE());
   mrb_define_module_function_id(mrb, wm, MRB_SYM(tick), wm_tick, MRB_ARGS_OPT(1));
   mrb_define_module_function_id(mrb, wm, MRB_SYM(fd), wm_fd, MRB_ARGS_NONE());
   mrb_define_module_function_id(mrb, wm, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
-  // webmachine-ruby's own spelling, the same method: an application
-  // object is where a Ruby program has the server in its hand.
   struct RClass* app = mrb_class_get_under_id(mrb, wm, MRB_SYM(Application));
   mrb_define_method_id(mrb, app, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
   mrb_define_module_function_id(mrb, wm, MRB_SYM_Q(stopped), wm_stopped, MRB_ARGS_NONE());
 }
 
+// The tool's entry: build if Ruby has not, then loop until the stop signal.
 int server_run(mrb_state* mrb, char* err, size_t errlen) {
   if (!build(mrb, err, errlen)) return 1;
   entered_ = true;
   ring_->run();
-  // The ring's destructor is what unlinks a unix path again, so it has
-  // to run BEFORE the process leaves - not at exit, when nothing is
-  // ordered any more.
   ring_.reset();
   return 0;
 }
-
-}  // namespace webmachine
+}

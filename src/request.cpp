@@ -11,20 +11,13 @@
 
 namespace webmachine {
 namespace {
-
-// The one view, swapped per request. A file-static because there is
-// one thread, one ring and one VM - the same reason the application
-// registry is one (application.cpp says it at length). Null outside a
-// run frame, and every accessor checks: reaching the request object
-// from anywhere else is a mistake worth naming, not a segfault.
 const ReqView* view_ = nullptr;
 
-// The one object. Rooted at init: nothing names its class, so it would
-// otherwise be collectable, and it must outlive every request.
 mrb_value obj_ = mrb_nil_value();
 
 const struct mrb_data_type request_type = {"webmachine.request", nullptr};
 
+// RFC 9110: the request being answered, or a named refusal outside a run frame.
 const ReqView* live(mrb_state* mrb) {
   if (view_ == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR,
@@ -34,10 +27,12 @@ const ReqView* live(mrb_state* mrb) {
   return view_;
 }
 
+// RFC 9110: request bytes as a Ruby String, materialised on demand.
 mrb_value lend(mrb_state* mrb, const char* p, size_t n) {
   return mrb_str_new(mrb, p, n);
 }
 
+// RFC 9110 9.1: the method, by name.
 mrb_value req_method(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   switch (v->method) {
@@ -49,8 +44,6 @@ mrb_value req_method(mrb_state* mrb, mrb_value) {
     case flow::Method::kOptions: return mrb_str_new_lit(mrb, "OPTIONS");
     case flow::Method::kOther: break;
   }
-  // The flow knows every method it DECIDES on by name; anything else
-  // is one token to it. Where the bytes are lent, they are the answer.
   if (v->method_p != nullptr) return lend(mrb, v->method_p, v->method_n);
   mrb_raise(mrb, E_RUNTIME_ERROR,
             "this request's method is outside the set the flow names, and its bytes are "
@@ -58,29 +51,26 @@ mrb_value req_method(mrb_state* mrb, mrb_value) {
   return mrb_nil_value();
 }
 
-// The request-target as it arrived, query and all (RFC 9110 4.2.1 -
-// webmachine-ruby's `uri` is the full thing too).
+// RFC 9110 4.2.1: the request-target as it arrived, query and all.
 mrb_value req_uri(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   return lend(mrb, v->target, v->target_len);
 }
 
+// RFC 9110 4.2.1: the target up to '?'.
 mrb_value req_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   return lend(mrb, v->target, v->path_len);
 }
 
-// What is LEFT of the path for the resource to dispatch on: the splat
-// tail where the route has one, the whole path where it does not -
-// webmachine-ruby's disp_path, same meaning.
+// RFC 9110 4.2.1: what is left of the path for the resource to dispatch on.
 mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   if (v->spans.has_splat) return lend(mrb, v->spans.splat.p, v->spans.splat.n);
   return lend(mrb, v->target, v->path_len);
 }
 
-// The Symbol tokens the route bound, by NAME - the names came off the
-// token array at add_route (router.hpp), the bytes off this request.
+// RFC 9110 4.2.1: the Symbol tokens this route bound, by name.
 mrb_value req_path_info(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value h = mrb_hash_new_capa(mrb, v->spans.nbind);
@@ -94,8 +84,7 @@ mrb_value req_path_info(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// The splat's segments, in order. No splat = an empty Array, which is
-// what webmachine-ruby hands a route that has none.
+// RFC 9110 4.2.1: the splat's segments, in order.
 mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value a = mrb_ary_new(mrb);
@@ -107,24 +96,20 @@ mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
     size_t seg = at;
     while (at < n && p[at] != '/') at++;
     mrb_ary_push(mrb, a, lend(mrb, p + seg, at - seg));
-    if (at < n) at++;  // step over the '/'
+    if (at < n) at++;
   }
   return a;
 }
 
-// The raw query, exactly as it arrived, without the '?'. Empty where
-// there was none.
+// RFC 9110 4.2.1: the raw query, without the '?'.
 mrb_value req_query_string(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   if (v->path_len >= v->target_len) return mrb_str_new(mrb, "", 0);
-  const size_t off = v->path_len + 1;  // past the '?'
+  const size_t off = v->path_len + 1;
   return lend(mrb, v->target + off, v->target_len - off);
 }
 
-// One percent-decoded value. '+' is a space (HTML form encoding, which
-// is what a query string is in practice); a truncated or non-hex
-// escape is kept VERBATIM rather than guessed at - a decoder that
-// invents bytes is worse than one that hands them back.
+// RFC 9110 2.4 / percent-encoding: one hex digit, or -1.
 int hex(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -132,6 +117,7 @@ int hex(char c) {
   return -1;
 }
 
+// RFC 9110 2.4: one percent-decoded value; '+' is a space, a bad escape is kept.
 mrb_value decoded(mrb_state* mrb, const char* p, size_t n) {
   mrb_value s = mrb_str_new_capa(mrb, n);
   for (size_t i = 0; i < n; i++) {
@@ -154,9 +140,7 @@ mrb_value decoded(mrb_state* mrb, const char* p, size_t n) {
   return s;
 }
 
-// key=value pairs, '&' or ';' separated, percent-decoded on both
-// sides. A repeated key keeps the LAST value, which is what a Hash
-// means; a key without '=' maps to "".
+// RFC 9110 4.2.1: key=value pairs, '&' or ';' separated.
 mrb_value req_query(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value h = mrb_hash_new(mrb);
@@ -180,24 +164,11 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// The head's fields as a Hash, built ON DEMAND like everything else
-// here. Names are LOWERCASED, which is not a courtesy: h2 puts them on
-// the wire lowercase (RFC 9113 8.2) and h1 says they are
-// case-insensitive (RFC 9110 5.1), so lowercasing is what makes one
-// name mean one thing whichever wire carried it. A repeated field is
-// joined with ", " - the same value list the sender could have sent
-// (RFC 9110 5.3).
-//
-// A websocket resource is the standing caller (#175): the handshake's
-// own fields are what a subprotocol, an Origin check or a token in the
-// head are decided from, and this is where they arrive.
+// RFC 9110 5.1/5.3, RFC 9113 8.2: the head's fields, names lowercased,
+// repeats joined with ", ".
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   if (v->hdrs == nullptr) {
-    // Not "never": GONE. A parked h2 request answers after its decode
-    // buffer is gone (h2.hpp says so at the stream struct, which is
-    // why the router's verdict is parked and not a pointer), so there
-    // is nothing to lend and nothing will be invented.
     mrb_raise(mrb, E_RUNTIME_ERROR,
               "request.headers: this request's head is gone - an HTTP/2 request that "
               "parked on its body answers after its decode buffer was reused, so its "
@@ -223,6 +194,7 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
+// RFC 9110 6.4: refused by name until a body tier exists.
 mrb_value req_body(mrb_state* mrb, mrb_value) {
   mrb_raise(mrb, E_RUNTIME_ERROR,
             "request.body is not built: this tree skips request bodies at the framer "
@@ -230,20 +202,20 @@ mrb_value req_body(mrb_state* mrb, mrb_value) {
   return mrb_nil_value();
 }
 
+// RFC 9110: Resource#request - the one object, never a new one.
 mrb_value resource_request(mrb_state* mrb, mrb_value) {
-  live(mrb);  // the refusal belongs at the door, not at the accessor
+  live(mrb);
   return obj_;
 }
+}
 
-}  // namespace
-
+// RFC 9110: point the one object at this request, or at nothing.
 void request_bind(const ReqView* view) { view_ = view; }
 
+// RFC 9110: Webmachine::Request, defined once at gem init.
 void request_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* req = mrb_define_class_under_id(mrb, wm, MRB_SYM(Request), mrb->object_class);
   MRB_SET_INSTANCE_TT(req, MRB_TT_CDATA);
-  // No `new`: the object is the process's, handed out by
-  // Resource#request and made by nobody else.
   mrb_undef_class_method_id(mrb, req, MRB_SYM(new));
   mrb_define_method_id(mrb, req, MRB_SYM(method), req_method, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(uri), req_uri, MRB_ARGS_NONE());
@@ -256,22 +228,14 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, req, MRB_SYM(headers), req_headers, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(body), req_body, MRB_ARGS_NONE());
 
-  // ONE object for the process: the view behind it is what changes.
   obj_ = mrb_obj_value(mrb_data_object_alloc(mrb, req, nullptr, &request_type));
   mrb_gc_register(mrb, obj_);
 
   struct RClass* res = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
   mrb_define_method_id(mrb, res, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
-  // A websocket resource is NOT a Resource (#175: no response, no
-  // flow, no negotiation survives the upgrade) - but the handshake's
-  // HEAD does, and it is the same object that lends it.
   struct RClass* wsres = mrb_class_get_under_id(mrb, wm, MRB_SYM(WebsocketResource));
   mrb_define_method_id(mrb, wsres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
-  // An SSE resource is not a Resource either (#102), and for the same
-  // reason it still reads the head that asked - Last-Event-ID lives
-  // there, and so do the route's own bindings.
   struct RClass* sseres = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
   mrb_define_method_id(mrb, sseres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
 }
-
-}  // namespace webmachine
+}

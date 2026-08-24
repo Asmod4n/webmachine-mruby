@@ -13,54 +13,42 @@
 #include <cstring>
 #include <string>
 
-// Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_RES_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
-// mruby decodes a packed backtrace itself (src/backtrace.c); the
-// declaration lives in mruby/internal.h, a C header with no extern "C"
-// wrapper - including it from C++ yields a mangled symbol nothing
-// defines. Declared here instead, next to the one place that uses it.
 extern "C" mrb_value mrb_exc_backtrace(mrb_state* mrb, mrb_value exc);
 
 namespace webmachine {
 namespace {
-
 using flow::KonstSet;
 using flow::Node;
 
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
+// mruby: a setup raise becomes a named refusal, printed by the VM itself.
 void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
-  // The direct variant: mruby prints exception + backtrace to stderr
-  // itself; err carries only the context line.
   std::snprintf(err, errlen, "%s (exception below)", what);
   mrb_print_error(mrb);
   mrb->exc = nullptr;
 }
 
-// An alias (`alias_method` in the class body) stores a proc carrying
-// MRB_PROC_ALIAS whose body holds the aliased-from mid, not an irep;
-// vm.c unwraps that at every call site. Unwrapped ONCE here instead -
-// the chain is fixed the moment the class freezes.
+// mruby: unwrap MRB_PROC_ALIAS once, at fold, instead of at every call.
 mrb_method_t resolve_alias(mrb_method_t m) {
   if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) return m;
   const struct RProc* p = MRB_METHOD_PROC(m);
-  while (p != nullptr && MRB_PROC_ALIAS_P(p)) p = p->upper;  // aliases chain
+  while (p != nullptr && MRB_PROC_ALIAS_P(p)) p = p->upper;
   if (p == nullptr) return m;
   mrb_method_t out = m;
   MRB_METHOD_FROM_PROC(out, p);
   return out;
 }
 
-// ONE resolver: where does `sym` answer for receivers of class `c`?
-// mrb_method_search_vm scribbles on the class it is given - always a
-// copy. fast = a Ruby proc we may enter directly.
 struct Resolved {
   mrb_method_t m = {};
   bool defined = false;
   bool fast = false;
 };
 
+// mruby: where does this symbol answer, and may we enter its proc directly?
 Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
   Resolved r;
   struct RClass* owner = c;
@@ -70,15 +58,11 @@ Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
   return r;
 }
 
-// Is `sym` an INSTANCE method (runtime, per request)? A direct look
-// into the class's method table - no funcall, no method_defined?.
+// mruby: is this a runtime callback? A direct look into the method table.
 bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
   return resolve(mrb, mrb_class_ptr(klass), sym).defined;
 }
 
-// The yield body for SETUP calls, run under mrb_protect_error: outside
-// a VM frame nothing catches a raise (funcall builds its own TRY,
-// yield does not).
 struct SetupCall {
   const struct RProc* proc;
   mrb_sym sym;
@@ -86,12 +70,9 @@ struct SetupCall {
   struct RClass* c;
 };
 
+// mruby: the yield body a setup call runs under mrb_protect_error.
 mrb_value setup_call_body(mrb_state* mrb, void* ud) {
   const SetupCall* c = static_cast<const SetupCall*>(ud);
-  // Lend the callback its own name: yield_with_class fills the new
-  // frame's mid from the CURRENT frame for a plain def, and `super`
-  // resolves through ci->mid. Restored after; on a raise the unwind
-  // pops past the frame and the value is moot.
   mrb_callinfo* ci = mrb->c->ci;
   const mrb_sym saved_mid = ci->mid;
   ci->mid = c->sym;
@@ -101,9 +82,7 @@ mrb_value setup_call_body(mrb_state* mrb, void* ud) {
   return r;
 }
 
-// Invoke a resolved method at SETUP time (cold): Ruby procs enter
-// directly under protection, cfuncs go through funcall (vm.c's frame
-// setup is not worth owning). On a raise the exception stays pending.
+// mruby: invoke a resolved method at SETUP time; a raise stays pending.
 mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_value self,
                         struct RClass* c) {
   if (!r.fast) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
@@ -111,15 +90,14 @@ mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_valu
   mrb_bool raised = FALSE;
   mrb_value v = mrb_protect_error(mrb, setup_call_body, &ctx, &raised);
   if (WM_RES_UNLIKELY(raised)) {
-    mrb->exc = mrb_obj_ptr(v);  // protect_error cleared it; re-arm
+    mrb->exc = mrb_obj_ptr(v);
     return mrb_nil_value();
   }
-  mrb_gc_protect(mrb, v);  // yield does not protect its result; funcall does
+  mrb_gc_protect(mrb, v);
   return v;
 }
 
-// A konst callback, asked once on the CLASS (its metaclass owns class
-// methods). Absent -> the default stands. Raise -> a named refusal.
+// RFC 9110: one konst flow callback, asked once on the class.
 bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool defv, bool* out,
          char* err, size_t errlen) {
   const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
@@ -136,10 +114,7 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
   return true;
 }
 
-// A method list (known_methods / allowed_methods): ONE String like
-// 'GET HEAD POST', tokenized here from its bytes - no Ruby arrays
-// cross the boundary. Tokens outside the compiled set are refused -
-// a method the walker cannot name would silently 501.
+// RFC 9110 9.1: known_methods / allowed_methods as one String of tokens.
 bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
                  char* err, size_t errlen) {
   const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
@@ -179,12 +154,6 @@ bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name,
   return true;
 }
 
-// Every symbol below is a COMPILE-TIME constant from mruby's presym
-// table - the build scans this file - so nothing is ever interned at
-// runtime; names ride along solely for error text.
-
-// The boolean flow callbacks: node ans = callback truthiness, exactly
-// flow.rb's decision_test orientation, already encoded in the table.
 struct BoolCb {
   Node node;
   mrb_sym sym;
@@ -194,7 +163,6 @@ struct BoolCb {
 const BoolCb kBools[] = {
     {Node::kB13, MRB_SYM_Q(service_available), "service_available?", true},
     {Node::kB11, MRB_SYM_Q(uri_too_long), "uri_too_long?", false},
-    // nil = not validated reads as pass
     {Node::kB9a, MRB_SYM(validate_content_checksum), "validate_content_checksum", true},
     {Node::kB9b, MRB_SYM_Q(malformed_request), "malformed_request?", false},
     {Node::kB7, MRB_SYM_Q(forbidden), "forbidden?", false},
@@ -216,18 +184,10 @@ struct NamedSym {
   mrb_sym sym;
   const char* name;
 };
-// Callbacks whose VALUES the machine cannot speak yet - konst or
-// runtime alike, they refuse the start by name.
 const NamedSym kUnhonored[] = {
-    // the *_provided pair arrays are value conneg - say content_type
     {MRB_SYM(content_types_provided), "content_types_provided"},
     {MRB_SYM(languages_provided), "languages_provided"},
     {MRB_SYM(charsets_provided), "charsets_provided"},
-    // encodings_provided is honored (#147, gzip only) - see kKonstOnly
-    // and the read below content_type's. Still unhonored: real per-
-    // representation ETag support - generate_etag stays refused until
-    // that lands, so #147 cannot promise a distinct ETag per coding
-    // (see the report on this task for the reasoning).
     {MRB_SYM(generate_etag), "generate_etag"},
     {MRB_SYM(last_modified), "last_modified"},
     {MRB_SYM(options), "options"},
@@ -238,7 +198,6 @@ const NamedSym kUnhonored[] = {
     {MRB_SYM(expires), "expires"},
     {MRB_SYM(variances), "variances"},
 };
-// These shape the compiled vectors or carry values: class methods only.
 const NamedSym kKonstOnly[] = {
     {MRB_SYM(known_methods), "known_methods"},
     {MRB_SYM(allowed_methods), "allowed_methods"},
@@ -249,25 +208,14 @@ const NamedSym kKonstOnly[] = {
     {MRB_SYM_Q(moved_temporarily), "moved_temporarily?"},
 };
 
-// --- the run: the whole flow inside ONE VM frame ---------------------
-//
-// Within this cfunc the wrapper funcall's TRY catches raises, the
-// wrapper's arena roots every value until exit, and anything one
-// callback returns stays alive for the next one - the frame IS the
-// memory model. The Resource arrives through the proc's env.
+// RFC 9110: THE runtime tier - the whole flow inside one VM frame.
 mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
   const Resource& res = *static_cast<const Resource*>(mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0)));
-  // THIS REQUEST'S resource (#181). One allocation, inside the frame
-  // that already exists, rooted by its arena - and the app's own
-  // initialize (if it wrote one) runs here, per request, exactly like
-  // webmachine-ruby. A raise in it is a raise in the frame: the 500
-  // path every other callback already uses.
   res.live = mrb_obj_new(mrb, res.klass, 0, nullptr);
   const flow::ReqFacts& facts = *res.run_facts;
   const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
   const auto naked = [&](mrb_method_t m, bool fast, mrb_sym sym) -> mrb_value {
     if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.live)->c != res.klass)) {
-      // cfunc, or a singleton class grew on the instance: full funcall.
       return mrb_funcall_argv(mrb, res.live, sym, 0, nullptr);
     }
     mrb_callinfo* ci = mrb->c->ci;
@@ -282,7 +230,7 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
 
   flow::Node n = flow::Node::kB13;
   uint16_t status = 0;
-  for (;;) {  // terminates: proven acyclic in flow.hpp
+  for (;;) {
     const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
     bool ans;
     if (f.kind == flow::Kind::kRequest) {
@@ -305,16 +253,16 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
     if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
       mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
     }
-    // Copied while the frame roots it - the frame is the borrow.
     res.run_body->assign(RSTRING_PTR(v), RSTRING_LEN(v));
     res.run_have_body = true;
   }
   res.run_status = status;
   return mrb_nil_value();
 }
+}
 
-}  // namespace
-
+// RFC 9110: fold one resource class - every konst callback asked once,
+// every dynamic callback resolved, the class frozen.
 bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
   out = Resource{};
@@ -337,8 +285,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // The booleans: class method -> konst bit; instance method -> the
-  // node goes dynamic, resolved HERE, asked inside the run frame.
   bool ans[sizeof(kBools) / sizeof(kBools[0])];
   for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
     const BoolCb& cb = kBools[i];
@@ -357,8 +303,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // is_authorized?: only an unconditional true is konst (a 401 with
-  // WWW-Authenticate needs the callback's string - a later tier).
   bool authorized = true;
   if (WM_RES_UNLIKELY(!ask(mrb, klass, MRB_SYM_Q(is_authorized), "is_authorized?", true,
                            &authorized, err, errlen))) {
@@ -370,7 +314,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-  // moved_*: a truthy answer carries a Location URI - a later tier.
   const NamedSym kMoved[] = {
       {MRB_SYM_Q(moved_permanently), "moved_permanently?"},
       {MRB_SYM_Q(moved_temporarily), "moved_temporarily?"},
@@ -388,9 +331,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // The representation: content_type is one String (default text/html),
-  // to_html the one handler. A CLASS handler renders once, here; an
-  // INSTANCE handler renders per request inside the run frame.
   std::string content_type = "text/html";
   {
     const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
@@ -408,17 +348,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // encodings_provided (#147): read once here, the same way as
-  // content_type just above - a class method, asked at setup, never
-  // again. webmachine-ruby's shape is a Hash of coding name -> encoder
-  // method; ONLY THE KEYS ARE READ. The values name a per-representation
-  // encoder callback and no tier honors that dispatch yet (gzip is
-  // built in, by zlib, at answer time - see gzip.hpp) - documented
-  // here, at the one place the declaration is read, per #147's own
-  // requirement. Presence of "gzip" is the whole question; "identity"
-  // needs no key at all (RFC 9110 12.5.3: it is always available, and
-  // for a dynamic body this tree can always produce it, so F6/F7 never
-  // need to refuse - see flow_walk.hpp's F7 konst default).
   {
     const Resolved enc = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(encodings_provided));
     if (enc.defined) {
@@ -455,18 +384,11 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     out.body_m = body_i.m;
     out.body_fast = body_i.fast;
   }
-  out.konst.content_type = content_type;  // the negotiated type, body or not
+  out.konst.content_type = content_type;
 
   out.klass = mrb_class_ptr(klass);
-  // routes.add is where resources FREEZE: from here no method can be
-  // redefined, so every method_t resolved above stays true forever.
   mrb_obj_freeze(mrb, klass);
 
-  // NO instance is built here (#181): a resource's instance belongs to
-  // a REQUEST, and run_cfunc builds it inside the frame that serves
-  // one. What setup builds is the run carrier: a HIDDEN class (no
-  // constant - unreachable from Ruby) whose one method is the run
-  // cfunc, the Resource wired in through the proc's env as a cptr.
   if (out.dynamic != 0 || out.dynamic_body) {
     struct RClass* hidden = mrb_class_new(mrb, mrb->object_class);
     const mrb_value env = mrb_cptr_value(mrb, &out);
@@ -478,8 +400,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     mrb_gc_register(mrb, out.run_self);
   }
 
-  // The method lists, folded (defaults: webmachine's standard known
-  // set, GET/HEAD allowed).
   bool known[7] = {true, true, true, true, true, true, false};
   if (WM_RES_UNLIKELY(!ask_methods(mrb, klass, MRB_SYM(known_methods), "known_methods", known,
                                    err, errlen))) {
@@ -493,8 +413,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     return false;
   }
 
-  // Fold everything into the per-method vectors, and spell the Allow
-  // line B10's 405 will speak (RFC 9110 10.2.1).
   out.konst.allow.clear();
   for (uint8_t m = 0; m < 6; m++) {
     if (allowed[m]) {
@@ -510,46 +428,33 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       k.ans[static_cast<size_t>(kBools[i].node)] = ans[i];
     }
   }
-  // The vectors just changed, so the answers derived from them are
-  // stale. A fully konst resource (no dynamic node, no dynamic body)
-  // is NOT bound, so it answers through flow::answer and reads these.
   out.konst.resolve_shortcuts();
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
 
+// RFC 9110: decision + render for one request; a raise leaves 500 pending.
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts, const ReqView* req,
                       std::string* body, bool* have_body) {
-  // One pointer store: the request object materialises nothing until a
-  // callback asks it something (#116 slice 4).
   request_bind(req);
   res.run_facts = &facts;
   res.run_body = body;
   res.run_have_body = false;
   res.run_status = 0;
-  // The wrapper: funcall arms the TRY, its arena roots the whole frame,
-  // its exit restores - one entry pays for everything inside.
   mrb_funcall_argv(res.mrb, res.run_self, MRB_SYM(call), 0, nullptr);
-  // The view's bytes belong to the receive buffer and to this frame;
-  // nothing may reach them once it is over. The request's resource
-  // goes the same way: the arena has unwound, so the value is stale -
-  // it must not stay readable through the struct.
   request_bind(nullptr);
   res.live = mrb_nil_value();
   if (WM_RES_UNLIKELY(res.mrb->exc != nullptr)) {
     *have_body = false;
-    return 500;  // exception stays pending for the answering path
+    return 500;
   }
   *have_body = res.run_have_body;
   return res.run_status;
 }
 
+// RFC 9110 15.6.1: the pending exception's message, lent for the 500 body.
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len) {
   if (res.mrb->exc == nullptr) return false;
-  // Straight from the field (mruby/error.h: RException.mesg is "NULL or
-  // probably RString"). The exception roots the message while pending;
-  // the caller copies before any mruby call can run, so clearing exc
-  // here is safe - no allocation happens in between.
   struct RException* e = reinterpret_cast<struct RException*>(res.mrb->exc);
   res.mrb->exc = nullptr;
   if (e->mesg == nullptr || e->mesg->tt != MRB_TT_STRING) return false;
@@ -559,31 +464,20 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
   return true;
 }
 
+// mruby: one raise as one error-log record - class, message, backtrace.
 void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
                    size_t tlen, uint16_t status) {
   if (mrb->exc == nullptr) return;
   const mrb_value exc = mrb_obj_value(mrb->exc);
-  // The class name is a symbol's bytes: interned for the VM's
-  // lifetime, so there is nothing here to root and nothing to free.
   const char* kn = mrb_obj_classname(mrb, exc);
   const char* mp = nullptr;
   size_t mlen = 0;
-  // Straight from the field (mruby/error.h: RException.mesg is "NULL
-  // or probably RString"), the same read the body path makes.
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
   if (e->mesg != nullptr && e->mesg->tt == MRB_TT_STRING) {
     const mrb_value mesg = mrb_obj_value(e->mesg);
     mp = RSTRING_PTR(mesg);
     mlen = static_cast<size_t>(RSTRING_LEN(mesg));
   }
-  // The frames, joined with "\n" - the shape the daemon splits on. The
-  // exception is still PENDING here, which is why nothing below is a
-  // funcall: mrb_exc_backtrace is the C entry mruby's own printer
-  // uses, and what it hands back is an Array of plain Strings.
-  //
-  // The join allocates, and that is deliberate: this runs when
-  // something already went wrong, which is the one path in this tree
-  // that has no throughput to protect.
   std::string trace;
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value bt = mrb_exc_backtrace(mrb, exc);
@@ -600,40 +494,24 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, co
   log_error(lg, peer, plen, kn, std::strlen(kn), target, tlen, status, mp, mlen, trace.data(),
             trace.size());
 }
+}
 
-}  // namespace webmachine
-
-// The gem's Ruby surface: the Webmachine::Resource base class an app
-// subclasses, and Webmachine::Application (#116), which is how a
-// resource reaches a listener at all. Inheritance registers nothing on
-// its own any more - route.add is the only door, and it is the door
-// that freezes the class.
 extern "C" {
-
+// mruby: the gem's Ruby surface - the base classes and the loop's three doors.
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   struct RClass* wm = mrb_define_module_id(mrb, MRB_SYM(Webmachine));
-  // The refusals' classes FIRST - everything below can raise, and
-  // error.hpp's head says why they exist at all.
   struct RClass* err =
       mrb_define_class_under_id(mrb, wm, MRB_SYM(Error), mrb->eStandardError_class);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(ConfigError), err);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(RouteError), err);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
-  // The websocket's own base class (#175), BEFORE the request object:
-  // a websocket resource reads the handshake's head through the same
-  // one object, so that accessor is hung on both classes.
   webmachine::ws_init(mrb, wm);
-  // The event stream's base class (#102), here for the same reason:
-  // its resource reads the head that asked, through the same object.
   webmachine::sse_init(mrb, wm);
   webmachine::application_init(mrb, wm);
-  // What a runtime callback sees of the request it is answering.
   webmachine::request_init(mrb, wm);
-  // The loop itself (#116 slice 3): run / tick / fd, next to the
-  // Application that says WHAT is served.
   webmachine::server_init(mrb, wm);
 }
 
+// mruby: nothing outlives the VM here.
 void mrb_webmachine_mruby_gem_final(mrb_state*) {}
-
-}  // extern "C"
+}

@@ -10,7 +10,7 @@
 
 namespace webmachine {
 namespace {
-
+// POSIX read(2): a whole file into memory. Setup only.
 bool slurp(const char* path, std::string& out) {
   const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return false;
@@ -29,12 +29,14 @@ bool slurp(const char* path, std::string& out) {
   return true;
 }
 
+// Apache mime.types / shared-mime-info globs2: field separators.
 bool blank(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
+// RFC 9110 8.3: a media type's extension key is case-insensitive.
 char lower(char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; }
+}
 
-}  // namespace
-
+// RFC 9110 8.3: one extension, one media type.
 void MimeDb::take(const char* type, size_t tlen, const char* ext, size_t elen) {
   if (tlen == 0 || elen == 0) return;
   std::string key(elen, '\0');
@@ -42,9 +44,7 @@ void MimeDb::take(const char* type, size_t tlen, const char* ext, size_t elen) {
   by_ext_.emplace_back(std::move(key), std::string(type, tlen));
 }
 
-// "type ext ext ..." - a media type, then the extensions that mean it.
-// Everything from '#' is a comment; a line with no extension names a
-// registered type that cannot answer a lookup, and is skipped.
+// Apache mime.types format: "type ext ext ...", '#' comments.
 void MimeDb::parse_types(const char* p, const char* end) {
   while (p < end) {
     const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
@@ -66,12 +66,7 @@ void MimeDb::parse_types(const char* p, const char* end) {
   }
 }
 
-// shared-mime-info's globs2: "weight:type:glob". Only "*.ext" is taken
-// - a glob with any other wildcard names a whole filename pattern, and
-// this table is keyed by extension. The weight is read and ignored:
-// the file is already sorted by it, so a later row for the same
-// extension is the weaker claim and simply loses to the earlier one at
-// dedup time.
+// shared-mime-info globs2 format: "weight:type:*.ext".
 void MimeDb::parse_globs2(const char* p, const char* end) {
   while (p < end) {
     const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
@@ -98,6 +93,7 @@ void MimeDb::parse_globs2(const char* p, const char* end) {
   }
 }
 
+// RFC 9110 8.3: the machine's own media-type database, first that exists.
 bool MimeDb::load(const char* configured, char* err, size_t errlen) {
   static const char* const kTypesPaths[] = {
       "/etc/mime.types", "/etc/apache2/mime.types", "/etc/httpd/conf/mime.types",
@@ -112,9 +108,6 @@ bool MimeDb::load(const char* configured, char* err, size_t errlen) {
       return false;
     }
     source_ = configured;
-    // The operator's file is read as whichever format its NAME says -
-    // globs2 is the only one with a distinct one, and it is always
-    // called that.
     globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
   } else {
     for (const char* path : kTypesPaths) {
@@ -141,11 +134,6 @@ bool MimeDb::load(const char* configured, char* err, size_t errlen) {
     parse_types(p, end);
   }
 
-  // Sorted for the binary search, and deduplicated so one extension
-  // holds one type. std::stable_sort keeps the file's own order among
-  // equal keys, which is what makes "the first row wins" mean "the
-  // first row of the file" - globs2's weight ordering and a
-  // mime.types duplicate both resolve the same way.
   std::stable_sort(by_ext_.begin(), by_ext_.end(),
                    [](const std::pair<std::string, std::string>& a,
                       const std::pair<std::string, std::string>& b) { return a.first < b.first; });
@@ -163,6 +151,7 @@ bool MimeDb::load(const char* configured, char* err, size_t errlen) {
   return true;
 }
 
+// RFC 9110 8.3: the type a filename claims; octet-stream when unknown.
 const char* MimeDb::type_of(const std::string& name) const {
   static const char kOctets[] = "application/octet-stream";
   const size_t dot = name.rfind('.');
@@ -174,5 +163,4 @@ const char* MimeDb::type_of(const std::string& name) const {
                                       const std::string& b) { return a.first < b; });
   return it != by_ext_.end() && it->first == ext ? it->second.c_str() : kOctets;
 }
-
-}  // namespace webmachine
+}

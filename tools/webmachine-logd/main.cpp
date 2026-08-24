@@ -1,35 +1,3 @@
-// webmachine-logd: the logs' prose half. Reads records from fd 0 - the
-// socketpair the server forked us with - formats them, and batches to
-// the file named on the command line. Lives on its own core, dies on
-// the socket's EOF after draining everything, and NEVER drops a
-// record: a write error is a named refusal with a nonzero exit the
-// server's operator can see.
-//
-// TWO MODES, because there are two streams and they share no field
-// (webmachine.hpp's log contract). One process per stream, each with
-// its own socket and its own file:
-//
-//   webmachine-logd access FILE MAXBYTES [full|anon|none]
-//   webmachine-logd error  FILE MAXBYTES
-//
-// MAXBYTES is a HARD ceiling on the file, not a rotation: at the cap
-// the OLDEST lines are dropped and the newest are kept, in place. The
-// reason is the one the user named - a server under load can write
-// faster than anyone reads, and a log that only ever grows fills the
-// disk and takes the machine with it. Rotation would only move the
-// ceiling to twice the number and keep growing. 0 means no ceiling,
-// which is the old behaviour and is the operator saying they watch it
-// themselves.
-//
-// This does NOT weaken the one rule. Every line the server decided to
-// write still lands on disk; what the cap governs is how long it
-// STAYS there, which is retention and the operator's choice.
-//
-// Deliberately dumb: blocking reads, write(2) per filled batch, no
-// ring, no threads. Its budget is enormous next to its load - the
-// formatting it took off the serving core measured 71.5ns/line, and
-// batched write(2) moves 3.8M lines/s in the slowest container this
-// tree benches on.
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -46,7 +14,6 @@
 
 #include "../../src/webmachine.hpp"
 
-
 using webmachine::ErrRec;
 using webmachine::LogRec;
 using webmachine::kErrRecVersion;
@@ -56,21 +23,11 @@ using webmachine::kLogRecVersion;
 
 static std::string out;
 static int log_fd = -1;
-// The hard ceiling and where the file currently stands. 0 = no cap.
 static size_t max_bytes = 0;
 static size_t on_disk = 0;
 
-// THE CAP, and the whole of it: keep the NEWEST bytes, drop the oldest
-// ones, in place. Called after a batch landed, so the file is only
-// ever briefly over. The cut is moved forward to the start of the next
-// whole ENTRY - a log whose first line is half a line, or the tail of
-// a record whose head is gone, is worse than one that lost a few bytes
-// more.
-//
-// Amortised cost: keeping half the cap means this runs once per
-// max_bytes/2 written and copies max_bytes/2, so one extra byte moved
-// per byte logged. That is the price of a bounded file, and it is paid
-// on the daemon's core, not the server's.
+// The hard ceiling: keep the NEWEST bytes, drop the oldest, in place.
+// The cut lands on a whole ENTRY, never mid-record.
 static void enforce_cap() {
   if (max_bytes == 0 || on_disk <= max_bytes) return;
   const size_t keep = max_bytes / 2;
@@ -89,16 +46,8 @@ static void enforce_cap() {
     got += static_cast<size_t>(n);
   }
   tail.resize(got);
-  // Start at a line boundary; if this chunk holds no break at all the
-  // whole of it is one enormous line and it goes as it is.
   const size_t nl = tail.find('\n');
   size_t start = nl == std::string::npos ? 0 : nl + 1;
-  // ...and then past any CONTINUATION lines, which is what makes the
-  // cut land on a whole ENTRY and not just a whole line. An error
-  // entry's backtrace frames are indented with a tab; a file that
-  // opens with three orphaned frames of an entry that is gone reads
-  // like a bug. No access line ever starts with a tab, so this is a
-  // no-op on that stream rather than a second rule for it.
   while (start < tail.size() && tail[start] == '\t') {
     const size_t next = tail.find('\n', start);
     if (next == std::string::npos) { start = tail.size(); break; }
@@ -127,6 +76,7 @@ static void enforce_cap() {
   on_disk = len;
 }
 
+// One write(2) per filled batch. A write error is a named refusal.
 static void flush_out() {
   size_t off = 0;
   while (off < out.size()) {
@@ -144,13 +94,9 @@ static void flush_out() {
   enforce_cap();
 }
 
-// "[23/Aug/2026:14:30:00 +0000]" - cached per second; records arrive
-// in near-time order, so this hits almost always.
 static int64_t ts_sec = -1;
-// 28 bytes are ever read (the append below says so); the size gives
-// snprintf its worst case - a five-digit year would truncate inside
-// 29, and gcc rightly refuses to promise it cannot happen.
 static char ts[40];
+// Combined Log Format: "[23/Aug/2026:14:30:00 +0000]", cached per second.
 static void spell_ts(int64_t sec) {
   if (sec == ts_sec) return;
   ts_sec = sec;
@@ -163,9 +109,7 @@ static void spell_ts(int64_t sec) {
                 kMon[g.tm_mon], g.tm_year + 1900, g.tm_hour, g.tm_min, g.tm_sec);
 }
 
-// Quotes, backslashes and control bytes in request-controlled fields
-// are escaped HERE - an attacker's header must not forge log columns,
-// and the serving core no longer pays the scan.
+// Escaping happens HERE: an attacker's header must not forge log columns.
 static void esc(const char* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     const unsigned char c = static_cast<unsigned char>(p[i]);
@@ -183,6 +127,7 @@ static void esc(const char* p, size_t n) {
   }
 }
 
+// Combined Log Format: %b, by hand.
 static void spell_num(size_t v) {
   char tmp[20];
   size_t k = 0;
@@ -190,22 +135,11 @@ static void spell_num(size_t v) {
   while (k != 0) out.push_back(tmp[--k]);
 }
 
-// %h from the record's RAW sockaddr. The level names the amount of
-// PRIVACY the peer gets, not the amount of address the operator gets:
-//   none  no privacy - the address as-is. A full IP is personal data
-//         under the GDPR; the server warns at startup that logging it
-//         needs a legal basis (consent banner / privacy notice).
-//   anon  IPv4 with the last octet zeroed, IPv6 cut to its /48 - the
-//         common GDPR anonymization the apache/nginx modules apply
-//   full  full privacy - every host spells "-"
-// The SERVER never sees a spelled address; the raw bytes exist only in
-// transit and, at anon/full, never reach the disk at all.
 enum class Privacy { kNone, kAnon, kFull };
 static Privacy privacy = Privacy::kAnon;
 
-// no_track: the record carries the peer's own "do not track" ask
-// (DNT/Sec-GPC) - it caps the level at anon whatever the operator
-// chose. It can only ever ADD privacy, never remove it.
+// Combined Log Format %h, at the operator's PRIVACY level; DNT/Sec-GPC
+// can only ever add privacy.
 static void spell_peer(const char* sa, size_t salen, bool no_track) {
   Privacy level = privacy;
   if (no_track && level == Privacy::kNone) level = Privacy::kAnon;
@@ -224,7 +158,7 @@ static void spell_peer(const char* sa, size_t salen, bool no_track) {
     struct sockaddr_in6 v6;
     std::memcpy(&v6, sa, sizeof v6);
     if (level == Privacy::kAnon) {
-      std::memset(v6.sin6_addr.s6_addr + 6, 0, 10);  // keep the /48
+      std::memset(v6.sin6_addr.s6_addr + 6, 0, 10);
     }
     inet_ntop(AF_INET6, &v6.sin6_addr, txt, sizeof txt);
   } else {
@@ -235,7 +169,7 @@ static void spell_peer(const char* sa, size_t salen, bool no_track) {
   out.append(txt);
 }
 
-// --- access: one line per response, Combined Log Format ------------
+// Combined Log Format: one line per response, batched.
 static void run_access() {
   std::string in;
   char rbuf[256 * 1024];
@@ -248,7 +182,7 @@ static void run_access() {
       flush_out();
       std::exit(1);
     }
-    if (n == 0) {  // the server is gone; everything received still lands
+    if (n == 0) {
       flush_out();
       std::exit(0);
     }
@@ -302,20 +236,7 @@ static void run_access() {
   }
 }
 
-// --- error: one block per raise ------------------------------------
-//
-// The header line carries what identifies the failure - when, who
-// asked, what they were answered, what they asked for, and which class
-// raised what. The backtrace follows as one indented line per frame,
-// because a trace read sideways is a trace nobody reads. Frames are
-// escaped like every other request-touched field, so a raise carrying
-// "\n" in its message cannot forge one.
-//
-// There is NO privacy switch on this stream: an error line spells the
-// peer at `anon` and that is the whole of its choice. A trace is a
-// debugging aid, and debugging never needed the last octet; an
-// operator who wants full addresses asks for them on the access log,
-// where the GDPR warning is attached to the asking.
+// One block per raise: a header line, then one indented line per frame.
 static void run_error() {
   std::string in;
   char rbuf[64 * 1024];
@@ -344,10 +265,6 @@ static void run_error() {
         flush_out();
         std::exit(1);
       }
-      // dyn is what the second send carried; the five lengths are what
-      // it is made of. The server computes both from the same numbers,
-      // so a disagreement is a desynced stream and not a bad record -
-      // every following byte would be misread. Refuse by name.
       const size_t parts = size_t(r.plen) + r.klen + r.tlen + r.mlen + r.blen;
       if (parts != r.dyn) {
         std::fprintf(stderr, "webmachine-logd: error record says %u dynamic bytes, its fields add "
@@ -383,8 +300,6 @@ static void run_error() {
       out.append(": ", 2);
       if (r.mlen != 0) esc(mesg, r.mlen); else out.push_back('-');
       out.push_back('\n');
-      // The frames, as the server packed them: "\n" between, none
-      // after. An empty trace is a release build, not a lost one.
       for (size_t i = 0; i < r.blen;) {
         size_t j = i;
         while (j < r.blen && trace[j] != '\n') j++;
@@ -395,14 +310,13 @@ static void run_error() {
       }
 
       off += need;
-      // Per record, not per megabyte: errors are rare and someone is
-      // waiting to read this one.
       flush_out();
     }
     in.erase(0, off);
   }
 }
 
+// Two modes, two streams: access FILE MAXBYTES [privacy] | error FILE MAXBYTES.
 int main(int argc, char** argv) {
   if (argc < 4) {
     std::fprintf(stderr,
@@ -440,20 +354,11 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  // O_RDWR because the cap reads the tail back; NOT O_APPEND, which on
-  // Linux drags pwrite(2) to the end of the file whatever offset it is
-  // given - the cap writes to offset 0 and would silently append
-  // instead. One process writes this file, so the seek position is
-  // ours alone and append semantics buy nothing.
   log_fd = ::open(argv[2], O_RDWR | O_CREAT | O_CLOEXEC, 0644);
   if (log_fd < 0) {
     std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[2], std::strerror(errno));
     return 1;
   }
-  // Seek to the end: this is where writing continues, and where the
-  // file already stands. The cap governs the FILE, not this process's
-  // share of it, so a restart into an existing log inherits its size
-  // instead of pretending it starts at zero.
   const off_t at = ::lseek(log_fd, 0, SEEK_END);
   if (at < 0) {
     std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[2], std::strerror(errno));
@@ -462,5 +367,5 @@ int main(int argc, char** argv) {
   on_disk = static_cast<size_t>(at);
 
   if (err_mode) run_error(); else run_access();
-  return 0;  // both loops leave through exit(); this keeps the compiler happy
+  return 0;
 }

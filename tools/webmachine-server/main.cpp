@@ -1,9 +1,3 @@
-// The server binary: the CLI states what this INVOCATION decides, the
-// app file's `main` states what is served, and the loop belongs to
-// neither - src/server.cpp owns it, and this tool enters it through the
-// same door Ruby does (#116 slice 3: Webmachine.run / .tick / .fd).
-// --echo mounts the byte-proof Echo app, which is a fixture and has no
-// applications, so it keeps a serve loop of its own here.
 #include <mruby.h>
 #include <mruby/variable.h>
 #include <sys/signalfd.h>
@@ -19,18 +13,15 @@
 
 #include "../../src/webmachine.hpp"
 
-
 namespace {
-
-// The byte proof: what arrived goes back, nothing else. Lives here
-// because it is a test fixture, not a protocol.
 struct Echo {
   struct Conn {
-    const void* peer = nullptr;   // the Ring fills these when a log is
-    uint8_t peer_len = 0;         // on; echo has no log and no reader
+    const void* peer = nullptr;
+    uint8_t peer_len = 0;
+    // Echo keeps no per-connection state.
     void reset(uint8_t, bool) {}
   };
-  struct Plan {  // echo hands over no segments; the shape is the Ring's
+  struct Plan {
     struct Seg {
       const char* base;
       size_t off;
@@ -42,41 +33,35 @@ struct Echo {
     size_t iov_len = 0;
     size_t byte_cap = 0;
   };
+  // The byte proof: what arrived goes back, nothing else.
   bool feed(Conn&, const char* data, size_t len, std::string& sink, Plan*) {
     sink.append(data, len);
     return true;
   }
-  bool more(Conn&, std::string&, Plan&) { return true; }  // owes nothing between feeds
-  webmachine::Logger* access_log() { return nullptr; }  // echo logs nothing
-  webmachine::Logger* error_log() { return nullptr; }   // and nothing in it can raise
-  bool pending(const Conn&) const { return false; }  // nothing is ever owed
-  bool timed(const Conn&) const { return false; }    // echo has no source of its own
+  // Echo owes nothing between feeds.
+  bool more(Conn&, std::string&, Plan&) { return true; }
+  // Echo logs nothing.
+  webmachine::Logger* access_log() { return nullptr; }
+  // And nothing in echo can raise.
+  webmachine::Logger* error_log() { return nullptr; }
+  // Nothing is ever owed.
+  bool pending(const Conn&) const { return false; }
+  // Echo has no source of its own.
+  bool timed(const Conn&) const { return false; }
+  // Echo keeps nothing fresh.
   void on_tick() {}
 };
 
-// Does io_uring exist on THIS machine? Not asked here - ANSWERED
-// here, by reading the answer the process already has. mruby-io_uring
-// probes in its gem_init during mrb_open() and publishes the result as
-// URING_AVAILABLE on Object; it is a hard dependency of this tree
-// (mrbgem.rake), so the constant is always there and always current.
-// Asking again with a probe of our own would create a second answer
-// that can disagree with the first - the point of the gem exporting a
-// signal is that there is exactly one.
-//
-// This is a RUNTIME question and stays one even though WHICH
-// implementation of the API got compiled in is settled at build time
-// (see slipstreamIO): a binary built against the real liburing can
-// still land on a kernel too old for the ring ops, or under a seccomp
-// profile or sysctl that blocks them.
+// Does io_uring exist on THIS machine? Read from URING_AVAILABLE, which
+// mruby-io-uring already answered during mrb_open().
 bool uring_present(mrb_state* mrb) {
   const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
   const mrb_value obj = mrb_obj_value(mrb->object_class);
-  if (!mrb_const_defined(mrb, obj, k)) return false;  // a build without the gem
+  if (!mrb_const_defined(mrb, obj, k)) return false;
   return mrb_bool(mrb_const_get(mrb, obj, k));
 }
 
-// The echo floor's own loop. The HTTP server has none here any more:
-// src/server.cpp holds it, so Ruby and this tool cannot drift apart.
+// The echo floor's own loop; the HTTP server's lives in src/server.cpp.
 int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
   char err[512] = "";
   if (!webmachine::server_backend_ok(have_uring, err, sizeof(err))) {
@@ -94,9 +79,9 @@ int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
   ring.run();
   return 0;
 }
+}
 
-}  // namespace
-
+// The CLI states what this INVOCATION decides; `main` states what is served.
 int main(int argc, char** argv) {
   bool echo = false;
   const char* pidfile = nullptr;
@@ -105,9 +90,6 @@ int main(int argc, char** argv) {
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
   const char* error_log_path = nullptr;
-  // -1 = nothing typed, so the config file may still speak and, after
-  // it, the 500 MB default. 0 is a real answer ("no ceiling"), which
-  // is why this is not just 0.
   long long log_max_bytes = -1;
   const char* config_path = nullptr;
   int cli_port = 0;
@@ -174,23 +156,12 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // The VM boots with the process and holds the resources. Class
-  // methods are asked ONCE at route.add and become constants; instance
-  // methods are the runtime tier, asked through the VM on every request
-  // (the budgeted entry - the copy floor prices one at ~0.1-0.3us).
-  // Booted BEFORE the config file: mruby-toml parses it through this
-  // same VM (config is once-per-start, no hot path, no second parser).
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {
     std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
 
-  // The file speaks after the flags (config.hpp's head owns the
-  // precedence sentence). An explicit --config that cannot be read is
-  // a refusal; without one, ./webmachine.toml is used when present -
-  // and ANNOUNCED, so an invisible file never silently steers a
-  // server. `fc` owns the strings for the whole run.
   webmachine::Config fc;
   if (config_path == nullptr && ::access("webmachine.toml", R_OK) == 0) {
     config_path = "webmachine.toml";
@@ -221,7 +192,7 @@ int main(int argc, char** argv) {
       log_max_bytes = static_cast<long long>(fc.log_max_bytes);
     }
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
-    opts.sq_entries = fc.sq_entries;  // no CLI twins; 0 = default
+    opts.sq_entries = fc.sq_entries;
     opts.backlog = fc.backlog;
     opts.to_header = fc.header_timeout;
     opts.to_send = fc.send_timeout;
@@ -231,15 +202,6 @@ int main(int argc, char** argv) {
   opts.cli_unix = cli_unix;
   opts.cli_port = cli_port;
 
-  // The pid, for whoever started this process and has to find it again
-  // - a supervisor, a test harness, a bench script. Written BEFORE
-  // anything can fail, so a file that exists names a process that at
-  // least got this far, and removed on the way out (the stop signal
-  // lands in the signalfd below, so the normal exit path runs).
-  //
-  // Pattern-matching the process table is the alternative, and it is
-  // worse than it looks: `pkill -f webmachine-server` also matches the
-  // shell that typed the command, which is how an afternoon gets spent.
   if (pidfile != nullptr) {
     FILE* pf = std::fopen(pidfile, "we");
     if (pf == nullptr) {
@@ -251,9 +213,6 @@ int main(int argc, char** argv) {
     std::fclose(pf);
   }
 
-  // TERM/INT are blocked and land in a signalfd the ring polls: the
-  // stop arrives as a CQE, so it cannot race the ring wait the way a
-  // handler flag would (flag checked, signal lands, wait blocks forever).
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);
@@ -264,8 +223,6 @@ int main(int argc, char** argv) {
   opts.log_path = log_path;
   opts.log_privacy = log_privacy;
   opts.error_log_path = error_log_path;
-  // Untyped and unconfigured leaves ServerOptions' own 500 MB
-  // standing; a typed 0 overrides it with "no ceiling".
   if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
   opts.have_uring = uring_present(mrb);
 
@@ -273,7 +230,7 @@ int main(int argc, char** argv) {
     webmachine::RingConfig cfg;
     cfg.nlisteners = 1;
     cfg.stop_fd = opts.stop_fd;
-    cfg.sq_entries = opts.sq_entries;  // [tune] reaches the floor too
+    cfg.sq_entries = opts.sq_entries;
     cfg.backlog = opts.backlog;
     cfg.to_header = opts.to_header;
     cfg.to_send = opts.to_send;
@@ -292,8 +249,6 @@ int main(int argc, char** argv) {
     return rc;
   }
 
-  // The INVOCATION speaks first, and once: an app file that could
-  // rewrite the command line would make the command line a suggestion.
   webmachine::server_options(opts);
 
   if (opts.app_path != nullptr) {
@@ -304,16 +259,10 @@ int main(int argc, char** argv) {
       return 1;
     }
   } else {
-    // No app: one splat route on webmachine-ruby's unbound resource -
-    // what this server answered everywhere before routes existed.
     webmachine::app_default();
   }
 
   int rc = 0;
-  // `main` may have served already - it can call Webmachine.run, or
-  // tick in a loop of its own; that is what slice 3 is for. Then there
-  // is nothing left here to do: the stop that ended its loop ends this
-  // process too.
   if (!webmachine::server_entered()) {
     char err[512] = "";
     rc = webmachine::server_run(mrb, err, sizeof(err));

@@ -1,9 +1,3 @@
-// The measuring stick, not a product. Same floor protocol as the ring
-// server - one fixed 200 per receive, --echo for the byte proof, TERM
-// removes the unix path - built on the classic reactor: epoll(7),
-// accept4, recv/send, edge-triggered, read-until-EAGAIN. The distance
-// between its number and the ring floor's number IS what io_uring buys
-// on this hardware; nothing else separates the two binaries.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
@@ -21,7 +15,6 @@
 #include <vector>
 
 namespace {
-
 #define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 constexpr char kResponse[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
@@ -29,7 +22,7 @@ constexpr size_t kResponseLen = sizeof(kResponse) - 1;
 
 struct Conn {
   bool live = false;
-  bool want_out = false;  // EPOLLOUT armed: `out` has bytes the socket refused
+  bool want_out = false;
   size_t sent = 0;
   std::string out;
 };
@@ -38,24 +31,26 @@ struct Floor {
   int ep = -1;
   int lfd = -1;
   bool echo = false;
-  std::vector<Conn> conns;  // fd-indexed
+  std::vector<Conn> conns;
 
+  // The measuring stick's connection table.
   Conn& conn(int fd) {
     if (static_cast<size_t>(fd) >= conns.size()) conns.resize(static_cast<size_t>(fd) + 1);
     return conns[static_cast<size_t>(fd)];
   }
 
+  // The measuring stick: close and forget.
   void drop(int fd) {
     Conn& c = conns[static_cast<size_t>(fd)];
     c.live = false;
     c.want_out = false;
     c.sent = 0;
-    c.out.clear();  // capacity survives: a warm slot allocates nothing
+    c.out.clear();
     ::epoll_ctl(ep, EPOLL_CTL_DEL, fd, nullptr);
     ::close(fd);
   }
 
-  // Push `out` at the socket; what it refuses waits for EPOLLOUT.
+  // The measuring stick: push `out`; what it refuses waits for EPOLLOUT.
   void flush(int fd) {
     Conn& c = conns[static_cast<size_t>(fd)];
     while (c.sent < c.out.size()) {
@@ -94,18 +89,18 @@ struct Floor {
     }
   }
 
+  // The measuring stick: edge-triggered, read until EAGAIN or the edge is lost.
   void on_readable(int fd) {
     Conn& c = conn(fd);
     char buf[65536];
-    // Edge-triggered contract: read until EAGAIN or the edge is lost.
     for (;;) {
       const ssize_t n = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
       if (n > 0) {
         if (echo) c.out.append(buf, static_cast<size_t>(n));
-        else c.out.append(kResponse, kResponseLen);  // one 200 per receive: the floor protocol
+        else c.out.append(kResponse, kResponseLen);
         continue;
       }
-      if (n == 0) {  // EOF: peer finished; anything queued is moot
+      if (n == 0) {
         drop(fd);
         return;
       }
@@ -117,10 +112,11 @@ struct Floor {
     if (!c.out.empty()) flush(fd);
   }
 
+  // The measuring stick: accept4 until EAGAIN.
   void on_accept() {
     for (;;) {
       const int fd = ::accept4(lfd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
-      if (fd < 0) return;  // EAGAIN and transient refusals end the drain the same way
+      if (fd < 0) return;
       Conn& c = conn(fd);
       c.live = true;
       c.want_out = false;
@@ -133,9 +129,10 @@ struct Floor {
     }
   }
 };
+}
 
-}  // namespace
-
+// The measuring stick, not a product: the same floor protocol on epoll(7).
+// The distance to the ring floor IS what io_uring buys on this hardware.
 int main(int argc, char** argv) {
   const char* unix_path = nullptr;
   int port = 0;
@@ -203,8 +200,6 @@ int main(int argc, char** argv) {
     ::epoll_ctl(f.ep, EPOLL_CTL_ADD, f.lfd, &ev);
   }
 
-  // TERM/INT land in a signalfd inside the epoll set: the stop is an
-  // event like every other - same race-free lifecycle as the ring floor.
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);

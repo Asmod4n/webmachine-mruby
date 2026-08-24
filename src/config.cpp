@@ -1,10 +1,3 @@
-// config.hpp's head says what the file may decide and why; this file
-// only reads, checks and copies. Everything here runs once, before
-// the ring exists. mruby-toml does the parsing: TOML.load(path)
-// returns a Document, and a section read through #[] arrives as a
-// plain Hash - Ruby values this side walks with the C API and copies
-// out of before the arena closes.
-
 #include "webmachine.hpp"
 
 #include <mruby/array.h>
@@ -19,17 +12,8 @@
 #include <cstring>
 
 namespace webmachine {
-
 namespace {
-
-// Any raise on the way is the refusal's text: the parser's own words
-// name the line and the reason better than a paraphrase would.
-//
-// Read STRAIGHT from the field, never through a funcall: with an
-// exception pending the VM is not in a state to run Ruby, and calling
-// #message there is asking for a second failure on top of the first.
-// mruby/error.h says what the field is ("RException.mesg is NULL or
-// probably RString"); resource_exception_begin reads it the same way.
+// TOML: the parser's own words become the refusal's text.
 bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   if (mrb->exc == nullptr) return false;
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
@@ -44,9 +28,7 @@ bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   return true;
 }
 
-// A top-level section: Document#[] raises KeyError for an absent key,
-// which here just means "the CLI or the app's conf speaks" - any
-// other raise is the file's problem. Present must be a table.
+// TOML: one top-level section; an absent one means the CLI or conf speaks.
 bool section(mrb_state* mrb, mrb_value doc, const char* name, mrb_value* out, bool* present,
              const char* path, char* err, size_t errlen) {
   *present = false;
@@ -68,8 +50,7 @@ bool section(mrb_state* mrb, mrb_value doc, const char* name, mrb_value* out, bo
   return true;
 }
 
-// A present key must have the right type and a usable value; absent
-// is always fine.
+// TOML: a present key must have the right type; absent is always fine.
 bool take_string(mrb_state* mrb, mrb_value h, const char* where, const char* key,
                  std::string& out, const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -82,6 +63,7 @@ bool take_string(mrb_state* mrb, mrb_value h, const char* where, const char* key
   return true;
 }
 
+// TOML: a count, in range. Counts are not durations.
 bool take_int(mrb_state* mrb, mrb_value h, const char* where, const char* key, mrb_int lo,
               mrb_int hi, mrb_int* out, const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -95,17 +77,7 @@ bool take_int(mrb_state* mrb, mrb_value h, const char* where, const char* key, m
   return true;
 }
 
-// A DURATION crossing the Ruby<->C boundary goes through mruby-chrono
-// and through nothing else (standing rule): ONE convention for every
-// timeout this tree will ever take, which is also why `0.5` is a
-// correct half second here instead of a parse error - the API reads
-// Integer and Float alike.
-//
-// The target is seconds because that is what the ring can ENFORCE:
-// #180's deadlines are whole seconds and its reaper runs once a
-// second. A sub-second ask is therefore rounded UP (ceil), never
-// down - the one direction that cannot cut a connection earlier than
-// the operator asked for.
+// TOML: a DURATION, through mruby-chrono and nothing else; rounded up.
 bool take_seconds(mrb_state* mrb, mrb_value h, const char* where, const char* key, int* out,
                   const char* path, char* err, size_t errlen) {
   const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
@@ -124,9 +96,9 @@ bool take_seconds(mrb_state* mrb, mrb_value h, const char* where, const char* ke
   *out = static_cast<int>(secs.count());
   return true;
 }
+}
 
-}  // namespace
-
+// TOML: parse and validate webmachine.toml through the VM the process carries.
 bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen) {
   const int ai = mrb_gc_arena_save(mrb);
   bool ok = false;
@@ -157,8 +129,6 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
         goto done;
       }
       out.port = static_cast<int>(port);
-      // The same rule the CLI enforces for --unix/--port: one listener
-      // override, not a quiet priority between two.
       if (!out.unix_path.empty() && out.port != 0) {
         std::snprintf(err, errlen, "%s: server.unix and server.port - at most one", path);
         goto done;
@@ -168,8 +138,6 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
     if (have_log) {
       if (!take_string(mrb, log, "log", "file", out.log_file, path, err, errlen)) goto done;
       if (!take_string(mrb, log, "log", "privacy", out.log_privacy, path, err, errlen)) goto done;
-      // The word is checked HERE, where the operator can still read
-      // the answer, not in the daemon after the fork.
       if (!out.log_privacy.empty() && out.log_privacy != "none" && out.log_privacy != "anon" &&
           out.log_privacy != "full") {
         std::snprintf(err, errlen, "%s: log.privacy '%s'? none, anon or full", path,
@@ -183,10 +151,6 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       if (!take_string(mrb, log, "log", "error_file", out.error_log_file, path, err, errlen)) {
         goto done;
       }
-      // The ceiling is a COUNT of bytes, not a duration - take_int,
-      // like backlog and sq_entries. Its floor is 4096: a cap smaller
-      // than a line keeps nothing, and half of it (what the daemon
-      // keeps) has to hold at least one whole entry to be a log.
       if (!take_int(mrb, log, "log", "max_bytes", 4096, 1LL << 40, &maxb, path, err, errlen)) {
         goto done;
       }
@@ -197,12 +161,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       if (!take_int(mrb, tune, "tune", "backlog", 1, 65535, &backlog, path, err, errlen)) {
         goto done;
       }
-      // 32768 is IORING_MAX_ENTRIES, the kernel's own ceiling - more
-      // is not "more headroom", it is -EINVAL at init.
       if (!take_int(mrb, tune, "tune", "sq_entries", 1, 32768, &sq, path, err, errlen)) goto done;
-      // The #180 clocks are DURATIONS, so they take the chrono road
-      // (take_seconds says why); backlog and sq_entries stay integers
-      // because they are COUNTS, and a count is not a duration.
       if (!take_seconds(mrb, tune, "tune", "header_timeout", &out.header_timeout, path, err,
                         errlen)) {
         goto done;
@@ -223,10 +182,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   }
 
 done:
-  // Everything worth keeping was copied into std::strings; the
-  // Document and every converted Hash die with the arena.
   mrb_gc_arena_restore(mrb, ai);
   return ok;
 }
-
-}  // namespace webmachine
+}

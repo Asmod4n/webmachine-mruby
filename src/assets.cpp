@@ -1,45 +1,3 @@
-// The ZIP side of the asset tier (#170, corrected by #177): archive
-// in, entry table + prebuilt responses out. Runs ONCE at setup -
-// classic open/mmap is fine here (ring.hpp exempts mmap by name:
-// memory, not IO). The fd does not outlive setup: the mapping is what
-// serves, and it keeps serving - a request's bytes are an iovec into
-// these pages, never a copy.
-//
-// THE ARCHIVE IS PARSED BY miniz, NOT BY THIS FILE (Nutzer-Entscheid:
-// ".zip ist ne riesen Angriffsflaeche, da was selbst zu rollen schreit
-// danach CVEs zu wollen"). What used to live here was an end record
-// scanned backwards over 64 KiB, 46-byte central directory rows with
-// four variable-length fields each, Zip64 escapes, an encryption flag,
-// and a bounds check against the mapping behind every one of them -
-// 137 instrumented edges of hand-written foreign-format parsing, which
-// is the shape every ZIP CVE has ever had.
-//
-// WHY miniz AND NOT libzip, which the standing rule would prefer (a
-// stable ABI that every distribution carries): libzip cannot answer
-// the question this tier asks. It hands over BYTES - zip_fopen_index
-// plus zip_fread - and has no public API for an entry's POSITION;
-// zip_source_seek_compute_offset is a helper for source
-// implementations, not that. Taking it would mean copying every served
-// byte into an arena at setup and losing the mapping: file-backed
-// pages the kernel faults in on demand and can evict would become
-// anonymous RSS that must all stay resident. The delivery model (#155,
-// #168 - an iovec into the mapping, sendmsg, no copy) is not something
-// to trade for a packaging preference.
-//
-// miniz answers it: mz_zip_reader_init_mem parses OUR mapping with no
-// IO at all (MINIZ_NO_STDIO is a first-class build switch, not a
-// workaround), and mz_zip_archive_file_stat carries m_local_header_ofs
-// - a position - next to the metadata HTTP needs: m_comp_size,
-// m_uncomp_size, m_crc32, m_method, m_time as a time_t (so the DOS
-// date arithmetic goes with the parser), m_is_directory,
-// m_is_encrypted, m_is_supported.
-//
-// WHAT THIS FILE STILL READS OF THE FORMAT, and it is the whole of it:
-// the 30-byte Local Header, to skip it. Its name and extra lengths may
-// differ from the directory's, so they must be read locally - a
-// signature check and two uint16 at +26 and +28. Five lines against
-// the directory walk that is gone.
-
 #include "webmachine.hpp"
 
 #include <miniz.h>
@@ -55,15 +13,7 @@
 
 namespace webmachine {
 namespace {
-
-
-// The archive's mtime to IMF-fixdate. miniz has already read whichever
-// of the DOS date/time fields (appnote 4.4.6) or the extended-timestamp
-// extra field the archive carried, and hands over a time_t - so the bit
-// arithmetic that used to live here went with the parser. The zone is
-// unknowable for a DOS date (they are "local" with no zone recorded);
-// read as UTC, which every tool in the chain also pretends. Zero means
-// "no date recorded" and serves no Last-Modified.
+// RFC 9110 5.6.7: the archive's mtime as Last-Modified; 0 serves none.
 bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
   if (t <= 0) return false;
   struct tm norm;
@@ -72,6 +22,7 @@ bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
   return true;
 }
 
+// RFC 9110 8.8.3: the CRC-32 an ETag is spelled from.
 void spell_hex8(char* out, uint32_t v) {
   static const char kHex[] = "0123456789abcdef";
   for (int i = 7; i >= 0; i--) {
@@ -80,8 +31,7 @@ void spell_hex8(char* out, uint32_t v) {
   }
 }
 
-// One h1 header section: status line, Date placeholder (offset kept),
-// the connection spelling, the entry's fields, the blank line.
+// RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
 void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
                 const std::string& fields) {
   r.bytes.clear();
@@ -93,23 +43,22 @@ void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
   r.sec = 0;
 }
 
+// RFC 9112 9.3: the same head in all three connection spellings.
 void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::string& fields) {
   build_head(v[Assets::kPlain], status_line, Assets::kConn[Assets::kPlain], fields);
   build_head(v[Assets::kKeep], status_line, Assets::kConn[Assets::kKeep], fields);
   build_head(v[Assets::kClose], status_line, Assets::kConn[Assets::kClose], fields);
 }
+}
 
-}  // namespace
-
+// The mapping is what serves, and it serves until the process ends.
 Assets::~Assets() {
   if (map_ != nullptr) ::munmap(const_cast<char*>(map_), map_len_);
 }
 
+// ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
+// parses; this reads only the 30-byte Local Header, to skip it.
 bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen) {
-  // The fd is a SETUP tool, closed before this function returns: the
-  // mapping keeps the pages alive by itself, and nothing past setup
-  // ever reads the archive through a descriptor. One fd fewer against
-  // ring.hpp's kFdReserve, and one fewer thing to own.
   const int fd = ::open(zip_path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
     std::snprintf(err, errlen, "%s: %s", zip_path, std::strerror(errno));
@@ -132,8 +81,6 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
   map_ = static_cast<const char*>(m);
   const unsigned char* base = reinterpret_cast<const unsigned char*>(map_);
 
-  // miniz over OUR mapping: no fd, no read, no seek - it walks the
-  // Central Directory in the pages already faulted in.
   mz_zip_archive za;
   std::memset(&za, 0, sizeof(za));
   if (!mz_zip_reader_init_mem(&za, map_, map_len_, 0)) {
@@ -143,13 +90,11 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
   }
   struct Ender {
     mz_zip_archive* z;
+    // miniz's reader is a setup tool and ends with this scope.
     ~Ender() { mz_zip_reader_end(z); }
   } ender{&za};
 
   const mz_uint n = mz_zip_reader_get_num_files(&za);
-  // #170's Explorer requirement as a number: under 65535 entries and
-  // under 4 GB, so no Zip64 record is needed anywhere. Refused by name
-  // rather than half-supported.
   if (n >= 0xffff) {
     std::snprintf(err, errlen, "%s: %u entries - Zip64 territory, excluded by design",
                   zip_path, n);
@@ -166,11 +111,7 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     }
     const size_t nlen = std::strlen(st.m_filename);
 
-    // Directory rows carry no bytes to serve.
     if (st.m_is_directory) continue;
-    // Both refusals are miniz's own findings, restated in this tier's
-    // words - m_is_supported covers the methods and the patch-file bit
-    // it will not read.
     if (st.m_is_encrypted) {
       std::snprintf(err, errlen, "%s: %s is encrypted - not supported", zip_path,
                     st.m_filename);
@@ -188,11 +129,6 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
       return false;
     }
 
-    // THE ONLY ZIP BYTES THIS FILE STILL READS. miniz gives the Local
-    // Header's offset, not the data's, and the header's own name and
-    // extra lengths may differ from the directory's - so they are read
-    // where they are, and the result is bounds-checked against the
-    // mapping like everything that indexes into it.
     const size_t lho = static_cast<size_t>(st.m_local_header_ofs);
     if (lho + 30 > map_len_ || MZ_READ_LE32(base + lho) != 0x04034b50) {
       std::snprintf(err, errlen, "%s: %s has a broken local header", zip_path,
@@ -220,8 +156,6 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     entries_.push_back(std::move(e));
   }
 
-  // Sorted for the binary search; a duplicated name keeps its LAST
-  // directory row - the row a rewriting tool appended most recently.
   std::stable_sort(entries_.begin(), entries_.end(),
                    [](const AssetEntry& a, const AssetEntry& b) { return a.name < b.name; });
   for (size_t i = 0; i + 1 < entries_.size();) {
@@ -229,42 +163,29 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     else i++;
   }
 
-  // Prebuild what every request would otherwise redo.
   for (AssetEntry& e : entries_) {
     e.ctype = http::with_charset(mime.type_of(e.name));
     std::string f;
     f.append("Content-Type: ").append(e.ctype).append("\r\n");
     if (e.deflated) {
       f.append("Content-Encoding: gzip\r\n");
-      // A cache must not hand the gzip answer to a client this tier
-      // would refuse with 406 (RFC 9110 §12.5.5).
       f.append("Vary: Accept-Encoding\r\n");
     }
     f.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
     if (e.lm_valid) f.append("Last-Modified: ").append(e.lm, sizeof(e.lm)).append("\r\n");
-    // Advertised because it is true (#148, RFC 9110 14.3) - both
-    // methods range over the wire body through the same copy_wire.
     f.append("Accept-Ranges: bytes\r\n");
-    // gzip framing costs exactly 18 bytes: 10 header + 8 trailer.
     const size_t clen = e.deflated ? e.comp_size + 18 : e.comp_size;
     f.append("Content-Length: ").append(std::to_string(clen)).append("\r\n");
     build_triple(e.h200, "HTTP/1.1 200 OK", f);
 
-    // 304 repeats what a cache updates by (RFC 9110 §15.4.5): ETag,
-    // and Vary where the 200 carried it. Bodyless by definition.
     std::string f304;
     f304.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
     if (e.deflated) f304.append("Vary: Accept-Encoding\r\n");
     build_triple(e.h304, "HTTP/1.1 304 Not Modified", f304);
 
     if (e.deflated) {
-      // RFC 1952: magic, CM=8, FLG=0, MTIME=0 (unknown), XFL=0,
-      // OS=0xff (unknown) - the exact values that keep this constant.
       static const unsigned char kGzHdr[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff};
       std::memcpy(e.gz_hdr, kGzHdr, sizeof(kGzHdr));
-      // CRC-32 and ISIZE, little-endian (RFC 1952 2.3) - both straight
-      // out of the Central Directory. No runtime compression, no
-      // decompression, ever.
       e.gz_trailer[0] = static_cast<unsigned char>(e.crc);
       e.gz_trailer[1] = static_cast<unsigned char>(e.crc >> 8);
       e.gz_trailer[2] = static_cast<unsigned char>(e.crc >> 16);
@@ -283,12 +204,13 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
   return true;
 }
 
+// RFC 9110 4.2.1: the target names a table row, byte for byte, or nothing.
 AssetEntry* Assets::find(const char* path, size_t len) {
   if (len == 0 || path[0] != '/') return nullptr;
   path++;
   len--;
   for (size_t i = 0; i < len; i++) {
-    if (path[i] == '?') {  // the query never names an entry
+    if (path[i] == '?') {
       len = i;
       break;
     }
@@ -309,6 +231,8 @@ AssetEntry* Assets::find(const char* path, size_t len) {
   return &*it;
 }
 
+// RFC 9110: the asset tier's whole decision, in the graph's own order -
+// 405/501, 406 (12.5.3+15.5.7), 412 (13.1.1), 304 (13.1.2), else 200.
 uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
                          const http::ReqValues& vals) const {
   switch (m) {
@@ -326,23 +250,26 @@ uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFac
   }
   if (f.has_if_match && !f.if_match_star &&
       !http::etag_list_match(vals.if_match, vals.if_match_len, e.etag, sizeof(e.etag),
-                             /*weak=*/false)) {
+                             false)) {
     return 412;
   }
   if (f.has_if_none_match &&
       (f.inm_star || http::etag_list_match(vals.if_none_match, vals.if_none_match_len, e.etag,
-                                           sizeof(e.etag), /*weak=*/true))) {
+                                           sizeof(e.etag), true))) {
     return 304;
   }
   return 200;
 }
 
+// RFC 9110 5.6.7: the date, patched lazily - an entry nobody asks for
+// is never patched.
 void Assets::patch_date(AssetEntry::Resp& r, const char* date, time_t sec) {
   if (r.sec == sec) return;
   std::memcpy(r.bytes.data() + r.date_off, date, http::kDateLen);
   r.sec = sec;
 }
 
+// RFC 9112: the header section for a verdict this tier owns. Never body bytes.
 void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date,
                          time_t sec, std::string& sink) {
   AssetEntry::Resp* r;
@@ -350,16 +277,16 @@ void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* 
     case 200: r = &e.h200[v]; break;
     case 304: r = &e.h304[v]; break;
     case 405: r = &s405_[v]; break;
-    default: r = &s406_[v]; break;  // verdict() hands this tier nothing else
+    default: r = &s406_[v]; break;
   }
   patch_date(*r, date, sec);
   sink.append(r->bytes);
 }
 
 namespace {
+}
 
-}  // namespace
-
+// RFC 9110 14.4/15.3.7: the satisfied range and the complete length.
 void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
                              const char* date, std::string& sink) {
   sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
@@ -371,25 +298,25 @@ void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_
   }
   sink.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
   sink.append("Accept-Ranges: bytes\r\n");
-  // RFC 9110 14.4/15.3.7: the satisfied range and the complete length,
-  // both counting the wire body's octets.
   sink.append("Content-Range: bytes ").append(std::to_string(first)).append("-");
   sink.append(std::to_string(last)).append("/").append(std::to_string(wire_len(e)));
   sink.append("\r\nContent-Length: ").append(std::to_string(last - first + 1));
   sink.append("\r\n\r\n");
 }
 
+// RFC 9110 15.5.17: the unsatisfied form names the complete length.
 void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
                              std::string& sink) {
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
   sink.append(date, http::kDateLen);
   sink.append("\r\n").append(kConn[v]);
   if (e.deflated) sink.append("Vary: Accept-Encoding\r\n");
-  // 15.5.17: the unsatisfied-range form names the complete length.
   sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e)));
   sink.append("\r\nContent-Length: 0\r\n\r\n");
 }
 
+// RFC 1952: [off, off+n) of the wire body as POINTERS - gzip header,
+// the deflate stream where it lies in the mapping, the trailer.
 unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov) {
   struct Seg {
     const char* p;
@@ -412,10 +339,6 @@ unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iove
     }
     const size_t avail = segs[i].len - off;
     const size_t take = avail < n ? avail : n;
-    // The pointer goes out as it lies - into the mapping for the
-    // deflate stream, into the entry for the 18 framing bytes. Both
-    // outlive any send: the mapping is process-lifetime, the entry is
-    // in the table built at add_route.
     iov[out].iov_base = const_cast<char*>(segs[i].p + off);
     iov[out].iov_len = take;
     out++;
@@ -425,6 +348,7 @@ unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iove
   return out;
 }
 
+// RFC 1952: the same window, copied, for the paths that must own their bytes.
 void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {
   struct Seg {
     const char* p;
@@ -451,5 +375,4 @@ void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& s
     n -= take;
   }
 }
-
-}  // namespace webmachine
+}

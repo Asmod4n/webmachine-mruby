@@ -16,33 +16,15 @@
 
 namespace webmachine {
 namespace {
-
-// Every AppSpec ever built lives here; `registered_` names the ones
-// whose Application.new block RETURNED (new without a block builds a
-// spec nobody serves - legal, and deliberately inert).
-//
-// A file-static registry rather than mrb->ud or a Ruby constant: the
-// server is one process, one VM, one ring, and the tool reads this
-// straight after `main` returns. Nothing on a request path touches it.
 std::vector<std::unique_ptr<AppSpec>> specs_;
 std::vector<AppSpec*> registered_;
 
-// The three hidden objects are DATA carrying the SAME AppSpec pointer.
-// The registry owns the spec, so free is a no-op.
 const struct mrb_data_type app_type = {"webmachine.app", nullptr};
 
-// The config and routes classes carry no constant: Ruby can reach them
-// only through the object `configure`/`routes` yields. They are rooted
-// once at init because a class nothing names is collectable.
 struct RClass* conf_class_ = nullptr;
 struct RClass* route_class_ = nullptr;
 
-// --- conf ------------------------------------------------------------
-
-// Exactly one of port / unix_path / url per app (RFC-free house rule:
-// a listener has one spelling). Several APPS may each name their own
-// (#116 slice 2); several listeners for ONE app is what nothing has
-// asked for, so nothing here builds it.
+// Exactly one listener spelling per app; a second refuses by name.
 void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
   if (s->form != AppSpec::Form::kNone && s->form != f) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
@@ -53,18 +35,12 @@ void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
   s->form = f;
 }
 
+// conf.port = N. 0 means the OS picks, read back after the bind.
 mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   mrb_int p;
   mrb_get_args(mrb, "i", &p);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   claim_form(mrb, s, AppSpec::Form::kPort, "port");
-  // 0 means "the OS picks". Slice 2 refused it ("io_uring has no
-  // getsockname"); that world ended when the access log's %h brought
-  // SOCKET_URING_OP_GETSOCKNAME into the tree - the ring now asks the
-  // BOUND listener its local name at setup (local form of the same
-  // cmd arm_peer rides) and conf.url reads the pick back in ready.
-  // A kernel without the cmd refuses THE START by name, and only for
-  // a port-0 ask - fixed ports never ask the question.
   if (p < 0 || p > 65535) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.port = %d is outside 0..65535", (int)p);
   }
@@ -72,6 +48,7 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.unix_path = PATH.
 mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
@@ -83,6 +60,7 @@ mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
@@ -110,9 +88,6 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const size_t colon = rest.rfind(':');
   if (colon != std::string::npos) {
     const std::string ps = rest.substr(colon + 1);
-    // :0 is legal - "the OS picks", same contract as conf.port = 0
-    // (the comment there says how the pick is read back). An EMPTY
-    // port ("http://h:") is not a zero, it is a malformed url.
     port = ps.empty() ? -1 : 0;
     for (char c : ps) {
       if (c < '0' || c > '9') { port = -1; break; }
@@ -129,10 +104,9 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.url reads both ways: the ask before the bind, the truth after it.
 mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  // After the bind this is where the listener REALLY is; before it,
-  // where it was asked to be.
   if (s->bound) return mrb_str_new(mrb, s->bound_url.data(), s->bound_url.size());
   char buf[300];
   int n = 0;
@@ -151,29 +125,7 @@ mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
   return mrb_str_new(mrb, buf, static_cast<size_t>(n < 0 ? 0 : n));
 }
 
-// conf.adapter= and the four ssl/certificate names USED to live here.
-// Both were wrong and both are gone (Nutzer-Entscheid 2026-08-23,
-// reversing an earlier decision of his own):
-//
-//   adapter= accepted a value and threw it away, so a file naming a
-//   reactor this tree does not have "worked" while doing nothing -
-//   the silent fallback this tree forbids everywhere else. Its
-//   compatibility promise ("a webmachine-ruby file runs unchanged")
-//   was worth less than the lie, so that promise is withdrawn: a file
-//   naming an adapter now gets NoMethodError, which is true.
-//
-//   ssl=/ssl_options=/certificate=/certificate_key= reserved names for
-//   a TLS that is not in this tree (#110/#112/#157 parked) - code on
-//   stock with no second user. When TLS returns it brings its own
-//   setters; until then NoMethodError says exactly what is the case.
-// --- routes ----------------------------------------------------------
-
-// THE TOKEN ARRAY CROSSES THIS BOUNDARY ONCE, and it does it here for
-// all three route kinds (#102 made it three): from this point a route
-// is bytes and offsets in a flat table (router.hpp), and no Ruby
-// object is looked at again on any request path. `who` names the
-// method in every refusal, because "route.add" and "route.sse" are
-// different mistakes to make.
+// The token array crosses the boundary ONCE, here, for all three route kinds.
 void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* who) {
   const mrb_int n = RARRAY_LEN(toks);
   table.open();
@@ -196,9 +148,6 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* 
         table.splat();
         continue;
       }
-      // The Symbol's own id rides into the table: the request object
-      // names what the span captured, and this is the only moment the
-      // name exists.
       if (!table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
         table.abandon();
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
@@ -212,9 +161,7 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* 
   }
 }
 
-// route.add [tokens], Klass - the ONE route form this slice builds.
-// Also app.add_route, webmachine-ruby's own spelling: same C function,
-// same mechanics, because both objects carry the same AppSpec.
+// route.add / app.add_route: the flow's table. Folds and FREEZES the class.
 mrb_value route_add(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -239,9 +186,6 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
 
   walk_tokens(mrb, s->table, toks, "route.add");
 
-  // The resource is folded and FROZEN right here: every method the
-  // flow will ever ask is resolved now, so nothing can be redefined
-  // behind the compiled answers.
   auto res = std::unique_ptr<Resource>(new Resource());
   char err[512] = "";
   if (!resource_fold(mrb, klass, *res, err, sizeof(err))) {
@@ -253,10 +197,7 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-// route.websocket [tokens], Klass - the SAME token forms as route.add,
-// walked out of the app's OWN websocket table (#175). A websocket
-// route shares nothing with the flow: it is matched at the upgrade or
-// not at all.
+// RFC 6455: route.websocket - the app's own second table.
 mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -275,12 +216,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-// route.sse [tokens], Klass - the same token forms again, walked out
-// of the app's OWN event-stream table (#102). Like a websocket route
-// it never reaches the flow: an SSE path is matched before the graph
-// or not at all, because there is nothing there to decide - the media
-// type is fixed, there is no representation to compare and no length
-// to declare.
+// WHATWG HTML: route.sse - the app's own third table.
 mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -300,23 +236,16 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// A signpost: assets are configured with --assets and serve unchanged.
 mrb_value route_assets(mrb_state* mrb, mrb_value) {
   mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
          "route.assets is reserved - the asset mount is #170/#115. Assets are configured "
          "with --assets and serve unchanged");
-  return mrb_nil_value();  // never reached: the raise above leaves
+  return mrb_nil_value();
 }
 
-// --- application ------------------------------------------------------
-
-// Two applications may not name the same listener. Since slice 2 a
-// process serves several apps, one listener each, so this is the
-// refusal that keeps them apart - two apps on one socket have no
-// answer to "whose request is this".
+// Two applications may not name the same listener - compared on the SOCKET.
 void register_app(mrb_state* mrb, AppSpec* s) {
-  // Compared on the LISTENER, not on the spelling: conf.port = 80 and
-  // conf.url = "http://host:80" are two ways to say one socket, and a
-  // refusal that only looked at the spelling would miss that pair.
   if (s->form == AppSpec::Form::kNone) {
     s->registered = true;
     registered_.push_back(s);
@@ -333,8 +262,6 @@ void register_app(mrb_state* mrb, AppSpec* s) {
                    s->unix_path.c_str());
       }
     } else if (s->port == other->port && s->port != 0) {
-      // Two port-0 asks are NOT one socket - the kernel picks a fresh
-      // ephemeral port for each bind, so they collide with nothing.
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "two applications claim the same listener: port %d",
                  s->port);
     }
@@ -343,6 +270,7 @@ void register_app(mrb_state* mrb, AppSpec* s) {
   registered_.push_back(s);
 }
 
+// Webmachine::Application.new { |app| ... } - the app's whole surface.
 mrb_value app_new(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -350,32 +278,17 @@ mrb_value app_new(mrb_state* mrb, mrb_value self) {
   AppSpec* s = specs_.back().get();
   mrb_value obj =
       mrb_obj_value(mrb_data_object_alloc(mrb, mrb_class_ptr(self), s, &app_type));
-  // The two facades, built ONCE and hung on the application: they are
-  // views of this AppSpec, and a view has no reason to be manufactured
-  // per access. As ivars they are rooted by the object that owns them -
-  // no mrb_gc_register, no second lifetime to reason about - and
-  // `app.conf` is the same object every time it is asked for, which is
-  // what a reader should mean. (mrblib/webmachine.rb reads @conf; that
-  // attr_reader is the whole accessor.)
   mrb_iv_set(mrb, obj, MRB_IVSYM(conf),
              mrb_obj_value(mrb_data_object_alloc(mrb, conf_class_, s, &app_type)));
   mrb_iv_set(mrb, obj, MRB_IVSYM(routes),
              mrb_obj_value(mrb_data_object_alloc(mrb, route_class_, s, &app_type)));
-  // No block: a built but UNREGISTERED application. Legal, and served
-  // by nobody - registration is what the block's return means.
   if (mrb_nil_p(blk)) return obj;
   mrb_yield(mrb, blk, obj);
   register_app(mrb, s);
   return obj;
 }
 
-// The CANONICAL surface (user decision): app.conf.url = "...",
-// app.conf.port = 8080 - direct writes, no ceremony. `conf` itself is
-// not here: it reads an ivar, which is what attr_reader is for, and it
-// lives in mrblib/webmachine.rb. The block forms below (configure /
-// config / routes) exist for webmachine-ruby compatibility only: tests
-// pin them, the examples never show them. A block stays canonical
-// exactly where it IS a callback: app.ready.
+// webmachine-ruby compatibility: configure / config yield the one conf facade.
 mrb_value app_configure(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -384,6 +297,7 @@ mrb_value app_configure(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// webmachine-ruby compatibility: routes yields the one route facade.
 mrb_value app_routes(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -392,6 +306,7 @@ mrb_value app_routes(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// The hook that runs after the bind and before the first accept.
 mrb_value app_ready(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -400,34 +315,26 @@ mrb_value app_ready(mrb_state* mrb, mrb_value self) {
   if (s->have_ready) mrb_gc_unregister(mrb, s->ready);
   s->ready = blk;
   s->have_ready = true;
-  mrb_gc_register(mrb, blk);  // it must survive until after the bind
+  mrb_gc_register(mrb, blk);
   return self;
 }
+}
 
-}  // namespace
-
+// Webmachine::Application and its two hidden facade classes.
 void application_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* app = mrb_define_class_under_id(mrb, wm, MRB_SYM(Application),
                                                  mrb->object_class);
   MRB_SET_INSTANCE_TT(app, MRB_TT_CDATA);
   mrb_define_class_method_id(mrb, app, MRB_SYM(new), app_new, MRB_ARGS_NONE() |
                                                                   MRB_ARGS_BLOCK());
-  // configure is webmachine-ruby's name; config is the same method
-  // under its other spelling, not a second one.
   mrb_define_method_id(mrb, app, MRB_SYM(configure), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(config), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(routes), app_routes, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(ready), app_ready, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(add_route), route_add, MRB_ARGS_REQ(2));
-  // The canonical websocket spelling, parallel to add_route: the same
-  // C function route.websocket runs, because app and route objects
-  // carry the same AppSpec.
   mrb_define_method_id(mrb, app, MRB_SYM(add_websocket), route_websocket, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, app, MRB_SYM(add_sse), route_sse, MRB_ARGS_REQ(2));
 
-  // Hidden: no constant names either class, so an app file can neither
-  // reopen nor instantiate them. Rooted by hand - a class nothing
-  // names is collectable.
   conf_class_ = mrb_class_new(mrb, mrb->object_class);
   MRB_SET_INSTANCE_TT(conf_class_, MRB_TT_CDATA);
   mrb_gc_register(mrb, mrb_obj_value(conf_class_));
@@ -447,11 +354,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, route_class_, MRB_SYM(assets), route_assets, MRB_ARGS_ANY());
 }
 
+// Load the app's bytecode and call its `main`. A .rb is refused by name.
 bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
-  // DECIDED (#100): --app takes a precompiled .mrb; this server never
-  // compiles Ruby itself. A .rb here is refused BY NAME, with the mrbc
-  // line that produces what --app wants - compiling it as a fallback is
-  // how the source path would come back in through the side door.
   const size_t path_len = std::strlen(path);
   if (path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0) {
     const std::string mrb_path(path, path_len - 3);
@@ -476,9 +380,6 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-  // The app file defines ONE method. Asked for straight in the method
-  // table - no respond_to?, no funcall that would report a missing
-  // `main` as a NoMethodError instead of as the refusal it is.
   struct RClass* owner = mrb->object_class;
   if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(main)))) {
     std::snprintf(err, errlen,
@@ -499,6 +400,7 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
   return true;
 }
 
+// Every application `main` registered - registration order IS listener order.
 bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
                         size_t errlen) {
   if (registered_.empty()) {
@@ -517,12 +419,10 @@ bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* 
   return true;
 }
 
+// No --app: one splat route on webmachine-ruby's unbound resource.
 AppSpec* app_default() {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
-  // ONE splat route on webmachine-ruby's unbound resource: exactly what
-  // a server without --app answered at every path before routes
-  // existed, now spelled as the route it always was.
   s->table.open();
   s->table.splat();
   s->table.commit();
@@ -532,6 +432,7 @@ AppSpec* app_default() {
   return s;
 }
 
+// What the listener REALLY became; this is what conf.url reads back.
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
   char buf[300];
   if (unix_path != nullptr) std::snprintf(buf, sizeof(buf), "unix://%s", unix_path);
@@ -544,12 +445,10 @@ void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
   spec.bound = true;
 }
 
+// Run the ready hook from the TOOL, outside any VM frame - so, funcall.
 bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen) {
   if (!spec.have_ready) return true;
   const int ai = mrb_gc_arena_save(mrb);
-  // Proc#call, not mrb_yield: this runs from the TOOL, outside any VM
-  // frame, and only a funcall arms the TRY that catches a raise here
-  // (resource.cpp makes the same distinction at setup).
   mrb_funcall_argv(mrb, spec.ready, MRB_SYM(call), 0, nullptr);
   if (mrb->exc != nullptr) {
     std::snprintf(err, errlen, "ready raised (exception below)");
@@ -561,5 +460,4 @@ bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen) {
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
-
-}  // namespace webmachine
+}

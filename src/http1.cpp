@@ -5,19 +5,12 @@
 #include <cstdlib>
 #include <cstring>
 
-
-// Prediction hints only where the taken side is terminal (see ring.hpp).
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace webmachine {
 namespace {
-
-// The version-free HTTP semantics live in http.hpp (RFC 9110); this
-// anonymous namespace holds only 9112 wire property.
-
-// Connection is a comma-separated token list (RFC 9110 §7.6.1); a
-// substring match would accept e.g. "not-close". The header itself is
-// 9112 property - h2 forbids it (RFC 9113 §8.2.2).
+// RFC 9110 7.6.1: Connection is a token LIST - a substring match would
+// accept "not-close".
 bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
   size_t i = 0;
   while (i < n) {
@@ -31,9 +24,9 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
 
 using http::kDateLen;
 using http::kDatePlaceholder;
+}
 
-}  // namespace
-
+// RFC 9112 9.3: one status prebuilt in all three connection spellings.
 void Http1::build_variants(Variants& v, uint16_t status, const char* extra, const char* body,
                            const char* date) {
   const auto build = [&](Resp& r, const char* conn) {
@@ -53,6 +46,7 @@ void Http1::build_variants(Variants& v, uint16_t status, const char* extra, cons
   build(v.close, "Connection: close\r\n");
 }
 
+// RFC 9110 15: one status into the shared store, date offset kept.
 void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   Variants v;
   build_variants(v, status, extra, body, kDatePlaceholder);
@@ -60,30 +54,22 @@ void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   store_.push_back(std::move(v));
 }
 
+// RFC 9110 5.6.7: the 29 date bytes, once a second, in place.
 void Http1::patch_date(Variants& v, const char* core) {
   std::memcpy(v.plain.bytes.data() + v.plain.date_off, core, kDateLen);
   std::memcpy(v.keep.bytes.data() + v.keep.date_off, core, kDateLen);
   std::memcpy(v.close.bytes.data() + v.close.date_off, core, kDateLen);
 }
 
-// ONE route's whole voice, built once (#116). Everything here used to
-// be a member of Http1 itself, when an app had exactly one resource;
-// the code is the same code, the owner is the route.
+// RFC 9110: ONE route's whole voice - its 200 in every shape, its Allow
+// (10.2.1), its negotiated type (8.3), its gzip decision, its h2 blocks.
 void Http1::build_bundle(Bundle& b, const Resource* res) {
   b.res = res;
   b.konst = res->konst;
   b.dynamic_body = res->dynamic_body;
   b.bound = res->dynamic != 0 || res->dynamic_body;
-  // One transformation, at the ONE point every writer reads from:
-  // ok_extra, the h2 blocks and the exception head all spell whatever
-  // stands here (#146). The resource's own copy is untouched -
-  // negotiation never string-compares this.
   b.konst.content_type = http::with_charset(b.konst.content_type);
-  // Start from the generic table, then point the two statuses that
-  // carry a resource's own voice at this route's own entries.
   b.index = index_;
-  // 200 carries the resource's rendered representation (RFC 9110 8.3:
-  // a body announces its Content-Type).
   std::string ok_extra;
   if (!b.konst.content_type.empty()) {
     ok_extra = "Content-Type: " + b.konst.content_type + "\r\n";
@@ -92,18 +78,10 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
       "Content-Length: " + std::to_string(b.konst.body.size()) + "\r\n\r\n" + b.konst.body;
   Variants ok;
   build_variants(ok, 200, ok_extra.c_str(), ok_tail.c_str(), kDatePlaceholder);
-  // 405 names what IS allowed (RFC 9110 10.2.1), from THIS resource's
-  // list - which is the whole reason 405 needs a per-route entry.
   const std::string allow = "Allow: " + b.konst.allow + "\r\n";
   Variants m405;
   build_variants(m405, 405, allow.c_str(), "Content-Length: 0\r\n\r\n", kDatePlaceholder);
 
-  // The fast lane's DATA half, whole and precomputed: valid only when
-  // the body never varies at all - !bound means status 200 always
-  // sends konst.body verbatim, forever. stream id is patched per
-  // response at its fixed offset (h2_patch_stream_id); END_STREAM is
-  // baked in because h2_answer only ever reaches for this buffer when
-  // it has already proven it will be the sole, last frame.
   if (!b.bound) {
     unsigned char fh[kH2FrameHeaderLen];
     h2_put_frame_header(fh, static_cast<uint32_t>(b.konst.body.size()), kH2Data,
@@ -112,7 +90,6 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     b.h2_data200.append(b.konst.body);
   }
 
-  // HEAD answers with 200's head and no body bytes (RFC 9110 9.3.2).
   {
     const size_t blen = b.konst.body.size();
     const auto strip = [&](const Resp& src, Resp& dst) {
@@ -123,10 +100,8 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     strip(ok.keep, b.ok_head.keep);
     strip(ok.close, b.ok_head.close);
   }
-  // A per-request body assembles onto 200's head cut before
-  // Content-Length: prefix + "Content-Length: N\r\n\r\n" + body.
   if (b.dynamic_body) {
-    const size_t cut = ok_tail.size();  // ok's bytes end with the whole tail
+    const size_t cut = ok_tail.size();
     const auto prefix = [&](const Resp& src, Resp& dst) {
       dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
       dst.date_off = src.date_off;
@@ -135,8 +110,6 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     prefix(ok.keep, b.ok_prefix.keep);
     prefix(ok.close, b.ok_prefix.close);
   }
-  // Into the shared store, one slot each; on_tick patches them with
-  // every other prebuilt status and never walks a per-route list.
   b.index[200] = static_cast<uint16_t>(store_.size());
   store_.push_back(std::move(ok));
   {
@@ -151,12 +124,6 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     h2_build_block(hb, 405, nullptr, &b.konst.allow);
     h2_store_.push_back(std::move(hb));
   }
-  // #147: this resource's own answer to TOR 2 (media-type table) and
-  // "encodings_provided says gzip" - decided ONCE, here, never again.
-  // A resource that fails either test costs no branch beyond this bool
-  // at answer time. Built directly rather than sliced from b.ok the
-  // way ok_prefix is above, because these carry headers (Vary,
-  // Content-Encoding) the konst 200 head never has.
   b.gzip_ok = b.dynamic_body && res->gzip_offered &&
               http::compressible_media_type(b.konst.content_type);
   if (b.gzip_ok) {
@@ -175,8 +142,6 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     buildv(b.ok_prefix_gzip.close, "Connection: close\r\n",
            "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
   }
-  // Exceptions answer as the negotiated type: a 500 head open for a
-  // per-request body carrying the reason.
   if (b.bound) {
     const auto build = [&](Resp& r, const char* conn) {
       r.bytes.clear();
@@ -187,11 +152,11 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     build(b.err_prefix.plain, "");
     build(b.err_prefix.keep, "Connection: keep-alive\r\n");
     build(b.err_prefix.close, "Connection: close\r\n");
-    // h2's exception answer: 500 in the negotiated type.
     h2_build_block(b.h2_err, 500, &b.konst.content_type, nullptr);
   }
 }
 
+// One app, one listener - the shape everything but a multi-app file has.
 Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
              Assets* assets)
     : assets_(assets) {
@@ -199,27 +164,20 @@ Http1::Http1(const RouteTable& table, const Resource* const* resources, size_t n
   build(&one, 1);
 }
 
+// Every response every route of every app can speak, built once.
 Http1::Http1(const AppInput* apps, size_t napps, Assets* assets) : assets_(assets) {
   build(apps, napps);
 }
 
+// RFC 9110 15: the status supply, the bundles and the asset blocks, at setup.
 void Http1::build(const AppInput* apps, size_t napps) {
-  // Every status the flow's halt edges can speak, plus the framer's own
-  // wire refusals - collected from the table, built ONCE. The 200 and
-  // 405 slots are built NEUTRALLY here (no content type, no Allow):
-  // they exist so index_ stays total for any status the tables name,
-  // and a matched route never reads them - its bundle owns those two.
   store_.reserve(32);
   bool have[600] = {};
   const auto add = [&](uint16_t s) {
     if (have[s]) return;
     have[s] = true;
-    // 204/304 are defined bodyless (RFC 9110 15.3.5/15.4.5): no
-    // Content-Length, no body.
     if (s == 204 || s == 304) build_status(s, "", "\r\n");
     else build_status(s, "", "Content-Length: 0\r\n\r\n");
-    // The same status precomputed as h2's header block (same slot as
-    // store_ via index_).
     H2Block b;
     h2_build_block(b, s, nullptr, nullptr);
     h2_store_.push_back(std::move(b));
@@ -232,15 +190,8 @@ void Http1::build(const AppInput* apps, size_t napps) {
   add(411);
   add(413);
   add(431);
-  // The router's own answer: a path no route claims is 404, built here
-  // like every other prebuilt status (the flow tables already name it,
-  // so this is a no-op the day they stop).
   add(404);
 
-  // Every app's routes go into ONE bundle vector, back to back; the
-  // app's slot remembers where its own start. A request therefore
-  // still indexes once (base + the router's verdict), and the date
-  // patch above stays one loop for the whole process.
   size_t total = 0;
   for (size_t a = 0; a < napps; a++) total += apps[a].nroutes;
   bundles_.resize(total);
@@ -256,18 +207,12 @@ void Http1::build(const AppInput* apps, size_t napps) {
       build_bundle(bundles_[at + i], apps[a].resources[i]);
     }
     at += apps[a].nroutes;
-    // The websocket routes (#175): a second table, walked only when a
-    // head asks for an upgrade, and nothing built for it here - a
-    // websocket has no prebuilt status to speak.
     apps_[a].ws_table = apps[a].ws_nroutes != 0 ? apps[a].ws_table : nullptr;
     apps_[a].ws_base = static_cast<uint16_t>(ws_at);
     for (size_t i = 0; i < apps[a].ws_nroutes; i++) {
       ws_res_.push_back(apps[a].ws_resources[i]);
     }
     ws_at += apps[a].ws_nroutes;
-    // The event-stream routes (#102): a third table, walked once per
-    // request BEFORE the flow, and nothing prebuilt for it either - a
-    // stream's head is one constant string plus the date.
     apps_[a].sse_table = apps[a].sse_nroutes != 0 ? apps[a].sse_table : nullptr;
     apps_[a].sse_base = static_cast<uint16_t>(sse_at);
     for (size_t i = 0; i < apps[a].sse_nroutes; i++) {
@@ -276,17 +221,12 @@ void Http1::build(const AppInput* apps, size_t napps) {
     sse_at += apps[a].sse_nroutes;
   }
 
-  // The warm budget, read once (see kWarmBudgetDefault for the
-  // measurement behind the number). 0 is legal and means "never copy,
-  // always deliver" - it is one end of the sweep.
   if (const char* w = std::getenv("WM_WARM_BUDGET")) {
     char* end = nullptr;
     const unsigned long v = std::strtoul(w, &end, 10);
     if (end != w) warm_budget_ = static_cast<size_t>(v);
   }
 
-  // The asset tier's h2 blocks (#170): per entry once, at setup, plus
-  // the shared 405/406. The h1 heads were prebuilt by Assets::open.
   if (assets_ != nullptr) {
     h2_build_asset_shared();
     for (AssetEntry& e : assets_->entries()) h2_build_asset_blocks(e);
@@ -296,6 +236,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
   on_tick();
 }
 
+// RFC 9110 5.6.7: the wall-clock second changed - patch every prebuilt date.
 void Http1::on_tick() {
   const time_t now = ::time(nullptr);
   if (now == sec_) return;
@@ -308,9 +249,6 @@ void Http1::on_tick() {
   const char* core = date_;
 
   for (Variants& v : store_) patch_date(v, core);
-  // Per route, only the shapes that route actually built. This is the
-  // one place the multi-resource cut costs work proportional to the
-  // number of routes, and it is per SECOND, never per request.
   for (Bundle& b : bundles_) {
     patch_date(b.ok_head, core);
     if (b.dynamic_body) patch_date(b.ok_prefix, core);
@@ -320,10 +258,9 @@ void Http1::on_tick() {
     }
     if (b.bound) patch_date(b.err_prefix, core);
   }
-  // The h2 blocks carry no date - it changes, so it rides the encoder
-  // lane per response, reading date_ directly.
 }
 
+// RFC 9110 8.6: prefix + hand-spelled Content-Length + (unless HEAD) the body.
 void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                      bool head_only) {
   sink.append(prefix.bytes);
@@ -332,46 +269,28 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
   if (!head_only) sink.append(body, len);
 }
 
-// #147: called only when the route's gzip_ok - the caller already paid
-// the one branch that costs every other resource nothing.
+// RFC 9110 12.5.3/12.5.5: identity or gzip for a dynamic 200, and the Vary
+// that says the resource varies either way.
 void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
                              const http::ReqValues& vals, const Resp& prefix_id,
                              const Resp& prefix_gz, bool head_only, std::string& sink) {
-  // RFC 9110 12.5.3: a missing Accept-Encoding accepts anything: the
-  // asset tier (#170) reads the SAME field the same way - the rule is
-  // pulled out, not duplicated, only in that http::gzip_acceptable is
-  // the shared code and "was the field even sent" is each caller's own
-  // one-line gate around it (h1 here, http/2 has no separate copy to
-  // duplicate against - it goes through this same function).
   const bool accept_gzip =
       !facts.has_accept_encoding || http::gzip_acceptable(vals.accept_encoding,
                                                            vals.accept_encoding_len);
   bool use_gzip = false;
-  // TOR 1, revised (Nutzer-Entscheid 2026-08-22): packetized (TCP, not
-  // unix behind a proxy - #147) is the first gate, kCompressFloor the
-  // second, replacing the per-connection MSS query this tree used to
-  // make at accept (see kCompressFloor's comment in http1.hpp for the
-  // full reasoning and the kernel finding that forced the retreat).
   if (accept_gzip && st.packetized) {
     char cl[40];
     const size_t cl_len = http::spell_content_length(cl, body_.size());
-    // The UNCOMPRESSED answer's total size - head (already carrying
-    // Vary) plus Content-Length line plus body - against the floor.
-    // Below it: identity, compression could not have saved a packet
-    // even on the narrowest legal path (#147 Tor 1).
     if (prefix_id.bytes.size() + cl_len + body_.size() >= kCompressFloor) {
-      use_gzip = gzip::compress(body_, gz_body_);  // false: fall back to identity, never fail
+      use_gzip = gzip::compress(body_, gz_body_);
     }
   }
   if (use_gzip) assemble(sink, prefix_gz, gz_body_.data(), gz_body_.size(), head_only);
   else assemble(sink, prefix_id, body_.data(), body_.size(), head_only);
 }
 
+// RFC 9112: wire invalidity - framing trust is gone, the connection ends.
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
-  // Wire invalidity: framing trust is gone, the connection always ends.
-  // The log line has no request to describe - most callers never got a
-  // parsed head - so every request field spells "-"; the status is the
-  // story. Callers past the header loop pass the peer's no-track ask.
   if (alog_.enabled) {
     log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
                nullptr, 0);
@@ -382,64 +301,35 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   return false;
 }
 
+// RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
+// splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
+// every status.
 bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
-  // A connection that spoke the client preface routes its bytes to the
-  // frame layer forever after (RFC 9113 3.4); everything below is h1.
   if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
-    // Decided on the first bytes: GET diverges at byte 0, POST/PUT at
-    // byte 1 - the h1 path pays for this compare exactly once per
-    // connection, never per request.
-    const size_t seen = st.carry.size();  // a partial preface carried over
+    const size_t seen = st.carry.size();
     size_t i = 0;
     while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
-    if (seen + i == kH2PrefaceLen) {  // the full preface: h2 from here on
+    if (seen + i == kH2PrefaceLen) {
       st.fresh = false;
       st.carry.clear();
       if (!h2_begin(st, sink)) return false;
       return h2_feed(st, data + i, len - i, sink, plan);
     }
-    if (i == len) {  // every byte so far matches: wait for the verdict
+    if (i == len) {
       st.carry.append(data, len);
       return true;
     }
-    // WHERE the mismatch fell decides who the peer is, and that is the
-    // whole of RFC 9113 3.4's advice: "an invalid preface indicates
-    // that the peer is not using HTTP/2".
-    //
-    // Past the announcement half - the 18 bytes "PRI * HTTP/2.0" CRLF
-    // CRLF, which no HTTP/1 request line can be a prefix of - the peer
-    // HAS named itself an h2 client and then fumbled the rest. It is
-    // waiting for a frame and cannot read a status line, so it gets
-    // the frame 3.4 names: GOAWAY, PROTOCOL_ERROR, last-stream-id 0
-    // (none was ever opened), then the connection ends.
-    //
-    // Before it, the peer never said "PRI" at all, so by 3.4's own
-    // sentence it is not an h2 client - and this listener also speaks
-    // HTTP/1.1, so it gets the HTTP/1.1 answer to a request line that
-    // does not parse: 400, Connection: close (RFC 9112 2.2). That is
-    // the ONE h2spec case this tree does not pass (3.5/2, "Sends
-    // invalid connection preface" - h2spec sends "INVALID CONNECTION
-    // PREFACE" CRLF CRLF and reads our status line as a frame header).
-    // Named, not accidental: h2spec measures an h2-ONLY endpoint, the
-    // connection dies either way as 3.4 requires, and the alternative
-    // - closing a fresh connection mute - would take the 400 away from
-    // every real HTTP/1 client that mistypes its first request line.
     if (seen + i >= kH2PrefaceAnnounce) {
       static const unsigned char kGoaway[kH2FrameHeaderLen + 8] = {
-          0, 0, 8, kH2Goaway, 0, 0, 0, 0, 0,  // length 8, stream 0
-          0, 0, 0, 0,                         // last stream id: none was opened
+          0, 0, 8, kH2Goaway, 0, 0, 0, 0, 0,
+          0, 0, 0, 0,
           0, 0, 0, kH2ProtocolError};
       sink.append(reinterpret_cast<const char*>(kGoaway), sizeof(kGoaway));
       return false;
     }
-    // Mismatch: h1 forever. Any stashed preface prefix doubles as a
-    // partial h1 head; the carry path below already handles it.
     st.fresh = false;
   }
-  // Body bytes a previous receive left owing are consumed first -
-  // skipped, this layer has no consumer, but the framing must hold or
-  // keep-alive would parse body bytes as the next head.
   if (st.body_skip != 0) {
     const size_t take = st.body_skip < len ? st.body_skip : len;
     st.body_skip -= take;
@@ -448,16 +338,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     if (len == 0) return true;
   }
 
-  // An active transfer owns the wire order (#168): responses to
-  // anything pipelined behind it would overtake its remaining chunks.
-  // The bytes wait in the carry; more() resumes parsing them when the
-  // source is exhausted. One head's budget bounds the wait - a peer
-  // stuffing more than that behind a running transfer wants buffer,
-  // not service (RFC 6585 §5 sanctions the refusal).
   if (WM_H1_UNLIKELY(st.xfer != nullptr)) {
     if (WM_H1_UNLIKELY(st.carry.size() + len > kMaxHead)) {
-      // Mid-body no status can be spoken (the bytes would land inside
-      // the transfer's Content-Length); the connection just ends.
       st.carry.clear();
       st.body_skip = 0;
       st.xfer = nullptr;
@@ -467,16 +349,9 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     return true;
   }
 
-  // Past the 101 this connection is not HTTP any more (#175): every
-  // byte belongs to the websocket half, which keeps its own carry.
   if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, data, len, sink);
-  // An event stream is one-way (#102). Whatever a client sends after
-  // its request has no answer here, so it is read and dropped rather
-  // than parsed as a head that could never be served.
   if (WM_H1_UNLIKELY(st.sse != nullptr)) return true;
 
-  // The hot path parses the receive buffer in place; only a head split
-  // across receives pays for the carry copy.
   const bool in_place = st.carry.empty();
   const char* view = data;
   size_t viewlen = len;
@@ -491,7 +366,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
   }
 
   size_t off = 0;
-  while (off < viewlen) {  // pipelining: every complete head in the view answers
+  while (off < viewlen) {
     const char* method;
     size_t method_len;
     const char* path;
@@ -501,38 +376,29 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     size_t num_headers = kMaxHeaders;
     const int ret = phr_parse_request(view + off, viewlen - off, &method, &method_len, &path,
                                       &path_len, &minor, headers, &num_headers, 0);
-    if (ret == -2) {  // incomplete head: carry it (bytes die with the pool buffer)
+    if (ret == -2) {
       const size_t rest = viewlen - off;
-      if (WM_H1_UNLIKELY(rest > kMaxHead)) return fail(st, 431, sink);  // RFC 6585 §5
+      if (WM_H1_UNLIKELY(rest > kMaxHead)) return fail(st, 431, sink);
       if (in_place) st.carry.assign(view + off, rest);
       else st.carry.erase(0, off);
       return true;
     }
-    if (WM_H1_UNLIKELY(ret <= 0)) return fail(st, 400, sink);  // RFC 9112 §2.2
-    // The cap holds for complete heads too, or one receive containing a
-    // whole oversized head would sail past the -2 path's check.
+    if (WM_H1_UNLIKELY(ret <= 0)) return fail(st, 400, sink);
     if (WM_H1_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, 431, sink);
 
     size_t content_length = 0;
     bool have_cl = false, have_te = false, have_host = false;
     bool conn_close = false, conn_keep = false;
-    // The upgrade's four facts (RFC 6455 4.2.1), read in the same one
-    // switch every other wire name is read in - a head that asks for
-    // nothing costs the compare its length already implied.
     bool up_ws = false, conn_upgrade = false;
     const char* ws_key = nullptr;
     size_t ws_key_len = 0;
     int ws_version = 0;
-    uint16_t wire_err = 0;  // first wire violation wins; the loop is bounded
+    uint16_t wire_err = 0;
     flow::ReqFacts facts;
-    http::ReqValues vals;  // value borrows die with this request's answer
+    http::ReqValues vals;
     facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      // The 9110 facts fill in http.hpp's length-switch; the functor
-      // carries the 9112 wire names. It inlines per case arm, where
-      // the length is a known constant - the compiled result is the
-      // ONE fused switch this loop always was.
       http::header_switch(
           h.name, h.name_len, h.value, h.value_len, facts, vals,
           [&](const char* n, size_t nl, const char* v, size_t vl) {
@@ -540,7 +406,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             switch (nl) {
               case 14:
                 if (http::tok_eq(n, nl, "content-length", 14)) {
-                  // A second Content-Length is a smuggling shape (RFC 9112 §6.3).
                   if (WM_H1_UNLIKELY(have_cl)) {
                     wire_err = 400;
                     return;
@@ -548,7 +413,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                   have_cl = true;
                   switch (http::parse_content_length(v, vl, &content_length)) {
                     case http::ClStatus::kOk: break;
-                    case http::ClStatus::kBad: wire_err = 400; break;  // 1*DIGIT, §6.2
+                    case http::ClStatus::kBad: wire_err = 400; break;
                     case http::ClStatus::kOverflow: wire_err = 413; break;
                   }
                 }
@@ -563,7 +428,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 
               case 4:
                 if (http::tok_eq(n, nl, "host", 4)) {
-                  if (WM_H1_UNLIKELY(have_host)) wire_err = 400;  // RFC 9112 §3.2: one
+                  if (WM_H1_UNLIKELY(have_host)) wire_err = 400;
                   have_host = true;
                 }
                 break;
@@ -574,9 +439,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                 } else if (http::tok_eq(n, nl, "connection", 10)) {
                   if (conn_has(v, vl, "close", 5)) conn_close = true;
                   else if (conn_has(v, vl, "keep-alive", 10)) conn_keep = true;
-                  // RFC 9110 7.8: Connection is a token LIST, and a
-                  // browser sends "keep-alive, Upgrade" - so this is a
-                  // third test on the same list, not an else.
                   if (conn_has(v, vl, "upgrade", 7)) conn_upgrade = true;
                 }
                 break;
@@ -586,7 +448,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                   vals.log_ref_len = vl;
                   break;
                 }
-                // RFC 6455 4.2.1 step 3: "websocket", case-insensitive.
                 if (http::tok_eq(n, nl, "upgrade", 7)) {
                   up_ws = http::tok_eq(v, vl, "websocket", 9);
                 }
@@ -607,36 +468,21 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             }
           });
     }
-    // The head parsed, so the peer's "do not track" ask is known -
-    // every log line below this point carries it, refusals included.
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
     if (WM_H1_UNLIKELY(wire_err != 0)) return fail(st, wire_err, sink, lflags);
-    // Transfer-Encoding alongside Content-Length is the classic
-    // smuggling vector (RFC 9112 §6.3.3); chunked alone is refused with
-    // 411 as §6.1 sanctions until a body consumer exists.
     if (WM_H1_UNLIKELY(have_te)) return fail(st, have_cl ? 400 : 411, sink, lflags);
-    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink, lflags);  // §3.2
+    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink, lflags);
     if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink, lflags);
 
-    // RFC 9112 §9.3: 1.1 persists unless close; 1.0 closes unless it
-    // asked (§C.2.2), and the asked-for keep-alive is echoed.
     const bool persist = minor >= 1 ? !conn_close : conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
 
-    // THE UPGRADE (#175). RFC 6455 4.2.1: Upgrade: websocket AND
-    // upgrade in the Connection list. A path no websocket route claims
-    // falls straight through to the ordinary request path - RFC 9110
-    // 7.8 lets a server ignore an upgrade it does not offer, and that
-    // is exactly what happens then.
     if (WM_H1_UNLIKELY(up_ws && conn_upgrade)) {
       const AppSlot& wslot = apps_[st.listener];
       RouteSpans wspans;
       const int wr =
           wslot.ws_table != nullptr ? wslot.ws_table->match(path, path_len, wspans) : -1;
       if (wr >= 0) {
-        // 4.4: the version this endpoint speaks is 13, and a peer that
-        // asked for another one is told WHICH - that is what makes 426
-        // useful instead of merely negative.
         if (ws_version != 13) {
           sink.append("HTTP/1.1 426 Upgrade Required\r\nDate: ");
           sink.append(date_, http::kDateLen);
@@ -645,7 +491,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
               "Content-Length: 0\r\n\r\n");
           return false;
         }
-        // 4.1: the handshake is a GET, and it carries a key.
         if (facts.method != flow::Method::kGet || ws_key == nullptr) {
           return fail(st, 400, sink, lflags);
         }
@@ -656,12 +501,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       }
     }
 
-    // THE EVENT STREAM (#102). Its own table, like the websocket one,
-    // and matched here - before the assets and long before the flow -
-    // because a path that names a stream is not a representation to
-    // negotiate. No upgrade marker exists to gate it on, so the table
-    // is walked once per request; an app without SSE routes has a null
-    // pointer here and pays one compare.
     if (WM_H1_UNLIKELY(apps_[st.listener].sse_table != nullptr)) {
       const AppSlot& sslot = apps_[st.listener];
       RouteSpans sspans;
@@ -672,10 +511,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       }
     }
 
-    // The asset tier (#170): a path naming a ZIP entry answers from
-    // the table, before the flow - the first thing in this tree that
-    // reads the request-target at all. A miss falls through to the app
-    // resource unchanged (the general router is #116's).
     if (assets_ != nullptr) {
       if (AssetEntry* ae = assets_->find(path, path_len)) {
         const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
@@ -683,19 +518,12 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         uint16_t alog_st = as;
         size_t alog_by = 0;
         if (as == 412 || as == 501) {
-          // Nothing asset-specific in these; the shared store answers.
           const Variants& sv = variants(as);
           sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                                  : (persist ? sv.keep.bytes : sv.close.bytes));
         } else {
           const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
                                                 : (persist ? Assets::kKeep : Assets::kClose);
-          // Range (#148): defined for GET alone (RFC 9110 14.2 - a
-          // HEAD carrying Range answers the plain 200 head), on the
-          // 200 verdict alone, and only past a matching If-Range (an
-          // unmatched or date-form validator lawfully serves the full
-          // 200). The window counts WIRE-body octets - a range over a
-          // gzip response ranges the encoded stream, structurally.
           uint16_t rs = 0;
           size_t rf = 0, rl = 0;
           if (as == 200 && !head_only && facts.method == flow::Method::kGet &&
@@ -707,7 +535,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                                       &rf, &rl)) {
               case http::RangeParse::kOne: rs = 206; break;
               case http::RangeParse::kUnsat: rs = 416; break;
-              case http::RangeParse::kNone: break;  // ignored: the full 200
+              case http::RangeParse::kNone: break;
             }
           }
           if (rs == 416) {
@@ -730,12 +558,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             assets_->answer_head(*ae, as, av, date_, sec_, sink);
             if (as == 200 && !head_only) {
               alog_by = Assets::wire_len(*ae);
-              // Delivery (#168): a body within the WARM BUDGET is
-              // copied and leaves with its head in one append - the
-              // degenerate case of the model, and the fast path. Above
-              // it the entry becomes the connection's source and every
-              // body round goes through more(), which hands the Ring
-              // pointers instead of bytes; only the head leaves here.
               const size_t wlen = Assets::wire_len(*ae);
               if (wlen <= warm_budget_) {
                 Assets::copy_wire(*ae, 0, wlen, sink);
@@ -762,25 +584,13 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         if (!persist) {
           st.carry.clear();
           st.body_skip = 0;
-          return false;  // false still delivers: more() drains the source first
+          return false;
         }
         if (started_xfer) {
-          // The transfer owns the wire order: the rest of this view is
-          // pipelined behind it and waits in the carry (more() resumes
-          // parsing when the source is exhausted).
           const size_t rest = viewlen - off;
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
-          // When the Ring handed a plan in, the transfer leaves WITH
-          // its head in this very round: the sink (head + everything
-          // before it) is one leading segment, the wire body follows
-          // as pointers, and the head-only round this used to cost is
-          // gone. Without a plan (a send in flight) the park stands
-          // and more() delivers, as before.
           if (plan != nullptr) {
-            // The head counts against the round's byte bound too - it
-            // rides the same sendmsg. No room past it: plan nothing,
-            // the head goes as a plain send and the park stands.
             const size_t room = plan->byte_cap == 0 ? st.xfer_end - st.xfer_off
                                 : plan->byte_cap > sink.size() ? plan->byte_cap - sink.size()
                                                                : 0;
@@ -810,22 +620,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       }
     }
 
-    // THE ROUTER (#116). One walk of the app's constant table decides
-    // which resource answers - literals by memcmp, symbols and :*
-    // captured as spans nothing reads yet (router.hpp says why they
-    // are captured anyway). A MISS answers the prebuilt 404 and stops
-    // here: before B13, therefore before any method test, so POST on
-    // an unknown path is 404 and never 405.
-    // WHOSE table: the listener the Ring wrote into this connection at
-    // accept (#116 slice 2). One indexed load, no search, no branch -
-    // a one-app process reads slot 0 every time.
     const AppSlot& slot = apps_[st.listener];
     RouteSpans spans;
     const int route = slot.table->match(path, path_len, spans);
     const Bundle* b = nullptr;
-    // Which status table answers, settled INSIDE the branch that was
-    // going to be taken anyway - so the writer below stays one indexed
-    // load with no test of its own.
     const std::array<uint16_t, 600>* idx = &index_;
     uint16_t status;
     bool have_body = false;
@@ -834,18 +632,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     } else {
       b = &bundles_[slot.base + static_cast<size_t>(route)];
       idx = &b->index;
-      // The wire is valid; from here the FLOW decides the status. Konst
-      // answers are compiled into the method's vector; dynamic nodes -
-      // instance methods, by declaration - are asked through the VM per
-      // request. Konst resources never see the VM; anything dynamic
-      // runs the whole flow inside ONE VM frame (this branch is
-      // deployment-stable: no hint).
       if (b->bound) {
-        // The request the callbacks may ask about (#116 slice 4). Built
-        // on THIS frame out of what the framer and the router already
-        // held - the spans the match captured, the target bytes still
-        // in the receive buffer - and nothing in it is materialised
-        // until a callback asks.
         ReqView rv;
         rv.target = path;
         rv.target_len = path_len;
@@ -856,8 +643,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
         rv.table = slot.table;
         rv.route = route;
         rv.spans = spans;
-        // The head itself, lent off this frame: two stores, and only
-        // in the branch that was going to run a resource anyway.
         rv.hdrs = headers;
         rv.nhdr = num_headers;
         status = resource_run(*b->res, facts, &rv, &body_, &have_body);
@@ -869,13 +654,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 
     bool answered = false;
     if (have_body && status == 200) {
-      // Rendered inside the run frame, copied there while the frame
-      // rooted it; HEAD renders too - its Content-Length must be the
-      // GET's - but sends no body bytes (RFC 9110 9.3.2).
       if (b->gzip_ok) {
-        // #147: deployment-stable like bound above - a resource either
-        // declared gzip or it never did, so no hint (see WM_H1_UNLIKELY's
-        // own rule: only for a branch that swings per request).
         assemble_dynamic(
             st, facts, vals,
             minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
@@ -891,13 +670,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       answered = true;
     }
     if (WM_H1_UNLIKELY(!answered && status == 500 && b != nullptr && b->bound)) {
-      // A raising callback answers in the negotiated type, the reason
-      // as body - the exception was left pending for exactly this.
-      // Copied before any mruby call can run.
       if (elog_.enabled) {
-        // The error log, BEFORE the exception is consumed for the body:
-        // the peer only ever learns "500", the operator learns which
-        // class raised what, and where.
         log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
       }
       const char* bp = nullptr;
@@ -910,21 +683,12 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       }
     }
     if (!answered) {
-      // The route's own table for a matched request (its 200 and 405
-      // sit in the shared store like everything else, at slots only
-      // its index names), the generic one for a router miss. The shape
-      // is one indexed load either way - exactly what a single-resource
-      // app paid.
       const Variants& sv =
           (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
       sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                              : (persist ? sv.keep.bytes : sv.close.bytes));
     }
     if (alog_.enabled) {
-      // %b for the dynamic 200 is the identity length - the gzip arm's
-      // wire size is conneg's secret, and re-deciding it here for a
-      // log column would be work per line. Prebuilt-store answers log
-      // "-": their body lengths were baked into bytes at build.
       log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
                  (answered && !head_only) ? body_.size() : 0, vals.log_ref, vals.log_ref_len,
                  vals.log_ua, vals.log_ua_len);
@@ -938,8 +702,6 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
       st.body_skip = content_length - skip;
     }
     if (!persist) {
-      // Bytes pipelined behind a closing request die with the
-      // connection (RFC 9112 §9.6: the close ends the exchange).
       st.carry.clear();
       st.body_skip = 0;
       return false;
@@ -949,23 +711,16 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
   return true;
 }
 
-// THE HANDSHAKE'S ANSWER (#175, RFC 6455 4.2.2). Everything that could
-// be decided from the wire was decided by feed; what is left is the
-// resource's own say and 129 bytes of head.
+// RFC 6455 4.2.2: the handshake's answer, 101 or the refusal the route earned.
 bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path,
                        size_t path_len, const RouteSpans& spans, const char* key,
                        size_t key_len, const void* hdrs, size_t nhdr, const char* rest,
                        size_t rest_len, std::string& sink) {
   char accept[28];
-  // 4.2.1 step 5.4: the key is 16 bytes base64'd. A key that is not
-  // that is the one thing the client half must get right.
   if (!ws::accept_key(key, key_len, accept)) return fail(st, 400, sink);
 
   const WsResource* res = ws_res_[slot.ws_base + static_cast<size_t>(route)];
 
-  // The resource's own say, with the handshake's head still LIVE: this
-  // is where a subprotocol is chosen, an Origin refused, a token in the
-  // query checked (#175's whole reason for request.headers).
   ReqView rv;
   rv.target = path;
   rv.target_len = path_len;
@@ -979,25 +734,12 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   request_bind(&rv);
   std::string proto;
   uint16_t refuse_status = 0;
-  // The peer's own resource is built here and its initialize decides
-  // (#181); what comes back IS this peer's connection, owning that
-  // object until ws_free.
   WsConn* wsc = ws_admit(res, elog_.enabled ? &elog_ : nullptr, proto, refuse_status);
   request_bind(nullptr);
   if (wsc == nullptr) {
-    // The resource said no. It answers as HTTP, because nothing was
-    // upgraded - and it closes, because a refused handshake has
-    // nothing more to say on this connection.
     return fail(st, refuse_status == 0 ? 403 : refuse_status, sink);
   }
 
-  // permessage-deflate (#175 round two, RFC 7692), and only for a route
-  // that said it wants it: the offer list is walked here, where the
-  // parsed head still lies, so the extension costs a route that
-  // declined it exactly one bool. A field may appear more than once
-  // (RFC 9110 5.3 makes a list one field or many); the FIRST offer
-  // anywhere in them that this endpoint can accept wins, which is
-  // 7692 5.1's "the server selects one".
   wsdeflate::Params dparams;
   std::string ext_answer;
   if (ws_wants_deflate(res)) {
@@ -1012,8 +754,6 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
               "Upgrade\r\nSec-WebSocket-Accept: ");
   sink.append(accept, sizeof(accept));
   if (!proto.empty()) {
-    // 4.2.2 step 5.5: at most one, and only one the client offered -
-    // which the resource read out of the head itself.
     sink.append("\r\nSec-WebSocket-Protocol: ").append(proto);
   }
   if (dparams.on) sink.append("\r\nSec-WebSocket-Extensions: ").append(ext_answer);
@@ -1021,19 +761,14 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
 
   ws_open(wsc, dparams);
   st.ws = wsc;
-  st.carry.clear();     // the head is answered; nothing HTTP waits any more
+  st.carry.clear();
   st.body_skip = 0;
-  // Frames the client sent in the SAME receive as its handshake - a
-  // peer that does not wait for the 101 is not made to wait for
-  // another packet.
   if (rest_len != 0) return ws_feed(st.ws, rest, rest_len, sink);
   return true;
 }
 
-// The event stream's head (#102). Everything about it is decided
-// here, once, and then this connection never reads another head: what
-// leaves from now on is what the SECOND produces (the reactor's own,
-// which it already wakes on for the timeout clocks).
+// WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111
+// 5.2.2.5 no-store, and this connection never reads another head.
 bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
                       size_t method_len, const char* path, size_t path_len,
                       const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
@@ -1045,10 +780,6 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
                  vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
     }
   };
-  // GET only. A stream has one representation and no other method has
-  // a meaning here, so anything else is 405 with the Allow that says
-  // so - the same answer the flow would have given, spelled by the
-  // tier that owns the route.
   if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
     log(405);
     sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
@@ -1056,9 +787,6 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
     sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return false;
   }
-  // HTTP/1.0 has no chunked framing and no EventSource, and a stream
-  // delimited by the connection's end is a message this tree cannot
-  // frame honestly. Refused by name rather than served badly.
   if (WM_H1_UNLIKELY(minor < 1)) {
     log(505);
     sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
@@ -1067,8 +795,6 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
     return false;
   }
 
-  // The resource's own say, with the head still LIVE - Last-Event-ID,
-  // an Origin check, a token in the query are all decided from it.
   ReqView rv;
   rv.target = path;
   rv.target_len = path_len;
@@ -1090,23 +816,14 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
   }
 
   log(200);
-  // Cache-Control: no-store because a stream is not a representation
-  // anything may keep (RFC 9111 5.2.2.5), and chunked because it is
-  // the only framing that lets a message stay legal without knowing
-  // its own length (RFC 9112 7.1). No Connection header: 1.1 persists
-  // by default and this one persists until somebody ends it.
   sink.append("HTTP/1.1 200 OK\r\nDate: ");
   sink.append(date_, http::kDateLen);
   sink.append(
       "\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
       "Transfer-Encoding: chunked\r\n\r\n");
   st.sse = s;
-  // Whatever the peer pipelined behind this request is discarded with
-  // the carry: this connection is a stream now, and a second request
-  // on it has nowhere to be answered.
   st.carry.clear();
   st.body_skip = 0;
   return true;
 }
-
-}  // namespace webmachine
+}
