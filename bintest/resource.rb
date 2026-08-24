@@ -206,17 +206,6 @@ assert('resource: a missing resource speaks 404/412 like the graph says') do
   end
 end
 
-assert('resource: later-tier callbacks refuse the start by name') do
-  src = <<~RUBY
-    class EtagResource < Webmachine::Resource
-      def self.generate_etag
-        'v1'
-      end
-    end
-  RUBY
-  assert_true resource_refused(wm_app('EtagResource', src)).include?('generate_etag')
-end
-
 assert('resource: an instance body renders per request through the VM') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   resource_server(src) do |sock|

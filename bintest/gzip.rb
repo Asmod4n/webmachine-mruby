@@ -189,9 +189,8 @@ end
 #
 # NOT asserted here, by name (#147's own report explains why): a
 # DISTINCT ETag per coding and a coding-aware 304. Dynamic resources
-# carry no ETag machinery at all yet - generate_etag stays refused at
-# setup (resource.cpp's kUnhonored) until a later tier lands it, so
-# there is no ETag for this test to compare, distinct or otherwise.
+# carry no ETag machinery at all, so there is no ETag for this test to
+# compare, distinct or otherwise.
 assert('gzip: encodings_provided + Accept-Encoding: gzip + a body over the floor compresses, byte-identical') do
   gz_tcp_server(GZ_ENC_RESOURCE) do |port|
     s = gz_tcp_connect(port)
