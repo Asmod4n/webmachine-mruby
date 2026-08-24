@@ -20,7 +20,6 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/uio.h>  // struct iovec: a source hands out pointers, not bytes
-#include <sys/uio.h>  // struct iovec: a round's plan is pointers, not bytes
 #include <sys/un.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -35,6 +34,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ------------------------------------------------------------------
@@ -1711,6 +1711,45 @@ inline bool compress(const std::string& in, std::string& out) {
 
 namespace webmachine {
 
+// The extension -> media type table, read ONCE at setup and never on a
+// request path. It comes off the MACHINE: a media-type database is
+// something the operator installs and curates, and a table kept in
+// this source could only ever be a worse, staler copy of it.
+//
+// Sources, first that exists wins:
+//   1. the path the operator named ([server].mime_types, --mime-types)
+//   2. /etc/mime.types            Debian media-types, Fedora/Arch mailcap
+//   3. /etc/apache2/mime.types, /etc/httpd/conf/mime.types,
+//      /usr/local/etc/mime.types                 Apache per distro, BSD
+//   4. /usr/share/mime/globs2                        shared-mime-info
+//   5. the list compiled in (share/mime.types, Apache httpd's own)
+//
+// Two formats, because there are two: "type ext ext ..." for 1-3 and
+// 5, "weight:type:*.ext" for globs2. nginx's block form stays out -
+// an operator who has one names it through source 1.
+class MimeDb {
+ public:
+  // A path the OPERATOR named and that cannot be read is a refusal,
+  // not a step down the list: they named it on purpose. Everything
+  // else falls through, and source() then says what answered.
+  bool load(const char* configured, char* err, size_t errlen);
+  const std::string& source() const { return source_; }
+  size_t size() const { return by_ext_.size(); }
+  // Never null. RFC 9110 8.3: a generic claim is only worse than no
+  // claim when it lies, and octet-stream never does.
+  const char* type_of(const std::string& name) const;
+
+ private:
+  void take(const char* type, size_t tlen, const char* ext, size_t elen);
+  void parse_types(const char* p, const char* end);
+  void parse_globs2(const char* p, const char* end);
+
+  // Sorted by extension, binary-searched - the same shape the asset
+  // table uses, and setup is its only reader.
+  std::vector<std::pair<std::string, std::string>> by_ext_;
+  std::string source_;
+};
+
 // Everything about one served entry, computed at setup. `data` points
 // into the mapping, past the local header - the deflate (or stored)
 // bytes the wire carries untouched.
@@ -1779,7 +1818,7 @@ class Assets {
   // Parse + map + prebuild. False leaves the named refusal in err -
   // Zip64, encryption, a method that is neither 0 nor 8, a truncated
   // directory: all name themselves, nothing degrades silently.
-  bool open(const char* zip_path, char* err, size_t errlen);
+  bool open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen);
 
   // path is the request-target (origin-form): the query is stripped,
   // the leading slash dropped, and the rest must equal a table name
@@ -3513,6 +3552,10 @@ namespace webmachine {
 // the CLI would make the command line a suggestion.
 struct ServerOptions {
   const char* assets_path = nullptr;  // --assets, null = no asset tier
+  // --mime-types, null = find the machine's own database (MimeDb).
+  // Only ever read when an asset tier exists - it is the only thing
+  // in the tree that asks a filename what it is.
+  const char* mime_path = nullptr;
   const char* log_path = nullptr;     // --log, null = no access log (opt-in)
   // --log-privacy none|anon|full - the amount of PRIVACY the peer
   // gets (none = full addresses + GDPR warning; default anon; logd
@@ -3597,6 +3640,9 @@ struct Config {
   int port = 0;           // port = N     - listener override, like --port
   std::string app;        // app = "FILE.mrb"
   std::string assets;     // assets = "FILE.zip"
+  // mime_types = "PATH" - the media-type database to read instead of
+  // hunting for the machine's own (MimeDb names the order it hunts in).
+  std::string mime_types;
   std::string pidfile;    // pidfile = "PATH"
 
   // [log]

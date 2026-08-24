@@ -49,7 +49,9 @@ webmachine::Http1& app() {
   static webmachine::Assets* assets = [] {
     auto* as = new webmachine::Assets();
     char err[256];
-    if (as->open("build/fuzz/fixture.zip", err, sizeof(err))) return as;
+    auto* mime = new webmachine::MimeDb();
+    mime->load(nullptr, err, sizeof(err));
+    if (as->open("build/fuzz/fixture.zip", *mime, err, sizeof(err))) return as;
     std::fprintf(stderr, "feed_fuzz: no asset fixture (%s) - the asset tier is not covered\n",
                  err);
     delete as;

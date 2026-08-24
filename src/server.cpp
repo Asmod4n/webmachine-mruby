@@ -28,6 +28,7 @@ std::vector<std::vector<const Resource*>> resources_;
 std::vector<std::vector<const WsResource*>> ws_resources_;
 int log_fd_ = -1;
 Assets assets_;
+MimeDb mime_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
@@ -172,9 +173,16 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (!build_listeners(cfg, err, errlen)) return false;
 
   // The asset table is built ONCE, before any listener exists; a bad
-  // archive refuses the start by name (#170).
-  if (opts_.assets_path != nullptr && !assets_.open(opts_.assets_path, err, errlen)) {
-    return false;
+  // archive refuses the start by name (#170). The media types come
+  // first, because every entry's Content-Type is decided while that
+  // table is built - and they come off the MACHINE, so the startup
+  // says which database answered rather than reaching into a file
+  // nobody expected.
+  if (opts_.assets_path != nullptr) {
+    if (!mime_.load(opts_.mime_path, err, errlen)) return false;
+    std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
+                 mime_.source().c_str(), mime_.size());
+    if (!assets_.open(opts_.assets_path, mime_, err, errlen)) return false;
   }
 
   // The access log (opt-in, accesslog.hpp's head says why the shape

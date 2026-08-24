@@ -113,6 +113,8 @@ int main(int argc, char** argv) {
       opts.app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       opts.assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--mime-types") == 0 && i + 1 < argc) {
+      opts.mime_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
       log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log-privacy") == 0 && i + 1 < argc) {
@@ -126,13 +128,18 @@ int main(int argc, char** argv) {
     } else {
       std::fprintf(stderr,
                    "usage: %s [--config FILE.toml] [--unix PATH | --port N] [--app FILE.mrb] "
-                   "[--assets FILE.zip] [--log FILE [--log-privacy none|anon|full]] "
+                   "[--assets FILE.zip] [--mime-types FILE] "
+                   "[--log FILE [--log-privacy none|anon|full]] "
                    "[--pidfile PATH] [--echo]\n"
                    "  --config reads the same choices from a TOML file; typed flags beat it,\n"
                    "  and both beat the app's conf. Without --config, a ./webmachine.toml is\n"
                    "  used when present (and announced).\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
+                   "  --mime-types names the media-type database the asset tier reads\n"
+                   "  instead of hunting for the machine's own (/etc/mime.types, the apache\n"
+                   "  paths, /usr/share/mime/globs2, then the list built in). The startup\n"
+                   "  always says which one answered.\n"
                    "  --pidfile writes this process's pid and removes the file on the way out.\n",
                    argv[0]);
       return 2;
@@ -178,6 +185,9 @@ int main(int argc, char** argv) {
     }
     if (opts.app_path == nullptr && !fc.app.empty()) opts.app_path = fc.app.c_str();
     if (opts.assets_path == nullptr && !fc.assets.empty()) opts.assets_path = fc.assets.c_str();
+    if (opts.mime_path == nullptr && !fc.mime_types.empty()) {
+      opts.mime_path = fc.mime_types.c_str();
+    }
     if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
     if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();

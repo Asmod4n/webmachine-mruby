@@ -49,7 +49,7 @@ def a_build_zip(entries, flags: 0)
   out
 end
 
-def a_server(zip_bytes)
+def a_server(zip_bytes, extra = [])
   zf = Tempfile.new(['wm-assets', '.zip'])
   zf.binmode
   zf.write(zip_bytes)
@@ -57,7 +57,7 @@ def a_server(zip_bytes)
   sock = "/tmp/wm-assets-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path, *extra,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -713,4 +713,108 @@ ensure
   File.unlink(logf) rescue nil
   File.unlink(sock) rescue nil
   zf&.unlink
+end
+
+# ---- the media type comes off the MACHINE (#183) ---------------------
+#
+# The hand-kept table of 20 extensions that used to live in
+# src/assets.cpp is gone. What answers now is the machine's own
+# database - /etc/mime.types, the apache paths, /usr/share/mime/globs2
+# - and, only where a machine has none, the list built in from
+# share/mime.types. The asset tests above are half the proof already:
+# they pin text/css, text/html and application/octet-stream at byte
+# level and pass unchanged, which is the statement that the database
+# answers what the table used to.
+#
+# This is the other half: what the table never could.
+
+assert('assets: an extension the deleted table never knew gets its real type') do
+  # .epub was not one of the 20. Every source in the chain names it -
+  # Debian media-types, the apache file, shared-mime-info's globs2 and
+  # the built-in list all say application/epub+zip - so this asserts a
+  # type, not "something other than octet-stream".
+  a_server(a_build_zip([['book.epub', 'PK-ish bytes'.b * 8, 0]])) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /book.epub HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK')
+      assert_true head.match?(%r{^Content-Type: application/epub\+zip\r$}i),
+                  "epub got: #{head[/^Content-Type:.*$/i]}"
+    end
+  end
+end
+
+assert('assets: --mime-types names the database, and the operator wins') do
+  db = Tempfile.new(['wm-mime', '.types'])
+  # One made-up type nothing on any machine could answer with, so a
+  # match proves THIS file was read; one line of comment and one of
+  # padding to exercise the parser's skipping.
+  db.write("# a database of one\napplication/vnd.webmachine-test\t\twm  WM\n")
+  db.close
+  begin
+    a_server(a_build_zip([['x.wm', 'body'.b * 16, 0], ['y.zzz', 'body'.b * 16, 0]]),
+             ['--mime-types', db.path]) do |sock|
+      UNIXSocket.open(sock) do |s|
+        s.write("GET /x.wm HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, = a_read(s)
+        assert_true head.match?(%r{^Content-Type: application/vnd\.webmachine-test\r$}i),
+                    "operator file ignored: #{head[/^Content-Type:.*$/i]}"
+        # An extension that file does not name falls to octet-stream -
+        # the named file REPLACES the machine's database, it does not
+        # extend it (RFC 9110 8.3: a generic claim never lies).
+        s.write("GET /y.zzz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        h2, = a_read(s)
+        assert_true h2.match?(%r{^Content-Type: application/octet-stream\r$}i)
+      end
+    end
+  ensure
+    db.unlink
+  end
+end
+
+assert('assets: a --mime-types file that cannot be read refuses the start, by name') do
+  zf = Tempfile.new(['wm-assets', '.zip'])
+  zf.binmode
+  zf.write(a_build_zip([['a.css', 'a{}', 0]]))
+  zf.close
+  sock = "/tmp/wm-mime-refuse-#{$$}.sock"
+  err = "/tmp/wm-mime-refuse-#{$$}.log"
+  File.unlink(sock) if File.exist?(sock)
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
+                '--mime-types', '/nonexistent/mime.types', out: File::NULL, err: err)
+    Process.wait(pid)
+    assert_false $?.success?, 'a missing media-type database started the server anyway'
+    text = File.read(err) rescue ''
+    assert_true text.include?('/nonexistent/mime.types'),
+                "refusal does not name the file: #{text.inspect}"
+    assert_false File.socket?(sock), 'listener came up despite the refusal'
+  ensure
+    File.unlink(sock) rescue nil
+    File.unlink(err) rescue nil
+    zf.unlink
+  end
+end
+
+assert('assets: shared-mime-info globs2 is the second format, and it parses') do
+  # A file NAMED globs2 is read in that format - weight:type:*.ext -
+  # which is the only source in the chain with a grammar of its own.
+  dir = "/tmp/wm-globs2-#{$$}"
+  Dir.mkdir(dir) unless Dir.exist?(dir)
+  path = File.join(dir, 'globs2')
+  File.write(path, "# generated\n50:application/vnd.webmachine-glob:*.wm\n" \
+                   "50:text/plain:*README*\n")
+  begin
+    a_server(a_build_zip([['x.wm', 'body'.b * 16, 0]]), ['--mime-types', path]) do |sock|
+      UNIXSocket.open(sock) do |s|
+        s.write("GET /x.wm HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        head, = a_read(s)
+        assert_true head.match?(%r{^Content-Type: application/vnd\.webmachine-glob\r$}i),
+                    "globs2 not parsed: #{head[/^Content-Type:.*$/i]}"
+      end
+    end
+  ensure
+    File.unlink(path) rescue nil
+    Dir.rmdir(dir) rescue nil
+  end
 end

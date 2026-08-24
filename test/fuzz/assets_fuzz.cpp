@@ -85,9 +85,19 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   if (::pwrite(fd, data, size, 0) != static_cast<ssize_t>(size)) return 0;
   const char* path = scratch_path();
 
+  // The media types are loaded ONCE for the whole campaign: they are
+  // setup input, not fuzz input, and rereading the machine's database
+  // per iteration would measure the filesystem instead of the parser.
+  static const MimeDb* mime = [] {
+    auto* db = new MimeDb();
+    char merr[256];
+    db->load(nullptr, merr, sizeof(merr));
+    return db;
+  }();
+
   Assets a;
   char err[256];
-  if (!a.open(path, err, sizeof(err))) return 0;
+  if (!a.open(path, *mime, err, sizeof(err))) return 0;
 
   // A directory that parsed. Now the REQUEST half.
   //

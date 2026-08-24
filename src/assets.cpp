@@ -56,36 +56,6 @@
 namespace webmachine {
 namespace {
 
-// Content-Type from the extension, decided at setup. Unknown speaks
-// octet-stream (RFC 9110 §8.3: no type claim is worse than a generic
-// one only when it lies; octet-stream never does).
-const char* ctype_of(const std::string& name) {
-  const size_t dot = name.rfind('.');
-  if (dot == std::string::npos) return "application/octet-stream";
-  const char* e = name.c_str() + dot + 1;
-  const size_t n = name.size() - dot - 1;
-  const auto is = [&](const char* lit) { return std::strlen(lit) == n && std::memcmp(e, lit, n) == 0; };
-  if (is("html") || is("htm")) return "text/html";
-  if (is("css")) return "text/css";
-  if (is("js") || is("mjs")) return "text/javascript";
-  if (is("json") || is("map")) return "application/json";
-  if (is("svg")) return "image/svg+xml";
-  if (is("png")) return "image/png";
-  if (is("jpg") || is("jpeg")) return "image/jpeg";
-  if (is("gif")) return "image/gif";
-  if (is("webp")) return "image/webp";
-  if (is("avif")) return "image/avif";
-  if (is("ico")) return "image/x-icon";
-  if (is("woff2")) return "font/woff2";
-  if (is("woff")) return "font/woff";
-  if (is("txt")) return "text/plain";
-  if (is("xml")) return "application/xml";
-  if (is("pdf")) return "application/pdf";
-  if (is("wasm")) return "application/wasm";
-  if (is("mp4")) return "video/mp4";
-  if (is("webm")) return "video/webm";
-  return "application/octet-stream";
-}
 
 // The archive's mtime to IMF-fixdate. miniz has already read whichever
 // of the DOS date/time fields (appnote 4.4.6) or the extended-timestamp
@@ -135,7 +105,7 @@ Assets::~Assets() {
   if (map_ != nullptr) ::munmap(const_cast<char*>(map_), map_len_);
 }
 
-bool Assets::open(const char* zip_path, char* err, size_t errlen) {
+bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen) {
   // The fd is a SETUP tool, closed before this function returns: the
   // mapping keeps the pages alive by itself, and nothing past setup
   // ever reads the archive through a descriptor. One fd fewer against
@@ -261,7 +231,7 @@ bool Assets::open(const char* zip_path, char* err, size_t errlen) {
 
   // Prebuild what every request would otherwise redo.
   for (AssetEntry& e : entries_) {
-    e.ctype = http::with_charset(ctype_of(e.name));
+    e.ctype = http::with_charset(mime.type_of(e.name));
     std::string f;
     f.append("Content-Type: ").append(e.ctype).append("\r\n");
     if (e.deflated) {
