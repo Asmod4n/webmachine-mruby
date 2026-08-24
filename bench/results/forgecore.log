@@ -809,3 +809,23 @@ steal +0 ticks over the whole sweep
 access log: 170134010 lines (12G)
 setup: 1 entry 4437us, 5000 entries 20304us (boot floor, min of 5; floor jitter 716us)
 setup: => 3174ns per entry
+==== 2026-08-24T18:08Z repo=74aa782 mruby=9ef4b16 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1607 busy=1% (200ms sample)
+    Req/Sec   226.74k     5.37k  242.73k    80.50%
+     50%  431.00us
+     99%  568.00us
+Requests/sec: 899161.46
+==== 2026-08-24T18:09Z repo=74aa782 mruby=9ef4b16 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1210 busy=0% (200ms sample)
+     50%  430.00us
+     99%  579.00us
+Requests/sec: 902131.17
+==== 2026-08-24T18:09Z repo=74aa782 mruby=9ef4b16 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1010 busy=0% (200ms sample)
+    Latency   600.29us   48.75us   2.47ms   99.50%
+     50%  600.00us
+     99%  625.00us
+Requests/sec: 657487.61
