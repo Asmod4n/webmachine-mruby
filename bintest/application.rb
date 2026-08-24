@@ -838,7 +838,7 @@ assert('application: request names what the route captured, per request') do
   end
 end
 
-assert('application: request.headers are the head, lowercased') do
+assert('application: request.headers are the head, lowercased; body refuses by name') do
   src = <<~RUBY
     class Asks < Webmachine::Resource
       def to_html
@@ -847,10 +847,19 @@ assert('application: request.headers are the head, lowercased') do
       end
     end
 
+    class AsksBody < Webmachine::Resource
+      def to_html
+        request.body
+      rescue RuntimeError => e
+        e.message
+      end
+    end
+
     def main
       Webmachine::Application.new do |app|
         app.routes do |route|
           route.add ['h'], Asks
+          route.add ['b'], AsksBody
         end
       end
     end
@@ -864,6 +873,9 @@ assert('application: request.headers are the head, lowercased') do
     s.write("GET /h HTTP/1.1\r\nHost: x\r\nX-One: a\r\nX-TWO: b\r\nX-One: c\r\n\r\n")
     _, body = ap_read(s)
     assert_equal 'a, c|b|x', body
+    s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    _, body2 = ap_read(s)
+    assert_true body2.include?('request bodies'), body2
     s.close
   end
 end

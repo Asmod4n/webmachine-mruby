@@ -185,6 +185,20 @@ struct NamedSym {
   mrb_sym sym;
   const char* name;
 };
+const NamedSym kUnhonored[] = {
+    {MRB_SYM(content_types_provided), "content_types_provided"},
+    {MRB_SYM(languages_provided), "languages_provided"},
+    {MRB_SYM(charsets_provided), "charsets_provided"},
+    {MRB_SYM(generate_etag), "generate_etag"},
+    {MRB_SYM(last_modified), "last_modified"},
+    {MRB_SYM(options), "options"},
+    {MRB_SYM(create_path), "create_path"},
+    {MRB_SYM(process_post), "process_post"},
+    {MRB_SYM(content_types_accepted), "content_types_accepted"},
+    {MRB_SYM(base_uri), "base_uri"},
+    {MRB_SYM(expires), "expires"},
+    {MRB_SYM(variances), "variances"},
+};
 const NamedSym kKonstOnly[] = {
     {MRB_SYM(known_methods), "known_methods"},
     {MRB_SYM(allowed_methods), "allowed_methods"},
@@ -255,6 +269,14 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out = Resource{};
   out.mrb = mrb;
 
+  for (const NamedSym& cb : kUnhonored) {
+    if (WM_RES_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
+                        instance_defined(mrb, klass, cb.sym))) {
+      std::snprintf(err, errlen, "%s is defined but no tier can honor it yet", cb.name);
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+  }
   for (const NamedSym& cb : kKonstOnly) {
     if (WM_RES_UNLIKELY(instance_defined(mrb, klass, cb.sym))) {
       std::snprintf(err, errlen, "%s shapes the compiled vectors - declare it konst (def self.%s)",

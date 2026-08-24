@@ -195,6 +195,14 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
+// RFC 9110 6.4: refused by name until a body tier exists.
+mrb_value req_body(mrb_state* mrb, mrb_value) {
+  mrb_raise(mrb, E_RUNTIME_ERROR,
+            "request.body is not built: this tree skips request bodies at the framer "
+            "(they are counted and discarded), so there is nothing to hand over yet");
+  return mrb_nil_value();
+}
+
 // RFC 9110: Resource#request - the one object, never a new one.
 mrb_value resource_request(mrb_state* mrb, mrb_value) {
   live(mrb);
@@ -219,6 +227,7 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, req, MRB_SYM(query), req_query, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(query_string), req_query_string, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(headers), req_headers, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, req, MRB_SYM(body), req_body, MRB_ARGS_NONE());
 
   obj_ = mrb_obj_value(mrb_data_object_alloc(mrb, req, nullptr, &request_type));
   mrb_gc_register(mrb, obj_);
