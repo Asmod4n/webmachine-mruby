@@ -282,6 +282,50 @@ assert('ws: a Symbol answer is a close by name; a String is a message') do
   end
 end
 
+assert('ws: a server-initiated close waits for the peer to answer it (5.5.1)') do
+  # THE BUG THIS PINS: the connection used to be torn down the instant
+  # the resource said a close, so the peer's answering Close - which
+  # 5.5.1 asks for and every browser sends - arrived at a socket that
+  # was already shut both ways. That is EPIPE here and an RST on the
+  # wire, and an RST discards whatever the peer had not read yet: the
+  # client lost the very Close it was answering and reported an
+  # abnormal closure instead of the code the resource named.
+  src = <<~RUBY
+    class Bye < Webmachine::WebsocketResource
+      def on_data(data, binary)
+        data == 'bye' ? :close : data
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.websocket ['ws'], Bye }
+      end
+    end
+  RUBY
+  ws_server(src) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s)
+    s.write(ws_frame(0x1, 'bye'))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1000, (payload.getbyte(0) << 8) | payload.getbyte(1)
+
+    # The client answers, as a conformant one does. This must reach the
+    # server: before the fix it raised EPIPE.
+    begin
+      s.write(ws_frame(0x8, [1000].pack('n')))
+    rescue Errno::EPIPE, Errno::ECONNRESET => e
+      raise "the peer could not answer the close: #{e.class}"
+    end
+
+    # And only THEN does the connection end - EOF, not a reset.
+    IO.select([s], nil, nil, 5) or raise 'server never closed after the handshake completed'
+    assert_equal nil, s.read_nonblock(4096, exception: false)
+    s.close
+  end
+end
+
 assert('ws: initialize reads the handshake head and picks the subprotocol') do
   src = <<~RUBY
     class Picky < Webmachine::WebsocketResource

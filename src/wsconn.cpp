@@ -324,7 +324,6 @@ bool deliver(WsConn* c, std::string& sink) {
     mrb_gc_arena_restore(mrb, ai);
     return fail(c, sink, ws::kCloseInternalError);
   }
-  bool alive = true;
   if (mrb_string_p(out)) {
     // A String is a message, in the SAME kind the message arrived in -
     // which is what makes an echo resource `data` and nothing else.
@@ -333,9 +332,24 @@ bool deliver(WsConn* c, std::string& sink) {
   } else if (mrb_symbol_p(out)) {
     uint16_t code = 0;
     if (symbol_code(mrb_symbol(out), code)) {
+      // 5.5.1: our Close goes out and the connection STAYS OPEN until
+      // the peer answers with its own. Tearing the socket down here -
+      // which is what this did - shuts the read side while the peer's
+      // Close is still in flight, so that Close lands on a closed
+      // socket: EPIPE here, RST on the wire, and an RST discards
+      // whatever the peer had not read yet. The peer therefore loses
+      // the very Close frame it was answering and reports an abnormal
+      // closure (1006) instead of the code the resource named. A
+      // conformant client - every browser - answers, so every browser
+      // saw it.
+      //
+      // Nothing more is said from this side (5.5.1 forbids further
+      // data frames), which is why deliver is not reached again: the
+      // guard at the message dispatch drops what still arrives. The
+      // peer's Close ends the connection at the kClose case above;
+      // a peer that never answers is reaped by the idle clock (#180).
       emit_close(c, sink, code, nullptr, 0);
       report_close(c, code, nullptr, 0);
-      alive = false;
     } else {
       std::fprintf(stderr,
                    "webmachine: on_data returned :%s, which is not a close this endpoint "
@@ -355,7 +369,10 @@ bool deliver(WsConn* c, std::string& sink) {
     return fail(c, sink, ws::kCloseInternalError);
   }
   mrb_gc_arena_restore(mrb, ai);
-  return alive;
+  // Every way OUT of this connection is a `return fail(...)` above;
+  // what reaches here is a message answered, a close begun, or
+  // nothing said, and all three keep the connection.
+  return true;
 }
 
 // A frame whose payload is now complete. False = the connection ends.
@@ -417,6 +434,15 @@ bool finish_frame(WsConn* c, std::string& sink) {
   // boundary left open.
   if (c->msg_op == ws::kText && !utf8_ok(c, true)) {
     return fail(c, sink, ws::kCloseInvalidPayload);
+  }
+  // Our Close has gone out and we are waiting for the peer's (5.5.1).
+  // A message that crossed it on the wire is dropped rather than
+  // delivered: the resource has already said goodbye, and anything it
+  // answered now could not be sent - this side may send no further
+  // data frames after a Close.
+  if (c->sent_close) {
+    drop_msg(c);
+    return true;
   }
   return deliver(c, sink);
 }
