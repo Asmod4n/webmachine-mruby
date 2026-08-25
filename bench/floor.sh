@@ -41,6 +41,25 @@ if [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
   exit 1
 fi
 
+# THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
+# already has, ported here: a number where wrk burned as much CPU as the
+# server describes wrk, not webmachine. cpu_ticks reads the SERVER's own
+# /proc/pid/stat (utime+stime), never system-wide - see snap_times below
+# for the client's side.
+cpu_ticks() {
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
+    "/proc/$1/stat" 2>/dev/null || echo 0
+}
+HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+WORK=$(mktemp -d)
+# Split like sysc_wait: the WAIT must run in the shell that backgrounded
+# wrk (a $() subshell is not its parent), only the read below may fork.
+snap_times() { times > "$WORK/.times"; }
+parse_child_cpu() {
+  awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
+               printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
+}
+
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
 # naming the .rb source. An .mrb APP (or none) passes through as-is.
@@ -79,7 +98,7 @@ else
   "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
-trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null' EXIT
+trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- requests per syscall -------------------------------------------
 # The point of a ring server is syscall AMORTIZATION - one enter
@@ -184,13 +203,22 @@ OUT=$(mktemp)
   [ "$TOTAL" -gt 0 ] && BUSYPCT=$((100*BUSY/TOTAL)) || BUSYPCT=0
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   sysc_begin "$SRV" "$DURATION"
+  S0=$(cpu_ticks "$SRV")
+  snap_times
+  C0=$(parse_child_cpu)
   if [ "$TRANSPORT" = unix ]; then
-    WRKOUT=$(WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/")
+    WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   else
-    WRKOUT=$("$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/")
+    "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+      "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   fi
+  CLI=$!
+  wait "$CLI" 2>/dev/null
+  snap_times
+  C1=$(parse_child_cpu)
+  S1=$(cpu_ticks "$SRV")
+  WRKOUT=$(cat "$WORK/cli.out")
   echo "$WRKOUT" | grep -E "Requests/sec|50%|99%"
   sysc_wait
   NSYSC=$(sysc_read)
@@ -198,9 +226,30 @@ OUT=$(mktemp)
   if [ -n "$NSYSC" ] && [ "$NSYSC" -gt 0 ] && [ -n "$NDONE" ]; then
     awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "req/syscall: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
   fi
+  # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
+  # comparison (bench/assets.sh already learned this the hard way): the
+  # server had headroom AND the client was pegged. wrk lawfully spends
+  # more total CPU than we do across THREADS threads; that alone is not
+  # client-bound.
+  SU=$((S1 - S0))
+  SCPU=$((SU * 100 / HZ / DURATION))
+  CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
+  if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge $((THREADS * 90)) ]; then
+    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% across $THREADS threads). This measures wrk, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
+    echo 1 > "$WORK/client_bound"
+  else
+    echo "server: ${SCPU}% of one core   client: ${CCPU}% across $THREADS threads"
+    echo 0 > "$WORK/client_bound"
+  fi
 } | tee "$OUT"
-# A failed run writes nothing: the log holds only numbers that existed.
-if grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; then
+# A failed or client-bound run writes nothing: the log holds only numbers
+# that describe webmachine, never wrk. CLIENT_BOUND is read back from a
+# file - the block above runs in tee's subshell, its own variables die
+# with it.
+CLIENT_BOUND=$(cat "$WORK/client_bound" 2>/dev/null || echo 0)
+if [ "$CLIENT_BOUND" = 1 ]; then
+  echo "run was client-bound - NOT recorded in $RESULTS" >&2
+elif grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; then
   cat "$OUT" >> "$RESULTS"
 else
   echo "run measured nothing - NOT recorded in $RESULTS" >&2

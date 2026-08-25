@@ -83,9 +83,28 @@ fi
 LOG="${LOG:-0}"
 LOG_ARGS=()
 [ "$LOG" = 1 ] && LOG_ARGS=(--log "/tmp/wm-h2bench-access.$$.log")
+# THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
+# already has (and bench/floor.sh now too), ported here: a number where
+# h2load burned as much CPU as the server describes h2load, not
+# webmachine. cpu_ticks reads the SERVER's own /proc/pid/stat
+# (utime+stime); snap_times/parse_child_cpu read the CLIENT's, via
+# bash's own `times` for its reaped children. Defined and WORK created
+# before the trap below, which references it on every exit path.
+cpu_ticks() {
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
+    "/proc/$1/stat" 2>/dev/null || echo 0
+}
+HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+WORK=$(mktemp -d)
+snap_times() { times > "$WORK/.times"; }
+parse_child_cpu() {
+  awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
+               printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
+}
+
 "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
 SRV=$!
-trap 'kill $SRV 2>/dev/null' EXIT
+trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat /tmp/wm-h2bench-srv.log >&2; exit 1; }
 grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
@@ -167,10 +186,19 @@ run() {  # run <label> <h2load flags...>
   echo "== $label =="
   local vals=()
   for _ in $(seq "$REPS"); do
-    local s0 s1 out line rps nsysc ndone rsc="-"
+    local s0 s1 out line rps nsysc ndone rsc="-" srv0 srv1 c0 c1 cli su scpu ccpu
     s0=$(steal_ticks)
     sysc_begin "$SRV" "$DURATION"
-    out=$(h2load -D"$DURATION" -t"$THREADS" -c"$CONNS" "$@" "$URL" 2>&1)
+    srv0=$(cpu_ticks "$SRV")
+    snap_times
+    c0=$(parse_child_cpu)
+    h2load -D"$DURATION" -t"$THREADS" -c"$CONNS" "$@" "$URL" >"$WORK/h2.out" 2>&1 &
+    cli=$!
+    wait "$cli" 2>/dev/null
+    snap_times
+    c1=$(parse_child_cpu)
+    srv1=$(cpu_ticks "$SRV")
+    out=$(cat "$WORK/h2.out")
     s1=$(steal_ticks)
     sysc_wait
     nsysc=$(sysc_read)
@@ -181,12 +209,24 @@ run() {  # run <label> <h2load flags...>
       echo "REFUSED: a rep with nothing to show must not be recorded as a blank row" >&2
       exit 1
     fi
+    # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
+    # comparison: the server had headroom AND the client was pegged.
+    # h2load lawfully spends more total CPU than we do across THREADS
+    # threads; that alone is not client-bound.
+    su=$((srv1 - srv0))
+    scpu=$((su * 100 / HZ / DURATION))
+    ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
+      echo "  REFUSED: the server had headroom (${scpu}% of its core) while h2load was pegged (${ccpu}% across $THREADS threads). This measures h2load, not webmachine." >&2
+      echo "REFUSED: a client-bound rep must not be recorded" >&2
+      exit 1
+    fi
     ndone=$(echo "$out" | grep '^requests:' | awk '{print $6}')
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
     rps=$(echo "$line" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
-    echo "  $line (steal +$((s1 - s0)) ticks, req/syscall $rsc)"
+    echo "  $line (steal +$((s1 - s0)) ticks, req/syscall $rsc, server ${scpu}%, client ${ccpu}%)"
     vals+=("$rps")
   done
   if [ "$REPS" -gt 1 ]; then
