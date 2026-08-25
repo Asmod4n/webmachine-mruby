@@ -303,21 +303,22 @@ void register_app(mrb_state* mrb, AppSpec* s) {
 }
 
 // Webmachine::Application.new { |app| ... } - the app's whole surface.
-mrb_value app_new(mrb_state* mrb, mrb_value self) {
+// initialize, not a hand-rolled .new: Class#new already allocates the
+// MRB_TT_CDATA instance and forwards the block here.
+mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
-  mrb_value obj =
-      mrb_obj_value(mrb_data_object_alloc(mrb, mrb_class_ptr(self), s, &app_type));
-  mrb_iv_set(mrb, obj, MRB_IVSYM(conf),
+  mrb_data_init(self, s, &app_type);
+  mrb_iv_set(mrb, self, MRB_IVSYM(conf),
              mrb_obj_value(mrb_data_object_alloc(mrb, conf_class_, s, &app_type)));
-  mrb_iv_set(mrb, obj, MRB_IVSYM(routes),
+  mrb_iv_set(mrb, self, MRB_IVSYM(routes),
              mrb_obj_value(mrb_data_object_alloc(mrb, route_class_, s, &app_type)));
-  if (mrb_nil_p(blk)) return obj;
-  mrb_yield(mrb, blk, obj);
+  if (mrb_nil_p(blk)) return self;
+  mrb_yield(mrb, blk, self);
   register_app(mrb, s);
-  return obj;
+  return self;
 }
 
 // webmachine-ruby compatibility: configure / config yield the one conf facade.
@@ -357,8 +358,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* app = mrb_define_class_under_id(mrb, wm, MRB_SYM(Application),
                                                  mrb->object_class);
   MRB_SET_INSTANCE_TT(app, MRB_TT_CDATA);
-  mrb_define_class_method_id(mrb, app, MRB_SYM(new), app_new, MRB_ARGS_NONE() |
-                                                                  MRB_ARGS_BLOCK());
+  mrb_define_method_id(mrb, app, MRB_SYM(initialize), app_initialize,
+                        MRB_ARGS_NONE() | MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(configure), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(config), app_configure, MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, app, MRB_SYM(routes), app_routes, MRB_ARGS_BLOCK());

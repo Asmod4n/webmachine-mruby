@@ -33,7 +33,14 @@ def wm_smoke(build_name, label)
       sleep 0.05
     end
     unless File.socket?(sock)
-      raise "the #{label} binary never came up:\n#{begin File.read(log) rescue '' end}"
+      text = begin File.read(log) rescue '' end
+      if text.include?('io_uring is not usable here')
+        warn "#{build_name} smoke: skipped - this machine cannot run io_uring " \
+             "(the #{label} binary needs it, no fallback); use " \
+             "build_config_portable.rb or build_config_portable_debug.rb here instead"
+        return
+      end
+      raise "the #{label} binary never came up:\n#{text}"
     end
     answer = UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: smoke\r\nConnection: close\r\n\r\n")
