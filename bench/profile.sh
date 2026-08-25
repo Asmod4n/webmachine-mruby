@@ -18,15 +18,20 @@
 # lines, still took a visible miss per request there. Use DIFF to
 # compare the protocols, LOAD to find work worth removing.
 #
-# Needs a WM_PROFILE=1 build (debug symbols + retained frame pointers,
-# see build_config.rb): WM_PROFILE=1 rake compile. Rebuild without it
-# before trusting any req/s number again - this binary is not the one
-# throughput is measured on.
+# Profiles BUILD_DIR=build/debug by default - see the BUILD_DIR knob
+# below for why that binary's samples are trustworthy despite being a
+# test build. Its req/s numbers are still not the ones bench/results/
+# archives (enable_test/enable_bintest add test-only gems the ship
+# build never links, per #176) - trust floor.sh/h2.sh's build/host
+# numbers for throughput, this script's own numbers only for WHERE
+# time goes.
 #
 # Knobs: MULTI (1 = diff mode, >1 = load mode at that depth), DURATION
 # (default 20 - profiling wants more samples than a throughput run),
-# FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default fp -
-# matches the frame pointers WM_PROFILE retains), # seen to swing 6% on its own, which reads as progress and is not),
+# FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default dwarf -
+# works on any binary with debug info; fp needs -fno-omit-frame-pointer,
+# which only WM_PROFILE=1 adds and BUILD_DIR's default, build/debug,
+# does not carry unless that was ALSO set for it),
 # THREADS (h2load client threads, default 1 - load mode's -cN connections
 # split across them; the server is one thread regardless, so this is
 # entirely about whether ONE client thread can generate enough load to
@@ -81,10 +86,26 @@ echo "perf: $PERF ($("$PERF" --version))"
 command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
 h2load --help 2>&1 | grep -q -- --h1 || { echo "this h2load lacks --h1" >&2; exit 1; }
 
-BIN=mruby/build/host/bin/webmachine-server
-[ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
-file "$BIN" 2>/dev/null | grep -q "not stripped" || echo \
-  "warning: $BIN looks stripped - was it built with WM_PROFILE=1? symbols will be useless" >&2
+# BUILD_DIR (bintest's own convention, see bintest/responsefile.rb),
+# default build/debug: it carries -g3 unconditionally AND shares
+# WM_FLAGS' -O3, so it profiles the same codegen shape the ship build
+# runs - not a de-optimized stand-in - at zero extra build cost beyond
+# a plain `rake test`. MRB_DEBUG (enable_debug) only turns mrb_assert
+# into a real assert() and adds one trivial local in mrb_vm_run - no
+# structural change to the VM/GC. The ship build (build/host) never
+# needs WM_PROFILE=1 for this reason: BUILD_DIR=build/host still works
+# for the rare case of profiling the literal shipped binary, but then
+# needs that env var for symbols at all (#184 strips -g by default).
+# build/debug does NOT get -fno-omit-frame-pointer unless WM_PROFILE=1
+# was ALSO set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
+# is unconditional either way.
+BUILD_DIR="${BUILD_DIR:-build/debug}"
+BIN="mruby/$BUILD_DIR/bin/webmachine-server"
+[ -x "$BIN" ] || { echo "$BIN missing - run: rake compile (or rake test, for build/debug)" >&2; exit 1; }
+if [ "$BUILD_DIR" = "build/host" ]; then
+  file "$BIN" 2>/dev/null | grep -q "not stripped" || echo \
+    "warning: $BIN looks stripped - was it built with WM_PROFILE=1? symbols will be useless" >&2
+fi
 
 paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo "?")
 if [ "$paranoid" != "?" ] && [ "$paranoid" -gt 1 ] && [ "$(id -u)" -ne 0 ]; then
@@ -95,7 +116,7 @@ fi
 
 DURATION="${DURATION:-20}"
 FREQ="${FREQ:-999}"
-CALLGRAPH="${CALLGRAPH:-fp}"
+CALLGRAPH="${CALLGRAPH:-dwarf}"
 # perf maps one ring buffer PER CPU - 129 pages each by default, which
 # on a 32-thread host is 16 MB. Those pages land in the kernel's
 # per-USER locked_vm, and io_uring's accounting compares that same
