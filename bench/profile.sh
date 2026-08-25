@@ -106,12 +106,13 @@ h2load --help 2>&1 | grep -q -- --h1 || { echo "this h2load lacks --h1" >&2; exi
 # build_config_debug.rb since the four-file split - so its per-symbol
 # shares describe this binary, and instructions/request runs about 15%
 # above what build/host does for the same work (measured). Read it for
-# WHERE time goes, never as the ship build's cost. MRB_DEBUG (enable_debug) only turns mrb_assert
-# into a real assert() and adds one trivial local in mrb_vm_run - no
-# structural change to the VM/GC. The ship build (build/host) never
-# needs WM_PROFILE=1 for this reason: BUILD_DIR=build/host still works
-# for the rare case of profiling the literal shipped binary, but then
-# needs that env var for symbols at all (#184 strips -g by default).
+# WHERE time goes, never as the ship build's cost.
+#
+# MRB_DEBUG (enable_debug) only turns mrb_assert into a real assert()
+# and adds one trivial local in mrb_vm_run - no structural change to
+# the VM/GC. BUILD_DIR=build/host profiles the literal shipped binary,
+# but #184 strips -g from it, so its symbols are gone and nothing in
+# the tree adds them back - WM_PROFILE is named in this file only.
 # build/debug does NOT get -fno-omit-frame-pointer unless WM_PROFILE=1
 # was ALSO set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
 # is unconditional either way.
@@ -413,16 +414,31 @@ while True:
   PERFPID=""
 }
 
+# WHOSE cycles: one line per object, nothing hidden. A top-30 symbol
+# list with a 0.5% floor showed 63% of the samples and made this tree
+# look like 3% of its own profile - our code is spread thin over many
+# small symbols, exactly the shape a floor erases. This is the number
+# that says how much of the run is webmachine at all; the symbol list
+# after it says where inside that.
+report_full() {
+  local data=$1 what=$2
+  echo
+  echo "== whose cycles ($what): per object, all samples =="
+  "$PERF" report -i "$data" --stdio --no-children -g none --sort dso \
+    --percent-limit=0 2>/dev/null | grep -vE '^#|^$'
+  echo
+  echo "== where in it ($what): every symbol at or above 0.10% =="
+  "$PERF" report -i "$data" --stdio --no-children -g none \
+    --percent-limit=0.10 2>/dev/null | grep -vE '^#|^$'
+}
+
 if [ "$PROTO" = h1 ]; then
   # h1 has no multiplexing, so CONNS alone carries the load and MULTI
   # says nothing here.
   LEGCONNS="$CONNS"
   GRAPH="$OUT/perf.data.h1"
   leg "h1 (c$CONNS)" "$GRAPH"
-  echo
-  echo "== perf report: where h1 spends its time under load =="
-  "$PERF" report -i "$GRAPH" --stdio --no-children -g none \
-    --percent-limit=0.5 2>/dev/null | grep -vE '^#|^$' | head -30
+  report_full "$GRAPH" "h1 c$CONNS"
 elif [ "$MULTI" = 1 ]; then
   LEGCONNS=1
   GRAPH="$OUT/perf.data.h2"
@@ -430,7 +446,8 @@ elif [ "$MULTI" = 1 ]; then
   leg "h2 -m1"    "$OUT/perf.data.h2" -m1
   echo
   echo "== perf diff: relative sample share, h1 -> h2 (positive = h2 spends more here) =="
-  "$PERF" diff "$OUT/perf.data.h1" "$OUT/perf.data.h2" 2>/dev/null | head -60
+  "$PERF" diff "$OUT/perf.data.h1" "$OUT/perf.data.h2" 2>/dev/null | grep -vE '^#|^$'
+  report_full "$OUT/perf.data.h2" "h2 -m1"
 else
   # No h1 anchor: h1 has no multiplexing to answer -m$MULTI with, so
   # there is nothing to diff against. This is the shape that keeps the
@@ -439,13 +456,8 @@ else
   LEGCONNS="$CONNS"
   GRAPH="$OUT/perf.data.h2"
   leg "h2 -m$MULTI (c$CONNS)" "$OUT/perf.data.h2" -m"$MULTI"
-  echo
-  echo "== perf report: where h2 spends its time under load =="
-  # -g none: a flat list. The call graph was recorded (it is what
-  # annotate and the flamegraph want) but here the question is only
-  # which symbol burns the cycles.
-  "$PERF" report -i "$OUT/perf.data.h2" --stdio --no-children -g none \
-    --percent-limit=0.5 2>/dev/null | grep -vE '^#|^$' | head -30
+
+  report_full "$OUT/perf.data.h2" "h2 -m$MULTI c$CONNS"
 fi
 
 if command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null; then
