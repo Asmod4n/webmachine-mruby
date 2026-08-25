@@ -3478,19 +3478,38 @@ class Ring {
     std::string out;
     std::string next;
 
-    // response.file's one in-flight open. A PLAIN fd, not a direct
-    // descriptor: statx is the only op in this chain the kernel does not
-    // accept a fixed file for, and statting the OPENED fd (AT_EMPTY_PATH) is
-    // what keeps size and mtime describing the bytes that were actually
-    // confined - a statx by path would resolve a second time, unguarded.
-    int file_fd = -1;
-    size_t file_off = 0;
-    size_t file_want = 0;
-    // A read whose buffer the App still owns. It outlives a torn-down
-    // connection by one completion, so nothing may hand that buffer back or
-    // resize it while this stands.
-    bool file_reading = false;
-    struct statx file_stx {};
+    // response.file's one in-flight open. Lazy like everything else here -
+    // most connections never open a file, and `struct statx` alone is ~256
+    // bytes that used to sit inline on every slot regardless. Allocated on
+    // first use (arm_file_open, right after app_.file_take() says a file is
+    // actually wanted) and kept for the slot's life rather than freed on
+    // every close: it "outlives a torn-down connection by one completion"
+    // (see file_reading below), so tearing it down on close would race that
+    // in-flight completion.
+    //
+    // unique_ptr, not a raw pointer, and for the same reason iov/msg_iov
+    // below already are one: conns_ is a std::vector, and a raw pointer
+    // plus a hand-written destructor would delete the implicit move
+    // constructor a vector resize needs, falling back to a copy - which a
+    // unique_ptr member refuses to compile, exactly like iov/msg_iov
+    // already refuse it. unique_ptr keeps the move and needs no
+    // destructor of its own.
+    struct FileIo {
+      // A PLAIN fd, not a direct descriptor: statx is the only op in this
+      // chain the kernel does not accept a fixed file for, and statting the
+      // OPENED fd (AT_EMPTY_PATH) is what keeps size and mtime describing
+      // the bytes that were actually confined - a statx by path would
+      // resolve a second time, unguarded.
+      int fd = -1;
+      size_t off = 0;
+      size_t want = 0;
+      // A read whose buffer the App still owns. It outlives a torn-down
+      // connection by one completion, so nothing may hand that buffer back
+      // or resize it while this stands.
+      bool reading = false;
+      struct statx stx {};
+    };
+    std::unique_ptr<FileIo> file_io;
 
     static constexpr unsigned kIov = App::Plan::kSegs + 1;
     unsigned niov = 0;
@@ -3842,7 +3861,7 @@ class Ring {
   // this code's - no path math here, on purpose.
   void arm_file_open(uint32_t idx) {
     Conn& c = conns_[idx];
-    if (c.file_reading) return;  // its buffer is still under a live read
+    if (c.file_io != nullptr && c.file_io->reading) return;  // its buffer is still under a live read
     const char* path = app_.file_take(c.app);
     if (path == nullptr) return;
 #ifdef SLIPSTREAM_IO
@@ -3852,6 +3871,7 @@ class Ring {
     app_.file_error(c.app, "this build has no openat2 and will not open without it");
     if (!c.sending) continue_conn(idx);
 #else
+    if (c.file_io == nullptr) c.file_io.reset(new Conn::FileIo());
     struct io_uring_sqe* s = sqe();
     io_uring_prep_openat2(s, docroot_fd(), path, const_cast<struct open_how*>(docroot_how()));
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileOpen, c.gen, idx));
@@ -3887,11 +3907,11 @@ class Ring {
       file_wake(idx);
       return;
     }
-    c.file_fd = cqe->res;
-    c.file_off = 0;
+    c.file_io->fd = cqe->res;
+    c.file_io->off = 0;
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_statx(s, c.file_fd, "", AT_EMPTY_PATH,
-                        STATX_TYPE | STATX_SIZE | STATX_MTIME, &c.file_stx);
+    io_uring_prep_statx(s, c.file_io->fd, "", AT_EMPTY_PATH,
+                        STATX_TYPE | STATX_SIZE | STATX_MTIME, &c.file_io->stx);
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileStat, c.gen, idx));
   }
 
@@ -3900,8 +3920,8 @@ class Ring {
   void on_file_stat(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    const int fd = c.file_fd;
-    c.file_fd = -1;
+    const int fd = c.file_io->fd;
+    c.file_io->fd = -1;
     if (!c.live || c.gen != gen) {
       arm_file_close(idx, fd, gen);
       return;
@@ -3913,26 +3933,26 @@ class Ring {
       return;
     }
     size_t want = 0;
-    const bool read_owed = app_.file_stat(c.app, c.file_stx, &want);
+    const bool read_owed = app_.file_stat(c.app, c.file_io->stx, &want);
     if (!read_owed || want == 0) {
       arm_file_close(idx, fd, gen);
       if (read_owed) app_.file_ready_now(c.app, 0);
       file_wake(idx);
       return;
     }
-    c.file_fd = fd;
-    c.file_want = want;
-    c.file_off = 0;
+    c.file_io->fd = fd;
+    c.file_io->want = want;
+    c.file_io->off = 0;
     arm_file_read(idx);
   }
 
   void arm_file_read(uint32_t idx) {
     Conn& c = conns_[idx];
-    char* buf = app_.file_buffer(c.app, c.file_want);
-    c.file_reading = true;
+    char* buf = app_.file_buffer(c.app, c.file_io->want);
+    c.file_io->reading = true;
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_read(s, c.file_fd, buf + c.file_off,
-                       static_cast<unsigned>(c.file_want - c.file_off), c.file_off);
+    io_uring_prep_read(s, c.file_io->fd, buf + c.file_io->off,
+                       static_cast<unsigned>(c.file_io->want - c.file_io->off), c.file_io->off);
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileRead, c.gen, idx));
   }
 
@@ -3942,30 +3962,33 @@ class Ring {
   void on_file_read(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    c.file_reading = false;
-    const int fd = c.file_fd;
+    c.file_io->reading = false;
+    const int fd = c.file_io->fd;
     if (!c.live || c.gen != gen) {
-      c.file_fd = -1;
+      c.file_io->fd = -1;
       arm_file_close(idx, fd, gen);
       arm_file_open(idx);
       return;
     }
     if (cqe->res < 0) {
-      c.file_fd = -1;
+      c.file_io->fd = -1;
       arm_file_close(idx, fd, gen);
       app_.file_error(c.app, std::strerror(-cqe->res));
       file_wake(idx);
       return;
     }
-    c.file_off += static_cast<size_t>(cqe->res);
-    if (cqe->res != 0 && c.file_off < c.file_want) {
+    c.file_io->off += static_cast<size_t>(cqe->res);
+    if (cqe->res != 0 && c.file_io->off < c.file_io->want) {
       arm_file_read(idx);
       return;
     }
-    c.file_fd = -1;
+    c.file_io->fd = -1;
     arm_file_close(idx, fd, gen);
-    if (c.file_off < c.file_want) app_.file_error(c.app, "the file shrank while it was read");
-    else app_.file_ready_now(c.app, c.file_off);
+    if (c.file_io->off < c.file_io->want) {
+      app_.file_error(c.app, "the file shrank while it was read");
+    } else {
+      app_.file_ready_now(c.app, c.file_io->off);
+    }
     file_wake(idx);
   }
 
@@ -4096,7 +4119,9 @@ class Ring {
     c.deadline_s = now_s_ + to_idle_;
     // Nothing owed and nothing on the wire - the one point where handing the
     // file read buffer back cannot pull it out from under anybody.
-    if (!c.file_reading && !app_.pending(c.app)) App::file_release(c.app);
+    if ((c.file_io == nullptr || !c.file_io->reading) && !app_.pending(c.app)) {
+      App::file_release(c.app);
+    }
   }
   // One completion, by tag.
   void handle(struct io_uring_cqe* cqe) {
