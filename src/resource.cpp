@@ -1470,6 +1470,8 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.run_head_dynamic = false;
   res.run_disp_path.clear();
   res.run_disp_set = false;
+  res.run_have_file = false;
+  res.run_file_bad = false;
   res.etag_asked = false;
   res.etag_present = false;
   res.etag_value.clear();
@@ -1535,6 +1537,17 @@ bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, siz
   *v = res.run_zc;
   *ptr = RSTRING_PTR(res.run_zc);
   *len = static_cast<size_t>(RSTRING_LEN(res.run_zc));
+  return true;
+}
+
+// response.file, handed over the same way: the run is over, so the name
+// leaves the Resource before the next request through it resets the slot.
+bool resource_file_wanted(const Resource& res, const char** ptr, size_t* len, bool* bad) {
+  if (!res.run_have_file) return false;
+  res.run_have_file = false;
+  *ptr = res.run_file.data();
+  *len = res.run_file.size();
+  *bad = res.run_file_bad;
   return true;
 }
 

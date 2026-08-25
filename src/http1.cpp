@@ -216,6 +216,10 @@ void Http1::build(const AppInput* apps, size_t napps) {
   add(413);
   add(431);
   add(404);
+  // response.file answers out of this store too, and index_ defaults to slot
+  // 0 - an absent status would quietly spell whatever lives there.
+  add(500);
+  add(304);
 
   size_t total = 0;
   for (size_t a = 0; a < napps; a++) total += apps[a].nroutes;
@@ -354,6 +358,119 @@ void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len,
   plan.seg[plan.nseg++] = Plan::Seg{body, 0, len};
   plan.iov_len += len;
   st.zc_split = true;
+}
+
+// RFC 9112 9.3: a file answer that carries nothing of its own - the status
+// straight out of the shared store, in this connection's spelling.
+void Http1::file_prebuilt(Conn& st, uint16_t status) {
+  const Variants& sv = variants(status);
+  st.file_head = st.file_minor >= 1 ? (st.file_persist ? sv.plain.bytes : sv.close.bytes)
+                                    : (st.file_persist ? sv.keep.bytes : sv.close.bytes);
+  st.file_status = status;
+  st.file_len = 0;
+  st.file_busy = false;
+  st.file_ready = true;
+}
+
+// RFC 9112 3: the head a served file wears. No prebuilt head can hold a
+// per-file Content-Length and Last-Modified, so it is spelled byte by byte -
+// spell_head's own job, with the run's field lines still in front.
+void Http1::file_spell(Conn& st, uint16_t status, size_t len, bool bodyless) {
+  st.file_head.clear();
+  spell_head(st.file_head, status, date_, bodyless ? std::string() : st.file_ctype,
+             st.file_hdrs, st.file_minor, st.file_persist, bodyless, len);
+  st.file_status = status;
+  st.file_len = bodyless || st.file_head_only ? 0 : len;
+  st.file_busy = false;
+  st.file_ready = true;
+}
+
+// response.file: the reactor is taking the open. The name has to stay put -
+// the SQE points straight at these bytes - so nothing clears it until the
+// answer is spelled.
+const char* Http1::file_take(Conn& st) {
+  if (!st.file_want || st.file_busy) return nullptr;
+  st.file_want = false;
+  st.file_busy = true;
+  return st.file_path.c_str();
+}
+
+// ONE answer for every refusal: a name that was never there, a directory, a
+// "..", a symlink out of the docroot, a /proc magic-link. Same status, same
+// bytes, same shape - so an attacker cannot tell a caught escape from a
+// miss and probe the filesystem through the difference.
+void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
+
+// The server's own fault: named in the error log, never in the answer.
+void Http1::file_error(Conn& st, const char* why) {
+  if (elog_.enabled) {
+    log_error(elog_, st.peer, st.peer_len, "Webmachine::Error", 17, st.file_target.data(),
+              st.file_target.size(), 500, why, std::strlen(why), nullptr, 0);
+  }
+  file_prebuilt(st, 500);
+}
+
+// statx on the opened fd. Only a regular file within the ceiling earns a
+// read; everything else is answered here and the fd goes straight back.
+// True = the bytes are still owed.
+bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
+  if (!S_ISREG(stx.stx_mode)) {
+    // A directory, a fifo, a device: not a representation, and saying WHICH
+    // would be the distinguishable answer this whole path avoids.
+    file_reject(st);
+    return false;
+  }
+  if (stx.stx_size > static_cast<uint64_t>(kResponseFileMax)) {
+    char why[256];
+    std::snprintf(why, sizeof why,
+                  "response.file %s is %llu bytes and this tier reads a file into one "
+                  "buffer, ceiling %zu - serve it from --assets, or split it",
+                  st.file_path.c_str(), static_cast<unsigned long long>(stx.stx_size),
+                  kResponseFileMax);
+    file_error(st, why);
+    return false;
+  }
+  const size_t len = static_cast<size_t>(stx.stx_size);
+
+  // RFC 9110 8.8.2: Last-Modified, whole seconds, in front of whatever field
+  // lines the run itself spelled.
+  const int64_t mtime = static_cast<int64_t>(stx.stx_mtime.tv_sec);
+  char lm[http::kDateLen];
+  {
+    const time_t t = static_cast<time_t>(mtime);
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    http::date_core(lm, tm);
+  }
+  st.file_hdrs.append("Last-Modified: ").append(lm, http::kDateLen).append("\r\n");
+
+  // RFC 9110 13.1.3 / 15.4.5: no newer than what the client already holds.
+  if (st.file_ims_valid && mtime <= st.file_ims) {
+    file_spell(st, 304, 0, true);
+    return false;
+  }
+  if (st.file_head_only || len == 0) {
+    // The head still states the real length; HEAD just sends no bytes.
+    file_spell(st, 200, len, false);
+    return false;
+  }
+  file_spell(st, 200, len, false);
+  st.file_ready = false;  // the head stands, the bytes are still owed
+  *want = len;
+  return true;
+}
+
+// Where the ring reads the bytes. Only ever called with no read in flight.
+char* Http1::file_buffer(Conn& st, size_t n) {
+  if (st.file_buf.size() < n) st.file_buf.resize(n);
+  return &st.file_buf[0];
+}
+
+// The bytes are in. `more` is what puts head and body on the wire.
+void Http1::file_ready_now(Conn& st, size_t n) {
+  st.file_len = n;
+  st.file_busy = false;
+  st.file_ready = true;
 }
 
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
@@ -745,6 +862,63 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc, &lent, &lent_len))) {
           st.zc_mrb = b->res->mrb;
           st.zc_have = true;
+        }
+        // response.file: the run named a file instead of spelling a body,
+        // and opening one is disk work that does not belong in a reactor
+        // step. NOTHING is answered here - the framing this answer will need
+        // is copied onto the connection, the reactor drives openat2/statx/
+        // read through the ring, and `more` puts the result on the wire. A
+        // name this process already refused takes the same 404 the kernel's
+        // own refusal takes, spelled right here since no ring trip is owed.
+        {
+          const char* fp = nullptr;
+          size_t fpn = 0;
+          bool fbad = false;
+          if (WM_H1_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad)) && status == 200) {
+            body_.clear();
+            have_body = false;
+            st.zc_release();
+            lent = nullptr;
+            lent_len = 0;
+            st.file_path.assign(fp, fpn);
+            st.file_hdrs = rhdrs_;
+            st.file_ctype = !b->res->run_ctype.empty() ? http::with_charset(b->res->run_ctype)
+                                                       : b->konst.content_type;
+            st.file_minor = minor;
+            st.file_persist = persist;
+            st.file_head_only = head_only;
+            st.file_ims_valid = facts.has_if_modified_since && facts.ims_valid;
+            st.file_ims = vals.ims_epoch;
+            st.file_lflags = lflags;
+            st.file_method.assign(method, method_len);
+            st.file_target.assign(path, path_len);
+            st.file_ref.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
+            st.file_ua.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
+            st.file_ready = false;
+            st.file_busy = false;
+            st.file_want = !fbad;
+            if (fbad) file_reject(st);
+            off += static_cast<size_t>(ret);
+            if (content_length != 0) {
+              const size_t avail = viewlen - off;
+              const size_t skip = content_length < avail ? content_length : avail;
+              off += skip;
+              st.body_skip = content_length - skip;
+            }
+            // The answer is still owed, so this returns TRUE even when the
+            // connection ends after it - `more` closes it once the bytes are
+            // out, the way every other deferred answer here ends.
+            const size_t rest = viewlen - off;
+            if (!persist) {
+              st.carry.clear();
+              st.body_skip = 0;
+            } else if (in_place) {
+              st.carry.assign(view + off, rest);
+            } else {
+              st.carry.erase(0, off);
+            }
+            return true;
+          }
         }
         // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
         // this run spells its own. 500 stays on the exception path below.

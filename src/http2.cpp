@@ -575,6 +575,39 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
                             head_only ? 0 : zc_min_);
       lent_have = resource_body_lent(*b->res, &lent_v, &lent, &lent_len);
       if (lent_have) lent_mrb = b->res->mrb;
+      // response.file is h1-only for now: the deferred open lives on the
+      // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
+      // that would each need their own. The slot is taken either way - left
+      // set it would answer the next request through this Resource - and a
+      // run that named a file is REFUSED here rather than quietly served the
+      // empty body it never meant to send.
+      {
+        const char* fp = nullptr;
+        size_t fpn = 0;
+        bool fbad = false;
+        if (WM_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad))) {
+          if (elog_.enabled) {
+            static const char kWhy[] =
+                "response.file is not wired for HTTP/2 yet - this stream would have been "
+                "answered with an empty body, so it is refused instead";
+            log_error(elog_, st0.peer, st0.peer_len, "Webmachine::Error", 17,
+                      req != nullptr ? req->target : nullptr,
+                      req != nullptr ? req->target_len : 0, 500, kWhy, sizeof(kWhy) - 1,
+                      nullptr, 0);
+          }
+          if (lent_have) {
+            resource_body_unlend(lent_mrb, lent_v);
+            lent_have = false;
+            lent = nullptr;
+            lent_len = 0;
+            lent_mrb = nullptr;
+          }
+          body_.clear();
+          have_body = false;
+          rhdrs_.clear();
+          status = 500;
+        }
+      }
       dynamic = (b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500;
     } else {
       status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
@@ -999,7 +1032,9 @@ bool Http1::pending(const Conn& st) const {
     }
     return false;
   }
-  return st.xfer != nullptr;
+  // A file the reactor is still opening owes bytes too - and saying so is
+  // what keeps `more` from re-feeding the carry ahead of that answer.
+  return st.xfer != nullptr || st.file_want || st.file_busy || st.file_ready;
 }
 
 // The continuation both protocols share: the sink has fully drained.
@@ -1008,6 +1043,28 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // drained, so a body lent to that round is off the wire. Before the next
   // one is built, so a connection never holds two.
   st.zc_release();
+  // response.file, spelled: the head, then the read buffer LENT as an
+  // external segment - the same door the asset tier and a lent body use, so
+  // the bytes reach the kernel without a second copy. The access line is
+  // owed here and nowhere else; the request it names is long gone.
+  if (WM_UNLIKELY(st.file_ready)) {
+    st.file_ready = false;
+    sink.append(st.file_head);
+    const size_t blen = st.file_len;
+    if (blen != 0) lend_body(st, sink, st.file_buf.data(), blen, plan);
+    if (alog_.enabled) {
+      log_access(alog_, st.peer, st.peer_len, st.file_method.data(), st.file_method.size(),
+                 st.file_target.data(), st.file_target.size(), st.file_lflags, st.file_status,
+                 blen, st.file_ref.data(), st.file_ref.size(), st.file_ua.data(),
+                 st.file_ua.size());
+    }
+    const bool persist = st.file_persist;
+    st.file_clear();
+    return persist;
+  }
+  // The ring still owes the answer: nothing else may speak for this
+  // connection until it lands, least of all the carry behind it.
+  if (WM_UNLIKELY(st.file_want || st.file_busy)) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);

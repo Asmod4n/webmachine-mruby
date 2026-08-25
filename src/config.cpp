@@ -123,6 +123,9 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       if (!take_int(mrb, server, "server", "port", 1, 65535, &port, path, err, errlen)) goto done;
       if (!take_string(mrb, server, "server", "app", out.app, path, err, errlen)) goto done;
       if (!take_string(mrb, server, "server", "assets", out.assets, path, err, errlen)) goto done;
+      if (!take_string(mrb, server, "server", "docroot", out.docroot, path, err, errlen)) {
+        goto done;
+      }
       if (!take_string(mrb, server, "server", "mime_types", out.mime_types, path, err, errlen)) {
         goto done;
       }

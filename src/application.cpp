@@ -77,6 +77,21 @@ mrb_value conf_zc_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.docroot = PATH. The ONE directory response.file may reach, resolved
+// and opened once before the first accept. --docroot and [server] docroot
+// both beat this, the same order everything else in here is beaten. Nothing
+// is checked here on purpose: the path is validated where it is opened, so
+// ONE refusal names it however the operator spelled it.
+mrb_value conf_docroot_set(mrb_state* mrb, mrb_value self) {
+  const char* p;
+  mrb_int n;
+  mrb_get_args(mrb, "s", &p, &n);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.docroot is empty");
+  s->docroot.assign(p, static_cast<size_t>(n));
+  return mrb_nil_value();
+}
+
 // conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
@@ -361,6 +376,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(url), conf_url_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM(url), conf_url_get, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(zero_copy_threshold), conf_zc_set,
+                       MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(docroot), conf_docroot_set,
                        MRB_ARGS_REQ(1));
 
   route_class_ = mrb_class_new(mrb, mrb->object_class);

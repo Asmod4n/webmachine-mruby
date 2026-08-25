@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -32,6 +33,32 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+// openat2(2) IS the docroot confinement response.file rests on, so a
+// toolchain whose kernel headers predate it must not silently lose the
+// hardening - same shape as the SO_MEMINFO fallback further down, and the
+// kernel's own fixed ABI values read off linux/openat2.h, never guessed.
+// RESOLVE_BENEATH alone blocks ".."/absolute escapes but NOT a symlink INSIDE
+// the docroot pointing out; NO_SYMLINKS closes that, NO_MAGICLINKS closes the
+// /proc-style ones. All three, always - each covers what the others do not.
+#if __has_include(<linux/openat2.h>)
+#include <linux/openat2.h>
+#else
+struct open_how {
+  uint64_t flags;
+  uint64_t mode;
+  uint64_t resolve;
+};
+#endif
+#ifndef RESOLVE_NO_MAGICLINKS
+#define RESOLVE_NO_MAGICLINKS 0x02
+#endif
+#ifndef RESOLVE_NO_SYMLINKS
+#define RESOLVE_NO_SYMLINKS 0x04
+#endif
+#ifndef RESOLVE_BENEATH
+#define RESOLVE_BENEATH 0x08
+#endif
 
 namespace webmachine::flow {
 enum class Node : uint8_t {
@@ -1634,6 +1661,14 @@ struct Resource {
   // n11: create_path's override of request.disp_path.
   mutable std::string run_disp_path;
   mutable bool run_disp_set = false;
+  // response.file = "rel/path": the NAME only. Nothing is opened here - the
+  // reactor does that through the ring, so a callback never blocks on a
+  // disk. run_file_bad is a name this process refused before the kernel saw
+  // it (empty, embedded NUL); it answers 404 in the SAME shape a rejected
+  // resolve does, so neither is distinguishable from a plain miss.
+  mutable std::string run_file;
+  mutable bool run_have_file = false;
+  mutable bool run_file_bad = false;
   // Once-per-run memos: generate_etag / last_modified / expires are
   // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share
   // last_modified), whatever the graph visits.
@@ -1667,6 +1702,10 @@ bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, siz
 
 // Hand a lent body back - the only legal end of the window opened above.
 void resource_body_unlend(mrb_state* mrb, mrb_value v);
+
+// Did this run name a file instead of spelling a body? Same hand-off shape
+// as resource_body_lent: the run is over, so the slot leaves the Resource.
+bool resource_file_wanted(const Resource& res, const char** ptr, size_t* len, bool* bad);
 
 // RFC 9110: Webmachine::Response - the object a runtime callback
 // writes to. Handles over the run slots above, nothing owns storage;
@@ -2479,6 +2518,14 @@ inline constexpr size_t kZeroCopyDefault = 128u * 1024;
 // refuse every value instead of refusing none.
 inline constexpr size_t kZeroCopyMax = 1u << 30;
 
+// response.file reads the whole file into ONE per-connection buffer before a
+// byte goes out, so the ceiling is a memory bound and not a policy: above it
+// a file wants the streaming continuation this pass did not build (see
+// Http1::file_deliver), and a named 500 says so rather than the process
+// quietly reserving 100 MiB per in-flight request. The pre-mapped asset tier
+// (--assets) is what serves anything larger today.
+inline constexpr size_t kResponseFileMax = 16u * 1024 * 1024;
+
 inline constexpr uint16_t kNoRoute = 0xffff;
 
 class Http1 {
@@ -2510,6 +2557,50 @@ class Http1 {
     // the plan has to claim explicitly: `zc_covered` is how far it got.
     size_t zc_covered = 0;
     bool zc_split = false;
+    // response.file: the answer a run DEFERRED to the reactor. `want` = the
+    // open is owed, `busy` = the ring is on it, `ready` = the head is
+    // spelled and `more` may put it on the wire. Nothing else about the
+    // request survives the run, so the framing it needs is copied here.
+    std::string file_path;
+    std::string file_head;
+    std::string file_ctype;
+    std::string file_hdrs;
+    std::string file_buf;
+    // The access line is owed whatever else happens, and the request it
+    // describes is gone by the time the ring answers - so it is copied.
+    std::string file_method;
+    std::string file_target;
+    std::string file_ref;
+    std::string file_ua;
+    size_t file_len = 0;
+    int64_t file_ims = 0;
+    uint16_t file_status = 0;
+    uint8_t file_lflags = 0;
+    bool file_want = false;
+    bool file_busy = false;
+    bool file_ready = false;
+    bool file_persist = true;
+    bool file_head_only = false;
+    bool file_ims_valid = false;
+    int file_minor = 1;
+    // Nothing is owed and nothing is held: the state a fresh connection and
+    // a delivered file both stand in.
+    void file_clear() {
+      file_want = false;
+      file_busy = false;
+      file_ready = false;
+      file_len = 0;
+      file_status = 0;
+      file_lflags = 0;
+      file_path.clear();
+      file_head.clear();
+      file_ctype.clear();
+      file_hdrs.clear();
+      file_method.clear();
+      file_target.clear();
+      file_ref.clear();
+      file_ua.clear();
+    }
     // The ONE end of the lend window - drained round, closed connection,
     // dead reactor. Never conditional on the round having succeeded.
     void zc_release() {
@@ -2528,6 +2619,7 @@ class Http1 {
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
       zc_release();
+      file_clear();
       peer_len = 0;
       carry.clear();
       body_skip = 0;
@@ -2594,6 +2686,28 @@ class Http1 {
 
   bool more(Conn& st, std::string& sink, Plan& plan);
 
+  // response.file, the reactor's half. A bound run may name a file instead
+  // of spelling a body; opening it is disk work, so it never happens inside
+  // the run. These five are the whole contract with the Ring - it drives
+  // openat2/statx/read through the ring and hands each result back here,
+  // and the answer reaches the wire through `more` like every other
+  // continuation. Any refusal - a miss, a directory, a resolve flag
+  // catching an escape - lands as the SAME 404 file_reject spells.
+  const char* file_take(Conn& st);
+  void file_reject(Conn& st);
+  void file_error(Conn& st, const char* why);
+  bool file_stat(Conn& st, const struct statx& stx, size_t* want);
+  char* file_buffer(Conn& st, size_t n);
+  void file_ready_now(Conn& st, size_t n);
+  // Is an answer waiting for `more` to put it on the wire?
+  static bool file_answerable(const Conn& st) { return st.file_ready; }
+  // Nothing owed, nothing on the wire: give the read buffer back, or a slot
+  // that once served a big file would hold those bytes for the process's
+  // life. The Ring calls this only where BOTH are true.
+  static void file_release(Conn& st) {
+    if (st.file_buf.capacity() > kDeliverChunk) std::string().swap(st.file_buf);
+  }
+
   // The App FORMATS lines; the Ring flushes the buffer. Opt-in.
   Logger* access_log() { return &alog_; }
   // The only way an access line is ever built.
@@ -2653,6 +2767,10 @@ class Http1 {
     return store_[index_[status]];
   }
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
+  // response.file's answer, head only - the bytes ride after it as a lent
+  // segment. `prebuilt` takes the status straight out of the shared store.
+  void file_spell(Conn& st, uint16_t status, size_t len, bool bodyless);
+  void file_prebuilt(Conn& st, uint16_t status);
   bool ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path, size_t path_len,
                   const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
                   size_t nhdr, const char* rest, size_t rest_len, std::string& sink);
@@ -2740,6 +2858,9 @@ struct AppSpec {
   bool registered = false;
   // conf.zero_copy_threshold = N; -1 = this app said nothing.
   long long zero_copy_threshold = -1;
+  // conf.docroot = PATH; empty = this app said nothing. --docroot and
+  // [server] docroot both beat it, same order as every other choice here.
+  std::string docroot;
 };
 
 void application_init(mrb_state* mrb, struct RClass* wm);
@@ -2757,8 +2878,27 @@ bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen);
 }
 
 namespace webmachine {
+// server.docroot: the ONE directory response.file may reach, resolved to a
+// canonical absolute path and opened O_DIRECTORY|O_PATH once at startup. That
+// fd is what RESOLVE_BENEATH anchors against - the kernel does the
+// confinement, this code never does path math of its own.
+bool docroot_open(const char* path, char* err, size_t errlen);
+
+// Did an operator configure one? response.file= refuses by name when not.
+bool docroot_ready();
+
+// The dirfd every per-request openat2 resolves relative to; -1 when unset.
+int docroot_fd();
+
+// The canonical absolute path, for the refusals that have to name it.
+const char* docroot_path();
+
+// The open_how every response.file open uses - built once, never per request.
+const struct open_how* docroot_how();
+
 struct ServerOptions {
   const char* assets_path = nullptr;
+  const char* docroot_path = nullptr;
   const char* mime_path = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
@@ -2796,6 +2936,7 @@ struct Config {
   int port = 0;
   std::string app;
   std::string assets;
+  std::string docroot;
   std::string mime_types;
   std::string pidfile;
 
@@ -2920,7 +3061,9 @@ struct RingConfig {
 namespace detail {
 enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
-  kMeminfo = 8, kLog = 9, kPeer = 10
+  kMeminfo = 8, kLog = 9, kPeer = 10,
+  // response.file: one kind per stage, so the tag needs no second field.
+  kFileOpen = 11, kFileStat = 12, kFileRead = 13, kFileClose = 14
 };
 
 // user_data: kind(8) | gen(16) | idx(32); gen guards a reused slot.
@@ -3290,6 +3433,20 @@ class Ring {
     std::string out;
     std::string next;
 
+    // response.file's one in-flight open. A PLAIN fd, not a direct
+    // descriptor: statx is the only op in this chain the kernel does not
+    // accept a fixed file for, and statting the OPENED fd (AT_EMPTY_PATH) is
+    // what keeps size and mtime describing the bytes that were actually
+    // confined - a statx by path would resolve a second time, unguarded.
+    int file_fd = -1;
+    size_t file_off = 0;
+    size_t file_want = 0;
+    // A read whose buffer the App still owns. It outlives a torn-down
+    // connection by one completion, so nothing may hand that buffer back or
+    // resize it while this stands.
+    bool file_reading = false;
+    struct statx file_stx {};
+
     static constexpr unsigned kIov = App::Plan::kSegs + 1;
     unsigned niov = 0;
     size_t plan_len = 0;
@@ -3579,6 +3736,13 @@ class Ring {
         arm_send(idx);
       }
     }
+    // A run that named a file answered nothing yet: the open is the
+    // reactor's, and its result reaches the wire through continue_conn.
+    arm_file_open(idx);
+    // Unless the name never reached the kernel at all - a refusal this
+    // process spelled itself owes no completion, so nothing else would ever
+    // come back to collect it.
+    if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
     if (WM_UNLIKELY(closing)) {
       if (c.sending) c.close_after_send = true;
       else begin_close(idx);
@@ -3626,6 +3790,138 @@ class Ring {
       return;
     }
     continue_conn(idx);
+  }
+
+  // response.file, stage 1: openat2 against the docroot fd. RESOLVE_BENEATH
+  // anchors the walk to THAT fd, so the confinement is the kernel's and not
+  // this code's - no path math here, on purpose.
+  void arm_file_open(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (c.file_reading) return;  // its buffer is still under a live read
+    const char* path = app_.file_take(c.app);
+    if (path == nullptr) return;
+#ifdef SLIPSTREAM_IO
+    // docroot_open refuses this build at startup precisely because a plain
+    // openat here would answer without the confinement; arriving anyway is
+    // a bug, and it says so instead of serving.
+    app_.file_error(c.app, "this build has no openat2 and will not open without it");
+    if (!c.sending) continue_conn(idx);
+#else
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_openat2(s, docroot_fd(), path, const_cast<struct open_how*>(docroot_how()));
+    io_uring_sqe_set_data64(s, detail::tag(detail::kFileOpen, c.gen, idx));
+#endif
+  }
+
+  // The fd leaves through the ring like every other descriptor here.
+  void arm_file_close(uint32_t idx, int fd, uint16_t gen) {
+    if (fd < 0) return;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_close(s, fd);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kFileClose, gen, idx));
+  }
+
+  // The head is spelled; `more` is what puts it on the wire, so a connection
+  // mid-send is left to on_send's own continuation.
+  void file_wake(uint32_t idx) {
+    if (!conns_[idx].sending) continue_conn(idx);
+  }
+
+  // ENOENT, EXDEV (RESOLVE_BENEATH), ELOOP (RESOLVE_NO_SYMLINKS), EACCES -
+  // ONE answer for all of them, so probing for a symlink or a traversal
+  // cannot be told apart from asking for a name that was never there.
+  void on_file_open(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen) {
+      arm_file_close(idx, cqe->res >= 0 ? cqe->res : -1, gen);
+      return;
+    }
+    if (cqe->res < 0) {
+      app_.file_reject(c.app);
+      file_wake(idx);
+      return;
+    }
+    c.file_fd = cqe->res;
+    c.file_off = 0;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_statx(s, c.file_fd, "", AT_EMPTY_PATH,
+                        STATX_TYPE | STATX_SIZE | STATX_MTIME, &c.file_stx);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kFileStat, c.gen, idx));
+  }
+
+  // statx on the OPENED fd, never by path: size and mtime have to describe
+  // the bytes openat2 confined, and a second resolve would not be confined.
+  void on_file_stat(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    const int fd = c.file_fd;
+    c.file_fd = -1;
+    if (!c.live || c.gen != gen) {
+      arm_file_close(idx, fd, gen);
+      return;
+    }
+    if (cqe->res < 0) {
+      arm_file_close(idx, fd, gen);
+      app_.file_reject(c.app);
+      file_wake(idx);
+      return;
+    }
+    size_t want = 0;
+    const bool read_owed = app_.file_stat(c.app, c.file_stx, &want);
+    if (!read_owed || want == 0) {
+      arm_file_close(idx, fd, gen);
+      if (read_owed) app_.file_ready_now(c.app, 0);
+      file_wake(idx);
+      return;
+    }
+    c.file_fd = fd;
+    c.file_want = want;
+    c.file_off = 0;
+    arm_file_read(idx);
+  }
+
+  void arm_file_read(uint32_t idx) {
+    Conn& c = conns_[idx];
+    char* buf = app_.file_buffer(c.app, c.file_want);
+    c.file_reading = true;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_read(s, c.file_fd, buf + c.file_off,
+                       static_cast<unsigned>(c.file_want - c.file_off), c.file_off);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kFileRead, c.gen, idx));
+  }
+
+  // A short read is ordinary and resumes; res == 0 before the end is the
+  // file shrinking under the Content-Length statx already named, which is a
+  // framing lie - refused, not sent.
+  void on_file_read(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    c.file_reading = false;
+    const int fd = c.file_fd;
+    if (!c.live || c.gen != gen) {
+      c.file_fd = -1;
+      arm_file_close(idx, fd, gen);
+      arm_file_open(idx);
+      return;
+    }
+    if (cqe->res < 0) {
+      c.file_fd = -1;
+      arm_file_close(idx, fd, gen);
+      app_.file_error(c.app, std::strerror(-cqe->res));
+      file_wake(idx);
+      return;
+    }
+    c.file_off += static_cast<size_t>(cqe->res);
+    if (cqe->res != 0 && c.file_off < c.file_want) {
+      arm_file_read(idx);
+      return;
+    }
+    c.file_fd = -1;
+    arm_file_close(idx, fd, gen);
+    if (c.file_off < c.file_want) app_.file_error(c.app, "the file shrank while it was read");
+    else app_.file_ready_now(c.app, c.file_off);
+    file_wake(idx);
   }
 
   // SO_MEMINFO through the ring - SOL_SOCKET is the only level it allows.
@@ -3736,6 +4032,7 @@ class Ring {
     typename App::Plan req;
     req.byte_cap = c.round_cap;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
+    arm_file_open(idx);
     if (req.nseg != 0) {
       take_plan(c, req);
       arm_send(idx);
@@ -3752,6 +4049,9 @@ class Ring {
     }
     c.idle = true;
     c.deadline_s = now_s_ + to_idle_;
+    // Nothing owed and nothing on the wire - the one point where handing the
+    // file read buffer back cannot pull it out from under anybody.
+    if (!c.file_reading && !app_.pending(c.app)) App::file_release(c.app);
   }
   // One completion, by tag.
   void handle(struct io_uring_cqe* cqe) {
@@ -3764,6 +4064,10 @@ class Ring {
       case detail::kRecv: on_recv(idx, gen, cqe); break;
       case detail::kSend: on_send(idx, gen, cqe); break;
       case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
+      case detail::kFileOpen: on_file_open(idx, gen, cqe); break;
+      case detail::kFileStat: on_file_stat(idx, gen, cqe); break;
+      case detail::kFileRead: on_file_read(idx, gen, cqe); break;
+      case detail::kFileClose: break;
       case detail::kLog: on_log(gen, idx, cqe); break;
       case detail::kPeer: on_peer(idx, gen, cqe); break;
       case detail::kClose:

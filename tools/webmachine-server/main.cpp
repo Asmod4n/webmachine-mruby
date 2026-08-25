@@ -51,6 +51,17 @@ struct Echo {
   bool timed(const Conn&) const { return false; }
   // Echo keeps nothing fresh.
   void on_tick() {}
+  // response.file's half of the App contract. Echo never names a file, so
+  // file_take is the only one the Ring can ever reach - the rest exist
+  // because the template instantiates every branch, not because they run.
+  const char* file_take(Conn&) { return nullptr; }
+  static bool file_answerable(const Conn&) { return false; }
+  void file_reject(Conn&) {}
+  void file_error(Conn&, const char*) {}
+  bool file_stat(Conn&, const struct statx&, size_t*) { return false; }
+  char* file_buffer(Conn&, size_t) { return nullptr; }
+  void file_ready_now(Conn&, size_t) {}
+  static void file_release(Conn&) {}
 };
 
 // Does io_uring exist on THIS machine? Read from URING_AVAILABLE, which
@@ -103,6 +114,8 @@ int main(int argc, char** argv) {
       opts.app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       opts.assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--docroot") == 0 && i + 1 < argc) {
+      opts.docroot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--mime-types") == 0 && i + 1 < argc) {
       opts.mime_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
@@ -134,7 +147,7 @@ int main(int argc, char** argv) {
     } else {
       std::fprintf(stderr,
                    "usage: %s [--config FILE.toml] [--unix PATH | --port N] [--app FILE.mrb] "
-                   "[--assets FILE.zip] [--mime-types FILE] "
+                   "[--assets FILE.zip] [--docroot DIR] [--mime-types FILE] "
                    "[--log FILE [--log-privacy none|anon|full]] [--error-log FILE] "
                    "[--log-max-bytes N] "
                    "[--zero-copy-threshold N] [--pidfile PATH] [--echo]\n"
@@ -143,6 +156,14 @@ int main(int argc, char** argv) {
                    "  used when present (and announced).\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
+                   "  --docroot is the ONE directory `response.file = \"rel/path\"` may\n"
+                   "  reach. It is resolved to a canonical absolute path and opened once\n"
+                   "  at startup, and every per-request open is an openat2(2) against\n"
+                   "  THAT descriptor with RESOLVE_BENEATH|NO_SYMLINKS|NO_MAGICLINKS - so\n"
+                   "  the kernel does the confinement and a '..', a symlink pointing out\n"
+                   "  of the tree or a /proc magic-link all get the same 404 a name that\n"
+                   "  was never there gets. Without it response.file= refuses by name; a\n"
+                   "  default would be a directory nobody chose to serve.\n"
                    "  --mime-types names the media-type database the asset tier reads\n"
                    "  instead of hunting for the machine's own (/etc/mime.types, the apache\n"
                    "  paths, /usr/share/mime/globs2, then the list built in). The startup\n"
@@ -194,6 +215,9 @@ int main(int argc, char** argv) {
     }
     if (opts.app_path == nullptr && !fc.app.empty()) opts.app_path = fc.app.c_str();
     if (opts.assets_path == nullptr && !fc.assets.empty()) opts.assets_path = fc.assets.c_str();
+    if (opts.docroot_path == nullptr && !fc.docroot.empty()) {
+      opts.docroot_path = fc.docroot.c_str();
+    }
     if (opts.mime_path == nullptr && !fc.mime_types.empty()) {
       opts.mime_path = fc.mime_types.c_str();
     }
