@@ -1636,6 +1636,34 @@ struct Resource {
   ValueCb cb_finish_request;  // after the walk, ALWAYS (fsm.rb ensure)
   ValueCb cb_handle_exception;
 
+  // The old fast part, back: `dynamic` above answers "is this flow NODE
+  // decided by the VM" in one load; `cb_mask` is the same idea for "does
+  // this value callback exist", one bit per ValueCb above, so a node
+  // handler that only needs the yes/no (most calls, most of the time)
+  // never has to load the ValueCb struct itself - the payload (sym/m/
+  // fast/argc) is only touched once the bit says the answer is yes. Set
+  // once at fold, read every run.
+  enum CbBit : uint32_t {
+    kCbKnownMethods = 1u << 0,
+    kCbAllowedMethods = 1u << 1,
+    kCbCtProvided = 1u << 2,
+    kCbCtAccepted = 1u << 3,
+    kCbOptions = 1u << 4,
+    kCbVariances = 1u << 5,
+    kCbEtag = 1u << 6,
+    kCbLastModified = 1u << 7,
+    kCbExpires = 1u << 8,
+    kCbMovedPerm = 1u << 9,
+    kCbMovedTemp = 1u << 10,
+    kCbPostIsCreate = 1u << 11,
+    kCbCreatePath = 1u << 12,
+    kCbBaseUri = 1u << 13,
+    kCbProcessPost = 1u << 14,
+    kCbFinishRequest = 1u << 15,
+    kCbHandleException = 1u << 16,
+  };
+  uint32_t cb_mask = 0;
+
   // Konst-folded content_types_provided: [type, handler] in the
   // resource's own order, [0] the default choice (c3 with no Accept).
   // Never empty after fold - the default is [["text/html", :to_html]].
@@ -2560,45 +2588,58 @@ class Http1 {
     // open is owed, `busy` = the ring is on it, `ready` = the head is
     // spelled and `more` may put it on the wire. Nothing else about the
     // request survives the run, so the framing it needs is copied here.
-    std::string file_path;
-    std::string file_head;
-    std::string file_ctype;
-    std::string file_hdrs;
-    std::string file_buf;
-    // The access line is owed whatever else happens, and the request it
-    // describes is gone by the time the ring answers - so it is copied.
-    std::string file_method;
-    std::string file_target;
-    std::string file_ref;
-    std::string file_ua;
-    size_t file_len = 0;
-    int64_t file_ims = 0;
-    uint16_t file_status = 0;
-    uint8_t file_lflags = 0;
-    bool file_want = false;
-    bool file_busy = false;
-    bool file_ready = false;
-    bool file_persist = true;
-    bool file_head_only = false;
-    bool file_ims_valid = false;
-    int file_minor = 1;
+    //
+    // Lazy, like h2/ws/sse below - most connections never call
+    // response.file=, and this used to sit inline (10 std::strings plus a
+    // dozen scalars) on EVERY connection slot, paid by the accept/recv/
+    // send hot path whether or not it was ever touched. Allocated on first
+    // use and kept for the life of the connection (not freed per request)
+    // so a connection that repeatedly serves files doesn't thrash malloc;
+    // `reset()` and `~Conn()` are the only places that delete it.
+    struct FileXfer {
+      std::string path;
+      std::string head;
+      std::string ctype;
+      std::string hdrs;
+      std::string buf;
+      // The access line is owed whatever else happens, and the request it
+      // describes is gone by the time the ring answers - so it is copied.
+      std::string method;
+      std::string target;
+      std::string ref;
+      std::string ua;
+      size_t len = 0;
+      int64_t ims = 0;
+      uint16_t status = 0;
+      uint8_t lflags = 0;
+      bool want = false;
+      bool busy = false;
+      bool ready = false;
+      bool persist = true;
+      bool head_only = false;
+      bool ims_valid = false;
+      int minor = 1;
+    };
+    FileXfer* file = nullptr;
     // Nothing is owed and nothing is held: the state a fresh connection and
-    // a delivered file both stand in.
+    // a delivered file both stand in. The allocation itself survives - see
+    // FileXfer's comment above.
     void file_clear() {
-      file_want = false;
-      file_busy = false;
-      file_ready = false;
-      file_len = 0;
-      file_status = 0;
-      file_lflags = 0;
-      file_path.clear();
-      file_head.clear();
-      file_ctype.clear();
-      file_hdrs.clear();
-      file_method.clear();
-      file_target.clear();
-      file_ref.clear();
-      file_ua.clear();
+      if (file == nullptr) return;
+      file->want = false;
+      file->busy = false;
+      file->ready = false;
+      file->len = 0;
+      file->status = 0;
+      file->lflags = 0;
+      file->path.clear();
+      file->head.clear();
+      file->ctype.clear();
+      file->hdrs.clear();
+      file->method.clear();
+      file->target.clear();
+      file->ref.clear();
+      file->ua.clear();
     }
     // The ONE end of the lend window - drained round, closed connection,
     // dead reactor. Never conditional on the round having succeeded.
@@ -2618,7 +2659,8 @@ class Http1 {
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
       zc_release();
-      file_clear();
+      delete file;
+      file = nullptr;
       peer_len = 0;
       carry.clear();
       body_skip = 0;
@@ -2636,9 +2678,11 @@ class Http1 {
       xfer_off = 0;
       xfer_end = 0;
     }
-    // The websocket, the stream and the h2 state die with the connection.
+    // The websocket, the stream, the h2 state and a response.file transfer
+    // die with the connection.
     ~Conn() {
       zc_release();
+      delete file;
       h2_free(h2);
       ws_free(ws);
       sse_free(sse);
@@ -2699,12 +2743,14 @@ class Http1 {
   char* file_buffer(Conn& st, size_t n);
   void file_ready_now(Conn& st, size_t n);
   // Is an answer waiting for `more` to put it on the wire?
-  static bool file_answerable(const Conn& st) { return st.file_ready; }
+  static bool file_answerable(const Conn& st) { return st.file != nullptr && st.file->ready; }
   // Nothing owed, nothing on the wire: give the read buffer back, or a slot
   // that once served a big file would hold those bytes for the process's
   // life. The Ring calls this only where BOTH are true.
   static void file_release(Conn& st) {
-    if (st.file_buf.capacity() > kDeliverChunk) std::string().swap(st.file_buf);
+    if (st.file != nullptr && st.file->buf.capacity() > kDeliverChunk) {
+      std::string().swap(st.file->buf);
+    }
   }
 
   // The App FORMATS lines; the Ring flushes the buffer. Opt-in.

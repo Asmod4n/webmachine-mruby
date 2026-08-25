@@ -1026,7 +1026,8 @@ bool Http1::pending(const Conn& st) const {
   }
   // A file the reactor is still opening owes bytes too - and saying so is
   // what keeps `more` from re-feeding the carry ahead of that answer.
-  return st.xfer != nullptr || st.file_want || st.file_busy || st.file_ready;
+  return st.xfer != nullptr ||
+         (st.file != nullptr && (st.file->want || st.file->busy || st.file->ready));
 }
 
 // The continuation both protocols share: the sink has fully drained.
@@ -1039,24 +1040,24 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // external segment - the same door the asset tier and a lent body use, so
   // the bytes reach the kernel without a second copy. The access line is
   // owed here and nowhere else; the request it names is long gone.
-  if (WM_UNLIKELY(st.file_ready)) {
-    st.file_ready = false;
-    sink.append(st.file_head);
-    const size_t blen = st.file_len;
-    if (blen != 0) lend_body(st, sink, st.file_buf.data(), blen, plan);
+  if (WM_UNLIKELY(st.file != nullptr && st.file->ready)) {
+    st.file->ready = false;
+    sink.append(st.file->head);
+    const size_t blen = st.file->len;
+    if (blen != 0) lend_body(st, sink, st.file->buf.data(), blen, plan);
     if (alog_.enabled) {
-      log_access(alog_, st.peer, st.peer_len, st.file_method.data(), st.file_method.size(),
-                 st.file_target.data(), st.file_target.size(), st.file_lflags, st.file_status,
-                 blen, st.file_ref.data(), st.file_ref.size(), st.file_ua.data(),
-                 st.file_ua.size());
+      log_access(alog_, st.peer, st.peer_len, st.file->method.data(), st.file->method.size(),
+                 st.file->target.data(), st.file->target.size(), st.file->lflags,
+                 st.file->status, blen, st.file->ref.data(), st.file->ref.size(),
+                 st.file->ua.data(), st.file->ua.size());
     }
-    const bool persist = st.file_persist;
+    const bool persist = st.file->persist;
     st.file_clear();
     return persist;
   }
   // The ring still owes the answer: nothing else may speak for this
   // connection until it lands, least of all the carry behind it.
-  if (WM_UNLIKELY(st.file_want || st.file_busy)) return true;
+  if (WM_UNLIKELY(st.file != nullptr && (st.file->want || st.file->busy))) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);

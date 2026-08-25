@@ -362,35 +362,35 @@ void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len,
 // straight out of the shared store, in this connection's spelling.
 void Http1::file_prebuilt(Conn& st, uint16_t status) {
   const Variants& sv = variants(status);
-  st.file_head = st.file_minor >= 1 ? (st.file_persist ? sv.plain.bytes : sv.close.bytes)
-                                    : (st.file_persist ? sv.keep.bytes : sv.close.bytes);
-  st.file_status = status;
-  st.file_len = 0;
-  st.file_busy = false;
-  st.file_ready = true;
+  st.file->head = st.file->minor >= 1 ? (st.file->persist ? sv.plain.bytes : sv.close.bytes)
+                                      : (st.file->persist ? sv.keep.bytes : sv.close.bytes);
+  st.file->status = status;
+  st.file->len = 0;
+  st.file->busy = false;
+  st.file->ready = true;
 }
 
 // RFC 9112 3: the head a served file wears. No prebuilt head can hold a
 // per-file Content-Length and Last-Modified, so it is spelled byte by byte -
 // spell_head's own job, with the run's field lines still in front.
 void Http1::file_spell(Conn& st, uint16_t status, size_t len, bool bodyless) {
-  st.file_head.clear();
-  spell_head(st.file_head, status, date_, bodyless ? std::string() : st.file_ctype,
-             st.file_hdrs, st.file_minor, st.file_persist, bodyless, len);
-  st.file_status = status;
-  st.file_len = bodyless || st.file_head_only ? 0 : len;
-  st.file_busy = false;
-  st.file_ready = true;
+  st.file->head.clear();
+  spell_head(st.file->head, status, date_, bodyless ? std::string() : st.file->ctype,
+             st.file->hdrs, st.file->minor, st.file->persist, bodyless, len);
+  st.file->status = status;
+  st.file->len = bodyless || st.file->head_only ? 0 : len;
+  st.file->busy = false;
+  st.file->ready = true;
 }
 
 // response.file: the reactor is taking the open. The name has to stay put -
 // the SQE points straight at these bytes - so nothing clears it until the
 // answer is spelled.
 const char* Http1::file_take(Conn& st) {
-  if (!st.file_want || st.file_busy) return nullptr;
-  st.file_want = false;
-  st.file_busy = true;
-  return st.file_path.c_str();
+  if (st.file == nullptr || !st.file->want || st.file->busy) return nullptr;
+  st.file->want = false;
+  st.file->busy = true;
+  return st.file->path.c_str();
 }
 
 // ONE answer for every refusal: a name that was never there, a directory, a
@@ -401,7 +401,7 @@ void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 
 // The server's own fault: named in the error log, never in the answer.
 void Http1::file_error(Conn& st, const char* why) {
-  log_internal_error(elog_, st.peer, st.peer_len, st.file_target.data(), st.file_target.size(),
+  log_internal_error(elog_, st.peer, st.peer_len, st.file->target.data(), st.file->target.size(),
                      500, why, std::strlen(why));
   file_prebuilt(st, 500);
 }
@@ -421,7 +421,7 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
     std::snprintf(why, sizeof why,
                   "response.file %s is %llu bytes and this tier reads a file into one "
                   "buffer, ceiling %zu - serve it from --assets, or split it",
-                  st.file_path.c_str(), static_cast<unsigned long long>(stx.stx_size),
+                  st.file->path.c_str(), static_cast<unsigned long long>(stx.stx_size),
                   kResponseFileMax);
     file_error(st, why);
     return false;
@@ -438,35 +438,35 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
     gmtime_r(&t, &tm);
     http::date_core(lm, tm);
   }
-  st.file_hdrs.append("Last-Modified: ").append(lm, http::kDateLen).append("\r\n");
+  st.file->hdrs.append("Last-Modified: ").append(lm, http::kDateLen).append("\r\n");
 
   // RFC 9110 13.1.3 / 15.4.5: no newer than what the client already holds.
-  if (st.file_ims_valid && mtime <= st.file_ims) {
+  if (st.file->ims_valid && mtime <= st.file->ims) {
     file_spell(st, 304, 0, true);
     return false;
   }
-  if (st.file_head_only || len == 0) {
+  if (st.file->head_only || len == 0) {
     // The head still states the real length; HEAD just sends no bytes.
     file_spell(st, 200, len, false);
     return false;
   }
   file_spell(st, 200, len, false);
-  st.file_ready = false;  // the head stands, the bytes are still owed
+  st.file->ready = false;  // the head stands, the bytes are still owed
   *want = len;
   return true;
 }
 
 // Where the ring reads the bytes. Only ever called with no read in flight.
 char* Http1::file_buffer(Conn& st, size_t n) {
-  if (st.file_buf.size() < n) st.file_buf.resize(n);
-  return &st.file_buf[0];
+  if (st.file->buf.size() < n) st.file->buf.resize(n);
+  return &st.file->buf[0];
 }
 
 // The bytes are in. `more` is what puts head and body on the wire.
 void Http1::file_ready_now(Conn& st, size_t n) {
-  st.file_len = n;
-  st.file_busy = false;
-  st.file_ready = true;
+  st.file->len = n;
+  st.file->busy = false;
+  st.file->ready = true;
 }
 
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
@@ -878,23 +878,24 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             // nullptr/0 here - zc_release() still runs, for its h2-backlog
             // drain.
             st.zc_release();
-            st.file_path.assign(fp, fpn);
-            st.file_hdrs = rhdrs_;
-            st.file_ctype = !b->res->run_ctype.empty() ? http::with_charset(b->res->run_ctype)
-                                                       : b->konst.content_type;
-            st.file_minor = minor;
-            st.file_persist = persist;
-            st.file_head_only = head_only;
-            st.file_ims_valid = facts.has_if_modified_since && facts.ims_valid;
-            st.file_ims = vals.ims_epoch;
-            st.file_lflags = lflags;
-            st.file_method.assign(method, method_len);
-            st.file_target.assign(path, path_len);
-            st.file_ref.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
-            st.file_ua.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
-            st.file_ready = false;
-            st.file_busy = false;
-            st.file_want = !fbad;
+            if (st.file == nullptr) st.file = new Conn::FileXfer();
+            st.file->path.assign(fp, fpn);
+            st.file->hdrs = rhdrs_;
+            st.file->ctype = !b->res->run_ctype.empty() ? http::with_charset(b->res->run_ctype)
+                                                        : b->konst.content_type;
+            st.file->minor = minor;
+            st.file->persist = persist;
+            st.file->head_only = head_only;
+            st.file->ims_valid = facts.has_if_modified_since && facts.ims_valid;
+            st.file->ims = vals.ims_epoch;
+            st.file->lflags = lflags;
+            st.file->method.assign(method, method_len);
+            st.file->target.assign(path, path_len);
+            st.file->ref.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
+            st.file->ua.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
+            st.file->ready = false;
+            st.file->busy = false;
+            st.file->want = !fbad;
             if (fbad) file_reject(st);
             off += static_cast<size_t>(ret);
             if (content_length != 0) {

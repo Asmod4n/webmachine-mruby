@@ -1283,16 +1283,29 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_process_post = value_cb(mrb, klass, MRB_SYM(process_post), 0, true);
   out.cb_finish_request = value_cb(mrb, klass, MRB_SYM(finish_request), 0, true);
   out.cb_handle_exception = value_cb(mrb, klass, MRB_SYM(handle_exception), 1, true);
-  const bool any_value_cb =
-      out.cb_known_methods.has || out.cb_allowed_methods.has || out.cb_ct_provided.has ||
-      out.cb_ct_accepted.has || out.cb_options.has || out.cb_variances.has ||
-      out.cb_etag.has || out.cb_last_modified.has || out.cb_expires.has ||
-      out.cb_moved_perm.has || out.cb_moved_temp.has || out.cb_post_is_create.has ||
-      out.cb_create_path.has || out.cb_base_uri.has || out.cb_process_post.has ||
-      out.cb_finish_request.has || out.cb_handle_exception.has;
+  // The fast part: one bit per ValueCb above, set once here so every run
+  // asks "does X exist" with one load instead of touching X's own struct.
+  out.cb_mask = 0;
+  if (out.cb_known_methods.has) out.cb_mask |= Resource::kCbKnownMethods;
+  if (out.cb_allowed_methods.has) out.cb_mask |= Resource::kCbAllowedMethods;
+  if (out.cb_ct_provided.has) out.cb_mask |= Resource::kCbCtProvided;
+  if (out.cb_ct_accepted.has) out.cb_mask |= Resource::kCbCtAccepted;
+  if (out.cb_options.has) out.cb_mask |= Resource::kCbOptions;
+  if (out.cb_variances.has) out.cb_mask |= Resource::kCbVariances;
+  if (out.cb_etag.has) out.cb_mask |= Resource::kCbEtag;
+  if (out.cb_last_modified.has) out.cb_mask |= Resource::kCbLastModified;
+  if (out.cb_expires.has) out.cb_mask |= Resource::kCbExpires;
+  if (out.cb_moved_perm.has) out.cb_mask |= Resource::kCbMovedPerm;
+  if (out.cb_moved_temp.has) out.cb_mask |= Resource::kCbMovedTemp;
+  if (out.cb_post_is_create.has) out.cb_mask |= Resource::kCbPostIsCreate;
+  if (out.cb_create_path.has) out.cb_mask |= Resource::kCbCreatePath;
+  if (out.cb_base_uri.has) out.cb_mask |= Resource::kCbBaseUri;
+  if (out.cb_process_post.has) out.cb_mask |= Resource::kCbProcessPost;
+  if (out.cb_finish_request.has) out.cb_mask |= Resource::kCbFinishRequest;
+  if (out.cb_handle_exception.has) out.cb_mask |= Resource::kCbHandleException;
   // kC3 is a request-kind node: its dynamic bit forces the run tier without
   // touching any konst answer.
-  if (any_value_cb) out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
+  if (out.cb_mask != 0) out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
 
   std::string content_type = "text/html";
   {
