@@ -40,6 +40,19 @@
 # CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
 # ASSETS + ASSET_CODING + TARGET (see below).
 #
+# STAT=1 answers a DIFFERENT question than everything above: not WHERE
+# time goes on one binary, but HOW MUCH work one binary does per request
+# against another - the number that tells "real extra work" apart from
+# "cache/layout noise" between two commits, without touching perf report's
+# per-symbol percentages (which are exactly the quantity layout shifts
+# corrupt). Runs `perf stat -p <server-pid>` for the same DURATION h2load
+# hits it, alongside the existing recording, and prints
+# instructions/request. To compare two commits: check one out, `rake
+# compile`, run this with STAT=1; check out the other, rebuild, run
+# again; diff the instructions/request lines by hand - this script
+# measures one binary per invocation, on purpose, so a build never
+# straddles the numbers it produces.
+#
 # ASSETS profiles the ASSET TIER instead of an app. Give it a byte
 # count and a one-entry pack of that size is built here and hammered;
 # give it a path to a .zip and it is served as-is, with TARGET naming
@@ -139,6 +152,7 @@ if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
 MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
 THREADS="${THREADS:-1}"
+STAT="${STAT:-0}"
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
@@ -286,7 +300,34 @@ leg() {
       }
     fi
   fi
-  h2load -D"$DURATION" -t"$THREADS" -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1 | grep '^finished'
+  # STAT: a second, independent perf session on the SAME pid, alongside
+  # the recording above - `perf stat -p PID -- sleep N` is the same
+  # attach-for-N-seconds idiom bench/floor.sh's sysc_begin already uses,
+  # here measuring cycles/instructions/cache instead of syscall count.
+  local statpid=""
+  if [ "$STAT" = 1 ]; then
+    "$PERF" stat -e cycles,instructions,L1-icache-load-misses,iTLB-load-misses \
+      -p "$srvpid" -x, -o "$WORK/stat.out" -- sleep "$DURATION" >/dev/null 2>&1 &
+    statpid=$!
+  fi
+  local h2out
+  h2out=$(h2load -D"$DURATION" -t"$THREADS" -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1)
+  echo "$h2out" | grep '^finished'
+  [ -n "$statpid" ] && wait "$statpid" 2>/dev/null
+  if [ "$STAT" = 1 ] && [ -s "$WORK/stat.out" ]; then
+    local ndone cyc instr icm itlb
+    ndone=$(echo "$h2out" | grep '^requests:' | awk '{print $6}')
+    cyc=$(awk -F, '$3=="cycles"{print $1}' "$WORK/stat.out")
+    instr=$(awk -F, '$3=="instructions"{print $1}' "$WORK/stat.out")
+    icm=$(awk -F, '$3=="L1-icache-load-misses"{print $1}' "$WORK/stat.out")
+    itlb=$(awk -F, '$3=="iTLB-load-misses"{print $1}' "$WORK/stat.out")
+    echo "  perf stat ($name): cycles=${cyc:-?} instructions=${instr:-?} L1-icache-misses=${icm:-?} iTLB-misses=${itlb:-?}"
+    if [ -n "$instr" ] && [ -n "$ndone" ] && [ "$ndone" -gt 0 ]; then
+      awk -v i="$instr" -v c="${cyc:-0}" -v d="$ndone" \
+        'BEGIN { printf "  instructions/request: %.1f   cycles/request: %.1f\n", i / d, c / d }'
+    fi
+    mv "$WORK/stat.out" "$OUT/stat.$(echo "$name" | tr ' /' '__').out"
+  fi
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
   SRVPID=""
