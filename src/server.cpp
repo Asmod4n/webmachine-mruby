@@ -202,6 +202,24 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   cfg.to_idle = opts_.to_idle;
   if (!build_listeners(cfg, err, errlen)) return false;
 
+  // server.docroot: a typed flag beats [server], and both beat the app's
+  // conf - the same order --unix and --port already follow. The canonical
+  // path is settled ONCE, here, before the first accept: no request may race
+  // the anchor RESOLVE_BENEATH is measured against. A configured docroot
+  // that is missing or is not a directory refuses startup by name, because
+  // an operator who asked for one and silently got a server without it would
+  // find that out through 500s in production.
+  {
+    const char* dr = opts_.docroot_path;
+    for (size_t i = 0; dr == nullptr && i < specs_.size(); i++) {
+      if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
+    }
+    if (dr != nullptr) {
+      if (!docroot_open(dr, err, errlen)) return false;
+      std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
+    }
+  }
+
   if (opts_.assets_path != nullptr) {
     if (!mime_.load(opts_.mime_path, err, errlen)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",

@@ -216,6 +216,53 @@ mrb_value resp_body_set(mrb_state* mrb, mrb_value) {
   return v;
 }
 
+// The file a callback named, or nil.
+mrb_value resp_file(mrb_state* mrb, mrb_value) {
+  const Resource* r = live(mrb);
+  if (!r->run_have_file) return mrb_nil_value();
+  return mrb_str_new(mrb, r->run_file.data(), r->run_file.size());
+}
+
+// response.file = "rel/path": the NAME of a file under the configured
+// docroot, which the reactor opens and streams through the ring. A callback
+// hands over a name and nothing more - no fd, no bytes, no disk syscall
+// inside a run.
+//
+// The missing-docroot refusal fires HERE, not at config load. Nothing at
+// load time can see it coming - response.file= is a runtime call, so "this
+// application uses it" is not a static fact worth guessing at. This is the
+// earliest honest point and the cheapest one to act on: the raise carries
+// the class, the message and the app's own file and line into --error-log,
+// where a 500 spelled three ring round-trips later would name nothing.
+mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
+  const Resource* r = live(mrb);
+  mrb_value v;
+  mrb_get_args(mrb, "o", &v);
+  if (mrb_nil_p(v)) {
+    r->run_have_file = false;
+    r->run_file_bad = false;
+    return v;
+  }
+  if (!mrb_string_p(v)) {
+    mrb_raise(mrb, E_TYPE_ERROR, "response.file= takes a String, or nil to clear it");
+  }
+  if (!docroot_ready()) {
+    mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
+              "response.file= needs a docroot and this server has none. Name one: "
+              "--docroot PATH, or [server] docroot in the TOML, or conf.docroot in the "
+              "application's configure block. There is no default - a server that guesses "
+              "which directory to serve files out of serves the wrong one");
+  }
+  // RESOLVE_BENEATH is the guard, not this. These two are the C-string API's
+  // own limits: an embedded NUL would truncate the name openat2 actually
+  // sees, and an empty name asks for nothing. Both answer the SAME 404 a
+  // rejected resolve does, so neither is a signal to probe with.
+  r->run_file.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  r->run_file_bad = r->run_file.empty() || r->run_file.find('\0') != std::string::npos;
+  r->run_have_file = true;
+  return v;
+}
+
 // RFC 9110 15.4.4: webmachine-ruby's own spelling of a redirect - an
 // optional Location plus the flag n11/p11 read back. `redirect_to`
 // below is the exact same function under its alias name.
@@ -339,6 +386,8 @@ void response_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, c, MRB_SYM_E(code), resp_code_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(body), resp_body, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM_E(body), resp_body_set, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, c, MRB_SYM(file), resp_file, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, c, MRB_SYM_E(file), resp_file_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(do_redirect), resp_do_redirect, MRB_ARGS_OPT(1));
   mrb_define_method_id(mrb, c, MRB_SYM(redirect_to), resp_do_redirect, MRB_ARGS_OPT(1));
   mrb_define_method_id(mrb, c, MRB_SYM_Q(is_redirect), resp_is_redirect, MRB_ARGS_NONE());
