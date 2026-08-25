@@ -774,6 +774,14 @@ inline void log_error(Logger& lg, const void* peer, size_t plen, const char* kla
   if (blen != 0) lg.buf.append(trace, blen);
 }
 
+// The server's own fault, spelled the same way at every call site: one
+// error-log record, class Webmachine::Error/17, never reaching the answer.
+inline void log_internal_error(Logger& lg, const void* peer, size_t plen, const char* target,
+                               size_t tlen, uint16_t status, const char* why, size_t whylen) {
+  if (!lg.enabled) return;
+  log_error(lg, peer, plen, "Webmachine::Error", 17, target, tlen, status, why, whylen, nullptr, 0);
+}
+
 // One raise as one error record. Defined in resource.cpp - it needs a VM.
 void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
                    size_t tlen, uint16_t status);
@@ -2464,15 +2472,6 @@ bool read_close(const char* payload, size_t len, uint16_t& code, const char** re
 }
 
 namespace webmachine {
-struct Resource;
-struct ReqView;
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
-                      const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers, size_t zc_min);
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
-bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len);
-void resource_body_unlend(mrb_state* mrb, mrb_value v);
-
 struct WsResource;
 struct WsConn;
 namespace wsdeflate { struct Params; }
@@ -2758,10 +2757,10 @@ class Http1 {
   static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                        bool head_only);
   bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+  static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
   static void lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan);
-  void assemble_dynamic(const Conn& st, const flow::ReqFacts& facts, const http::ReqValues& vals,
-                        const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
-                        std::string& sink);
+  void assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefix_id,
+                        const Resp& prefix_gz, bool head_only, std::string& sink);
   // RFC 9112 9.3: one prebuilt status in its three connection spellings.
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];

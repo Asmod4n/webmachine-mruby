@@ -586,22 +586,14 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         size_t fpn = 0;
         bool fbad = false;
         if (WM_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad))) {
-          if (elog_.enabled) {
-            static const char kWhy[] =
-                "response.file is not wired for HTTP/2 yet - this stream would have been "
-                "answered with an empty body, so it is refused instead";
-            log_error(elog_, st0.peer, st0.peer_len, "Webmachine::Error", 17,
-                      req != nullptr ? req->target : nullptr,
-                      req != nullptr ? req->target_len : 0, 500, kWhy, sizeof(kWhy) - 1,
-                      nullptr, 0);
-          }
-          if (lent_have) {
-            resource_body_unlend(lent_mrb, lent_v);
-            lent_have = false;
-            lent = nullptr;
-            lent_len = 0;
-            lent_mrb = nullptr;
-          }
+          static const char kWhy[] =
+              "response.file is not wired for HTTP/2 yet - this stream would have been "
+              "answered with an empty body, so it is refused instead";
+          log_internal_error(elog_, st0.peer, st0.peer_len, req != nullptr ? req->target : nullptr,
+                             req != nullptr ? req->target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
+          // A run that named a file never lends its body either (see the
+          // O18 body handler in resource.cpp) - lent_have is already false
+          // here, nothing to unwind.
           body_.clear();
           have_body = false;
           rhdrs_.clear();

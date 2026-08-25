@@ -1110,26 +1110,34 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
               mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
             }
-            const size_t blen = static_cast<size_t>(RSTRING_LEN(v));
-            // Already frozen means the app kept this String, so a second
-            // connection may be holding it too - and the release would lift
-            // a freeze that was not ours. Our own freeze is therefore also
-            // the interlock: one lend per String at a time, everything else
-            // copies.
-            if (res.run_zc_min != 0 && blen >= res.run_zc_min &&
-                !mrb_frozen_p(mrb_basic_ptr(v))) {
-              // Frozen so mrb_str_modify cannot realloc the bytes out from
-              // under a send in flight, rooted so the GC cannot take them;
-              // the writer hands RSTRING_PTR straight to the kernel.
-              mrb_obj_freeze(mrb, v);
-              mrb_gc_register(mrb, v);
-              res.run_zc = v;
-              res.run_zc_have = true;
-              res.run_body->clear();
-            } else {
-              res.run_body->assign(RSTRING_PTR(v), blen);
+            // response.file= already named the answer - this String (the
+            // handler's own '' by convention) is dead on arrival, so
+            // neither the freeze+register interlock nor the copy is worth
+            // taking. The caller reads run_have_file first and never looks
+            // at run_body/run_have_body for this run.
+            if (!res.run_have_file) {
+              const size_t blen = static_cast<size_t>(RSTRING_LEN(v));
+              // Already frozen means the app kept this String, so a second
+              // connection may be holding it too - and the release would
+              // lift a freeze that was not ours. Our own freeze is
+              // therefore also the interlock: one lend per String at a
+              // time, everything else copies.
+              if (res.run_zc_min != 0 && blen >= res.run_zc_min &&
+                  !mrb_frozen_p(mrb_basic_ptr(v))) {
+                // Frozen so mrb_str_modify cannot realloc the bytes out
+                // from under a send in flight, rooted so the GC cannot
+                // take them; the writer hands RSTRING_PTR straight to the
+                // kernel.
+                mrb_obj_freeze(mrb, v);
+                mrb_gc_register(mrb, v);
+                res.run_zc = v;
+                res.run_zc_have = true;
+                res.run_body->clear();
+              } else {
+                res.run_body->assign(RSTRING_PTR(v), blen);
+              }
+              res.run_have_body = true;
             }
-            res.run_have_body = true;
           }
         }
         n = Node::kO18b;

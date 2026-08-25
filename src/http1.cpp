@@ -300,12 +300,8 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
 
 // RFC 9110 12.5.3/12.5.5: identity or gzip for a dynamic 200, and the Vary
 // that says the resource varies either way.
-void Http1::assemble_dynamic(const Conn& st, const flow::ReqFacts& facts,
-                             const http::ReqValues& vals, const Resp& prefix_id,
+void Http1::assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefix_id,
                              const Resp& prefix_gz, bool head_only, std::string& sink) {
-  const bool accept_gzip =
-      !facts.has_accept_encoding || http::gzip_acceptable(vals.accept_encoding,
-                                                           vals.accept_encoding_len);
   bool use_gzip = false;
   if (accept_gzip && st.packetized) {
     char cl[40];
@@ -331,17 +327,24 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   return false;
 }
 
+// The sink's uncovered tail since the last claim, as one external segment -
+// every site that splices something else into the plan claims this head
+// first, so what follows lands at the right offset on the wire.
+void Http1::claim_sink(Conn& st, const std::string& sink, Plan& plan) {
+  if (sink.size() > st.zc_covered) {
+    const size_t head = sink.size() - st.zc_covered;
+    plan.seg[plan.nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
+    plan.iov_len += head;
+  }
+  st.zc_covered = sink.size();
+}
+
 // A lent body splits the sink, so whatever the parse appended after it
 // still has to be claimed - and it returns down a dozen paths, so the plan
 // is closed HERE, once, on all of them.
 bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   const bool ok = feed_parse(st, data, len, sink, plan);
-  if (WM_H1_UNLIKELY(st.zc_split) && plan != nullptr && sink.size() > st.zc_covered) {
-    const size_t rest = sink.size() - st.zc_covered;
-    plan->seg[plan->nseg++] = Plan::Seg{nullptr, st.zc_covered, rest};
-    plan->iov_len += rest;
-    st.zc_covered = sink.size();
-  }
+  if (WM_H1_UNLIKELY(st.zc_split) && plan != nullptr) claim_sink(st, sink, *plan);
   return ok;
 }
 
@@ -349,12 +352,7 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 // over its own frozen String - the door http1's mmap'd assets already use.
 // The sink bytes it splits are claimed on either side of it by offset.
 void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan) {
-  if (sink.size() > st.zc_covered) {
-    const size_t head = sink.size() - st.zc_covered;
-    plan.seg[plan.nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
-    plan.iov_len += head;
-  }
-  st.zc_covered = sink.size();
+  claim_sink(st, sink, plan);
   plan.seg[plan.nseg++] = Plan::Seg{body, 0, len};
   plan.iov_len += len;
   st.zc_split = true;
@@ -403,10 +401,8 @@ void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 
 // The server's own fault: named in the error log, never in the answer.
 void Http1::file_error(Conn& st, const char* why) {
-  if (elog_.enabled) {
-    log_error(elog_, st.peer, st.peer_len, "Webmachine::Error", 17, st.file_target.data(),
-              st.file_target.size(), 500, why, std::strlen(why), nullptr, 0);
-  }
+  log_internal_error(elog_, st.peer, st.peer_len, st.file_target.data(), st.file_target.size(),
+                     500, why, std::strlen(why));
   file_prebuilt(st, 500);
 }
 
@@ -782,10 +778,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             size_t take = st.xfer_end - st.xfer_off;
             if (take > room) take = room;
             if (take > 0) {
-              const size_t head = sink.size() - st.zc_covered;
-              plan->seg[plan->nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
-              plan->iov_len += head;
-              st.zc_covered = sink.size();
+              claim_sink(st, sink, *plan);
               struct iovec iv[3];
               const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
               for (unsigned i = 0; i < k; i++) {
@@ -817,6 +810,10 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     bool answered = false;
     const char* lent = nullptr;
     size_t lent_len = 0;
+    // Read once, used by both the zero-copy eligibility gate below and
+    // assemble_dynamic() further down - Accept-Encoding does not change
+    // between the two.
+    bool accept_gzip = false;
     if (WM_H1_UNLIKELY(route < 0)) {
       status = 404;
     } else {
@@ -847,13 +844,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           rv.body = view + off + head_len;
           rv.body_len = content_length;
         }
+        accept_gzip = !facts.has_accept_encoding ||
+                      http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
         // A run may LEND its body only where nothing downstream touches the
         // bytes anyway: HEAD sends none, gzip copies them, one connection
         // holds one lend, and an external segment fits through a plan only.
-        const bool gz_now =
-            b->gzip_ok && st.packetized &&
-            (!facts.has_accept_encoding ||
-             http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len));
+        const bool gz_now = accept_gzip && b->gzip_ok && st.packetized;
         const size_t zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_have && !head_only &&
                                !gz_now)
                                   ? zc_min_
@@ -877,9 +873,11 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           if (WM_H1_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad)) && status == 200) {
             body_.clear();
             have_body = false;
+            // resource_run never lends a body a run also named a file for
+            // (see the O18 body handler), so lent/lent_len are already
+            // nullptr/0 here - zc_release() still runs, for its h2-backlog
+            // drain.
             st.zc_release();
-            lent = nullptr;
-            lent_len = 0;
             st.file_path.assign(fp, fpn);
             st.file_hdrs = rhdrs_;
             st.file_ctype = !b->res->run_ctype.empty() ? http::with_charset(b->res->run_ctype)
@@ -961,7 +959,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         lend_body(st, sink, lent, lent_len, *plan);
       } else if (b->gzip_ok) {
         assemble_dynamic(
-            st, facts, vals,
+            st, accept_gzip,
             minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
                        : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close),
             minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
