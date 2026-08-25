@@ -27,6 +27,11 @@
 # (default 20 - profiling wants more samples than a throughput run),
 # FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default fp -
 # matches the frame pointers WM_PROFILE retains), # seen to swing 6% on its own, which reads as progress and is not),
+# THREADS (h2load client threads, default 1 - load mode's -cN connections
+# split across them; the server is one thread regardless, so this is
+# entirely about whether ONE client thread can generate enough load to
+# saturate it - it silently could not at deep multiplexing on forgecore,
+# reading as a server-side cost that was actually client starvation),
 # CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
 # ASSETS + ASSET_CODING + TARGET (see below).
 #
@@ -112,6 +117,7 @@ TARGET="${TARGET:-/}"
 if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
 MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
+THREADS="${THREADS:-1}"
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
@@ -176,6 +182,7 @@ OUT=bench/profile
 mkdir -p "$OUT"
 URL="http://127.0.0.1:$PORT$TARGET"
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} target $TARGET coding ${ASSETS:+$ASSET_CODING}"
+echo "harness: h2load -t$THREADS $([ "$MULTI" = 1 ] && echo "-c1 (diff mode)" || echo "-c$CONNS -m$MULTI") -D${DURATION}"
 
 # An io_uring ring is locked memory, so a LEAKED server costs more than
 # a pid: enough orphans and the next ring init fails with ENOMEM
@@ -258,7 +265,7 @@ leg() {
       }
     fi
   fi
-  h2load -D"$DURATION" -t1 -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1 | grep '^finished'
+  h2load -D"$DURATION" -t"$THREADS" -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1 | grep '^finished'
   kill -TERM "$srvpid"
   wait "$perfpid" 2>/dev/null
   SRVPID=""
