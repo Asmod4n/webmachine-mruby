@@ -10,14 +10,17 @@
 #            backtraces, and the tracer after it builds on the same
 #            ground. Test gems (and their demands) live only here.
 #   portable - the same ship binary WITHOUT liburing: <liburing.h>
-#            resolves to slipstreamIO's select(2) implementation, on
-#            any host. It exists because io_uring can be forbidden to
-#            a PROCESS on a machine that has it - Debian/Ubuntu ship
+#            resolves to slipstreamIO's select(2) implementation. It
+#            exists because io_uring can be forbidden to a PROCESS on a
+#            Linux machine that has it - Debian/Ubuntu ship
 #            kernel.io_uring_disabled=2 hardening, Docker's default
 #            seccomp profile blocks the syscalls, SELinux/AppArmor
 #            can too - and a binary linked against liburing has
-#            nothing else to fall back on. CORRECT, NOT FAST: it is
-#            the way out, not the way.
+#            nothing else to fall back on. NOT a cross-OS build: the
+#            shim itself calls accept4/SOCK_NONBLOCK/statx, all
+#            Linux/glibc-only - "portable" means across Linux hardening
+#            configurations, never across operating systems.
+#            CORRECT, NOT FAST: it is the way out, not the way.
 #
 # Shared shape lives in the lambdas; a difference between the two
 # builds should be a DECISION visible in the block below, never an
