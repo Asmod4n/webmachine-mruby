@@ -799,9 +799,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   bool halted = false;
   int chosen = 0;
 
-  // fsm.rb run: one step's edge, out of the graph table.
-  const auto take = [&](bool a) {
-    const flow::FlowNode& f = flow::kFlow[static_cast<size_t>(n)];
+  // fsm.rb run: one step's edge, out of the graph table. Split so the
+  // one caller that already holds `f` (the generic node path below,
+  // which reads it to check f.kind first) does not pay for a second
+  // flow::kFlow[n] lookup of the same node take() would otherwise redo.
+  const auto take_edge = [&](const flow::FlowNode& f, bool a) {
     const flow::Target& t = a ? f.on_true : f.on_false;
     if (t.status != 0) {
       status = t.status;
@@ -810,6 +812,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       n = t.node;
     }
   };
+  const auto take = [&](bool a) { take_edge(flow::kFlow[static_cast<size_t>(n)], a); };
 
   while (!halted) {
     switch (n) {
@@ -1175,7 +1178,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     } else {
       ans = k.ans[static_cast<size_t>(n)];
     }
-    take(ans);
+    take_edge(f, ans);
   }
 
   // fsm.rb respond: a 304 sheds Content-Type at the writer and carries the
