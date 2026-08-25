@@ -1,5 +1,5 @@
 MRUBY_DIR = File.expand_path('mruby', __dir__)
-CONFIG = ENV['MRUBY_CONFIG'] || File.expand_path('build_config_host.rb', __dir__)
+CONFIG = File.expand_path(ENV['MRUBY_CONFIG'] || 'build_config_host.rb', __dir__)
 
 file MRUBY_DIR do
   sh "git clone --depth 1 https://github.com/mruby/mruby.git #{MRUBY_DIR}"
