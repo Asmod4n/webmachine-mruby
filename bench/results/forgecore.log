@@ -829,3 +829,96 @@ env: runnable=1/1010 busy=0% (200ms sample)
      50%  600.00us
      99%  625.00us
 Requests/sec: 657487.61
+==== 2026-08-25T16:13Z repo=4b5b675 mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/counter.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1565 busy=0% (200ms sample)
+     50%  599.00us
+     99%  724.00us
+Requests/sec: 655574.42
+==== 2026-08-25T16:13Z repo=4b5b675 mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1565 busy=0% (200ms sample)
+     50%  436.00us
+     99%  584.00us
+Requests/sec: 888958.14
+==== 2026-08-25T16:57Z repo=4b5b675 mruby=44ab336 ====
+harness: h2load -t1 -c1 -D20 reps=5 app=examples/hello.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 20.00s, 59297.05 req/s, 8.77MB/s (steal +0 ticks, req/syscall -)
+  finished in 20.00s, 60866.75 req/s, 9.00MB/s (steal +0 ticks, req/syscall -)
+  finished in 20.00s, 60258.10 req/s, 8.91MB/s (steal +0 ticks, req/syscall -)
+==== 2026-08-25T16:58Z repo=4b5b675 mruby=44ab336 ====
+harness: h2load -t1 -c1 -D5 reps=1 app=examples/hello.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 5.00s, 59076.80 req/s, 8.73MB/s (steal +0 ticks, req/syscall -)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 5.00s, 55038.40 req/s, 5.72MB/s (steal +0 ticks, req/syscall -)
+== h2 -m32 ==
+  finished in 5.00s, 678272.00 req/s, 70.51MB/s (steal +0 ticks, req/syscall -)
+== h2 -m64 ==
+  finished in 5.00s, 816076.80 req/s, 84.83MB/s (steal +0 ticks, req/syscall -)
+==== 2026-08-25T16:58Z repo=4b5b675 mruby=44ab336 ====
+harness: h2load -t3 -c1 -D5 reps=1 app=examples/hello.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+   (steal +0 ticks, req/syscall -)
+== h2 -m1 (expect: within noise of the anchor) ==
+   (steal +0 ticks, req/syscall -)
+== h2 -m32 ==
+   (steal +0 ticks, req/syscall -)
+== h2 -m64 ==
+   (steal +0 ticks, req/syscall -)
+==== 2026-08-25T16:59Z repo=4b5b675 mruby=44ab336 ====
+harness: h2load -t3 -c9 -D5 reps=1 app=examples/hello.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 5.00s, 220044.60 req/s, 32.53MB/s (steal +0 ticks, req/syscall -)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 5.00s, 218754.60 req/s, 22.74MB/s (steal +0 ticks, req/syscall -)
+== h2 -m32 ==
+  finished in 5.00s, 3041926.40 req/s, 316.21MB/s (steal +0 ticks, req/syscall -)
+== h2 -m64 ==
+  finished in 5.00s, 3314496.00 req/s, 344.54MB/s (steal +0 ticks, req/syscall -)
+==== 2026-08-25T17:00Z repo=4b5b675 mruby=44ab336 ====
+harness: h2load -t4 -c80 -D5 reps=1 app=examples/hello.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 5.01s, 225989.00 req/s, 33.41MB/s (steal +0 ticks, req/syscall -)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 5.02s, 224341.80 req/s, 23.32MB/s (steal +0 ticks, req/syscall -)
+== h2 -m32 ==
+  finished in 5.01s, 3831532.80 req/s, 398.29MB/s (steal +0 ticks, req/syscall -)
+== h2 -m64 ==
+  finished in 5.02s, 4282713.60 req/s, 445.19MB/s (steal +0 ticks, req/syscall -)
+==== 2026-08-25T17:03Z repo=9fddc4e mruby=44ab336 ====
+harness: h2load -t4 -c80 -D5 reps=1 app=examples/counter.rb log=0 port=8123 7.1.8-1-default x86_64
+== h1 anchor: h2load --h1 -m1 ==
+  finished in 5.01s, 206467.20 req/s, 29.91MB/s (steal +0 ticks, req/syscall -)
+== h2 -m1 (expect: within noise of the anchor) ==
+  finished in 5.01s, 204207.60 req/s, 20.84MB/s (steal +0 ticks, req/syscall -)
+== h2 -m32 ==
+  finished in 5.02s, 1472057.60 req/s, 150.21MB/s (steal +0 ticks, req/syscall -)
+== h2 -m64 ==
+  finished in 5.01s, 1632409.60 req/s, 168.02MB/s (steal +0 ticks, req/syscall -)
+==== 2026-08-25T17:06Z repo=9fddc4e mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1440 busy=1% (200ms sample)
+    Req/Sec   223.37k     4.13k  235.96k    73.50%
+     50%  438.00us
+     99%  599.00us
+Requests/sec: 885383.81
+==== 2026-08-25T17:11Z repo=9fddc4e mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1522 busy=0% (200ms sample)
+     50%  439.00us
+     99%  591.00us
+Requests/sec: 884787.16
+==== 2026-08-25T17:14Z repo=9fddc4e mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1521 busy=1% (200ms sample)
+     50%  437.00us
+     99%  595.00us
+Requests/sec: 884922.09
+==== 2026-08-25T19:23Z repo=77adb4e mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1777 busy=0% (200ms sample)
+     50%  440.00us
+     99%  586.00us
+Requests/sec: 883663.23
