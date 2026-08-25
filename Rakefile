@@ -10,7 +10,7 @@
 # that reason - and it is what lets a measurement name what it ran on.
 # Refresh with: git -C mruby fetch --depth 1 origin master && git -C mruby reset --hard FETCH_HEAD
 MRUBY_DIR = File.expand_path('mruby', __dir__)
-CONFIG = ENV['MRUBY_CONFIG'] || File.expand_path('build_config.rb', __dir__)
+CONFIG = ENV['MRUBY_CONFIG'] || File.expand_path('build_config_host.rb', __dir__)
 
 file MRUBY_DIR do
   sh "git clone --depth 1 https://github.com/mruby/mruby.git #{MRUBY_DIR}"
