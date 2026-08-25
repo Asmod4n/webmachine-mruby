@@ -327,10 +327,39 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   return false;
 }
 
+// A lent body splits the sink, so whatever the parse appended after it
+// still has to be claimed - and it returns down a dozen paths, so the plan
+// is closed HERE, once, on all of them.
+bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
+  const bool ok = feed_parse(st, data, len, sink, plan);
+  if (WM_H1_UNLIKELY(st.zc_split) && plan != nullptr && sink.size() > st.zc_covered) {
+    const size_t rest = sink.size() - st.zc_covered;
+    plan->seg[plan->nseg++] = Plan::Seg{nullptr, st.zc_covered, rest};
+    plan->iov_len += rest;
+    st.zc_covered = sink.size();
+  }
+  return ok;
+}
+
+// RFC 9110 8.6: the body the run LENT, delivered as an external segment
+// over its own frozen String - the door http1's mmap'd assets already use.
+// The sink bytes it splits are claimed on either side of it by offset.
+void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan) {
+  if (sink.size() > st.zc_covered) {
+    const size_t head = sink.size() - st.zc_covered;
+    plan.seg[plan.nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
+    plan.iov_len += head;
+  }
+  st.zc_covered = sink.size();
+  plan.seg[plan.nseg++] = Plan::Seg{body, 0, len};
+  plan.iov_len += len;
+  st.zc_split = true;
+}
+
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
-bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
+bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
     st.body_need = 0;
@@ -636,8 +665,10 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
             size_t take = st.xfer_end - st.xfer_off;
             if (take > room) take = room;
             if (take > 0) {
-              plan->seg[plan->nseg++] = Plan::Seg{nullptr, 0, sink.size()};
-              plan->iov_len += sink.size();
+              const size_t head = sink.size() - st.zc_covered;
+              plan->seg[plan->nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
+              plan->iov_len += head;
+              st.zc_covered = sink.size();
               struct iovec iv[3];
               const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
               for (unsigned i = 0; i < k; i++) {
@@ -667,6 +698,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     uint16_t status;
     bool have_body = false;
     bool answered = false;
+    const char* lent = nullptr;
+    size_t lent_len = 0;
     if (WM_H1_UNLIKELY(route < 0)) {
       status = 404;
     } else {
@@ -697,20 +730,43 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
           rv.body = view + off + head_len;
           rv.body_len = content_length;
         }
-        status = resource_run(*b->res, facts, &vals, &rv, &body_, &have_body, &rhdrs_);
+        // A run may LEND its body only where nothing downstream touches the
+        // bytes anyway: HEAD sends none, gzip copies them, one connection
+        // holds one lend, and an external segment fits through a plan only.
+        const bool gz_now =
+            b->gzip_ok && st.packetized &&
+            (!facts.has_accept_encoding ||
+             http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len));
+        const size_t zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_have && !head_only &&
+                               !gz_now)
+                                  ? zc_min_
+                                  : 0;
+        status = resource_run(*b->res, facts, &vals, &rv, &body_, &have_body, &rhdrs_, zc_min);
+        if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc, &lent, &lent_len))) {
+          st.zc_mrb = b->res->mrb;
+          st.zc_have = true;
+        }
         // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
         // this run spells its own. 500 stays on the exception path below.
         if (WM_H1_UNLIKELY((b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500)) {
           const bool bodyless = status == 204 || status == 304;
-          if (bodyless || !have_body) body_.clear();
+          if (bodyless || !have_body) {
+            body_.clear();
+            st.zc_release();
+            lent = nullptr;
+            lent_len = 0;
+          }
           std::string ctype;
           if (!bodyless) {
             if (!b->res->run_ctype.empty()) ctype = http::with_charset(b->res->run_ctype);
             else if (have_body) ctype = b->konst.content_type;
           }
           spell_head(sink, status, date_, ctype, rhdrs_, minor, persist, bodyless,
-                     body_.size());
-          if (!bodyless && !head_only) sink.append(body_);
+                     lent != nullptr ? lent_len : body_.size());
+          if (!bodyless && !head_only) {
+            if (lent != nullptr) lend_body(st, sink, lent, lent_len, *plan);
+            else sink.append(body_);
+          }
           have_body = false;
           answered = true;
         }
@@ -721,7 +777,15 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
     }
 
     if (have_body && status == 200) {
-      if (b->gzip_ok) {
+      if (lent != nullptr) {
+        const Variants& pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
+        const Resp& pfx = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                     : (persist ? pv.keep : pv.close);
+        sink.append(pfx.bytes);
+        char cl[40];
+        sink.append(cl, http::spell_content_length(cl, lent_len));
+        lend_body(st, sink, lent, lent_len, *plan);
+      } else if (b->gzip_ok) {
         assemble_dynamic(
             st, facts, vals,
             minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
@@ -756,8 +820,9 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
                              : (persist ? sv.keep.bytes : sv.close.bytes));
     }
     if (alog_.enabled) {
+      const size_t blen = lent != nullptr ? lent_len : body_.size();
       log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
-                 (answered && !head_only) ? body_.size() : 0, vals.log_ref, vals.log_ref_len,
+                 (answered && !head_only) ? blen : 0, vals.log_ref, vals.log_ref_len,
                  vals.log_ua, vals.log_ua_len);
     }
 

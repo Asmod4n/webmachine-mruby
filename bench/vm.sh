@@ -37,6 +37,9 @@ if [ ! -x "$BIN" ] || [ bench/vm/vm_floor.cpp -nt "$BIN" ]; then
   # vendored liburing they call into.
   g++ -O2 -g -std=c++20 \
     -Imruby/include -Imruby/build/host/include -I"$GB_DIR/include" \
+    -Ideps/ls-hpack -Ideps/ls-hpack/deps/xxhash \
+    -Imruby/build/repos/host/mruby-string-is-utf8/include \
+    -Imruby/build/host/mrbgems/mruby-io-uring/build/include \
     bench/vm/vm_floor.cpp "$LIBMRUBY" \
     mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a \
     "$GB_DIR/build/src/libbenchmark.a" \

@@ -1547,12 +1547,22 @@ struct Resource {
   mrb_method_t body_m = {};
   bool body_fast = false;
   bool gzip_offered = false;
-  mrb_value run_self = {};
+  // The engine frame is entered as a C++ call, not a Ruby one: no
+  // hidden class, no proc, no per-resource object for the GC to mark.
+  bool init_needed = false;
+  enum mrb_vtype live_tt = MRB_TT_OBJECT;
   mutable mrb_value live = {};
   mutable const flow::ReqFacts* run_facts = nullptr;
   mutable std::string* run_body = nullptr;
   mutable bool run_have_body = false;
   mutable uint16_t run_status = 0;
+  // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
+  // own String is frozen and rooted and LENT to the writer, instead of
+  // being copied into run_body. 0 = never lend, which is every caller
+  // that does not pass a threshold.
+  mutable size_t run_zc_min = 0;
+  mutable mrb_value run_zc = {};
+  mutable bool run_zc_have = false;
 
   // How many arguments each node's callback ASKED for, read once at
   // fold from its own signature. webmachine-ruby hands several of them
@@ -1647,9 +1657,16 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers);
+                      bool* have_body, std::string* headers, size_t zc_min = 0);
 
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
+
+// The body a bound run LENT rather than copied: the value the connection
+// has to hold until its send drains, and the bytes it may point at.
+bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len);
+
+// Hand a lent body back - the only legal end of the window opened above.
+void resource_body_unlend(mrb_state* mrb, mrb_value v);
 
 // RFC 9110: Webmachine::Response - the object a runtime callback
 // writes to. Handles over the run slots above, nothing owns storage;
@@ -2364,8 +2381,10 @@ struct Resource;
 struct ReqView;
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers);
+                      bool* have_body, std::string* headers, size_t zc_min);
 bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
+bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len);
+void resource_body_unlend(mrb_state* mrb, mrb_value v);
 
 struct WsResource;
 struct WsConn;
@@ -2396,6 +2415,22 @@ inline constexpr size_t kDeliverChunk = 64u * 1024;
 
 inline constexpr size_t kWarmBudgetDefault = kDeliverChunk;
 
+// At or above this many bytes a dynamic body is LENT to the writer instead
+// of copied into the send buffer. 128 KiB and not 64: through the real ring
+// the measured win at 64 KiB (+7.5%) sits inside the harness's own +/-10%
+// spread and is not a number a default can be defended with, while 128 KiB
+// (+25%) is several times that noise. At and below 32 KiB lending is a small
+// net LOSS, and a wrong-direction default silently regresses every
+// deployment that never tunes it - so the default errs high. 0 turns lending
+// off and every body is copied, exactly as before.
+inline constexpr size_t kZeroCopyDefault = 128u * 1024;
+// A ceiling on what an operator may ask for, so a typo cannot quietly mean
+// "never lend": beyond this a body is larger than anything this tier serves.
+// 1 GiB and not 2, so it still fits an mrb_int on a 32-bit-integer build -
+// the TOML range check is spelled in mrb_int, and a wrapped bound would
+// refuse every value instead of refusing none.
+inline constexpr size_t kZeroCopyMax = 1u << 30;
+
 inline constexpr uint16_t kNoRoute = 0xffff;
 
 class Http1 {
@@ -2418,9 +2453,29 @@ class Http1 {
     SseStream* sse = nullptr;
     const void* peer = nullptr;
     uint8_t peer_len = 0;
+    // A dynamic body this connection was LENT: frozen and rooted from the
+    // handler's return until the round it belongs to has fully drained.
+    mrb_state* zc_mrb = nullptr;
+    mrb_value zc = {};
+    bool zc_have = false;
+    // A lent body splits the sink, so the segments around it carry offsets
+    // the plan has to claim explicitly: `zc_covered` is how far it got.
+    size_t zc_covered = 0;
+    bool zc_split = false;
+    // The ONE end of the lend window - drained round, closed connection,
+    // dead reactor. Never conditional on the round having succeeded.
+    void zc_release() {
+      zc_covered = 0;
+      zc_split = false;
+      if (!zc_have) return;
+      zc_have = false;
+      resource_body_unlend(zc_mrb, zc);
+      zc_mrb = nullptr;
+    }
     // The Ring resets this; `li` is the App's key to "whose connection is
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
+      zc_release();
       peer_len = 0;
       carry.clear();
       body_skip = 0;
@@ -2440,6 +2495,7 @@ class Http1 {
     }
     // The websocket, the stream and the h2 state die with the connection.
     ~Conn() {
+      zc_release();
       h2_free(h2);
       ws_free(ws);
       sse_free(sse);
@@ -2494,6 +2550,8 @@ class Http1 {
   Logger* error_log() { return &elog_; }
   // The only way an error record is ever built.
   void enable_error_log() { elog_.enabled = true; }
+  // [tune] zero_copy_threshold, once, before the first accept.
+  void set_zero_copy_threshold(size_t n) { zc_min_ = n; }
 
  private:
   struct AppSlot;
@@ -2533,6 +2591,8 @@ class Http1 {
   static void patch_date(Variants& v, const char* core);
   static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
                        bool head_only);
+  bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+  static void lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan);
   void assemble_dynamic(const Conn& st, const flow::ReqFacts& facts, const http::ReqValues& vals,
                         const Resp& prefix_id, const Resp& prefix_gz, bool head_only,
                         std::string& sink);
@@ -2594,6 +2654,7 @@ class Http1 {
   H2Block h2_asset406_;
   Assets* assets_ = nullptr;
   size_t warm_budget_ = kWarmBudgetDefault;
+  size_t zc_min_ = kZeroCopyDefault;
   Logger alog_;
   Logger elog_;
   uint16_t alog_status_ = 0;
@@ -2625,6 +2686,8 @@ struct AppSpec {
   mrb_value ready = mrb_nil_value();
   bool have_ready = false;
   bool registered = false;
+  // conf.zero_copy_threshold = N; -1 = this app said nothing.
+  long long zero_copy_threshold = -1;
 };
 
 void application_init(mrb_state* mrb, struct RClass* wm);
@@ -2659,6 +2722,8 @@ struct ServerOptions {
   int to_header = 0;
   int to_send = 0;
   int to_idle = 0;
+  // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
+  long long zero_copy_threshold = -1;
 };
 void server_options(const ServerOptions& opts);
 
@@ -2692,6 +2757,8 @@ struct Config {
   int header_timeout = 0;
   int send_timeout = 0;
   int idle_timeout = 0;
+  // 0 is a CHOICE here ("never lend"), so absence is -1 and not 0.
+  long long zero_copy_threshold = -1;
 };
 
 bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen);

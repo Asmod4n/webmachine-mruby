@@ -1,0 +1,163 @@
+==== 2026-08-25T08:02Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=2 pin ring=0 client=1
+
+size      var      wall_med    wall_min    wall_max    ringcpu req/entr
+64        copy         7317        7103        7530       4801     2.50
+64        zero         8069        7797        8342       5595     2.62
+64        ->    paired zero/copy median 1.103  (-10.3% for zero-copy)  zero won 0/2 reps
+32768     copy        15098       14563       15632      12266     2.67
+32768     zero        14606       14355       14858      11410     2.65
+32768     ->    paired zero/copy median 0.968  (+3.2% for zero-copy)  zero won 2/2 reps
+==== 2026-08-25T08:03Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=13 pin ring=0 client=1
+
+size      var      wall_med    wall_min    wall_max    ringcpu req/entr
+64        copy         7237        6145        8226       4916     2.61
+64        zero         7201        6204        8951       4891     2.63
+64        ->    paired zero/copy median 1.004  (-0.4% for zero-copy)  zero won 6/13 reps
+32768     copy        16058       15325       19640      13228     2.67
+32768     zero        15939       14187       17798      13009     2.66
+32768     ->    paired zero/copy median 0.965  (+3.5% for zero-copy)  zero won 10/13 reps
+262144    copy       120243      104763      139402      96770     1.24
+262144    zero        88396       81218      100707      80045     1.84
+262144    ->    paired zero/copy median 0.738  (+26.2% for zero-copy)  zero won 13/13 reps
+1048576   copy       445428      411760      513381     397987     0.63
+1048576   zero       400877      371232      437096     352958     0.73
+1048576   ->    paired zero/copy median 0.874  (+12.6% for zero-copy)  zero won 11/13 reps
+4194304   copy      2684978     2141371     7569559    2560092     0.21
+4194304   zero      1935962     1761730     2139784    1872827     0.47
+4194304   ->    paired zero/copy median 0.721  (+27.9% for zero-copy)  zero won 13/13 reps
+==== 2026-08-25T08:06Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=13 pin ring=0 client=1
+
+size      var      wall_med    wall_min    wall_max    ringcpu req/entr
+8192      copy        17171       14945       18164      13693     2.65
+8192      zero        10150        9079       10749       7398     2.64
+8192      ->    paired zero/copy median 0.592  (+40.8% for zero-copy)  zero won 13/13 reps
+16384     copy        22553       21063       23853      19365     2.66
+16384     zero        12082       11031       13015       9393     2.65
+16384     ->    paired zero/copy median 0.536  (+46.4% for zero-copy)  zero won 13/13 reps
+65536     copy        29024       27920       33961      25941     2.67
+65536     zero        24209       21915       28618      20658     2.67
+65536     ->    paired zero/copy median 0.807  (+19.3% for zero-copy)  zero won 12/13 reps
+131072    copy        55308       50214       62897      52149     2.67
+131072    zero        42577       39766       55324      38846     2.67
+131072    ->    paired zero/copy median 0.774  (+22.6% for zero-copy)  zero won 13/13 reps
+==== 2026-08-25T08:11Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=2 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+8192      copy            15968       15343       16593      13243     2.66
+8192      copyhold         9995        9706       10284       7577     2.66
+8192      zero             9303        9151        9456       6862     2.65
+8192        paired copyhold /copy median 0.626  (+37.4% vs copy)  won 2/2 reps
+8192        paired zero     /copy median 0.583  (+41.7% vs copy)  won 2/2 reps
+==== 2026-08-25T08:11Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=11 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+64        copy             7030        5600        7854       4804     2.63
+64        copyhold         7180        6166        7858       4975     2.63
+64        zero             7265        6178        7724       4927     2.61
+64          paired copyhold /copy median 1.036  (-3.6% vs copy)  won 2/11 reps
+64          paired zero     /copy median 1.020  (-2.0% vs copy)  won 2/11 reps
+8192      copy            16795       15911       17815      14020     2.66
+8192      copyhold        10374        9784       11384       7753     2.65
+8192      zero            10539        9297       11477       8012     2.66
+8192        paired copyhold /copy median 0.618  (+38.2% vs copy)  won 11/11 reps
+8192        paired zero     /copy median 0.619  (+38.1% vs copy)  won 11/11 reps
+32768     copy            15550       14634       18572      12653     2.66
+32768     copyhold        16918       15668       18384      14028     2.66
+32768     zero            15990       15225       17494      12903     2.66
+32768       paired copyhold /copy median 1.088  (-8.8% vs copy)  won 3/11 reps
+32768       paired zero     /copy median 1.030  (-3.0% vs copy)  won 4/11 reps
+262144    copy           125404      110935      151189     100477     1.20
+262144    copyhold       126177      121255      161429     105646     1.15
+262144    zero            90524       79479       99518      80862     1.85
+262144      paired copyhold /copy median 1.067  (-6.7% vs copy)  won 5/11 reps
+262144      paired zero     /copy median 0.719  (+28.1% vs copy)  won 11/11 reps
+1048576   copy           446540      416553      497854     397254     0.63
+1048576   copyhold       496124      460031      539955     439871     0.63
+1048576   zero           397530      360369      419402     352885     0.70
+1048576     paired copyhold /copy median 1.096  (-9.6% vs copy)  won 1/11 reps
+1048576     paired zero     /copy median 0.908  (+9.2% vs copy)  won 11/11 reps
+4194304   copy          2357584     2052139     6040929    2251490     0.23
+4194304   copyhold      2354682     2251941     3152698    2243081     0.19
+4194304   zero          1818075     1726231     2100874    1743952     0.44
+4194304     paired copyhold /copy median 1.006  (-0.6% vs copy)  won 5/11 reps
+4194304     paired zero     /copy median 0.759  (+24.1% vs copy)  won 11/11 reps
+==== 2026-08-25T08:15Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=7 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+4096      copy            13918       12500       15378      11043     2.65
+4096      copyhold         9902        8464       11380       7307     2.65
+4096      zero             9281        8048       10320       7018     2.65
+4096        paired copyhold /copy median 0.713  (+28.7% vs copy)  won 7/7 reps
+4096        paired zero     /copy median 0.671  (+32.9% vs copy)  won 7/7 reps
+16384     copy            23955       22103       26889      21029     2.67
+16384     copyhold        12551       11529       13353       9830     2.66
+16384     zero            12437       11954       13214       9729     2.66
+16384       paired copyhold /copy median 0.519  (+48.1% vs copy)  won 7/7 reps
+16384       paired zero     /copy median 0.527  (+47.3% vs copy)  won 7/7 reps
+65536     copy            29333       27669       31826      26421     2.67
+65536     copyhold        29479       27916       31991      26375     2.67
+65536     zero            25603       23437       27942      22608     2.67
+65536       paired copyhold /copy median 1.019  (-1.9% vs copy)  won 2/7 reps
+65536       paired zero     /copy median 0.925  (+7.5% vs copy)  won 7/7 reps
+131072    copy            58379       51674       65883      55472     2.67
+131072    copyhold        55118       51024       58864      51999     2.67
+131072    zero            43716       39478       45102      40129     2.67
+131072      paired copyhold /copy median 0.964  (+3.6% vs copy)  won 5/7 reps
+131072      paired zero     /copy median 0.746  (+25.4% vs copy)  won 7/7 reps
+==== 2026-08-25T08:16Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=1 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+262144    copy           226299      226299      226299     212318     1.57
+262144    copyhold       128958      128958      128958     115492     1.58
+262144    zero           103441      103441      103441      96819     2.17
+262144      paired copyhold /copy median 0.570  (+43.0% vs copy)  won 1/1 reps
+262144      paired zero     /copy median 0.457  (+54.3% vs copy)  won 1/1 reps
+==== 2026-08-25T08:17Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=5 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+32768     copy            15522       14906       24937      12598     2.67
+32768     copyhold        16882       15680       18410      14036     2.66
+32768     zero            17332       14789       24700      14330     2.67
+32768       paired copyhold /copy median 1.061  (-6.1% vs copy)  won 1/5 reps
+32768       paired zero     /copy median 1.041  (-4.1% vs copy)  won 2/5 reps
+262144    copy           119492      113841      125400      98890     1.22
+262144    copyhold       124665      111674      129218     105810     1.23
+262144    zero            93122       86680       99479      83702     1.73
+262144      paired copyhold /copy median 1.018  (-1.8% vs copy)  won 1/5 reps
+262144      paired zero     /copy median 0.803  (+19.7% vs copy)  won 5/5 reps
+==== 2026-08-25T10:42Z repo=60c5371 mruby=a5f6411b1 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v21 x86_64
+conns=8 reps=7 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+16384     copy            28168       26262       31080      25088     2.67
+16384     zero            16922       14929       23231      14125     2.66
+16384       paired zero     /copy median 0.590  (+41.0% vs copy)  won 7/7 reps
+32768     copy            25231       24329       32916      21629     2.67
+32768     zero            24610       23682       28662      20570     2.66
+32768       paired zero     /copy median 0.962  (+3.8% vs copy)  won 6/7 reps
+65536     copy            42088       30882       46488      37905     2.67
+65536     zero            36148       34700       45983      32734     2.67
+65536       paired zero     /copy median 0.869  (+13.1% vs copy)  won 5/7 reps
+131072    copy            79823       54843       84542      74689     2.67
+131072    zero            72592       67402       88419      66964     2.67
+131072      paired zero     /copy median 0.901  (+9.9% vs copy)  won 5/7 reps
+262144    copy           131471      126299      139857     120452     1.75
+262144    zero           122732      117726      135248     115113     2.03
+262144      paired zero     /copy median 0.930  (+7.0% vs copy)  won 6/7 reps

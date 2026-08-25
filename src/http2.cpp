@@ -918,6 +918,10 @@ bool Http1::pending(const Conn& st) const {
 
 // The continuation both protocols share: the sink has fully drained.
 bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
+  // THE release point: the Ring reaches here only once a whole round has
+  // drained, so a body lent to that round is off the wire. Before the next
+  // one is built, so a connection never holds two.
+  st.zc_release();
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);

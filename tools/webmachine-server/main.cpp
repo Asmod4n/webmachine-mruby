@@ -117,6 +117,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
         return 2;
       }
+    } else if (std::strcmp(argv[i], "--zero-copy-threshold") == 0 && i + 1 < argc) {
+      opts.zero_copy_threshold = std::atoll(argv[++i]);
+      if (opts.zero_copy_threshold < 0 ||
+          opts.zero_copy_threshold > static_cast<long long>(webmachine::kZeroCopyMax)) {
+        std::fprintf(stderr, "webmachine: --zero-copy-threshold is a byte count, 0 to copy "
+                             "every body\n");
+        return 2;
+      }
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
@@ -129,7 +137,7 @@ int main(int argc, char** argv) {
                    "[--assets FILE.zip] [--mime-types FILE] "
                    "[--log FILE [--log-privacy none|anon|full]] [--error-log FILE] "
                    "[--log-max-bytes N] "
-                   "[--pidfile PATH] [--echo]\n"
+                   "[--zero-copy-threshold N] [--pidfile PATH] [--echo]\n"
                    "  --config reads the same choices from a TOML file; typed flags beat it,\n"
                    "  and both beat the app's conf. Without --config, a ./webmachine.toml is\n"
                    "  used when present (and announced).\n"
@@ -147,6 +155,11 @@ int main(int argc, char** argv) {
                    "  --log-max-bytes is a hard ceiling on EACH log file: at the cap the\n"
                    "  oldest lines are dropped and the newest kept, in place. The default\n"
                    "  is 500 MB; 0 means no ceiling and the operator watches the disk.\n"
+                   "  --zero-copy-threshold is the body size at which a dynamic response is\n"
+                   "  LENT to the writer - the handler's own String goes to the kernel\n"
+                   "  instead of being copied into the send buffer. Below it, and at 0,\n"
+                   "  every body is copied. The default is 128 KiB; bench/vm/zero_copy_advise.sh\n"
+                   "  measures the crossover on the machine that will run this.\n"
                    "  --pidfile writes this process's pid and removes the file on the way out.\n",
                    argv[0]);
       return 2;
@@ -193,6 +206,9 @@ int main(int argc, char** argv) {
       log_max_bytes = static_cast<long long>(fc.log_max_bytes);
     }
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
+    if (opts.zero_copy_threshold < 0 && fc.zero_copy_threshold >= 0) {
+      opts.zero_copy_threshold = fc.zero_copy_threshold;
+    }
     opts.sq_entries = fc.sq_entries;
     opts.backlog = fc.backlog;
     opts.to_header = fc.header_timeout;

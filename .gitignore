@@ -3,6 +3,7 @@
 # Fetched and built by bench/vm.sh; never committed.
 bench/vm/benchmark/
 bench/vm/vm_floor
+bench/vm/ring_body
 bench/echo/echo_bench
 # perf.data and any rendered flamegraph from bench/profile.sh - large
 # binary profiling artifacts, host-specific, never committed. The

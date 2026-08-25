@@ -6,6 +6,7 @@
 #include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
+#include <mruby/object.h>
 #include <mruby/proc.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
@@ -315,9 +316,53 @@ bool content_md5_ok(const Resource& res) {
 
 // RFC 9110: THE runtime tier - webmachine-ruby's value semantics for the
 // whole flow (flow.rb + helpers.rb, 1:1) inside one VM frame.
-mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
-  const Resource& res = *static_cast<const Resource*>(mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0)));
-  res.live = mrb_obj_new(mrb, res.klass, 0, nullptr);
+// RFC 9110: one request's walk through the flow. Entered as a C++ call
+// from resource_run - a Ruby frame around it would cost a method lookup
+// per request and leave a class in the GC's mark set.
+struct RescueCtx {
+  const Resource* res;
+  mrb_value exc;
+  bool handled = false;
+};
+
+// fsm.rb: the raise path - handle_exception when the app declared one,
+// then finish_request, both inside their own guarded frame.
+mrb_value run_rescue_body(mrb_state* mrb, void* ud) {
+  RescueCtx& rc = *static_cast<RescueCtx*>(ud);
+  const Resource& res = *rc.res;
+  if (res.cb_handle_exception.has && !mrb_nil_p(res.live)) {
+    rc.handled = true;
+    mrb_value e = rc.exc;
+    const mrb_value recv =
+        MRB_METHOD_UNDEF_P(res.cb_handle_exception.m) ? mrb_obj_value(res.klass) : res.live;
+    mrb_funcall_argv(mrb, recv, res.cb_handle_exception.sym,
+                     res.cb_handle_exception.argc != 0 ? 1 : 0, &e);
+    if (res.cb_finish_request.has) {
+      const mrb_value frecv =
+          MRB_METHOD_UNDEF_P(res.cb_finish_request.m) ? mrb_obj_value(res.klass) : res.live;
+      mrb_funcall_argv(mrb, frecv, res.cb_finish_request.sym, 0, nullptr);
+    }
+  }
+  return mrb_nil_value();
+}
+
+mrb_value run_engine(mrb_state* mrb, const Resource& res);
+
+// mruby: the ONE guarded entry per request. Without a jmpbuf on the
+// state a raise reaches mrb_exc_raise with mrb->jmp NULL, which prints
+// and calls abort() - so the frame is not optional. mrb_protect_error
+// buys it for a C function pointer, with no method lookup and no
+// object to construct.
+mrb_value run_engine_body(mrb_state* mrb, void* ud) {
+  return run_engine(mrb, *static_cast<const Resource*>(ud));
+}
+
+mrb_value run_engine(mrb_state* mrb, const Resource& res) {
+  // #181: the resource instance belongs to ONE request. initialize is
+  // only called when the class defines one - the fold knows.
+  res.live = res.init_needed
+                 ? mrb_obj_new(mrb, res.klass, 0, nullptr)
+                 : mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
   const flow::ReqFacts& facts = *res.run_facts;
   const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
   const http::ReqValues* vals = res.run_vals;
@@ -1065,7 +1110,25 @@ mrb_value run_cfunc(mrb_state* mrb, mrb_value) {
             if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
               mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
             }
-            res.run_body->assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+            const size_t blen = static_cast<size_t>(RSTRING_LEN(v));
+            // Already frozen means the app kept this String, so a second
+            // connection may be holding it too - and the release would lift
+            // a freeze that was not ours. Our own freeze is therefore also
+            // the interlock: one lend per String at a time, everything else
+            // copies.
+            if (res.run_zc_min != 0 && blen >= res.run_zc_min &&
+                !mrb_frozen_p(mrb_basic_ptr(v))) {
+              // Frozen so mrb_str_modify cannot realloc the bytes out from
+              // under a send in flight, rooted so the GC cannot take them;
+              // the writer hands RSTRING_PTR straight to the kernel.
+              mrb_obj_freeze(mrb, v);
+              mrb_gc_register(mrb, v);
+              res.run_zc = v;
+              res.run_zc_have = true;
+              res.run_body->clear();
+            } else {
+              res.run_body->assign(RSTRING_PTR(v), blen);
+            }
             res.run_have_body = true;
           }
         }
@@ -1366,16 +1429,18 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.klass = mrb_class_ptr(klass);
   mrb_obj_freeze(mrb, klass);
 
-  if (out.dynamic != 0 || out.dynamic_body) {
-    struct RClass* hidden = mrb_class_new(mrb, mrb->object_class);
-    const mrb_value env = mrb_cptr_value(mrb, &out);
-    struct RProc* run_proc = mrb_proc_new_cfunc_with_env(mrb, run_cfunc, 1, &env);
-    mrb_method_t m;
-    MRB_METHOD_FROM_PROC(m, run_proc);
-    mrb_define_method_raw(mrb, hidden, MRB_SYM(call), m);
-    out.run_self = mrb_obj_new(mrb, hidden, 0, nullptr);
-    mrb_gc_register(mrb, out.run_self);
-  }
+  // What building the per-request instance costs, decided once: the
+  // allocation's type, and whether anyone defined an initialize worth
+  // calling (mrb_obj_new always calls one, lookup and frame included).
+  out.live_tt = MRB_INSTANCE_TT(out.klass) != 0 ? MRB_INSTANCE_TT(out.klass) : MRB_TT_OBJECT;
+  struct RClass* owner = out.klass;
+  struct RClass* base = mrb->object_class;
+  const mrb_method_t im = mrb_method_search_vm(mrb, &owner, MRB_SYM(initialize));
+  const mrb_method_t bm = mrb_method_search_vm(mrb, &base, MRB_SYM(initialize));
+  out.init_needed = MRB_METHOD_UNDEF_P(im) || MRB_METHOD_UNDEF_P(bm) ||
+                    MRB_METHOD_PROC_P(im) != MRB_METHOD_PROC_P(bm) ||
+                    (MRB_METHOD_PROC_P(im) ? MRB_METHOD_PROC(im) != MRB_METHOD_PROC(bm)
+                                           : MRB_METHOD_FUNC(im) != MRB_METHOD_FUNC(bm));
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
@@ -1385,7 +1450,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 // it, handle_exception owns the raise path when the app declared it.
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers) {
+                      bool* have_body, std::string* headers, size_t zc_min) {
   mrb_state* mrb = res.mrb;
   request_bind(req);
   response_bind(&res);
@@ -1396,6 +1461,8 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   headers->clear();
   res.run_body = body;
   res.run_have_body = false;
+  res.run_zc_min = zc_min;
+  res.run_zc_have = false;
   res.run_status = 0;
   res.run_resp_code = 0;
   res.run_redirect = false;
@@ -1415,24 +1482,29 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.run_ct.clear();
   res.run_methods.clear();
   res.run_variances.clear();
-  mrb_funcall_argv(mrb, res.run_self, MRB_SYM(call), 0, nullptr);
+  mrb_bool raised = FALSE;
+  const mrb_value thrown =
+      mrb_protect_error(mrb, run_engine_body, const_cast<Resource*>(&res), &raised);
   uint16_t status = res.run_resp_code;
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    if (res.cb_handle_exception.has && !mrb_nil_p(res.live)) {
-      mrb_value e = mrb_obj_value(mrb->exc);
-      mrb->exc = nullptr;
-      mrb_gc_protect(mrb, e);
-      const mrb_value recv = MRB_METHOD_UNDEF_P(res.cb_handle_exception.m)
-                                 ? mrb_obj_value(res.klass)
-                                 : res.live;
-      mrb_funcall_argv(mrb, recv, res.cb_handle_exception.sym,
-                       res.cb_handle_exception.argc != 0 ? 1 : 0, &e);
-      if (mrb->exc == nullptr && res.cb_finish_request.has) {
-        const mrb_value frecv = MRB_METHOD_UNDEF_P(res.cb_finish_request.m)
-                                    ? mrb_obj_value(res.klass)
-                                    : res.live;
-        mrb_funcall_argv(mrb, frecv, res.cb_finish_request.sym, 0, nullptr);
-      }
+  // A raise voids whatever the run lent: the rescue path spells its own
+  // body, and a root nobody comes back for outlives the process.
+  if (WM_RES_UNLIKELY(res.run_zc_have && raised != FALSE)) {
+    resource_body_unlend(mrb, res.run_zc);
+    res.run_zc_have = false;
+  }
+  if (WM_RES_UNLIKELY(raised != FALSE)) {
+    // fsm.rb: handle_exception owns the raise when the app declared it,
+    // and finish_request still runs. Both may raise again, so they get
+    // their own guarded frame - the rare path pays for a second one.
+    RescueCtx rc = {&res, thrown};
+    mrb_bool again = FALSE;
+    const mrb_value second = mrb_protect_error(mrb, run_rescue_body, &rc, &again);
+    // The writer's contract (resource_exception_begin): with nothing that
+    // handled it, the exception is still pending when this returns.
+    if (again != FALSE) {
+      if (mrb_exception_p(second)) mrb->exc = mrb_obj_ptr(second);
+    } else if (!rc.handled && mrb_exception_p(thrown)) {
+      mrb->exc = mrb_obj_ptr(thrown);
     }
     status = res.run_resp_code != 0 ? res.run_resp_code : 500;
   }
@@ -1443,12 +1515,34 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.run_req = nullptr;
   res.run_headers = nullptr;
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
+    if (res.run_zc_have) {
+      resource_body_unlend(mrb, res.run_zc);
+      res.run_zc_have = false;
+    }
     *have_body = false;
     return 500;
   }
   *have_body = res.run_have_body;
   res.run_status = status;
   return status;
+}
+
+// The lend window OPENS here for the caller: the run is over, so the value
+// has to leave the Resource - the next request through it resets the slot.
+bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len) {
+  if (!res.run_zc_have) return false;
+  res.run_zc_have = false;
+  *v = res.run_zc;
+  *ptr = RSTRING_PTR(res.run_zc);
+  *len = static_cast<size_t>(RSTRING_LEN(res.run_zc));
+  return true;
+}
+
+// And it CLOSES here: unrooted so the GC may take it, and the freeze lifted
+// - it was ours for the in-flight window, and Ruby has no #unfreeze.
+void resource_body_unlend(mrb_state* mrb, mrb_value v) {
+  mrb_gc_unregister(mrb, v);
+  mrb_basic_ptr(v)->frozen = 0;
 }
 
 // RFC 9110 15.6.1: the pending exception's message, lent for the 500 body.

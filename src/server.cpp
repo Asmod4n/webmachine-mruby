@@ -255,6 +255,13 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
                         opts_.assets_path != nullptr ? &assets_ : nullptr));
   if (opts_.log_path != nullptr) http_->enable_access_log();
   if (opts_.error_log_path != nullptr) http_->enable_error_log();
+  // A typed flag and [tune] beat the app's conf, and all three beat the
+  // built-in default - the same order --unix and --port already follow.
+  long long zct = opts_.zero_copy_threshold;
+  for (size_t i = 0; zct < 0 && i < specs_.size(); i++) {
+    zct = specs_[i]->zero_copy_threshold;
+  }
+  if (zct >= 0) http_->set_zero_copy_threshold(static_cast<size_t>(zct));
 
   ring_.reset(new Ring<Http1>(*http_));
   if (!ring_->init(cfg, err, errlen)) {

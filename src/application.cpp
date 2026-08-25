@@ -61,6 +61,22 @@ mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.zero_copy_threshold = N. The body size at which a dynamic response is
+// LENT to the writer instead of copied; 0 copies every body. A typed flag and
+// [tune] both beat this, the way every other choice in here is beaten.
+mrb_value conf_zc_set(mrb_state* mrb, mrb_value self) {
+  mrb_int n;
+  mrb_get_args(mrb, "i", &n);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  if (n < 0 || n > static_cast<mrb_int>(kZeroCopyMax)) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf.zero_copy_threshold = %lld is outside 0..%lld bytes",
+               static_cast<long long>(n), static_cast<long long>(kZeroCopyMax));
+  }
+  s->zero_copy_threshold = static_cast<long long>(n);
+  return mrb_nil_value();
+}
+
 // conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
@@ -344,6 +360,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(url), conf_url_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM(url), conf_url_get, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(zero_copy_threshold), conf_zc_set,
+                       MRB_ARGS_REQ(1));
 
   route_class_ = mrb_class_new(mrb, mrb->object_class);
   MRB_SET_INSTANCE_TT(route_class_, MRB_TT_CDATA);

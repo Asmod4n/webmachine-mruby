@@ -164,7 +164,8 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
     if (len == 0) continue;
     size_t eq = 0;
     while (eq < len && p[start + eq] != '=') eq++;
-    const mrb_value key = decoded(mrb, p + start, eq);
+    // Frozen key: hash.c h_key_for would otherwise dup it (ea96df2).
+    const mrb_value key = mrb_obj_freeze(mrb, decoded(mrb, p + start, eq));
     const mrb_value val =
         eq < len ? decoded(mrb, p + start + eq + 1, len - eq - 1) : mrb_str_new(mrb, "", 0);
     mrb_hash_set(mrb, h, key, val);
@@ -198,6 +199,10 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
     for (mrb_int j = 0; j < RSTRING_LEN(name); j++) {
       if (np[j] >= 'A' && np[j] <= 'Z') np[j] = static_cast<char>(np[j] + 32);
     }
+    // hash.c h_key_for dups every String key that is not already
+    // frozen; freezing after the downcase hands it the final bytes and
+    // skips one allocation and one copy per header (ea96df2).
+    name = mrb_obj_freeze(mrb, name);
     const mrb_value had = mrb_hash_get(mrb, h, name);
     if (mrb_string_p(had)) {
       mrb_str_cat_lit(mrb, had, ", ");
@@ -300,7 +305,8 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
     size_t eq = start;
     while (eq < end && p[eq] != '=') eq++;
     if (eq >= end) continue;
-    mrb_hash_set(mrb, h, mrb_str_new(mrb, p + start, eq - start),
+    // Frozen key: hash.c h_key_for would otherwise dup it (ea96df2).
+    mrb_hash_set(mrb, h, mrb_str_new_frozen(mrb, p + start, eq - start),
                  mrb_str_new(mrb, p + eq + 1, end - eq - 1));
   }
   return h;
