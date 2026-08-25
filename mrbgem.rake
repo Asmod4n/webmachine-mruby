@@ -68,7 +68,16 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   abort 'webmachine-mruby: deps/miniz is empty - run: git submodule update --init' unless File.exist?("#{mnz}/miniz_zip.h")
   mnz_gen = "#{build_dir}/miniz"
   FileUtils.mkdir_p(mnz_gen)
-  File.write("#{mnz_gen}/miniz_export.h", "#pragma once\n#define MINIZ_EXPORT\n")
+  mnz_export = "#{mnz_gen}/miniz_export.h"
+  mnz_export_content = "#pragma once\n#define MINIZ_EXPORT\n"
+  # An unconditional write here reset this file's mtime on every `rake
+  # compile`, whether its content changed or not - and since miniz.c/
+  # miniz_tinfl.c/miniz_zip.c include it, that alone forced all three to
+  # recompile every single run. Written only when the content actually
+  # differs, the mtime - and the rebuild it drives - now tracks reality.
+  unless File.exist?(mnz_export) && File.read(mnz_export) == mnz_export_content
+    File.write(mnz_export, mnz_export_content)
+  end
   spec.cc.include_paths  << mnz << mnz_gen
   spec.cxx.include_paths << mnz << mnz_gen
   # MINIZ_NO_ZLIB_COMPATIBLE_NAMES: miniz otherwise claims zlib's own
