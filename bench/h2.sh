@@ -31,7 +31,10 @@
 # buys, which is also what the older tree concluded when it deleted
 # every taskset it had.
 #
-# Knobs: THREADS/CONNS mandatory (the harness is part of the number),
+# Knobs: THREADS/CONNS mandatory (the harness is part of the number) - and
+# CONNS must be >= THREADS, h2load's own requirement (one thread needs at
+# least one connection to drive); it refuses otherwise, and a rep with
+# nothing to show is refused here rather than logged as a blank row.
 # DURATION (default 10), REPS (default 1), PORT (default 8123), APP (default
 # examples/hello.rb; empty = the bare floor). Appends to
 # bench/results/$(hostname).log; failed runs write nothing.
@@ -172,6 +175,12 @@ run() {  # run <label> <h2load flags...>
     sysc_wait
     nsysc=$(sysc_read)
     line=$(echo "$out" | grep '^finished')
+    if [ -z "$line" ]; then
+      echo "  h2load produced no result - its own words:" >&2
+      echo "$out" | sed 's/^/    /' >&2
+      echo "REFUSED: a rep with nothing to show must not be recorded as a blank row" >&2
+      exit 1
+    fi
     ndone=$(echo "$out" | grep '^requests:' | awk '{print $6}')
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
