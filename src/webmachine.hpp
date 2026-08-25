@@ -2736,6 +2736,14 @@ class Http1 {
   // and the answer reaches the wire through `more` like every other
   // continuation. Any refusal - a miss, a directory, a resolve flag
   // catching an escape - lands as the SAME 404 file_reject spells.
+  // The same question file_take answers, without the call: continue_conn
+  // asks it once per request and almost never means it, so the answer has
+  // to be a load and a branch rather than a jump into another
+  // translation unit. Every run that named no file - which is every run of
+  // a resource that never names one - stops here.
+  bool file_pending(const Conn& st) const {
+    return st.file != nullptr && st.file->want && !st.file->busy;
+  }
   const char* file_take(Conn& st);
   void file_reject(Conn& st);
   void file_error(Conn& st, const char* why);
@@ -4111,7 +4119,7 @@ class Ring {
     typename App::Plan req;
     req.byte_cap = c.round_cap;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
-    arm_file_open(idx);
+    if (WM_UNLIKELY(app_.file_pending(c.app))) arm_file_open(idx);
     if (req.nseg != 0) {
       take_plan(c, req);
       arm_send(idx);

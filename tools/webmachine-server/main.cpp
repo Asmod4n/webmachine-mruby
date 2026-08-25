@@ -54,6 +54,7 @@ struct Echo {
   // response.file's half of the App contract. Echo never names a file, so
   // file_take is the only one the Ring can ever reach - the rest exist
   // because the template instantiates every branch, not because they run.
+  bool file_pending(const Conn&) const { return false; }
   const char* file_take(Conn&) { return nullptr; }
   static bool file_answerable(const Conn&) { return false; }
   void file_reject(Conn&) {}
