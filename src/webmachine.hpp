@@ -2835,7 +2835,8 @@ class Http1 {
   bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
   void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
-  bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, std::string& sink);
+  bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, const unsigned char* blk,
+                   size_t blk_len, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts,

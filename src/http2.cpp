@@ -9,6 +9,30 @@ constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 constexpr size_t kH2FragBudget = kMaxHead * 2;
 constexpr size_t kH2MergeBody = 1024;
 
+// RFC 9113 8.2.1: a field name carrying an uppercase letter is malformed.
+// Eight bytes a word. Clearing every high bit first and re-setting it as
+// a guard bit keeps each byte's subtraction inside its own lane, so no
+// borrow can travel between bytes and forge (or hide) a letter; the last
+// term drops bytes >= 0x80, whose low seven bits could otherwise spell
+// one.
+bool h2_has_upper(const char* s, size_t n) {
+  constexpr uint64_t kOnes = 0x0101010101010101ULL;
+  constexpr uint64_t kHigh = 0x8080808080808080ULL;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    uint64_t w;
+    std::memcpy(&w, s + i, sizeof(w));
+    const uint64_t g = (w & ~kHigh) | kHigh;
+    const uint64_t ge_a = (g - kOnes * 'A') & kHigh;
+    const uint64_t ge_z1 = (g - kOnes * ('Z' + 1)) & kHigh;
+    if ((ge_a & ~ge_z1 & ~w & kHigh) != 0) return true;
+  }
+  for (; i < n; i++) {
+    if (static_cast<unsigned char>(s[i]) - 'A' < 26u) return true;
+  }
+  return false;
+}
+
 // RFC 9113 4.1: a 32-bit field, network order.
 void put_u32(unsigned char* p, uint32_t v) {
   p[0] = static_cast<unsigned char>(v >> 24);
@@ -168,14 +192,15 @@ void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sin
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
 // either answer or park the facts on the stream.
-bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::string& sink) {
+bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const unsigned char* blk,
+                        size_t blk_len, std::string& sink) {
   H2State& h2 = *st0.h2;
 
   uint32_t quads[4 * kH2MaxFields];
   size_t nq = 0;
   size_t used = 0;
-  const unsigned char* p = reinterpret_cast<const unsigned char*>(h2.frag.data());
-  const unsigned char* end = p + h2.frag.size();
+  const unsigned char* p = blk;
+  const unsigned char* end = p + blk_len;
   while (p < end) {
     if (nq + 4 > 4 * kH2MaxFields) return h2_error(st0, kH2EnhanceYourCalm, sink);
     if (used > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
@@ -270,13 +295,10 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, std::str
       continue;
     }
     saw_regular = true;
-    for (size_t j = 0; j < nlen; j++) {
-      if (name[j] >= 'A' && name[j] <= 'Z') {
-        ok = false;
-        break;
-      }
+    if (h2_has_upper(name, nlen)) {
+      ok = false;
+      break;
     }
-    if (!ok) break;
     http::header_switch(name, nlen, val, vlen, facts, vals,
                         [&](const char* n, size_t nl, const char* v, size_t vl) {
                           switch (nl) {
@@ -1205,14 +1227,21 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           hp += 5;
           hlen -= 5;
         }
+        if (flags & kH2FlagEndHeaders) {
+          // The whole block is already contiguous in the recv buffer, so
+          // it is decoded where it lies; frag exists for the split that
+          // CONTINUATION makes, and this is not one.
+          h2.frag_active = false;
+          if (!h2_dispatch(st0, stream, (flags & kH2FlagEndStream) != 0, hp, hlen, sink)) {
+            return false;
+          }
+          break;
+        }
+        if (hlen > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
         h2.frag.assign(reinterpret_cast<const char*>(hp), hlen);
         h2.frag_stream = stream;
         h2.frag_flags = flags;
         h2.frag_active = true;
-        if (flags & kH2FlagEndHeaders) {
-          h2.frag_active = false;
-          if (!h2_dispatch(st0, stream, (flags & kH2FlagEndStream) != 0, sink)) return false;
-        }
         break;
       }
 
@@ -1227,7 +1256,8 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
         if (flags & kH2FlagEndHeaders) {
           h2.frag_active = false;
           if (!h2_dispatch(st0, h2.frag_stream, (h2.frag_flags & kH2FlagEndStream) != 0,
-                           sink)) {
+                           reinterpret_cast<const unsigned char*>(h2.frag.data()),
+                           h2.frag.size(), sink)) {
             return false;
           }
         }

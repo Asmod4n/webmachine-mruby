@@ -153,6 +153,15 @@ MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
 THREADS="${THREADS:-1}"
 STAT="${STAT:-0}"
+# PROTO=h1 profiles the h1 path under load. Until it existed the h1 leg
+# ran only in diff mode (-c1, against h2 -m1), so the question "where
+# does h1 spend its time at CONNS connections" had no way to be asked -
+# h1 has no -m to vary, which is why the load branch below is h2-only.
+PROTO="${PROTO:-h2}"
+case "$PROTO" in
+  h1|h2) ;;
+  *) echo "PROTO=$PROTO is neither h1 nor h2" >&2; exit 1 ;;
+esac
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
@@ -217,7 +226,11 @@ OUT=bench/profile
 mkdir -p "$OUT"
 URL="http://127.0.0.1:$PORT$TARGET"
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} target $TARGET coding ${ASSETS:+$ASSET_CODING}"
-echo "harness: h2load -t$THREADS $([ "$MULTI" = 1 ] && echo "-c1 (diff mode)" || echo "-c$CONNS -m$MULTI") -D${DURATION}"
+if [ "$PROTO" = h1 ]; then
+  echo "harness: h2load --h1 -t$THREADS -c$CONNS -m1 -D${DURATION}"
+else
+  echo "harness: h2load -t$THREADS $([ "$MULTI" = 1 ] && echo "-c1 (diff mode)" || echo "-c$CONNS -m$MULTI") -D${DURATION}"
+fi
 
 # An io_uring ring is locked memory, so a LEAKED server costs more than
 # a pid: enough orphans and the next ring init fails with ENOMEM
@@ -334,8 +347,19 @@ leg() {
   PERFPID=""
 }
 
-if [ "$MULTI" = 1 ]; then
+if [ "$PROTO" = h1 ]; then
+  # h1 has no multiplexing, so CONNS alone carries the load and MULTI
+  # says nothing here.
+  LEGCONNS="$CONNS"
+  GRAPH="$OUT/perf.data.h1"
+  leg "h1 (c$CONNS)" "$GRAPH" --h1 -m1
+  echo
+  echo "== perf report: where h1 spends its time under load =="
+  "$PERF" report -i "$GRAPH" --stdio --no-children -g none \
+    --percent-limit=0.5 2>/dev/null | grep -vE '^#|^$' | head -30
+elif [ "$MULTI" = 1 ]; then
   LEGCONNS=1
+  GRAPH="$OUT/perf.data.h2"
   leg "h1 anchor" "$OUT/perf.data.h1" --h1 -m1
   leg "h2 -m1"    "$OUT/perf.data.h2" -m1
   echo
@@ -347,6 +371,7 @@ else
   # connection's working set warm, which is the whole point - what
   # shows up here is work, not the cold-cache cost -m1 also measures.
   LEGCONNS="$CONNS"
+  GRAPH="$OUT/perf.data.h2"
   leg "h2 -m$MULTI (c$CONNS)" "$OUT/perf.data.h2" -m"$MULTI"
   echo
   echo "== perf report: where h2 spends its time under load =="
@@ -358,9 +383,9 @@ else
 fi
 
 if command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null; then
-  "$PERF" script -i "$OUT/perf.data.h2" 2>/dev/null | stackcollapse-perf.pl | flamegraph.pl \
-    > "$OUT/flamegraph.h2.svg"
-  echo "flamegraph: $OUT/flamegraph.h2.svg"
+  "$PERF" script -i "$GRAPH" 2>/dev/null | stackcollapse-perf.pl | flamegraph.pl \
+    > "$OUT/flamegraph.$PROTO.svg"
+  echo "flamegraph: $OUT/flamegraph.$PROTO.svg"
 else
   echo "FlameGraph scripts (stackcollapse-perf.pl/flamegraph.pl) not on PATH - " \
        "skipped, perf diff above is the finding" >&2

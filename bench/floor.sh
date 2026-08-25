@@ -180,11 +180,13 @@ OUT=$(mktemp)
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
   # The compiler flags are part of every number since they became a
   # variable (O2 -> O3+native landed mid-archive).
-  # Read from build_config.rb, with -march resolved the way the build
-  # resolves it (WM_MARCH, default native) - a harness line that prints
-  # the source expression instead of the flag describes nothing.
-  CFLAGS_LINE=$(grep -o "'-O[^']*'.*" build_config.rb | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  CFLAGS_LINE=${CFLAGS_LINE/-march=#{march\}/-march=${WM_MARCH:-native}}
+  # Read from the config that built THIS binary - since the split there
+  # are four, and portable's flags are not host's.
+  case "$IMPL" in
+    portable) CFLAGS_SRC=build_config_portable.rb ;;
+    *)        CFLAGS_SRC=build_config_host.rb ;;
+  esac
+  CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
   echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).

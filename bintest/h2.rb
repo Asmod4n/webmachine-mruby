@@ -547,3 +547,70 @@ assert('h2: two big assets share the rounds and arrive byte-exact (#168)') do
     end
   end
 end
+
+assert('h2: a header block split across CONTINUATION answers, split at any byte') do
+  h2_server do |sock|
+    [1, 3, 4, 6, 10, 19].each do |cut|
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        blk = h2_get_block
+        s.write(h2_frame(1, 0x01, 1, blk[0, cut]))
+        s.write(h2_frame(9, 0x04, 1, blk[cut..]))
+        type, flags, stream, block = h2_next(s)
+        assert_equal 1, type, "cut=#{cut}"
+        assert_equal 1, stream, "cut=#{cut}"
+        assert_true (flags & 0x04) != 0, "END_HEADERS missing, cut=#{cut}"
+        assert_equal 0x88, block.getbyte(0), "cut=#{cut}"
+        type, _, _, data = h2_next(s)
+        assert_equal 0, type, "cut=#{cut}"
+        assert_equal 'OK', data, "cut=#{cut}"
+      end
+    end
+  end
+end
+
+assert('h2: a block split across TWO CONTINUATION frames answers') do
+  h2_server do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      blk = h2_get_block
+      s.write(h2_frame(1, 0x01, 1, blk[0, 2]))
+      s.write(h2_frame(9, 0x00, 1, blk[2, 5]))
+      s.write(h2_frame(9, 0x04, 1, blk[7..]))
+      type, flags, stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 1, stream
+      assert_true (flags & 0x04) != 0, 'END_HEADERS missing'
+      assert_equal 0x88, block.getbyte(0)
+      type, _, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 'OK', data
+    end
+  end
+end
+
+assert('h2: CONTINUATION on a stream the HEADERS did not open is a connection error') do
+  h2_server do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      blk = h2_get_block
+      s.write(h2_frame(1, 0x01, 1, blk[0, 4]))
+      s.write(h2_frame(9, 0x04, 3, blk[4..]))
+      type, _, _, payload = h2_next(s)
+      assert_equal 7, type
+      assert_equal 1, payload[4, 4].unpack1('N')
+    end
+  end
+end
+
+assert('h2: CONTINUATION with no HEADERS before it is a connection error') do
+  h2_server do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(9, 0x04, 1, h2_get_block))
+      type, _, _, payload = h2_next(s)
+      assert_equal 7, type
+      assert_equal 1, payload[4, 4].unpack1('N')
+    end
+  end
+end
