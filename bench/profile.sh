@@ -32,7 +32,8 @@
 # works on any binary with debug info; fp needs -fno-omit-frame-pointer,
 # which only WM_PROFILE=1 adds and BUILD_DIR's default, build/debug,
 # does not carry unless that was ALSO set for it),
-# THREADS (h2load client threads, default 1 - load mode's -cN connections
+# PROTO (h2 default, or h1 - h1 drives wrk over a UNIX socket, see
+# below), THREADS (client threads, default 1 - load mode's -cN connections
 # split across them; the server is one thread regardless, so this is
 # entirely about whether ONE client thread can generate enough load to
 # saturate it - it silently could not at deep multiplexing on forgecore,
@@ -100,10 +101,12 @@ command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2;
 h2load --help 2>&1 | grep -q -- --h1 || { echo "this h2load lacks --h1" >&2; exit 1; }
 
 # BUILD_DIR (bintest's own convention, see bintest/responsefile.rb),
-# default build/debug: it carries -g3 unconditionally AND shares
-# WM_FLAGS' -O3, so it profiles the same codegen shape the ship build
-# runs - not a de-optimized stand-in - at zero extra build cost beyond
-# a plain `rake test`. MRB_DEBUG (enable_debug) only turns mrb_assert
+# default build/debug: it carries -g3 unconditionally, which is what
+# perf needs to name a symbol. It is -Og, NOT the ship build's -O3 -
+# build_config_debug.rb since the four-file split - so its per-symbol
+# shares describe this binary, and instructions/request runs about 15%
+# above what build/host does for the same work (measured). Read it for
+# WHERE time goes, never as the ship build's cost. MRB_DEBUG (enable_debug) only turns mrb_assert
 # into a real assert() and adds one trivial local in mrb_vm_run - no
 # structural change to the VM/GC. The ship build (build/host) never
 # needs WM_PROFILE=1 for this reason: BUILD_DIR=build/host still works
@@ -157,11 +160,28 @@ STAT="${STAT:-0}"
 # ran only in diff mode (-c1, against h2 -m1), so the question "where
 # does h1 spend its time at CONNS connections" had no way to be asked -
 # h1 has no -m to vary, which is why the load branch below is h2-only.
+#
+# It drives the load the way bench/floor.sh does - the WRK_UNIX-patched
+# wrk over a UNIX socket - and NOT with h2load over TCP, which was the
+# first attempt and measured the wrong machine: h2load fed 219k req/s
+# where wrk feeds 870k against the same binary, so the client was the
+# bottleneck, and the profile that came back was nftables, conntrack
+# and the TCP stack with no webmachine symbol above 0.8%. A UNIX socket
+# has no IP layer for a firewall to hook, which is the whole point:
+# what is left in the profile is this tree.
 PROTO="${PROTO:-h2}"
 case "$PROTO" in
   h1|h2) ;;
   *) echo "PROTO=$PROTO is neither h1 nor h2" >&2; exit 1 ;;
 esac
+if [ "$PROTO" = h1 ]; then
+  WRK="${WRK:-$HOME/wrk/wrk}"
+  [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found (PROTO=h1 drives with wrk)" >&2; exit 1; }
+  grep -aq WRK_UNIX "$WRK" || {
+    echo "$WRK is not the WRK_UNIX-patched build - apply bench/wrk-af-unix.patch (see its header)" >&2
+    exit 1
+  }
+fi
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
@@ -225,9 +245,10 @@ fi
 OUT=bench/profile
 mkdir -p "$OUT"
 URL="http://127.0.0.1:$PORT$TARGET"
+WM_SOCK=/tmp/wm-profile-bench.sock
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} target $TARGET coding ${ASSETS:+$ASSET_CODING}"
 if [ "$PROTO" = h1 ]; then
-  echo "harness: h2load --h1 -t$THREADS -c$CONNS -m1 -D${DURATION}"
+  echo "harness: WRK_UNIX wrk -t$THREADS -c$CONNS -d${DURATION}s (unix socket, no TCP/nftables)"
 else
   echo "harness: h2load -t$THREADS $([ "$MULTI" = 1 ] && echo "-c1 (diff mode)" || echo "-c$CONNS -m$MULTI") -D${DURATION}"
 fi
@@ -244,6 +265,7 @@ cleanup() {
   [ -n "$PERFPID" ] && kill "$PERFPID" 2>/dev/null
   wait 2>/dev/null
   rm -rf "$WORK"
+  rm -f "$WM_SOCK"
   return 0
 }
 trap cleanup EXIT INT TERM
@@ -260,8 +282,13 @@ leg() {
   local name=$1 data=$2
   shift 2
   echo "== recording $name -> $data =="
+  local bindargs=(--port "$PORT")
+  if [ "$PROTO" = h1 ]; then
+    rm -f "$WM_SOCK"
+    bindargs=(--unix "$WM_SOCK")
+  fi
   "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
-    "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
+    "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid
@@ -271,7 +298,13 @@ leg() {
   local srvpid=""
   for _ in $(seq 20); do
     srvpid=$(pgrep -P "$perfpid" | head -1)
-    [ -n "$srvpid" ] && bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null && break
+    if [ -n "$srvpid" ]; then
+      if [ "$PROTO" = h1 ]; then
+        [ -S "$WM_SOCK" ] && break
+      else
+        bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null && break
+      fi
+    fi
     srvpid=""
     sleep 0.1
   done
@@ -324,12 +357,45 @@ leg() {
     statpid=$!
   fi
   local h2out
-  h2out=$(h2load -D"$DURATION" -t"$THREADS" -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1)
-  echo "$h2out" | grep '^finished'
+  if [ "$PROTO" = h1 ]; then
+    # The patched wrk sends every byte over WRK_UNIX but still probes the
+    # URL's TCP port once before it starts; something has to answer that
+    # handshake (bench/floor.sh carries the same dummy listener).
+    python3 -c "
+import socket
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(('127.0.0.1',$PORT)); s.listen(16)
+while True:
+    c,_=s.accept(); c.close()" >/dev/null 2>&1 &
+    local dummy=$!
+    # wrk refuses to start if that probe is not yet accepting, and it
+    # fails QUIETLY - a leg that raced it recorded the server's startup
+    # page faults and nothing else.
+    local ok=0
+    for _ in $(seq 50); do
+      bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null && { ok=1; break; }
+      sleep 0.1
+    done
+    if [ "$ok" != 1 ]; then
+      echo "the URL probe listener on :$PORT never came up - wrk cannot start" >&2
+      kill "$dummy" 2>/dev/null; kill -TERM "$srvpid"; exit 1
+    fi
+    h2out=$(WRK_UNIX="$WM_SOCK" "$WRK" -t"$THREADS" -c"$LEGCONNS" -d"${DURATION}"s \
+              --latency "$URL" 2>&1)
+    kill "$dummy" 2>/dev/null
+    echo "$h2out" | grep -E '^  [0-9]+ requests|Requests/sec'
+  else
+    h2out=$(h2load -D"$DURATION" -t"$THREADS" -c"$LEGCONNS" "$@" "${HDRS[@]}" "$URL" 2>&1)
+    echo "$h2out" | grep '^finished'
+  fi
   [ -n "$statpid" ] && wait "$statpid" 2>/dev/null
   if [ "$STAT" = 1 ] && [ -s "$WORK/stat.out" ]; then
     local ndone cyc instr icm itlb
-    ndone=$(echo "$h2out" | grep '^requests:' | awk '{print $6}')
+    if [ "$PROTO" = h1 ]; then
+      ndone=$(echo "$h2out" | sed -nE 's/^ *([0-9]+) requests in .*/\1/p')
+    else
+      ndone=$(echo "$h2out" | grep '^requests:' | awk '{print $6}')
+    fi
     cyc=$(awk -F, '$3=="cycles"{print $1}' "$WORK/stat.out")
     instr=$(awk -F, '$3=="instructions"{print $1}' "$WORK/stat.out")
     icm=$(awk -F, '$3=="L1-icache-load-misses"{print $1}' "$WORK/stat.out")
@@ -352,7 +418,7 @@ if [ "$PROTO" = h1 ]; then
   # says nothing here.
   LEGCONNS="$CONNS"
   GRAPH="$OUT/perf.data.h1"
-  leg "h1 (c$CONNS)" "$GRAPH" --h1 -m1
+  leg "h1 (c$CONNS)" "$GRAPH"
   echo
   echo "== perf report: where h1 spends its time under load =="
   "$PERF" report -i "$GRAPH" --stdio --no-children -g none \
