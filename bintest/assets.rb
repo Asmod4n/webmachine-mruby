@@ -1,9 +1,3 @@
-# The asset tier on the wire (#170): a ZIP built by hand right here,
-# served back as gzip synthesized from the archive's own bytes - the
-# deflate stream untouched, header and trailer from the Central
-# Directory. Every claim the task makes is asserted at byte level:
-# method encodes the coding, 406 for refused codings, 304/412 from the
-# CRC ETag, Explorer-shaped archives (deflate only) just work.
 
 require 'socket'
 require 'stringio'
@@ -17,10 +11,6 @@ def a_recv(s, maxlen = 1, deadline = 10)
   s.readpartial(maxlen)
 end
 
-# One ZIP, spelled by hand so the test owns every byte: entries are
-# [name, data, method]; method 8 deflates via zlib (raw stream, the
-# same bytes any zip tool would store), 0 stores. DOS stamp fixed:
-# 2025-03-01 12:04:06.
 def a_build_zip(entries, flags: 0)
   out = +''.b
   cd = +''.b
@@ -71,8 +61,6 @@ def a_server(zip_bytes, extra = [])
   end
 end
 
-# Reads one response; body only where one is owed (a HEAD caller and
-# the bodyless statuses say so).
 def a_read(s, body: true)
   head = +''.b
   head << a_recv(s) until head.end_with?("\r\n\r\n")
@@ -103,14 +91,9 @@ assert('assets: a method-8 entry ships as gzip synthesized from the archive itse
       etag = format('"%08x"', Zlib.crc32(A_CSS))
       assert_true head.include?("ETag: #{etag}\r\n"), "etag missing: #{head.inspect}"
       assert_true head.match?(/^Last-Modified: Sat, 01 Mar 2025 12:04:06 GMT\r$/)
-      # RFC 1952 framing, byte for byte: MTIME=0 and OS=0xff are what
-      # keep the header constant; the trailer is CRC-32 + ISIZE out of
-      # the Central Directory. Content-Length = deflate + 18.
       assert_equal "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff".b, body[0, 10]
       assert_equal [Zlib.crc32(A_CSS), A_CSS.bytesize].pack('VV'), body[-8, 8]
       assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
-      # HEAD: the same head (Content-Length announced), no body bytes -
-      # a pipelined GET's answer must begin immediately.
       s.write("HEAD /site.css HTTP/1.1\r\nHost: x\r\n\r\nGET /img.bin HTTP/1.1\r\nHost: x\r\n\r\n")
       hh, = a_read(s, body: false)
       assert_true hh.start_with?('HTTP/1.1 200 OK')
@@ -127,7 +110,6 @@ assert('assets: a stored entry is identity - the method IS the decision') do
     UNIXSocket.open(sock) do |s|
       s.write("GET /img.bin HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n")
       head, body = a_read(s)
-      # identity asked, identity served: stored entries have no 406 case.
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_false head.match?(/^Content-Encoding/i)
       assert_false head.match?(/^Vary/i)
@@ -140,17 +122,17 @@ end
 assert('assets: Accept-Encoding negotiation - gzip or 406, per RFC 9110 12.5.3/15.5.7') do
   a_server(a_the_zip) do |sock|
     cases = [
-      ['',                          200],  # no field: any coding acceptable
+      ['',                          200],
       ['Accept-Encoding: gzip',     200],
       ['Accept-Encoding: gzip;q=0.5, br', 200],
       ['Accept-Encoding: *',        200],
-      ['Accept-Encoding: x-gzip',   200],  # the alias the RFC folds into gzip
-      ['Accept-Encoding: identity', 406],  # we cannot inflate - refusal by name
+      ['Accept-Encoding: x-gzip',   200],
+      ['Accept-Encoding: identity', 406],
       ['Accept-Encoding: br',       406],
       ['Accept-Encoding: gzip;q=0', 406],
-      ['Accept-Encoding: gzip;q=0, *;q=1', 406],  # specific beats star
+      ['Accept-Encoding: gzip;q=0, *;q=1', 406],
       ['Accept-Encoding: *;q=0',    406],
-      ['Accept-Encoding:',          406],  # empty value: no codings acceptable
+      ['Accept-Encoding:',          406],
     ]
     UNIXSocket.open(sock) do |s|
       cases.each do |hdr, want|
@@ -171,8 +153,6 @@ assert('assets: the CRC ETag drives 304 and 412') do
   a_server(a_the_zip) do |sock|
     etag = format('"%08x"', Zlib.crc32(A_CSS))
     UNIXSocket.open(sock) do |s|
-      # If-None-Match matches (strong, weak-prefixed, starred, listed):
-      # 304 with the validators a cache updates by.
       ["If-None-Match: #{etag}",
        %(If-None-Match: W/#{etag}),
        'If-None-Match: *',
@@ -181,14 +161,11 @@ assert('assets: the CRC ETag drives 304 and 412') do
         head, = a_read(s, body: false)
         assert_true head.start_with?('HTTP/1.1 304'), "#{hdr} answered #{head[0, 20].inspect}"
         assert_true head.include?("ETag: #{etag}\r\n")
-        assert_false head.match?(/^Content-Length/i)  # 304 is bodyless
+        assert_false head.match?(/^Content-Length/i)
       end
-      # A non-matching If-None-Match serves the representation.
       s.write("GET /site.css HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"zzzzzzzz\"\r\n\r\n")
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
-      # If-Match compares STRONGLY: a wrong tag is 412, a weak spelling
-      # of the right tag can never match (13.1.1).
       ["If-Match: \"zzzzzzzz\"", "If-Match: W/#{etag}"].each do |hdr|
         s.write("GET /site.css HTTP/1.1\r\nHost: x\r\n#{hdr}\r\n\r\n")
         head, = a_read(s)
@@ -208,13 +185,10 @@ assert('assets: only GET/HEAD; misses fall through to the app tier') do
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 405')
       assert_true head.match?(/^Allow: GET, HEAD\r$/i)
-      # The query never names an entry; the path alone does.
       s.write("GET /site.css?v=1 HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
-      # A path the table does not hold is NOT an asset: it answers from
-      # the app resource (the default konst 200 here), untouched.
       s.write("GET /missing.css HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
@@ -226,7 +200,6 @@ end
 assert('assets: an archive this tier cannot serve refuses the start by name') do
   zf = Tempfile.new(['wm-assets-bad', '.zip'])
   zf.binmode
-  # method 12 (bzip2): neither stored nor deflate.
   zf.write(a_build_zip([['weird.dat', 'x' * 32, 12]]))
   zf.close
   err = "/tmp/wm-assets-refuse-#{$$}.log"
@@ -241,7 +214,6 @@ ensure
   File.delete(err) rescue nil
 end
 
-# --- the h2 side: same table, same verdicts, frames instead of heads ---
 
 def a_h2_read_exact(s, n)
   buf = +''.b
@@ -262,8 +234,6 @@ def a_h2_next(s)
   [h.getbyte(3), h.getbyte(4), h[5, 4].unpack1('N') & 0x7fffffff, payload]
 end
 
-# :method GET (indexed), :scheme http (indexed), :path literal (name
-# index 4, no indexing), :authority literal.
 def a_h2_get(path)
   "\x82\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
 end
@@ -276,13 +246,11 @@ assert('assets over h2: the same gzip bytes ride DATA frames') do
       raise "expected server SETTINGS, got #{t}" unless t == 4
       t, f, = a_h2_next(s)
       raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
-      s.write(a_h2_frame(1, 0x05, 1, a_h2_get('/site.css')))  # END_HEADERS|END_STREAM
+      s.write(a_h2_frame(1, 0x05, 1, a_h2_get('/site.css')))
       t, f, st, block = a_h2_next(s)
       assert_equal 1, t
       assert_equal 1, st
-      assert_equal 0x88, block.getbyte(0)  # :status 200, indexed
-      # Never-indexed literals arrive as raw bytes: the type, the
-      # coding, the Vary and the ETag are all visible in the block.
+      assert_equal 0x88, block.getbyte(0)
       assert_true block.include?('text/css'.b)
       assert_true block.include?('gzip'.b)
       assert_true block.include?('Accept-Encoding'.b)
@@ -290,12 +258,11 @@ assert('assets over h2: the same gzip bytes ride DATA frames') do
       body = +''.b
       loop do
         t, f, st, payload = a_h2_next(s)
-        assert_equal 0, t  # DATA
+        assert_equal 0, t
         body << payload
-        break if (f & 0x1) == 0x1  # END_STREAM
+        break if (f & 0x1) == 0x1
       end
       assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
-      # A conditional over h2 hits the same verdict: 304, no DATA.
       etag = format('"%08x"', Zlib.crc32(A_CSS))
       inm = "if-none-match"
       block = "\x82\x86\x04#{'/site.css'.bytesize.chr}/site.css\x41\x0bexample.com".b
@@ -304,17 +271,13 @@ assert('assets over h2: the same gzip bytes ride DATA frames') do
       t, f, st, blk = a_h2_next(s)
       assert_equal 1, t
       assert_equal 3, st
-      assert_equal 0x01, f & 0x01  # END_STREAM on HEADERS: bodyless
-      assert_equal 0x8b, blk.getbyte(0)  # :status 304, indexed
+      assert_equal 0x01, f & 0x01
+      assert_equal 0x8b, blk.getbyte(0)
     end
   end
 end
 
-# --- the delivery model (#168): bodies past one chunk arrive whole ---
 
-# Incompressible bytes, deterministic: deflate stays >1 chunk, so the
-# gzip framing crosses chunk boundaries and the h1 transfer needs
-# several more() rounds.
 A_BIG = Random.new(42).bytes(300 * 1024) unless defined?(A_BIG)
 
 def a_big_zip
@@ -324,19 +287,15 @@ end
 assert('delivery h1: a body past the chunk budget arrives whole, in order') do
   a_server(a_big_zip) do |sock|
     UNIXSocket.open(sock) do |s|
-      # Stored: the body is the mapping's bytes, several chunks long.
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_equal A_BIG.bytesize, body.bytesize
       assert_equal A_BIG.b, body
-      # Deflated: gzip header/deflate/trailer cross chunk boundaries.
       s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = a_read(s)
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
       assert_equal A_BIG.b, Zlib::GzipReader.new(StringIO.new(body)).read.b
-      # Pipelined BEHIND a transfer: the small answer must wait its
-      # turn and still be byte-perfect.
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\nGET /site.css HTTP/1.1\r\nHost: x\r\n\r\n")
       h1, b1 = a_read(s)
       assert_true h1.start_with?('HTTP/1.1 200 OK')
@@ -344,15 +303,12 @@ assert('delivery h1: a body past the chunk budget arrives whole, in order') do
       h2, b2 = a_read(s)
       assert_true h2.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
       assert_equal A_CSS.b, Zlib::GzipReader.new(StringIO.new(b2)).read.b
-      # HEAD on a big entry: the head announces the full length, no
-      # transfer starts, the connection stays immediately usable.
       s.write("HEAD /big.bin HTTP/1.1\r\nHost: x\r\n\r\nGET /site.css HTTP/1.1\r\nHost: x\r\n\r\n")
       hh, = a_read(s, body: false)
       assert_true hh.match?(/^Content-Length: #{A_BIG.bytesize}\r$/i)
       nh, = a_read(s)
       assert_true nh.start_with?('HTTP/1.1 200 OK')
     end
-    # Connection: close still delivers the whole source first, then FIN.
     UNIXSocket.open(sock) do |s|
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
       head, body = a_read(s)
@@ -366,16 +322,13 @@ end
 assert('delivery h2: the drained sink continues a parked source; so does WINDOW_UPDATE') do
   a_server(a_big_zip) do |sock|
     UNIXSocket.open(sock) do |s|
-      # Big client windows: the ONLY thing that can continue past the
-      # chunk cap is the drained-sink signal (more()) - no further
-      # client frame arrives.
-      settings = [4, 1 << 24].pack('nN')  # INITIAL_WINDOW_SIZE
+      settings = [4, 1 << 24].pack('nN')
       s.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b + a_h2_frame(4, 0, 0, settings))
       t, = a_h2_next(s)
       raise "expected server SETTINGS, got #{t}" unless t == 4
       t, f, = a_h2_next(s)
       raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
-      s.write(a_h2_frame(8, 0, 0, [1 << 24].pack('N')))  # connection window
+      s.write(a_h2_frame(8, 0, 0, [1 << 24].pack('N')))
       s.write(a_h2_frame(1, 0x05, 1, a_h2_get('/big.bin')))
       t, _f, st, = a_h2_next(s)
       assert_equal 1, t
@@ -390,9 +343,6 @@ assert('delivery h2: the drained sink continues a parked source; so does WINDOW_
       assert_equal A_BIG.b, body
     end
     UNIXSocket.open(sock) do |s|
-      # A 20-byte stream window parks the source at offset 20; the
-      # WINDOW_UPDATE pair drains the rest - the offset park behaves
-      # exactly like the byte park the window test has always pinned.
       settings = [4, 20].pack('nN')
       s.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b + a_h2_frame(4, 0, 0, settings))
       t, = a_h2_next(s)
@@ -405,7 +355,7 @@ assert('delivery h2: the drained sink continues a parked source; so does WINDOW_
       t, f, _st, payload = a_h2_next(s)
       assert_equal 0, t
       assert_equal 20, payload.bytesize
-      assert_equal 0, f & 0x1  # not END_STREAM: the rest is parked
+      assert_equal 0, f & 0x1
       s.write(a_h2_frame(8, 0, 0, [1 << 20].pack('N')))
       s.write(a_h2_frame(8, 0, 1, [1 << 20].pack('N')))
       body = payload.dup
@@ -420,12 +370,6 @@ assert('delivery h2: the drained sink continues a parked source; so does WINDOW_
   end
 end
 
-# --- plan delivery over TCP (#168): many rounds, one connection ---
-#
-# The unix-socket cases elsewhere cover the same code; TCP is here
-# because it is the transport that actually segments - a big body
-# leaves as a plan spread over several sends, and the rounds must not
-# reorder against the small responses queued behind them.
 
 def a_tcp_server(zip_bytes)
   zf = Tempfile.new(['wm-assets-tcp', '.zip'])
@@ -435,7 +379,6 @@ def a_tcp_server(zip_bytes)
   err = "/tmp/wm-assets-tcp-#{$$}.log"
   port = nil
   pid = nil
-  # The port is a guess; a taken one shows as a dead server - try on.
   10.times do
     port = 20000 + rand(40000)
     pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
@@ -469,10 +412,6 @@ end
 assert('big bodies over TCP arrive whole, interleaved with small ones') do
   a_tcp_server(a_big_zip) do |port|
     TCPSocket.open('127.0.0.1', port) do |s|
-      # deflated (gzip framing around the mapping's deflate bytes), a
-      # small entry behind it, then stored - all on ONE connection.
-      # Order must hold across continuation rounds: a plan is unsent
-      # bytes, and the next response may not overtake them.
       s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\n\r\n")
       h, b1 = a_read(s)
       assert_true h.match?(/^Content-Encoding: gzip\r$/i)
@@ -482,8 +421,6 @@ assert('big bodies over TCP arrive whole, interleaved with small ones') do
       assert_true h2a.match?(%r{^Content-Type: text/css; charset=utf-8\r$}i)
       _, b3 = a_read(s)
       assert_equal A_BIG.b, b3
-      # a ranged window wider than one chunk spans rounds too, clipped
-      # to the window's edges (#148 through #168's machinery)
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
       h4, b4 = a_read(s)
       assert_true h4.start_with?('HTTP/1.1 206')
@@ -492,7 +429,6 @@ assert('big bodies over TCP arrive whole, interleaved with small ones') do
   end
 end
 
-# --- ranges (#148): one range, wire-body octets, 206/416/If-Range ---
 
 def a_wire_gzip(data)
   z = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -Zlib::MAX_WBITS)
@@ -509,18 +445,13 @@ assert('ranges: 206 slices the wire body - stored AND the gzip stream alike') do
       assert_true head.start_with?('HTTP/1.1 206 Partial Content')
       assert_true head.match?(%r{^Content-Range: bytes 0-9/#{A_BIG.bytesize}\r$}i)
       assert_equal A_BIG.b[0, 10], body
-      # suffix form: the final 10 octets
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=-10\r\n\r\n")
       head, body = a_read(s)
       assert_equal A_BIG.b[-10, 10], body
-      # open end from an offset
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=307000-\r\n\r\n")
       head, body = a_read(s)
       assert_true head.match?(%r{^Content-Range: bytes 307000-#{A_BIG.bytesize - 1}/#{A_BIG.bytesize}\r$}i)
       assert_equal A_BIG.b[307000..], body
-      # A range over a Content-Encoding: gzip response ranges the
-      # ENCODED stream (RFC 9110 14.1.2) - anything else is silent
-      # corruption. The wire body is reconstructable bit for bit.
       wire = a_wire_gzip(A_BIG)
       s.write("GET /big.gz.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=5-1004\r\n\r\n")
       head, body = a_read(s)
@@ -528,8 +459,6 @@ assert('ranges: 206 slices the wire body - stored AND the gzip stream alike') do
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
       assert_true head.match?(%r{^Content-Range: bytes 5-1004/#{wire.bytesize}\r$}i)
       assert_equal wire[5, 1000], body
-      # a range wider than one delivery chunk walks the window through
-      # the transfer machinery
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=1000-201000\r\n\r\n")
       _head, body = a_read(s)
       assert_equal A_BIG.b[1000..201000], body
@@ -541,21 +470,16 @@ assert('ranges: 416, ignored forms, If-Range, HEAD') do
   a_server(a_big_zip) do |sock|
     etag = format('"%08x"', Zlib.crc32(A_BIG))
     UNIXSocket.open(sock) do |s|
-      # past the end: unsatisfiable, names the complete length
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=999999999-\r\n\r\n")
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 416 Range Not Satisfiable')
       assert_true head.match?(%r{^Content-Range: bytes \*/#{A_BIG.bytesize}\r$}i)
-      # multi-range and foreign units degrade to the full 200 (14.2:
-      # a server MAY ignore Range) - stated, tested, never a surprise
       ['bytes=0-1,5-6', 'chapters=1-2', 'bytes=9-5'].each do |r|
         s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: #{r}\r\n\r\n")
         head, body = a_read(s)
         assert_true head.start_with?('HTTP/1.1 200'), "#{r} answered #{head[0, 20].inspect}"
         assert_equal A_BIG.bytesize, body.bytesize
       end
-      # If-Range: the matching validator keeps the range; a stale one
-      # (and the unparsed date form) serves the whole representation
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\nIf-Range: #{etag}\r\n\r\n")
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 206')
@@ -566,8 +490,6 @@ assert('ranges: 416, ignored forms, If-Range, HEAD') do
         assert_true head.start_with?('HTTP/1.1 200'), "If-Range #{ir} answered #{head[0, 20].inspect}"
         assert_equal A_BIG.bytesize, body.bytesize
       end
-      # Range handling is defined for GET alone: HEAD answers its
-      # plain 200 head, which now advertises the ability
       s.write("HEAD /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\n\r\n")
       head, = a_read(s, body: false)
       assert_true head.start_with?('HTTP/1.1 200')
@@ -588,11 +510,11 @@ assert('ranges over h2: 206 block and windowed DATA') do
       raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && f == 1
       s.write(a_h2_frame(8, 0, 0, [1 << 24].pack('N')))
       block = a_h2_get('/big.bin')
-      block << "\x00\x05range\x0Cbytes=10-109".b  # literal new-name range
+      block << "\x00\x05range\x0Cbytes=10-109".b
       s.write(a_h2_frame(1, 0x05, 1, block))
       t, _f, st, blk = a_h2_next(s)
       assert_equal 1, t
-      assert_equal 0x8a, blk.getbyte(0)  # :status 206, indexed
+      assert_equal 0x8a, blk.getbyte(0)
       assert_true blk.include?("bytes 10-109/#{A_BIG.bytesize}".b)
       body = +''.b
       loop do
@@ -606,9 +528,6 @@ assert('ranges over h2: 206 block and windowed DATA') do
   end
 end
 
-# The refusals, checked as refusals: the server must NOT come up, and it
-# must say which entry and why. Since #177 the finding is miniz's, the
-# sentence is this tier's - so both halves are pinned.
 def a_refusal(zip_bytes)
   zf = Tempfile.new(['wm-assets-bad', '.zip'])
   zf.binmode
@@ -628,28 +547,18 @@ ensure
 end
 
 assert('assets: an encrypted entry is refused by name, not served') do
-  # General purpose bit 0. miniz reports m_is_encrypted; nothing is
-  # served from a pack this tree cannot read whole.
   out = a_refusal(a_build_zip([['secret.css', A_CSS, 8]], flags: 0x1))
   assert_true out.include?('secret.css'), out
   assert_true out.downcase.include?('encrypted'), out
 end
 
 assert('assets: a method this tier cannot serve is refused by name') do
-  # 12 is bzip2: a legal ZIP method, and one whose bytes are not a
-  # deflate stream - so it can never become a gzip body (#170).
   out = a_refusal(a_build_zip([['odd.css', A_CSS, 12]]))
   assert_true out.include?('odd.css'), out
   assert_true out.include?('method 12'), out
 end
 
 assert('assets: a body above the warm budget arrives byte-exact behind its head') do
-  # Above WM_WARM_BUDGET (default 64 KiB) the body is never copied: the
-  # head goes into the sink, the mapping bytes ride the same sendmsg as
-  # plan segments (#168 at the feed boundary). The one failure mode of
-  # that plan is ORDER - head and body swapped, or body bytes before
-  # the blank line - and only a wire read can see it. 200 KB of
-  # rotating bytes would expose any offset slip.
   big = ((0..255).to_a.pack('C*') * 800).byteslice(0, 200_000)
   a_server(a_build_zip([['big.bin', big, 0]])) do |sock|
     UNIXSocket.open(sock) do |s|
@@ -658,8 +567,6 @@ assert('assets: a body above the warm budget arrives byte-exact behind its head'
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_equal big.bytesize, body.bytesize
       assert_equal big, body
-      # The connection survives: a pipelined request behind the
-      # transfer parses out of the carry and answers.
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
       _, body2 = a_read(s)
       assert_equal big, body2
@@ -668,12 +575,6 @@ assert('assets: a body above the warm budget arrives byte-exact behind its head'
 end
 
 assert('access log: --log writes combined lines through the record daemon') do
-  # Opt-in end to end: server ships LogRec records over the socketpair,
-  # webmachine-logd formats Combined Log Format. Asserted at line level
-  # because the CONTRACT is "what existing readers parse": a combined
-  # regex must match every line, the escape must defuse a quote in the
-  # target, and nothing may be missing after the server exits (the
-  # daemon drains to EOF - the one rule is that every line lands).
   zip = a_build_zip([['img.bin', A_RAW, 0]])
   zf = Tempfile.new(['wm-logzip', '.zip'])
   zf.binmode
@@ -698,7 +599,6 @@ assert('access log: --log writes combined lines through the record daemon') do
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
   end
-  # The daemon drains and exits AFTER the server; give it a beat.
   20.times { break if File.exist?(logf) && File.readlines(logf).size >= 2; sleep 0.1 }
   lines = File.readlines(logf)
   assert_equal 2, lines.size
@@ -706,33 +606,16 @@ assert('access log: --log writes combined lines through the record daemon') do
   lines.each { |l| assert_true l.match?(combined), "not combined: #{l.inspect}" }
   assert_true lines[0].include?('"GET /img.bin HTTP/1.1" 200 768'), lines[0]
   assert_true lines[0].include?('probe/1'), lines[0]
-  # The quote in the Referer arrives ESCAPED - it cannot close the column.
   assert_true lines[0].include?('http://r.example/\\"q'), lines[0]
-  assert_true lines[1].include?(' 200 '), lines[1]  # /miss = default resource today
+  assert_true lines[1].include?(' 200 '), lines[1]
 ensure
   File.unlink(logf) rescue nil
   File.unlink(sock) rescue nil
   zf&.unlink
 end
 
-# ---- the media type comes off the MACHINE (#183) ---------------------
-#
-# The hand-kept table of 20 extensions that used to live in
-# src/assets.cpp is gone. What answers now is the machine's own
-# database - /etc/mime.types, the apache paths, /usr/share/mime/globs2
-# - and, only where a machine has none, the list built in from
-# share/mime.types. The asset tests above are half the proof already:
-# they pin text/css, text/html and application/octet-stream at byte
-# level and pass unchanged, which is the statement that the database
-# answers what the table used to.
-#
-# This is the other half: what the table never could.
 
 assert('assets: an extension the deleted table never knew gets its real type') do
-  # .epub was not one of the 20. Every source in the chain names it -
-  # Debian media-types, the apache file, shared-mime-info's globs2 and
-  # the built-in list all say application/epub+zip - so this asserts a
-  # type, not "something other than octet-stream".
   a_server(a_build_zip([['book.epub', 'PK-ish bytes'.b * 8, 0]])) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /book.epub HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -746,9 +629,6 @@ end
 
 assert('assets: --mime-types names the database, and the operator wins') do
   db = Tempfile.new(['wm-mime', '.types'])
-  # One made-up type nothing on any machine could answer with, so a
-  # match proves THIS file was read; one line of comment and one of
-  # padding to exercise the parser's skipping.
   db.write("# a database of one\napplication/vnd.webmachine-test\t\twm  WM\n")
   db.close
   begin
@@ -759,9 +639,6 @@ assert('assets: --mime-types names the database, and the operator wins') do
         head, = a_read(s)
         assert_true head.match?(%r{^Content-Type: application/vnd\.webmachine-test\r$}i),
                     "operator file ignored: #{head[/^Content-Type:.*$/i]}"
-        # An extension that file does not name falls to octet-stream -
-        # the named file REPLACES the machine's database, it does not
-        # extend it (RFC 9110 8.3: a generic claim never lies).
         s.write("GET /y.zzz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
         h2, = a_read(s)
         assert_true h2.match?(%r{^Content-Type: application/octet-stream\r$}i)
@@ -797,8 +674,6 @@ assert('assets: a --mime-types file that cannot be read refuses the start, by na
 end
 
 assert('assets: shared-mime-info globs2 is the second format, and it parses') do
-  # A file NAMED globs2 is read in that format - weight:type:*.ext -
-  # which is the only source in the chain with a grammar of its own.
   dir = "/tmp/wm-globs2-#{$$}"
   Dir.mkdir(dir) unless Dir.exist?(dir)
   path = File.join(dir, 'globs2')

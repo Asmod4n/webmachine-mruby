@@ -1,11 +1,3 @@
-# The instance-based Application (#116, slice 1): an app file defines
-# `main`, `Webmachine::Application.new { |app| ... }` registers one
-# application, and its routes decide who answers. The constant scan is
-# gone - a resource class reaches the wire only through route.add.
-#
-# What is proven here: the token forms on the wire (literal, symbol,
-# splat), first-registration-wins, the router's 404 BEFORE B13, two
-# resources on two routes, and every named refusal this slice owes.
 
 require 'socket'
 require 'tempfile'
@@ -40,8 +32,6 @@ def ap_read(s)
   [head, body]
 end
 
-# Runs a server on the app source. `args` lets a case decide whether
-# --unix overrides the app's own conf or not.
 def ap_server(app_source, sock: nil, args: nil)
   app = ap_compile(app_source)
   sock ||= "/tmp/wm-ap-#{$$}.sock"
@@ -62,7 +52,6 @@ def ap_server(app_source, sock: nil, args: nil)
   end
 end
 
-# Starts a server that MUST refuse; returns its stderr for the reason.
 def ap_refused(app_source)
   app = ap_compile(app_source)
   err = "/tmp/wm-ap-refuse-#{$$}.log"
@@ -75,8 +64,6 @@ ensure
   app.unlink
 end
 
-# The user's own sketch, verbatim in shape: a literal, a binding and a
-# splat tail on one route.
 AP_FIZZ = <<~RUBY unless defined?(AP_FIZZ)
   class MyResource < Webmachine::Resource
     def self.to_html
@@ -102,20 +89,16 @@ RUBY
 assert('application: literal, binding and splat match on the wire; a miss is 404') do
   ap_server(AP_FIZZ) do |sock|
     UNIXSocket.open(sock) do |s|
-      # literal + binding, splat empty
       s.write("GET /fizz/one HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = ap_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal '<html><body>fizzbuzz</body></html>', body
-      # splat carrying a tail of several segments
       s.write("GET /fizz/one/two/three HTTP/1.1\r\nHost: x\r\n\r\n")
       head2, = ap_read(s)
       assert_true head2.start_with?('HTTP/1.1 200'), head2.lines.first.to_s
-      # the query is not part of the path (RFC 9110 4.2.1)
       s.write("GET /fizz/one?v=1 HTTP/1.1\r\nHost: x\r\n\r\n")
       head3, = ap_read(s)
       assert_true head3.start_with?('HTTP/1.1 200'), head3.lines.first.to_s
-      # the literal has to match, and the binding needs a segment
       s.write("GET /buzz/one HTTP/1.1\r\nHost: x\r\n\r\n")
       head4, = ap_read(s)
       assert_true head4.start_with?('HTTP/1.1 404'), head4.lines.first.to_s
@@ -127,15 +110,12 @@ assert('application: literal, binding and splat match on the wire; a miss is 404
 end
 
 assert('application: a router miss is 404 BEFORE B13 - POST on an unknown path is not 405') do
-  # The whole point of routing before the flow: the method is never
-  # tested on a path no resource claims.
   ap_server(AP_FIZZ) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST /nowhere HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head, = ap_read(s)
       assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
       assert_false head.match?(/^Allow:/i), head
-      # ... while POST on a path that IS routed still speaks B10's 405.
       s.write("POST /fizz/one HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head2, = ap_read(s)
       assert_true head2.start_with?('HTTP/1.1 405'), head2.lines.first.to_s
@@ -213,7 +193,6 @@ assert('application: two resources on two routes keep their own body and Allow')
       h2, b2 = ap_read(s)
       assert_equal 'wide', b2
       assert_true h2.match?(%r{^Content-Type: text/plain; charset=utf-8\r$}i), h2
-      # Each route's 405 names ITS OWN resource's list.
       s.write("PUT /narrow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
       h3, = ap_read(s)
       assert_true h3.start_with?('HTTP/1.1 405'), h3.lines.first.to_s
@@ -222,7 +201,6 @@ assert('application: two resources on two routes keep their own body and Allow')
       h4, = ap_read(s)
       assert_true h4.start_with?('HTTP/1.1 405'), h4.lines.first.to_s
       assert_true h4.match?(/^Allow: GET, HEAD, POST\r$/i), h4
-      # POST is allowed on one and not the other, on the same connection.
       s.write("POST /wide HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
       h5, = ap_read(s)
       assert_true h5.start_with?('HTTP/1.1 200'), h5.lines.first.to_s
@@ -352,9 +330,6 @@ assert('application: add_route on the app itself is route.add (webmachine-ruby s
 end
 
 assert('application: conf.url names the listener when nothing overrides it') do
-  # No --unix, no --port: the app's own conf.url is the listener. The
-  # port is high and picked here, not by the OS - conf.port = 0 refuses
-  # (see below), so a test that binds names its own number.
   port = 20000 + rand(40000)
   src = <<~RUBY
     class R < Webmachine::Resource
@@ -402,7 +377,6 @@ assert('application: conf.url names the listener when nothing overrides it') do
   end
 end
 
-# --- the named refusals ------------------------------------------------
 
 def ap_one_route(body)
   <<~RUBY
@@ -438,12 +412,6 @@ assert('application: port and unix_path together refuse by name') do
 end
 
 assert('application: conf.port = 0 is legal - the OS picks at bind time') do
-  # Slice 2 refused this ("io_uring has no getsockname"); that world
-  # ended when the access log's %h brought SOCKET_URING_OP_GETSOCKNAME
-  # into the tree. The port question is asked AT THE BIND, and only
-  # then - here --unix overrides the listener, so the port is never
-  # even asked and the app simply comes up. (The bind-time half lives
-  # in the conf.url port 0 test below.)
   sock = "/tmp/wm-ap-eph0-#{$$}.sock"
   src = ap_one_route(<<~BODY)
     app.conf.port = 0
@@ -459,10 +427,6 @@ assert('application: conf.port = 0 is legal - the OS picks at bind time') do
 end
 
 assert('application: conf.adapter does not exist - a swallowed setting is a lie') do
-  # This used to be the opposite test: adapter= was accepted and thrown
-  # away so a webmachine-ruby file "ran unchanged". It ran while doing
-  # nothing, which is the silent fallback this tree forbids everywhere
-  # else, so the setter is gone and Ruby says the true thing.
   out = ap_refused(ap_one_route(<<~BODY))
     app.conf.port = 8080
     app.conf.adapter = :Webrick
@@ -473,10 +437,6 @@ assert('application: conf.adapter does not exist - a swallowed setting is a lie'
 end
 
 assert('application: the ssl/certificate names do not exist at all') do
-  # They were reserved for a TLS this tree does not have - code on
-  # stock, with no second user. When TLS returns (#110/#112/#157) it
-  # brings its own setters; until then NoMethodError is the truth, and
-  # an https URL still refuses with the reason (next assert).
   %w[ssl ssl_options certificate certificate_key].each do |name|
     out = ap_refused(ap_one_route(<<~BODY))
       app.conf.port = 8080
@@ -499,16 +459,9 @@ assert('application: an https url refuses with the same TLS reason') do
 end
 
 assert('application: route.assets is a signpost, route.sse is a real route kind') do
-  # route.assets points at a feature configured elsewhere
-  # (--assets/[server].assets, #170), so it refuses with directions -
-  # a signpost is worth a method.
   assets = ap_refused(ap_one_route("app.routes { |route| route.assets '/static' }"))
   assert_true assets.include?('#170'), assets
   assert_true assets.include?('--assets'), assets
-  # route.sse now EXISTS (#102): its own table, like websockets, and it
-  # validates the class the same way - a plain Resource is not a
-  # Webmachine::SseResource and is refused by name, not with a
-  # NoMethodError for a missing method.
   sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
   assert_true sse.include?('SseResource'), sse
 end
@@ -536,11 +489,6 @@ assert('application: two applications on the same listener refuse by name') do
   assert_true out.include?('same listener'), out
 end
 
-# SLICE 2 (#116): several applications, one ring. Each app names its
-# own listener, the ring binds them all, and the listener a connection
-# arrived on is what decides whose routes answer it - which is exactly
-# what this proves, on the wire, with two apps whose routes overlap in
-# name and differ in body.
 assert('application: two applications, two listeners, one ring - each answers its own') do
   a = "/tmp/wm-ap-a-#{$$}.sock"
   b = "/tmp/wm-ap-b-#{$$}.sock"
@@ -580,7 +528,6 @@ assert('application: two applications, two listeners, one ring - each answers it
     100.times { break if File.socket?(a) && File.socket?(b); sleep 0.05 }
     assert_true File.socket?(a) && File.socket?(b), (File.read(err) rescue '')
 
-    # Each app's own route answers on its own socket...
     { a => 'from-a', b => 'from-b' }.each do |sock, body|
       s = UNIXSocket.new(sock)
       path = body == 'from-a' ? '/only-a' : '/only-b'
@@ -591,8 +538,6 @@ assert('application: two applications, two listeners, one ring - each answers it
       s.close
     end
 
-    # ...and the OTHER app's route is a plain miss there: the tables
-    # never blend, the listener index is the whole of "whose app".
     { a => '/only-b', b => '/only-a' }.each do |sock, path|
       s = UNIXSocket.new(sock)
       s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -632,8 +577,6 @@ assert('application: --unix cannot speak for a file with several apps') do
 end
 
 assert('application: new WITHOUT a block builds nothing anybody serves') do
-  # Legal, and inert: registration is what returning from the block
-  # means. With no registered app the start refuses by name.
   out = ap_refused("def main\n  Webmachine::Application.new\nend\n")
   assert_true out.include?('registered no application'), out
 end
@@ -657,10 +600,6 @@ assert('application: route.add refuses a token that is neither String nor Symbol
   assert_true out.include?('String (literal)'), out
 end
 
-# SLICE 3 (#116): the loop is a Ruby surface. `main` may serve itself -
-# Webmachine.run blocks like the tool's own loop, Webmachine.tick(3.ms)
-# does ONE bounded step for an embedder that owns its loop, and
-# Webmachine.fd is what such an embedder waits on in between.
 assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
   sock = "/tmp/wm-ap-tick-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
@@ -783,12 +722,7 @@ assert('application: Webmachine.run inside main serves like the tool loop') do
   end
 end
 
-# SLICE 4 (#116): the request object. Lazy by construction - the router
-# captured the spans while it was walking anyway, and NOTHING becomes a
-# Ruby value until a callback asks for it.
 assert('application: request names what the route captured, per request') do
-  # One field per line, so a value with a space in it (a decoded query
-  # parameter) cannot be mistaken for a field boundary.
   src = <<~RUBY
     class Debug < Webmachine::Resource
       def to_html
@@ -818,22 +752,20 @@ assert('application: request names what the route captured, per request') do
     assert_equal 'GET', f[0]
     assert_equal '/fizz/one/a/b?x=1&y=two%20words&z', f[1]
     assert_equal '/fizz/one/a/b', f[2]
-    assert_equal 'a/b', f[3]             # the splat tail is what is left
-    assert_equal 'buzz=one', f[4]        # the Symbol token, by NAME
+    assert_equal 'a/b', f[3]
+    assert_equal 'buzz=one', f[4]
     assert_equal 'a|b', f[5]
-    assert_equal 'x=1,y=two words,z=', f[6]  # percent-decoded, '+' a space
+    assert_equal 'x=1,y=two words,z=', f[6]
     assert_equal 'x=1&y=two%20words&z', f[7]
 
-    # A SECOND request through the same warm connection sees its own
-    # values - the view is swapped per request, never remembered.
     s.write("GET /fizz/two HTTP/1.1\r\nHost: x\r\n\r\n")
     _, body2 = ap_read(s)
     g = body2.split("\n", -1)
     assert_equal '/fizz/two', g[1]
-    assert_equal '', g[3]                # an empty splat tail
+    assert_equal '', g[3]
     assert_equal 'buzz=two', g[4]
     assert_equal '', g[5]
-    assert_equal '', g[7]                # no query at all
+    assert_equal '', g[7]
     s.close
   end
 end
@@ -873,15 +805,9 @@ assert('application: request.headers are the head, lowercased; request.body is t
   RUBY
   ap_server(src) do |sock|
     s = UNIXSocket.new(sock)
-    # Mixed case in, lowercase out (RFC 9110 5.1 says the name is
-    # case-insensitive; h2 puts it on the wire lowercase, so one name
-    # means one thing whichever wire carried it). A repeated field is
-    # the value list it could have been sent as.
     s.write("GET /h HTTP/1.1\r\nHost: x\r\nX-One: a\r\nX-TWO: b\r\nX-One: c\r\n\r\n")
     _, body = ap_read(s)
     assert_equal 'a, c|b|x', body
-    # RFC 9110 6.4: no entity means request.body is nil; a POST's
-    # entity is the body, byte for byte.
     s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
     _, body2 = ap_read(s)
     assert_equal 'none', body2
@@ -893,8 +819,6 @@ assert('application: request.headers are the head, lowercased; request.body is t
 end
 
 assert('application: request outside a callback refuses instead of reading a dead view') do
-  # `main` runs at setup, with no request being answered - asking then
-  # is a mistake worth naming.
   out = ap_refused(<<~RUBY)
     class R < Webmachine::Resource
       def self.to_html
@@ -912,7 +836,6 @@ assert('application: request outside a callback refuses instead of reading a dea
   assert_true out.include?('no request being answered'), out
 end
 
-# SLICE 5 (#116): the server stops from Ruby - drain, then forget.
 assert('application: Webmachine.stop drains, then the process ends by itself') do
   sock = "/tmp/wm-ap-stop-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
@@ -946,9 +869,6 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
     assert_true head.start_with?('HTTP/1.1 200'), head
     assert_equal 'bye', body
     s.close
-    # No signal is sent: the grace runs out (or the connection goes)
-    # and the loop returns on its own. The unix path goes with it -
-    # that is the destructor, the same one a signal's stop reaches.
     ended = false
     100.times do
       break ended = true if Process.waitpid(pid, Process::WNOHANG)
@@ -1003,10 +923,6 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
   end
   begin
     if refused
-      # This kernel has no GETSOCKNAME uring cmd, so the START refused
-      # by name - and only because port 0 asked; every other test in
-      # this file binds a named listener and never asks. The green
-      # half of this assert runs where the cmd exists.
       Process.wait(pid) rescue nil
       assert_include (begin File.read(err) rescue '' end), 'name a port'
     else
@@ -1034,9 +950,6 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
 end
 
 assert('application: app.conf is ONE object, not a fresh one per read') do
-  # It is a view of the application's own spec; a view has no reason to
-  # be manufactured per access, and a reader that hands out a new
-  # object every time is not a reader.
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html
@@ -1060,9 +973,6 @@ assert('application: app.conf is ONE object, not a fresh one per read') do
 end
 
 assert('application: a refusal is catchable BY CLASS, not by luck') do
-  # Until #183 every refusal was a RuntimeError - indistinguishable
-  # from any RuntimeError an app raises itself. Now the class says who
-  # refused and about what.
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html

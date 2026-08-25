@@ -1,29 +1,10 @@
-# The lend path on the wire: above [tune] zero_copy_threshold a dynamic
-# body is NOT copied into the send buffer - the handler's own String is
-# frozen, rooted and handed to the kernel as an external segment, the same
-# door the mmap'd asset tier already uses.
-#
-# Every case here is a BYTE test, because that is the only failure mode
-# worth catching: a wrong external pointer is still the right LENGTH, so a
-# test that only counted bytes would pass on garbage. The bodies below are
-# phase-sensitive (a repeating 10-byte unit with a distinct head and tail),
-# so an off-by-one offset in the sink split shows up as a mismatch and not
-# as a short read.
-#
-# The switch itself must be INVISIBLE: the same request answered with the
-# threshold at 1 (lend everything), at its default (lend the big body only)
-# and at 0 (lend nothing) has to produce identical bytes. That is what the
-# cases assert against each other.
 
 require 'socket'
 require 'tempfile'
 
 ZC_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(ZC_BIN)
 
-# 200_000 bytes: over the 128 KiB default, so the default configuration
-# lends it and no flag is needed to reach the new path.
 ZC_BIG = ('START' + ('abcdefghij' * 19_999) + 'ENDEND').freeze
-# 4_000 bytes: under every threshold this file sets except 1.
 ZC_SMALL = ('S4K' + ('zyxwvutsrq' * 399) + 'E4K4').freeze
 
 def zc_recv(s, maxlen = 65_536, deadline = 10)
@@ -78,8 +59,6 @@ ensure
   src&.unlink
 end
 
-# head + exactly Content-Length body, to a deadline: a wedged server fails
-# the test instead of hanging the suite.
 def zc_read(s)
   head = +''.b
   head << zc_recv(s, 1) until head.end_with?("\r\n\r\n")
@@ -159,9 +138,6 @@ end
 assert('zero-copy: a lent body splits a pipelined round correctly') do
   zc_serve(1) do |sock|
     s = UNIXSocket.new(sock)
-    # Three answers out of ONE plan: only the first may be lent, the two
-    # behind it are copied into the sink AFTER the external segment, which
-    # is exactly the ordering the sink split has to get right.
     s.write "GET /big HTTP/1.1\r\nHost: zc\r\n\r\n" \
             "GET /small HTTP/1.1\r\nHost: zc\r\n\r\n" \
             "GET /big HTTP/1.1\r\nHost: zc\r\n\r\n"
@@ -198,8 +174,6 @@ end
 
 assert('zero-copy: a String the app froze is copied, not lent') do
   zc_serve(1) do |sock|
-    # Twice, on one connection: if the freeze had been lifted on release
-    # the second answer would be serving a String nothing roots any more.
     s = UNIXSocket.new(sock)
     2.times do
       s.write "GET /kept HTTP/1.1\r\nHost: zc\r\n\r\n"
@@ -260,14 +234,6 @@ ensure
   File.unlink(err) rescue nil
 end
 
-# --------------------------------------------------------------------
-# h2: the same lend, per STREAM. A connection multiplexes, so the body a
-# run lends belongs to one stream and is released with THAT stream, not
-# with the round - and flow control can cut it across several rounds, so
-# the lend has to survive them. The frame helpers below are deliberately
-# this file's own: bintest files are loaded by glob, and a test that
-# breaks on load ORDER is worse than fifteen lines of frames.
-# --------------------------------------------------------------------
 
 ZC_H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(ZC_H2_PREFACE)
 
@@ -283,7 +249,6 @@ def zch2_read_exact(s, n)
   buf
 end
 
-# -> [type, flags, stream, payload]
 def zch2_next(s)
   h = zch2_read_exact(s, 9)
   len = (h.getbyte(0) << 16) | (h.getbyte(1) << 8) | h.getbyte(2)
@@ -291,15 +256,11 @@ def zch2_next(s)
    len > 0 ? zch2_read_exact(s, len) : ''.b]
 end
 
-# RFC 7541: literal :method and :path without indexing, indexed :scheme,
-# :authority literal-with-indexing - the shape that can spell any target.
 def zch2_block(method, path)
   "\x02".b + method.bytesize.chr + method + "\x86".b +
     "\x04".b + path.bytesize.chr + path + "\x41\x0b".b + 'example.com'
 end
 
-# RFC 9113 6.5: SETTINGS_INITIAL_WINDOW_SIZE, the one setting these cases
-# turn - it is what decides whether a lent body fits in a single round.
 def zch2_settings(initial_window)
   [4, initial_window].pack('nN')
 end
@@ -310,12 +271,9 @@ def zch2_handshake(s, initial_window = 1_048_576, conn_credit = 4_194_304)
   raise "expected server SETTINGS, got type #{t}" unless t == 4
   t, f, = zch2_next(s)
   raise "expected SETTINGS ACK, got #{t}/#{f}" unless t == 4 && (f & 1) == 1
-  # The connection window is not a setting (RFC 9113 6.9.2), so the room
-  # for a body this size has to be granted explicitly.
   s.write(zch2_frame(8, 0, 0, [conn_credit].pack('N'))) if conn_credit > 0
 end
 
-# Every DATA frame of the named streams until each has END_STREAM.
 def zch2_collect(s, streams)
   out = {}
   streams.each { |i| out[i] = +''.b }
@@ -356,9 +314,6 @@ end
 assert('zero-copy h2: a lent body survives flow control across rounds') do
   zc_serve(1) do |sock|
     UNIXSocket.open(sock) do |s|
-      # 16 KiB of window and no connection credit: the body is several
-      # times that, so the lend MUST outlive the round that starts it and
-      # every WINDOW_UPDATE below drives one more.
       zch2_handshake(s, 16_384, 0)
       s.write(zch2_frame(1, 0x05, 1, zch2_block('GET', '/big')))
       body = +''.b
@@ -372,11 +327,8 @@ assert('zero-copy h2: a lent body survives flow control across rounds') do
         s.write(zch2_frame(8, 0, 0, [16_384].pack('N')) +
                 zch2_frame(8, 0, 1, [16_384].pack('N')))
       end
-      # A body that arrived in ONE frame would prove nothing about the
-      # multi-round lend, so the shape is asserted too.
       assert_true rounds > 1, "expected several DATA frames, got #{rounds}"
       assert_equal ZC_BIG, body
-      # The connection is still sane after the last release.
       s.write(zch2_frame(1, 0x05, 3, zch2_block('GET', '/small')))
       s.write(zch2_frame(8, 0, 3, [1_048_576].pack('N')))
       assert_equal ZC_SMALL, zch2_collect(s, [3])[3]
@@ -388,8 +340,6 @@ assert('zero-copy h2: two streams lend at once and close in either order') do
   zc_serve(1) do |sock|
     UNIXSocket.open(sock) do |s|
       zch2_handshake(s)
-      # Both in flight before either answers: the table holds two lends,
-      # and closing the first MOVES the second's entry (swap-and-pop).
       s.write(zch2_frame(1, 0x05, 1, zch2_block('GET', '/big')) +
               zch2_frame(1, 0x05, 3, zch2_block('GET', '/big')) +
               zch2_frame(1, 0x05, 5, zch2_block('GET', '/small')))
@@ -397,7 +347,6 @@ assert('zero-copy h2: two streams lend at once and close in either order') do
       assert_equal ZC_BIG, got[1]
       assert_equal ZC_BIG, got[3]
       assert_equal ZC_SMALL, got[5]
-      # And the connection still answers on a fresh stream afterwards.
       s.write(zch2_frame(1, 0x05, 7, zch2_block('GET', '/small')))
       assert_equal ZC_SMALL, zch2_collect(s, [7])[7]
     end
@@ -413,8 +362,6 @@ assert('zero-copy h2: RST_STREAM mid-body releases the lend') do
         type, _, st, = zch2_next(s)
         break if type == 0 && st == 1
       end
-      # The stream dies with bytes still owed: the release is due HERE and
-      # exactly once, or the next stream's run meets a broken arena.
       s.write(zch2_frame(3, 0, 1, [8].pack('N')))
       s.write(zch2_frame(1, 0x05, 3, zch2_block('GET', '/big')))
       s.write(zch2_frame(8, 0, 0, [4_194_304].pack('N')) +
@@ -433,7 +380,6 @@ assert('zero-copy h2: HEAD lends nothing and sends no DATA') do
       assert_equal 1, type
       assert_equal 1, st
       assert_equal 1, flags & 0x01
-      # Nothing follows it, and the connection still serves a real body.
       s.write(zch2_frame(1, 0x05, 3, zch2_block('GET', '/small')))
       assert_equal ZC_SMALL, zch2_collect(s, [3])[3]
     end
@@ -444,8 +390,6 @@ assert('zero-copy h2: a String the app froze is copied, not lent') do
   zc_serve(1) do |sock|
     UNIXSocket.open(sock) do |s|
       zch2_handshake(s)
-      # Twice on one connection: a lifted freeze would leave the second
-      # answer serving a String nothing roots any more.
       s.write(zch2_frame(1, 0x05, 1, zch2_block('GET', '/kept')))
       assert_equal ZC_BIG, zch2_collect(s, [1])[1]
       s.write(zch2_frame(1, 0x05, 3, zch2_block('GET', '/kept')))

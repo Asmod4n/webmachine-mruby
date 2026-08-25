@@ -1,16 +1,4 @@
-# The vendored HPACK codec against RFC 7541's own vectors, byte for
-# byte, BEFORE any h2 frame ever exists. Appendix C.3 and C.4 are three
-# requests on one connection - the second and third only decode
-# correctly if the dynamic table carried over from the first, so these
-# are a test of the table, not just of the wire format.
-#
-# The encoder is deliberately NOT compared against the RFC's bytes: an
-# HPACK encoder is free to choose different (valid) encodings, so its
-# test is the roundtrip - what goes in comes out, through one encoder
-# and one decoder that keep their tables across blocks.
 
-# No Regexp (and no each_char) in this build, so by hand: strip
-# spaces, then byte pairs.
 def hx(s)
   hex = ''
   i = 0
@@ -60,11 +48,8 @@ assert('hpack: roundtrip keeps every byte, tables live across blocks') do
   blocks = [
     [[':method', 'GET'], [':scheme', 'https'], [':path', '/kept'],
      [':authority', 'example.com'], ['x-probe', 'hello world']],
-    # Same headers again: the second block should ride the dynamic
-    # table, and must still decode to the same pairs.
     [[':method', 'GET'], [':scheme', 'https'], [':path', '/kept'],
      [':authority', 'example.com'], ['x-probe', 'hello world']],
-    # A changed value behind a known name, and a binary-ish value.
     [[':method', 'POST'], [':path', '/kept?x=1&y=2'],
      ['x-probe', "\x00\x01\xfe\xff binary"], ['cookie', 'a=' + ('z' * 512)]]
   ]
@@ -72,9 +57,6 @@ assert('hpack: roundtrip keeps every byte, tables live across blocks') do
 end
 
 assert('hpack: roundtrip survives a 256-byte table, evictions included') do
-  # RFC 7541 C.6 works a 256-byte table until entries evict; this does
-  # the same with a growing set of large cookies, so insertion, hit and
-  # eviction all happen - and every block must still decode exactly.
   blocks = (1..6).map do |i|
     [[':status', '200'], ['cache-control', 'private'],
      ['set-cookie', "s=#{i.to_s * 60}"]]

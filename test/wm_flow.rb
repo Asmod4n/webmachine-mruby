@@ -1,45 +1,3 @@
-# webmachine-ruby's own spec/webmachine/decision/flow_spec.rb, ported.
-# It is the ORACLE: 34 flow nodes, each pinned by the cases their author
-# wrote, run here against THIS tree's resource_fold + resource_run
-# through the shim in test/wm_ruby.cpp. Nothing here mocks the machine -
-# every case builds a resource class, runs the real graph, and reads the
-# real answer.
-#
-# PORTED 120 of the upstream file's 131 examples. OMITTED 11, each with
-# its reason at the place it would have stood:
-#   4  #d4/#d5   Accept-Language      - no i18n in this tree (user's call)
-#   3  #e5/#e6   Accept-Charset       - no charset negotiation here (#146
-#                                       spells one charset, always)
-#   2  #f6/#f7   Accept-Encoding      - encodings_provided is konst here
-#                                       (folded, not chosen per request)
-#   1  #b6       an unknown Content-* - the shim hands the flow only the
-#                                       fields RFC 9110 names
-#   1  On error  "calls handle_exception" - mocks the resource
-# Also dropped, without costing a case: the after(:each) Date check
-# (Date is the writer's field, proven on the wire in bintest/), and
-# every `expect(subject).to_not receive(:x)` half, which asserts the
-# FSM's internal path rather than its answer - the status assertion that
-# stands beside it is kept.
-#
-# TWO SHAPES CHANGED, both because this tree is not the Ruby one:
-#
-#   1. The specs set the answer on the resource INSTANCE
-#      (`resource.available = false`). Here the instance lives exactly
-#      one request (#181) - the FSM is handed a CLASS and the run frame
-#      builds the instance itself, so there is no object to reach before
-#      the run. The answer therefore lives outside the instance and the
-#      callback reads it from there, which is the same tested effect:
-#      the callback answers false/true/Integer. bintest/resource.rb does
-#      the same thing with $flaky for the same reason.
-#   2. Content-Type assertions gain "; charset=utf-8": this tree appends
-#      it to every text/* type (#146), so upstream's 'text/html' is
-#      'text/html; charset=utf-8' here.
-#
-# The cases are REGISTERED, not asserted, here: mruby loads a gem's
-# test/**/*.rb in sorted order (wm_flow, wm_helpers, wm_ruby) and
-# `assert` runs its block immediately, before test/wm_ruby.rb has
-# defined the objects the specs construct. test/wm_ruby.rb drains this
-# queue, so each case still becomes one assert under its own name.
 
 $wm_cases = []
 
@@ -47,27 +5,20 @@ def wm_case(name, &blk)
   $wm_cases << [name, blk]
 end
 
-# The spec's `resource_with`: a resource that renders 'test resource'
-# and nothing else.
 class WmSpecResource < Webmachine::Resource
   def to_html
     'test resource'
   end
 end
 
-# The spec's `missing_resource_with`.
 class WmSpecMissing < WmSpecResource
   def resource_exists?
     false
   end
 end
 
-# One request through the real machinery, answered into a SpecResponse.
 def wm_run(klass, method = 'GET', headers = nil, body = nil)
   h = headers || Webmachine::Headers.new
-  # The spec's request URI is http://localhost/ ; here the authority is
-  # a field, so Host carries it (RFC 9110 7.2) - request.base_uri reads
-  # it, and n11 builds Location from that.
   h['Host'] = 'localhost' unless h.key?('Host')
   req = Webmachine::SpecRequest.new(method, '/', h, body)
   resp = Webmachine::SpecResponse.new
@@ -79,23 +30,17 @@ def wm_h(pairs = nil)
   Webmachine::Headers[pairs]
 end
 
-# last_modified answers a Time upstream. The unit VM is mrb_open_core
-# plus this gem's dependencies, so mruby-time need not be there; the
-# epoch second is the same instant either way.
 def wm_time(epoch)
   Object.const_defined?(:Time) ? Time.at(epoch) : epoch
 end
 
-# One fixed instant and the HTTP-dates around it, so no case depends on
-# the wall clock. 1000000000 = Sun, 09 Sep 2001 01:46:40 GMT.
 WM_LM = 1000000000
-WM_LM_PLUS100  = 'Sun, 09 Sep 2001 01:48:20 GMT'  # WM_LM + 100
-WM_LM_MINUS100 = 'Sun, 09 Sep 2001 01:45:00 GMT'  # WM_LM - 100
-WM_LM_MINUS1   = 'Sun, 09 Sep 2001 01:46:39 GMT'  # WM_LM - 1
-WM_LM_MINUS1K  = 'Sun, 09 Sep 2001 01:30:00 GMT'  # WM_LM - 1000
-WM_FUTURE_DATE = 'Fri, 01 Jan 2100 00:00:00 GMT'  # later than any run
+WM_LM_PLUS100  = 'Sun, 09 Sep 2001 01:48:20 GMT'
+WM_LM_MINUS100 = 'Sun, 09 Sep 2001 01:45:00 GMT'
+WM_LM_MINUS1   = 'Sun, 09 Sep 2001 01:46:39 GMT'
+WM_LM_MINUS1K  = 'Sun, 09 Sep 2001 01:30:00 GMT'
+WM_FUTURE_DATE = 'Fri, 01 Jan 2100 00:00:00 GMT'
 
-# --- #b13 (Service available?) ------------------------------------- 1
 
 def wm_res_b13
   Class.new(WmSpecResource) do
@@ -110,7 +55,6 @@ wm_case('flow b13: an unavailable service answers 503') do
   assert_equal 503, wm_run(wm_res_b13).code
 end
 
-# --- #b12 (Known method?) ------------------------------------------ 1
 
 def wm_res_b12
   Class.new(WmSpecResource) do
@@ -124,7 +68,6 @@ wm_case('flow b12: a method outside known_methods answers 501') do
   assert_equal 501, wm_run(wm_res_b12).code
 end
 
-# --- #b11 (URI too long?) ------------------------------------------ 1
 
 def wm_res_b11
   Class.new(WmSpecResource) do
@@ -138,7 +81,6 @@ wm_case('flow b11: a URI the resource calls too long answers 414') do
   assert_equal 414, wm_run(wm_res_b11).code
 end
 
-# --- #b10 (Method allowed?) ---------------------------------------- 1
 
 def wm_res_b10
   Class.new(WmSpecResource) do
@@ -154,7 +96,6 @@ wm_case('flow b10: a method outside allowed_methods answers 405, Allow names the
   assert_equal 'POST', res.headers['Allow']
 end
 
-# --- #b9 (Malformed request? / Content-MD5) ----------------------- 10
 
 def wm_res_b9_malformed
   Class.new(WmSpecResource) do
@@ -186,8 +127,6 @@ def wm_res_b9_md5
   end
 end
 
-# The spec's headers for the Content-MD5 context, with the checksum
-# spelled by the caller. :none leaves the field off entirely.
 def wm_b9_headers(md5 = :none)
   h = wm_h('Content-Type' => 'text/plain')
   h['Content-MD5'] = md5 unless md5 == :none
@@ -208,7 +147,6 @@ wm_case('flow b9a: a Content-MD5 that matches the body answers 204') do
 end
 
 wm_case('flow b9a: a Content-MD5 with a nil value bypasses validation (204)') do
-  # nil never reached the wire, so the field is simply absent (b9 -> b9b).
   $wm_validation = nil
   assert_equal 204, wm_run_b9(nil).code
 end
@@ -248,7 +186,6 @@ wm_case('flow b9a: a status returned while validating is the answer') do
   assert_equal 500, wm_run_b9(wm_b9_sum('thiswillnotmatchthehash')).code
 end
 
-# --- #b8 (Authorized?) --------------------------------------------- 4
 
 def wm_res_b8
   Class.new(WmSpecResource) do
@@ -280,7 +217,6 @@ wm_case('flow b8: an authorized client does not answer 401') do
   assert_true wm_run(wm_res_b8).code != 401
 end
 
-# --- #b7 (Forbidden?) ---------------------------------------------- 3
 
 def wm_res_b7
   Class.new(WmSpecResource) do
@@ -305,12 +241,6 @@ wm_case('flow b7: a status returned by forbidden? halts with it') do
   assert_equal 400, wm_run(wm_res_b7).code
 end
 
-# --- #b6 (Unsupported Content-* header?) --------------------------- 1
-# OMITTED (1): "should reply with 501 when an invalid Content-* header
-# is present". The upstream case sets 'Content-Fail', a field RFC 9110
-# does not name; this tree's http::header_switch hands such a field to
-# the framer's functor, which the shim drops, so the callback could
-# never see it. The wire tier is where that field exists.
 
 def wm_res_b6
   Class.new(WmSpecResource) do
@@ -324,12 +254,9 @@ wm_case('flow b6: valid Content-* headers do not answer 501') do
   assert_true wm_run(wm_res_b6).code != 501
 end
 
-# --- #b5 (Known Content-Type?) ------------------------------------- 2
 
 def wm_res_b5
   Class.new(WmSpecResource) do
-    # Upstream writes `type !~ /unknown/`; the unit VM has no Regexp, and
-    # the decision under test is the callback's answer, not its spelling.
     def known_content_type?(type)
       type.nil? || !type.include?('unknown')
     end
@@ -355,7 +282,6 @@ wm_case('flow b5: a known Content-Type does not answer 415') do
   assert_true wm_run(wm_res_b5, 'POST', h, WM_B9_BODY).code != 415
 end
 
-# --- #b4 (Request entity too large?) ------------------------------- 2
 
 def wm_res_b4
   Class.new(WmSpecResource) do
@@ -386,7 +312,6 @@ wm_case('flow b4: a request body inside the limit does not answer 413') do
   assert_true wm_run_b4('small').code != 413
 end
 
-# --- #b3 (OPTIONS?) ------------------------------------------------ 1
 
 def wm_res_b3
   Class.new(WmSpecResource) do
@@ -400,7 +325,6 @@ wm_case('flow b3: OPTIONS answers 200') do
   assert_equal 200, wm_run(wm_res_b3, 'OPTIONS').code
 end
 
-# --- #c3, #c4 (Acceptable media types) ----------------------------- 3
 
 def wm_res_default
   Class.new(WmSpecResource)
@@ -413,7 +337,6 @@ end
 wm_case('flow c4: an acceptable Accept does not answer 406 and types the response') do
   res = wm_run(wm_res_default, 'GET', wm_h('Accept' => 'text/*'))
   assert_true res.code != 406
-  # #146: this tree spells charset=utf-8 on every text/* type.
   assert_equal 'text/html; charset=utf-8', res.headers['Content-Type']
 end
 
@@ -424,15 +347,7 @@ wm_case('flow c3: no Accept negotiates nothing and types the response') do
   assert_equal 'text/html; charset=utf-8', res.headers['Content-Type']
 end
 
-# --- #d4, #d5 (Acceptable languages) ------------------------- OMITTED 4
-# --- #e5, #e6 (Acceptable charsets) -------------------------- OMITTED 3
-# --- #f6, #f7 (Acceptable encodings) ------------------------- OMITTED 2
-# There is no language negotiation, no charset negotiation and no
-# negotiated encoding set in this tree (user's decision): #146 spells one
-# charset on text/*, and encodings_provided is folded, not chosen from.
-# Porting these would assert a machine that does not exist.
 
-# --- #g7 (Resource exists?) ---------------------------------------- 4
 
 def wm_res_g7
   Class.new(WmSpecResource) do
@@ -462,7 +377,6 @@ wm_case('flow g7: nil means it is missing (404)') do
   assert_equal 404, wm_run(wm_res_g7).code
 end
 
-# --- #g8, #g9, #g11 (If-Match) ------------------------------------- 4
 
 def wm_res_etag
   Class.new(WmSpecResource) do
@@ -490,7 +404,6 @@ wm_case('flow g11: an ETag inside If-Match does not answer 412') do
   assert_true wm_run(wm_res_etag, 'GET', wm_h('If-Match' => '"etag"')).code != 412
 end
 
-# --- #h10, #h11, #h12 (If-Unmodified-Since) ------------------------ 4
 
 def wm_res_lastmod
   Class.new(WmSpecResource) do
@@ -524,7 +437,6 @@ wm_case('flow h12: Last-Modified after IUMS answers 412') do
   assert_equal 412, wm_run(wm_res_lastmod, 'GET', h).code
 end
 
-# --- #i12, #i13, #k13, #j18 (If-None-Match) ------------------------ 8
 
 def wm_res_inm
   Class.new(WmSpecResource) do
@@ -589,7 +501,6 @@ wm_case('flow k13: a resource without an ETag answers 200 when If-None-Match is 
   assert_equal 200, wm_run(wm_res_no_etag, 'GET', wm_h('If-None-Match' => '"etag"')).code
 end
 
-# --- #l13, #l14, #l15, #l17 (If-Modified-Since) -------------------- 5
 
 wm_case('flow l13: no If-Modified-Since skips Last-Modified matching') do
   $wm_lastmod = WM_LM
@@ -620,7 +531,6 @@ wm_case('flow l17: Last-Modified after IMS does not answer 304') do
   assert_true wm_run(wm_res_lastmod, 'GET', h).code != 304
 end
 
-# --- #h7 (If-Match: * on a missing resource) ----------------------- 2
 
 def wm_res_missing
   Class.new(WmSpecMissing)
@@ -634,7 +544,6 @@ wm_case('flow h7: an If-Match that is not * does not answer 412 on a missing res
   assert_true wm_run(wm_res_missing, 'GET', wm_h('If-Match' => '"etag"')).code != 412
 end
 
-# --- #i7 (PUT?) ---------------------------------------------------- 2
 
 def wm_res_i7
   Class.new(WmSpecMissing) do
@@ -659,7 +568,6 @@ wm_case('flow i7: a method other than PUT never reaches i4 (no 409)') do
   assert_true wm_run(wm_res_i7, 'POST', h, WM_B9_BODY).code != 409
 end
 
-# --- #i4 (Apply to a different URI?) ------------------------------- 2
 
 def wm_res_i4
   Class.new(WmSpecMissing) do
@@ -687,7 +595,6 @@ wm_case('flow i4: a resource that has not moved does not answer 301') do
   assert_true wm_run(wm_res_i4, 'PUT', h, WM_B9_BODY).code != 301
 end
 
-# --- Redirection (resource previously existed): #k5, #l5, #m5, #n5 -- 7
 
 def wm_res_gone
   Class.new(WmSpecMissing) do
@@ -765,10 +672,6 @@ wm_case('flow n5: a POST a gone resource disallows answers 410') do
 end
 
 wm_case('flow n5: a POST a gone resource allows does not answer 410') do
-  # Upstream asserts 410 here although its own title says otherwise: its
-  # `let(:method)` memoises 'GET' in the before block that runs first, so
-  # that example never posts. The graph is unambiguous - n5 with
-  # allow_missing_post? true goes to n11 - and that is what is asserted.
   $wm_moved_perm = false
   $wm_moved_temp = false
   $wm_allow_missing = true
@@ -776,7 +679,6 @@ wm_case('flow n5: a POST a gone resource allows does not answer 410') do
   assert_true wm_run(wm_res_gone, 'POST', h, WM_B9_BODY).code != 410
 end
 
-# --- #l7 (POST?), #m7 (POST to missing resource?) ------------------- 3
 
 def wm_res_l7
   Class.new(WmSpecMissing) do
@@ -815,7 +717,6 @@ wm_case('flow m7: a POST the resource allows does not answer 404') do
   assert_true wm_run(wm_res_l7, 'POST', h, WM_B9_BODY).code != 404
 end
 
-# --- #p3 (Conflict? on a missing resource) ------------------------- 2
 
 def wm_res_p3
   Class.new(WmSpecMissing) do
@@ -839,7 +740,6 @@ wm_case('flow p3: a PUT without conflict does not answer 409') do
   assert_true wm_run(wm_res_p3, 'PUT', wm_h('Content-Type' => 'text/plain'), 'x').code != 409
 end
 
-# --- #n11 (Redirect?) ---------------------------------------------- 4
 
 def wm_res_n11
   Class.new(WmSpecResource) do
@@ -855,8 +755,6 @@ def wm_res_n11
       true
     end
 
-    # Upstream calls response.redirect_to(uri), which is Location plus
-    # the redirect flag; this tree spells the two separately.
     def process_post
       if $wm_new_loc
         response.headers['Location'] = $wm_new_loc
@@ -885,7 +783,6 @@ end
   end
 end
 
-# --- #p11 (New resource?) ----------------------------------------- 10
 
 def wm_res_p11
   Class.new(WmSpecResource) do
@@ -969,7 +866,6 @@ end
   end
 end
 
-# --- #o14 (Conflict? on an existing resource) ---------------------- 2
 
 def wm_res_o14
   Class.new(WmSpecResource) do
@@ -993,7 +889,6 @@ wm_case('flow o14: a PUT without conflict does not answer 409') do
   assert_true wm_run(wm_res_o14, 'PUT', wm_h('Content-Type' => 'text/plain'), 'x').code != 409
 end
 
-# --- #m16 (DELETE?), #m20 (Delete enacted?) ------------------------ 4
 
 def wm_res_delete
   Class.new(WmSpecResource) do
@@ -1035,7 +930,6 @@ wm_case('flow m20b: a DELETE that completes does not answer 202') do
   assert_true wm_run(wm_res_delete, 'DELETE').code != 202
 end
 
-# --- #o18 (Multiple representations?) ----------------------------- 14
 
 def wm_res_o18
   Class.new(WmSpecResource) do
@@ -1055,10 +949,6 @@ def wm_res_o18
       $wm_multiple
     end
 
-    # Upstream: [[request.content_type, :accept_all]]. The fallback is
-    # for the methods that carry no entity (GET/HEAD/DELETE), where
-    # request.content_type is nil and this list is never consulted - a
-    # nil type there would only be a nil the marshaller has to survive.
     def content_types_accepted
       [[request.content_type || 'text/plain', :accept_all]]
     end
@@ -1103,7 +993,6 @@ end
   end
 end
 
-# --- #o20 (Response includes an entity?) -------------------------- 10
 
 def wm_res_o20
   Class.new(WmSpecResource) do
@@ -1119,10 +1008,6 @@ def wm_res_o20
       true
     end
 
-    # Upstream: [[request.content_type, :accept_all]]. The fallback is
-    # for the methods that carry no entity (GET/HEAD/DELETE), where
-    # request.content_type is nil and this list is never consulted - a
-    # nil type there would only be a nil the marshaller has to survive.
     def content_types_accepted
       [[request.content_type || 'text/plain', :accept_all]]
     end
@@ -1166,11 +1051,6 @@ end
   end
 end
 
-# --- On error ------------------------------------------------------ 3
-# OMITTED (1): "calls handle_exception", which mocks the resource
-# (`expect(resource).to receive(:handle_exception)`). There is no double
-# here - the resource the run frame builds is the real one - and the two
-# cases below already prove the inherited handler ran.
 
 def wm_res_raising
   Class.new(WmSpecResource) do

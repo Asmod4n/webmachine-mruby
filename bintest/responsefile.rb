@@ -1,15 +1,3 @@
-# response.file on the wire (#118): a callback names a RELATIVE path, the
-# reactor opens it through the ring with openat2(2) against the docroot's own
-# descriptor - RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS -
-# statx's it for length and mtime, reads it, and lends the bytes to the
-# writer.
-#
-# The refusals are the point of this file, so they are asserted as BYTES and
-# not just as statuses: a caught traversal, a symlink pointing out of the
-# tree, a directory and a name that was never there must produce the SAME
-# answer, down to the last header. A 404 that differs by one field, or by
-# arriving through a different code path, is a probe an attacker can build a
-# filesystem oracle out of - which is exactly what openat2 exists to prevent.
 
 require 'socket'
 require 'tempfile'
@@ -18,8 +6,6 @@ require 'fileutils'
 RF_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RF_BIN)
 
 RF_TEXT = 'hello from the docroot'.freeze
-# 250_000 bytes: past one 64 KiB delivery round, so a body that only ever
-# arrived in a single send would fail here rather than pass by accident.
 RF_BIG = ('rf' + ('0123456789abcdefghij' * 12_499) + 'END').freeze
 RF_SECRET = 'THIS FILE IS OUTSIDE THE DOCROOT'.freeze
 
@@ -29,8 +15,6 @@ def rf_recv(s, maxlen = 65_536, deadline = 10)
   s.readpartial(maxlen)
 end
 
-# head + exactly Content-Length body, to a deadline: a wedged server fails
-# the test instead of hanging the suite.
 def rf_read(s)
   head = +''.b
   head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
@@ -74,9 +58,6 @@ ensure
   src&.unlink
 end
 
-# A docroot with everything the refusals need to be real: a plain file, a
-# subdirectory, and a symlink pointing at a file OUTSIDE the tree - the case
-# RESOLVE_BENEATH alone would happily follow.
 def rf_tree
   base = "/tmp/wm-rf-#{$$}-#{rand(1 << 30)}"
   root = File.join(base, 'root')
@@ -117,7 +98,6 @@ ensure
   FileUtils.rm_rf(base) if base
 end
 
-# One request, one connection, closed by the server.
 def rf_get(sock, name, extra = '', method = 'GET')
   s = UNIXSocket.new(sock)
   s.write "#{method} /f?n=#{name} HTTP/1.1\r\nHost: rf\r\n#{extra}Connection: close\r\n\r\n"
@@ -126,8 +106,6 @@ def rf_get(sock, name, extra = '', method = 'GET')
   [head, body]
 end
 
-# The Date field is the only byte of a refusal that may legitimately differ
-# between two requests a second apart; everything else has to match exactly.
 def rf_undated(head)
   head.sub(/^Date: .*\r\n/i, '')
 end
@@ -155,17 +133,12 @@ assert('response.file delivers a body larger than one delivery round') do
     head, body = rf_get(sock, 'big.txt')
     assert_include head, 'HTTP/1.1 200 OK'
     assert_include head, "Content-Length: #{RF_BIG.bytesize}\r\n"
-    # Byte equality, not a length check: a wrong external pointer is still
-    # the right LENGTH, and only the bytes catch that.
     assert_equal RF_BIG, body
   end
 end
 
 assert('response.file answers HEAD with the length and no body') do
   rf_serve do |sock, _root|
-    # Read to EOF, not to Content-Length: a HEAD that STATES a length and
-    # sends bytes anyway is the bug worth catching here, and rf_read would
-    # sit waiting for those bytes instead of failing.
     s = UNIXSocket.new(sock)
     s.write "HEAD /f?n=a.txt HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
     buf = +''.b
@@ -193,9 +166,6 @@ assert('response.file answers If-Modified-Since with 304') do
   end
 end
 
-# THE security case. Every one of these must be refused, and refused
-# IDENTICALLY - a traversal, a symlink out of the tree, a symlinked
-# directory, an absolute path, a directory and a plain miss.
 assert('response.file refuses every escape as the same 404') do
   rf_serve do |sock, _root|
     miss, missb = rf_get(sock, 'nothing-here.txt')
@@ -216,10 +186,8 @@ assert('response.file refuses every escape as the same 404') do
     }.each do |what, name|
       head, body = rf_get(sock, name)
       assert_include head, 'HTTP/1.1 404 Not Found'
-      # No byte of the secret, ever - not in the head, not in the body.
       assert_false head.include?(RF_SECRET)
       assert_equal '', body
-      # Same SHAPE, so a caught escape cannot be told from a plain miss.
       assert_equal baseline, rf_undated(head), "#{what} answered differently"
     end
   end
@@ -228,12 +196,9 @@ end
 assert('response.file without a docroot is a named refusal, not a wrong answer') do
   rf_serve(docroot: false) do |sock, _root|
     head, body = rf_get(sock, 'a.txt')
-    # A clean 500 that NAMES the missing configuration - never a 200 out of
-    # the cwd, never a bare 404 that reads like the file is simply absent.
     assert_include head, 'HTTP/1.1 500 Internal Server Error'
     assert_include body, 'response.file='
     assert_include body, 'docroot'
-    # And the server is still standing: a config refusal is not a crash.
     again, = rf_get(sock, 'a.txt')
     assert_include again, 'HTTP/1.1 500 Internal Server Error'
   end
@@ -252,8 +217,6 @@ assert('response.file keeps a keep-alive connection in order') do
   end
 end
 
-# Pipelining is where a deferred answer breaks first: the file open costs
-# three ring round-trips, and the requests behind it must NOT overtake it.
 assert('response.file answers pipelined requests in order') do
   rf_serve do |sock, _root|
     s = UNIXSocket.new(sock)
@@ -273,10 +236,6 @@ assert('response.file answers pipelined requests in order') do
   end
 end
 
-# response.file is h1-only for now - the deferred open hangs off the
-# CONNECTION, and an h2 connection multiplexes streams that would each need
-# one. What matters is that h2 says so: an empty 200 would be a silently
-# wrong answer, which is the failure this whole file exists to rule out.
 RF_H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(RF_H2_PREFACE)
 
 def rf_h2_frame(type, flags, stream, payload = ''.b)
@@ -302,18 +261,16 @@ assert('response.file over h2 refuses rather than sending an empty body') do
   rf_serve do |sock, _root|
     UNIXSocket.open(sock) do |s|
       s.write(RF_H2_PREFACE + rf_h2_frame(4, 0, 0, ''.b))
-      t, = rf_h2_next(s)  # server SETTINGS
+      t, = rf_h2_next(s)
       assert_equal 4, t
-      t, = rf_h2_next(s)  # SETTINGS ACK
+      t, = rf_h2_next(s)
       assert_equal 4, t
-      # Indexed :method GET + :scheme http, a LITERAL :path, then :authority.
       path = '/f?n=a.txt'
       block = "\x82\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
       s.write(rf_h2_frame(1, 0x05, 1, block))
       type, _flags, stream, hblock = rf_h2_next(s)
       assert_equal 1, type
       assert_equal 1, stream
-      # RFC 7541 static table: 0x8e is :status 500, 0x88 is :status 200.
       assert_equal 0x8e, hblock.getbyte(0)
       assert_false hblock.getbyte(0) == 0x88
     end

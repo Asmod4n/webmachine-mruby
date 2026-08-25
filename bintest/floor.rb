@@ -1,15 +1,3 @@
-# The floor, proven at the byte level before any HTTP exists.
-#
-# Echo mode is the proof: what the reactor read is what it writes back,
-# so a reconstruction bug (the bundle class: claimed length spanning
-# buffers that were never filled) shows up as a byte mismatch here, not
-# as a corrupted request three layers up.
-#
-# The standard run forces WM_BUNDLE=0: one known kernel (the CI
-# container's 6.18.5-fc) violates the bundle dense-fill contract, and a
-# suite must be green everywhere. Real kernels honor it - set
-# WM_TEST_BUNDLES=1 there (forgecore, the Pi) and the same assertions
-# run again with bundles on, which is exactly the density check.
 
 require 'socket'
 require 'tempfile'
@@ -17,9 +5,6 @@ require 'tempfile'
 SERVER_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SERVER_BIN)
 EPOLL_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-floor-epoll') unless defined?(EPOLL_BIN)
 
-# Every suite read has a deadline: a wedged server must FAIL the test,
-# never hang it. Seen live (2026-08-20): the pre-fix accept bug held a
-# readpartial forever and the whole run died in the scrollback.
 def wm_recv(s, maxlen = 1, deadline = 10)
   IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
   s.readpartial(maxlen)
@@ -49,9 +34,6 @@ end
 def floor_echo_assertions(bundles, bin: SERVER_BIN)
   floor_server(echo: true, bundles: bundles, bin: bin) do |sock|
     UNIXSocket.open(sock) do |s|
-      # Many small segments, written with pauses so they arrive as
-      # separate receives - the exact traffic shape that caught the
-      # bundle bug. Random bytes so an offset error cannot pass as luck.
       sent = +''
       60.times do
         seg = Random.bytes(20)
@@ -65,7 +47,6 @@ def floor_echo_assertions(bundles, bin: SERVER_BIN)
       assert_equal sent, got
     end
     UNIXSocket.open(sock) do |s|
-      # One large write: crosses several pool buffers in one receive.
       blob = Random.bytes(3 * 4096 + 123)
       s.write(blob)
       got = +''
@@ -97,8 +78,6 @@ assert('floor: a receive is answered 200, keep-alive holds') do
 end
 
 assert('floor: the ring-built TCP listener answers like the unix one') do
-  # bind/listen/setsockopt all ran as ring ops; this proves them on the
-  # wire. A pid-derived port keeps parallel suites apart.
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--port', port.to_s,
@@ -147,9 +126,6 @@ assert('epoll floor: a receive is answered 200, keep-alive holds') do
 end
 
 assert('floor: TERM removes the unix socket path') do
-  # Seen on the Pi: the path outlived the process because nothing ever
-  # left the run loop. The signal now interrupts the ring wait and the
-  # destructor unlinks - through the ring, like everything else.
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
   pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--unix', sock,

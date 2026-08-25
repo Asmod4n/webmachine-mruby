@@ -1,13 +1,3 @@
-# WebSocket over the wire (#175): the handshake, the framing and the
-# resource that is FED. Round one's protocol half is proven in
-# test/ws.rb against RFC 6455's own examples; this is the other half -
-# a real server, a real socket, a resource answering.
-#
-# The surface under test (Nutzer-Entscheid 2026-08-22): a
-# Webmachine::WebsocketResource - NOT a Webmachine::Resource, since no
-# response, status or flow survives the upgrade - instantiated once and
-# fed through on_data(data, binary). A String goes back as a message in
-# the same kind; a Symbol is a close by name; nil says nothing.
 
 require 'socket'
 require 'tempfile'
@@ -63,8 +53,6 @@ def ws_head(s)
   head
 end
 
-# The client half of RFC 6455 4.1, with the spec's own key so the
-# accept value is the one 4.2.2 works out by hand.
 def ws_handshake(s, path = '/ws', extra = '')
   s.write("GET #{path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n" \
           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n#{extra}\r\n")
@@ -77,7 +65,6 @@ def ws_be16(n)
   (((n >> 8) & 0xff).chr + (n & 0xff).chr).b
 end
 
-# A client frame is always masked (5.1).
 def ws_frame(opcode, payload, fin: true, mask: "\x21\x09\x8f\x3c".b)
   masked = ''.b
   payload.bytes.each_with_index { |b, i| masked << (b ^ mask.getbyte(i % 4)).chr }
@@ -95,9 +82,6 @@ def ws_frame(opcode, payload, fin: true, mask: "\x21\x09\x8f\x3c".b)
   out + mask + masked
 end
 
-# One server frame off the wire: [opcode, fin, payload, rsv1]. RSV1 is
-# appended rather than inserted - round one's cases destructure this
-# positionally and permessage-deflate is round two's news, not theirs.
 def ws_read_frame(s)
   b = ws_recv(s, 2)
   b0 = b.getbyte(0)
@@ -137,7 +121,6 @@ assert('ws: the handshake answers 101 with RFC 6455 4.2.2 accept value') do
     head = ws_handshake(s)
     assert_true head.include?('Upgrade: websocket'), head
     assert_true head.include?('Connection: Upgrade'), head
-    # The spec's own worked example, on the wire this time.
     assert_true head.include?('Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo='), head
     s.close
   end
@@ -151,8 +134,6 @@ assert('ws: a text message comes back as text, a binary one as binary') do
     op, fin, payload = ws_read_frame(s)
     assert_equal [0x1, true, 'hello'], [op, fin, payload]
 
-    # The SAME String answer, in the kind the message arrived in - that
-    # is what makes an echo resource `data` and nothing else.
     s.write(ws_frame(0x2, "\x00\x01\xfe\xff".b))
     op2, _, payload2 = ws_read_frame(s)
     assert_equal 0x2, op2
@@ -178,8 +159,6 @@ assert('ws: a message bigger than one 4 KiB receive buffer survives whole') do
   ws_server(WS_ECHO) do |sock|
     s = UNIXSocket.new(sock)
     ws_handshake(s)
-    # 20 KiB: five recv buffers, one frame - the streaming reader's
-    # own case (the payload is copied ONCE, straight into the String).
     big = 'x' * 20_000
     s.write(ws_frame(0x1, big))
     op, _, payload = ws_read_frame(s)
@@ -197,8 +176,6 @@ assert('ws: ping is answered with a pong, by the server, with no resource in sig
     s.write(ws_frame(0x9, 'beat'))
     op, fin, payload = ws_read_frame(s)
     assert_equal [0xa, true, 'beat'], [op, fin, payload]
-    # An unsolicited pong is legal and answered with nothing (5.5.3);
-    # the echo behind it proves the connection kept its place.
     s.write(ws_frame(0xa, 'ignored'))
     s.write(ws_frame(0x1, 'still here'))
     _, _, after = ws_read_frame(s)
@@ -215,7 +192,7 @@ assert('ws: the close handshake is echoed and the connection ends') do
     op, _, payload = ws_read_frame(s)
     assert_equal 0x8, op
     assert_equal ws_be16(1000) + 'bye', payload
-    assert_equal '', s.read.to_s   # FIN follows; nothing more is said
+    assert_equal '', s.read.to_s
     s.close
   end
 end
@@ -237,7 +214,7 @@ assert('ws: invalid UTF-8 in a text message closes 1007, on_data never sees it')
   ws_server(src) do |sock|
     s = UNIXSocket.new(sock)
     ws_handshake(s)
-    s.write(ws_frame(0x1, "\xc3\x28".b))  # a truncated two-byte sequence
+    s.write(ws_frame(0x1, "\xc3\x28".b))
     op, _, payload = ws_read_frame(s)
     assert_equal 0x8, op
     assert_equal 1007, (payload.getbyte(0) << 8) | payload.getbyte(1)
@@ -269,7 +246,6 @@ assert('ws: a Symbol answer is a close by name; a String is a message') do
     s.write(ws_frame(0x1, 'loud'))
     _, _, up = ws_read_frame(s)
     assert_equal 'LOUD', up
-    # nil says nothing at all - the ping behind it is what comes back.
     s.write(ws_frame(0x1, 'quiet'))
     s.write(ws_frame(0x9, 'p'))
     op, _, payload = ws_read_frame(s)
@@ -283,13 +259,6 @@ assert('ws: a Symbol answer is a close by name; a String is a message') do
 end
 
 assert('ws: a server-initiated close waits for the peer to answer it (5.5.1)') do
-  # THE BUG THIS PINS: the connection used to be torn down the instant
-  # the resource said a close, so the peer's answering Close - which
-  # 5.5.1 asks for and every browser sends - arrived at a socket that
-  # was already shut both ways. That is EPIPE here and an RST on the
-  # wire, and an RST discards whatever the peer had not read yet: the
-  # client lost the very Close it was answering and reported an
-  # abnormal closure instead of the code the resource named.
   src = <<~RUBY
     class Bye < Webmachine::WebsocketResource
       def on_data(data, binary)
@@ -311,15 +280,12 @@ assert('ws: a server-initiated close waits for the peer to answer it (5.5.1)') d
     assert_equal 0x8, op
     assert_equal 1000, (payload.getbyte(0) << 8) | payload.getbyte(1)
 
-    # The client answers, as a conformant one does. This must reach the
-    # server: before the fix it raised EPIPE.
     begin
       s.write(ws_frame(0x8, [1000].pack('n')))
     rescue Errno::EPIPE, Errno::ECONNRESET => e
       raise "the peer could not answer the close: #{e.class}"
     end
 
-    # And only THEN does the connection end - EOF, not a reset.
     IO.select([s], nil, nil, 5) or raise 'server never closed after the handshake completed'
     assert_equal nil, s.read_nonblock(4096, exception: false)
     s.close
@@ -355,7 +321,6 @@ assert('ws: initialize reads the handshake head and picks the subprotocol') do
     assert_equal 'hi', back
     s.close
 
-    # A room the resource does not admit: no upgrade, an HTTP refusal.
     t = UNIXSocket.new(sock)
     t.write("GET /ws/attic HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n" \
             "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" \
@@ -435,8 +400,6 @@ assert('ws: an upgrade on a path no websocket route claims stays HTTP') do
   RUBY
   ws_server(src) do |sock|
     s = UNIXSocket.new(sock)
-    # RFC 9110 7.8: a server may ignore an upgrade it does not offer -
-    # and here that means the ordinary resource answers.
     s.write("GET /page HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
     head = ws_head(s)
@@ -515,7 +478,7 @@ assert('ws: on_close hears the client going away, with its code and reason') do
     s = UNIXSocket.new(sock)
     ws_handshake(s)
     s.write(ws_frame(0x8, ws_be16(1001) + 'leaving'))
-    ws_read_frame(s)   # the echoed close
+    ws_read_frame(s)
     s.close
     seen = false
     100.times do
@@ -527,23 +490,14 @@ assert('ws: on_close hears the client going away, with its code and reason') do
   end
 end
 
-# ---------------------------------------------------------------------
-# Round two (#175, RFC 7692): permessage-deflate over the wire. The
-# negotiation's own vectors are in test/ws.rb; these are the cases only
-# a real socket can answer - that the zlib streams on both ends stay in
-# step across messages, and that a compressed message is bounded by the
-# size it BECOMES.
 
 require 'zlib'
 
-# The client half of 7692 7.2.1: deflate with a sync flush, then drop
-# the four bytes the flush ends with.
 def ws_deflate(z, str)
   out = z.deflate(str, Zlib::SYNC_FLUSH)
   out[0, out.bytesize - 4]
 end
 
-# 7.2.2 step 1: put them back.
 def ws_inflate(z, payload)
   z.inflate(payload + "\x00\x00\xff\xff".b)
 end
@@ -556,7 +510,6 @@ def ws_inflator(bits = 15)
   Zlib::Inflate.new(-bits)
 end
 
-# A compressed data frame: RSV1 on the FIRST frame of the message.
 def ws_dframe(opcode, payload, fin: true, rsv1: true)
   f = ws_frame(opcode, payload, fin: fin)
   f.setbyte(0, f.getbyte(0) | 0x40) if rsv1
@@ -585,11 +538,7 @@ assert('ws: a route that never asked for 7692 declines the offer, and RSV1 stays
   ws_server(WS_ECHO) do |sock|
     s = UNIXSocket.new(sock)
     head = ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
-    # 7692 5.1: a server may ignore an offer, and the handshake is then
-    # a perfectly good plain websocket - nothing in the 101 says
-    # otherwise, so the client knows not to set the bit.
     assert_false head.downcase.include?('sec-websocket-extensions'), head
-    # And setting it anyway is 6455 5.2's protocol error.
     s.write(ws_dframe(0x1, 'x'))
     op, _, payload = ws_read_frame(s)
     assert_equal 0x8, op
@@ -611,7 +560,6 @@ assert('ws: an accepted offer is answered, and a compressed message comes back c
     op, fin, payload, rsv1 = ws_read_frame(s)
     assert_equal [0x1, true, true], [op, fin, rsv1]
     assert_equal body, ws_inflate(zi, payload)
-    # It really was compressed, not merely flagged.
     assert_true payload.bytesize < body.bytesize, "#{payload.bytesize} vs #{body.bytesize}"
     s.close
   end
@@ -630,13 +578,9 @@ assert('ws: context takeover carries the window between messages (7692 7.1.1)') 
       s.write(ws_dframe(0x1, ws_deflate(z, body)))
       _, _, payload, rsv1 = ws_read_frame(s)
       assert_true rsv1
-      # The SAME inflater across both: a client that reset here would
-      # decode garbage, which is exactly what context takeover means.
       assert_equal body, ws_inflate(zi, payload)
       i.zero? ? first = payload.bytesize : second = payload.bytesize
     end
-    # The second answer is smaller because the server's window still
-    # holds the first - the whole point of not resetting.
     assert_true second < first, "#{second} not smaller than #{first}"
     s.close
   end
@@ -657,12 +601,10 @@ assert('ws: server_no_context_takeover is honoured, not just echoed (7692 7.1.1.
       s.write(ws_dframe(0x1, ws_deflate(z, body)))
       _, _, payload, rsv1 = ws_read_frame(s)
       assert_true rsv1
-      # A FRESH inflater per message is the client half of the promise,
-      # and it only works because the server really did reset.
       assert_equal body, ws_inflate(ws_inflator, payload)
       sizes << payload.bytesize
     end
-    assert_equal sizes[0], sizes[1]  # nothing was carried over
+    assert_equal sizes[0], sizes[1]
     s.close
   end
 end
@@ -676,9 +618,6 @@ assert('ws: server_max_window_bits is honoured, so a small window still decodes'
     )
     assert_true head.include?('permessage-deflate; server_max_window_bits=9'), head
     z = ws_deflator
-    # A 9-bit window is 512 bytes; a body several times that proves the
-    # server compressed inside it (an inflater built that small cannot
-    # follow a stream that reached further back).
     body = (0...4000).map { |i| (97 + (i % 26)).chr }.join
     s.write(ws_dframe(0x1, ws_deflate(z, body)))
     _, _, payload, rsv1 = ws_read_frame(s)
@@ -700,8 +639,6 @@ assert('ws: a compressed message may be fragmented, with RSV1 only on the first 
     _, _, payload, = ws_read_frame(s)
     assert_equal 'one two three four five six seven eight', ws_inflate(ws_inflator, payload)
 
-    # 7692 6: the bit belongs to the message, so a CONTINUATION
-    # carrying it is the peer confusing a message with a frame.
     s.write(ws_dframe(0x1, whole[0, cut], fin: false))
     s.write(ws_dframe(0x0, whole[cut..-1], fin: true, rsv1: true))
     op, _, close_payload = ws_read_frame(s)
@@ -737,17 +674,12 @@ assert('ws: max_message bounds what a message BECOMES, not what it arrived as') 
     s = UNIXSocket.new(sock)
     ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
     z = ws_deflator
-    # A megabyte of one byte deflates to a few hundred: the frame this
-    # sends is far UNDER the route's limit and what it becomes is two
-    # hundred times over it. A compressed-length cap would wave it
-    # through, which is the whole reason the cap sits in the inflate
-    # sink instead.
     bomb = ws_deflate(z, 'a' * 1_000_000)
     assert_true bomb.bytesize < 4096, "the bomb must arrive small (#{bomb.bytesize})"
     s.write(ws_dframe(0x1, bomb))
     op, _, payload = ws_read_frame(s)
     assert_equal 0x8, op
-    assert_equal 1009, (payload.getbyte(0) << 8) | payload.getbyte(1)  # 7.4.1: too big
+    assert_equal 1009, (payload.getbyte(0) << 8) | payload.getbyte(1)
     s.close
   end
 end
@@ -769,8 +701,6 @@ assert('ws: text is checked for UTF-8 after it decompresses (6455 8.1)') do
     s = UNIXSocket.new(sock)
     ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
     z = ws_deflator
-    # Valid compressed framing, invalid text inside it - the only place
-    # 8.1 can be asked at all is on the decompressed bytes.
     s.write(ws_dframe(0x1, ws_deflate(z, "hello \xff\xfe world".b)))
     op, _, payload = ws_read_frame(s)
     assert_equal 0x8, op
@@ -785,7 +715,7 @@ assert('ws: an empty compressed message is one byte on the wire and empty in the
     ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
     z = ws_deflator
     empty = ws_deflate(z, '')
-    assert_equal 1, empty.bytesize          # 7.2.1: the empty stored block, tail removed
+    assert_equal 1, empty.bytesize
     s.write(ws_dframe(0x1, empty))
     op, fin, payload, rsv1 = ws_read_frame(s)
     assert_equal [0x1, true, true], [op, fin, rsv1]
@@ -814,8 +744,6 @@ assert('ws: an uncompressed message on a compressed connection is still a messag
   ws_server(WS_DEFLATE_ECHO) do |sock|
     s = UNIXSocket.new(sock)
     ws_handshake(s, '/ws', "Sec-WebSocket-Extensions: permessage-deflate\r\n")
-    # RSV1 clear: 7692 6 lets either end skip compression per message,
-    # and a client that does must not disturb the other direction.
     s.write(ws_frame(0x1, 'plain'))
     _, _, payload, rsv1 = ws_read_frame(s)
     assert_true rsv1, 'the server still answers compressed'
@@ -825,9 +753,6 @@ assert('ws: an uncompressed message on a compressed connection is still a messag
 end
 
 assert('ws: the resource is THE PEER\'S - two connections keep separate state') do
-  # #181's whole point on this side: a websocket is a session, so its
-  # resource is one object per peer. Each connection counts only its
-  # own messages, and initialize is where the count starts.
   src = <<~RUBY
     class Counted < Webmachine::WebsocketResource
       def initialize
@@ -859,7 +784,6 @@ assert('ws: the resource is THE PEER\'S - two connections keep separate state') 
     _, _, r = ws_read_frame(a)
     assert_equal 'a:2', r
 
-    # B has its own object: still at one, whatever A did.
     b.write(ws_frame(0x1, 'b'))
     _, _, r = ws_read_frame(b)
     assert_equal 'b:1', r

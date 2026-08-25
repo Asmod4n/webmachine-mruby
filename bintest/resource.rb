@@ -1,17 +1,9 @@
-# Resources on the wire: a Ruby class inheriting Webmachine::Resource
-# is asked ONCE at setup; the requests that follow never enter the VM.
-# What a later tier must honor refuses the start by name, never silently.
 
 require 'socket'
 require 'tempfile'
 
 RES_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RES_BIN)
 
-# --app takes bytecode (#100): mrbc runs here, the same way an app's
-# author runs it before shipping. ENV['MRBCFILE'] is mruby's own
-# bintest.rb export - see test/bintest.rb in the mruby checkout - and
-# names whichever mrbc this build produced (the bootstrap host/mrbc
-# build when the shipped build carries no mruby-compiler, as here).
 def wm_compile(app_source)
   src = Tempfile.new(['wm-app', '.rb'])
   src.write(app_source)
@@ -26,12 +18,6 @@ ensure
   src&.unlink
 end
 
-# Since #116 a resource class is not an app: the file defines `main`,
-# and the Webmachine::Application registered there carries the listener
-# and the routes. Every fixture below is ONE resource on the root splat
-# route - exactly the semantics the constant scan used to hand out for
-# free - and the listener comes from --unix on the command line, which
-# overrides whatever conf would have said.
 def wm_app(name, src)
   <<~RUBY
     #{src}
@@ -45,7 +31,6 @@ def wm_app(name, src)
   RUBY
 end
 
-# Runs a server bound to the given app source; raises if it never comes up.
 def resource_server(app_source)
   app = wm_compile(app_source)
   sock = "/tmp/wm-res-#{$$}.sock"
@@ -65,7 +50,6 @@ def resource_server(app_source)
   end
 end
 
-# Starts a server that MUST refuse; returns its stderr for the reason.
 def resource_refused(app_source)
   app = wm_compile(app_source)
   err = "/tmp/wm-res-stderr-#{$$}.log"
@@ -78,8 +62,6 @@ ensure
   app.unlink
 end
 
-# Starts a server pointed straight at a .rb path - never compiled, the
-# case the mrbc line in the refusal message exists to fix.
 def resource_refused_rb(app_source)
   src = Tempfile.new(['wm-app', '.rb'])
   src.write(app_source)
@@ -94,9 +76,6 @@ ensure
   src.unlink
 end
 
-# Every suite read has a deadline: a wedged server must FAIL the test,
-# never hang it. Seen live (2026-08-20): the pre-fix accept bug held a
-# readpartial forever and the whole run died in the scrollback.
 def wm_recv(s, maxlen = 1, deadline = 10)
   IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
   s.readpartial(maxlen)
@@ -119,8 +98,6 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i)
       assert_equal '<html><body>Hello, World!</body></html>', body
-      # HEAD: the same head, Content-Length announced, no body bytes -
-      # the pipelined GET's response must begin immediately after.
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
       hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
@@ -131,7 +108,6 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       len = nxt[/^Content-Length: *(\d+)\r$/i, 1].to_i
       drain = +''
       drain << wm_recv(s, len - drain.bytesize) while drain.bytesize < len
-      # POST is outside the default allowed_methods: 405 from B10.
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head3, = resource_read(s)
       assert_true head3.start_with?('HTTP/1.1 405')
@@ -198,18 +174,15 @@ assert('resource: a missing resource speaks 404/412 like the graph says') do
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = resource_read(s)
-      assert_true head.start_with?('HTTP/1.1 404')  # G7 -> H7 -> I7 -> K7 -> L7
+      assert_true head.start_with?('HTTP/1.1 404')
       s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-Match: *\r\n\r\n")
       head2, = resource_read(s)
-      assert_true head2.start_with?('HTTP/1.1 412')  # H7: If-Match * on missing
+      assert_true head2.start_with?('HTTP/1.1 412')
     end
   end
 end
 
 assert('resource: i18n callbacks refuse the start by name') do
-  # generate_etag and friends RUN now (the 1:1 tier); what remains
-  # refused is what this tree does not have at all - i18n and charset
-  # conversion.
   src = <<~RUBY
     class LangResource < Webmachine::Resource
       def self.languages_provided
@@ -230,8 +203,6 @@ assert('resource: an instance body renders per request through the VM') do
       _, body2 = resource_read(s)
       assert_equal '<html><body>hit 1</body></html>', body1
       assert_equal '<html><body>hit 2</body></html>', body2
-      # HEAD announces the NEXT render's length and sends no bytes; the
-      # pipelined GET must begin right after the head.
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
       hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
@@ -244,9 +215,6 @@ assert('resource: an instance body renders per request through the VM') do
 end
 
 assert('resource: an instance decision is asked per request (state changes answers)') do
-  # The counter is APP state, so it lives outside the instance (#181):
-  # the resource itself is built fresh per request, which is exactly
-  # what the next assert proves.
   src = <<~RUBY
     class Flaky < Webmachine::Resource
       def resource_exists?
@@ -289,7 +257,7 @@ assert('resource: a raising callback answers 500 in the negotiated type, reason 
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = resource_read(s)
-      assert_true head.start_with?('HTTP/1.1 500')  # still answering, still alive
+      assert_true head.start_with?('HTTP/1.1 500')
     end
   end
 end
@@ -299,10 +267,6 @@ assert('resource: an app that raises at load refuses the start with the error') 
 end
 
 assert('resource: an app file without `main` is refused by name (#116)') do
-  # The constant scan is gone with #116: nothing goes looking for "the"
-  # resource class any more. An app file defines `main`, and a file
-  # that does not is refused with that sentence, not with a
-  # NoMethodError from a funcall.
   out = resource_refused("class Quiet < Webmachine::Resource; end\n")
   assert_true out.include?('main'), out
 end
@@ -313,8 +277,6 @@ assert('resource: a main that registers no application is refused by name (#116)
 end
 
 assert('resource: a class NOT on a route never answers - the route is the door') do
-  # Two classes in one file, one route: what the scan used to call
-  # ambiguous is now simply a fact about routing.
   src = <<~RUBY
     class Served < Webmachine::Resource
       def self.to_html
@@ -344,9 +306,6 @@ assert('resource: a .rb path is refused by name, with the mrbc line that fixes i
 end
 
 assert('chrono: duration units and clocks answer inside the run frame') do
-  # mruby-chrono is the ONE gate for durations crossing Ruby<->C.
-  # Prove the gem is linked into the server and its whole surface -
-  # units, both clocks, the timer - answers inside a per-request frame.
   src = <<~RUBY
     class Clocked < Webmachine::Resource
       def initialize
@@ -375,10 +334,6 @@ assert('chrono: duration units and clocks answer inside the run frame') do
 end
 
 assert('run frame: bodies survive a full GC per request, 200 requests exact') do
-  # The memory model on trial: ONE frame roots everything, the arena
-  # carries values between callbacks, no ivars, no pins. Two GC.start
-  # per render is the harshest weather that claim must hold in - a
-  # body swept too early answers with corrupted bytes here.
   src = <<~RUBY
     class Churn < Webmachine::Resource
       HITS = [0]
@@ -403,8 +358,6 @@ assert('run frame: bodies survive a full GC per request, 200 requests exact') do
 end
 
 assert('run frame: a raise right after GC still answers 500 with its message') do
-  # The pending exception (and its mesg bytes we lend to the writer)
-  # must be rooted through the collection that preceded the raise.
   src = <<~RUBY
     class GcBoom < Webmachine::Resource
       def to_html
@@ -426,12 +379,6 @@ assert('run frame: a raise right after GC still answers 500 with its message') d
 end
 
 assert('run frame: RSS stays flat across 8000 runtime requests') do
-  # No per-request allocation may outlive its request: not in the VM
-  # (arena resets, no ivars), not in C (string capacities are reused).
-  # Measured curve (container): the mruby heap reaches steady state by
-  # ~4000 requests and then moves ZERO bytes over 16000 more - so warm
-  # past the knee and demand near-flat after it. 512KB headroom still
-  # convicts any leak of >= 64 bytes per request.
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   resource_server(src) do |sock, pid|
     rss = -> { File.read("/proc/#{pid}/status")[/^VmRSS:\s*(\d+)/, 1].to_i }
@@ -442,7 +389,7 @@ assert('run frame: RSS stays flat across 8000 runtime requests') do
           resource_read(s)
         end
       end
-      run.call(4000)  # warm past the heap's steady-state knee
+      run.call(4000)
       before = rss.call
       run.call(8000)
       grew = rss.call - before
@@ -452,11 +399,6 @@ assert('run frame: RSS stays flat across 8000 runtime requests') do
 end
 
 assert('resource: the instance is the REQUEST\'s - ivars never cross, always carry') do
-  # Two things at once, and they are the whole point of #181:
-  #   - an ivar written by one request is GONE for the next (HTTP is
-  #     stateless, so its resource is),
-  #   - an ivar written by one CALLBACK is there for the next callback
-  #     of that SAME request (that is what request scope buys).
   src = <<~RUBY
     class Scope < Webmachine::Resource
       def resource_exists?

@@ -1,8 +1,3 @@
-# The config file (#166): the invocation as TOML, parsed by mruby-toml
-# through the VM the process already carries. The file can do what the
-# flags can do and NOTHING the app does - it names no resources. The
-# precedence sentence: CLI > file > the app's conf. A file that cannot
-# be honored refuses the start by name, exit 2.
 
 require 'socket'
 require 'tempfile'
@@ -49,9 +44,6 @@ assert('webmachine.toml: the invocation as a file') do
   pid = cfg_spawn(['--config', cfg.path], err)
   begin
     cfg_await(sock, err)
-    # No app: the default splat resource answers, proving the file
-    # alone brings a serving process up - and the [tune] knobs were
-    # accepted (a refused knob never reaches the listen).
     assert_include cfg_get(sock, '/'), '200 OK'
     assert_include File.read(err), 'config '
   ensure
@@ -111,8 +103,6 @@ assert('[tune] timeouts: the reaper closes what never speaks and what fell silen
   pid = cfg_spawn(['--config', cfg.path], err)
   begin
     cfg_await(sock, err)
-    # A connection that never says a word dies on the header clock
-    # (1s here, plus up to a second of reap granularity).
     c = UNIXSocket.new(sock)
     t0 = Time.now
     got = begin
@@ -123,7 +113,6 @@ assert('[tune] timeouts: the reaper closes what never speaks and what fell silen
     c.close rescue nil
     assert_true got != :open, 'naked connection survived the header clock'
     assert_true Time.now - t0 < 4.5, 'reaper took too long'
-    # An ACTIVE connection lives: ask, get answered, ask again.
     assert_include cfg_get(sock, '/'), '200 OK'
   ensure
     Process.kill(:TERM, pid) rescue nil
