@@ -3256,6 +3256,7 @@ class Ring {
     nlisteners_ = cfg.nlisteners;
 
     conns_.resize(max_conns_);
+    live_bits_.assign((static_cast<size_t>(max_conns_) + 63) / 64, 0);
     rearm_.reserve(64);
 
     if (cfg.stop_fd >= 0) {
@@ -3682,6 +3683,13 @@ class Ring {
     c.sending = true;
   }
 
+  // One bit per slot, so the once-a-second reap can find the live ones
+  // without reading a Conn to ask. The table is sized by RLIMIT_NOFILE
+  // (derive_max_conns), not by the peers actually here, so walking it
+  // touched a cache line per slot however few were connected.
+  void live_set(uint32_t idx) { live_bits_[idx >> 6] |= 1ULL << (idx & 63); }
+  void live_clear(uint32_t idx) { live_bits_[idx >> 6] &= ~(1ULL << (idx & 63)); }
+
   // shutdown BEFORE close_direct, linked: close_direct alone leaves the
   // socket open and the peer never sees FIN.
   void begin_close(uint32_t idx) {
@@ -3692,6 +3700,7 @@ class Ring {
       return;
     }
     c.live = false;
+    live_clear(idx);
     if (live_ != 0) live_--;
     if (io_uring_sq_space_left(&ring_) < 2) io_uring_submit(&ring_);
     struct io_uring_sqe* s = sqe();
@@ -3712,6 +3721,7 @@ class Ring {
     Conn& c = conns_[idx];
     c.gen++;
     c.live = true;
+    live_set(idx);
     live_++;
     c.sending = false;
     c.close_after_send = false;
@@ -4206,25 +4216,34 @@ class Ring {
     }
     if (now_s_ != last_reap_s_) {
       last_reap_s_ = now_s_;
-      for (uint32_t i = 0; i < max_conns_; i++) {
-        Conn& c = conns_[i];
-        if (!c.live) continue;
-        if (!c.sending && app_.timed(c.app)) {
-          c.deadline_s = now_s_ + to_idle_;
-          continue_conn(i);
-          continue;
-        }
-        if (c.deadline_s >= now_s_) continue;
-        if (c.sending) {
-          if (!c.close_after_send) {
-            c.close_after_send = true;
-            struct io_uring_sqe* s = sqe();
-            io_uring_prep_shutdown(s, static_cast<int>(i), SHUT_RDWR);
-            s->flags |= IOSQE_FIXED_FILE;
-            io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, i));
+      const size_t nwords = live_bits_.size();
+      for (size_t w = 0; w < nwords; w++) {
+        // begin_close only CLEARS bits and no accept runs inside this
+        // sweep, so a snapshot can go stale in one direction only - the
+        // c.live guard below still catches that.
+        uint64_t bits = live_bits_[w];
+        while (bits != 0) {
+          const uint32_t i = static_cast<uint32_t>(w * 64) + __builtin_ctzll(bits);
+          bits &= bits - 1;
+          Conn& c = conns_[i];
+          if (!c.live) continue;
+          if (!c.sending && app_.timed(c.app)) {
+            c.deadline_s = now_s_ + to_idle_;
+            continue_conn(i);
+            continue;
           }
-        } else {
-          begin_close(i);
+          if (c.deadline_s >= now_s_) continue;
+          if (c.sending) {
+            if (!c.close_after_send) {
+              c.close_after_send = true;
+              struct io_uring_sqe* s = sqe();
+              io_uring_prep_shutdown(s, static_cast<int>(i), SHUT_RDWR);
+              s->flags |= IOSQE_FIXED_FILE;
+              io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, i));
+            }
+          } else {
+            begin_close(i);
+          }
         }
       }
     }
@@ -4261,6 +4280,7 @@ class Ring {
   bool draining_ = false;
   int64_t drain_deadline_ = 0;
   uint32_t live_ = 0;
+  std::vector<uint64_t> live_bits_;
   char* pool_ = nullptr;
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   unsigned replenish_ = 0;
