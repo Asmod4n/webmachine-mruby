@@ -554,6 +554,13 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   uint16_t status;
   bool have_body = false;
   bool dynamic = false;
+  // What this run LENT instead of copying, if anything: not yet owned by a
+  // stream, so every path out of here below still has to place or free it.
+  mrb_state* lent_mrb = nullptr;
+  mrb_value lent_v = {};
+  const char* lent = nullptr;
+  size_t lent_len = 0;
+  bool lent_have = false;
   if (route == kNoRoute) {
     status = 404;
   } else {
@@ -562,7 +569,12 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     if (b->bound) {
       // The Values die with the frame that carried them, so a run reached
       // from here - parked or not - gets none.
-      status = resource_run(*b->res, facts, vals, req, &body_, &have_body, &rhdrs_);
+      // The SAME [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
+      // to lend, and h2 has no gzip path for a dynamic body to collide with.
+      status = resource_run(*b->res, facts, vals, req, &body_, &have_body, &rhdrs_,
+                            head_only ? 0 : zc_min_);
+      lent_have = resource_body_lent(*b->res, &lent_v, &lent, &lent_len);
+      if (lent_have) lent_mrb = b->res->mrb;
       dynamic = (b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500;
     } else {
       status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
@@ -583,12 +595,15 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       else if (have_body) ctype = b->konst.content_type;
     }
     h2_build_block(dynblk, status, ctype.empty() ? nullptr : &ctype, nullptr);
-    body = body_.data();
-    blen = body_.size();
+    // A status that sends no body cleared body_ above, and a lend it does
+    // not carry is handed back below - the same order h1 spells it in.
+    const bool use_lent = lent_have && !bodyless && have_body;
+    body = use_lent ? lent : body_.data();
+    blen = use_lent ? lent_len : body_.size();
     blk = &dynblk;
   } else if (have_body && status == 200) {
-    body = body_.data();
-    blen = body_.size();
+    body = lent_have ? lent : body_.data();
+    blen = lent_have ? lent_len : body_.size();
     blk = &h2_store_[(*idx)[200]];
   } else if (status == 500 && b != nullptr && b->bound) {
     if (elog_.enabled) {
@@ -614,6 +629,27 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   }
 
   const bool no_data = head_only || blen == 0;
+
+  // A lend the chain above did not adopt (a bodyless status, a 500 that
+  // spelled its own body) never reached a plan, so this IS its release.
+  if (lent_have && (no_data || body != lent)) {
+    resource_body_unlend(lent_mrb, lent_v);
+    lent_have = false;
+  }
+  // And one that WAS adopted becomes the stream's before anything below can
+  // fail: from here on close_stream and ~H2State own it, so no error path
+  // can strand a rooted body nobody comes back for.
+  if (lent_have) {
+    H2Stream& keep = h2.open(stream_id);
+    keep.zc_mrb = lent_mrb;
+    keep.zc = lent_v;
+    keep.zc_ptr = lent;
+    keep.zc_off = 0;
+    keep.zc_len = lent_len;
+    keep.zc_have = true;
+    keep.headers_done = true;
+    keep.half_closed_remote = true;
+  }
 
   alog_status_ = status;
   alog_bytes_ = no_data ? 0 : blen;
@@ -700,8 +736,12 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     if (merged) h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
   }
 
+  // RFC 9113 6.9.1: not one byte of a LENT body is framed here. All of it
+  // is parked on the stream and h2_flush_pending - the only place holding a
+  // plan - gives it the window, the frames and the external segment, the
+  // same way the asset tier's `src` is delivered.
   size_t give = 0;
-  if (!no_data) {
+  if (!lent_have && !no_data) {
     if (merged) {
       give = blen;
     } else {
@@ -735,7 +775,9 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
     }
   }
-  if (no_data || give == blen) h2.close_stream(stream_id);
+  // A lent stream is never closed here: its bytes have not been framed yet,
+  // and the sweep at the end of h2_flush_pending closes it once they are.
+  if (!lent_have && (no_data || give == blen)) h2.close_stream(stream_id);
   return true;
 }
 
@@ -806,6 +848,20 @@ struct RoundOut {
       plan->iov_len += iv[i].iov_len;
     }
   }
+
+  // RFC 9110 8.6: the body a run LENT, as a POINTER into its own frozen
+  // String. Without a plan there is no segment to hang it on, so the round
+  // copies - correct either way, since the lend outlives this round.
+  void lent(const char* p, size_t n) {
+    if (plan == nullptr) {
+      sink.append(p, n);
+      emitted += n;
+      return;
+    }
+    prime();
+    plan->seg[plan->nseg++] = Http1::Plan::Seg{p, 0, n};
+    plan->iov_len += n;
+  }
 };
 }
 
@@ -870,6 +926,34 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
       if (stp.src_off == stp.src_len) stp.src = nullptr;
       continue;
     }
+    if (stp.zc_have) {
+      // RFC 9113 6.9.1: a lent body is cut by the same two windows as any
+      // other, so it may take SEVERAL rounds - the cursor stays on the
+      // stream and the lend stands until the last byte has been framed.
+      const int64_t budget =
+          h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
+      if (budget <= 0) continue;
+      const size_t remaining = stp.zc_len - stp.zc_off;
+      size_t give = remaining;
+      if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
+      size_t off = 0;
+      while (off < give) {
+        if (!out.room_for_frame()) break;
+        size_t n = give - off;
+        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
+        const bool last = stp.zc_off + off + n == stp.zc_len;
+        unsigned char fh[kH2FrameHeaderLen];
+        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
+                            last ? kH2FlagEndStream : 0, stp.id);
+        out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
+        out.lent(stp.zc_ptr + stp.zc_off + off, n);
+        off += n;
+      }
+      h2.send_window -= static_cast<int64_t>(off);
+      stp.send_window -= static_cast<int64_t>(off);
+      stp.zc_off += off;
+      continue;
+    }
     if (stp.pending.empty()) continue;
     const int64_t budget =
         h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
@@ -897,7 +981,9 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   for (size_t i = 0; i < h2.streams.size();) {
     H2Stream& stp = h2.streams[i];
     if (stp.headers_done && stp.half_closed_remote && stp.pending.empty() &&
-        stp.src == nullptr) {
+        stp.src == nullptr && !stp.zc_owes()) {
+      // close_stream RETIRES the lend rather than freeing it: its last
+      // frames are in the round being built, not yet on the wire.
       h2.close_stream(stp.id);
     } else {
       i++;
@@ -909,7 +995,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
 bool Http1::pending(const Conn& st) const {
   if (st.h2 != nullptr) {
     for (const H2Stream& s : st.h2->streams) {
-      if (s.src != nullptr || !s.pending.empty()) return true;
+      if (s.src != nullptr || !s.pending.empty() || s.zc_owes()) return true;
     }
     return false;
   }

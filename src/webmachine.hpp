@@ -1924,6 +1924,19 @@ struct H2Stream {
   const AssetEntry* src = nullptr;
   size_t src_off = 0;
   size_t src_len = 0;
+  // A dynamic body this STREAM was lent: the handler's own frozen String,
+  // pointer plus cursor exactly like `src` above - but an asset's mapping
+  // outlives the process and this does not, so the release is a real event
+  // (H2State::zc_retire) and every stream end owes it.
+  mrb_state* zc_mrb = nullptr;
+  mrb_value zc = {};
+  const char* zc_ptr = nullptr;
+  size_t zc_off = 0;
+  size_t zc_len = 0;
+  bool zc_have = false;
+  // RFC 9113 6.9.1: flow control can cut a lent body across many rounds,
+  // so "still owes bytes" is what keeps the stream - and the lend - alive.
+  bool zc_owes() const { return zc_have && zc_off < zc_len; }
   uint16_t route = 0;
   std::string target;
   bool head_only = false;
@@ -1962,13 +1975,27 @@ struct H2State {
     time_t sec = 0;
   } head_cache;
 
+  // A body whose LAST bytes are in the round now on the wire: the stream
+  // that owned it is gone, but the writer still points at it, so it waits
+  // here for the drained-round point (Http1::Conn::zc_release) instead of
+  // being unrooted where the stream ended.
+  struct Lend {
+    mrb_state* mrb;
+    mrb_value v;
+  };
+  std::vector<Lend> zc_retired;
+
   // RFC 9113: allocated only when the preface was spoken, never before.
   H2State() {
     lshpack_enc_init(&enc);
     lshpack_dec_init(&dec);
   }
-  // RFC 9113: the decoder dies with the connection.
+  // RFC 9113: the decoder dies with the connection - and so does every
+  // lend the streams still hold. h1's ~Conn, one tier down: unconditional,
+  // GOAWAY or error or a client that simply left.
   ~H2State() {
+    for (H2Stream& s : streams) zc_retire(s);
+    zc_drain();
     lshpack_enc_cleanup(&enc);
     lshpack_dec_cleanup(&dec);
   }
@@ -1990,10 +2017,31 @@ struct H2State {
     st.send_window = peer_initial_window;
     return st;
   }
+  // A stream's lend leaves the stream: clearing zc_have HERE is what makes
+  // a second call a no-op, so no value is ever unrooted twice.
+  void zc_retire(H2Stream& s) {
+    if (!s.zc_have) return;
+    s.zc_have = false;
+    s.zc_ptr = nullptr;
+    s.zc_off = 0;
+    s.zc_len = 0;
+    zc_retired.push_back(Lend{s.zc_mrb, s.zc});
+    s.zc_mrb = nullptr;
+  }
+  // THE release: called where a whole round has drained, so nothing the
+  // kernel was handed still points into these Strings.
+  void zc_drain() {
+    for (const Lend& l : zc_retired) resource_body_unlend(l.mrb, l.v);
+    zc_retired.clear();
+  }
   // RFC 9113 5.1: the number stays, the entry goes.
   void close_stream(uint32_t id) {
     for (size_t i = 0; i < streams.size(); i++) {
       if (streams[i].id == id) {
+        // The move-assign below DISCARDS this entry's members: a body it
+        // still holds has to leave first, or its root leaks silently on
+        // every close - RST_STREAM, END_STREAM and error paths alike.
+        zc_retire(streams[i]);
         streams[i] = std::move(streams.back());
         streams.pop_back();
         return;
@@ -2465,6 +2513,10 @@ class Http1 {
     // The ONE end of the lend window - drained round, closed connection,
     // dead reactor. Never conditional on the round having succeeded.
     void zc_release() {
+      // h2 lends PER STREAM and hands each one back where the stream ends,
+      // but the last bytes are still in flight there - this is the point
+      // that knows they are not, so the h2 backlog is freed from here.
+      if (h2 != nullptr) h2->zc_drain();
       zc_covered = 0;
       zc_split = false;
       if (!zc_have) return;
