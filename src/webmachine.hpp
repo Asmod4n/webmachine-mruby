@@ -2557,6 +2557,10 @@ inline constexpr uint16_t kNoRoute = 0xffff;
 
 class Http1 {
  public:
+  // ONE of these per connection, so the order is by alignment and not by
+  // topic: interleaving the flags with the pointers cost 34 bytes of
+  // padding in 176, which is a cache line every five connections spent
+  // on nothing. Widest first, the single-byte members last and together.
   struct Conn {
     std::string carry;
     size_t body_skip = 0;
@@ -2564,25 +2568,25 @@ class Http1 {
     // the bytes themselves collect in `carry` behind the head, which
     // keeps the hand-off zero-copy. A konst route keeps skipping.
     size_t body_need = 0;
-    uint8_t listener = 0;
-    bool fresh = true;
-    H2State* h2 = nullptr;
-    const AssetEntry* xfer = nullptr;
     size_t xfer_off = 0;
     size_t xfer_end = 0;
-    bool packetized = false;
+    // A lent body splits the sink, so the segments around it carry offsets
+    // the plan has to claim explicitly: `zc_covered` is how far it got.
+    size_t zc_covered = 0;
+    H2State* h2 = nullptr;
+    const AssetEntry* xfer = nullptr;
     WsConn* ws = nullptr;
     SseStream* sse = nullptr;
     const void* peer = nullptr;
-    uint8_t peer_len = 0;
     // A dynamic body this connection was LENT: frozen and rooted from the
     // handler's return until the round it belongs to has fully drained.
     mrb_state* zc_mrb = nullptr;
     mrb_value zc = {};
+    uint8_t listener = 0;
+    uint8_t peer_len = 0;
+    bool fresh = true;
+    bool packetized = false;
     bool zc_have = false;
-    // A lent body splits the sink, so the segments around it carry offsets
-    // the plan has to claim explicitly: `zc_covered` is how far it got.
-    size_t zc_covered = 0;
     bool zc_split = false;
     // response.file: the answer a run DEFERRED to the reactor. `want` = the
     // open is owed, `busy` = the ring is on it, `ready` = the head is
@@ -3461,21 +3465,33 @@ class Ring {
     return true;
   }
 
+  // Ordered by alignment, not by topic - see Http1::Conn's own note. The
+  // flags sat between the 8-byte members and cost 21 bytes of padding.
   struct Conn {
-    bool live = false;
-    bool sending = false;
-    bool close_after_send = false;
-    bool idle = false;
     int64_t deadline_s = 0;
-    uint8_t li = 0;
-    uint16_t gen = 0;
     size_t sent = 0;
 
     static constexpr size_t kRoundFloor = 64u * 1024;
     size_t round_cap = kRoundFloor;
+    // The kernel writes all of these, so the landing buffer is full size
+    // even though on_meminfo reads three of them. Every accept arms it,
+    // so it stays inline - a pointer here would be a malloc per
+    // connection to save 36 bytes.
     uint32_t mi[SK_MEMINFO_VARS] = {};
-    struct sockaddr_storage peer_ss;
-    int peer_slen = 0;
+
+    // The peer's address, materialised only where it is going to be
+    // read. arm_peer runs for a logged TCP connection and nothing else,
+    // so a unix listener - and every server started without --log -
+    // carries a null pointer here instead of a sockaddr_storage, which
+    // is 128 bytes of which __ss_padding is 118. Kept for the slot's
+    // life once made, like FileIo below and for the same reason:
+    // Http1::Conn::peer points into it, and reset() clears peer_len
+    // rather than the pointer.
+    struct PeerAddr {
+      int slen = 0;
+      struct sockaddr_storage ss {};
+    };
+    std::unique_ptr<PeerAddr> peer;
 
     std::string out;
     std::string next;
@@ -3514,9 +3530,16 @@ class Ring {
     std::unique_ptr<FileIo> file_io;
 
     static constexpr unsigned kIov = App::Plan::kSegs + 1;
-    unsigned niov = 0;
     size_t plan_len = 0;
     struct msghdr msg {};
+
+    unsigned niov = 0;
+    uint16_t gen = 0;
+    uint8_t li = 0;
+    bool live = false;
+    bool sending = false;
+    bool close_after_send = false;
+    bool idle = false;
 
     typename App::Conn app;
 
@@ -4017,12 +4040,13 @@ class Ring {
   // cmd_net.c's contract. Only when someone is logging.
   void arm_peer(uint32_t idx) {
     Conn& c = conns_[idx];
-    c.peer_slen = static_cast<int>(sizeof(c.peer_ss));
+    if (c.peer == nullptr) c.peer.reset(new typename Conn::PeerAddr());
+    c.peer->slen = static_cast<int>(sizeof(c.peer->ss));
     struct io_uring_sqe* s = sqe();
     io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(idx), nullptr, 0, 0);
     s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
-    s->addr = reinterpret_cast<uint64_t>(&c.peer_ss);
-    s->optval = reinterpret_cast<uint64_t>(&c.peer_slen);
+    s->addr = reinterpret_cast<uint64_t>(&c.peer->ss);
+    s->optval = reinterpret_cast<uint64_t>(&c.peer->slen);
     s->optlen = 1;
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kPeer, c.gen, idx));
@@ -4042,10 +4066,11 @@ class Ring {
       }
       return;
     }
-    if (c.peer_slen > 0 && static_cast<size_t>(c.peer_slen) <= sizeof(c.peer_ss)) {
-      c.app.peer = &c.peer_ss;
+    if (c.peer != nullptr && c.peer->slen > 0 &&
+        static_cast<size_t>(c.peer->slen) <= sizeof(c.peer->ss)) {
+      c.app.peer = &c.peer->ss;
       c.app.peer_len = static_cast<uint8_t>(
-          c.peer_slen > 255 ? 255 : c.peer_slen);
+          c.peer->slen > 255 ? 255 : c.peer->slen);
     }
   }
 

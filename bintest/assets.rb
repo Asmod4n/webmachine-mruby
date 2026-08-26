@@ -693,3 +693,58 @@ assert('assets: shared-mime-info globs2 is the second format, and it parses') do
     Dir.rmdir(dir) rescue nil
   end
 end
+
+assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)') do
+  zip = a_build_zip([['img.bin', A_RAW, 0]])
+  zf = Tempfile.new(['wm-peerzip', '.zip'])
+  zf.binmode
+  zf.write(zip)
+  zf.close
+  logf = "/tmp/wm-peer-access-#{$$}.log"
+  File.unlink(logf) if File.exist?(logf)
+  port = 20000 + rand(40000)
+  errf = "/tmp/wm-peer-err-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
+              '--log', logf, out: File::NULL, err: errf)
+  begin
+    up = false
+    100.times do
+      begin
+        TCPSocket.open('127.0.0.1', port).close
+        up = true
+        break
+      rescue Errno::ECONNREFUSED, Errno::EADDRNOTAVAIL
+        break unless Process.wait(pid, Process::WNOHANG).nil?
+        sleep 0.05
+      end
+    end
+    assert_true up, 'no TCP listener came up'
+    TCPSocket.open('127.0.0.1', port) do |s|
+      s.write("GET /img.bin HTTP/1.1\r\nHost: x\r\nUser-Agent: probe/2\r\n\r\n")
+      a_read(s)
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+  end
+  20.times { break if File.exist?(logf) && File.readlines(logf).size >= 1; sleep 0.1 }
+  lines = File.readlines(logf)
+  assert_true lines.size >= 1, 'no access line was written'
+  assert_true lines[0].include?('"GET /img.bin HTTP/1.1" 200'), lines[0]
+  # SOCKET_URING_OP_GETSOCKNAME is not in every kernel. Where it is
+  # missing the server says so once and %h is '-' by contract; where it
+  # is there, the address has to arrive. Both are checked - what is NOT
+  # allowed is a '-' on a kernel that could have answered.
+  errtext = begin File.read(errf) rescue '' end
+  if errtext.include?('peer address unavailable')
+    assert_true lines[0].start_with?('- '),
+                "the cmd is unsupported here, so %h must be '-': #{lines[0].inspect}"
+  else
+    assert_true lines[0].start_with?('127.0.0.1 '),
+                "peer address missing from %h: #{lines[0].inspect}"
+  end
+ensure
+  File.unlink(logf) rescue nil
+  File.unlink(errf) rescue nil
+  zf&.unlink
+end
