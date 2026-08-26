@@ -80,6 +80,20 @@ if [ -n "${APP:-}" ]; then
   esac
 fi
 
+# BROWSER=1 sends what a browser sends. It is not decoration: Accept,
+# Accept-Encoding and Accept-Language are three of the eight headers
+# that clear ReqFacts::plain, and a plain request never walks the flow
+# tree at all - flow::answer returns the konst status on its first
+# branch. wrk's own request carries none of them, so every number this
+# script has ever produced measured the path a browser never takes.
+BROWSER="${BROWSER:-0}"
+WRK_HDRS=()
+if [ "$BROWSER" = 1 ]; then
+  WRK_HDRS=(-H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            -H 'Accept-Encoding: gzip, deflate'
+            -H 'Accept-Language: en-US,en;q=0.9')
+fi
+
 SOCK=/tmp/wm-floor-bench.sock
 DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
@@ -187,7 +201,7 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own
@@ -210,10 +224,10 @@ OUT=$(mktemp)
   C0=$(parse_child_cpu)
   if [ "$TRANSPORT" = unix ]; then
     WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
+      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   else
     "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
-      "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
+      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   fi
   CLI=$!
   wait "$CLI" 2>/dev/null
