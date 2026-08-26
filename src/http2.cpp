@@ -1,6 +1,8 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
+#include <picohttpparser.h>
+
 #include <cstring>
 
 namespace webmachine {
@@ -242,10 +244,23 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     }
     std::string body;
     body.swap(existing->body);
+    // The fields this stream copied when it parked, rebuilt over the
+    // blob that outlived hdrbuf.
+    struct phr_header hv[kH2MaxFields];
+    size_t nh = existing->hq.size() / 4;
+    if (nh > kH2MaxFields) nh = kH2MaxFields;
+    for (size_t i = 0; i < nh; i++) {
+      hv[i].name = existing->hblob.data() + existing->hq[i * 4];
+      hv[i].name_len = existing->hq[i * 4 + 1];
+      hv[i].value = existing->hblob.data() + existing->hq[i * 4 + 2];
+      hv[i].value_len = existing->hq[i * 4 + 3];
+    }
     ReqView rv;
     rv.method = facts.method;
     rv.body = body.empty() ? nullptr : body.data();
     rv.body_len = body.size();
+    rv.hdrs = nh != 0 ? hv : nullptr;
+    rv.nhdr = nh;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
     if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, sink)) return false;
     h2_log(st0, facts, target.data(), target.size());
@@ -260,6 +275,13 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
   bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
   size_t claimed_len = 0;
   bool have_claimed_len = false;
+  // RFC 9113 8.3: the request's own fields, in the shape h1 hands down,
+  // so request.headers and every by-name accessor answer the same way on
+  // both protocols. Filled in the loop that already holds the pointers -
+  // the pseudo-fields are not among them, because the branch below takes
+  // them first, which is also what h1 means by a header.
+  struct phr_header hv[kH2MaxFields];
+  size_t nh = 0;
   for (size_t i = 0; ok && i < nq; i += 4) {
     const char* name = h2.hdrbuf.data() + quads[i];
     const size_t nlen = quads[i + 1];
@@ -298,6 +320,13 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     if (h2_has_upper(name, nlen)) {
       ok = false;
       break;
+    }
+    if (nh < kH2MaxFields) {
+      hv[nh].name = name;
+      hv[nh].name_len = nlen;
+      hv[nh].value = val;
+      hv[nh].value_len = vlen;
+      nh++;
     }
     http::header_switch(name, nlen, val, vlen, facts, vals,
                         [&](const char* n, size_t nl, const char* v, size_t vl) {
@@ -401,6 +430,10 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     rv.table = apps_[st0.listener].table;
     rv.route = r;
     rv.spans = spans;
+    // hdrbuf is still the block this dispatch decoded, so the fields can
+    // be lent for the length of the answer.
+    rv.hdrs = hv;
+    rv.nhdr = nh;
     if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv, sink)) {
       return false;
     }
@@ -417,6 +450,17 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
   stx.asset_end = asset_end;
   stx.route = route;
   stx.target.assign(path_val, path_vlen);
+  stx.hblob.clear();
+  stx.hq.clear();
+  stx.hq.reserve(nh * 4);
+  for (size_t i = 0; i < nh; i++) {
+    stx.hq.push_back(static_cast<uint32_t>(stx.hblob.size()));
+    stx.hq.push_back(static_cast<uint32_t>(hv[i].name_len));
+    stx.hblob.append(hv[i].name, hv[i].name_len);
+    stx.hq.push_back(static_cast<uint32_t>(stx.hblob.size()));
+    stx.hq.push_back(static_cast<uint32_t>(hv[i].value_len));
+    stx.hblob.append(hv[i].value, hv[i].value_len);
+  }
   stx.content_length = claimed_len;
   stx.have_content_length = have_claimed_len;
   return true;
@@ -1193,14 +1237,39 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           const std::string target = stp->target;
           std::string body;
           body.swap(stp->body);
+          // The fields the HEADERS frame copied when this stream parked,
+          // rebuilt over the blob that outlived hdrbuf's reuse.
+          struct phr_header hv[kH2MaxFields];
+          size_t nh = stp->hq.size() / 4;
+          if (nh > kH2MaxFields) nh = kH2MaxFields;
+          for (size_t i = 0; i < nh; i++) {
+            hv[i].name = stp->hblob.data() + stp->hq[i * 4];
+            hv[i].name_len = stp->hq[i * 4 + 1];
+            hv[i].value = stp->hblob.data() + stp->hq[i * 4 + 2];
+            hv[i].value_len = stp->hq[i * 4 + 3];
+          }
+          // RFC 9110 12.5: the values negotiation reads point into hdrbuf
+          // too, so a parked answer had none and every request that named
+          // an Accept was refused 406 for a header it had actually sent.
+          // Re-derived from the copied fields, which is the only place
+          // they still exist.
+          http::ReqValues pvals;
+          flow::ReqFacts scratch;
+          for (size_t i = 0; i < nh; i++) {
+            http::header_switch(hv[i].name, hv[i].name_len, hv[i].value, hv[i].value_len,
+                                scratch, pvals,
+                                [](const char*, size_t, const char*, size_t) {});
+          }
           ReqView rv;
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.
           rv.method = facts.method;
           rv.body = body.empty() ? nullptr : body.data();
           rv.body_len = body.size();
+          rv.hdrs = nh != 0 ? hv : nullptr;
+          rv.nhdr = nh;
           const ReqView* rvp = h2_parked_view(st0, target, rv);
-          if (!h2_answer(st0, stream, facts, nullptr, head_only, route, rvp, sink)) return false;
+          if (!h2_answer(st0, stream, facts, &pvals, head_only, route, rvp, sink)) return false;
           h2_log(st0, facts, target.data(), target.size());
         }
         break;

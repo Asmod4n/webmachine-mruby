@@ -614,3 +614,91 @@ assert('h2: CONTINUATION with no HEADERS before it is a connection error') do
     end
   end
 end
+
+def h2_lit(name, value)
+  "\x00".b + name.bytesize.chr + name.b + value.bytesize.chr + value.b
+end
+
+# A DATA frame is answered with WINDOW_UPDATE first (RFC 9113 6.9), so a
+# parked stream's HEADERS is not the next frame on the wire.
+def h2_until(s, type)
+  20.times do
+    t, f, st, pay = h2_next(s)
+    return [t, f, st, pay] if t == type
+  end
+  raise "no frame of type #{type} arrived"
+end
+
+H2_FIELDS_APP = <<~RUBY unless defined?(H2_FIELDS_APP)
+  class Fields < Webmachine::Resource
+    def self.allowed_methods
+      'GET HEAD POST'
+    end
+
+    def to_html
+      request.headers.keys.sort.join(',')
+    end
+
+    def process_post
+      response.body = request.headers.keys.sort.join(',') + '|' + request.body.to_s
+      true
+    end
+  end
+RUBY
+
+assert('h2: request.headers answers on an immediate request (RFC 9113 8.3)') do
+  h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      blk = "\x82\x86\x84\x41\x0bexample.com".b + h2_lit('x-probe', 'one')
+      s.write(h2_frame(1, 0x05, 1, blk))
+      t, = h2_next(s)
+      assert_equal 1, t
+      t, _, _, data = h2_next(s)
+      assert_equal 0, t
+      assert_true data.include?('x-probe'), "headers missing: #{data.inspect}"
+    end
+  end
+end
+
+assert('h2: a PARKED request keeps its fields - headers and body both answer') do
+  h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      blk = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('x-probe', 'two')
+      s.write(h2_frame(1, 0x04, 1, blk))
+      s.write(h2_frame(0, 0x01, 1, 'hello=1'))
+      h2_until(s, 1)
+      body = +''.b
+      20.times do
+        ty, fl, _, pay = h2_next(s)
+        next unless ty == 0
+        body << pay
+        break if (fl & 0x01) != 0
+      end
+      assert_true body.include?('x-probe'), "parked headers missing: #{body.inspect}"
+      assert_true body.include?('hello=1'), "parked body missing: #{body.inspect}"
+    end
+  end
+end
+
+assert('h2: a parked request negotiates on the Accept it actually sent') do
+  h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      ok = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'text/html')
+      s.write(h2_frame(1, 0x04, 1, ok))
+      s.write(h2_frame(0, 0x01, 1, 'a=1'))
+      _, _, _, block = h2_until(s, 1)
+      assert_equal 0x88, block.getbyte(0), 'a matching Accept must not be refused'
+    end
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      no = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'application/json')
+      s.write(h2_frame(1, 0x04, 1, no))
+      s.write(h2_frame(0, 0x01, 1, 'a=1'))
+      _, _, _, block = h2_until(s, 1)
+      assert_not_equal 0x88, block.getbyte(0), 'an unservable Accept must still refuse'
+    end
+  end
+end

@@ -1991,6 +1991,14 @@ struct H2Stream {
   size_t content_length = 0;
   bool have_content_length = false;
   std::string pending;
+  // RFC 9113 8.3: a parked request is answered after hdrbuf has been
+  // reused by the next dispatch, so its fields cannot be lent the way
+  // the immediate path lends them - they are COPIED here instead, names
+  // and values end to end in `hblob` with four offsets each in `hq`.
+  // Paid only by a request that carries a body, which is already doing
+  // more work than a GET.
+  std::string hblob;
+  std::vector<uint32_t> hq;
   flow::ReqFacts facts;
   const AssetEntry* asset = nullptr;
   uint16_t asset_status = 0;
