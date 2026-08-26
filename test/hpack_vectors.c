@@ -154,6 +154,7 @@ void mrb_webmachine_flow_vectors_init(mrb_state *mrb);
 void mrb_webmachine_ws_vectors_init(mrb_state *mrb);
 void mrb_webmachine_wm_ruby_init(mrb_state *mrb);
 void mrb_webmachine_file_vectors_init(mrb_state *mrb);
+void mrb_webmachine_asset_vectors_init(mrb_state *mrb);
 
 void
 mrb_webmachine_mruby_gem_test(mrb_state *mrb)
@@ -162,6 +163,7 @@ mrb_webmachine_mruby_gem_test(mrb_state *mrb)
   mrb_webmachine_ws_vectors_init(mrb);
   mrb_webmachine_wm_ruby_init(mrb);
   mrb_webmachine_file_vectors_init(mrb);
+  mrb_webmachine_asset_vectors_init(mrb);
 
   struct RClass *m = mrb_define_module(mrb, "HPackVectors");
   mrb_define_module_function(mrb, m, "decode_blocks", decode_blocks,

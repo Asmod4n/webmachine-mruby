@@ -745,65 +745,41 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     if (assets_ != nullptr) {
       if (AssetEntry* ae = assets_->find(path, path_len)) {
         const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
-        bool started_xfer = false;
-        uint16_t alog_st = as;
-        size_t alog_by = 0;
-        if (as == 412 || as == 501) {
-          const Variants& sv = variants(as);
-          sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
-                                 : (persist ? sv.keep.bytes : sv.close.bytes));
-        } else {
-          const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
-                                                : (persist ? Assets::kKeep : Assets::kClose);
-          uint16_t rs = 0;
-          size_t rf = 0, rl = 0;
-          if (as == 200 && !head_only && facts.method == flow::Method::kGet &&
-              vals.range != nullptr &&
-              (vals.if_range == nullptr ||
-               http::if_range_matches(vals.if_range, vals.if_range_len, ae->etag,
-                                      sizeof(ae->etag)))) {
-            switch (http::parse_range(vals.range, vals.range_len, Assets::wire_len(*ae),
-                                      &rf, &rl)) {
-              case http::RangeParse::kOne: rs = 206; break;
-              case http::RangeParse::kUnsat: rs = 416; break;
-              case http::RangeParse::kNone: break;
-            }
+        const AssetStep step = asset_step(*ae, as, head_only, facts.method, vals, warm_budget_);
+        const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
+                                              : (persist ? Assets::kKeep : Assets::kClose);
+        switch (step.head) {
+          case AssetStep::Head::kRefusal: {
+            const Variants& sv = variants(step.status);
+            sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
+                                   : (persist ? sv.keep.bytes : sv.close.bytes));
+            break;
           }
-          if (rs == 416) {
-            alog_st = 416;
+          case AssetStep::Head::kUnsatisfiable:
             assets_->answer_416_head(*ae, av, date_, sink);
-          } else if (rs == 206) {
-            alog_st = 206;
-            assets_->answer_206_head(*ae, av, rf, rl, date_, sink);
-            const size_t rlen = rl - rf + 1;
-            alog_by = rlen;
-            if (rlen <= warm_budget_) {
-              Assets::copy_wire(*ae, rf, rlen, sink);
-            } else {
-              st.xfer = ae;
-              st.xfer_off = rf;
-              st.xfer_end = rl + 1;
-              started_xfer = true;
-            }
+            break;
+          case AssetStep::Head::kRange:
+            assets_->answer_206_head(*ae, av, step.off, step.off + step.len - 1, date_, sink);
+            break;
+          case AssetStep::Head::kNormal:
+            assets_->answer_head(*ae, step.status, av, date_, sec_, sink);
+            break;
+        }
+        bool started_xfer = false;
+        if (step.body) {
+          if (step.copy) {
+            Assets::copy_wire(*ae, step.off, step.len, sink);
           } else {
-            assets_->answer_head(*ae, as, av, date_, sec_, sink);
-            if (as == 200 && !head_only) {
-              alog_by = Assets::wire_len(*ae);
-              const size_t wlen = Assets::wire_len(*ae);
-              if (wlen <= warm_budget_) {
-                Assets::copy_wire(*ae, 0, wlen, sink);
-              } else {
-                st.xfer = ae;
-                st.xfer_off = 0;
-                st.xfer_end = wlen;
-                started_xfer = true;
-              }
-            }
+            st.xfer = ae;
+            st.xfer_off = step.off;
+            st.xfer_end = step.off + step.len;
+            started_xfer = true;
           }
         }
         if (alog_.enabled) {
-          log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, alog_st,
-                     alog_by, vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
+          log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags,
+                     step.status, step.body ? step.len : 0, vals.log_ref, vals.log_ref_len,
+                     vals.log_ua, vals.log_ua_len);
         }
         off += static_cast<size_t>(ret);
         if (content_length != 0) {
@@ -997,8 +973,22 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       }
     }
 
-    if (have_body && status == 200) {
-      if (lent != nullptr) {
+    AnswerStep astep = answer_step(status, answered, have_body, body_.size(), lent_len,
+                                   lent != nullptr, b != nullptr && b->gzip_ok,
+                                   b != nullptr && b->bound);
+    const char* exc_body = nullptr;
+    size_t exc_len = 0;
+    if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
+      if (elog_.enabled) {
+        log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
+      }
+      if (resource_exception_begin(*b->res, &exc_body, &exc_len)) astep.answered = true;
+      else astep.shape = AnswerStep::Shape::kStatus;
+    }
+    switch (astep.shape) {
+      case AnswerStep::Shape::kAlready:
+        break;
+      case AnswerStep::Shape::kLent: {
         const Variants& pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
         const Resp& pfx = minor >= 1 ? (persist ? pv.plain : pv.close)
                                      : (persist ? pv.keep : pv.close);
@@ -1006,7 +996,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         char cl[40];
         sink.append(cl, http::spell_content_length(cl, lent_len));
         lend_body(st, sink, lent, lent_len, *plan);
-      } else if (b->gzip_ok) {
+        break;
+      }
+      case AnswerStep::Shape::kGzip:
         assemble_dynamic(
             st, accept_gzip,
             minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
@@ -1014,37 +1006,29 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
                        : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close),
             head_only, sink);
-      } else {
+        break;
+      case AnswerStep::Shape::kPlain:
         assemble(sink, minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                   : (persist ? b->ok_prefix.keep : b->ok_prefix.close),
                  body_.data(), body_.size(), head_only);
-      }
-      answered = true;
-    }
-    if (WM_H1_UNLIKELY(!answered && status == 500 && b != nullptr && b->bound)) {
-      if (elog_.enabled) {
-        log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
-      }
-      const char* bp = nullptr;
-      size_t blen = 0;
-      if (resource_exception_begin(*b->res, &bp, &blen)) {
+        break;
+      case AnswerStep::Shape::kException:
         assemble(sink, minor >= 1 ? (persist ? b->err_prefix.plain : b->err_prefix.close)
                                   : (persist ? b->err_prefix.keep : b->err_prefix.close),
-               bp, blen, head_only);
-        answered = true;
+                 exc_body, exc_len, head_only);
+        break;
+      case AnswerStep::Shape::kStatus: {
+        const Variants& sv =
+            (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
+        sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
+                               : (persist ? sv.keep.bytes : sv.close.bytes));
+        break;
       }
     }
-    if (!answered) {
-      const Variants& sv =
-          (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
-      sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
-                             : (persist ? sv.keep.bytes : sv.close.bytes));
-    }
     if (alog_.enabled) {
-      const size_t blen = lent != nullptr ? lent_len : body_.size();
       log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
-                 (answered && !head_only) ? blen : 0, vals.log_ref, vals.log_ref_len,
-                 vals.log_ua, vals.log_ua_len);
+                 (astep.answered && !head_only) ? astep.body_len : 0, vals.log_ref,
+                 vals.log_ref_len, vals.log_ua, vals.log_ua_len);
     }
 
     off += static_cast<size_t>(ret);

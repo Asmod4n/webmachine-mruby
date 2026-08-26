@@ -2837,6 +2837,99 @@ class Http1 {
   static size_t file_map_len(const Conn& st) {
     return (st.file != nullptr && st.file->map_wanted) ? st.file->total : 0;
   }
+  // Which shape a resource's answer takes. The five were four `if`s that
+  // each decided AND wrote, with `answered` as a shadow flag set in three
+  // places - and an access line below that recomputed the byte count for
+  // itself, so it could disagree with what actually went out.
+  struct AnswerStep {
+    enum class Shape : uint8_t {
+      kAlready,    // the dynamic-head branch already spelled it
+      kLent,       // a lent body behind the 200 prefix
+      kGzip,       // conneg between identity and gzip
+      kPlain,      // a copied body behind the 200 prefix
+      kException,  // a 500 the resource spelled itself (may demote)
+      kStatus      // a prebuilt status line and nothing else
+    };
+    Shape shape = Shape::kStatus;
+    size_t body_len = 0;  // what the access line counts
+    bool answered = false;
+  };
+  static AnswerStep answer_step(uint16_t status, bool answered_already, bool have_body,
+                                size_t body_len, size_t lent_len, bool has_lent,
+                                bool gzip_ok, bool bound) {
+    AnswerStep s;
+    s.body_len = has_lent ? lent_len : body_len;
+    s.answered = answered_already;
+    if (have_body && status == 200) {
+      s.shape = has_lent ? AnswerStep::Shape::kLent
+                         : (gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
+      s.answered = true;
+    } else if (answered_already) {
+      s.shape = AnswerStep::Shape::kAlready;
+    } else if (status == 500 && bound) {
+      // Whether a body exists is a question for the VM, so the caller
+      // demotes this to kStatus when the answer is no.
+      s.shape = AnswerStep::Shape::kException;
+    } else {
+      s.shape = AnswerStep::Shape::kStatus;
+    }
+    return s;
+  }
+
+  // What the asset tier does with ONE request: which head, which byte
+  // range, whether the body is copied into the sink or streamed. Computed
+  // here and performed by the caller - the range verdict used to be
+  // decided inside the branch that was already writing, with two shadow
+  // variables (alog_st/alog_by) carrying the answer back out.
+  struct AssetStep {
+    enum class Head : uint8_t { kRefusal, kNormal, kRange, kUnsatisfiable };
+    Head head = Head::kNormal;
+    uint16_t status = 200;  // what the access line says
+    size_t off = 0;
+    size_t len = 0;   // the body's span; also what the access line counts
+    bool body = false;
+    bool copy = false;  // small enough to ride the sink instead of a lend
+  };
+  // RFC 9110 14.1/14.2: a range is honoured only on a GET that would have
+  // been a 200, and only when If-Range still matches the representation.
+  static AssetStep asset_step(const AssetEntry& e, uint16_t verdict, bool head_only,
+                              flow::Method m, const http::ReqValues& vals,
+                              size_t warm_budget) {
+    AssetStep s;
+    s.status = verdict;
+    if (verdict == 412 || verdict == 501) {
+      s.head = AssetStep::Head::kRefusal;
+      return s;
+    }
+    const size_t whole = Assets::wire_len(e);
+    if (verdict == 200 && !head_only && m == flow::Method::kGet && vals.range != nullptr &&
+        (vals.if_range == nullptr ||
+         http::if_range_matches(vals.if_range, vals.if_range_len, e.etag, sizeof(e.etag)))) {
+      size_t rf = 0, rl = 0;
+      switch (http::parse_range(vals.range, vals.range_len, whole, &rf, &rl)) {
+        case http::RangeParse::kOne:
+          s.head = AssetStep::Head::kRange;
+          s.status = 206;
+          s.off = rf;
+          s.len = rl - rf + 1;
+          s.body = true;
+          break;
+        case http::RangeParse::kUnsat:
+          s.head = AssetStep::Head::kUnsatisfiable;
+          s.status = 416;
+          return s;
+        case http::RangeParse::kNone:
+          break;
+      }
+    }
+    if (s.head == AssetStep::Head::kNormal && verdict == 200 && !head_only) {
+      s.len = whole;
+      s.body = true;
+    }
+    s.copy = s.body && s.len <= warm_budget;
+    return s;
+  }
+
   // The next round of a transfer, computed and not performed. Public
   // because test/file_vectors.cpp drives it directly - a decision that
   // needs a socket to test is a decision nobody tests.
