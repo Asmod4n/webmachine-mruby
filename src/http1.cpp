@@ -366,8 +366,7 @@ void Http1::file_prebuilt(Conn& st, uint16_t status) {
                                       : (st.file->persist ? sv.keep.bytes : sv.close.bytes);
   st.file->status = status;
   st.file->len = 0;
-  st.file->busy = false;
-  st.file->ready = true;
+  st.file->stage = FileStage::kDeliver;
 }
 
 // RFC 9112 3: the head a served file wears. No prebuilt head can hold a
@@ -379,17 +378,15 @@ void Http1::file_spell(Conn& st, uint16_t status, size_t len, bool bodyless) {
              st.file->hdrs, st.file->minor, st.file->persist, bodyless, len);
   st.file->status = status;
   st.file->len = bodyless || st.file->head_only ? 0 : len;
-  st.file->busy = false;
-  st.file->ready = true;
+  st.file->stage = FileStage::kDeliver;
 }
 
 // response.file: the reactor is taking the open. The name has to stay put -
 // the SQE points straight at these bytes - so nothing clears it until the
 // answer is spelled.
 const char* Http1::file_take(Conn& st) {
-  if (st.file == nullptr || !st.file->want || st.file->busy) return nullptr;
-  st.file->want = false;
-  st.file->busy = true;
+  if (st.file == nullptr || st.file->stage != FileStage::kNamed) return nullptr;
+  st.file->stage = FileStage::kRing;
   return st.file->path.c_str();
 }
 
@@ -403,6 +400,18 @@ void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 void Http1::file_error(Conn& st, const char* why) {
   log_internal_error(elog_, st.peer, st.peer_len, st.file->target.data(), st.file->target.size(),
                      500, why, std::strlen(why));
+  // Once a window has gone out the answer is committed: the head named a
+  // Content-Length this body can no longer reach, so a 500 spelled here
+  // would land BEHIND those bytes and the client would wait forever for the
+  // rest. RFC 9112 6.3: the only way left to say "this is not the whole
+  // representation" is to close the connection under it.
+  if (st.file->sent != 0) {
+    st.file->total = st.file->sent;
+    st.file->len = 0;
+    st.file->persist = false;
+    st.file->stage = FileStage::kDeliver;
+    return;
+  }
   file_prebuilt(st, 500);
 }
 
@@ -414,16 +423,6 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
     // A directory, a fifo, a device: not a representation, and saying WHICH
     // would be the distinguishable answer this whole path avoids.
     file_reject(st);
-    return false;
-  }
-  if (stx.stx_size > static_cast<uint64_t>(kResponseFileMax)) {
-    char why[256];
-    std::snprintf(why, sizeof why,
-                  "response.file %s is %llu bytes and this tier reads a file into one "
-                  "buffer, ceiling %zu - serve it from --assets, or split it",
-                  st.file->path.c_str(), static_cast<unsigned long long>(stx.stx_size),
-                  kResponseFileMax);
-    file_error(st, why);
     return false;
   }
   const size_t len = static_cast<size_t>(stx.stx_size);
@@ -451,8 +450,15 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
     return false;
   }
   file_spell(st, 200, len, false);
-  st.file->ready = false;  // the head stands, the bytes are still owed
-  *want = len;
+  st.file->stage = FileStage::kRing;  // the head stands, the bytes are owed
+  st.file->total = len;
+  st.file->sent = 0;
+  // [tune] file_map_threshold: 0 is "never map", so it is not a plain >=.
+  st.file->map_wanted = map_min_ != 0 && len >= map_min_;
+  // ONE meaning: what a READ may take. The mapping's length is a separate
+  // question with a separate answer (file_map_len) - the two used to share
+  // this variable, and the read path then asked for the whole file.
+  *want = len < kResponseFileWindow ? len : kResponseFileWindow;
   return true;
 }
 
@@ -462,11 +468,55 @@ char* Http1::file_buffer(Conn& st, size_t n) {
   return &st.file->buf[0];
 }
 
+// The whole file, mapped. No read happened and none will: more() lends the
+// mapping to one send and zc_release() gives it back when that round drains.
+void Http1::file_mapped(Conn& st, const char* p, size_t n) {
+  // A mapping still installed here belongs to no round: nothing lent it,
+  // so nothing will hand it back.
+  st.map_release();
+  st.file->map = p;
+  st.file->map_len = n;
+  st.file->len = n;
+  st.file->total = n;
+  st.file->sent = 0;
+  st.file->stage = FileStage::kDeliver;
+}
+
+// The ONE place a transfer's state changes as a round goes out. Everything
+// it does was decided by file_step over a snapshot; nothing is decided here.
+void Http1::file_apply(Conn& st, const FileStep& step) {
+  if (st.file == nullptr) return;
+  st.file->sent = step.sent_after;
+  st.file->stage = step.next;
+  if (step.head) st.file->head.clear();  // the head rides the first round
+  if (step.log) file_log(st);            // before file_clear takes the strings
+  if (step.release_map) st.map_release();
+  if (step.clear) st.file_clear();
+}
+
+// RFC 9110: ONE access line per request, with the bytes that really left.
+// A transfer that ends in sixteen windows is one request, not sixteen.
+void Http1::file_log(Conn& st) {
+  if (!alog_.enabled || st.file == nullptr) return;
+  log_access(alog_, st.peer, st.peer_len, st.file->method.data(), st.file->method.size(),
+             st.file->target.data(), st.file->target.size(), st.file->lflags,
+             st.file->status, st.file->sent, st.file->ref.data(), st.file->ref.size(),
+             st.file->ua.data(), st.file->ua.size());
+}
+
+// A connection dying under a transfer still owes its line - that event is
+// exactly what an operator wants to see. The stage is the guard: a transfer
+// that reached kNone has already written its line and cannot write a second.
+void Http1::file_abandon(Conn& st) {
+  if (st.file == nullptr || st.file->stage == FileStage::kNone) return;
+  file_log(st);
+  st.file->stage = FileStage::kNone;
+}
+
 // The bytes are in. `more` is what puts head and body on the wire.
 void Http1::file_ready_now(Conn& st, size_t n) {
   st.file->len = n;
-  st.file->busy = false;
-  st.file->ready = true;
+  st.file->stage = FileStage::kDeliver;
 }
 
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
@@ -893,9 +943,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             st.file->target.assign(path, path_len);
             st.file->ref.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
             st.file->ua.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
-            st.file->ready = false;
-            st.file->busy = false;
-            st.file->want = !fbad;
+            st.file->stage = FileStage::kNamed;
             if (fbad) file_reject(st);
             off += static_cast<size_t>(ret);
             if (content_length != 0) {

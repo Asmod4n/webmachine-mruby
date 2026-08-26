@@ -280,6 +280,11 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     zct = specs_[i]->zero_copy_threshold;
   }
   if (zct >= 0) http_->set_zero_copy_threshold(static_cast<size_t>(zct));
+  long long fmt = opts_.file_map_threshold;
+  for (size_t i = 0; fmt < 0 && i < specs_.size(); i++) {
+    fmt = specs_[i]->file_map_threshold;
+  }
+  if (fmt >= 0) http_->set_file_map_threshold(static_cast<size_t>(fmt));
 
   ring_.reset(new Ring<Http1>(*http_));
   if (!ring_->init(cfg, err, errlen)) {

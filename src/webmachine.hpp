@@ -2554,13 +2554,54 @@ inline constexpr size_t kZeroCopyDefault = 128u * 1024;
 // refuse every value instead of refusing none.
 inline constexpr size_t kZeroCopyMax = 1u << 30;
 
-// response.file reads the whole file into ONE per-connection buffer before a
-// byte goes out, so the ceiling is a memory bound and not a policy: above it
-// a file wants the streaming continuation this pass did not build (see
-// Http1::file_deliver), and a named 500 says so rather than the process
-// quietly reserving 100 MiB per in-flight request. The pre-mapped asset tier
-// (--assets) is what serves anything larger today.
-inline constexpr size_t kResponseFileMax = 16u * 1024 * 1024;
+// response.file reads a WINDOW at a time, the way the asset tier already
+// delivers (see Http1::more's st.xfer arm), so per-connection memory is
+// O(window) and not O(file). A file smaller than this is still one read and
+// one round, exactly as before; a larger one is refilled per drained round.
+// There is no ceiling on the file itself any more.
+// Where a response.file transfer stands. ONE field, five values: the
+// combinations three separate bools could spell - and did spell wrongly -
+// are not representable. kDone is the state that made the difference: the
+// last lend is ON THE WIRE, so the mapping may not be handed back yet, and
+// the drained round after it is the one that cleans up.
+enum class FileStage : uint8_t { kNone, kNamed, kRing, kDeliver, kDone };
+
+// What the next round of a transfer does. Computed by file_step() from a
+// snapshot and by nothing else; applied by file_apply() and by nothing
+// else. A POD returned in registers - purity here is about the DECISION,
+// never about the bytes, which stay exactly where they are.
+struct FileStep {
+  const char* body = nullptr;  // nullptr = nothing to lend this round
+  size_t body_len = 0;
+  size_t sent_after = 0;
+  FileStage next = FileStage::kNone;
+  bool head = false;         // the head rides the first round only
+  bool release_map = false;  // the mapping is off the wire and may go back
+  bool log = false;          // the ONE access line of this transfer
+  bool clear = false;        // the transfer is over
+  bool persist = true;
+};
+
+inline constexpr size_t kResponseFileWindow = 256u * 1024;
+
+// From this size up a file is MAPPED and handed to one send instead of being
+// read window by window: the kernel walks the mapping itself, so there is no
+// read into user space and no window buffer at all. Below it the mmap/munmap
+// pair - two syscalls the ring cannot carry - costs more than the reads it
+// saves. The crossover is a property of the machine, so it is a [tune] knob:
+// 0 is the operator saying "never map", which is a real answer.
+inline constexpr size_t kFileMapDefault = 1u * 1024 * 1024;
+// The same ceiling kZeroCopyMax carries, for the same reason: it has to fit
+// an mrb_int on a 32-bit-integer build or the range check refuses everything.
+inline constexpr size_t kFileMapMax = 1u << 30;
+
+// The most a mapping lends to ONE send. The kernel caps a single sendmsg
+// at MAX_RW_COUNT (INT_MAX rounded down to a page), and a body offered past
+// that comes back short - which reads exactly like a dead peer and drops a
+// healthy connection. 64 MiB sits under that cap at every page size, costs
+// one extra SQE per 64 MiB and not one extra copy, and bounds how long a
+// single operation can hold the connection.
+inline constexpr size_t kFileSendChunk = 64u * 1024 * 1024;
 
 inline constexpr uint16_t kNoRoute = 0xffff;
 
@@ -2622,12 +2663,22 @@ class Http1 {
       std::string ref;
       std::string ua;
       size_t len = 0;
+      // total is the whole file (what Content-Length promised), sent what
+      // has already gone out. total != sent is the only thing that keeps a
+      // file alive across rounds.
+      size_t total = 0;
+      size_t sent = 0;
+      // A mapped file: lent whole, in chunks no bigger than one send can
+      // move. Like buf it deliberately survives file_clear() - the SQE
+      // still points into it - and it goes back on the kDone round, which
+      // is by construction the round AFTER the last lend.
+      const char* map = nullptr;
+      size_t map_len = 0;
+      bool map_wanted = false;
       int64_t ims = 0;
       uint16_t status = 0;
       uint8_t lflags = 0;
-      bool want = false;
-      bool busy = false;
-      bool ready = false;
+      FileStage stage = FileStage::kNone;
       bool persist = true;
       bool head_only = false;
       bool ims_valid = false;
@@ -2639,10 +2690,13 @@ class Http1 {
     // FileXfer's comment above.
     void file_clear() {
       if (file == nullptr) return;
-      file->want = false;
-      file->busy = false;
-      file->ready = false;
+      file->stage = FileStage::kNone;
       file->len = 0;
+      // The counters end with the transfer they counted. Leaving them for
+      // the next request is how a stale `total` gets read as this one's.
+      file->total = 0;
+      file->sent = 0;
+      file->map_wanted = false;
       file->status = 0;
       file->lflags = 0;
       file->path.clear();
@@ -2654,9 +2708,21 @@ class Http1 {
       file->ref.clear();
       file->ua.clear();
     }
+    // The address space goes back. Called from zc_release once the round
+    // that borrowed the mapping has drained, and unconditionally when the
+    // connection itself ends - a mapping nobody borrowed still has to go.
+    void map_release() {
+      if (file == nullptr || file->map == nullptr) return;
+      ::munmap(const_cast<char*>(file->map), file->map_len);
+      file->map = nullptr;
+      file->map_len = 0;
+    }
     // The ONE end of the lend window - drained round, closed connection,
     // dead reactor. Never conditional on the round having succeeded.
     void zc_release() {
+      // The mapping is NOT released from here. Which round may hand it back
+      // is a decision, and decisions live in file_step(); this function
+      // runs before that one and could only guess.
       // h2 lends PER STREAM and hands each one back where the stream ends,
       // but the last bytes are still in flight there - this is the point
       // that knows they are not, so the h2 backlog is freed from here.
@@ -2672,6 +2738,7 @@ class Http1 {
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
       zc_release();
+      map_release();
       delete file;
       file = nullptr;
       peer_len = 0;
@@ -2695,6 +2762,7 @@ class Http1 {
     // die with the connection.
     ~Conn() {
       zc_release();
+      map_release();
       delete file;
       h2_free(h2);
       ws_free(ws);
@@ -2755,8 +2823,75 @@ class Http1 {
   bool file_stat(Conn& st, const struct statx& stx, size_t* want);
   char* file_buffer(Conn& st, size_t n);
   void file_ready_now(Conn& st, size_t n);
-  // Is an answer waiting for `more` to put it on the wire?
-  static bool file_answerable(const Conn& st) { return st.file != nullptr && st.file->ready; }
+  void file_mapped(Conn& st, const char* p, size_t n);
+  // Is a round waiting for `more` to run? kDone counts: it puts nothing on
+  // the wire, but it is the round that hands the mapping back and writes
+  // the access line, so nothing may go idle in front of it.
+  static bool file_answerable(const Conn& st) {
+    return st.file != nullptr &&
+           (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone);
+  }
+  // 0 = do not map; otherwise the exact length to map. ONE question, ONE
+  // answer - the split that made the read path ask "map?" and then use the
+  // map's length to read with.
+  static size_t file_map_len(const Conn& st) {
+    return (st.file != nullptr && st.file->map_wanted) ? st.file->total : 0;
+  }
+  // The next round of a transfer, computed and not performed. Public
+  // because test/file_vectors.cpp drives it directly - a decision that
+  // needs a socket to test is a decision nobody tests.
+  //
+  // Defined HERE, not in a .cpp: `more` lives in another translation unit
+  // and this build has no LTO, so a definition over there would be a real
+  // call with a 48-byte return through memory (SysV returns anything past
+  // 16 bytes that way). Inlined, the FileStep never exists - the compiler
+  // keeps its fields in registers. Purity only pays where the compiler can
+  // SEE it.
+  static FileStep file_step(const Conn::FileXfer& x) {
+    FileStep s;
+    s.persist = x.persist;
+    s.sent_after = x.sent;
+    s.next = x.stage;
+    switch (x.stage) {
+      case FileStage::kDeliver: {
+        const bool mapped = x.map != nullptr;
+        const size_t left = x.total > x.sent ? x.total - x.sent : 0;
+        // A mapping lends a bounded chunk of itself; a window lends exactly
+        // what the read put in it.
+        const size_t take = mapped ? (left < kFileSendChunk ? left : kFileSendChunk) : x.len;
+        s.head = !x.head.empty();
+        s.body = take != 0 ? (mapped ? x.map + x.sent : x.buf.data()) : nullptr;
+        s.body_len = take;
+        s.sent_after = x.sent + take;
+        // A window is refilled by the ring, so the next round waits on it.
+        // A mapping has no read coming to wake it and drives itself.
+        s.next = s.sent_after < x.total
+                     ? (mapped ? FileStage::kDeliver : FileStage::kRing)
+                     : FileStage::kDone;
+        break;
+      }
+      case FileStage::kDone:
+        // The last lend has DRAINED - that is what kDone means and the only
+        // way to reach it. So this is where the mapping goes back and where
+        // the transfer's one access line is owed.
+        s.release_map = x.map != nullptr;
+        s.log = true;
+        s.clear = true;
+        s.next = FileStage::kNone;
+        break;
+      default:
+        break;
+    }
+    return s;
+  }
+  // The ONE place a transfer's state changes as a round is delivered.
+  void file_apply(Conn& st, const FileStep& step);
+  // The single access line of a transfer, with the bytes that really went
+  // out. Called on the kDone round, or by file_abandon when a connection
+  // dies under one; the stage is what keeps it from happening twice.
+  void file_log(Conn& st);
+  // A connection closing under a transfer still owes its access line.
+  void file_abandon(Conn& st);
   // Nothing owed, nothing on the wire: give the read buffer back, or a slot
   // that once served a big file would hold those bytes for the process's
   // life. The Ring calls this only where BOTH are true.
@@ -2776,6 +2911,13 @@ class Http1 {
   void enable_error_log() { elog_.enabled = true; }
   // [tune] zero_copy_threshold, once, before the first accept.
   void set_zero_copy_threshold(size_t n) { zc_min_ = n; }
+
+  // [tune] file_map_threshold, once, before the first accept. 0 = never map.
+  void set_file_map_threshold(size_t n) { map_min_ = n; }
+
+  // The Ring asks before it opens: the size that decides this is the App's
+  // to weigh, because the App is what holds the operator's answer.
+
 
  private:
   struct AppSlot;
@@ -2884,6 +3026,7 @@ class Http1 {
   Assets* assets_ = nullptr;
   size_t warm_budget_ = kWarmBudgetDefault;
   size_t zc_min_ = kZeroCopyDefault;
+  size_t map_min_ = kFileMapDefault;
   Logger alog_;
   Logger elog_;
   uint16_t alog_status_ = 0;
@@ -2917,6 +3060,8 @@ struct AppSpec {
   bool registered = false;
   // conf.zero_copy_threshold = N; -1 = this app said nothing.
   long long zero_copy_threshold = -1;
+  // conf.file_map_threshold = N; -1 = this app said nothing.
+  long long file_map_threshold = -1;
   // conf.docroot = PATH; empty = this app said nothing. --docroot and
   // [server] docroot both beat it, same order as every other choice here.
   std::string docroot;
@@ -2975,6 +3120,8 @@ struct ServerOptions {
   int to_idle = 0;
   // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
   long long zero_copy_threshold = -1;
+  // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+  long long file_map_threshold = -1;
 };
 void server_options(const ServerOptions& opts);
 
@@ -3011,6 +3158,8 @@ struct Config {
   int idle_timeout = 0;
   // 0 is a CHOICE here ("never lend"), so absence is -1 and not 0.
   long long zero_copy_threshold = -1;
+  // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+  long long file_map_threshold = -1;
 };
 
 bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen);
@@ -3478,7 +3627,6 @@ class Ring {
   // flags sat between the 8-byte members and cost 21 bytes of padding.
   struct Conn {
     int64_t deadline_s = 0;
-    size_t sent = 0;
 
     static constexpr size_t kRoundFloor = 64u * 1024;
     size_t round_cap = kRoundFloor;
@@ -3514,12 +3662,12 @@ class Ring {
     // (see file_reading below), so tearing it down on close would race that
     // in-flight completion.
     //
-    // unique_ptr, not a raw pointer, and for the same reason iov/msg_iov
-    // below already are one: conns_ is a std::vector, and a raw pointer
+    // unique_ptr, not a raw pointer, and for the same reason iov below
+    // already is one: conns_ is a std::vector, and a raw pointer
     // plus a hand-written destructor would delete the implicit move
     // constructor a vector resize needs, falling back to a copy - which a
-    // unique_ptr member refuses to compile, exactly like iov/msg_iov
-    // already refuse it. unique_ptr keeps the move and needs no
+    // unique_ptr member refuses to compile, exactly like iov already
+    // refuses it. unique_ptr keeps the move and needs no
     // destructor of its own.
     struct FileIo {
       // A PLAIN fd, not a direct descriptor: statx is the only op in this
@@ -3530,6 +3678,10 @@ class Ring {
       int fd = -1;
       size_t off = 0;
       size_t want = 0;
+      // done counts what earlier windows already read, so the next read
+      // starts where the last one stopped; total ends the chain.
+      size_t done = 0;
+      size_t total = 0;
       // A read whose buffer the App still owns. It outlives a torn-down
       // connection by one completion, so nothing may hand that buffer back
       // or resize it while this stands.
@@ -3553,7 +3705,6 @@ class Ring {
     typename App::Conn app;
 
     std::unique_ptr<struct iovec[]> iov;
-    std::unique_ptr<struct iovec[]> msg_iov;
   };
 
   // Never null: a full SQ is submitted and retried once, and a ring that
@@ -3685,29 +3836,21 @@ class Ring {
   }
 
   // One sendmsg for the whole round; MSG_MORE when the App still owes bytes.
+  // MSG_WAITALL: the kernel finishes a short send itself, so this round is
+  // one operation and there is no resume offset to carry. What it cannot
+  // finish it reports as fewer bytes, and for a response body that is not
+  // resumable anyway - see on_send.
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
-    const int flags = MSG_NOSIGNAL | (app_.pending(c.app) ? MSG_MORE : 0);
+    const int flags =
+        MSG_NOSIGNAL | MSG_WAITALL | (app_.pending(c.app) ? MSG_MORE : 0);
     if (c.niov == 0) {
-      io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.sent,
-                         c.out.size() - c.sent, flags);
+      io_uring_prep_send(s, static_cast<int>(idx), c.out.data(), c.out.size(), flags);
     } else {
-      unsigned n = 0;
-      size_t skip = c.sent;
-      for (unsigned i = 0; i < c.niov; i++) {
-        if (skip >= c.iov[i].iov_len) {
-          skip -= c.iov[i].iov_len;
-          continue;
-        }
-        c.msg_iov[n].iov_base = static_cast<char*>(c.iov[i].iov_base) + skip;
-        c.msg_iov[n].iov_len = c.iov[i].iov_len - skip;
-        skip = 0;
-        n++;
-      }
       c.msg = msghdr{};
-      c.msg.msg_iov = c.msg_iov.get();
-      c.msg.msg_iovlen = n;
+      c.msg.msg_iov = c.iov.get();
+      c.msg.msg_iovlen = c.niov;
       io_uring_prep_sendmsg(s, static_cast<int>(idx), &c.msg, flags);
     }
     s->flags |= IOSQE_FIXED_FILE;
@@ -3731,6 +3874,10 @@ class Ring {
       c.close_after_send = true;
       return;
     }
+    // A transfer dying under a client is exactly the event an operator
+    // wants in the log, so the line is owed here too - with the bytes that
+    // really went out.
+    app_.file_abandon(c.app);
     c.live = false;
     live_clear(idx);
     if (live_ != 0) live_--;
@@ -3760,7 +3907,6 @@ class Ring {
     c.idle = false;
     c.deadline_s = now_s_ + to_header_;
     c.li = static_cast<uint8_t>(li);
-    c.sent = 0;
     c.out.clear();
     c.next.clear();
     c.app.reset(static_cast<uint8_t>(li), !unix_listener_[li]);
@@ -3869,22 +4015,18 @@ class Ring {
       begin_close(idx);
       return;
     }
+    // MSG_WAITALL means the kernel already retried; fewer bytes than offered
+    // is a dead peer, and a half-written response cannot be resumed - HTTP/1
+    // has no restart point and an h2 frame cut in half breaks the whole
+    // connection's framing. So the only answer is to drop it.
     const size_t took = static_cast<size_t>(cqe->res);
     const size_t offered = c.niov != 0 ? c.plan_len : c.out.size();
-    size_t new_sent = 0;
-    if (WM_UNLIKELY(took > offered - c.sent ||
-                    __builtin_add_overflow(c.sent, took, &new_sent))) {
+    if (WM_UNLIKELY(took != offered)) {
       begin_close(idx);
       return;
     }
-    c.sent = new_sent;
     c.deadline_s = now_s_ + to_send_;
-    if (c.sent < offered) {
-      arm_send(idx);
-      return;
-    }
     c.out.clear();
-    c.sent = 0;
     c.niov = 0;
     c.plan_len = 0;
     if (!c.next.empty()) {
@@ -3983,9 +4125,25 @@ class Ring {
       file_wake(idx);
       return;
     }
+    // A large file is mapped, not read: the sends walk the mapping and the
+    // fd is done with. A failed mmap is not an error - the read path below
+    // serves the same bytes, only slower, and `want` is a WINDOW whatever
+    // the answer here was, so falling through cannot ask for the file.
+    const size_t maplen = App::file_map_len(c.app);
+    if (maplen != 0) {
+      void* m = ::mmap(nullptr, maplen, PROT_READ, MAP_PRIVATE, fd, 0);
+      if (m != MAP_FAILED) {
+        arm_file_close(idx, fd, gen);
+        app_.file_mapped(c.app, static_cast<const char*>(m), maplen);
+        file_wake(idx);
+        return;
+      }
+    }
     c.file_io->fd = fd;
     c.file_io->want = want;
     c.file_io->off = 0;
+    c.file_io->done = 0;
+    c.file_io->total = static_cast<size_t>(c.file_io->stx.stx_size);
     arm_file_read(idx);
   }
 
@@ -3995,7 +4153,8 @@ class Ring {
     c.file_io->reading = true;
     struct io_uring_sqe* s = sqe();
     io_uring_prep_read(s, c.file_io->fd, buf + c.file_io->off,
-                       static_cast<unsigned>(c.file_io->want - c.file_io->off), c.file_io->off);
+                       static_cast<unsigned>(c.file_io->want - c.file_io->off),
+                       c.file_io->done + c.file_io->off);
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileRead, c.gen, idx));
   }
 
@@ -4025,13 +4184,24 @@ class Ring {
       arm_file_read(idx);
       return;
     }
-    c.file_io->fd = -1;
-    arm_file_close(idx, fd, gen);
     if (c.file_io->off < c.file_io->want) {
+      // Short of the window with nothing left to read: the file shrank under
+      // the Content-Length statx already promised. The framing would lie, so
+      // the answer is refused rather than sent.
+      c.file_io->fd = -1;
+      arm_file_close(idx, fd, gen);
       app_.file_error(c.app, "the file shrank while it was read");
-    } else {
-      app_.file_ready_now(c.app, c.file_io->off);
+      file_wake(idx);
+      return;
     }
+    c.file_io->done += c.file_io->off;
+    // The fd stays open while the file still owes windows; continue_conn
+    // arms the next read once the round this one feeds has drained.
+    if (c.file_io->done >= c.file_io->total) {
+      c.file_io->fd = -1;
+      arm_file_close(idx, fd, gen);
+    }
+    app_.file_ready_now(c.app, c.file_io->off);
     file_wake(idx);
   }
 
@@ -4107,7 +4277,6 @@ class Ring {
   void take_plan(Conn& c, const typename App::Plan& req) {
     if (!c.iov) {
       c.iov = std::make_unique<struct iovec[]>(Conn::kIov);
-      c.msg_iov = std::make_unique<struct iovec[]>(Conn::kIov);
     }
     c.niov = 0;
     c.plan_len = 0;
@@ -4131,7 +4300,6 @@ class Ring {
       c.plan_len += c.out.size();
       c.niov++;
     }
-    c.sent = 0;
   }
 
   // The delivery continuation: a fully drained sink is the one signal every
@@ -4153,6 +4321,18 @@ class Ring {
     }
     if (!c.out.empty()) {
       arm_send(idx);
+      return;
+    }
+    // Nothing went out this round, so the window lent to the last one is
+    // off the wire and the buffer is free. THIS is the only point where the
+    // next window may be read - doing it on the round that just lent the
+    // buffer out overwrites the bytes still being sent.
+    if (c.file_io != nullptr && c.file_io->fd >= 0 && !c.file_io->reading &&
+        c.file_io->done < c.file_io->total) {
+      const size_t left = c.file_io->total - c.file_io->done;
+      c.file_io->want = left < kResponseFileWindow ? left : kResponseFileWindow;
+      c.file_io->off = 0;
+      arm_file_read(idx);
       return;
     }
     if (c.close_after_send) {

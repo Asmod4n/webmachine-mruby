@@ -55,6 +55,10 @@ struct Echo {
   // file_take is the only one the Ring can ever reach - the rest exist
   // because the template instantiates every branch, not because they run.
   const char* file_take(Conn&) { return nullptr; }
+  // Echo never names a file, so nothing is ever mapped for it either.
+  void file_mapped(Conn&, const char*, size_t) {}
+  static size_t file_map_len(const Conn&) { return 0; }
+  void file_abandon(Conn&) {}
   static bool file_answerable(const Conn&) { return false; }
   void file_reject(Conn&) {}
   void file_error(Conn&, const char*) {}
@@ -128,6 +132,14 @@ int main(int argc, char** argv) {
       log_max_bytes = std::atoll(argv[++i]);
       if (log_max_bytes < 0) {
         std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
+        return 2;
+      }
+    } else if (std::strcmp(argv[i], "--file-map-threshold") == 0 && i + 1 < argc) {
+      opts.file_map_threshold = std::atoll(argv[++i]);
+      if (opts.file_map_threshold < 0 ||
+          opts.file_map_threshold > static_cast<long long>(webmachine::kFileMapMax)) {
+        std::fprintf(stderr, "webmachine: --file-map-threshold is a byte count, 0 to never "
+                             "map a served file\n");
         return 2;
       }
     } else if (std::strcmp(argv[i], "--zero-copy-threshold") == 0 && i + 1 < argc) {
@@ -232,6 +244,9 @@ int main(int argc, char** argv) {
     if (pidfile == nullptr && !fc.pidfile.empty()) pidfile = fc.pidfile.c_str();
     if (opts.zero_copy_threshold < 0 && fc.zero_copy_threshold >= 0) {
       opts.zero_copy_threshold = fc.zero_copy_threshold;
+    }
+    if (opts.file_map_threshold < 0 && fc.file_map_threshold >= 0) {
+      opts.file_map_threshold = fc.file_map_threshold;
     }
     opts.sq_entries = fc.sq_entries;
     opts.backlog = fc.backlog;

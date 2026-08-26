@@ -1092,8 +1092,13 @@ bool Http1::pending(const Conn& st) const {
   }
   // A file the reactor is still opening owes bytes too - and saying so is
   // what keeps `more` from re-feeding the carry ahead of that answer.
+  // kDone is deliberately NOT owed bytes: its last lend has drained and it
+  // only has bookkeeping left. Counting it here cost 60 us per request -
+  // MSG_MORE corked the final send, and on_send took the arm_meminfo
+  // detour (an io-wq round trip) in front of a round that sends nothing.
   return st.xfer != nullptr ||
-         (st.file != nullptr && (st.file->want || st.file->busy || st.file->ready));
+         (st.file != nullptr && st.file->stage != FileStage::kNone &&
+          st.file->stage != FileStage::kDone);
 }
 
 // The continuation both protocols share: the sink has fully drained.
@@ -1102,28 +1107,32 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // drained, so a body lent to that round is off the wire. Before the next
   // one is built, so a connection never holds two.
   st.zc_release();
-  // response.file, spelled: the head, then the read buffer LENT as an
-  // external segment - the same door the asset tier and a lent body use, so
-  // the bytes reach the kernel without a second copy. The access line is
-  // owed here and nowhere else; the request it names is long gone.
-  if (WM_UNLIKELY(st.file != nullptr && st.file->ready)) {
-    st.file->ready = false;
-    sink.append(st.file->head);
-    const size_t blen = st.file->len;
-    if (blen != 0) lend_body(st, sink, st.file->buf.data(), blen, plan);
-    if (alog_.enabled) {
-      log_access(alog_, st.peer, st.peer_len, st.file->method.data(), st.file->method.size(),
-                 st.file->target.data(), st.file->target.size(), st.file->lflags,
-                 st.file->status, blen, st.file->ref.data(), st.file->ref.size(),
-                 st.file->ua.data(), st.file->ua.size());
-    }
-    const bool persist = st.file->persist;
-    st.file_clear();
-    return persist;
+  // response.file, spelled: the head, then the window buffer or a chunk of
+  // the mapping LENT as an external segment - the same door the asset tier
+  // and a lent body use, so the bytes reach the kernel without a copy.
+  if (WM_UNLIKELY(st.file != nullptr && (st.file->stage == FileStage::kDeliver ||
+                                         st.file->stage == FileStage::kDone))) {
+    // The round is COMPUTED first and performed second. Everything that
+    // used to be decided in the middle of doing - which window, whether the
+    // mapping may go back, whether the access line is owed - is one value
+    // now, and file_apply is the only thing that writes.
+    const FileStep step = file_step(*st.file);
+    if (step.head) sink.append(st.file->head);
+    if (step.body != nullptr) lend_body(st, sink, step.body, step.body_len, plan);
+    file_apply(st, step);
+    // Still owed: this round is spent.
+    if (!step.clear) return true;
+    // Over, and the connection ends with it.
+    if (!step.persist) return false;
+    // Over, and the connection lives: the kDone round put NOTHING on the
+    // wire, so it does not get to consume the round - a pipelined request
+    // waiting in the carry speaks below, in this same one. (Consuming it
+    // wedged `response.file answers pipelined requests in order`: the
+    // carry had no later round to be fed from.)
   }
   // The ring still owes the answer: nothing else may speak for this
   // connection until it lands, least of all the carry behind it.
-  if (WM_UNLIKELY(st.file != nullptr && (st.file->want || st.file->busy))) return true;
+  if (WM_UNLIKELY(st.file != nullptr && st.file->stage != FileStage::kNone)) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);

@@ -77,6 +77,22 @@ mrb_value conf_zc_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.file_map_threshold = N. The file size from which response.file maps
+// instead of reading window by window; 0 never maps. A typed flag and [tune]
+// both beat this, the way every other choice in here is beaten.
+mrb_value conf_map_set(mrb_state* mrb, mrb_value self) {
+  mrb_int n;
+  mrb_get_args(mrb, "i", &n);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  if (n < 0 || n > static_cast<mrb_int>(kFileMapMax)) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf.file_map_threshold = %lld is outside 0..%lld bytes",
+               static_cast<long long>(n), static_cast<long long>(kFileMapMax));
+  }
+  s->file_map_threshold = static_cast<long long>(n);
+  return mrb_nil_value();
+}
+
 // conf.docroot = PATH. The ONE directory response.file may reach, resolved
 // and opened once before the first accept. --docroot and [server] docroot
 // both beat this, the same order everything else in here is beaten. Nothing
@@ -376,6 +392,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(url), conf_url_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM(url), conf_url_get, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(file_map_threshold), conf_map_set,
+                       MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(zero_copy_threshold), conf_zc_set,
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(docroot), conf_docroot_set,

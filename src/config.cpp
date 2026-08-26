@@ -113,7 +113,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   {
     mrb_value server{}, log{}, tune{};
     bool have_server = false, have_log = false, have_tune = false;
-    mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1;
+    mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1;
     if (!section(mrb, doc, "server", &server, &have_server, path, err, errlen)) goto done;
     if (!section(mrb, doc, "log", &log, &have_log, path, err, errlen)) goto done;
     if (!section(mrb, doc, "tune", &tune, &have_tune, path, err, errlen)) goto done;
@@ -173,6 +173,12 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
                     static_cast<mrb_int>(kZeroCopyMax), &zct, path, err, errlen)) {
         goto done;
       }
+      // 0 is the operator saying "never map, always read" - a real answer,
+      // which is why absence is -1 and not 0.
+      if (!take_int(mrb, tune, "tune", "file_map_threshold", 0,
+                    static_cast<mrb_int>(kFileMapMax), &fmt, path, err, errlen)) {
+        goto done;
+      }
       if (!take_seconds(mrb, tune, "tune", "header_timeout", &out.header_timeout, path, err,
                         errlen)) {
         goto done;
@@ -188,6 +194,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
       out.backlog = static_cast<int>(backlog);
       out.sq_entries = static_cast<unsigned>(sq);
       if (zct >= 0) out.zero_copy_threshold = static_cast<long long>(zct);
+      if (fmt >= 0) out.file_map_threshold = static_cast<long long>(fmt);
     }
 
     ok = true;

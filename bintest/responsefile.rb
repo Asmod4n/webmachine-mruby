@@ -293,3 +293,82 @@ assert('a docroot that is missing or is not a directory refuses startup') do
     FileUtils.rm_rf(base)
   end
 end
+
+# The window is what bounds memory, so the sizes that matter are the ones
+# around it: one short of a window, exactly one, and several - plus a file
+# far past the 16 MiB ceiling this path used to refuse outright.
+assert('response.file streams a file of any size, window by window') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-big-#{$$}-#{rand(1 << 30)}.sock"
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
+                '--docroot', root, out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    [262_143, 262_144, 262_145, 700_000, 20 << 20].each do |n|
+      # A repeating pattern, not zeros: a window delivered twice or a window
+      # skipped both survive a length check, neither survives this.
+      blob = (0...n).map { |i| ((i * 31 + i / 977) & 0xff).chr }.join
+      File.binwrite(File.join(root, 'sized.bin'), blob)
+      head, body = rf_get(sock, 'sized.bin')
+      assert_include head, 'HTTP/1.1 200 OK'
+      assert_include head, "Content-Length: #{n}\r\n"
+      assert_equal n, body.bytesize
+      assert_equal blob, body
+    end
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    app&.unlink
+    File.unlink(sock) rescue nil
+    FileUtils.rm_rf(base)
+  end
+end
+
+# The head named a Content-Length before the last window was read. If the
+# file shrinks under it the promise cannot be kept, and a 500 spelled after
+# those bytes would sit BEHIND them - the client would wait for a remainder
+# that never comes. RFC 9112 6.3: close instead. The property asserted here
+# is the deterministic one - the request ENDS - because whether the truncate
+# wins the race against the send does not change what must not happen.
+assert('response.file that shrinks mid-flight ends the request, never hangs') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-shrink-#{$$}-#{rand(1 << 30)}.sock"
+  path = File.join(root, 'shrink.bin')
+  File.binwrite(path, 'S' * (48 << 20))
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
+                '--docroot', root, out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    cutter = Thread.new { sleep 0.05; File.truncate(path, 1 << 20) rescue nil }
+    done = false
+    reader = Thread.new do
+      s = UNIXSocket.new(sock)
+      s.write "GET /f?n=shrink.bin HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
+      begin
+        loop { break if s.readpartial(1 << 16).nil? }
+      rescue EOFError, Errno::ECONNRESET, IOError
+      end
+      s.close rescue nil
+      done = true
+    end
+    assert_true reader.join(20) ? true : false, 'the request never ended'
+    assert_true done
+    cutter.join
+    # And the server is still there afterwards, serving the next request.
+    head, body = rf_get(sock, 'a.txt')
+    assert_include head, 'HTTP/1.1 200 OK'
+    assert_equal RF_TEXT, body
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    app&.unlink
+    File.unlink(sock) rescue nil
+    FileUtils.rm_rf(base)
+  end
+end
