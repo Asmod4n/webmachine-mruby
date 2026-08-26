@@ -27,7 +27,8 @@ bench/idle_load
 !/deps/ls-hpack
 !/deps/zlib-ng
 !/deps/miniz
-build_config.rb.lock
+build_config*.rb.lock
 bench/vm/*.mrb
 build/fuzz/
 build/conformance/
+/pgo-profile/
