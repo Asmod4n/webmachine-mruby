@@ -205,7 +205,28 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
   return true;
 }
 
-// RFC 9110 4.2.1: the target names a table row, byte for byte, or nothing.
+// One entry, by name, exact bytes.
+const AssetEntry* Assets::find_exact(const char* name, size_t len) const {
+  const auto it = std::lower_bound(
+      entries_.begin(), entries_.end(), std::pair<const char*, size_t>(name, len),
+      [](const AssetEntry& a, const std::pair<const char*, size_t>& key) {
+        const int c = std::memcmp(a.name.data(), key.first,
+                                  a.name.size() < key.second ? a.name.size() : key.second);
+        if (c != 0) return c < 0;
+        return a.name.size() < key.second;
+      });
+  if (it == entries_.end() || it->name.size() != len ||
+      std::memcmp(it->name.data(), name, len) != 0) {
+    return nullptr;
+  }
+  return &*it;
+}
+
+// RFC 9110 4.2.1: the target names a table row, byte for byte - or, for a
+// path that names a directory (root "/", or anything ending "/"), that
+// directory's own index.html, the near-universal default document. A pack
+// with no index.html at that path answers 404 exactly as before; nothing
+// here invents a directory listing.
 AssetEntry* Assets::find(const char* path, size_t len) {
   if (len == 0 || path[0] != '/') return nullptr;
   path++;
@@ -216,20 +237,16 @@ AssetEntry* Assets::find(const char* path, size_t len) {
       break;
     }
   }
-  if (len == 0) return nullptr;
-  const auto it = std::lower_bound(
-      entries_.begin(), entries_.end(), std::pair<const char*, size_t>(path, len),
-      [](const AssetEntry& a, const std::pair<const char*, size_t>& key) {
-        const int c = std::memcmp(a.name.data(), key.first,
-                                  a.name.size() < key.second ? a.name.size() : key.second);
-        if (c != 0) return c < 0;
-        return a.name.size() < key.second;
-      });
-  if (it == entries_.end() || it->name.size() != len ||
-      std::memcmp(it->name.data(), path, len) != 0) {
-    return nullptr;
+  if (len == 0 || path[len - 1] == '/') {
+    static constexpr char kIndex[] = "index.html";
+    static constexpr size_t kIndexLen = sizeof(kIndex) - 1;
+    char buf[kMaxHead];
+    if (len + kIndexLen > sizeof(buf)) return nullptr;
+    if (len != 0) std::memcpy(buf, path, len);
+    std::memcpy(buf + len, kIndex, kIndexLen);
+    return const_cast<AssetEntry*>(find_exact(buf, len + kIndexLen));
   }
-  return &*it;
+  return const_cast<AssetEntry*>(find_exact(path, len));
 }
 
 // RFC 9110: the asset tier's whole decision, in the graph's own order -

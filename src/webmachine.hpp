@@ -1877,6 +1877,7 @@ class Assets {
   std::vector<AssetEntry>& entries() { return entries_; }
 
  private:
+  const AssetEntry* find_exact(const char* name, size_t len) const;
   static void patch_date(AssetEntry::Resp& r, const char* date, time_t sec);
 
   const char* map_ = nullptr;
