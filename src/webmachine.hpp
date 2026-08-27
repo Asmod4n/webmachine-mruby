@@ -3060,9 +3060,7 @@ class Http1 {
     return s;
   }
 
-  // The next round of a transfer, computed and not performed. Public
-  // because test/file_vectors.cpp drives it directly - a decision that
-  // needs a socket to test is a decision nobody tests.
+  // The next round of a transfer, computed and not performed.
   //
   // Defined HERE, not in a .cpp: `more` lives in another translation unit
   // and this build has no LTO, so a definition over there would be a real

@@ -372,3 +372,177 @@ assert('response.file that shrinks mid-flight ends the request, never hangs') do
     FileUtils.rm_rf(base)
   end
 end
+
+# A sparse file: the last byte is the only one on disk, so a multi-gigabyte
+# case costs no space and no time to create.
+def rf_sparse(path, size)
+  File.open(path, 'wb') do |f|
+    f.seek(size - 1)
+    f.write("\xff")
+  end
+  size
+end
+
+# Streams the body instead of collecting it - these cases are gigabytes.
+def rf_stream(sock, name)
+  s = UNIXSocket.new(sock)
+  s.write "GET /f?n=#{name} HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
+  head = +''.b
+  head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
+  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
+  got = 0
+  last = nil
+  begin
+    while got < len
+      part = rf_recv(s, 1 << 16, 30)
+      got += part.bytesize
+      last = part.getbyte(-1)
+    end
+  rescue EOFError, Errno::ECONNRESET
+  end
+  s.close rescue nil
+  [head, len, got, last]
+end
+
+# ONE sendmsg moves at most MAX_RW_COUNT (INT_MAX rounded down to a page,
+# 2,147,479,552 here). A body offered past that comes back short, which is
+# indistinguishable from a dead peer - the connection used to be dropped
+# with the client holding a prefix and a Content-Length it would never
+# reach. The mapping is lent in bounded chunks now, so the size stops
+# mattering.
+assert('response.file serves a file larger than one send can move') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-huge-#{$$}-#{rand(1 << 30)}.sock"
+  size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
+                '--docroot', root, out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    head, len, got, last = rf_stream(sock, 'huge.bin')
+    assert_include head, 'HTTP/1.1 200 OK'
+    assert_equal size, len
+    assert_equal size, got
+    assert_equal 0xff, last
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    app&.unlink
+    File.unlink(sock) rescue nil
+    FileUtils.rm_rf(base)
+  end
+end
+
+# A mapping that cannot be made is not an error: the read path serves the
+# same bytes, a window at a time. What must NOT happen is the fallback
+# asking for the whole file - that allocation threw std::bad_alloc and took
+# the process down, every connection on it with one request.
+assert('response.file survives an mmap it cannot make, and still serves') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-nomap-#{$$}-#{rand(1 << 30)}.sock"
+  size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
+  pid = nil
+  begin
+    # An address space too small for the mapping, large enough for the server.
+    cmd = "ulimit -v 2000000; exec #{RF_BIN} --unix #{sock} --app #{app.path} " \
+          "--docroot #{root}"
+    pid = spawn({ 'WM_BUNDLE' => '0' }, 'sh', '-c', cmd, out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock), 'the server never came up under the limit'
+    _, len, got, last = rf_stream(sock, 'huge.bin')
+    assert_equal size, len
+    assert_equal size, got
+    assert_equal 0xff, last
+    # And it is still there afterwards - the point of the case.
+    head, body = rf_get(sock, 'a.txt')
+    assert_include head, 'HTTP/1.1 200 OK'
+    assert_equal RF_TEXT, body
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    app&.unlink
+    File.unlink(sock) rescue nil
+    FileUtils.rm_rf(base)
+  end
+end
+
+# RFC 9110: one access line per REQUEST. A 4 MB file over the window path
+# takes sixteen rounds, and the line used to be written from inside the
+# round - sixteen lines for one request, each with a window's byte count.
+assert('response.file writes one access line per request, not one per window') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-log-#{$$}-#{rand(1 << 30)}.sock"
+  logf = "/tmp/wm-rf-access-#{$$}-#{rand(1 << 30)}.log"
+  File.unlink(logf) if File.exist?(logf)
+  n = 4_000_000
+  File.binwrite(File.join(root, 'big.bin'), 'B' * n)
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
+                '--docroot', root, '--log', logf, '--file-map-threshold', '0',
+                out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    head, body = rf_get(sock, 'big.bin')
+    assert_include head, 'HTTP/1.1 200 OK'
+    assert_equal n, body.bytesize
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+  end
+  20.times { break if File.exist?(logf) && !File.readlines(logf).empty?; sleep 0.1 }
+  lines = File.readlines(logf)
+  assert_equal 1, lines.size, "one request, #{lines.size} lines"
+  assert_true lines[0].include?("\" 200 #{n} "), lines[0]
+ensure
+  File.unlink(logf) rescue nil
+  File.unlink(sock) rescue nil
+  app&.unlink
+  FileUtils.rm_rf(base) if base
+end
+
+# A client that hangs up mid-transfer is exactly the event an operator wants
+# in the log, so the line is still owed - with the bytes that really left,
+# not the ones the head promised.
+assert('response.file logs an abandoned transfer once, with what really left') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-abort-#{$$}-#{rand(1 << 30)}.sock"
+  logf = "/tmp/wm-rf-abort-access-#{$$}-#{rand(1 << 30)}.log"
+  File.unlink(logf) if File.exist?(logf)
+  n = 4_000_000
+  File.binwrite(File.join(root, 'big.bin'), 'B' * n)
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
+                '--docroot', root, '--log', logf, '--file-map-threshold', '0',
+                out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    s = UNIXSocket.new(sock)
+    s.write "GET /f?n=big.bin HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
+    head = +''.b
+    head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
+    rf_recv(s, 4096)
+    s.close                       # hang up with the body still owed
+  ensure
+    sleep 0.3
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+  end
+  20.times { break if File.exist?(logf) && !File.readlines(logf).empty?; sleep 0.1 }
+  lines = File.readlines(logf)
+  assert_equal 1, lines.size, "one aborted request, #{lines.size} lines"
+  bytes = lines[0][/" 200 (\d+) /, 1].to_i
+  assert_true bytes > 0, "logged #{bytes} bytes"
+  assert_true bytes < n, "logged #{bytes}, which is the whole file"
+ensure
+  File.unlink(logf) rescue nil
+  File.unlink(sock) rescue nil
+  app&.unlink
+  FileUtils.rm_rf(base) if base
+end
