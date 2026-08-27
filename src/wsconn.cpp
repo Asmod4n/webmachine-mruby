@@ -287,71 +287,41 @@ bool finish_frame(WsConn* c, std::string& sink) {
 
 // RFC 6455 5.2/5.5, RFC 7692 6: everything the header must satisfy.
 bool begin_frame(WsConn* c, std::string& sink) {
-  const unsigned char b0 = c->hbuf[0];
-  const unsigned char b1 = c->hbuf[1];
-  const bool fin = (b0 & 0x80) != 0;
-  const bool rsv1 = (b0 & 0x40) != 0;
-  const uint8_t opcode = static_cast<uint8_t>(b0 & 0x0f);
-  if ((b0 & 0x30) != 0) return fail(c, sink, ws::kCloseProtocolError);
-  if (rsv1 && c->codec == nullptr) return fail(c, sink, ws::kCloseProtocolError);
-  const bool control = (opcode & 0x08) != 0;
-  switch (opcode) {
-    case ws::kContinuation:
-    case ws::kText:
-    case ws::kBinary:
-    case ws::kClose:
-    case ws::kPing:
-    case ws::kPong: break;
-    default: return fail(c, sink, ws::kCloseProtocolError);
+  // RFC 6455 5.2 / 5.4: the header is READ and judged first, whole. It used
+  // to be judged one rule at a time with the refusal written from inside
+  // the check that failed.
+  const ws::Head h = ws::read_head(c->hbuf, c->codec != nullptr);
+  if (h.err != ws::Head::Err::kNone) return fail(c, sink, ws::kCloseProtocolError);
+  const uint64_t msg_len =
+      c->msg_op != 0 ? static_cast<uint64_t>(RSTRING_LEN(c->msg)) : 0;
+  const ws::Head::Err a =
+      ws::admit(h, c->msg_op, c->msg_deflated, msg_len, c->res->max_message);
+  if (a != ws::Head::Err::kNone) {
+    return fail(c, sink,
+                a == ws::Head::Err::kTooBig ? ws::kCloseTooBig : ws::kCloseProtocolError);
   }
-  if (rsv1 && (control || opcode == ws::kContinuation)) {
-    return fail(c, sink, ws::kCloseProtocolError);
-  }
-  if ((b1 & 0x80) == 0) return fail(c, sink, ws::kCloseProtocolError);
 
-  uint64_t plen = static_cast<uint64_t>(b1 & 0x7f);
-  size_t at = 2;
-  if (plen == 126) {
-    plen = (static_cast<uint64_t>(c->hbuf[2]) << 8) | c->hbuf[3];
-    at = 4;
-    if (plen < 126) return fail(c, sink, ws::kCloseProtocolError);
-  } else if (plen == 127) {
-    plen = 0;
-    for (int i = 0; i < 8; i++) plen = (plen << 8) | c->hbuf[2 + i];
-    at = 10;
-    if (plen <= 0xffff || (plen >> 63) != 0) return fail(c, sink, ws::kCloseProtocolError);
-  }
-  if (control && (plen > ws::kMaxControlPayload || !fin)) {
-    return fail(c, sink, ws::kCloseProtocolError);
-  }
-  std::memcpy(c->mask, c->hbuf + at, 4);
+  std::memcpy(c->mask, c->hbuf + h.mask_at, 4);
   c->mask_off = 0;
-  c->opcode = opcode;
-  c->fin = fin;
-  c->control = control;
-  c->remaining = plen;
+  c->opcode = h.opcode;
+  c->fin = h.fin;
+  c->control = h.control;
+  c->remaining = h.plen;
   c->ctl_len = 0;
 
-  if (!control) {
+  // A data frame that starts a message opens the buffer it collects into -
+  // the one thing here the VM has to be asked for.
+  if (!h.control && h.opcode != ws::kContinuation) {
     mrb_state* mrb = c->res->mrb;
-    const size_t max = c->res->max_message;
-    if (opcode == ws::kContinuation) {
-      if (c->msg_op == 0) return fail(c, sink, ws::kCloseProtocolError);
-      if (!c->msg_deflated && static_cast<uint64_t>(RSTRING_LEN(c->msg)) + plen > max) {
-        return fail(c, sink, ws::kCloseTooBig);
-      }
-    } else {
-      if (c->msg_op != 0) return fail(c, sink, ws::kCloseProtocolError);
-      if (!rsv1 && plen > max) return fail(c, sink, ws::kCloseTooBig);
-      const uint64_t capa = plen > max ? max : plen;
-      c->msg = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
-      mrb_gc_register(mrb, c->msg);
-      c->msg_live = true;
-      c->msg_op = opcode;
-      c->msg_deflated = rsv1;
-    }
+    const uint64_t max = c->res->max_message;
+    const uint64_t capa = h.plen > max ? max : h.plen;
+    c->msg = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
+    mrb_gc_register(mrb, c->msg);
+    c->msg_live = true;
+    c->msg_op = h.opcode;
+    c->msg_deflated = h.rsv1;
   }
-  c->in_payload = plen != 0;
+  c->in_payload = h.plen != 0;
   return true;
 }
 

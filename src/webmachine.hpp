@@ -2480,6 +2480,91 @@ inline constexpr size_t kMaxControlPayload = 125;
 
 bool accept_key(const char* key, size_t key_len, char out[28]);
 
+// RFC 6455 5.2: everything the fourteen header bytes decide on their own -
+// the reserved bits, the opcode, the mask bit, the length encoding, and
+// what a control frame may not be. Pure, because begin_frame used to judge
+// these one at a time while already writing the refusal for the first one
+// that failed, and because these are the Autobahn cases: they deserve a
+// table, not a socket.
+struct Head {
+  enum class Err : uint8_t { kNone, kProtocol, kTooBig };
+  Err err = Err::kNone;
+  uint8_t opcode = 0;
+  uint64_t plen = 0;
+  uint8_t mask_at = 0;  // where the four mask bytes start
+  bool fin = false;
+  bool rsv1 = false;
+  bool control = false;
+};
+
+inline Head read_head(const unsigned char* h, bool have_codec) {
+  Head o;
+  const unsigned char b0 = h[0];
+  const unsigned char b1 = h[1];
+  o.fin = (b0 & 0x80) != 0;
+  o.rsv1 = (b0 & 0x40) != 0;
+  o.opcode = static_cast<uint8_t>(b0 & 0x0f);
+  o.control = (o.opcode & 0x08) != 0;
+  // RFC 6455 5.2: RSV2 and RSV3 are never negotiated here, and RSV1 only
+  // where a codec was.
+  if ((b0 & 0x30) != 0) { o.err = Head::Err::kProtocol; return o; }
+  if (o.rsv1 && !have_codec) { o.err = Head::Err::kProtocol; return o; }
+  switch (o.opcode) {
+    case kContinuation:
+    case kText:
+    case kBinary:
+    case kClose:
+    case kPing:
+    case kPong: break;
+    default: o.err = Head::Err::kProtocol; return o;
+  }
+  // RFC 7692 6: the per-message bit rides the FIRST frame of a data
+  // message and nothing else.
+  if (o.rsv1 && (o.control || o.opcode == kContinuation)) {
+    o.err = Head::Err::kProtocol;
+    return o;
+  }
+  // RFC 6455 5.1: every client frame is masked.
+  if ((b1 & 0x80) == 0) { o.err = Head::Err::kProtocol; return o; }
+  o.plen = static_cast<uint64_t>(b1 & 0x7f);
+  o.mask_at = 2;
+  // RFC 6455 5.2: the shortest encoding that fits, and the top bit of a
+  // 64-bit length is reserved.
+  if (o.plen == 126) {
+    o.plen = (static_cast<uint64_t>(h[2]) << 8) | h[3];
+    o.mask_at = 4;
+    if (o.plen < 126) { o.err = Head::Err::kProtocol; return o; }
+  } else if (o.plen == 127) {
+    o.plen = 0;
+    for (int i = 0; i < 8; i++) o.plen = (o.plen << 8) | h[2 + i];
+    o.mask_at = 10;
+    if (o.plen <= 0xffff || (o.plen >> 63) != 0) { o.err = Head::Err::kProtocol; return o; }
+  }
+  // RFC 6455 5.5: a control frame is short and never fragmented.
+  if (o.control && (o.plen > kMaxControlPayload || !o.fin)) {
+    o.err = Head::Err::kProtocol;
+    return o;
+  }
+  return o;
+}
+
+// RFC 6455 5.4 and 7.4.1: may this frame join the message in flight? Four
+// scalars are all the connection state that decides it - which is why it
+// can be a table too.
+inline Head::Err admit(const Head& h, uint8_t msg_op, bool msg_deflated, uint64_t msg_len,
+                       uint64_t max_message) {
+  if (h.control) return Head::Err::kNone;
+  if (h.opcode == kContinuation) {
+    if (msg_op == 0) return Head::Err::kProtocol;  // continues nothing
+    // A deflated message is bounded after inflation, not here.
+    if (!msg_deflated && msg_len + h.plen > max_message) return Head::Err::kTooBig;
+    return Head::Err::kNone;
+  }
+  if (msg_op != 0) return Head::Err::kProtocol;  // interleaved data frames
+  if (!h.rsv1 && h.plen > max_message) return Head::Err::kTooBig;
+  return Head::Err::kNone;
+}
+
 struct Frame {
   uint8_t opcode = 0;
   bool fin = false;

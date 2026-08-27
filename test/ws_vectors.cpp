@@ -136,12 +136,63 @@ mrb_value ws_read_close(mrb_state* mrb, mrb_value) {
   return a;
 }
 
+
+/* RFC 6455 5.2: the fourteen header bytes, judged on their own.
+ *   WsVectors.head(bytes, have_codec = false)
+ *     -> [err, opcode, plen, mask_at, fin, rsv1, control]
+ * err: 0 none, 1 protocol, 2 too big.
+ */
+mrb_value ws_head(mrb_state *mrb, mrb_value)
+{
+  const char *b = NULL;
+  mrb_int n = 0;
+  mrb_bool codec = FALSE;
+  mrb_get_args(mrb, "s|b", &b, &n, &codec);
+  unsigned char h[14] = {0};
+  for (mrb_int i = 0; i < n && i < 14; i++) h[i] = (unsigned char)b[i];
+  const webmachine::ws::Head o =
+      webmachine::ws::read_head(h, codec ? true : false);
+  mrb_value out = mrb_ary_new_capa(mrb, 7);
+  mrb_ary_push(mrb, out, mrb_int_value(mrb, (mrb_int)o.err));
+  mrb_ary_push(mrb, out, mrb_int_value(mrb, o.opcode));
+  mrb_ary_push(mrb, out, mrb_int_value(mrb, (mrb_int)o.plen));
+  mrb_ary_push(mrb, out, mrb_int_value(mrb, o.mask_at));
+  mrb_ary_push(mrb, out, mrb_bool_value(o.fin));
+  mrb_ary_push(mrb, out, mrb_bool_value(o.rsv1));
+  mrb_ary_push(mrb, out, mrb_bool_value(o.control));
+  return out;
+}
+
+/* RFC 6455 5.4 / 7.4.1: may this frame join the message in flight?
+ *   WsVectors.admit(bytes, max, msg_op = 0, msg_deflated = false,
+ *                   msg_len = 0, have_codec = false) -> err
+ */
+mrb_value ws_admit(mrb_state *mrb, mrb_value)
+{
+  const char *b = NULL;
+  mrb_int n = 0, max = 0, msg_op = 0, msg_len = 0;
+  mrb_bool deflated = FALSE, codec = FALSE;
+  mrb_get_args(mrb, "si|ibib", &b, &n, &max, &msg_op, &deflated, &msg_len, &codec);
+  unsigned char h[14] = {0};
+  for (mrb_int i = 0; i < n && i < 14; i++) h[i] = (unsigned char)b[i];
+  const webmachine::ws::Head o =
+      webmachine::ws::read_head(h, codec ? true : false);
+  if (o.err != webmachine::ws::Head::Err::kNone) {
+    return mrb_int_value(mrb, (mrb_int)o.err);
+  }
+  const webmachine::ws::Head::Err a = webmachine::ws::admit(
+      o, (uint8_t)msg_op, deflated ? true : false, (uint64_t)msg_len, (uint64_t)max);
+  return mrb_int_value(mrb, (mrb_int)a);
+}
+
 }  // namespace
 
 extern "C" void mrb_webmachine_ws_vectors_init(mrb_state* mrb);
 
 void mrb_webmachine_ws_vectors_init(mrb_state* mrb) {
   struct RClass* m = mrb_define_module(mrb, "WsVectors");
+  mrb_define_module_function(mrb, m, "head", ws_head, MRB_ARGS_ARG(1, 1));
+  mrb_define_module_function(mrb, m, "admit", ws_admit, MRB_ARGS_ARG(2, 4));
   mrb_define_module_function(mrb, m, "accept_key", ws_accept_key, MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, m, "parse", ws_parse, MRB_ARGS_ARG(1, 2));
   mrb_define_module_function(mrb, m, "header", ws_header, MRB_ARGS_ARG(3, 1));
