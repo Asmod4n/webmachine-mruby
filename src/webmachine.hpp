@@ -3876,6 +3876,14 @@ class Ring {
     // unique_ptr member refuses to compile, exactly like iov already
     // refuses it. unique_ptr keeps the move and needs no
     // destructor of its own.
+    // NO RFC - this is the kernel's ABI, so the fields carry the names of
+    // the ARGUMENTS they become:
+    //
+    //   io_uring_prep_read(sqe, fd, buf + filled, nbytes - filled,
+    //                      offset + filled)
+    //   io_uring_prep_statx(sqe, fd, "", AT_EMPTY_PATH, mask, &stx)
+    //
+    // Two of them are not arguments and say so.
     struct FileIo {
       // A PLAIN fd, not a direct descriptor: statx is the only op in this
       // chain the kernel does not accept a fixed file for, and statting the
@@ -3883,15 +3891,17 @@ class Ring {
       // the bytes that were actually confined - a statx by path would
       // resolve a second time, unguarded.
       int fd = -1;
-      size_t off = 0;
-      size_t want = 0;
-      // done counts what earlier windows already read, so the next read
-      // starts where the last one stopped; total ends the chain.
-      size_t done = 0;
-      size_t total = 0;
-      // A read whose buffer the App still owns. It outlives a torn-down
-      // connection by one completion, so nothing may hand that buffer back
-      // or resize it while this stands.
+      // Not an argument: how much of `nbytes` has arrived. A read may come
+      // back short, so the next one resumes at buf + filled.
+      size_t filled = 0;
+      size_t nbytes = 0;
+      // Where in the FILE this window starts. Earlier windows advanced it,
+      // so the kernel gets offset + filled and stx_size ends the chain.
+      size_t offset = 0;
+      size_t stx_size = 0;
+      // Not an argument: a read whose buffer the App still owns. It
+      // outlives a torn-down connection by one completion, so nothing may
+      // hand that buffer back or resize it while this stands.
       bool reading = false;
       struct statx stx {};
     };
@@ -4300,7 +4310,7 @@ class Ring {
       return;
     }
     c.file_io->fd = cqe->res;
-    c.file_io->off = 0;
+    c.file_io->filled = 0;
     struct io_uring_sqe* s = sqe();
     io_uring_prep_statx(s, c.file_io->fd, "", AT_EMPTY_PATH,
                         STATX_TYPE | STATX_SIZE | STATX_MTIME, &c.file_io->stx);
@@ -4347,21 +4357,21 @@ class Ring {
       }
     }
     c.file_io->fd = fd;
-    c.file_io->want = want;
-    c.file_io->off = 0;
-    c.file_io->done = 0;
-    c.file_io->total = static_cast<size_t>(c.file_io->stx.stx_size);
+    c.file_io->nbytes = want;
+    c.file_io->filled = 0;
+    c.file_io->offset = 0;
+    c.file_io->stx_size = static_cast<size_t>(c.file_io->stx.stx_size);
     arm_file_read(idx);
   }
 
   void arm_file_read(uint32_t idx) {
     Conn& c = conns_[idx];
-    char* buf = app_.file_buffer(c.app, c.file_io->want);
+    char* buf = app_.file_buffer(c.app, c.file_io->nbytes);
     c.file_io->reading = true;
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_read(s, c.file_io->fd, buf + c.file_io->off,
-                       static_cast<unsigned>(c.file_io->want - c.file_io->off),
-                       c.file_io->done + c.file_io->off);
+    io_uring_prep_read(s, c.file_io->fd, buf + c.file_io->filled,
+                       static_cast<unsigned>(c.file_io->nbytes - c.file_io->filled),
+                       c.file_io->offset + c.file_io->filled);
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileRead, c.gen, idx));
   }
 
@@ -4386,12 +4396,12 @@ class Ring {
       file_wake(idx);
       return;
     }
-    c.file_io->off += static_cast<size_t>(cqe->res);
-    if (cqe->res != 0 && c.file_io->off < c.file_io->want) {
+    c.file_io->filled += static_cast<size_t>(cqe->res);
+    if (cqe->res != 0 && c.file_io->filled < c.file_io->nbytes) {
       arm_file_read(idx);
       return;
     }
-    if (c.file_io->off < c.file_io->want) {
+    if (c.file_io->filled < c.file_io->nbytes) {
       // Short of the window with nothing left to read: the file shrank under
       // the Content-Length statx already promised. The framing would lie, so
       // the answer is refused rather than sent.
@@ -4401,14 +4411,14 @@ class Ring {
       file_wake(idx);
       return;
     }
-    c.file_io->done += c.file_io->off;
+    c.file_io->offset += c.file_io->filled;
     // The fd stays open while the file still owes windows; continue_conn
     // arms the next read once the round this one feeds has drained.
-    if (c.file_io->done >= c.file_io->total) {
+    if (c.file_io->offset >= c.file_io->stx_size) {
       c.file_io->fd = -1;
       arm_file_close(idx, fd, gen);
     }
-    app_.file_ready_now(c.app, c.file_io->off);
+    app_.file_ready_now(c.app, c.file_io->filled);
     file_wake(idx);
   }
 
@@ -4535,10 +4545,10 @@ class Ring {
     // next window may be read - doing it on the round that just lent the
     // buffer out overwrites the bytes still being sent.
     if (c.file_io != nullptr && c.file_io->fd >= 0 && !c.file_io->reading &&
-        c.file_io->done < c.file_io->total) {
-      const size_t left = c.file_io->total - c.file_io->done;
-      c.file_io->want = left < kResponseFileWindow ? left : kResponseFileWindow;
-      c.file_io->off = 0;
+        c.file_io->offset < c.file_io->stx_size) {
+      const size_t left = c.file_io->stx_size - c.file_io->offset;
+      c.file_io->nbytes = left < kResponseFileWindow ? left : kResponseFileWindow;
+      c.file_io->filled = 0;
       arm_file_read(idx);
       return;
     }
