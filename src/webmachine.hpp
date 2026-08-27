@@ -4001,6 +4001,19 @@ class Ring {
     return true;
   }
 
+  // NO RFC - one slot of the reactor, so what the kernel touches carries
+  // the kernel's names (rule 4: the ARGUMENT a field becomes) and what
+  // only we touch says that it is ours:
+  //   meminfo   getsockopt(fd, SOL_SOCKET, SO_MEMINFO, optval, optlen)
+  //   addr,     accept4/getsockname(fd, addr, addrlen) - and what
+  //   addrlen   Http1::Conn::peer then points into
+  //   msg       struct msghdr, handed to io_uring_prep_sendmsg
+  //   msg_iov,  its msg_iov and msg_iovlen, filled from an App::Plan
+  //   msg_iovlen
+  //   gen       ours: the generation half of user_data's tag, which is
+  //             what makes a reused slot safe
+  //   out/next  ours: the round on the wire and the one being built
+  //
   // Ordered by alignment, not by topic - see Http1::Conn's own note. The
   // flags sat between the 8-byte members and cost 21 bytes of padding.
   struct Conn {
@@ -4012,7 +4025,7 @@ class Ring {
     // even though on_meminfo reads three of them. Every accept arms it,
     // so it stays inline - a pointer here would be a malloc per
     // connection to save 36 bytes.
-    uint32_t mi[SK_MEMINFO_VARS] = {};
+    uint32_t meminfo[SK_MEMINFO_VARS] = {};
 
     // The peer's address, materialised only where it is going to be
     // read. arm_peer runs for a logged TCP connection and nothing else,
@@ -4023,8 +4036,8 @@ class Ring {
     // Http1::Conn::peer points into it, and reset() clears peer_len
     // rather than the pointer.
     struct PeerAddr {
-      int slen = 0;
-      struct sockaddr_storage ss {};
+      int addrlen = 0;
+      struct sockaddr_storage addr {};
     };
     std::unique_ptr<PeerAddr> peer;
 
@@ -4078,13 +4091,15 @@ class Ring {
     };
     std::unique_ptr<FileIo> file_io;
 
-    static constexpr unsigned kIov = App::Plan::kSegs + 1;
-    size_t plan_len = 0;
+    // Not ABI: our own cap, one segment more than a Plan can hold, for
+    // the head that rides in front of it.
+    static constexpr unsigned kMsgIovMax = App::Plan::kSegs + 1;
+    size_t plan_byte_total = 0;
     struct msghdr msg {};
 
-    unsigned niov = 0;
+    unsigned msg_iovlen = 0;
     uint16_t gen = 0;
-    uint8_t li = 0;
+    uint8_t listener = 0;
     bool live = false;
     bool sending = false;
     bool close_after_send = false;
@@ -4092,7 +4107,7 @@ class Ring {
 
     typename App::Conn app;
 
-    std::unique_ptr<struct iovec[]> iov;
+    std::unique_ptr<struct iovec[]> msg_iov;
   };
 
   // Never null: a full SQ is submitted and retried once, and a ring that
@@ -4233,12 +4248,12 @@ class Ring {
     struct io_uring_sqe* s = sqe();
     const int flags =
         MSG_NOSIGNAL | MSG_WAITALL | (app_.pending(c.app) ? MSG_MORE : 0);
-    if (c.niov == 0) {
+    if (c.msg_iovlen == 0) {
       io_uring_prep_send(s, static_cast<int>(idx), c.out.data(), c.out.size(), flags);
     } else {
       c.msg = msghdr{};
-      c.msg.msg_iov = c.iov.get();
-      c.msg.msg_iovlen = c.niov;
+      c.msg.msg_iov = c.msg_iov.get();
+      c.msg.msg_iovlen = c.msg_iovlen;
       io_uring_prep_sendmsg(s, static_cast<int>(idx), &c.msg, flags);
     }
     s->flags |= IOSQE_FIXED_FILE;
@@ -4294,7 +4309,7 @@ class Ring {
     c.close_after_send = false;
     c.idle = false;
     c.deadline_s = now_s_ + header_timeout_;
-    c.li = static_cast<uint8_t>(li);
+    c.listener = static_cast<uint8_t>(li);
     c.out.clear();
     c.next.clear();
     c.app.reset(static_cast<uint8_t>(li), !unix_listener_[li]);
@@ -4408,15 +4423,15 @@ class Ring {
     // has no restart point and an h2 frame cut in half breaks the whole
     // connection's framing. So the only answer is to drop it.
     const size_t took = static_cast<size_t>(cqe->res);
-    const size_t offered = c.niov != 0 ? c.plan_len : c.out.size();
+    const size_t offered = c.msg_iovlen != 0 ? c.plan_byte_total : c.out.size();
     if (WM_UNLIKELY(took != offered)) {
       begin_close(idx);
       return;
     }
     c.deadline_s = now_s_ + send_timeout_;
     c.out.clear();
-    c.niov = 0;
-    c.plan_len = 0;
+    c.msg_iovlen = 0;
+    c.plan_byte_total = 0;
     if (!c.next.empty()) {
       c.out.swap(c.next);
       arm_send(idx);
@@ -4598,7 +4613,7 @@ class Ring {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
     io_uring_prep_cmd_sock(s, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(idx), SOL_SOCKET,
-                           SO_MEMINFO, c.mi, sizeof(c.mi));
+                           SO_MEMINFO, c.meminfo, sizeof(c.meminfo));
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kMeminfo, c.gen, idx));
   }
@@ -4608,12 +4623,12 @@ class Ring {
   void arm_peer(uint32_t idx) {
     Conn& c = conns_[idx];
     if (c.peer == nullptr) c.peer.reset(new typename Conn::PeerAddr());
-    c.peer->slen = static_cast<int>(sizeof(c.peer->ss));
+    c.peer->addrlen = static_cast<int>(sizeof(c.peer->addr));
     struct io_uring_sqe* s = sqe();
     io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(idx), nullptr, 0, 0);
     s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
-    s->addr = reinterpret_cast<uint64_t>(&c.peer->ss);
-    s->optval = reinterpret_cast<uint64_t>(&c.peer->slen);
+    s->addr = reinterpret_cast<uint64_t>(&c.peer->addr);
+    s->optval = reinterpret_cast<uint64_t>(&c.peer->addrlen);
     s->optlen = 1;
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kPeer, c.gen, idx));
@@ -4633,11 +4648,11 @@ class Ring {
       }
       return;
     }
-    if (c.peer != nullptr && c.peer->slen > 0 &&
-        static_cast<size_t>(c.peer->slen) <= sizeof(c.peer->ss)) {
-      c.app.peer = &c.peer->ss;
+    if (c.peer != nullptr && c.peer->addrlen > 0 &&
+        static_cast<size_t>(c.peer->addrlen) <= sizeof(c.peer->addr)) {
+      c.app.peer = &c.peer->addr;
       c.app.peer_len = static_cast<uint8_t>(
-          c.peer->slen > 255 ? 255 : c.peer->slen);
+          c.peer->addrlen > 255 ? 255 : c.peer->addrlen);
     }
   }
 
@@ -4648,10 +4663,10 @@ class Ring {
     if (c.gen != gen) return;
     size_t cap = Conn::kRoundFloor;
     if (WM_LIKELY(cqe->res >= 0)) {
-      const uint32_t used = c.mi[SK_MEMINFO_WMEM_QUEUED] > c.mi[SK_MEMINFO_WMEM_ALLOC]
-                                ? c.mi[SK_MEMINFO_WMEM_QUEUED]
-                                : c.mi[SK_MEMINFO_WMEM_ALLOC];
-      const uint32_t buf = c.mi[SK_MEMINFO_SNDBUF];
+      const uint32_t used = c.meminfo[SK_MEMINFO_WMEM_QUEUED] > c.meminfo[SK_MEMINFO_WMEM_ALLOC]
+                                ? c.meminfo[SK_MEMINFO_WMEM_QUEUED]
+                                : c.meminfo[SK_MEMINFO_WMEM_ALLOC];
+      const uint32_t buf = c.meminfo[SK_MEMINFO_SNDBUF];
       const size_t free_b = buf > used ? buf - used : 0;
       if (free_b > cap) cap = free_b;
     }
@@ -4663,30 +4678,30 @@ class Ring {
   // RESOLVE a plan into iovecs: a sink segment carried an OFFSET, and this
   // is the first moment the address is final.
   void take_plan(Conn& c, const typename App::Plan& req) {
-    if (!c.iov) {
-      c.iov = std::make_unique<struct iovec[]>(Conn::kIov);
+    if (!c.msg_iov) {
+      c.msg_iov = std::make_unique<struct iovec[]>(Conn::kMsgIovMax);
     }
-    c.niov = 0;
-    c.plan_len = 0;
+    c.msg_iovlen = 0;
+    c.plan_byte_total = 0;
     bool sink_covered = false;
     for (unsigned i = 0; i < req.iovlen; i++) {
       const typename App::Plan::Seg& sg = req.iov[i];
       if (sg.iov_base != nullptr) {
-        c.iov[c.niov].iov_base = const_cast<char*>(sg.iov_base);
+        c.msg_iov[c.msg_iovlen].iov_base = const_cast<char*>(sg.iov_base);
       } else {
-        c.iov[c.niov].iov_base = c.out.data() + sg.off;
+        c.msg_iov[c.msg_iovlen].iov_base = c.out.data() + sg.off;
         sink_covered = true;
       }
-      c.iov[c.niov].iov_len = sg.iov_len;
-      c.plan_len += sg.iov_len;
-      c.niov++;
+      c.msg_iov[c.msg_iovlen].iov_len = sg.iov_len;
+      c.plan_byte_total += sg.iov_len;
+      c.msg_iovlen++;
     }
     if (!sink_covered && !c.out.empty()) {
-      for (unsigned i = c.niov; i > 0; i--) c.iov[i] = c.iov[i - 1];
-      c.iov[0].iov_base = c.out.data();
-      c.iov[0].iov_len = c.out.size();
-      c.plan_len += c.out.size();
-      c.niov++;
+      for (unsigned i = c.msg_iovlen; i > 0; i--) c.msg_iov[i] = c.msg_iov[i - 1];
+      c.msg_iov[0].iov_base = c.out.data();
+      c.msg_iov[0].iov_len = c.out.size();
+      c.plan_byte_total += c.out.size();
+      c.msg_iovlen++;
     }
   }
 
