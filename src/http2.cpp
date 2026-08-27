@@ -221,19 +221,19 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
   h2.frag.clear();
 
   H2Stream* existing = h2.find(stream_id);
-  if (existing != nullptr && existing->headers_done) {
+  if (existing != nullptr && existing->end_headers) {
     if (!end_stream || existing->half_closed_remote) {
       return h2_error(st0, kH2ProtocolError, sink);
     }
     existing->half_closed_remote = true;
     const flow::ReqFacts facts = existing->facts;
-    const bool head_only = existing->head_only;
-    const AssetEntry* asset = existing->asset;
-    const uint16_t asset_status = existing->asset_status;
-    const size_t asset_off = existing->asset_off;
-    const size_t asset_end = existing->asset_end;
+    const bool head_only = existing->head_method;
+    const AssetEntry* asset = existing->parked_asset;
+    const uint16_t asset_status = existing->parked_status;
+    const size_t asset_off = existing->parked_first;
+    const size_t asset_end = existing->parked_end;
     const uint16_t route = existing->route;
-    const std::string target = existing->target;
+    const std::string target = existing->request_target;
     if (asset != nullptr) {
       if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
                            asset_end, sink)) {
@@ -243,17 +243,17 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       return true;
     }
     std::string body;
-    body.swap(existing->body);
+    body.swap(existing->request_content);
     // The fields this stream copied when it parked, rebuilt over the
     // blob that outlived hdrbuf.
     struct phr_header hv[kH2MaxFields];
-    size_t nh = existing->hq.size() / 4;
+    size_t nh = existing->field_spans.size() / 4;
     if (nh > kH2MaxFields) nh = kH2MaxFields;
     for (size_t i = 0; i < nh; i++) {
-      hv[i].name = existing->hblob.data() + existing->hq[i * 4];
-      hv[i].name_len = existing->hq[i * 4 + 1];
-      hv[i].value = existing->hblob.data() + existing->hq[i * 4 + 2];
-      hv[i].value_len = existing->hq[i * 4 + 3];
+      hv[i].name = existing->field_blob.data() + existing->field_spans[i * 4];
+      hv[i].name_len = existing->field_spans[i * 4 + 1];
+      hv[i].value = existing->field_blob.data() + existing->field_spans[i * 4 + 2];
+      hv[i].value_len = existing->field_spans[i * 4 + 3];
     }
     ReqView rv;
     rv.method = facts.method;
@@ -441,28 +441,28 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     return true;
   }
   H2Stream& stx = h2.open(stream_id);
-  stx.headers_done = true;
+  stx.end_headers = true;
   stx.facts = facts;
-  stx.head_only = head_only;
-  stx.asset = asset;
-  stx.asset_status = asset_status;
-  stx.asset_off = asset_off;
-  stx.asset_end = asset_end;
+  stx.head_method = head_only;
+  stx.parked_asset = asset;
+  stx.parked_status = asset_status;
+  stx.parked_first = asset_off;
+  stx.parked_end = asset_end;
   stx.route = route;
-  stx.target.assign(path_val, path_vlen);
-  stx.hblob.clear();
-  stx.hq.clear();
-  stx.hq.reserve(nh * 4);
+  stx.request_target.assign(path_val, path_vlen);
+  stx.field_blob.clear();
+  stx.field_spans.clear();
+  stx.field_spans.reserve(nh * 4);
   for (size_t i = 0; i < nh; i++) {
-    stx.hq.push_back(static_cast<uint32_t>(stx.hblob.size()));
-    stx.hq.push_back(static_cast<uint32_t>(hv[i].name_len));
-    stx.hblob.append(hv[i].name, hv[i].name_len);
-    stx.hq.push_back(static_cast<uint32_t>(stx.hblob.size()));
-    stx.hq.push_back(static_cast<uint32_t>(hv[i].value_len));
-    stx.hblob.append(hv[i].value, hv[i].value_len);
+    stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
+    stx.field_spans.push_back(static_cast<uint32_t>(hv[i].name_len));
+    stx.field_blob.append(hv[i].name, hv[i].name_len);
+    stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
+    stx.field_spans.push_back(static_cast<uint32_t>(hv[i].value_len));
+    stx.field_blob.append(hv[i].value, hv[i].value_len);
   }
   stx.content_length = claimed_len;
-  stx.have_content_length = have_claimed_len;
+  stx.content_length_given = have_claimed_len;
   return true;
 }
 
@@ -600,10 +600,8 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   }
 
   H2Stream& keep = h2.open(stream_id);
-  keep.src = &e;
-  keep.src_off = win_off;
-  keep.src_len = win_end;
-  keep.headers_done = true;
+  keep.response_content.take_asset(&e, win_off, win_end);
+  keep.end_headers = true;
   keep.half_closed_remote = true;
   return true;
 }
@@ -732,13 +730,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // can strand a rooted body nobody comes back for.
   if (lent_have) {
     H2Stream& keep = h2.open(stream_id);
-    keep.zc_mrb = lent_mrb;
-    keep.zc = lent_v;
-    keep.zc_ptr = lent;
-    keep.zc_off = 0;
-    keep.zc_len = lent_len;
-    keep.zc_have = true;
-    keep.headers_done = true;
+    keep.response_content.take_lent(lent_mrb, lent_v, lent, lent_len);
+    keep.end_headers = true;
     keep.half_closed_remote = true;
   }
 
@@ -748,8 +741,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
   int64_t budget = 0;
   if (!no_data) {
-    const int64_t swin = stp != nullptr ? stp->send_window : h2.peer_initial_window;
-    budget = h2.send_window < swin ? h2.send_window : swin;
+    const int64_t swin = stp != nullptr ? stp->flow_window : h2.peer_initial_window;
+    budget = h2.flow_window < swin ? h2.flow_window : swin;
   }
 
   bool merged = false;
@@ -856,14 +849,14 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       }
     }
     const bool had_stream = stp != nullptr;
-    h2.send_window -= static_cast<int64_t>(give);
-    if (had_stream) stp->send_window -= static_cast<int64_t>(give);
+    h2.flow_window -= static_cast<int64_t>(give);
+    if (had_stream) stp->flow_window -= static_cast<int64_t>(give);
     if (give < blen) {
       H2Stream& keep = h2.open(stream_id);
-      keep.pending.assign(body + give, blen - give);
-      keep.headers_done = true;
+      keep.response_content.take_owned(body + give, blen - give);
+      keep.end_headers = true;
       keep.half_closed_remote = true;
-      if (!had_stream) keep.send_window -= static_cast<int64_t>(give);
+      if (!had_stream) keep.flow_window -= static_cast<int64_t>(give);
     }
   }
   // A lent stream is never closed here: its bytes have not been framed yet,
@@ -999,33 +992,30 @@ static size_t h2_emit(RoundOut& out, const H2Stream& s, const Http1::H2SendStep&
     h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
                         s.id);
     out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
-    switch (step.src) {
-      case Http1::H2SendStep::Src::kAsset: out.span(*s.src, step.start + off, n); break;
-      case Http1::H2SendStep::Src::kLent: out.lent(s.zc_ptr + step.start + off, n); break;
-      case Http1::H2SendStep::Src::kPending:
-        out.bytes(s.pending.data() + step.start + off, n);
+    switch (s.response_content.src) {
+      case H2Stream::Content::Src::kAsset:
+        out.span(*s.response_content.asset, step.start + off, n);
         break;
-      case Http1::H2SendStep::Src::kNone: break;
+      case H2Stream::Content::Src::kLent: out.lent(s.response_content.lent + step.start + off, n); break;
+      case H2Stream::Content::Src::kOwned:
+        out.bytes(s.response_content.owned.data() + step.start + off, n);
+        break;
+      case H2Stream::Content::Src::kNone: break;
     }
     off += n;
   }
   return off;
 }
 
-// Both windows and the source's own cursor, from what really went out.
+// Both windows and the body's one cursor, from what really went out. The
+// owned buffer used to erase from its front - a memmove per round to say
+// what an offset says for free.
 static void h2_advance(H2State& h2, H2Stream& s, const Http1::H2SendStep& step, size_t sent) {
+  (void)step;
   if (sent == 0) return;
-  h2.send_window -= static_cast<int64_t>(sent);
-  s.send_window -= static_cast<int64_t>(sent);
-  switch (step.src) {
-    case Http1::H2SendStep::Src::kAsset:
-      s.src_off += sent;
-      if (s.src_off == s.src_len) s.src = nullptr;
-      break;
-    case Http1::H2SendStep::Src::kLent: s.zc_off += sent; break;
-    case Http1::H2SendStep::Src::kPending: s.pending.erase(0, sent); break;
-    case Http1::H2SendStep::Src::kNone: break;
-  }
+  h2.flow_window -= static_cast<int64_t>(sent);
+  s.flow_window -= static_cast<int64_t>(sent);
+  s.response_content.sent += sent;
 }
 
 void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
@@ -1037,7 +1027,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   for (; walked < n_streams; walked++) {
     if (!out.room_for_frame()) break;
     H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
-    const H2SendStep step = h2_send_step(stp, h2.send_window, kDeliverChunk);
+    const H2SendStep step = h2_send_step(stp, h2.flow_window, kDeliverChunk);
     if (step.give == 0) continue;
     const size_t sent = h2_emit(out, stp, step, h2.peer_max_frame);
     h2_advance(h2, stp, step, sent);
@@ -1045,8 +1035,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   for (size_t i = 0; i < h2.streams.size();) {
     H2Stream& stp = h2.streams[i];
-    if (stp.headers_done && stp.half_closed_remote && stp.pending.empty() &&
-        stp.src == nullptr && !stp.zc_owes()) {
+    if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes()) {
       // close_stream RETIRES the lend rather than freeing it: its last
       // frames are in the round being built, not yet on the wire.
       h2.close_stream(stp.id);
@@ -1060,7 +1049,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
 bool Http1::pending(const Conn& st) const {
   if (st.h2 != nullptr) {
     for (const H2Stream& s : st.h2->streams) {
-      if (s.src != nullptr || !s.pending.empty() || s.zc_owes()) return true;
+      if (s.response_content.owes()) return true;
     }
     return false;
   }
@@ -1180,7 +1169,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           h2_rst(st0, stream, kH2StreamClosed, sink);
           break;
         }
-        if (!stp->headers_done || stp->half_closed_remote) {
+        if (!stp->end_headers || stp->half_closed_remote) {
           h2_rst(st0, stream, kH2StreamClosed, sink);
           break;
         }
@@ -1194,17 +1183,17 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           if (pad > dlen) return h2_error(st0, kH2ProtocolError, sink);
           dlen -= pad;
         }
-        if (stp->body_len + dlen > kMaxBody) {
+        if (stp->content_received + dlen > kMaxBody) {
           h2_rst(st0, stream, kH2RefusedStream, sink);
           break;
         }
-        stp->body_len += dlen;
+        stp->content_received += dlen;
         // Stored only where a bound resource will read them - a konst
         // route's or a miss's bytes are counted and dropped, so idle
         // streams cannot hold megabytes nobody will ever ask for.
         if (stp->route != kNoRoute &&
             bundles_[apps_[st0.listener].base + stp->route].bound) {
-          stp->body.append(reinterpret_cast<const char*>(dp), dlen);
+          stp->request_content.append(reinterpret_cast<const char*>(dp), dlen);
         }
         if (flen != 0) {
           unsigned char inc[4];
@@ -1213,27 +1202,27 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           emit_control(sink, kH2WindowUpdate, 0, stream, inc, 4);
         }
         if (flags & kH2FlagEndStream) {
-          if (stp->have_content_length && stp->body_len != stp->content_length) {
+          if (stp->content_length_given && stp->content_received != stp->content_length) {
             h2_rst(st0, stream, kH2ProtocolError, sink);
             break;
           }
           stp->half_closed_remote = true;
           const flow::ReqFacts facts = stp->facts;
-          const bool head_only = stp->head_only;
+          const bool head_only = stp->head_method;
           const uint16_t route = stp->route;
-          const std::string target = stp->target;
+          const std::string target = stp->request_target;
           std::string body;
-          body.swap(stp->body);
+          body.swap(stp->request_content);
           // The fields the HEADERS frame copied when this stream parked,
           // rebuilt over the blob that outlived hdrbuf's reuse.
           struct phr_header hv[kH2MaxFields];
-          size_t nh = stp->hq.size() / 4;
+          size_t nh = stp->field_spans.size() / 4;
           if (nh > kH2MaxFields) nh = kH2MaxFields;
           for (size_t i = 0; i < nh; i++) {
-            hv[i].name = stp->hblob.data() + stp->hq[i * 4];
-            hv[i].name_len = stp->hq[i * 4 + 1];
-            hv[i].value = stp->hblob.data() + stp->hq[i * 4 + 2];
-            hv[i].value_len = stp->hq[i * 4 + 3];
+            hv[i].name = stp->field_blob.data() + stp->field_spans[i * 4];
+            hv[i].name_len = stp->field_spans[i * 4 + 1];
+            hv[i].value = stp->field_blob.data() + stp->field_spans[i * 4 + 2];
+            hv[i].value_len = stp->field_spans[i * 4 + 3];
           }
           // RFC 9110 12.5: the values negotiation reads point into hdrbuf
           // too, so a parked answer had none and every request that named
@@ -1356,7 +1345,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
               if (v > kH2WindowCeiling) return h2_error(st0, kH2FlowControlError, sink);
               const int64_t delta = static_cast<int64_t>(v) - h2.peer_initial_window;
               h2.peer_initial_window = static_cast<int64_t>(v);
-              for (H2Stream& stp : h2.streams) stp.send_window += delta;
+              for (H2Stream& stp : h2.streams) stp.flow_window += delta;
               break;
             }
             case kH2SettingsMaxFrameSize:
@@ -1389,13 +1378,13 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
         const uint32_t inc = h2_u31(p);
         if (inc == 0) return h2_error(st0, kH2ProtocolError, sink);
         if (stream == 0) {
-          h2.send_window += inc;
-          if (h2.send_window > kH2WindowCeiling) {
+          h2.flow_window += inc;
+          if (h2.flow_window > kH2WindowCeiling) {
             return h2_error(st0, kH2FlowControlError, sink);
           }
         } else if (H2Stream* stp = h2.find(stream)) {
-          stp->send_window += inc;
-          if (stp->send_window > kH2WindowCeiling) {
+          stp->flow_window += inc;
+          if (stp->flow_window > kH2WindowCeiling) {
             h2_rst(st0, stream, kH2FlowControlError, sink);
             break;
           }

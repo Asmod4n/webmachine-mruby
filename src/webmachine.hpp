@@ -1982,49 +1982,104 @@ inline uint16_t h2_u16(const unsigned char* p) {
 
 struct AssetEntry;
 
+// RFC 9113 5.1: one entry per stream in a non-idle state. What a stream
+// must remember between frames is exactly what the state machine there
+// names - what it has received, what it still owes, and whether either
+// half is closed - so the fields are that list and nothing else.
 struct H2Stream {
+  // RFC 9113 5.1.1: the Stream Identifier every frame carries.
   uint32_t id = 0;
-  int64_t send_window = kH2DefaultWindow;
-  size_t body_len = 0;
-  // RFC 9110 6.4: the DATA bytes, kept for a bound resource (counted
-  // AND stored now - request.body reads them at END_STREAM).
-  std::string body;
+  // RFC 9113 6.9.1: the stream's half of the flow-control window. Signed
+  // because a SETTINGS_INITIAL_WINDOW_SIZE change can drive it negative.
+  int64_t flow_window = kH2DefaultWindow;
+  // RFC 9110 6.4: the request's content. Counted AND kept, because
+  // request.body reads it at END_STREAM (RFC 9113 6.1).
+  size_t content_received = 0;
+  std::string request_content;
+  // RFC 9110 8.6: what the sender said it would send, and whether it said.
   size_t content_length = 0;
-  bool have_content_length = false;
-  std::string pending;
+  bool content_length_given = false;
   // RFC 9113 8.3: a parked request is answered after hdrbuf has been
   // reused by the next dispatch, so its fields cannot be lent the way
   // the immediate path lends them - they are COPIED here instead, names
-  // and values end to end in `hblob` with four offsets each in `hq`.
-  // Paid only by a request that carries a body, which is already doing
-  // more work than a GET.
-  std::string hblob;
-  std::vector<uint32_t> hq;
+  // and values end to end in `field_blob` with four offsets each in
+  // `field_spans`. Paid only by a request that carries a body, which is
+  // already doing more work than a GET.
+  std::string field_blob;
+  std::vector<uint32_t> field_spans;
   flow::ReqFacts facts;
-  const AssetEntry* asset = nullptr;
-  uint16_t asset_status = 0;
-  size_t asset_off = 0;
-  size_t asset_end = 0;
-  const AssetEntry* src = nullptr;
-  size_t src_off = 0;
-  size_t src_len = 0;
-  // A dynamic body this STREAM was lent: the handler's own frozen String,
-  // pointer plus cursor exactly like `src` above - but an asset's mapping
-  // outlives the process and this does not, so the release is a real event
-  // (H2State::zc_retire) and every stream end owes it.
-  mrb_state* zc_mrb = nullptr;
-  mrb_value zc = {};
-  const char* zc_ptr = nullptr;
-  size_t zc_off = 0;
-  size_t zc_len = 0;
-  bool zc_have = false;
-  // RFC 9113 6.9.1: flow control can cut a lent body across many rounds,
-  // so "still owes bytes" is what keeps the stream - and the lend - alive.
-  bool zc_owes() const { return zc_have && zc_off < zc_len; }
+  // RFC 9113 6.9.1: an answer flow control could not frame yet. The asset
+  // and its verdict wait here; the byte range is [first, end).
+  const AssetEntry* parked_asset = nullptr;
+  uint16_t parked_status = 0;
+  size_t parked_first = 0;
+  size_t parked_end = 0;
+  // RFC 9110 6.4: the response content, in ONE form whatever it is made
+  // of. A content this stream owes is a base, a cursor, an end, and -
+  // where the base is borrowed - a release obligation; the three sources
+  // this replaced differed in nothing else. Carrying them as three
+  // parallel triples is what let a release rule live APART from the lend
+  // it releases, which is the shape the h1 mapping's use-after-free had.
+  struct Content {
+    // RFC 9110 8.1: where the representation data comes from.
+    enum class Src : uint8_t { kNone, kAsset, kLent, kOwned };
+    // kAsset: RFC 1952 framing means one logical range is up to THREE
+    // iovecs (gzip header, the stored deflate payload, trailer), so the
+    // entry travels and not a pointer.
+    const AssetEntry* asset = nullptr;
+    const char* lent = nullptr;  // kLent: the handler's frozen String
+    std::string owned;           // kOwned: what flow control could not frame
+    // RFC 9113 6.9.1: what has already left, against RFC 9110 8.6's total.
+    size_t sent = 0;
+    size_t length = 0;
+    // No RFC: mruby's GC. Non-null EXACTLY while an unroot is owed, and
+    // H2State::content_retire is the one place that clears it, so no
+    // value is ever unrooted twice.
+    mrb_state* mrb = nullptr;
+    mrb_value value = {};
+    Src src = Src::kNone;
+    // RFC 9113 6.9.1: flow control can cut content across many rounds, so
+    // "still owes octets" is what keeps the stream - and the lend - alive.
+    bool owes() const { return src != Src::kNone && sent < length; }
+    void take_asset(const AssetEntry* e, size_t first, size_t end) {
+      src = Src::kAsset;
+      asset = e;
+      sent = first;
+      length = end;
+    }
+    void take_lent(mrb_state* m, mrb_value v, const char* p, size_t n) {
+      src = Src::kLent;
+      lent = p;
+      sent = 0;
+      length = n;
+      mrb = m;
+      value = v;
+    }
+    void take_owned(const char* p, size_t n) {
+      src = Src::kOwned;
+      owned.assign(p, n);
+      sent = 0;
+      length = n;
+    }
+    void clear() {
+      src = Src::kNone;
+      asset = nullptr;
+      lent = nullptr;
+      owned.clear();
+      sent = 0;
+      length = 0;
+    }
+  };
+  Content response_content;
+  // No RFC: this server's route table index.
   uint16_t route = 0;
-  std::string target;
-  bool head_only = false;
-  bool headers_done = false;
+  // RFC 9113 8.3.1: the :path pseudo-header, which is the request target.
+  std::string request_target;
+  // RFC 9110 9.3.2: HEAD is GET without content.
+  bool head_method = false;
+  // RFC 9113 6.2: END_HEADERS has been seen, so the field section is whole.
+  bool end_headers = false;
+  // RFC 9113 5.1: the peer will send no more DATA on this stream.
   bool half_closed_remote = false;
 };
 
@@ -2032,7 +2087,8 @@ struct H2State {
   struct lshpack_enc enc;
   struct lshpack_dec dec;
 
-  int64_t send_window = kH2DefaultWindow;
+  // RFC 9113 6.9.1: the CONNECTION's half of the flow-control window.
+  int64_t flow_window = kH2DefaultWindow;
   int64_t peer_initial_window = kH2DefaultWindow;
   uint32_t peer_max_frame = kH2MaxFrameSize;
   uint32_t last_stream = 0;
@@ -2067,7 +2123,7 @@ struct H2State {
     mrb_state* mrb;
     mrb_value v;
   };
-  std::vector<Lend> zc_retired;
+  std::vector<Lend> retired;
 
   // RFC 9113: allocated only when the preface was spoken, never before.
   H2State() {
@@ -2078,8 +2134,8 @@ struct H2State {
   // lend the streams still hold. h1's ~Conn, one tier down: unconditional,
   // GOAWAY or error or a client that simply left.
   ~H2State() {
-    for (H2Stream& s : streams) zc_retire(s);
-    zc_drain();
+    for (H2Stream& s : streams) content_retire(s);
+    content_drain();
     lshpack_enc_cleanup(&enc);
     lshpack_dec_cleanup(&dec);
   }
@@ -2098,25 +2154,25 @@ struct H2State {
     streams.emplace_back();
     H2Stream& st = streams.back();
     st.id = id;
-    st.send_window = peer_initial_window;
+    st.flow_window = peer_initial_window;
     return st;
   }
-  // A stream's lend leaves the stream: clearing zc_have HERE is what makes
-  // a second call a no-op, so no value is ever unrooted twice.
-  void zc_retire(H2Stream& s) {
-    if (!s.zc_have) return;
-    s.zc_have = false;
-    s.zc_ptr = nullptr;
-    s.zc_off = 0;
-    s.zc_len = 0;
-    zc_retired.push_back(Lend{s.zc_mrb, s.zc});
-    s.zc_mrb = nullptr;
+  // RFC 9113 5.1: content leaves the stream when the stream does. Clearing
+  // `mrb` HERE is what makes a second call a no-op, so no value is ever
+  // unrooted twice - and the content is cleared whole, so an asset or an
+  // owned buffer cannot outlive the stream that framed it either.
+  void content_retire(H2Stream& s) {
+    if (s.response_content.mrb != nullptr) {
+      retired.push_back(Lend{s.response_content.mrb, s.response_content.value});
+      s.response_content.mrb = nullptr;
+    }
+    s.response_content.clear();
   }
   // THE release: called where a whole round has drained, so nothing the
   // kernel was handed still points into these Strings.
-  void zc_drain() {
-    for (const Lend& l : zc_retired) resource_body_unlend(l.mrb, l.v);
-    zc_retired.clear();
+  void content_drain() {
+    for (const Lend& l : retired) resource_body_unlend(l.mrb, l.v);
+    retired.clear();
   }
   // RFC 9113 5.1: the number stays, the entry goes.
   void close_stream(uint32_t id) {
@@ -2125,7 +2181,7 @@ struct H2State {
         // The move-assign below DISCARDS this entry's members: a body it
         // still holds has to leave first, or its root leaks silently on
         // every close - RST_STREAM, END_STREAM and error paths alike.
-        zc_retire(streams[i]);
+        content_retire(streams[i]);
         streams[i] = std::move(streams.back());
         streams.pop_back();
         return;
@@ -2724,7 +2780,7 @@ class Http1 {
       // h2 lends PER STREAM and hands each one back where the stream ends,
       // but the last bytes are still in flight there - this is the point
       // that knows they are not, so the h2 backlog is freed from here.
-      if (h2 != nullptr) h2->zc_drain();
+      if (h2 != nullptr) h2->content_drain();
       zc_covered = 0;
       zc_split = false;
       if (!zc_have) return;
@@ -2879,9 +2935,10 @@ class Http1 {
   // the delivery chunk. This was the same twenty lines three times over,
   // once per source, each computing the budget again and each writing in
   // the middle of the arithmetic.
+  // How many bytes of THE stream's body go out this round. It no longer
+  // picks among sources - there is one - so it decides a count and nothing
+  // else; where the bytes come from is H2Stream::Body's business.
   struct H2SendStep {
-    enum class Src : uint8_t { kNone, kAsset, kLent, kPending };
-    Src src = Src::kNone;
     size_t start = 0;   // first byte of the body this round frames
     size_t give = 0;    // how many bytes it may frame
     size_t total = 0;   // the body's length, so END_STREAM is a comparison
@@ -2889,30 +2946,16 @@ class Http1 {
   };
   static H2SendStep h2_send_step(const H2Stream& s, int64_t conn_window, size_t chunk) {
     H2SendStep o;
-    size_t remaining = 0;
-    // ONE source per round, in the order the wire cares about. A stream
-    // whose source is chosen but whose window is shut sends nothing - it
-    // does not fall through to another source.
-    if (s.src != nullptr) {
-      o.src = H2SendStep::Src::kAsset;
-      o.start = s.src_off;
-      o.total = s.src_len;
-      remaining = s.src_len - s.src_off;
-    } else if (s.zc_have) {
-      o.src = H2SendStep::Src::kLent;
-      o.start = s.zc_off;
-      o.total = s.zc_len;
-      remaining = s.zc_len - s.zc_off;
-    } else if (!s.pending.empty()) {
-      o.src = H2SendStep::Src::kPending;
-      o.total = s.pending.size();
-      // A copied buffer is bounded per round; a lend and a mapping are not.
-      remaining = s.pending.size() < chunk ? s.pending.size() : chunk;
-    } else {
-      return o;
+    if (!s.response_content.owes()) return o;
+    o.start = s.response_content.sent;
+    o.total = s.response_content.length;
+    size_t remaining = s.response_content.length - s.response_content.sent;
+    // A copied buffer is bounded per round; a lend and a mapping are not.
+    if (s.response_content.src == H2Stream::Content::Src::kOwned && remaining > chunk) {
+      remaining = chunk;
     }
-    const int64_t budget = conn_window < s.send_window ? conn_window : s.send_window;
-    if (budget <= 0) return o;  // src named, give stays 0
+    const int64_t budget = conn_window < s.flow_window ? conn_window : s.flow_window;
+    if (budget <= 0) return o;  // owed, but the window is shut: give stays 0
     o.give = remaining;
     if (static_cast<int64_t>(o.give) > budget) o.give = static_cast<size_t>(budget);
     o.ends = o.give != 0 && o.start + o.give == o.total;
