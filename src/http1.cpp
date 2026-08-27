@@ -273,8 +273,8 @@ void Http1::on_tick() {
   struct tm tm;
   gmtime_r(&now, &tm);
   http::date_core(date_, tm);
-  alog_.sec = static_cast<int64_t>(now);
-  elog_.sec = static_cast<int64_t>(now);
+  alog_.unix_seconds = static_cast<int64_t>(now);
+  elog_.unix_seconds = static_cast<int64_t>(now);
   const char* core = date_;
 
   for (Variants& v : store_) patch_date(v, core);

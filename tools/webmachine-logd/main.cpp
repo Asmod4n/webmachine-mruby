@@ -199,35 +199,37 @@ static void run_access() {
         flush_out();
         std::exit(1);
       }
-      const size_t need = sizeof(LogRec) + r.mlen + r.plen + r.tlen + r.rlen + r.ulen;
+      const size_t need = sizeof(LogRec) + r.method_token_len + r.peer_len + r.request_target_len +
+                          r.referer_len + r.user_agent_len;
       if (in.size() - off < need) break;
       const char* p = in.data() + off + sizeof(LogRec);
-      const char* method = p;               p += r.mlen;
-      const char* peer = p;                 p += r.plen;
-      const char* target = p;               p += r.tlen;
-      const char* ref = p;                  p += r.rlen;
-      const char* ua = p;
+      const char* method_token = p;         p += r.method_token_len;
+      const char* peer = p;                 p += r.peer_len;
+      const char* request_target = p;       p += r.request_target_len;
+      const char* referer = p;              p += r.referer_len;
+      const char* user_agent = p;
 
-      spell_ts(r.sec);
-      if (r.plen != 0) spell_peer(peer, r.plen, (r.flags & kLogNoTrack) != 0);
+      spell_ts(r.unix_seconds);
+      if (r.peer_len != 0) spell_peer(peer, r.peer_len, (r.flags & kLogNoTrack) != 0);
       else out.push_back('-');
       out.append(" - - ", 5);
       out.append(ts, 28);
       out.append(" \"", 2);
-      if (r.mlen != 0) esc(method, r.mlen); else out.push_back('-');
+      if (r.method_token_len != 0) esc(method_token, r.method_token_len);
+      else out.push_back('-');
       out.push_back(' ');
-      esc(target, r.tlen);
+      esc(request_target, r.request_target_len);
       const bool h2 = (r.flags & kLogH2) != 0;
       out.append(h2 ? " HTTP/2\" " : " HTTP/1.1\" ", h2 ? 9 : 11);
-      out.push_back(char('0' + r.status / 100));
-      out.push_back(char('0' + r.status / 10 % 10));
-      out.push_back(char('0' + r.status % 10));
+      out.push_back(char('0' + r.status_code / 100));
+      out.push_back(char('0' + r.status_code / 10 % 10));
+      out.push_back(char('0' + r.status_code % 10));
       out.push_back(' ');
-      if (r.bytes == 0) out.push_back('-'); else spell_num(r.bytes);
+      if (r.content_length == 0) out.push_back('-'); else spell_num(r.content_length);
       out.append(" \"", 2);
-      if (r.rlen != 0) esc(ref, r.rlen); else out.push_back('-');
+      if (r.referer_len != 0) esc(referer, r.referer_len); else out.push_back('-');
       out.append("\" \"", 3);
-      if (r.ulen != 0) esc(ua, r.ulen); else out.push_back('-');
+      if (r.user_agent_len != 0) esc(user_agent, r.user_agent_len); else out.push_back('-');
       out.append("\"\n", 2);
 
       off += need;
@@ -266,46 +268,49 @@ static void run_error() {
         flush_out();
         std::exit(1);
       }
-      const size_t parts = size_t(r.plen) + r.klen + r.tlen + r.mlen + r.blen;
-      if (parts != r.dyn) {
+      const size_t parts = size_t(r.peer_len) + r.exception_class_len + r.request_target_len +
+                           r.message_len + r.backtrace_len;
+      if (parts != r.dynamic_len) {
         std::fprintf(stderr, "webmachine-logd: error record says %u dynamic bytes, its fields add "
-                             "up to %zu - stream desynced, refusing\n", r.dyn, parts);
+                             "up to %zu - stream desynced, refusing\n", r.dynamic_len, parts);
         flush_out();
         std::exit(1);
       }
-      const size_t need = sizeof(ErrRec) + r.dyn;
+      const size_t need = sizeof(ErrRec) + r.dynamic_len;
       if (in.size() - off < need) break;
       const char* p = in.data() + off + sizeof(ErrRec);
-      const char* peer = p;                 p += r.plen;
-      const char* klass = p;                p += r.klen;
-      const char* target = p;               p += r.tlen;
-      const char* mesg = p;                 p += r.mlen;
-      const char* trace = p;
+      const char* peer = p;                 p += r.peer_len;
+      const char* exception_class = p;      p += r.exception_class_len;
+      const char* request_target = p;       p += r.request_target_len;
+      const char* message = p;              p += r.message_len;
+      const char* backtrace = p;
 
-      spell_ts(r.sec);
+      spell_ts(r.unix_seconds);
       out.append(ts, 28);
       out.push_back(' ');
-      if (r.plen != 0) spell_peer(peer, r.plen, false); else out.push_back('-');
+      if (r.peer_len != 0) spell_peer(peer, r.peer_len, false); else out.push_back('-');
       out.push_back(' ');
-      if (r.status != 0) {
-        out.push_back(char('0' + r.status / 100));
-        out.push_back(char('0' + r.status / 10 % 10));
-        out.push_back(char('0' + r.status % 10));
+      if (r.status_code != 0) {
+        out.push_back(char('0' + r.status_code / 100));
+        out.push_back(char('0' + r.status_code / 10 % 10));
+        out.push_back(char('0' + r.status_code % 10));
       } else {
         out.push_back('-');
       }
       out.push_back(' ');
-      if (r.tlen != 0) esc(target, r.tlen); else out.push_back('-');
+      if (r.request_target_len != 0) esc(request_target, r.request_target_len);
+      else out.push_back('-');
       out.push_back(' ');
-      if (r.klen != 0) esc(klass, r.klen); else out.push_back('-');
+      if (r.exception_class_len != 0) esc(exception_class, r.exception_class_len);
+      else out.push_back('-');
       out.append(": ", 2);
-      if (r.mlen != 0) esc(mesg, r.mlen); else out.push_back('-');
+      if (r.message_len != 0) esc(message, r.message_len); else out.push_back('-');
       out.push_back('\n');
-      for (size_t i = 0; i < r.blen;) {
+      for (size_t i = 0; i < r.backtrace_len;) {
         size_t j = i;
-        while (j < r.blen && trace[j] != '\n') j++;
+        while (j < r.backtrace_len && backtrace[j] != '\n') j++;
         out.append("\tfrom ", 6);
-        esc(trace + i, j - i);
+        esc(backtrace + i, j - i);
         out.push_back('\n');
         i = j + 1;
       }

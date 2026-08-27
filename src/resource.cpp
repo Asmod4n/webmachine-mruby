@@ -1595,20 +1595,20 @@ bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len
 }
 
 // mruby: one raise as one error-log record - class, message, backtrace.
-void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
-                   size_t tlen, uint16_t status) {
+void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len,
+                   const char* request_target, size_t request_target_len, uint16_t status_code) {
   if (mrb->exc == nullptr) return;
   const mrb_value exc = mrb_obj_value(mrb->exc);
-  const char* kn = mrb_obj_classname(mrb, exc);
-  const char* mp = nullptr;
-  size_t mlen = 0;
+  const char* exception_class = mrb_obj_classname(mrb, exc);
+  const char* message = nullptr;
+  size_t message_len = 0;
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
   if (e->mesg != nullptr && e->mesg->tt == MRB_TT_STRING) {
     const mrb_value mesg = mrb_obj_value(e->mesg);
-    mp = RSTRING_PTR(mesg);
-    mlen = static_cast<size_t>(RSTRING_LEN(mesg));
+    message = RSTRING_PTR(mesg);
+    message_len = static_cast<size_t>(RSTRING_LEN(mesg));
   }
-  std::string trace;
+  std::string backtrace;
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value bt = mrb_exc_backtrace(mrb, exc);
   if (mrb_array_p(bt)) {
@@ -1616,13 +1616,14 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, co
     for (mrb_int i = 0; i < n; i++) {
       const mrb_value f = RARRAY_PTR(bt)[i];
       if (!mrb_string_p(f)) continue;
-      if (!trace.empty()) trace.push_back('\n');
-      trace.append(RSTRING_PTR(f), static_cast<size_t>(RSTRING_LEN(f)));
+      if (!backtrace.empty()) backtrace.push_back('\n');
+      backtrace.append(RSTRING_PTR(f), static_cast<size_t>(RSTRING_LEN(f)));
     }
   }
   mrb_gc_arena_restore(mrb, ai);
-  log_error(lg, peer, plen, kn, std::strlen(kn), target, tlen, status, mp, mlen, trace.data(),
-            trace.size());
+  log_error(lg, peer, peer_len, exception_class, std::strlen(exception_class), request_target,
+            request_target_len, status_code, message, message_len, backtrace.data(),
+            backtrace.size());
 }
 }
 

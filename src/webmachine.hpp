@@ -677,114 +677,153 @@ class RouteTable {
 }
 
 namespace webmachine {
+// NO RFC - and that is the finding worth writing down. The access log is
+// the NCSA Combined Log Format: something httpd shipped and everyone
+// copied, never specified, so no line here can be checked against a
+// source. What the fields MEAN is specified (RFC 9110); how they are
+// spelled onto a line is not. Logger is this server's own plumbing - the
+// records are formatted here and drained by the ring to webmachine-logd.
 struct Logger {
   bool enabled = false;
-  std::string buf;
-  std::string flight;
+  std::string pending;       // formatted, not yet handed to the ring
+  std::string flight;        // handed over; the kernel owns these bytes
   bool in_flight = false;
-  int64_t sec = 0;
+  int64_t unix_seconds = 0;  // the reactor's cached wall clock, per batch
 };
 
+// One response as one record. The format is ours (see Logger above); the
+// fields are not:
+//   status_code      RFC 9110 15
+//   content_length   RFC 9110 8.6 - octets of content, headers excluded
+//   method_token     RFC 9110 9.1
+//   request_target   RFC 9112 3.2
+//   referer          RFC 9110 10.1.3 - the RFC misspells it, so do we
+//   user_agent       RFC 9110 10.1.5
+//   peer             no RFC: the socket's address, already spelled
+//   unix_seconds     no RFC: the clock
+// The *_len fields are this record's framing, not content: their widths
+// ARE the truncation caps, which is why log_access clamps to them.
 struct LogRec {
   uint8_t version;
   uint8_t flags;
-  uint16_t status;
-  uint32_t bytes;
-  int64_t sec;
-  uint8_t mlen;
-  uint8_t plen;
-  uint16_t tlen;
-  uint16_t rlen;
-  uint16_t ulen;
+  uint16_t status_code;
+  uint32_t content_length;
+  int64_t unix_seconds;
+  uint8_t method_token_len;
+  uint8_t peer_len;
+  uint16_t request_target_len;
+  uint16_t referer_len;
+  uint16_t user_agent_len;
 };
 inline constexpr uint8_t kLogRecVersion = 3;
-inline constexpr uint8_t kLogH2 = 1;
-inline constexpr uint8_t kLogNoTrack = 2;
+inline constexpr uint8_t kLogH2 = 1;       // RFC 9113: the version token
+inline constexpr uint8_t kLogNoTrack = 2;  // no RFC: operator's choice
 
 // Combined Log Format: one response as one record. Truncation caps are the
 // wire fields' widths.
-inline void log_access(Logger& lg, const void* peer, size_t plen, const char* method, size_t mlen,
-                       const char* target, size_t tlen, uint8_t flags, uint16_t status,
-                       size_t body_bytes, const char* ref, size_t rlen, const char* ua,
-                       size_t ulen) {
-  if (mlen > 255) mlen = 255;
-  if (plen > 255) plen = 255;
-  if (tlen > 65535) tlen = 65535;
-  if (rlen > 65535) rlen = 65535;
-  if (ulen > 65535) ulen = 65535;
+inline void log_access(Logger& lg, const void* peer, size_t peer_len,
+                       const char* method_token, size_t method_token_len,
+                       const char* request_target, size_t request_target_len, uint8_t flags,
+                       uint16_t status_code, size_t content_length, const char* referer,
+                       size_t referer_len, const char* user_agent, size_t user_agent_len) {
+  if (method_token_len > 255) method_token_len = 255;
+  if (peer_len > 255) peer_len = 255;
+  if (request_target_len > 65535) request_target_len = 65535;
+  if (referer_len > 65535) referer_len = 65535;
+  if (user_agent_len > 65535) user_agent_len = 65535;
   LogRec r;
   r.version = kLogRecVersion;
   r.flags = flags;
-  r.status = status;
-  r.bytes = body_bytes > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(body_bytes);
-  r.sec = lg.sec;
-  r.mlen = static_cast<uint8_t>(mlen);
-  r.plen = static_cast<uint8_t>(plen);
-  r.tlen = static_cast<uint16_t>(tlen);
-  r.rlen = static_cast<uint16_t>(rlen);
-  r.ulen = static_cast<uint16_t>(ulen);
-  lg.buf.append(reinterpret_cast<const char*>(&r), sizeof r);
-  if (mlen != 0) lg.buf.append(method, mlen);
-  if (plen != 0) lg.buf.append(static_cast<const char*>(peer), plen);
-  if (tlen != 0) lg.buf.append(target, tlen);
-  if (rlen != 0) lg.buf.append(ref, rlen);
-  if (ulen != 0) lg.buf.append(ua, ulen);
+  r.status_code = status_code;
+  r.content_length =
+      content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
+  r.unix_seconds = lg.unix_seconds;
+  r.method_token_len = static_cast<uint8_t>(method_token_len);
+  r.peer_len = static_cast<uint8_t>(peer_len);
+  r.request_target_len = static_cast<uint16_t>(request_target_len);
+  r.referer_len = static_cast<uint16_t>(referer_len);
+  r.user_agent_len = static_cast<uint16_t>(user_agent_len);
+  lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
+  if (method_token_len != 0) lg.pending.append(method_token, method_token_len);
+  if (peer_len != 0) lg.pending.append(static_cast<const char*>(peer), peer_len);
+  if (request_target_len != 0) lg.pending.append(request_target, request_target_len);
+  if (referer_len != 0) lg.pending.append(referer, referer_len);
+  if (user_agent_len != 0) lg.pending.append(user_agent, user_agent_len);
 }
 
+// One raise as one record. Same finding as LogRec - no format specifies
+// this - and here even the CONTENT mostly has no source: an exception
+// class, a message and a backtrace are mruby's, not any RFC's.
+//   status_code           RFC 9110 15, or 0 when the raise never reached
+//                         an answer
+//   request_target        RFC 9112 3.2
+//   peer                  no RFC: the socket's address
+//   exception_class,      no RFC: mruby. Note message_len is the
+//   message, backtrace    EXCEPTION's message - LogRec's neighbouring
+//                         field of the same shape is a METHOD's length,
+//                         which is why neither is called mlen any more.
+//   dynamic_len           no RFC: it is the LENGTH argument of the second
+//                         io_uring_prep_send, so the daemon can read this
+//                         fixed header first and then take exactly that
+//                         many bytes.
 struct ErrRec {
   uint8_t version;
   uint8_t flags;
-  uint16_t status;
-  int64_t sec;
-  uint8_t plen;
-  uint8_t klen;
-  uint16_t tlen;
-  uint16_t mlen;
-  uint16_t blen;
-  uint32_t dyn;
+  uint16_t status_code;
+  int64_t unix_seconds;
+  uint8_t peer_len;
+  uint8_t exception_class_len;
+  uint16_t request_target_len;
+  uint16_t message_len;
+  uint16_t backtrace_len;
+  uint32_t dynamic_len;
 };
 inline constexpr uint8_t kErrRecVersion = 1;
 
 // One raise as one record: a FIXED header whose last field is the size of
 // the second send, then that many bytes.
-inline void log_error(Logger& lg, const void* peer, size_t plen, const char* klass, size_t klen,
-                      const char* target, size_t tlen, uint16_t status, const char* mesg,
-                      size_t mlen, const char* trace, size_t blen) {
-  if (plen > 255) plen = 255;
-  if (klen > 255) klen = 255;
-  if (tlen > 65535) tlen = 65535;
-  if (mlen > 65535) mlen = 65535;
-  if (blen > 65535) blen = 65535;
+inline void log_error(Logger& lg, const void* peer, size_t peer_len, const char* exception_class,
+                      size_t exception_class_len, const char* request_target,
+                      size_t request_target_len, uint16_t status_code, const char* message,
+                      size_t message_len, const char* backtrace, size_t backtrace_len) {
+  if (peer_len > 255) peer_len = 255;
+  if (exception_class_len > 255) exception_class_len = 255;
+  if (request_target_len > 65535) request_target_len = 65535;
+  if (message_len > 65535) message_len = 65535;
+  if (backtrace_len > 65535) backtrace_len = 65535;
   ErrRec r;
   r.version = kErrRecVersion;
-  r.flags = 0;
-  r.status = status;
-  r.sec = lg.sec;
-  r.plen = static_cast<uint8_t>(plen);
-  r.klen = static_cast<uint8_t>(klen);
-  r.tlen = static_cast<uint16_t>(tlen);
-  r.mlen = static_cast<uint16_t>(mlen);
-  r.blen = static_cast<uint16_t>(blen);
-  r.dyn = static_cast<uint32_t>(plen + klen + tlen + mlen + blen);
-  lg.buf.append(reinterpret_cast<const char*>(&r), sizeof r);
-  if (plen != 0) lg.buf.append(static_cast<const char*>(peer), plen);
-  if (klen != 0) lg.buf.append(klass, klen);
-  if (tlen != 0) lg.buf.append(target, tlen);
-  if (mlen != 0) lg.buf.append(mesg, mlen);
-  if (blen != 0) lg.buf.append(trace, blen);
+  r.flags = 0;  // no RFC, and nothing sets it yet: reserved on the wire
+  r.status_code = status_code;
+  r.unix_seconds = lg.unix_seconds;
+  r.peer_len = static_cast<uint8_t>(peer_len);
+  r.exception_class_len = static_cast<uint8_t>(exception_class_len);
+  r.request_target_len = static_cast<uint16_t>(request_target_len);
+  r.message_len = static_cast<uint16_t>(message_len);
+  r.backtrace_len = static_cast<uint16_t>(backtrace_len);
+  r.dynamic_len = static_cast<uint32_t>(peer_len + exception_class_len + request_target_len +
+                                        message_len + backtrace_len);
+  lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
+  if (peer_len != 0) lg.pending.append(static_cast<const char*>(peer), peer_len);
+  if (exception_class_len != 0) lg.pending.append(exception_class, exception_class_len);
+  if (request_target_len != 0) lg.pending.append(request_target, request_target_len);
+  if (message_len != 0) lg.pending.append(message, message_len);
+  if (backtrace_len != 0) lg.pending.append(backtrace, backtrace_len);
 }
 
 // The server's own fault, spelled the same way at every call site: one
 // error-log record, class Webmachine::Error/17, never reaching the answer.
-inline void log_internal_error(Logger& lg, const void* peer, size_t plen, const char* target,
-                               size_t tlen, uint16_t status, const char* why, size_t whylen) {
+inline void log_internal_error(Logger& lg, const void* peer, size_t peer_len,
+                               const char* request_target, size_t request_target_len,
+                               uint16_t status_code, const char* why, size_t why_len) {
   if (!lg.enabled) return;
-  log_error(lg, peer, plen, "Webmachine::Error", 17, target, tlen, status, why, whylen, nullptr, 0);
+  log_error(lg, peer, peer_len, "Webmachine::Error", 17, request_target, request_target_len,
+            status_code, why, why_len, nullptr, 0);
 }
 
 // One raise as one error record. Defined in resource.cpp - it needs a VM.
-void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t plen, const char* target,
-                   size_t tlen, uint16_t status);
+void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len,
+                   const char* request_target, size_t request_target_len, uint16_t status_code);
 }
 
 namespace webmachine::http {
@@ -3964,8 +4003,8 @@ class Ring {
   void flush_access() {
     if (log_fd_ < 0) return;
     Logger* al = app_.access_log();
-    if (al == nullptr || al->in_flight || al->buf.empty()) return;
-    al->buf.swap(al->flight);
+    if (al == nullptr || al->in_flight || al->pending.empty()) return;
+    al->pending.swap(al->flight);
     al->in_flight = true;
     arm_access_write(al);
   }
@@ -3980,13 +4019,13 @@ class Ring {
   void flush_error() {
     if (err_fd_ < 0) return;
     Logger* el = app_.error_log();
-    if (el == nullptr || el->in_flight || el->buf.size() < sizeof(ErrRec)) return;
+    if (el == nullptr || el->in_flight || el->pending.size() < sizeof(ErrRec)) return;
     ErrRec r;
-    std::memcpy(&r, el->buf.data(), sizeof r);
-    const size_t whole = sizeof(ErrRec) + r.dyn;
-    if (el->buf.size() < whole) return;
-    el->flight.assign(el->buf, 0, whole);
-    el->buf.erase(0, whole);
+    std::memcpy(&r, el->pending.data(), sizeof r);
+    const size_t whole = sizeof(ErrRec) + r.dynamic_len;
+    if (el->pending.size() < whole) return;
+    el->flight.assign(el->pending, 0, whole);
+    el->pending.erase(0, whole);
     el->in_flight = true;
     arm_error_write(el);
   }
