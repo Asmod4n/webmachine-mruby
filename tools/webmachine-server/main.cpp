@@ -59,6 +59,7 @@ struct Echo {
   void file_mapped(Conn&, const char*, size_t) {}
   static size_t file_map_len(const Conn&) { return 0; }
   void file_abandon(Conn&) {}
+  void set_send_timeout(int) {}
   static bool file_answerable(const Conn&) { return false; }
   void file_reject(Conn&) {}
   void file_error(Conn&, const char*) {}

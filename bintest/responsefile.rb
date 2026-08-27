@@ -546,3 +546,68 @@ ensure
   app&.unlink
   FileUtils.rm_rf(base) if base
 end
+
+# Read a body at a fixed byte rate, the way a throttled mobile link does.
+# Returns what the head promised and what actually arrived - a client that
+# gets dropped mid-body comes back with the second smaller than the first.
+def rf_throttled(sock, name, rate)
+  s = UNIXSocket.new(sock)
+  s.write "GET /f?n=#{name} HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
+  head = +''.b
+  head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
+  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
+  t0 = Time.now
+  got = 0
+  begin
+    while got < len
+      wait = t0 + got.to_f / rate - Time.now
+      sleep wait if wait > 0
+      got += rf_recv(s, 1 << 14, 20).bytesize
+    end
+  rescue EOFError, Errno::ECONNRESET
+  end
+  s.close rescue nil
+  [head, len, got]
+end
+
+# A deadline is refreshed per COMPLETED send, so what ONE send carries decides
+# which clients survive: offer the whole body at once and the client must
+# drain all of it before the clock that is running - the header clock, until
+# the first send completes - runs out. That is why the chunk is DERIVED from
+# send_timeout and the slowest rate we serve (16 kbit/s) instead of chosen: a
+# 64 MiB chunk picked for MAX_RW_COUNT's sake silently demanded 1.12 MB/s of
+# every client, and a phone on a spent monthly allowance gets 32 kbit/s.
+# Here both clocks are 3 s, so nothing but the chunking can carry the
+# request: 3 s -> 6000 bytes a send, and the 1.5 MB body takes ten seconds
+# at the rate this client reads. Offered whole, it dies around 700 KB.
+assert('response.file serves a client slower than one send-timeout of body') do
+  base, root = rf_tree
+  app = rf_compile(rf_app)
+  sock = "/tmp/wm-rf-slow-#{$$}-#{rand(1 << 30)}.sock"
+  n = 1_500_000
+  File.binwrite(File.join(root, 'slow.bin'), 'S' * n)
+  cfg = Tempfile.new(['wm-rf-slow', '.toml'])
+  cfg.write("[server]\nunix = \"#{sock}\"\n\n[tune]\n" \
+            "header_timeout = 3\nsend_timeout = 3\n")
+  cfg.close
+  pid = nil
+  begin
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--config', cfg.path,
+                '--app', app.path, '--docroot', root,
+                '--file-map-threshold', '65536',
+                out: File::NULL, err: File::NULL)
+    200.times { break if File.socket?(sock); sleep 0.05 }
+    assert_true File.socket?(sock)
+    head, len, got = rf_throttled(sock, 'slow.bin', 150_000)
+    assert_include head, 'HTTP/1.1 200 OK'
+    assert_equal n, len
+    assert_equal n, got
+  ensure
+    Process.kill(:TERM, pid) rescue nil
+    Process.waitpid(pid) rescue nil
+    app&.unlink
+    cfg&.unlink
+    File.unlink(sock) rescue nil
+    FileUtils.rm_rf(base)
+  end
+end

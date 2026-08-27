@@ -1090,7 +1090,7 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     // used to be decided in the middle of doing - which window, whether the
     // mapping may go back, whether the access line is owed - is one value
     // now, and file_apply is the only thing that writes.
-    const FileStep step = file_step(*st.file);
+    const FileStep step = file_step(*st.file, send_chunk_);
     if (step.head) sink.append(st.file->head);
     if (step.src != FileStep::Src::kNone) {
       const char* base = step.src == FileStep::Src::kMapping ? st.file->map

@@ -2691,7 +2691,34 @@ inline constexpr size_t kFileMapMax = 1u << 30;
 // healthy connection. 64 MiB sits under that cap at every page size, costs
 // one extra SQE per 64 MiB and not one extra copy, and bounds how long a
 // single operation can hold the connection.
-inline constexpr size_t kFileSendChunk = 64u * 1024 * 1024;
+// The slowest client this tier will serve a large file to, in bytes per
+// second. 16 kbit/s: HALF the slowest throttle a mobile network applies once
+// a monthly allowance is spent - Vodafone and O2 drop to 32 kbit/s, Telekom
+// to 64, and 128 kbit/s is the common US figure. Half, because the send
+// deadline is refreshed per COMPLETED send, so a client running at exactly
+// the chunk's own rate would finish it exactly on the deadline.
+inline constexpr size_t kSlowClientRate = 2000;
+// A send is bounded at both ends. Below: enough for a frame and its head, so
+// a very short send_timeout cannot chop the wire into nothing. Above: one
+// sendmsg moves at most MAX_RW_COUNT (INT_MAX rounded down to a page), and a
+// body offered past that comes back short - indistinguishable from a dead
+// peer.
+inline constexpr size_t kFileSendChunkMin = 4096;
+inline constexpr size_t kFileSendChunkMax = 64u * 1024 * 1024;
+
+// What one send may carry, from the send timeout and the slowest client we
+// serve. DERIVED, not chosen: the same number bounds the kernel call and
+// decides who gets dropped mid-download, so picking it for one of those
+// reasons silently sets the other - which is exactly what happened when it
+// was 64 MiB for MAX_RW_COUNT's sake and quietly demanded 1.12 MB/s of every
+// client. At the default 60 s this is 120,000 bytes.
+inline constexpr size_t file_send_chunk(int send_timeout_s) {
+  const size_t want =
+      static_cast<size_t>(send_timeout_s > 0 ? send_timeout_s : 60) * kSlowClientRate;
+  if (want < kFileSendChunkMin) return kFileSendChunkMin;
+  if (want > kFileSendChunkMax) return kFileSendChunkMax;
+  return want;
+}
 
 inline constexpr uint16_t kNoRoute = 0xffff;
 
@@ -3073,7 +3100,7 @@ class Http1 {
   // 16 bytes that way). Inlined, the FileStep never exists - the compiler
   // keeps its fields in registers. Purity only pays where the compiler can
   // SEE it.
-  static FileStep file_step(const Conn::FileXfer& x) {
+  static FileStep file_step(const Conn::FileXfer& x, size_t chunk) {
     FileStep s;
     s.persist = x.persist;
     s.sent_after = x.sent;
@@ -3084,7 +3111,7 @@ class Http1 {
         const size_t left = x.total > x.sent ? x.total - x.sent : 0;
         // A mapping lends a bounded chunk of itself; a window lends exactly
         // what the read put in it.
-        const size_t take = mapped ? (left < kFileSendChunk ? left : kFileSendChunk) : x.len;
+        const size_t take = mapped ? (left < chunk ? left : chunk) : x.len;
         s.head = !x.head.empty();
         if (take != 0) {
           s.src = mapped ? FileStep::Src::kMapping : FileStep::Src::kWindow;
@@ -3145,6 +3172,9 @@ class Http1 {
 
   // [tune] file_map_threshold, once, before the first accept. 0 = never map.
   void set_file_map_threshold(size_t n) { map_min_ = n; }
+  // The Ring owns the send clock, so the Ring is what tells this layer how
+  // much one send may carry - one rule, one place.
+  void set_send_timeout(int secs) { send_chunk_ = file_send_chunk(secs); }
 
   // The Ring asks before it opens: the size that decides this is the App's
   // to weigh, because the App is what holds the operator's answer.
@@ -3258,6 +3288,7 @@ class Http1 {
   size_t warm_budget_ = kWarmBudgetDefault;
   size_t zc_min_ = kZeroCopyDefault;
   size_t map_min_ = kFileMapDefault;
+  size_t send_chunk_ = file_send_chunk(60);
   Logger alog_;
   Logger elog_;
   uint16_t alog_status_ = 0;
@@ -3589,6 +3620,7 @@ class Ring {
     to_header_ = cfg.to_header != 0 ? cfg.to_header : 60;
     to_send_ = cfg.to_send != 0 ? cfg.to_send : 60;
     to_idle_ = cfg.to_idle != 0 ? cfg.to_idle : 75;
+    app_.set_send_timeout(to_send_);
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
