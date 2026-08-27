@@ -2876,6 +2876,51 @@ class Http1 {
     return s;
   }
 
+  // RFC 9113 6.9.1: what ONE stream may put on the wire this round. Both
+  // windows, what is left of the body, and - for a copied buffer only -
+  // the delivery chunk. This was the same twenty lines three times over,
+  // once per source, each computing the budget again and each writing in
+  // the middle of the arithmetic.
+  struct H2SendStep {
+    enum class Src : uint8_t { kNone, kAsset, kLent, kPending };
+    Src src = Src::kNone;
+    size_t start = 0;   // first byte of the body this round frames
+    size_t give = 0;    // how many bytes it may frame
+    size_t total = 0;   // the body's length, so END_STREAM is a comparison
+    bool ends = false;  // give reaches the last byte
+  };
+  static H2SendStep h2_send_step(const H2Stream& s, int64_t conn_window, size_t chunk) {
+    H2SendStep o;
+    size_t remaining = 0;
+    // ONE source per round, in the order the wire cares about. A stream
+    // whose source is chosen but whose window is shut sends nothing - it
+    // does not fall through to another source.
+    if (s.src != nullptr) {
+      o.src = H2SendStep::Src::kAsset;
+      o.start = s.src_off;
+      o.total = s.src_len;
+      remaining = s.src_len - s.src_off;
+    } else if (s.zc_have) {
+      o.src = H2SendStep::Src::kLent;
+      o.start = s.zc_off;
+      o.total = s.zc_len;
+      remaining = s.zc_len - s.zc_off;
+    } else if (!s.pending.empty()) {
+      o.src = H2SendStep::Src::kPending;
+      o.total = s.pending.size();
+      // A copied buffer is bounded per round; a lend and a mapping are not.
+      remaining = s.pending.size() < chunk ? s.pending.size() : chunk;
+    } else {
+      return o;
+    }
+    const int64_t budget = conn_window < s.send_window ? conn_window : s.send_window;
+    if (budget <= 0) return o;  // src named, give stays 0
+    o.give = remaining;
+    if (static_cast<int64_t>(o.give) > budget) o.give = static_cast<size_t>(budget);
+    o.ends = o.give != 0 && o.start + o.give == o.total;
+    return o;
+  }
+
   // What the asset tier does with ONE request: which head, which byte
   // range, whether the body is copied into the sink or streamed. Computed
   // here and performed by the caller - the range verdict used to be

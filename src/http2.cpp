@@ -982,6 +982,52 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
 
 // RFC 9113 6.9: one round of parked streams, as segments; the cursor keeps
 // the cut fair between them.
+// RFC 9113 6.1: carve the round into DATA frames. END_STREAM rides the
+// frame that lands on the last byte - which is why the step carries the
+// body's total and not just what this round gives. Returns what ACTUALLY
+// went out: the round can run out of plan room mid-body, and then nothing
+// ends.
+static size_t h2_emit(RoundOut& out, const H2Stream& s, const Http1::H2SendStep& step,
+                      size_t max_frame) {
+  size_t off = 0;
+  while (off < step.give) {
+    if (!out.room_for_frame()) break;
+    size_t n = step.give - off;
+    if (n > max_frame) n = max_frame;
+    const bool last = step.start + off + n == step.total;
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
+                        s.id);
+    out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
+    switch (step.src) {
+      case Http1::H2SendStep::Src::kAsset: out.span(*s.src, step.start + off, n); break;
+      case Http1::H2SendStep::Src::kLent: out.lent(s.zc_ptr + step.start + off, n); break;
+      case Http1::H2SendStep::Src::kPending:
+        out.bytes(s.pending.data() + step.start + off, n);
+        break;
+      case Http1::H2SendStep::Src::kNone: break;
+    }
+    off += n;
+  }
+  return off;
+}
+
+// Both windows and the source's own cursor, from what really went out.
+static void h2_advance(H2State& h2, H2Stream& s, const Http1::H2SendStep& step, size_t sent) {
+  if (sent == 0) return;
+  h2.send_window -= static_cast<int64_t>(sent);
+  s.send_window -= static_cast<int64_t>(sent);
+  switch (step.src) {
+    case Http1::H2SendStep::Src::kAsset:
+      s.src_off += sent;
+      if (s.src_off == s.src_len) s.src = nullptr;
+      break;
+    case Http1::H2SendStep::Src::kLent: s.zc_off += sent; break;
+    case Http1::H2SendStep::Src::kPending: s.pending.erase(0, sent); break;
+    case Http1::H2SendStep::Src::kNone: break;
+  }
+}
+
 void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   H2State& h2 = *st0.h2;
   RoundOut out{sink, plan};
@@ -991,82 +1037,10 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   for (; walked < n_streams; walked++) {
     if (!out.room_for_frame()) break;
     H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
-    if (stp.src != nullptr) {
-      const int64_t budget =
-          h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
-      if (budget <= 0) continue;
-      const size_t remaining = stp.src_len - stp.src_off;
-      size_t give = remaining;
-      if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
-      size_t off = 0;
-      while (off < give) {
-        if (!out.room_for_frame()) break;
-        size_t n = give - off;
-        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-        const bool last = stp.src_off + off + n == stp.src_len;
-        unsigned char fh[kH2FrameHeaderLen];
-        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
-                            last ? kH2FlagEndStream : 0, stp.id);
-        out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
-        out.span(*stp.src, stp.src_off + off, n);
-        off += n;
-      }
-      h2.send_window -= static_cast<int64_t>(off);
-      stp.send_window -= static_cast<int64_t>(off);
-      stp.src_off += off;
-      if (stp.src_off == stp.src_len) stp.src = nullptr;
-      continue;
-    }
-    if (stp.zc_have) {
-      // RFC 9113 6.9.1: a lent body is cut by the same two windows as any
-      // other, so it may take SEVERAL rounds - the cursor stays on the
-      // stream and the lend stands until the last byte has been framed.
-      const int64_t budget =
-          h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
-      if (budget <= 0) continue;
-      const size_t remaining = stp.zc_len - stp.zc_off;
-      size_t give = remaining;
-      if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
-      size_t off = 0;
-      while (off < give) {
-        if (!out.room_for_frame()) break;
-        size_t n = give - off;
-        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-        const bool last = stp.zc_off + off + n == stp.zc_len;
-        unsigned char fh[kH2FrameHeaderLen];
-        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
-                            last ? kH2FlagEndStream : 0, stp.id);
-        out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
-        out.lent(stp.zc_ptr + stp.zc_off + off, n);
-        off += n;
-      }
-      h2.send_window -= static_cast<int64_t>(off);
-      stp.send_window -= static_cast<int64_t>(off);
-      stp.zc_off += off;
-      continue;
-    }
-    if (stp.pending.empty()) continue;
-    const int64_t budget =
-        h2.send_window < stp.send_window ? h2.send_window : stp.send_window;
-    if (budget <= 0) continue;
-    size_t give = stp.pending.size() < kDeliverChunk ? stp.pending.size() : kDeliverChunk;
-    if (static_cast<int64_t>(give) > budget) give = static_cast<size_t>(budget);
-    size_t off = 0;
-    while (off < give) {
-      if (!out.room_for_frame()) break;
-      size_t n = give - off;
-      if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-      const bool last = off + n == stp.pending.size();
-      unsigned char fh[kH2FrameHeaderLen];
-      h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
-                          last ? kH2FlagEndStream : 0, stp.id);
-      out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
-      out.bytes(stp.pending.data() + off, n);
-      off += n;
-    }
-    h2.send_window -= static_cast<int64_t>(off);
-    stp.send_window -= static_cast<int64_t>(off);
-    stp.pending.erase(0, off);
+    const H2SendStep step = h2_send_step(stp, h2.send_window, kDeliverChunk);
+    if (step.give == 0) continue;
+    const size_t sent = h2_emit(out, stp, step, h2.peer_max_frame);
+    h2_advance(h2, stp, step, sent);
   }
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   for (size_t i = 0; i < h2.streams.size();) {
