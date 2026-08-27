@@ -22,16 +22,18 @@ struct Echo {
     // Echo keeps no per-connection state.
     void reset(uint8_t, bool) {}
   };
+  // The same shape webmachine.hpp's Plan has, and for the same reason: it
+  // becomes a struct msghdr, so it carries that struct's names.
   struct Plan {
     struct Seg {
-      const char* base;
-      size_t off;
-      size_t len;
+      const char* iov_base;
+      size_t off;  // not ABI: where in the sink, when iov_base is null
+      size_t iov_len;
     };
     static constexpr unsigned kSegs = 1;
-    Seg seg[kSegs] = {};
-    unsigned nseg = 0;
-    size_t iov_len = 0;
+    Seg iov[kSegs] = {};
+    unsigned iovlen = 0;
+    size_t byte_total = 0;
     size_t byte_cap = 0;
   };
   // The byte proof: what arrived goes back, nothing else.

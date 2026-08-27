@@ -333,8 +333,8 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
 void Http1::claim_sink(Conn& st, const std::string& sink, Plan& plan) {
   if (sink.size() > st.zc_covered) {
     const size_t head = sink.size() - st.zc_covered;
-    plan.seg[plan.nseg++] = Plan::Seg{nullptr, st.zc_covered, head};
-    plan.iov_len += head;
+    plan.iov[plan.iovlen++] = Plan::Seg{nullptr, st.zc_covered, head};
+    plan.byte_total += head;
   }
   st.zc_covered = sink.size();
 }
@@ -353,8 +353,8 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 // The sink bytes it splits are claimed on either side of it by offset.
 void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan) {
   claim_sink(st, sink, plan);
-  plan.seg[plan.nseg++] = Plan::Seg{body, 0, len};
-  plan.iov_len += len;
+  plan.iov[plan.iovlen++] = Plan::Seg{body, 0, len};
+  plan.byte_total += len;
   st.zc_split = true;
 }
 
@@ -808,10 +808,10 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
               struct iovec iv[3];
               const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
               for (unsigned i = 0; i < k; i++) {
-                plan->seg[plan->nseg++] =
+                plan->iov[plan->iovlen++] =
                     Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
               }
-              plan->iov_len += take;
+              plan->byte_total += take;
               st.xfer_off += take;
               if (st.xfer_off == st.xfer_end) {
                 st.xfer = nullptr;

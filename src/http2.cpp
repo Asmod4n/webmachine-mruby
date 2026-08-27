@@ -874,17 +874,17 @@ struct RoundOut {
   // RFC 9113: claim the sink bytes this round started with - a plan naming
   // any sink range describes the sink COMPLETELY.
   void prime() {
-    if (plan == nullptr || plan->nseg != 0 || sink.empty()) return;
-    plan->seg[plan->nseg++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
-    plan->iov_len += sink.size();
+    if (plan == nullptr || plan->iovlen != 0 || sink.empty()) return;
+    plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
+    plan->byte_total += sink.size();
   }
 
   // RFC 9113 6.1: room for one more DATA frame - its header plus up to three
   // payload spans. Every gate sits BEFORE the frame, never inside one.
   bool room_for_frame() const {
     if (plan == nullptr) return emitted < kDeliverChunk;
-    if (plan->nseg + 4 > Http1::Plan::kSegs) return false;
-    return plan->byte_cap == 0 || plan->iov_len < plan->byte_cap;
+    if (plan->iovlen + 4 > Http1::Plan::kSegs) return false;
+    return plan->byte_cap == 0 || plan->byte_total < plan->byte_cap;
   }
 
   // RFC 9113: framing bytes, coalesced into the open sink run.
@@ -897,16 +897,16 @@ struct RoundOut {
     prime();
     const size_t at = sink.size();
     sink.append(p, n);
-    if (plan->nseg > 0) {
-      Http1::Plan::Seg& open = plan->seg[plan->nseg - 1];
-      if (open.base == nullptr && open.off + open.len == at) {
-        open.len += n;
-        plan->iov_len += n;
+    if (plan->iovlen > 0) {
+      Http1::Plan::Seg& open = plan->iov[plan->iovlen - 1];
+      if (open.iov_base == nullptr && open.off + open.iov_len == at) {
+        open.iov_len += n;
+        plan->byte_total += n;
         return;
       }
     }
-    plan->seg[plan->nseg++] = Http1::Plan::Seg{nullptr, at, n};
-    plan->iov_len += n;
+    plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, at, n};
+    plan->byte_total += n;
   }
 
   static constexpr size_t kCopyFloor = 4096;
@@ -927,9 +927,9 @@ struct RoundOut {
         bytes(static_cast<const char*>(iv[i].iov_base), iv[i].iov_len);
         continue;
       }
-      plan->seg[plan->nseg++] =
+      plan->iov[plan->iovlen++] =
           Http1::Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
-      plan->iov_len += iv[i].iov_len;
+      plan->byte_total += iv[i].iov_len;
     }
   }
 
@@ -943,8 +943,8 @@ struct RoundOut {
       return;
     }
     prime();
-    plan->seg[plan->nseg++] = Http1::Plan::Seg{p, 0, n};
-    plan->iov_len += n;
+    plan->iov[plan->iovlen++] = Http1::Plan::Seg{p, 0, n};
+    plan->byte_total += n;
   }
 };
 }
@@ -1113,10 +1113,10 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     struct iovec iv[3];
     const unsigned k = Assets::wire_iov(e, st.xfer_off, take, iv);
     for (unsigned i = 0; i < k; i++) {
-      plan.seg[plan.nseg++] =
+      plan.iov[plan.iovlen++] =
           Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
     }
-    plan.iov_len = take;
+    plan.byte_total = take;
     st.xfer_off += take;
     if (st.xfer_off == lim) {
       st.xfer = nullptr;

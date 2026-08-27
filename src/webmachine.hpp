@@ -2867,16 +2867,28 @@ class Http1 {
   // WHATWG HTML: does this connection carry a source with its own schedule?
   bool timed(const Conn& st) const { return st.sse != nullptr; }
 
+  // NO RFC - this becomes a struct msghdr, so it carries that struct's
+  // names: the segments are its msg_iov, their count its msg_iovlen, and
+  // each segment is an iovec. take_plan resolves them one to one.
+  //
+  // Two fields are NOT part of the ABI and say so. `off` is what makes a
+  // segment resolvable at all: a sink segment cannot know its address
+  // until the sink has stopped growing, so it carries an offset and gets
+  // its iov_base at the last moment. And `byte_total` is the SUM of the
+  // iov_lens, which is what a round is measured against - it used to be
+  // called iov_len too, one name for a segment's length and for every
+  // segment's length together.
   struct Plan {
     struct Seg {
-      const char* base;
-      size_t off;
-      size_t len;
+      const char* iov_base;
+      size_t off;  // not ABI: where in the sink, when iov_base is null
+      size_t iov_len;
     };
+    // Not ABI: our own bound on how many segments one round may carry.
     static constexpr unsigned kSegs = 1023;
-    Seg seg[kSegs];
-    unsigned nseg = 0;
-    size_t iov_len = 0;
+    Seg iov[kSegs];
+    unsigned iovlen = 0;
+    size_t byte_total = 0;
     size_t byte_cap = 0;
   };
 
@@ -4199,7 +4211,7 @@ class Ring {
     }
 
     if (!c.sending) {
-      if (req.nseg != 0) {
+      if (req.iovlen != 0) {
         take_plan(c, req);
         arm_send(idx);
       } else if (!c.out.empty()) {
@@ -4498,16 +4510,16 @@ class Ring {
     c.niov = 0;
     c.plan_len = 0;
     bool sink_covered = false;
-    for (unsigned i = 0; i < req.nseg; i++) {
-      const typename App::Plan::Seg& sg = req.seg[i];
-      if (sg.base != nullptr) {
-        c.iov[c.niov].iov_base = const_cast<char*>(sg.base);
+    for (unsigned i = 0; i < req.iovlen; i++) {
+      const typename App::Plan::Seg& sg = req.iov[i];
+      if (sg.iov_base != nullptr) {
+        c.iov[c.niov].iov_base = const_cast<char*>(sg.iov_base);
       } else {
         c.iov[c.niov].iov_base = c.out.data() + sg.off;
         sink_covered = true;
       }
-      c.iov[c.niov].iov_len = sg.len;
-      c.plan_len += sg.len;
+      c.iov[c.niov].iov_len = sg.iov_len;
+      c.plan_len += sg.iov_len;
       c.niov++;
     }
     if (!sink_covered && !c.out.empty()) {
@@ -4531,7 +4543,7 @@ class Ring {
     req.byte_cap = c.round_cap;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
-    if (req.nseg != 0) {
+    if (req.iovlen != 0) {
       take_plan(c, req);
       arm_send(idx);
       return;
