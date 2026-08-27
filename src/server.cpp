@@ -197,9 +197,9 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;
   cfg.backlog = opts_.backlog;
-  cfg.to_header = opts_.to_header;
-  cfg.to_send = opts_.to_send;
-  cfg.to_idle = opts_.to_idle;
+  cfg.header_timeout = opts_.header_timeout;
+  cfg.send_timeout = opts_.send_timeout;
+  cfg.idle_timeout = opts_.idle_timeout;
   if (!build_listeners(cfg, err, errlen)) return false;
 
   // server.docroot: a typed flag beats [server], and both beat the app's
@@ -221,7 +221,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   }
 
   if (opts_.assets_path != nullptr) {
-    if (!mime_.load(opts_.mime_path, err, errlen)) return false;
+    if (!mime_.load(opts_.mime_types_path, err, errlen)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
     if (!assets_.open(opts_.assets_path, mime_, err, errlen)) return false;

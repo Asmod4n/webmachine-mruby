@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(argv[i], "--docroot") == 0 && i + 1 < argc) {
       opts.docroot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--mime-types") == 0 && i + 1 < argc) {
-      opts.mime_path = argv[++i];
+      opts.mime_types_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
       log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--log-privacy") == 0 && i + 1 < argc) {
@@ -233,8 +233,8 @@ int main(int argc, char** argv) {
     if (opts.docroot_path == nullptr && !fc.docroot.empty()) {
       opts.docroot_path = fc.docroot.c_str();
     }
-    if (opts.mime_path == nullptr && !fc.mime_types.empty()) {
-      opts.mime_path = fc.mime_types.c_str();
+    if (opts.mime_types_path == nullptr && !fc.mime_types.empty()) {
+      opts.mime_types_path = fc.mime_types.c_str();
     }
     if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
     if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
@@ -253,9 +253,9 @@ int main(int argc, char** argv) {
     }
     opts.sq_entries = fc.sq_entries;
     opts.backlog = fc.backlog;
-    opts.to_header = fc.header_timeout;
-    opts.to_send = fc.send_timeout;
-    opts.to_idle = fc.idle_timeout;
+    opts.header_timeout = fc.header_timeout;
+    opts.send_timeout = fc.send_timeout;
+    opts.idle_timeout = fc.idle_timeout;
   }
 
   opts.cli_unix = cli_unix;
@@ -291,9 +291,9 @@ int main(int argc, char** argv) {
     cfg.stop_fd = opts.stop_fd;
     cfg.sq_entries = opts.sq_entries;
     cfg.backlog = opts.backlog;
-    cfg.to_header = opts.to_header;
-    cfg.to_send = opts.to_send;
-    cfg.to_idle = opts.to_idle;
+    cfg.header_timeout = opts.header_timeout;
+    cfg.send_timeout = opts.send_timeout;
+    cfg.idle_timeout = opts.idle_timeout;
     if (cli_unix != nullptr) {
       cfg.listeners[0].unix_path = cli_unix;
     } else if (cli_port != 0) {

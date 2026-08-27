@@ -3402,6 +3402,13 @@ class Http1 {
 }
 
 namespace webmachine {
+// NO SPECIFICATION, and that is the entry. Nothing below is HTTP and
+// nothing is the kernel's - these are OPERATING decisions, and the only
+// source that names them is the surface an operator types at: the TOML
+// keys, the CLI flags, and the conf.* setters an app writes. So those are
+// the names, verbatim, all the way down - a knob spelled header_timeout
+// in the file is header_timeout here too, and where a field says -1 it
+// means "nobody said", because 0 is an answer an operator can give.
 struct AppSpec {
   enum class Form : uint8_t { kNone, kPort, kUnix, kUrl };
   Form form = Form::kNone;
@@ -3461,10 +3468,13 @@ const char* docroot_path();
 // The open_how every response.file open uses - built once, never per request.
 const struct open_how* docroot_how();
 
+// What main() resolved: the CLI flags and the [server]/[log]/[tune]
+// sections, merged, with the CLI winning. cli_* keeps its prefix on
+// purpose - it is the reason those two beat the file.
 struct ServerOptions {
   const char* assets_path = nullptr;
   const char* docroot_path = nullptr;
-  const char* mime_path = nullptr;
+  const char* mime_types_path = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
   const char* error_log_path = nullptr;
@@ -3476,9 +3486,9 @@ struct ServerOptions {
   bool have_uring = false;
   unsigned sq_entries = 0;
   int backlog = 0;
-  int to_header = 0;
-  int to_send = 0;
-  int to_idle = 0;
+  int header_timeout = 0;
+  int send_timeout = 0;
+  int idle_timeout = 0;
   // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
@@ -3496,6 +3506,9 @@ bool server_entered();
 }
 
 namespace webmachine {
+// The TOML file as read, one member per key, grouped as the file groups
+// them: [server], then [log], then [tune]. Nothing is defaulted here -
+// absence has to stay visible, or --flag and conf.* cannot beat it.
 struct Config {
   std::string path;
 
@@ -3614,6 +3627,9 @@ struct ListenerSpec {
   int port = 0;
 };
 
+// What the reactor needs and nothing else - already resolved, already
+// merged. Same names as the operator's knobs (see Config), so a value can
+// be followed from the file to the SQE without changing what it is called.
 struct RingConfig {
   ListenerSpec listeners[kMaxListeners] = {};
   uint32_t nlisteners = 0;
@@ -3621,9 +3637,9 @@ struct RingConfig {
   int err_fd = -1;
   unsigned sq_entries = 0;
   int backlog = 0;
-  int to_header = 0;
-  int to_send = 0;
-  int to_idle = 0;
+  int header_timeout = 0;
+  int send_timeout = 0;
+  int idle_timeout = 0;
   int stop_fd = -1;
 };
 
@@ -3716,10 +3732,10 @@ class Ring {
     log_fd_ = cfg.log_fd;
     err_fd_ = cfg.err_fd;
     backlog_ = cfg.backlog != 0 ? cfg.backlog : 511;
-    to_header_ = cfg.to_header != 0 ? cfg.to_header : 60;
-    to_send_ = cfg.to_send != 0 ? cfg.to_send : 60;
-    to_idle_ = cfg.to_idle != 0 ? cfg.to_idle : 75;
-    app_.set_send_timeout(to_send_);
+    header_timeout_ = cfg.header_timeout != 0 ? cfg.header_timeout : 60;
+    send_timeout_ = cfg.send_timeout != 0 ? cfg.send_timeout : 60;
+    idle_timeout_ = cfg.idle_timeout != 0 ? cfg.idle_timeout : 75;
+    app_.set_send_timeout(send_timeout_);
     max_conns_ = derive_max_conns(nofile);
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
@@ -4277,7 +4293,7 @@ class Ring {
     c.sending = false;
     c.close_after_send = false;
     c.idle = false;
-    c.deadline_s = now_s_ + to_header_;
+    c.deadline_s = now_s_ + header_timeout_;
     c.li = static_cast<uint8_t>(li);
     c.out.clear();
     c.next.clear();
@@ -4312,7 +4328,7 @@ class Ring {
     }
     if (c.idle) {
       c.idle = false;
-      c.deadline_s = now_s_ + to_header_;
+      c.deadline_s = now_s_ + header_timeout_;
     }
 
     if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
@@ -4397,7 +4413,7 @@ class Ring {
       begin_close(idx);
       return;
     }
-    c.deadline_s = now_s_ + to_send_;
+    c.deadline_s = now_s_ + send_timeout_;
     c.out.clear();
     c.niov = 0;
     c.plan_len = 0;
@@ -4713,7 +4729,7 @@ class Ring {
       return;
     }
     c.idle = true;
-    c.deadline_s = now_s_ + to_idle_;
+    c.deadline_s = now_s_ + idle_timeout_;
     // Nothing owed and nothing on the wire - the one point where handing the
     // file read buffer back cannot pull it out from under anybody.
     if ((c.file_io == nullptr || !c.file_io->reading) && !app_.pending(c.app)) {
@@ -4814,7 +4830,7 @@ class Ring {
           Conn& c = conns_[i];
           if (!c.live) continue;
           if (!c.sending && app_.timed(c.app)) {
-            c.deadline_s = now_s_ + to_idle_;
+            c.deadline_s = now_s_ + idle_timeout_;
             continue_conn(i);
             continue;
           }
@@ -4851,9 +4867,9 @@ class Ring {
   int err_fd_ = -1;
   unsigned sq_entries_ = 0;
   int backlog_ = 511;
-  int to_header_ = 60;
-  int to_send_ = 60;
-  int to_idle_ = 75;
+  int header_timeout_ = 60;
+  int send_timeout_ = 60;
+  int idle_timeout_ = 75;
   int64_t now_s_ = 0;
   int64_t last_reap_s_ = 0;
   uint32_t max_conns_ = 0;
