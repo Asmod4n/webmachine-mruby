@@ -910,14 +910,15 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             if (st.file == nullptr) st.file = new Conn::FileXfer();
             st.file->pathname.assign(fp, fpn);
             st.file->field_lines = rhdrs_;
-            st.file->content_type = !b->res->run_ctype.empty()
-                                        ? http::with_charset(b->res->run_ctype)
+            st.file->content_type = !b->res->run_content_type.empty()
+                                        ? http::with_charset(b->res->run_content_type)
                                         : b->konst.content_type;
             st.file->minor = minor;
             st.file->persist = persist;
             st.file->head_only = head_only;
-            st.file->if_modified_since_valid = facts.has_if_modified_since && facts.ims_valid;
-            st.file->if_modified_since = vals.ims_epoch;
+            st.file->if_modified_since_valid =
+                facts.has_if_modified_since && facts.if_modified_since_valid;
+            st.file->if_modified_since = vals.if_modified_since_epoch;
             st.file->log_flags = lflags;
             st.file->method_token.assign(method, method_len);
             st.file->request_target.assign(path, path_len);
@@ -959,7 +960,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           }
           std::string ctype;
           if (!bodyless) {
-            if (!b->res->run_ctype.empty()) ctype = http::with_charset(b->res->run_ctype);
+            if (!b->res->run_content_type.empty()) {
+              ctype = http::with_charset(b->res->run_content_type);
+            }
             else if (have_body) ctype = b->konst.content_type;
           }
           spell_head(sink, status, date_, ctype, rhdrs_, minor, persist, bodyless,

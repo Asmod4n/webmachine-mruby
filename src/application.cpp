@@ -216,7 +216,8 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
   if (!mrb_class_p(klass)) {
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "route.add wants a class inheriting Webmachine::Resource");
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "route.add wants a class inheriting Webmachine::Resource");
   }
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));

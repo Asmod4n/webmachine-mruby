@@ -275,8 +275,9 @@ uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFac
     return 412;
   }
   if (f.has_if_none_match &&
-      (f.inm_star || http::etag_list_match(vals.if_none_match, vals.if_none_match_len, e.etag,
-                                           sizeof(e.etag), true))) {
+      (f.if_none_match_star ||
+       http::etag_list_match(vals.if_none_match, vals.if_none_match_len, e.etag,
+                             sizeof(e.etag), true))) {
     return 304;
   }
   return 200;

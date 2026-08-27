@@ -522,11 +522,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     res.run_head_dynamic = true;
   };
 
-  const bool ct_dyn = res.cb_ct_provided.has;
+  const bool ct_dyn = res.cb_content_types_provided.has;
   // cb.rb content_types_provided: the dynamic answer, marshalled once.
   const auto marshal_ct = [&]() {
-    if (!ct_dyn || !res.run_ct.empty()) return;
-    const mrb_value v = cbv(res.cb_ct_provided);
+    if (!ct_dyn || !res.run_content_types_provided.empty()) return;
+    const mrb_value v = cbv(res.cb_content_types_provided);
     if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
       mrb_raise(mrb, E_WM_ERROR(mrb),
                 "content_types_provided must answer [[type, handler]] pairs");
@@ -542,12 +542,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
                      static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
       th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
-      res.run_ct.push_back(std::move(th));
+      res.run_content_types_provided.push_back(std::move(th));
     }
   };
   // RFC 9110 12.5.1: the list conneg runs against - dynamic or konst-folded.
   const auto active_ct = [&]() -> const std::vector<Resource::TypedHandler>& {
-    return ct_dyn ? res.run_ct : res.ct_provided;
+    return ct_dyn ? res.run_content_types_provided : res.content_types_provided;
   };
 
   // cb.rb generate_etag: asked at most once per run; g11, k13 and the
@@ -555,9 +555,9 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   const auto ensure_etag = [&]() -> int {
     if (res.etag_asked) return -1;
     res.etag_asked = true;
-    if (!res.cb_etag.has) return -1;
-    mrb_value v = cbv(res.cb_etag);
-    if (mrb_integer_p(v)) return halt_of(v, res.cb_etag.sym);
+    if (!res.cb_generate_etag.has) return -1;
+    mrb_value v = cbv(res.cb_generate_etag);
+    if (mrb_integer_p(v)) return halt_of(v, res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
     if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
     http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), res.etag_value);
@@ -608,9 +608,9 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     }
     epoch_memo(res.cb_expires, &res.expires_asked, &res.expires_present, &res.expires_epoch);
     if (res.expires_present) date_line("Expires: ", 9, res.expires_epoch);
-    epoch_memo(res.cb_last_modified, &res.lastmod_asked, &res.lastmod_present,
-               &res.lastmod_epoch);
-    if (res.lastmod_present) date_line("Last-Modified: ", 15, res.lastmod_epoch);
+    epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
+               &res.last_modified_epoch);
+    if (res.last_modified_present) date_line("Last-Modified: ", 15, res.last_modified_epoch);
     return -1;
   };
 
@@ -658,8 +658,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     size_t ctn = 0;
     while (ctn < ct_full && ct[ctn] != ';') ctn++;
     while (ctn > 0 && (ct[ctn - 1] == ' ' || ct[ctn - 1] == '\t')) ctn--;
-    if (!res.cb_ct_accepted.has) return 415;
-    const mrb_value v = cbv(res.cb_ct_accepted);
+    if (!res.cb_content_types_accepted.has) return 415;
+    const mrb_value v = cbv(res.cb_content_types_accepted);
     if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
       mrb_raise(mrb, E_WM_ERROR(mrb),
                 "content_types_accepted must answer [[type, Symbol]] pairs");
@@ -918,7 +918,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (!facts.has_accept) {
           chosen = 0;
           if (ct_dyn) {
-            res.run_ctype = active_ct()[0].type;
+            res.run_content_type = active_ct()[0].type;
             res.run_head_dynamic = true;
           }
           n = Node::kD4;
@@ -945,7 +945,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         chosen = idx;
         if (idx != 0 || ct_dyn) {
-          res.run_ctype = cts[static_cast<size_t>(idx)].type;
+          res.run_content_type = cts[static_cast<size_t>(idx)].type;
           res.run_head_dynamic = true;
         }
         n = Node::kD4;
@@ -1009,22 +1009,24 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kH12: {
-        epoch_memo(res.cb_last_modified, &res.lastmod_asked, &res.lastmod_present,
-                   &res.lastmod_epoch);
-        take(res.lastmod_present && vals != nullptr && res.lastmod_epoch > vals->ius_epoch);
+        epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
+                   &res.last_modified_epoch);
+        take(res.last_modified_present && vals != nullptr &&
+             res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
-        epoch_memo(res.cb_last_modified, &res.lastmod_asked, &res.lastmod_present,
-                   &res.lastmod_epoch);
-        take(!res.lastmod_present || vals == nullptr || res.lastmod_epoch > vals->ims_epoch);
+        epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
+                   &res.last_modified_epoch);
+        take(!res.last_modified_present || vals == nullptr ||
+             res.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
       }
       case Node::kI4:
       case Node::kK5:
       case Node::kL5: {
         const Resource::ValueCb& cb =
-            n == Node::kL5 ? res.cb_moved_temp : res.cb_moved_perm;
+            n == Node::kL5 ? res.cb_moved_temporarily : res.cb_moved_permanently;
         if (!cb.has) break;
         const mrb_value v = cbv(cb);
         if (mrb_string_p(v)) {
@@ -1264,19 +1266,19 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // cb.rb: the value callbacks; known/allowed/ct_provided keep their konst
+  // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
   out.cb_known_methods = value_cb(mrb, klass, MRB_SYM(known_methods), 0, false);
   out.cb_allowed_methods = value_cb(mrb, klass, MRB_SYM(allowed_methods), 0, false);
-  out.cb_ct_provided = value_cb(mrb, klass, MRB_SYM(content_types_provided), 0, false);
-  out.cb_ct_accepted = value_cb(mrb, klass, MRB_SYM(content_types_accepted), 0, true);
+  out.cb_content_types_provided = value_cb(mrb, klass, MRB_SYM(content_types_provided), 0, false);
+  out.cb_content_types_accepted = value_cb(mrb, klass, MRB_SYM(content_types_accepted), 0, true);
   out.cb_options = value_cb(mrb, klass, MRB_SYM(options), 0, true);
   out.cb_variances = value_cb(mrb, klass, MRB_SYM(variances), 0, true);
-  out.cb_etag = value_cb(mrb, klass, MRB_SYM(generate_etag), 0, true);
+  out.cb_generate_etag = value_cb(mrb, klass, MRB_SYM(generate_etag), 0, true);
   out.cb_last_modified = value_cb(mrb, klass, MRB_SYM(last_modified), 0, true);
   out.cb_expires = value_cb(mrb, klass, MRB_SYM(expires), 0, true);
-  out.cb_moved_perm = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
-  out.cb_moved_temp = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
+  out.cb_moved_permanently = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
+  out.cb_moved_temporarily = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
   out.cb_post_is_create = value_cb(mrb, klass, MRB_SYM_Q(post_is_create), 0, true);
   out.cb_create_path = value_cb(mrb, klass, MRB_SYM(create_path), 0, true);
   out.cb_base_uri = value_cb(mrb, klass, MRB_SYM(base_uri), 0, true);
@@ -1288,15 +1290,15 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_mask = 0;
   if (out.cb_known_methods.has) out.cb_mask |= Resource::kCbKnownMethods;
   if (out.cb_allowed_methods.has) out.cb_mask |= Resource::kCbAllowedMethods;
-  if (out.cb_ct_provided.has) out.cb_mask |= Resource::kCbCtProvided;
-  if (out.cb_ct_accepted.has) out.cb_mask |= Resource::kCbCtAccepted;
+  if (out.cb_content_types_provided.has) out.cb_mask |= Resource::kCbContentTypesProvided;
+  if (out.cb_content_types_accepted.has) out.cb_mask |= Resource::kCbContentTypesAccepted;
   if (out.cb_options.has) out.cb_mask |= Resource::kCbOptions;
   if (out.cb_variances.has) out.cb_mask |= Resource::kCbVariances;
-  if (out.cb_etag.has) out.cb_mask |= Resource::kCbEtag;
+  if (out.cb_generate_etag.has) out.cb_mask |= Resource::kCbGenerateEtag;
   if (out.cb_last_modified.has) out.cb_mask |= Resource::kCbLastModified;
   if (out.cb_expires.has) out.cb_mask |= Resource::kCbExpires;
-  if (out.cb_moved_perm.has) out.cb_mask |= Resource::kCbMovedPerm;
-  if (out.cb_moved_temp.has) out.cb_mask |= Resource::kCbMovedTemp;
+  if (out.cb_moved_permanently.has) out.cb_mask |= Resource::kCbMovedPermanently;
+  if (out.cb_moved_temporarily.has) out.cb_mask |= Resource::kCbMovedTemporarily;
   if (out.cb_post_is_create.has) out.cb_mask |= Resource::kCbPostIsCreate;
   if (out.cb_create_path.has) out.cb_mask |= Resource::kCbCreatePath;
   if (out.cb_base_uri.has) out.cb_mask |= Resource::kCbBaseUri;
@@ -1360,7 +1362,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
           th.m = hr.m;
           th.fast = hr.fast;
         }
-        out.ct_provided.push_back(std::move(th));
+        out.content_types_provided.push_back(std::move(th));
       }
     } else {
       Resource::TypedHandler th;
@@ -1371,7 +1373,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
         th.m = hr.m;
         th.fast = hr.fast;
       }
-      out.ct_provided.push_back(std::move(th));
+      out.content_types_provided.push_back(std::move(th));
     }
   }
 
@@ -1392,11 +1394,11 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // helpers.rb encode_body: the default body path - ct_provided[0]'s handler
+  // helpers.rb encode_body: the default body path - content_types_provided[0]'s handler
   // pre-renders when it lives on the class, runs per request when it is an
   // instance method.
   {
-    const Resource::TypedHandler& first = out.ct_provided[0];
+    const Resource::TypedHandler& first = out.content_types_provided[0];
     const Resolved body_k = resolve(mrb, mrb_class(mrb, klass), first.handler);
     if (body_k.defined) {
       const mrb_value rendered =
@@ -1416,7 +1418,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.body_fast = first.fast;
     }
   }
-  out.konst.content_type = out.ct_provided[0].type;
+  out.konst.content_type = out.content_types_provided[0].type;
 
   bool known[7] = {true, true, true, true, true, true, false};
   if (!out.cb_known_methods.has &&
@@ -1490,7 +1492,7 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.run_status = 0;
   res.run_resp_code = 0;
   res.run_redirect = false;
-  res.run_ctype.clear();
+  res.run_content_type.clear();
   res.run_head_dynamic = false;
   res.run_disp_path.clear();
   res.run_disp_set = false;
@@ -1499,13 +1501,13 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.etag_asked = false;
   res.etag_present = false;
   res.etag_value.clear();
-  res.lastmod_asked = false;
-  res.lastmod_present = false;
-  res.lastmod_epoch = 0;
+  res.last_modified_asked = false;
+  res.last_modified_present = false;
+  res.last_modified_epoch = 0;
   res.expires_asked = false;
   res.expires_present = false;
   res.expires_epoch = 0;
-  res.run_ct.clear();
+  res.run_content_types_provided.clear();
   res.run_methods.clear();
   res.run_variances.clear();
   mrb_bool raised = FALSE;

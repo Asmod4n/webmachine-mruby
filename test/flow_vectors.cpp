@@ -60,12 +60,12 @@ ReqFacts facts_of(Method m, uint32_t mask)
   r.has_if_match            = (mask & (1u << 5))  != 0;
   r.if_match_star           = (mask & (1u << 6))  != 0;
   r.has_if_unmodified_since = (mask & (1u << 7))  != 0;
-  r.ius_valid               = (mask & (1u << 8))  != 0;
+  r.if_unmodified_since_valid               = (mask & (1u << 8))  != 0;
   r.has_if_none_match       = (mask & (1u << 9))  != 0;
-  r.inm_star                = (mask & (1u << 10)) != 0;
+  r.if_none_match_star                = (mask & (1u << 10)) != 0;
   r.has_if_modified_since   = (mask & (1u << 11)) != 0;
-  r.ims_valid               = (mask & (1u << 12)) != 0;
-  r.ims_future              = (mask & (1u << 13)) != 0;
+  r.if_modified_since_valid               = (mask & (1u << 12)) != 0;
+  r.if_modified_since_future              = (mask & (1u << 13)) != 0;
   r.response_has_location   = (mask & (1u << 14)) != 0;
   r.response_has_body       = (mask & (1u << 15)) == 0;
   r.plain = mask == 0;

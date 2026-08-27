@@ -61,6 +61,12 @@ struct open_how {
 #endif
 
 namespace webmachine::flow {
+// NO RFC NAMES THESE. The node letters are webmachine's own - Alan Dean
+// and Justin Sheehy's HTTP decision diagram, which webmachine-ruby walks
+// and which this table IS. RFC 9110 describes the same decisions but
+// gives them no names and no order, so there is nothing to rename to:
+// per the rule, webmachine's names stay and each entry cites the clause
+// its edge implements (see kFlow's `clause` column, one RFC per node).
 enum class Node : uint8_t {
   kB13, kB12, kB11, kB10, kB9, kB9a, kB9b, kB8, kB7, kB6, kB5, kB4, kB3,
   kC3, kC4, kD4, kD5, kE5, kE6, kF6, kF7,
@@ -74,6 +80,8 @@ enum class Node : uint8_t {
   kCount
 };
 
+// Also ours: WHO decides a node. RFC 9110 has no such split - it is the
+// fold's, and it is what lets a kRequest node answer without the VM.
 enum class Kind : uint8_t { kRequest, kResource, kConneg, kAction };
 
 struct Target {
@@ -85,6 +93,10 @@ constexpr Target to(Node n) { return {n, 0}; }
 // The graph as data: an edge that halts with a status.
 constexpr Target halt(uint16_t s) { return {Node::kCount, s}; }
 
+// One row of the diagram. `callback` is webmachine-ruby's method name for
+// this node, verbatim - that is the contract an app writes against.
+// `clause` is the RFC 9110 section the edge implements, which is what a
+// reader needs when the diagram and the specification are both open.
 struct FlowNode {
   Node id;
   Kind kind;
@@ -284,8 +296,25 @@ static_assert(all_reachable(), "every node is reachable from B13");
 }
 
 namespace webmachine::flow {
+// RFC 9110 9.3: the methods this server names. kOther is not a method -
+// it is "some token we did not recognise", which b12 turns into 501.
 enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOther };
 
+// RFC 9110: everything a kRequest node needs, decided from the parsed
+// request alone. Every field is a FIELD OF THE SPECIFICATION and now
+// spells it out - has_if_unmodified_since used to sit next to ius_valid,
+// the same header abbreviated in one line and not in the next.
+//   has_content_md5             RFC 1864 (historic)
+//   has_accept*                 RFC 9110 12.5.1-12.5.4
+//   has_if_match, *_star        RFC 9110 13.1.1
+//   has_if_unmodified_since     RFC 9110 13.1.4
+//   has_if_none_match, *_star   RFC 9110 13.1.2
+//   has_if_modified_since       RFC 9110 13.1.3
+//   *_valid                     RFC 9110 5.6.7: it parsed as an HTTP-date
+//   response_has_*              RFC 9110 10.2.2 / 6.4, set by the run
+//   plain, no_track             NO RFC: the access log's privacy bits,
+//                               from DNT and Sec-GPC, neither of which
+//                               any RFC defines
 struct ReqFacts {
   Method method = Method::kGet;
   bool has_content_md5 = false;
@@ -296,18 +325,20 @@ struct ReqFacts {
   bool has_if_match = false;
   bool if_match_star = false;
   bool has_if_unmodified_since = false;
-  bool ius_valid = false;
+  bool if_unmodified_since_valid = false;
   bool has_if_none_match = false;
-  bool inm_star = false;
+  bool if_none_match_star = false;
   bool has_if_modified_since = false;
-  bool ims_valid = false;
-  bool ims_future = false;
+  bool if_modified_since_valid = false;
+  bool if_modified_since_future = false;
   bool response_has_location = false;
   bool response_has_body = true;
   bool plain = true;
   bool no_track = false;
 };
 
+// NO RFC: the fold's own result. What a resource answered at SETUP, once,
+// for every node whose answer cannot change per request.
 struct KonstAnswers {
   bool ans[kNodeCount] = {};
 };
@@ -326,15 +357,15 @@ constexpr bool eval_request(Node id, const ReqFacts& r) {
     case Node::kG9: return r.if_match_star;
     case Node::kH7: return r.has_if_match && r.if_match_star;
     case Node::kH10: return r.has_if_unmodified_since;
-    case Node::kH11: return r.ius_valid;
+    case Node::kH11: return r.if_unmodified_since_valid;
     case Node::kI7: return r.method == Method::kPut;
     case Node::kI12: return r.has_if_none_match;
-    case Node::kI13: return r.inm_star;
+    case Node::kI13: return r.if_none_match_star;
     case Node::kJ18: return r.method == Method::kGet || r.method == Method::kHead;
     case Node::kL7: return r.method == Method::kPost;
     case Node::kL13: return r.has_if_modified_since;
-    case Node::kL14: return r.ims_valid;
-    case Node::kL15: return r.ims_future;
+    case Node::kL14: return r.if_modified_since_valid;
+    case Node::kL15: return r.if_modified_since_future;
     case Node::kM5: return r.method == Method::kPost;
     case Node::kM16: return r.method == Method::kDelete;
     case Node::kN16: return r.method == Method::kPost;
@@ -496,8 +527,8 @@ static_assert(walk(options, options_allowed) == 200,
 constexpr ReqFacts del{.method = Method::kDelete};
 static_assert(walk(del, default_konst(Method::kDelete)) == 405,
               "default allowed_methods is GET/HEAD: DELETE is 405 at B10");
-constexpr ReqFacts inm_star{.has_if_none_match = true, .inm_star = true};
-static_assert(walk(inm_star, default_konst(Method::kGet)) == 304,
+constexpr ReqFacts if_none_match_star{.has_if_none_match = true, .if_none_match_star = true};
+static_assert(walk(if_none_match_star, default_konst(Method::kGet)) == 304,
               "GET with If-None-Match: * on an existing resource is 304");
 constexpr ReqFacts im_star_missing{.has_if_match = true, .if_match_star = true};
 constexpr KonstAnswers missing = [] {
@@ -511,7 +542,7 @@ static_assert(walk(get_plain, missing) == 404,
               "GET on a never-existed resource is 404 (L7)");
 static_assert(walk_compiled<default_konst(Method::kGet)>(get_plain) == 200);
 static_assert(walk_compiled<default_konst(Method::kDelete)>(del) == 405);
-static_assert(walk_compiled<default_konst(Method::kGet)>(inm_star) == 304);
+static_assert(walk_compiled<default_konst(Method::kGet)>(if_none_match_star) == 304);
 static_assert(walk_compiled<missing>(im_star_missing) == 412);
 static_assert(walk_compiled<missing>(get_plain) == 404);
 }
@@ -1066,9 +1097,9 @@ struct ReqValues {
   const char* cookie = nullptr;
   size_t cookie_len = 0;
   // If-Unmodified-Since / If-Modified-Since, parsed at the switch
-  // (5.6.7); valid only when the facts' ius_valid/ims_valid bit says.
-  int64_t ius_epoch = 0;
-  int64_t ims_epoch = 0;
+  // (5.6.7); valid only when the facts' if_unmodified_since_valid/if_modified_since_valid bit says.
+  int64_t if_unmodified_since_epoch = 0;
+  int64_t if_modified_since_epoch = 0;
 };
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
@@ -1524,7 +1555,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "if-none-match", 13)) {
         facts.has_if_none_match = true;
         facts.plain = false;
-        facts.inm_star = star_value(value, vlen);
+        facts.if_none_match_star = star_value(value, vlen);
         vals.if_none_match = value;
         vals.if_none_match_len = vlen;
         return;
@@ -1556,9 +1587,12 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.has_if_modified_since = true;
         facts.plain = false;
         // 13.1.3: an unparseable date reads as "field absent" (l14).
-        facts.ims_valid = parse_http_date(value, vlen, &vals.ims_epoch);
+        facts.if_modified_since_valid = parse_http_date(value, vlen, &vals.if_modified_since_epoch);
         // 13.1.3: a date in the future is ignored (l15).
-        if (facts.ims_valid) facts.ims_future = vals.ims_epoch > ::time(nullptr);
+        if (facts.if_modified_since_valid) {
+          facts.if_modified_since_future =
+              vals.if_modified_since_epoch > ::time(nullptr);
+        }
         return;
       }
       break;
@@ -1567,7 +1601,8 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.has_if_unmodified_since = true;
         facts.plain = false;
         // 13.1.4: same rule as IMS (h11).
-        facts.ius_valid = parse_http_date(value, vlen, &vals.ius_epoch);
+        facts.if_unmodified_since_valid =
+            parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
         return;
       }
       break;
@@ -1617,6 +1652,17 @@ void request_disp_override(const char* p, size_t n);
 }
 
 namespace webmachine {
+// WEBMACHINE'S NAMES, AND THEY STAY. Every cb_* below is a callback of
+// webmachine-ruby's Webmachine::Resource::Callbacks, spelled exactly as
+// an app spells it - content_types_provided, generate_etag,
+// moved_permanently?, post_is_create?. That IS the contract; RFC 9110
+// names none of them, it only says what each one decides (the clause
+// sits in kFlow, one per node). Which is why the abbreviations went:
+// cb_ct_provided was not a name an app could grep for.
+//
+// The run_* slots below are ours and no source names them: they hold what
+// ONE request's callbacks produced, are reset at frame entry, and keep
+// their capacity across requests on purpose.
 struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
@@ -1668,15 +1714,15 @@ struct Resource {
   };
   ValueCb cb_known_methods;   // instance-level; class-level folds konst
   ValueCb cb_allowed_methods;
-  ValueCb cb_ct_provided;     // instance content_types_provided
-  ValueCb cb_ct_accepted;     // content_types_accepted (accept_helper)
+  ValueCb cb_content_types_provided;     // instance content_types_provided
+  ValueCb cb_content_types_accepted;     // content_types_accepted (accept_helper)
   ValueCb cb_options;         // b3: Hash of extra response fields
   ValueCb cb_variances;       // Vary's tail (helpers.rb variances)
-  ValueCb cb_etag;            // generate_etag
+  ValueCb cb_generate_etag;            // generate_etag
   ValueCb cb_last_modified;
   ValueCb cb_expires;
-  ValueCb cb_moved_perm;      // i4/k5: String/URI = Location + 301
-  ValueCb cb_moved_temp;      // l5: String/URI = Location + 307
+  ValueCb cb_moved_permanently;      // i4/k5: String/URI = Location + 301
+  ValueCb cb_moved_temporarily;      // l5: String/URI = Location + 307
   ValueCb cb_post_is_create;  // n11's fork
   ValueCb cb_create_path;
   ValueCb cb_base_uri;
@@ -1694,15 +1740,15 @@ struct Resource {
   enum CbBit : uint32_t {
     kCbKnownMethods = 1u << 0,
     kCbAllowedMethods = 1u << 1,
-    kCbCtProvided = 1u << 2,
-    kCbCtAccepted = 1u << 3,
+    kCbContentTypesProvided = 1u << 2,
+    kCbContentTypesAccepted = 1u << 3,
     kCbOptions = 1u << 4,
     kCbVariances = 1u << 5,
-    kCbEtag = 1u << 6,
+    kCbGenerateEtag = 1u << 6,
     kCbLastModified = 1u << 7,
     kCbExpires = 1u << 8,
-    kCbMovedPerm = 1u << 9,
-    kCbMovedTemp = 1u << 10,
+    kCbMovedPermanently = 1u << 9,
+    kCbMovedTemporarily = 1u << 10,
     kCbPostIsCreate = 1u << 11,
     kCbCreatePath = 1u << 12,
     kCbBaseUri = 1u << 13,
@@ -1721,7 +1767,7 @@ struct Resource {
     mrb_method_t m = {};
     bool fast = false;
   };
-  std::vector<TypedHandler> ct_provided;
+  std::vector<TypedHandler> content_types_provided;
 
   // Per-request slots for the RUNTIME tier, all reset by resource_run
   // at frame entry. `run_headers` takes the field lines this request
@@ -1740,7 +1786,7 @@ struct Resource {
   // means the writer spells THIS Content-Type in a dynamic head
   // instead of using the baked prefix. Empty = prebuilt path,
   // byte-identical to today.
-  mutable std::string run_ctype;
+  mutable std::string run_content_type;
   mutable bool run_head_dynamic = false;
   // n11: create_path's override of request.disp_path.
   mutable std::string run_disp_path;
@@ -1759,15 +1805,15 @@ struct Resource {
   mutable bool etag_asked = false;
   mutable bool etag_present = false;
   mutable std::string etag_value;  // spelled, quoted form
-  mutable bool lastmod_asked = false;
-  mutable bool lastmod_present = false;
-  mutable int64_t lastmod_epoch = 0;
+  mutable bool last_modified_asked = false;
+  mutable bool last_modified_present = false;
+  mutable int64_t last_modified_epoch = 0;
   mutable bool expires_asked = false;
   mutable bool expires_present = false;
   mutable int64_t expires_epoch = 0;
   // Marshalled once per run where the app answered dynamically;
   // capacity survives across requests.
-  mutable std::vector<TypedHandler> run_ct;
+  mutable std::vector<TypedHandler> run_content_types_provided;
   mutable std::vector<std::string> run_methods;
   mutable std::vector<std::string> run_variances;
 };

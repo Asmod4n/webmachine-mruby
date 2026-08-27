@@ -680,7 +680,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     if (bodyless || !have_body) body_.clear();
     std::string ctype;
     if (!bodyless) {
-      if (!b->res->run_ctype.empty()) ctype = http::with_charset(b->res->run_ctype);
+      if (!b->res->run_content_type.empty()) ctype = http::with_charset(b->res->run_content_type);
       else if (have_body) ctype = b->konst.content_type;
     }
     h2_build_block(dynblk, status, ctype.empty() ? nullptr : &ctype, nullptr);
