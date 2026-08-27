@@ -1092,7 +1092,11 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     // now, and file_apply is the only thing that writes.
     const FileStep step = file_step(*st.file);
     if (step.head) sink.append(st.file->head);
-    if (step.body != nullptr) lend_body(st, sink, step.body, step.body_len, plan);
+    if (step.src != FileStep::Src::kNone) {
+      const char* base = step.src == FileStep::Src::kMapping ? st.file->map
+                                                             : st.file->buf.data();
+      lend_body(st, sink, base + step.start, step.body_len, plan);
+    }
     file_apply(st, step);
     // Still owed: this round is spent.
     if (!step.clear) return true;

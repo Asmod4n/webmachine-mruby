@@ -2656,7 +2656,12 @@ enum class FileStage : uint8_t { kNone, kNamed, kRing, kDeliver, kDone };
 // else. A POD returned in registers - purity here is about the DECISION,
 // never about the bytes, which stay exactly where they are.
 struct FileStep {
-  const char* body = nullptr;  // nullptr = nothing to lend this round
+  // The source is NAMED, not pointed at - the same shape H2SendStep uses,
+  // and for the same reason: a round is a decision about which bytes, and
+  // an address is an answer to a different question.
+  enum class Src : uint8_t { kNone, kWindow, kMapping };
+  Src src = Src::kNone;
+  size_t start = 0;  // first byte of the body this round lends
   size_t body_len = 0;
   size_t sent_after = 0;
   FileStage next = FileStage::kNone;
@@ -3081,7 +3086,12 @@ class Http1 {
         // what the read put in it.
         const size_t take = mapped ? (left < kFileSendChunk ? left : kFileSendChunk) : x.len;
         s.head = !x.head.empty();
-        s.body = take != 0 ? (mapped ? x.map + x.sent : x.buf.data()) : nullptr;
+        if (take != 0) {
+          s.src = mapped ? FileStep::Src::kMapping : FileStep::Src::kWindow;
+          // A mapping is walked from where the transfer stands; the window
+          // buffer holds only this round's bytes and starts at zero.
+          s.start = mapped ? x.sent : 0;
+        }
         s.body_len = take;
         s.sent_after = x.sent + take;
         // A window is refilled by the ring, so the next round waits on it.
