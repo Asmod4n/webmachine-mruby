@@ -330,7 +330,10 @@ assert('application: add_route on the app itself is route.add (webmachine-ruby s
 end
 
 assert('application: conf.url names the listener when nothing overrides it') do
-  port = 20000 + rand(40000)
+  # Below ip_local_port_range (32768 up here): a fixed port picked
+  # INSIDE that window collides with an ephemeral port the machine
+  # already handed out, which is how this suite once died on 44468.
+  port = 20000 + rand(11000)
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html

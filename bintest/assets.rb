@@ -380,7 +380,10 @@ def a_tcp_server(zip_bytes)
   port = nil
   pid = nil
   10.times do
-    port = 20000 + rand(40000)
+    # Below ip_local_port_range (32768 up here): a fixed port picked
+    # INSIDE that window collides with an ephemeral port the machine
+    # already handed out, which is how this suite once died on 44468.
+    port = 20000 + rand(11000)
     pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
                 out: File::NULL, err: err)
     up = false
@@ -702,7 +705,10 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   zf.close
   logf = "/tmp/wm-peer-access-#{$$}.log"
   File.unlink(logf) if File.exist?(logf)
-  port = 20000 + rand(40000)
+  # Below ip_local_port_range (32768 up here): a fixed port picked
+  # INSIDE that window collides with an ephemeral port the machine
+  # already handed out, which is how this suite once died on 44468.
+  port = 20000 + rand(11000)
   errf = "/tmp/wm-peer-err-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
               '--log', logf, out: File::NULL, err: errf)
