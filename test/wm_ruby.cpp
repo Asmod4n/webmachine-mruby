@@ -188,17 +188,17 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   fields_from(mrb, headers, facts, vals, store, hdrs);
 
   webmachine::ReqView rv;
-  rv.target = RSTRING_PTR(path);
-  rv.target_len = static_cast<size_t>(RSTRING_LEN(path));
-  rv.path_len = webmachine::http::path_only(rv.target, rv.target_len);
+  rv.request_target = RSTRING_PTR(path);
+  rv.request_target_len = static_cast<size_t>(RSTRING_LEN(path));
+  rv.path_len = webmachine::http::path_only(rv.request_target, rv.request_target_len);
   rv.method = facts.method;
-  rv.method_p = RSTRING_PTR(m);
-  rv.method_n = static_cast<size_t>(RSTRING_LEN(m));
-  rv.hdrs = hdrs.data();
-  rv.nhdr = hdrs.size();
+  rv.method_token = RSTRING_PTR(m);
+  rv.method_token_len = static_cast<size_t>(RSTRING_LEN(m));
+  rv.fields = hdrs.data();
+  rv.field_count = hdrs.size();
   if (mrb_string_p(rbody)) {
-    rv.body = RSTRING_PTR(rbody);
-    rv.body_len = static_cast<size_t>(RSTRING_LEN(rbody));
+    rv.content = RSTRING_PTR(rbody);
+    rv.content_len = static_cast<size_t>(RSTRING_LEN(rbody));
   }
 
   std::string body;

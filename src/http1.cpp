@@ -855,20 +855,20 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           return true;
         }
         ReqView rv;
-        rv.target = path;
-        rv.target_len = path_len;
+        rv.request_target = path;
+        rv.request_target_len = path_len;
         rv.path_len = http::path_only(path, path_len);
         rv.method = facts.method;
-        rv.method_p = method;
-        rv.method_n = method_len;
+        rv.method_token = method;
+        rv.method_token_len = method_len;
         rv.table = slot.table;
         rv.route = route;
         rv.spans = spans;
-        rv.hdrs = headers;
-        rv.nhdr = num_headers;
+        rv.fields = headers;
+        rv.field_count = num_headers;
         if (content_length != 0) {
-          rv.body = view + off + head_len;
-          rv.body_len = content_length;
+          rv.content = view + off + head_len;
+          rv.content_len = content_length;
         }
         accept_gzip = !facts.has_accept_encoding ||
                       http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
@@ -1059,15 +1059,15 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   const WsResource* res = ws_res_[slot.ws_base + static_cast<size_t>(route)];
 
   ReqView rv;
-  rv.target = path;
-  rv.target_len = path_len;
+  rv.request_target = path;
+  rv.request_target_len = path_len;
   rv.path_len = http::path_only(path, path_len);
   rv.method = flow::Method::kGet;
   rv.table = slot.ws_table;
   rv.route = route;
   rv.spans = spans;
-  rv.hdrs = hdrs;
-  rv.nhdr = nhdr;
+  rv.fields = hdrs;
+  rv.field_count = nhdr;
   request_bind(&rv);
   std::string proto;
   uint16_t refuse_status = 0;
@@ -1133,15 +1133,15 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
   }
 
   ReqView rv;
-  rv.target = path;
-  rv.target_len = path_len;
+  rv.request_target = path;
+  rv.request_target_len = path_len;
   rv.path_len = http::path_only(path, path_len);
   rv.method = flow::Method::kGet;
   rv.table = slot.sse_table;
   rv.route = route;
   rv.spans = spans;
-  rv.hdrs = hdrs;
-  rv.nhdr = nhdr;
+  rv.fields = hdrs;
+  rv.field_count = nhdr;
   request_bind(&rv);
   uint16_t refused = 0;
   SseStream* s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(route)],

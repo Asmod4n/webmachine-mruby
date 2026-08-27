@@ -93,8 +93,8 @@ const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqVi
   const AppSlot& slot = apps_[st0.listener];
   const int r = slot.table->match(target.data(), target.size(), out.spans);
   if (r < 0) return nullptr;
-  out.target = target.data();
-  out.target_len = target.size();
+  out.request_target = target.data();
+  out.request_target_len = target.size();
   out.path_len = http::path_only(target.data(), target.size());
   out.table = slot.table;
   out.route = r;
@@ -257,10 +257,10 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     }
     ReqView rv;
     rv.method = facts.method;
-    rv.body = body.empty() ? nullptr : body.data();
-    rv.body_len = body.size();
-    rv.hdrs = nh != 0 ? hv : nullptr;
-    rv.nhdr = nh;
+    rv.content = body.empty() ? nullptr : body.data();
+    rv.content_len = body.size();
+    rv.fields = nh != 0 ? hv : nullptr;
+    rv.field_count = nh;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
     if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, sink)) return false;
     h2_log(st0, facts, target.data(), target.size());
@@ -423,8 +423,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       return true;
     }
     ReqView rv;
-    rv.target = path_val;
-    rv.target_len = path_vlen;
+    rv.request_target = path_val;
+    rv.request_target_len = path_vlen;
     rv.path_len = http::path_only(path_val, path_vlen);
     rv.method = facts.method;
     rv.table = apps_[st0.listener].table;
@@ -432,8 +432,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     rv.spans = spans;
     // hdrbuf is still the block this dispatch decoded, so the fields can
     // be lent for the length of the answer.
-    rv.hdrs = hv;
-    rv.nhdr = nh;
+    rv.fields = hv;
+    rv.field_count = nh;
     if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv, sink)) {
       return false;
     }
@@ -653,8 +653,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
           static const char kWhy[] =
               "response.file is not wired for HTTP/2 yet - this stream would have been "
               "answered with an empty body, so it is refused instead";
-          log_internal_error(elog_, st0.peer, st0.peer_len, req != nullptr ? req->target : nullptr,
-                             req != nullptr ? req->target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
+          log_internal_error(elog_, st0.peer, st0.peer_len, req != nullptr ? req->request_target : nullptr,
+                             req != nullptr ? req->request_target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
           // A run that named a file never lends its body either (see the
           // O18 body handler in resource.cpp) - lent_have is already false
           // here, nothing to unwind.
@@ -697,8 +697,8 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   } else if (status == 500 && b != nullptr && b->bound) {
     if (elog_.enabled) {
       log_exception(elog_, b->res->mrb, st0.peer, st0.peer_len,
-                    req != nullptr ? req->target : nullptr,
-                    req != nullptr ? req->target_len : 0, 500);
+                    req != nullptr ? req->request_target : nullptr,
+                    req != nullptr ? req->request_target_len : 0, 500);
     }
     const char* bp = nullptr;
     size_t bl = 0;
@@ -1240,10 +1240,10 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.
           rv.method = facts.method;
-          rv.body = body.empty() ? nullptr : body.data();
-          rv.body_len = body.size();
-          rv.hdrs = nh != 0 ? hv : nullptr;
-          rv.nhdr = nh;
+          rv.content = body.empty() ? nullptr : body.data();
+          rv.content_len = body.size();
+          rv.fields = nh != 0 ? hv : nullptr;
+          rv.field_count = nh;
           const ReqView* rvp = h2_parked_view(st0, target, rv);
           if (!h2_answer(st0, stream, facts, &pvals, head_only, route, rvp, sink)) return false;
           h2_log(st0, facts, target.data(), target.size());

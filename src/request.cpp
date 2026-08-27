@@ -50,7 +50,7 @@ mrb_value req_method(mrb_state* mrb, mrb_value) {
     case flow::Method::kOptions: return mrb_str_new_lit(mrb, "OPTIONS");
     case flow::Method::kOther: break;
   }
-  if (v->method_p != nullptr) return lend(mrb, v->method_p, v->method_n);
+  if (v->method_token != nullptr) return lend(mrb, v->method_token, v->method_token_len);
   mrb_raise(mrb, E_RUNTIME_ERROR,
             "this request's method is outside the set the flow names, and its bytes are "
             "not lent on this path");
@@ -60,13 +60,13 @@ mrb_value req_method(mrb_state* mrb, mrb_value) {
 // RFC 9110 4.2.1: the request-target as it arrived, query and all.
 mrb_value req_uri(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
-  return lend(mrb, v->target, v->target_len);
+  return lend(mrb, v->request_target, v->request_target_len);
 }
 
 // RFC 9110 4.2.1: the target up to '?'.
 mrb_value req_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
-  return lend(mrb, v->target, v->path_len);
+  return lend(mrb, v->request_target, v->path_len);
 }
 
 // RFC 9110 4.2.1: what is left of the path for the resource to dispatch
@@ -75,7 +75,7 @@ mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   if (disp_override_set_) return lend(mrb, disp_override_.data(), disp_override_.size());
   if (v->spans.has_splat) return lend(mrb, v->spans.splat.p, v->spans.splat.n);
-  return lend(mrb, v->target, v->path_len);
+  return lend(mrb, v->request_target, v->path_len);
 }
 
 // RFC 9110 4.2.1: the Symbol tokens this route bound, by name.
@@ -112,9 +112,9 @@ mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
 // RFC 9110 4.2.1: the raw query, without the '?'.
 mrb_value req_query_string(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
-  if (v->path_len >= v->target_len) return mrb_str_new(mrb, "", 0);
+  if (v->path_len >= v->request_target_len) return mrb_str_new(mrb, "", 0);
   const size_t off = v->path_len + 1;
-  return lend(mrb, v->target + off, v->target_len - off);
+  return lend(mrb, v->request_target + off, v->request_target_len - off);
 }
 
 // RFC 9110 2.4 / percent-encoding: one hex digit, or -1.
@@ -152,9 +152,9 @@ mrb_value decoded(mrb_state* mrb, const char* p, size_t n) {
 mrb_value req_query(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value h = mrb_hash_new(mrb);
-  if (v->path_len >= v->target_len) return h;
-  const char* p = v->target + v->path_len + 1;
-  const size_t n = v->target_len - v->path_len - 1;
+  if (v->path_len >= v->request_target_len) return h;
+  const char* p = v->request_target + v->path_len + 1;
+  const size_t n = v->request_target_len - v->path_len - 1;
   size_t at = 0;
   while (at < n) {
     const size_t start = at;
@@ -177,14 +177,14 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
 // refusal when this request's head is gone (a parked HTTP/2 body) -
 // every field-by-name accessor below shares this one refusal.
 const struct phr_header* live_hdrs(mrb_state* mrb, const ReqView* v) {
-  if (v->hdrs == nullptr) {
+  if (v->fields == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR,
               "request.headers: this request's head is gone - an HTTP/2 request that "
               "parked on its body answers after its decode buffer was reused, so its "
               "fields cannot be lent. They are there on HTTP/1.1 and at a websocket "
               "handshake");
   }
-  return static_cast<const struct phr_header*>(v->hdrs);
+  return static_cast<const struct phr_header*>(v->fields);
 }
 
 // RFC 9110 5.1/5.3, RFC 9113 8.2: the head's fields, names lowercased,
@@ -192,8 +192,8 @@ const struct phr_header* live_hdrs(mrb_state* mrb, const ReqView* v) {
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   const struct phr_header* hs = live_hdrs(mrb, v);
-  mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->nhdr));
-  for (size_t i = 0; i < v->nhdr; i++) {
+  mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->field_count));
+  for (size_t i = 0; i < v->field_count; i++) {
     mrb_value name = mrb_str_new(mrb, hs[i].name, hs[i].name_len);
     char* np = RSTRING_PTR(name);
     for (mrb_int j = 0; j < RSTRING_LEN(name); j++) {
@@ -218,20 +218,20 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
 // when none arrived.
 mrb_value req_body(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
-  if (v->body == nullptr) return mrb_nil_value();
-  return lend(mrb, v->body, v->body_len);
+  if (v->content == nullptr) return mrb_nil_value();
+  return lend(mrb, v->content, v->content_len);
 }
 
 // RFC 9110 6.4: is there a body worth reading? An empty body counts as none.
 mrb_value req_has_body(mrb_state* mrb, mrb_value) {
-  return mrb_bool_value(live(mrb)->body_len > 0);
+  return mrb_bool_value(live(mrb)->content_len > 0);
 }
 
 // RFC 9110 5.1: one field, by its (already-lowercase) name; nil when absent.
 mrb_value req_header(mrb_state* mrb, const char* name, size_t nlen) {
   const ReqView* v = live(mrb);
   const struct phr_header* hs = live_hdrs(mrb, v);
-  for (size_t i = 0; i < v->nhdr; i++) {
+  for (size_t i = 0; i < v->field_count; i++) {
     if (http::tok_eq(hs[i].name, hs[i].name_len, name, nlen)) {
       return lend(mrb, hs[i].value, hs[i].value_len);
     }

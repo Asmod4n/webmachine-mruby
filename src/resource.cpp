@@ -292,9 +292,9 @@ bool content_md5_ok(const Resource& res) {
   if (v == nullptr || v->content_md5 == nullptr) return true;
   const char* bp = "";
   size_t bn = 0;
-  if (res.run_req != nullptr && res.run_req->body != nullptr) {
-    bp = res.run_req->body;
-    bn = res.run_req->body_len;
+  if (res.run_req != nullptr && res.run_req->content != nullptr) {
+    bp = res.run_req->content;
+    bn = res.run_req->content_len;
   }
   unsigned char dg[MD5_DIGEST_LENGTH];
   MD5(reinterpret_cast<const unsigned char*>(bp), bn, dg);
@@ -422,8 +422,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
                    ? mrb_str_new(mrb, vals->authorization, vals->authorization_len)
                    : mrb_nil_value();
       case Node::kB11:
-        return res.run_req != nullptr && res.run_req->target != nullptr
-                   ? mrb_str_new(mrb, res.run_req->target, res.run_req->target_len)
+        return res.run_req != nullptr && res.run_req->request_target != nullptr
+                   ? mrb_str_new(mrb, res.run_req->request_target, res.run_req->request_target_len)
                    : mrb_nil_value();
       case Node::kB6: {
         const mrb_value rq = mrb_funcall_argv(mrb, res.live, MRB_SYM(request), 0, nullptr);
@@ -446,7 +446,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
                    : mrb_nil_value();
       case Node::kB4:
         return mrb_int_value(
-            mrb, static_cast<mrb_int>(res.run_req != nullptr ? res.run_req->body_len : 0));
+            mrb, static_cast<mrb_int>(res.run_req != nullptr ? res.run_req->content_len : 0));
       default:
         return mrb_nil_value();
     }
@@ -454,9 +454,9 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
 
   // RFC 9110 9.1: this request's method, by name.
   const auto method_name = [&](const char** p, size_t* n) {
-    if (res.run_req != nullptr && res.run_req->method_p != nullptr) {
-      *p = res.run_req->method_p;
-      *n = res.run_req->method_n;
+    if (res.run_req != nullptr && res.run_req->method_token != nullptr) {
+      *p = res.run_req->method_token;
+      *n = res.run_req->method_token_len;
       return;
     }
     const size_t m = static_cast<size_t>(facts.method);

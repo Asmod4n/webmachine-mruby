@@ -1540,23 +1540,32 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
 }
 
 namespace webmachine {
+// RFC 9110 3.4: one request message, as the parser left it - every field
+// LENT, nothing copied, valid for the frame that dispatches it. This is
+// what a run may read; it is not what a run may keep.
 struct ReqView {
-  const char* target = nullptr;
-  size_t target_len = 0;
+  // RFC 9112 3.2 / RFC 9113 8.3.1: the request-target, and how much of it
+  // is RFC 3986 3.3's path.
+  const char* request_target = nullptr;
+  size_t request_target_len = 0;
   size_t path_len = 0;
+  // RFC 9110 9: the method, folded to what the flow branches on and kept
+  // verbatim for what has to spell it back (405's Allow, the access line).
   flow::Method method = flow::Method::kGet;
-  const char* method_p = nullptr;
-  size_t method_n = 0;
+  const char* method_token = nullptr;
+  size_t method_token_len = 0;
+  // No RFC: this server's route table and what the match captured.
   const RouteTable* table = nullptr;
   int route = -1;
   RouteSpans spans {};
-  const void* hdrs = nullptr;
-  size_t nhdr = 0;
-  // The request body, LENT for the frame like everything else here -
-  // the framer collected it (bounded by its own 413) and it dies with
-  // the dispatch. Null = no body arrived.
-  const char* body = nullptr;
-  size_t body_len = 0;
+  // RFC 9110 6.3: the header field section, in the parser's own layout.
+  const void* fields = nullptr;
+  size_t field_count = 0;
+  // RFC 9110 6.4: the request's content, LENT for the frame like
+  // everything else here - the framer collected it (bounded by its own
+  // 413) and it dies with the dispatch. Null = no content arrived.
+  const char* content = nullptr;
+  size_t content_len = 0;
 };
 
 void request_init(mrb_state* mrb, struct RClass* wm);
@@ -1795,6 +1804,10 @@ inline bool compress(const std::string& in, std::string& out) {
 }
 
 namespace webmachine {
+// RFC 9110 8.3: Content-Type needs a media type, and the mapping from a
+// file's extension to one is NOT specified by any RFC - it is the
+// platform's database (mime.types / shared-mime-info). This class is that
+// lookup and says which file answered, because the answer differs per host.
 class MimeDb {
  public:
   bool load(const char* configured, char* err, size_t errlen);
