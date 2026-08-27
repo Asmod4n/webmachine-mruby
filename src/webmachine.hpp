@@ -1865,38 +1865,59 @@ class MimeDb {
   std::string source_;
 };
 
+// TWO sources, and the split runs right through this struct. The STORE is
+// a ZIP file, so the stored fields carry PKWARE APPNOTE 4.3.7's names for
+// them (file name, file data, compressed size, uncompressed size, CRC-32,
+// method 8 = deflate, RFC 1951). What we ANSWER with is HTTP, so the
+// derived fields carry RFC 9110's:
+//   etag           RFC 9110 8.8.3
+//   last_modified  RFC 9110 8.8.2
+//   content_type   RFC 9110 8.3
+//   gzip_*         RFC 1952 2.2/2.3 - the 10 header and 8 trailer octets
+//                  that turn ZIP's raw deflate stream into a gzip member
+// The heads are prebuilt because they never vary per request except in
+// their Date (RFC 9110 6.6.1), which is why each one remembers where its
+// Date sits and which second it spells.
 struct AssetEntry {
-  std::string name;
-  const char* data = nullptr;
-  size_t comp_size = 0;
-  size_t uncomp_size = 0;
-  uint32_t crc = 0;
+  std::string file_name;
+  const char* file_data = nullptr;
+  size_t compressed_size = 0;
+  size_t uncompressed_size = 0;
+  uint32_t crc32 = 0;
   bool deflated = false;
-  bool lm_valid = false;
+  bool last_modified_valid = false;
   char etag[10] = {};
-  char lm[http::kDateLen] = {};
-  std::string ctype;
+  char last_modified[http::kDateLen] = {};
+  std::string content_type;
 
-  struct Resp {
+  // RFC 9112 2.1: a status-line and a header section, complete, ending in
+  // the empty line - everything of a response except its content.
+  struct Head {
     std::string bytes;
-    size_t date_off = 0;
-    time_t sec = 0;
+    size_t date_offset = 0;
+    time_t unix_seconds = 0;
   };
-  Resp h200[3];
-  Resp h304[3];
+  Head head_200[3];  // RFC 9110 15.3.1
+  Head head_304[3];  // RFC 9110 15.4.5
 
-  unsigned char gz_hdr[10] = {};
-  unsigned char gz_trailer[8] = {};
+  unsigned char gzip_header[10] = {};
+  unsigned char gzip_trailer[8] = {};
 
-  std::string h2_200;
-  std::string h2_304;
+  std::string h2_head_200;  // RFC 9113 8.3 / RFC 7541: the same, encoded
+  std::string h2_head_304;
 };
 
+// PKWARE APPNOTE: the store. One mapping of one ZIP file, its entries
+// sorted, answered from RAM. Everything this class emits is RFC 9110's,
+// so its own vocabulary has to stay clear of HTTP's: the three prebuilt
+// head flavours differ ONLY in their Connection field line (RFC 9110
+// 7.6.1, "connection option"), which is why they are not called variants
+// - RFC 9110 12.1 already means something else by that word.
 class Assets {
  public:
-  enum Variant : uint8_t { kPlain = 0, kKeep = 1, kClose = 2 };
-  static constexpr const char* kConn[3] = {"", "Connection: keep-alive\r\n",
-                                           "Connection: close\r\n"};
+  enum ConnectionOption : uint8_t { kNoConnectionField = 0, kKeepAlive = 1, kConnClose = 2 };
+  static constexpr const char* kConnectionLine[3] = {"", "Connection: keep-alive\r\n",
+                                                     "Connection: close\r\n"};
 
   Assets() = default;
   ~Assets();
@@ -1910,18 +1931,24 @@ class Assets {
   uint16_t verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
                    const http::ReqValues& vals) const;
 
-  void answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date, time_t sec,
-                   std::string& sink);
+  void answer_head(AssetEntry& e, uint16_t status_code, ConnectionOption conn, const char* date,
+                   time_t unix_seconds, std::string& sink);
 
-  void answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
-                       const char* date, std::string& sink);
-  void answer_416_head(const AssetEntry& e, Variant v, const char* date, std::string& sink);
+  void answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t first_byte_pos,
+                       size_t last_byte_pos, const char* date, std::string& sink);
+  void answer_416_head(const AssetEntry& e, ConnectionOption conn, const char* date,
+                       std::string& sink);
 
-  // RFC 1952: the wire body's length - deflate plus 18 framing bytes, or
-  // the stored bytes alone.
+  // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
+  // header and 8 trailer octets of a gzip member, or the stored bytes
+  // alone when nothing was deflated.
   static size_t wire_len(const AssetEntry& e) {
-    return e.deflated ? e.comp_size + 18 : e.comp_size;
+    return e.deflated ? e.compressed_size + 18 : e.compressed_size;
   }
+  // RFC 1952 2.2: [off, off+n) of that body WITHOUT copying it, which is
+  // why it returns a COUNT: a gzip member is three separate spans - our
+  // header, the mapping, our trailer - so one logical window is up to
+  // THREE iovecs, and only the middle one is the file.
   static unsigned wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov);
   static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
 
@@ -1930,13 +1957,14 @@ class Assets {
 
  private:
   const AssetEntry* find_exact(const char* name, size_t len) const;
-  static void patch_date(AssetEntry::Resp& r, const char* date, time_t sec);
+  static void patch_date(AssetEntry::Head& h, const char* date, time_t unix_seconds);
 
-  const char* map_ = nullptr;
-  size_t map_len_ = 0;
+  // munmap(addr, length) - the names of the arguments they become.
+  const char* map_addr_ = nullptr;
+  size_t map_length_ = 0;
   std::vector<AssetEntry> entries_;
-  AssetEntry::Resp s405_[3];
-  AssetEntry::Resp s406_[3];
+  AssetEntry::Head s405_[3];  // RFC 9110 15.5.6
+  AssetEntry::Head s406_[3];  // RFC 9110 15.5.7
 };
 }
 
@@ -3033,19 +3061,27 @@ class Http1 {
     return o;
   }
 
-  // What the asset tier does with ONE request: which head, which byte
-  // range, whether the body is copied into the sink or streamed. Computed
-  // here and performed by the caller - the range verdict used to be
-  // decided inside the branch that was already writing, with two shadow
-  // variables (alog_st/alog_by) carrying the answer back out.
+  // What the asset tier does with ONE request, computed here and performed
+  // by the caller - the range verdict used to be decided inside the branch
+  // that was already writing, with two shadow variables (alog_st/alog_by)
+  // carrying the answer back out.
+  //   status_code      RFC 9110 15 - and what the access line says
+  //   first_byte_pos   RFC 9110 14.1.2
+  //   content_length   RFC 9110 8.6 - the span sent, and what the access
+  //                    line counts
+  //   sends_content    RFC 9110 6.4
+  //   copy_content     no RFC: small enough to ride the sink instead of
+  //                    being lent out of the mapping
   struct AssetStep {
-    enum class Head : uint8_t { kRefusal, kNormal, kRange, kUnsatisfiable };
-    Head head = Head::kNormal;
-    uint16_t status = 200;  // what the access line says
-    size_t off = 0;
-    size_t len = 0;   // the body's span; also what the access line counts
-    bool body = false;
-    bool copy = false;  // small enough to ride the sink instead of a lend
+    // Which of the four heads this request gets; the enum is HeadKind, not
+    // Head, because AssetEntry::Head is a head - this only picks one.
+    enum class HeadKind : uint8_t { kRefusal, kNormal, kRange, kUnsatisfiable };
+    HeadKind head = HeadKind::kNormal;
+    uint16_t status_code = 200;
+    size_t first_byte_pos = 0;
+    size_t content_length = 0;
+    bool sends_content = false;
+    bool copy_content = false;
   };
   // RFC 9110 14.1/14.2: a range is honoured only on a GET that would have
   // been a 200, and only when If-Range still matches the representation.
@@ -3053,37 +3089,38 @@ class Http1 {
                               flow::Method m, const http::ReqValues& vals,
                               size_t warm_budget) {
     AssetStep s;
-    s.status = verdict;
+    s.status_code = verdict;
     if (verdict == 412 || verdict == 501) {
-      s.head = AssetStep::Head::kRefusal;
+      s.head = AssetStep::HeadKind::kRefusal;
       return s;
     }
-    const size_t whole = Assets::wire_len(e);
+    const size_t complete_length = Assets::wire_len(e);
     if (verdict == 200 && !head_only && m == flow::Method::kGet && vals.range != nullptr &&
         (vals.if_range == nullptr ||
          http::if_range_matches(vals.if_range, vals.if_range_len, e.etag, sizeof(e.etag)))) {
-      size_t rf = 0, rl = 0;
-      switch (http::parse_range(vals.range, vals.range_len, whole, &rf, &rl)) {
+      size_t first_byte_pos = 0, last_byte_pos = 0;
+      switch (http::parse_range(vals.range, vals.range_len, complete_length, &first_byte_pos,
+                                &last_byte_pos)) {
         case http::RangeParse::kOne:
-          s.head = AssetStep::Head::kRange;
-          s.status = 206;
-          s.off = rf;
-          s.len = rl - rf + 1;
-          s.body = true;
+          s.head = AssetStep::HeadKind::kRange;
+          s.status_code = 206;
+          s.first_byte_pos = first_byte_pos;
+          s.content_length = last_byte_pos - first_byte_pos + 1;
+          s.sends_content = true;
           break;
         case http::RangeParse::kUnsat:
-          s.head = AssetStep::Head::kUnsatisfiable;
-          s.status = 416;
+          s.head = AssetStep::HeadKind::kUnsatisfiable;
+          s.status_code = 416;
           return s;
         case http::RangeParse::kNone:
           break;
       }
     }
-    if (s.head == AssetStep::Head::kNormal && verdict == 200 && !head_only) {
-      s.len = whole;
-      s.body = true;
+    if (s.head == AssetStep::HeadKind::kNormal && verdict == 200 && !head_only) {
+      s.content_length = complete_length;
+      s.sends_content = true;
     }
-    s.copy = s.body && s.len <= warm_budget;
+    s.copy_content = s.sends_content && s.content_length <= warm_budget;
     return s;
   }
 

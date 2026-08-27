@@ -746,40 +746,42 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       if (AssetEntry* ae = assets_->find(path, path_len)) {
         const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
         const AssetStep step = asset_step(*ae, as, head_only, facts.method, vals, warm_budget_);
-        const Assets::Variant av = minor >= 1 ? (persist ? Assets::kPlain : Assets::kClose)
-                                              : (persist ? Assets::kKeep : Assets::kClose);
+        const Assets::ConnectionOption conn =
+            minor >= 1 ? (persist ? Assets::kNoConnectionField : Assets::kConnClose)
+                       : (persist ? Assets::kKeepAlive : Assets::kConnClose);
         switch (step.head) {
-          case AssetStep::Head::kRefusal: {
-            const Variants& sv = variants(step.status);
+          case AssetStep::HeadKind::kRefusal: {
+            const Variants& sv = variants(step.status_code);
             sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
                                    : (persist ? sv.keep.bytes : sv.close.bytes));
             break;
           }
-          case AssetStep::Head::kUnsatisfiable:
-            assets_->answer_416_head(*ae, av, date_, sink);
+          case AssetStep::HeadKind::kUnsatisfiable:
+            assets_->answer_416_head(*ae, conn, date_, sink);
             break;
-          case AssetStep::Head::kRange:
-            assets_->answer_206_head(*ae, av, step.off, step.off + step.len - 1, date_, sink);
+          case AssetStep::HeadKind::kRange:
+            assets_->answer_206_head(*ae, conn, step.first_byte_pos,
+                                     step.first_byte_pos + step.content_length - 1, date_, sink);
             break;
-          case AssetStep::Head::kNormal:
-            assets_->answer_head(*ae, step.status, av, date_, sec_, sink);
+          case AssetStep::HeadKind::kNormal:
+            assets_->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
             break;
         }
         bool started_xfer = false;
-        if (step.body) {
-          if (step.copy) {
-            Assets::copy_wire(*ae, step.off, step.len, sink);
+        if (step.sends_content) {
+          if (step.copy_content) {
+            Assets::copy_wire(*ae, step.first_byte_pos, step.content_length, sink);
           } else {
             st.xfer = ae;
-            st.xfer_off = step.off;
-            st.xfer_end = step.off + step.len;
+            st.xfer_off = step.first_byte_pos;
+            st.xfer_end = step.first_byte_pos + step.content_length;
             started_xfer = true;
           }
         }
         if (alog_.enabled) {
           log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags,
-                     step.status, step.body ? step.len : 0, vals.log_ref, vals.log_ref_len,
-                     vals.log_ua, vals.log_ua_len);
+                     step.status_code, step.sends_content ? step.content_length : 0, vals.log_ref,
+                     vals.log_ref_len, vals.log_ua, vals.log_ua_len);
         }
         off += static_cast<size_t>(ret);
         if (content_length != 0) {

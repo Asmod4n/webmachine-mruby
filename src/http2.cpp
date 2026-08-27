@@ -468,12 +468,12 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
 
 // RFC 7541 Appendix A: never-indexed blocks per asset entry, at setup.
 void Http1::h2_build_asset_blocks(AssetEntry& e) {
-  std::string& b = e.h2_200;
+  std::string& b = e.h2_head_200;
   b.clear();
   b.push_back(static_cast<char>(0x88));
   hp_name_idx(b, 31);
-  hp_len(b, e.ctype.size());
-  b.append(e.ctype);
+  hp_len(b, e.content_type.size());
+  b.append(e.content_type);
   if (e.deflated) {
     hp_name_idx(b, 26);
     hp_len(b, 4);
@@ -485,16 +485,16 @@ void Http1::h2_build_asset_blocks(AssetEntry& e) {
   hp_name_idx(b, 34);
   hp_len(b, sizeof(e.etag));
   b.append(e.etag, sizeof(e.etag));
-  if (e.lm_valid) {
+  if (e.last_modified_valid) {
     hp_name_idx(b, 44);
-    hp_len(b, sizeof(e.lm));
-    b.append(e.lm, sizeof(e.lm));
+    hp_len(b, sizeof(e.last_modified));
+    b.append(e.last_modified, sizeof(e.last_modified));
   }
   hp_name_idx(b, 18);
   hp_len(b, 5);
   b.append("bytes", 5);
 
-  std::string& c = e.h2_304;
+  std::string& c = e.h2_head_304;
   c.clear();
   c.push_back(static_cast<char>(0x8b));
   hp_name_idx(c, 34);
@@ -526,12 +526,12 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
   std::string rblk;
   const std::string* blk;
   switch (status) {
-    case 200: blk = &e.h2_200; break;
+    case 200: blk = &e.h2_head_200; break;
     case 206: {
       rblk.push_back(static_cast<char>(0x8a));
       hp_name_idx(rblk, 31);
-      hp_len(rblk, e.ctype.size());
-      rblk.append(e.ctype);
+      hp_len(rblk, e.content_type.size());
+      rblk.append(e.content_type);
       if (e.deflated) {
         hp_name_idx(rblk, 26);
         hp_len(rblk, 4);
@@ -568,7 +568,7 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
       blk = &rblk;
       break;
     }
-    case 304: blk = &e.h2_304; break;
+    case 304: blk = &e.h2_head_304; break;
     case 405: blk = &h2_asset405_.bytes; break;
     case 406: blk = &h2_asset406_.bytes; break;
     default: blk = &h2_store_[index_[status]].bytes; break;

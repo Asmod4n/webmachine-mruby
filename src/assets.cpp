@@ -33,28 +33,28 @@ void spell_hex8(char* out, uint32_t v) {
 }
 
 // RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
-void build_head(AssetEntry::Resp& r, const char* status_line, const char* conn,
+void build_head(AssetEntry::Head& h, const char* status_line, const char* connection_line,
                 const std::string& fields) {
-  r.bytes.clear();
-  r.bytes.append(status_line);
-  r.bytes.append("\r\nDate: ");
-  r.date_off = r.bytes.size();
-  r.bytes.append(http::kDatePlaceholder, http::kDateLen);
-  r.bytes.append("\r\n").append(conn).append(fields).append("\r\n");
-  r.sec = 0;
+  h.bytes.clear();
+  h.bytes.append(status_line);
+  h.bytes.append("\r\nDate: ");
+  h.date_offset = h.bytes.size();
+  h.bytes.append(http::kDatePlaceholder, http::kDateLen);
+  h.bytes.append("\r\n").append(connection_line).append(fields).append("\r\n");
+  h.unix_seconds = 0;
 }
 
 // RFC 9112 9.3: the same head in all three connection spellings.
-void build_triple(AssetEntry::Resp (&v)[3], const char* status_line, const std::string& fields) {
-  build_head(v[Assets::kPlain], status_line, Assets::kConn[Assets::kPlain], fields);
-  build_head(v[Assets::kKeep], status_line, Assets::kConn[Assets::kKeep], fields);
-  build_head(v[Assets::kClose], status_line, Assets::kConn[Assets::kClose], fields);
+void build_triple(AssetEntry::Head (&h)[3], const char* status_line, const std::string& fields) {
+  for (uint8_t c = Assets::kNoConnectionField; c <= Assets::kConnClose; c++) {
+    build_head(h[c], status_line, Assets::kConnectionLine[c], fields);
+  }
 }
 }
 
 // The mapping is what serves, and it serves until the process ends.
 Assets::~Assets() {
-  if (map_ != nullptr) ::munmap(const_cast<char*>(map_), map_len_);
+  if (map_addr_ != nullptr) ::munmap(const_cast<char*>(map_addr_), map_length_);
 }
 
 // ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
@@ -71,20 +71,20 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     std::snprintf(err, errlen, "%s: not a ZIP (too small for an end record)", zip_path);
     return false;
   }
-  map_len_ = static_cast<size_t>(st.st_size);
-  void* m = ::mmap(nullptr, map_len_, PROT_READ, MAP_PRIVATE, fd, 0);
+  map_length_ = static_cast<size_t>(st.st_size);
+  void* m = ::mmap(nullptr, map_length_, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);
   if (m == MAP_FAILED) {
-    map_len_ = 0;
+    map_length_ = 0;
     std::snprintf(err, errlen, "mmap %s: %s", zip_path, std::strerror(errno));
     return false;
   }
-  map_ = static_cast<const char*>(m);
-  const unsigned char* base = reinterpret_cast<const unsigned char*>(map_);
+  map_addr_ = static_cast<const char*>(m);
+  const unsigned char* base = reinterpret_cast<const unsigned char*>(map_addr_);
 
   mz_zip_archive za;
   std::memset(&za, 0, sizeof(za));
-  if (!mz_zip_reader_init_mem(&za, map_, map_len_, 0)) {
+  if (!mz_zip_reader_init_mem(&za, map_addr_, map_length_, 0)) {
     std::snprintf(err, errlen, "%s: not a readable ZIP (%s)", zip_path,
                   mz_zip_get_error_string(mz_zip_get_last_error(&za)));
     return false;
@@ -131,70 +131,73 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     }
 
     const size_t lho = static_cast<size_t>(st.m_local_header_ofs);
-    if (lho + 30 > map_len_ || MZ_READ_LE32(base + lho) != 0x04034b50) {
+    if (lho + 30 > map_length_ || MZ_READ_LE32(base + lho) != 0x04034b50) {
       std::snprintf(err, errlen, "%s: %s has a broken local header", zip_path,
                     st.m_filename);
       return false;
     }
     const size_t data_off = lho + 30 + MZ_READ_LE16(base + lho + 26) + MZ_READ_LE16(base + lho + 28);
     const size_t comp = static_cast<size_t>(st.m_comp_size);
-    if (data_off + comp > map_len_) {
+    if (data_off + comp > map_length_) {
       std::snprintf(err, errlen, "%s: %s data overruns the file", zip_path, st.m_filename);
       return false;
     }
 
     AssetEntry e;
-    e.name.assign(st.m_filename, nlen);
-    e.data = map_ + data_off;
-    e.comp_size = comp;
-    e.uncomp_size = static_cast<size_t>(st.m_uncomp_size);
-    e.crc = st.m_crc32;
+    e.file_name.assign(st.m_filename, nlen);
+    e.file_data = map_addr_ + data_off;
+    e.compressed_size = comp;
+    e.uncompressed_size = static_cast<size_t>(st.m_uncomp_size);
+    e.crc32 = st.m_crc32;
     e.deflated = st.m_method == MZ_DEFLATED;
-    e.lm_valid = mtime_to_imf(st.m_time, e.lm);
+    e.last_modified_valid = mtime_to_imf(st.m_time, e.last_modified);
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
     entries_.push_back(std::move(e));
   }
 
-  std::stable_sort(entries_.begin(), entries_.end(),
-                   [](const AssetEntry& a, const AssetEntry& b) { return a.name < b.name; });
+  std::stable_sort(
+      entries_.begin(), entries_.end(),
+      [](const AssetEntry& a, const AssetEntry& b) { return a.file_name < b.file_name; });
   for (size_t i = 0; i + 1 < entries_.size();) {
-    if (entries_[i].name == entries_[i + 1].name) entries_.erase(entries_.begin() + i);
+    if (entries_[i].file_name == entries_[i + 1].file_name) entries_.erase(entries_.begin() + i);
     else i++;
   }
 
   for (AssetEntry& e : entries_) {
-    e.ctype = http::with_charset(mime.type_of(e.name));
+    e.content_type = http::with_charset(mime.type_of(e.file_name));
     std::string f;
-    f.append("Content-Type: ").append(e.ctype).append("\r\n");
+    f.append("Content-Type: ").append(e.content_type).append("\r\n");
     if (e.deflated) {
       f.append("Content-Encoding: gzip\r\n");
       f.append("Vary: Accept-Encoding\r\n");
     }
     f.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
-    if (e.lm_valid) f.append("Last-Modified: ").append(e.lm, sizeof(e.lm)).append("\r\n");
+    if (e.last_modified_valid) {
+      f.append("Last-Modified: ").append(e.last_modified, sizeof(e.last_modified)).append("\r\n");
+    }
     f.append("Accept-Ranges: bytes\r\n");
-    const size_t clen = e.deflated ? e.comp_size + 18 : e.comp_size;
+    const size_t clen = e.deflated ? e.compressed_size + 18 : e.compressed_size;
     f.append("Content-Length: ").append(std::to_string(clen)).append("\r\n");
-    build_triple(e.h200, "HTTP/1.1 200 OK", f);
+    build_triple(e.head_200, "HTTP/1.1 200 OK", f);
 
     std::string f304;
     f304.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
     if (e.deflated) f304.append("Vary: Accept-Encoding\r\n");
-    build_triple(e.h304, "HTTP/1.1 304 Not Modified", f304);
+    build_triple(e.head_304, "HTTP/1.1 304 Not Modified", f304);
 
     if (e.deflated) {
       static const unsigned char kGzHdr[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff};
-      std::memcpy(e.gz_hdr, kGzHdr, sizeof(kGzHdr));
-      e.gz_trailer[0] = static_cast<unsigned char>(e.crc);
-      e.gz_trailer[1] = static_cast<unsigned char>(e.crc >> 8);
-      e.gz_trailer[2] = static_cast<unsigned char>(e.crc >> 16);
-      e.gz_trailer[3] = static_cast<unsigned char>(e.crc >> 24);
-      e.gz_trailer[4] = static_cast<unsigned char>(e.uncomp_size);
-      e.gz_trailer[5] = static_cast<unsigned char>(e.uncomp_size >> 8);
-      e.gz_trailer[6] = static_cast<unsigned char>(e.uncomp_size >> 16);
-      e.gz_trailer[7] = static_cast<unsigned char>(e.uncomp_size >> 24);
+      std::memcpy(e.gzip_header, kGzHdr, sizeof(kGzHdr));
+      e.gzip_trailer[0] = static_cast<unsigned char>(e.crc32);
+      e.gzip_trailer[1] = static_cast<unsigned char>(e.crc32 >> 8);
+      e.gzip_trailer[2] = static_cast<unsigned char>(e.crc32 >> 16);
+      e.gzip_trailer[3] = static_cast<unsigned char>(e.crc32 >> 24);
+      e.gzip_trailer[4] = static_cast<unsigned char>(e.uncompressed_size);
+      e.gzip_trailer[5] = static_cast<unsigned char>(e.uncompressed_size >> 8);
+      e.gzip_trailer[6] = static_cast<unsigned char>(e.uncompressed_size >> 16);
+      e.gzip_trailer[7] = static_cast<unsigned char>(e.uncompressed_size >> 24);
     }
   }
 
@@ -210,13 +213,13 @@ const AssetEntry* Assets::find_exact(const char* name, size_t len) const {
   const auto it = std::lower_bound(
       entries_.begin(), entries_.end(), std::pair<const char*, size_t>(name, len),
       [](const AssetEntry& a, const std::pair<const char*, size_t>& key) {
-        const int c = std::memcmp(a.name.data(), key.first,
-                                  a.name.size() < key.second ? a.name.size() : key.second);
+        const size_t n = a.file_name.size() < key.second ? a.file_name.size() : key.second;
+        const int c = std::memcmp(a.file_name.data(), key.first, n);
         if (c != 0) return c < 0;
-        return a.name.size() < key.second;
+        return a.file_name.size() < key.second;
       });
-  if (it == entries_.end() || it->name.size() != len ||
-      std::memcmp(it->name.data(), name, len) != 0) {
+  if (it == entries_.end() || it->file_name.size() != len ||
+      std::memcmp(it->file_name.data(), name, len) != 0) {
     return nullptr;
   }
   return &*it;
@@ -281,60 +284,60 @@ uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFac
 
 // RFC 9110 5.6.7: the date, patched lazily - an entry nobody asks for
 // is never patched.
-void Assets::patch_date(AssetEntry::Resp& r, const char* date, time_t sec) {
-  if (r.sec == sec) return;
-  std::memcpy(r.bytes.data() + r.date_off, date, http::kDateLen);
-  r.sec = sec;
+void Assets::patch_date(AssetEntry::Head& h, const char* date, time_t unix_seconds) {
+  if (h.unix_seconds == unix_seconds) return;
+  std::memcpy(h.bytes.data() + h.date_offset, date, http::kDateLen);
+  h.unix_seconds = unix_seconds;
 }
 
 // RFC 9112: the header section for a verdict this tier owns. Never body bytes.
-void Assets::answer_head(AssetEntry& e, uint16_t status, Variant v, const char* date,
-                         time_t sec, std::string& sink) {
-  AssetEntry::Resp* r;
-  switch (status) {
-    case 200: r = &e.h200[v]; break;
-    case 304: r = &e.h304[v]; break;
-    case 405: r = &s405_[v]; break;
-    default: r = &s406_[v]; break;
+void Assets::answer_head(AssetEntry& e, uint16_t status_code, ConnectionOption conn,
+                         const char* date, time_t unix_seconds, std::string& sink) {
+  AssetEntry::Head* h;
+  switch (status_code) {
+    case 200: h = &e.head_200[conn]; break;
+    case 304: h = &e.head_304[conn]; break;
+    case 405: h = &s405_[conn]; break;
+    default: h = &s406_[conn]; break;
   }
-  patch_date(*r, date, sec);
-  sink.append(r->bytes);
-}
-
-namespace {
+  patch_date(*h, date, unix_seconds);
+  sink.append(h->bytes);
 }
 
 // RFC 9110 14.4/15.3.7: the satisfied range and the complete length.
-void Assets::answer_206_head(const AssetEntry& e, Variant v, size_t first, size_t last,
-                             const char* date, std::string& sink) {
+void Assets::answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t first_byte_pos,
+                             size_t last_byte_pos, const char* date, std::string& sink) {
   sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
   sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(kConn[v]);
-  sink.append("Content-Type: ").append(e.ctype).append("\r\n");
+  sink.append("\r\n").append(kConnectionLine[conn]);
+  sink.append("Content-Type: ").append(e.content_type).append("\r\n");
   if (e.deflated) {
     sink.append("Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
   }
   sink.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
   sink.append("Accept-Ranges: bytes\r\n");
-  sink.append("Content-Range: bytes ").append(std::to_string(first)).append("-");
-  sink.append(std::to_string(last)).append("/").append(std::to_string(wire_len(e)));
-  sink.append("\r\nContent-Length: ").append(std::to_string(last - first + 1));
+  sink.append("Content-Range: bytes ").append(std::to_string(first_byte_pos)).append("-");
+  sink.append(std::to_string(last_byte_pos)).append("/").append(std::to_string(wire_len(e)));
+  sink.append("\r\nContent-Length: ")
+      .append(std::to_string(last_byte_pos - first_byte_pos + 1));
   sink.append("\r\n\r\n");
 }
 
 // RFC 9110 15.5.17: the unsatisfied form names the complete length.
-void Assets::answer_416_head(const AssetEntry& e, Variant v, const char* date,
+void Assets::answer_416_head(const AssetEntry& e, ConnectionOption conn, const char* date,
                              std::string& sink) {
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
   sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(kConn[v]);
+  sink.append("\r\n").append(kConnectionLine[conn]);
   if (e.deflated) sink.append("Vary: Accept-Encoding\r\n");
   sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e)));
   sink.append("\r\nContent-Length: 0\r\n\r\n");
 }
 
-// RFC 1952: [off, off+n) of the wire body as POINTERS - gzip header,
-// the deflate stream where it lies in the mapping, the trailer.
+// RFC 1952 2.2: [off, off+n) of the wire body as POINTERS - the gzip
+// header, the deflate stream where it lies in the mapping, the trailer.
+// Up to THREE iovecs for ONE logical window, and only the middle one is
+// the file: that is why this returns a count and not a pointer.
 unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov) {
   struct Seg {
     const char* p;
@@ -343,11 +346,11 @@ unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iove
   Seg segs[3];
   size_t ns = 0;
   if (e.deflated) {
-    segs[ns++] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
-    segs[ns++] = {e.data, e.comp_size};
-    segs[ns++] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gzip_header), sizeof(e.gzip_header)};
+    segs[ns++] = {e.file_data, e.compressed_size};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gzip_trailer), sizeof(e.gzip_trailer)};
   } else {
-    segs[ns++] = {e.data, e.comp_size};
+    segs[ns++] = {e.file_data, e.compressed_size};
   }
   unsigned out = 0;
   for (size_t i = 0; i < ns && n != 0; i++) {
@@ -375,11 +378,11 @@ void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& s
   Seg segs[3];
   size_t ns = 0;
   if (e.deflated) {
-    segs[ns++] = {reinterpret_cast<const char*>(e.gz_hdr), sizeof(e.gz_hdr)};
-    segs[ns++] = {e.data, e.comp_size};
-    segs[ns++] = {reinterpret_cast<const char*>(e.gz_trailer), sizeof(e.gz_trailer)};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gzip_header), sizeof(e.gzip_header)};
+    segs[ns++] = {e.file_data, e.compressed_size};
+    segs[ns++] = {reinterpret_cast<const char*>(e.gzip_trailer), sizeof(e.gzip_trailer)};
   } else {
-    segs[ns++] = {e.data, e.comp_size};
+    segs[ns++] = {e.file_data, e.compressed_size};
   }
   for (size_t i = 0; i < ns && n != 0; i++) {
     if (off >= segs[i].len) {
