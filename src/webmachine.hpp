@@ -1363,17 +1363,17 @@ inline void etag_spell(const char* raw, size_t n, std::string& out) {
 // RFC 3986 5.3, the n11 subset: join create_path onto a base. A full
 // URI passes verbatim; an absolute-path ref replaces the base's path;
 // a relative segment appends after the base's last '/'.
-inline void uri_join(const char* base, size_t blen, const char* path, size_t plen,
+inline void uri_join(const char* base, size_t blen, const char* path, size_t payload_length,
                      std::string& out) {
   out.clear();
-  if (plen >= 8 && std::memcmp(path, "http", 4) == 0) {
-    const char* colon = static_cast<const char*>(std::memchr(path, ':', plen));
+  if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
+    const char* colon = static_cast<const char*>(std::memchr(path, ':', payload_length));
     if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
-      out.append(path, plen);
+      out.append(path, payload_length);
       return;
     }
   }
-  if (plen > 0 && path[0] == '/') {
+  if (payload_length > 0 && path[0] == '/') {
     size_t slashes = 0, i = 0;
     for (; i < blen; i++) {
       if (base[i] == '/') {
@@ -1382,7 +1382,7 @@ inline void uri_join(const char* base, size_t blen, const char* path, size_t ple
       }
     }
     out.append(base, i);
-    out.append(path, plen);
+    out.append(path, payload_length);
     return;
   }
   size_t cut = blen;
@@ -1390,7 +1390,7 @@ inline void uri_join(const char* base, size_t blen, const char* path, size_t ple
   if (cut == 0) cut = blen;
   out.append(base, cut);
   if (!out.empty() && out.back() != '/') out.push_back('/');
-  out.append(path, plen);
+  out.append(path, payload_length);
 }
 
 template <class OnWire>
@@ -2424,14 +2424,17 @@ bool accept_key(const char* key, size_t key_len, char out[28]);
 // that failed, and because these are the Autobahn cases: they deserve a
 // table, not a socket.
 struct Head {
+  // No RFC: our verdict on the header, which 6455 5.1 turns into a close.
   enum class Err : uint8_t { kNone, kProtocol, kTooBig };
   Err err = Err::kNone;
-  uint8_t opcode = 0;
-  uint64_t plen = 0;
-  uint8_t mask_at = 0;  // where the four mask bytes start
-  bool fin = false;
-  bool rsv1 = false;
-  bool control = false;
+  uint8_t opcode = 0;           // RFC 6455 5.2: Opcode
+  uint64_t payload_length = 0;  // RFC 6455 5.2: Payload length
+  // RFC 6455 5.2: where the four Masking-key octets start, which is where
+  // the length encoding ended.
+  uint8_t masking_key_at = 0;
+  bool fin = false;   // RFC 6455 5.2: FIN
+  bool rsv1 = false;  // RFC 6455 5.2: RSV1, negotiated by RFC 7692
+  bool control = false;  // RFC 6455 5.5: opcode has the high bit
 };
 
 inline Head read_head(const unsigned char* h, bool have_codec) {
@@ -2463,22 +2466,22 @@ inline Head read_head(const unsigned char* h, bool have_codec) {
   }
   // RFC 6455 5.1: every client frame is masked.
   if ((b1 & 0x80) == 0) { o.err = Head::Err::kProtocol; return o; }
-  o.plen = static_cast<uint64_t>(b1 & 0x7f);
-  o.mask_at = 2;
+  o.payload_length = static_cast<uint64_t>(b1 & 0x7f);
+  o.masking_key_at = 2;
   // RFC 6455 5.2: the shortest encoding that fits, and the top bit of a
   // 64-bit length is reserved.
-  if (o.plen == 126) {
-    o.plen = (static_cast<uint64_t>(h[2]) << 8) | h[3];
-    o.mask_at = 4;
-    if (o.plen < 126) { o.err = Head::Err::kProtocol; return o; }
-  } else if (o.plen == 127) {
-    o.plen = 0;
-    for (int i = 0; i < 8; i++) o.plen = (o.plen << 8) | h[2 + i];
-    o.mask_at = 10;
-    if (o.plen <= 0xffff || (o.plen >> 63) != 0) { o.err = Head::Err::kProtocol; return o; }
+  if (o.payload_length == 126) {
+    o.payload_length = (static_cast<uint64_t>(h[2]) << 8) | h[3];
+    o.masking_key_at = 4;
+    if (o.payload_length < 126) { o.err = Head::Err::kProtocol; return o; }
+  } else if (o.payload_length == 127) {
+    o.payload_length = 0;
+    for (int i = 0; i < 8; i++) o.payload_length = (o.payload_length << 8) | h[2 + i];
+    o.masking_key_at = 10;
+    if (o.payload_length <= 0xffff || (o.payload_length >> 63) != 0) { o.err = Head::Err::kProtocol; return o; }
   }
   // RFC 6455 5.5: a control frame is short and never fragmented.
-  if (o.control && (o.plen > kMaxControlPayload || !o.fin)) {
+  if (o.control && (o.payload_length > kMaxControlPayload || !o.fin)) {
     o.err = Head::Err::kProtocol;
     return o;
   }
@@ -2494,20 +2497,24 @@ inline Head::Err admit(const Head& h, uint8_t msg_op, bool msg_deflated, uint64_
   if (h.opcode == kContinuation) {
     if (msg_op == 0) return Head::Err::kProtocol;  // continues nothing
     // A deflated message is bounded after inflation, not here.
-    if (!msg_deflated && msg_len + h.plen > max_message) return Head::Err::kTooBig;
+    if (!msg_deflated && msg_len + h.payload_length > max_message) return Head::Err::kTooBig;
     return Head::Err::kNone;
   }
   if (msg_op != 0) return Head::Err::kProtocol;  // interleaved data frames
-  if (!h.rsv1 && h.plen > max_message) return Head::Err::kTooBig;
+  if (!h.rsv1 && h.payload_length > max_message) return Head::Err::kTooBig;
   return Head::Err::kNone;
 }
 
+// RFC 6455 5.2: one frame, read out of a buffer - the header's verdict plus
+// where its Payload data begins. `consumed` is not a 6455 term: it is how
+// much of the buffer this frame occupied, which is what a caller reading a
+// stream of frames needs and the wire format does not say.
 struct Frame {
-  uint8_t opcode = 0;
-  bool fin = false;
-  bool rsv1 = false;
-  const char* payload = nullptr;
-  size_t len = 0;
+  uint8_t opcode = 0;           // RFC 6455 5.2: Opcode
+  bool fin = false;             // RFC 6455 5.2: FIN
+  bool rsv1 = false;            // RFC 6455 5.2: RSV1
+  const char* payload = nullptr;  // RFC 6455 5.2: Payload data
+  size_t payload_length = 0;      // RFC 6455 5.2: Payload length
   size_t consumed = 0;
 };
 
@@ -3674,12 +3681,12 @@ class Ring {
     socklen_t salen = 0;
     if (is_unix) {
       sun.sun_family = AF_UNIX;
-      const size_t plen = std::strlen(spec.unix_path);
-      if (plen >= sizeof(sun.sun_path)) {
-        std::snprintf(err, errlen, "listener %u: unix path too long (%zu)", li, plen);
+      const size_t payload_length = std::strlen(spec.unix_path);
+      if (payload_length >= sizeof(sun.sun_path)) {
+        std::snprintf(err, errlen, "listener %u: unix path too long (%zu)", li, payload_length);
         return false;
       }
-      std::memcpy(sun.sun_path, spec.unix_path, plen + 1);
+      std::memcpy(sun.sun_path, spec.unix_path, payload_length + 1);
       sa = reinterpret_cast<struct sockaddr*>(&sun);
       salen = sizeof(sun);
 

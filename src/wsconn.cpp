@@ -426,12 +426,12 @@ bool begin_frame(WsConn* c, std::string& sink) {
                 a == ws::Head::Err::kTooBig ? ws::kCloseTooBig : ws::kCloseProtocolError);
   }
 
-  std::memcpy(c->mask, c->hbuf + h.mask_at, 4);
+  std::memcpy(c->mask, c->hbuf + h.masking_key_at, 4);
   c->mask_off = 0;
   c->opcode = h.opcode;
   c->fin = h.fin;
   c->control = h.control;
-  c->remaining = h.plen;
+  c->remaining = h.payload_length;
   c->ctl_len = 0;
 
   // A data frame that starts a message opens the buffer it collects into -
@@ -439,14 +439,14 @@ bool begin_frame(WsConn* c, std::string& sink) {
   if (!h.control && h.opcode != ws::kContinuation) {
     mrb_state* mrb = c->res->mrb;
     const uint64_t max = c->res->max_message;
-    const uint64_t capa = h.plen > max ? max : h.plen;
+    const uint64_t capa = h.payload_length > max ? max : h.payload_length;
     c->msg = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
     mrb_gc_register(mrb, c->msg);
     c->msg_live = true;
     c->msg_op = h.opcode;
     c->msg_deflated = h.rsv1;
   }
-  c->in_payload = h.plen != 0;
+  c->in_payload = h.payload_length != 0;
   return true;
 }
 

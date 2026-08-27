@@ -60,26 +60,26 @@ Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& 
   const bool control = (opcode & 0x08) != 0;
   if (rsv1 && (control || opcode == kContinuation)) return Parse::kError;
   const bool masked = (b1 & 0x80) != 0;
-  uint64_t plen = static_cast<uint64_t>(b1 & 0x7f);
+  uint64_t payload_length = static_cast<uint64_t>(b1 & 0x7f);
   size_t at = 2;
-  if (plen == 126) {
+  if (payload_length == 126) {
     if (len < at + 2) return Parse::kNeedMore;
-    plen = (static_cast<uint64_t>(static_cast<unsigned char>(data[at])) << 8) |
+    payload_length = (static_cast<uint64_t>(static_cast<unsigned char>(data[at])) << 8) |
            static_cast<unsigned char>(data[at + 1]);
     at += 2;
-    if (plen < 126) return Parse::kError;
-  } else if (plen == 127) {
+    if (payload_length < 126) return Parse::kError;
+  } else if (payload_length == 127) {
     if (len < at + 8) return Parse::kNeedMore;
-    plen = 0;
+    payload_length = 0;
     for (int i = 0; i < 8; i++) {
-      plen = (plen << 8) | static_cast<unsigned char>(data[at + i]);
+      payload_length = (payload_length << 8) | static_cast<unsigned char>(data[at + i]);
     }
     at += 8;
-    if (plen <= 0xffff) return Parse::kError;
-    if ((plen >> 63) != 0) return Parse::kError;
+    if (payload_length <= 0xffff) return Parse::kError;
+    if ((payload_length >> 63) != 0) return Parse::kError;
   }
-  if (control && (plen > kMaxControlPayload || !fin)) return Parse::kError;
-  if (plen > max_payload) {
+  if (control && (payload_length > kMaxControlPayload || !fin)) return Parse::kError;
+  if (payload_length > max_payload) {
     code = kCloseTooBig;
     return Parse::kError;
   }
@@ -88,17 +88,17 @@ Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& 
   unsigned char mask[4];
   std::memcpy(mask, data + at, 4);
   at += 4;
-  if (len - at < plen) return Parse::kNeedMore;
+  if (len - at < payload_length) return Parse::kNeedMore;
 
   char* payload = data + at;
-  const size_t n = static_cast<size_t>(plen);
+  const size_t n = static_cast<size_t>(payload_length);
   for (size_t i = 0; i < n; i++) payload[i] = static_cast<char>(payload[i] ^ mask[i & 3]);
 
   out.opcode = opcode;
   out.fin = fin;
   out.rsv1 = rsv1;
   out.payload = payload;
-  out.len = n;
+  out.payload_length = n;
   out.consumed = at + n;
   return Parse::kOk;
 }

@@ -88,7 +88,7 @@ mrb_value ws_parse(mrb_state* mrb, mrb_value) {
       mrb_ary_push(mrb, a, mrb_symbol_value(mrb_intern_lit(mrb, "ok")));
       mrb_ary_push(mrb, a, mrb_fixnum_value(f.opcode));
       mrb_ary_push(mrb, a, mrb_bool_value(f.fin));
-      mrb_ary_push(mrb, a, mrb_str_new(mrb, f.payload, f.len));
+      mrb_ary_push(mrb, a, mrb_str_new(mrb, f.payload, f.payload_length));
       mrb_ary_push(mrb, a, mrb_fixnum_value(static_cast<mrb_int>(f.consumed)));
       // Appended, not inserted: round one's tests destructure this
       // array positionally and RSV1 is round two's news, not theirs.
