@@ -16,6 +16,131 @@
 extern "C" mrb_int mrb_proc_arity(const struct RProc* p);
 
 namespace webmachine {
+namespace wsdeflate {
+class Codec {
+ public:
+  Codec() = default;
+  Codec(const Codec&) = delete;
+  Codec& operator=(const Codec&) = delete;
+  // RFC 7692: both zlib streams die with the connection.
+  ~Codec() {
+    if (inf_on_) inflateEnd(&inf_);
+    if (def_on_) deflateEnd(&def_);
+  }
+
+  // RFC 7692 7.1.2: what the negotiation settled on.
+  void configure(const Params& p) { p_ = p; }
+  // RFC 7692: what this connection agreed to.
+  const Params& params() const { return p_; }
+
+  template <class Sink>
+  // RFC 7692 7.2.2: payload bytes as they arrive; the SINK is the only
+  // bound, which is the whole decompression-bomb answer.
+  int inflate_some(const char* in, size_t n, Sink&& sink) {
+    if (!inflate_ready()) return -1;
+    inf_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in));
+    inf_.avail_in = static_cast<uInt>(n);
+    return pump(sink);
+  }
+
+  template <class Sink>
+  // RFC 7692 7.2.2 step 1: the four bytes the sender stripped go back on.
+  int inflate_finish(Sink&& sink) {
+    if (!inflate_ready()) return -1;
+    inf_.next_in = const_cast<Bytef*>(kSyncTail);
+    inf_.avail_in = sizeof(kSyncTail);
+    const int rc = pump(sink);
+    if (rc != 0) return rc;
+    if (p_.client_no_context_takeover || inf_ended_) {
+      inflateReset(&inf_);
+      inf_ended_ = false;
+    }
+    return 0;
+  }
+
+  // RFC 7692 7.2.1: one whole message; false means send it uncompressed,
+  // and then never compress on this connection again.
+  bool compress(const char* in, size_t n, std::string& out) {
+    if (n > std::numeric_limits<uInt>::max()) return false;
+    if (def_broken_ || !deflate_ready()) return false;
+    out.clear();
+    def_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in));
+    def_.avail_in = static_cast<uInt>(n);
+    unsigned char buf[8192];
+    for (;;) {
+      def_.next_out = buf;
+      def_.avail_out = sizeof(buf);
+      const int rc = deflate(&def_, Z_SYNC_FLUSH);
+      if (rc != Z_OK && rc != Z_BUF_ERROR) {
+        def_broken_ = true;
+        return false;
+      }
+      out.append(reinterpret_cast<const char*>(buf), sizeof(buf) - def_.avail_out);
+      if (def_.avail_out != 0) break;
+    }
+    if (out.size() < sizeof(kSyncTail) ||
+        std::memcmp(out.data() + out.size() - sizeof(kSyncTail), kSyncTail,
+                    sizeof(kSyncTail)) != 0) {
+      def_broken_ = true;
+      return false;
+    }
+    out.resize(out.size() - sizeof(kSyncTail));
+    if (p_.server_no_context_takeover) deflateReset(&def_);
+    return true;
+  }
+
+ private:
+  // RFC 7692 7.1.2.1: never below 9 bits - no zlib can produce an 8-bit
+  // window, and larger than promised is always safe.
+  bool inflate_ready() {
+    if (inf_on_) return true;
+    const int bits = p_.client_max_window_bits < kMinRawWindowBits
+                         ? kMinRawWindowBits
+                         : p_.client_max_window_bits;
+    if (inflateInit2(&inf_, -bits) != Z_OK) return false;
+    inf_on_ = true;
+    return true;
+  }
+
+  // RFC 7692 7.1.2.1: raw deflate, the negotiated window, Z_BEST_SPEED.
+  bool deflate_ready() {
+    if (def_on_) return true;
+    if (deflateInit2(&def_, Z_BEST_SPEED, Z_DEFLATED,
+                     -static_cast<int>(p_.server_max_window_bits), 8,
+                     Z_DEFAULT_STRATEGY) != Z_OK) {
+      def_broken_ = true;
+      return false;
+    }
+    def_on_ = true;
+    return true;
+  }
+
+  template <class Sink>
+  // RFC 7692 7.2.2: inflate until zlib stops producing.
+  int pump(Sink& sink) {
+    unsigned char buf[8192];
+    for (;;) {
+      inf_.next_out = buf;
+      inf_.avail_out = sizeof(buf);
+      const int rc = inflate(&inf_, Z_NO_FLUSH);
+      if (rc == Z_STREAM_END) inf_ended_ = true;
+      else if (rc != Z_OK && rc != Z_BUF_ERROR) return -1;
+      const size_t got = sizeof(buf) - inf_.avail_out;
+      if (got != 0 && !sink(reinterpret_cast<const char*>(buf), got)) return -2;
+      if (inf_.avail_out != 0) return 0;
+    }
+  }
+
+  Params p_;
+  z_stream inf_{};
+  z_stream def_{};
+  bool inf_on_ = false;
+  bool def_on_ = false;
+  bool def_broken_ = false;
+  bool inf_ended_ = false;
+};
+}  // namespace wsdeflate
+
 struct WsResource {
   mrb_state* mrb = nullptr;
   struct RClass* klass = nullptr;
