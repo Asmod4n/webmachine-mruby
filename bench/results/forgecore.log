@@ -922,3 +922,80 @@ env: runnable=1/1777 busy=0% (200ms sample)
      50%  440.00us
      99%  586.00us
 Requests/sec: 883663.23
+==== 2026-08-25T22:34Z repo=328de90 mruby=44ab336 ====
+harness: wrk -t3 -c280 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=? 7.1.8-1-default x86_64
+env: runnable=2/2116 busy=1% (200ms sample)
+     50%  301.00us
+     99%  429.00us
+Requests/sec: 871830.55
+server: 99% of one core   client: 280% across 3 threads
+==== 2026-08-25T22:35Z repo=328de90 mruby=44ab336 ====
+harness: wrk -t3 -c192 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=? 7.1.8-1-default x86_64
+env: runnable=1/2124 busy=1% (200ms sample)
+     50%  209.00us
+     99%  285.00us
+Requests/sec: 864509.94
+server: 99% of one core   client: 280% across 3 threads
+==== 2026-08-25T22:35Z repo=328de90 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=? 7.1.8-1-default x86_64
+env: runnable=1/2111 busy=0% (200ms sample)
+     50%  275.00us
+     99%  423.00us
+Requests/sec: 858741.41
+server: 99% of one core   client: 280% across 3 threads
+==== 2026-08-25T22:36Z repo=328de90 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=? 7.1.8-1-default x86_64
+env: runnable=1/1401 busy=0% (200ms sample)
+     50%  280.00us
+     99%  355.00us
+Requests/sec: 870131.56
+server: 100% of one core   client: 280% across 3 threads
+==== 2026-08-26T00:34Z repo=ed1564d mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=2/1854 busy=0% (200ms sample)
+     50%  437.00us
+     99%  579.00us
+Requests/sec: 889295.50
+server: 99% of one core   client: 320% across 4 threads
+==== 2026-08-26T00:37Z repo=ed1564d mruby=44ab336 ====
+harness: wrk -t4 -c400 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1913 busy=0% (200ms sample)
+     50%  436.00us
+     99%  571.00us
+Requests/sec: 893017.14
+server: 99% of one core   client: 320% across 4 threads
+==== 2026-08-26T00:38Z repo=ed1564d mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/hello.rb WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1912 busy=0% (200ms sample)
+     50%  271.00us
+     99%  347.00us
+Requests/sec: 891722.53
+server: 100% of one core   client: 280% across 3 threads
+==== 2026-08-27T16:20Z repo=e494f38 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/hello.rb browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1317 busy=1% (200ms sample)
+     50%  264.00us
+     99%  328.00us
+Requests/sec: 914493.58
+server: 100% of one core   client: 290% across 3 threads
+==== 2026-08-27T16:21Z repo=e494f38 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/counter.rb browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/1401 busy=0% (200ms sample)
+     50%  373.00us
+     99%  418.00us
+Requests/sec: 658493.29
+server: 100% of one core   client: 220% across 3 threads
+==== 2026-08-27T16:25Z repo=c888ec0 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/hello.rb browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/981 busy=0% (200ms sample)
+     50%  268.00us
+     99%  298.00us
+Requests/sec: 909392.86
+server: 100% of one core   client: 280% across 3 threads
+==== 2026-08-27T16:25Z repo=c888ec0 mruby=44ab336 ====
+harness: wrk -t3 -c256 -d10s impl=uring transport=unix app=examples/counter.rb browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.1.8-1-default x86_64
+env: runnable=1/982 busy=0% (200ms sample)
+     50%  372.00us
+     99%  407.00us
+Requests/sec: 663118.25
+server: 100% of one core   client: 220% across 3 threads
