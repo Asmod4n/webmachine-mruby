@@ -322,8 +322,8 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   }
   sink.append(variants(status).close.bytes);
   st.carry.clear();
-  st.body_skip = 0;
-  st.body_need = 0;
+  st.content_skip = 0;
+  st.content_need = 0;
   return false;
 }
 
@@ -360,24 +360,24 @@ void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len,
 
 // RFC 9112 9.3: a file answer that carries nothing of its own - the status
 // straight out of the shared store, in this connection's spelling.
-void Http1::file_prebuilt(Conn& st, uint16_t status) {
-  const Variants& sv = variants(status);
+void Http1::file_prebuilt(Conn& st, uint16_t status_code) {
+  const Variants& sv = variants(status_code);
   st.file->head = st.file->minor >= 1 ? (st.file->persist ? sv.plain.bytes : sv.close.bytes)
                                       : (st.file->persist ? sv.keep.bytes : sv.close.bytes);
-  st.file->status = status;
-  st.file->len = 0;
+  st.file->status_code = status_code;
+  st.file->buf_filled = 0;
   st.file->stage = FileStage::kDeliver;
 }
 
 // RFC 9112 3: the head a served file wears. No prebuilt head can hold a
 // per-file Content-Length and Last-Modified, so it is spelled byte by byte -
 // spell_head's own job, with the run's field lines still in front.
-void Http1::file_spell(Conn& st, uint16_t status, size_t len, bool bodyless) {
+void Http1::file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless) {
   st.file->head.clear();
-  spell_head(st.file->head, status, date_, bodyless ? std::string() : st.file->ctype,
-             st.file->hdrs, st.file->minor, st.file->persist, bodyless, len);
-  st.file->status = status;
-  st.file->len = bodyless || st.file->head_only ? 0 : len;
+  spell_head(st.file->head, status_code, date_, bodyless ? std::string() : st.file->content_type,
+             st.file->field_lines, st.file->minor, st.file->persist, bodyless, content_length);
+  st.file->status_code = status_code;
+  st.file->buf_filled = bodyless || st.file->head_only ? 0 : content_length;
   st.file->stage = FileStage::kDeliver;
 }
 
@@ -387,7 +387,7 @@ void Http1::file_spell(Conn& st, uint16_t status, size_t len, bool bodyless) {
 const char* Http1::file_take(Conn& st) {
   if (st.file == nullptr || st.file->stage != FileStage::kNamed) return nullptr;
   st.file->stage = FileStage::kRing;
-  return st.file->path.c_str();
+  return st.file->pathname.c_str();
 }
 
 // ONE answer for every refusal: a name that was never there, a directory, a
@@ -398,16 +398,16 @@ void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 
 // The server's own fault: named in the error log, never in the answer.
 void Http1::file_error(Conn& st, const char* why) {
-  log_internal_error(elog_, st.peer, st.peer_len, st.file->target.data(), st.file->target.size(),
-                     500, why, std::strlen(why));
+  log_internal_error(elog_, st.peer, st.peer_len, st.file->request_target.data(),
+                     st.file->request_target.size(), 500, why, std::strlen(why));
   // Once a window has gone out the answer is committed: the head named a
   // Content-Length this body can no longer reach, so a 500 spelled here
   // would land BEHIND those bytes and the client would wait forever for the
   // rest. RFC 9112 6.3: the only way left to say "this is not the whole
   // representation" is to close the connection under it.
-  if (st.file->sent != 0) {
-    st.file->total = st.file->sent;
-    st.file->len = 0;
+  if (st.file->content_sent != 0) {
+    st.file->content_length = st.file->content_sent;
+    st.file->buf_filled = 0;
     st.file->persist = false;
     st.file->stage = FileStage::kDeliver;
     return;
@@ -437,10 +437,10 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
     gmtime_r(&t, &tm);
     http::date_core(lm, tm);
   }
-  st.file->hdrs.append("Last-Modified: ").append(lm, http::kDateLen).append("\r\n");
+  st.file->field_lines.append("Last-Modified: ").append(lm, http::kDateLen).append("\r\n");
 
   // RFC 9110 13.1.3 / 15.4.5: no newer than what the client already holds.
-  if (st.file->ims_valid && mtime <= st.file->ims) {
+  if (st.file->if_modified_since_valid && mtime <= st.file->if_modified_since) {
     file_spell(st, 304, 0, true);
     return false;
   }
@@ -451,8 +451,8 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
   }
   file_spell(st, 200, len, false);
   st.file->stage = FileStage::kRing;  // the head stands, the bytes are owed
-  st.file->total = len;
-  st.file->sent = 0;
+  st.file->content_length = len;
+  st.file->content_sent = 0;
   // [tune] file_map_threshold: 0 is "never map", so it is not a plain >=.
   st.file->map_wanted = map_min_ != 0 && len >= map_min_;
   // ONE meaning: what a READ may take. The mapping's length is a separate
@@ -474,11 +474,11 @@ void Http1::file_mapped(Conn& st, const char* p, size_t n) {
   // A mapping still installed here belongs to no round: nothing lent it,
   // so nothing will hand it back.
   st.map_release();
-  st.file->map = p;
-  st.file->map_len = n;
-  st.file->len = n;
-  st.file->total = n;
-  st.file->sent = 0;
+  st.file->map_addr = p;
+  st.file->map_length = n;
+  st.file->buf_filled = n;
+  st.file->content_length = n;
+  st.file->content_sent = 0;
   st.file->stage = FileStage::kDeliver;
 }
 
@@ -486,7 +486,7 @@ void Http1::file_mapped(Conn& st, const char* p, size_t n) {
 // it does was decided by file_step over a snapshot; nothing is decided here.
 void Http1::file_apply(Conn& st, const FileStep& step) {
   if (st.file == nullptr) return;
-  st.file->sent = step.sent_after;
+  st.file->content_sent = step.sent_after;
   st.file->stage = step.next;
   if (step.head) st.file->head.clear();  // the head rides the first round
   if (step.log) file_log(st);            // before file_clear takes the strings
@@ -498,10 +498,11 @@ void Http1::file_apply(Conn& st, const FileStep& step) {
 // A transfer that ends in sixteen windows is one request, not sixteen.
 void Http1::file_log(Conn& st) {
   if (!alog_.enabled || st.file == nullptr) return;
-  log_access(alog_, st.peer, st.peer_len, st.file->method.data(), st.file->method.size(),
-             st.file->target.data(), st.file->target.size(), st.file->lflags,
-             st.file->status, st.file->sent, st.file->ref.data(), st.file->ref.size(),
-             st.file->ua.data(), st.file->ua.size());
+  const Conn::FileXfer& x = *st.file;
+  log_access(alog_, st.peer, st.peer_len, x.method_token.data(), x.method_token.size(),
+             x.request_target.data(), x.request_target.size(), x.log_flags, x.status_code,
+             x.content_sent, x.referer.data(), x.referer.size(), x.user_agent.data(),
+             x.user_agent.size());
 }
 
 // A connection dying under a transfer still owes its line - that event is
@@ -515,7 +516,7 @@ void Http1::file_abandon(Conn& st) {
 
 // The bytes are in. `more` is what puts head and body on the wire.
 void Http1::file_ready_now(Conn& st, size_t n) {
-  st.file->len = n;
+  st.file->buf_filled = n;
   st.file->stage = FileStage::kDeliver;
 }
 
@@ -525,7 +526,7 @@ void Http1::file_ready_now(Conn& st, size_t n) {
 bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
   if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
   if (st.fresh) {
-    st.body_need = 0;
+    st.content_need = 0;
     const size_t seen = st.carry.size();
     size_t i = 0;
     while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
@@ -549,9 +550,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     }
     st.fresh = false;
   }
-  if (st.body_skip != 0) {
-    const size_t take = st.body_skip < len ? st.body_skip : len;
-    st.body_skip -= take;
+  if (st.content_skip != 0) {
+    const size_t take = st.content_skip < len ? st.content_skip : len;
+    st.content_skip -= take;
     data += take;
     len -= take;
     if (len == 0) return true;
@@ -560,20 +561,20 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
   // RFC 9110 6.4: a bound route's head waits in the carry until the whole
   // body is here - the run READS the body, so it cannot answer before the
   // last byte. Nothing is parsed again until body_need is paid off.
-  if (WM_H1_UNLIKELY(st.body_need != 0)) {
-    if (len < st.body_need) {
-      st.body_need -= len;
+  if (WM_H1_UNLIKELY(st.content_need != 0)) {
+    if (len < st.content_need) {
+      st.content_need -= len;
       st.carry.append(data, len);
       return true;
     }
-    st.body_need = 0;
+    st.content_need = 0;
   }
 
-  if (WM_H1_UNLIKELY(st.xfer != nullptr)) {
+  if (WM_H1_UNLIKELY(st.asset != nullptr)) {
     if (WM_H1_UNLIKELY(st.carry.size() + len > kMaxHead)) {
       st.carry.clear();
-      st.body_skip = 0;
-      st.xfer = nullptr;
+      st.content_skip = 0;
+      st.asset = nullptr;
       return false;
     }
     st.carry.append(data, len);
@@ -772,9 +773,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           if (step.copy_content) {
             Assets::copy_wire(*ae, step.first_byte_pos, step.content_length, sink);
           } else {
-            st.xfer = ae;
-            st.xfer_off = step.first_byte_pos;
-            st.xfer_end = step.first_byte_pos + step.content_length;
+            st.asset = ae;
+            st.asset_off = step.first_byte_pos;
+            st.asset_end = step.first_byte_pos + step.content_length;
             started_xfer = true;
           }
         }
@@ -788,11 +789,11 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           const size_t avail = viewlen - off;
           const size_t skip = content_length < avail ? content_length : avail;
           off += skip;
-          st.body_skip = content_length - skip;
+          st.content_skip = content_length - skip;
         }
         if (!persist) {
           st.carry.clear();
-          st.body_skip = 0;
+          st.content_skip = 0;
           return false;
         }
         if (started_xfer) {
@@ -800,25 +801,25 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
           if (plan != nullptr) {
-            const size_t room = plan->byte_cap == 0 ? st.xfer_end - st.xfer_off
+            const size_t room = plan->byte_cap == 0 ? st.asset_end - st.asset_off
                                 : plan->byte_cap > sink.size() ? plan->byte_cap - sink.size()
                                                                : 0;
-            size_t take = st.xfer_end - st.xfer_off;
+            size_t take = st.asset_end - st.asset_off;
             if (take > room) take = room;
             if (take > 0) {
               claim_sink(st, sink, *plan);
               struct iovec iv[3];
-              const unsigned k = Assets::wire_iov(*st.xfer, st.xfer_off, take, iv);
+              const unsigned k = Assets::wire_iov(*st.asset, st.asset_off, take, iv);
               for (unsigned i = 0; i < k; i++) {
                 plan->iov[plan->iovlen++] =
                     Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
               }
               plan->byte_total += take;
-              st.xfer_off += take;
-              if (st.xfer_off == st.xfer_end) {
-                st.xfer = nullptr;
-                st.xfer_off = 0;
-                st.xfer_end = 0;
+              st.asset_off += take;
+              if (st.asset_off == st.asset_end) {
+                st.asset = nullptr;
+                st.asset_off = 0;
+                st.asset_end = 0;
               }
             }
           }
@@ -850,7 +851,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       if (b->bound) {
         const size_t head_len = static_cast<size_t>(ret);
         if (content_length != 0 && viewlen - off - head_len < content_length) {
-          st.body_need = content_length - (viewlen - off - head_len);
+          st.content_need = content_length - (viewlen - off - head_len);
           const size_t rest = viewlen - off;
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
@@ -878,14 +879,14 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         // bytes anyway: HEAD sends none, gzip copies them, one connection
         // holds one lend, and an external segment fits through a plan only.
         const bool gz_now = accept_gzip && b->gzip_ok && st.packetized;
-        const size_t zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_have && !head_only &&
+        const size_t zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_lent && !head_only &&
                                !gz_now)
                                   ? zc_min_
                                   : 0;
         status = resource_run(*b->res, facts, &vals, &rv, &body_, &have_body, &rhdrs_, zc_min);
-        if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc, &lent, &lent_len))) {
+        if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc_value, &lent, &lent_len))) {
           st.zc_mrb = b->res->mrb;
-          st.zc_have = true;
+          st.zc_lent = true;
         }
         // response.file: the run named a file instead of spelling a body,
         // and opening one is disk work that does not belong in a reactor
@@ -907,20 +908,21 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             // drain.
             st.zc_release();
             if (st.file == nullptr) st.file = new Conn::FileXfer();
-            st.file->path.assign(fp, fpn);
-            st.file->hdrs = rhdrs_;
-            st.file->ctype = !b->res->run_ctype.empty() ? http::with_charset(b->res->run_ctype)
-                                                        : b->konst.content_type;
+            st.file->pathname.assign(fp, fpn);
+            st.file->field_lines = rhdrs_;
+            st.file->content_type = !b->res->run_ctype.empty()
+                                        ? http::with_charset(b->res->run_ctype)
+                                        : b->konst.content_type;
             st.file->minor = minor;
             st.file->persist = persist;
             st.file->head_only = head_only;
-            st.file->ims_valid = facts.has_if_modified_since && facts.ims_valid;
-            st.file->ims = vals.ims_epoch;
-            st.file->lflags = lflags;
-            st.file->method.assign(method, method_len);
-            st.file->target.assign(path, path_len);
-            st.file->ref.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
-            st.file->ua.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
+            st.file->if_modified_since_valid = facts.has_if_modified_since && facts.ims_valid;
+            st.file->if_modified_since = vals.ims_epoch;
+            st.file->log_flags = lflags;
+            st.file->method_token.assign(method, method_len);
+            st.file->request_target.assign(path, path_len);
+            st.file->referer.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
+            st.file->user_agent.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
             st.file->stage = FileStage::kNamed;
             if (fbad) file_reject(st);
             off += static_cast<size_t>(ret);
@@ -928,7 +930,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
               const size_t avail = viewlen - off;
               const size_t skip = content_length < avail ? content_length : avail;
               off += skip;
-              st.body_skip = content_length - skip;
+              st.content_skip = content_length - skip;
             }
             // The answer is still owed, so this returns TRUE even when the
             // connection ends after it - `more` closes it once the bytes are
@@ -936,7 +938,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             const size_t rest = viewlen - off;
             if (!persist) {
               st.carry.clear();
-              st.body_skip = 0;
+              st.content_skip = 0;
             } else if (in_place) {
               st.carry.assign(view + off, rest);
             } else {
@@ -1038,11 +1040,11 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       const size_t avail = viewlen - off;
       const size_t skip = content_length < avail ? content_length : avail;
       off += skip;
-      st.body_skip = content_length - skip;
+      st.content_skip = content_length - skip;
     }
     if (!persist) {
       st.carry.clear();
-      st.body_skip = 0;
+      st.content_skip = 0;
       return false;
     }
   }
@@ -1101,7 +1103,7 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   ws_open(wsc, dparams);
   st.ws = wsc;
   st.carry.clear();
-  st.body_skip = 0;
+  st.content_skip = 0;
   if (rest_len != 0) return ws_feed(st.ws, rest, rest_len, sink);
   return true;
 }
@@ -1162,7 +1164,7 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
       "Transfer-Encoding: chunked\r\n\r\n");
   st.sse = s;
   st.carry.clear();
-  st.body_skip = 0;
+  st.content_skip = 0;
   return true;
 }
 }

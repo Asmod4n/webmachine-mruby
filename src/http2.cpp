@@ -1059,7 +1059,7 @@ bool Http1::pending(const Conn& st) const {
   // only has bookkeeping left. Counting it here cost 60 us per request -
   // MSG_MORE corked the final send, and on_send took the arm_meminfo
   // detour (an io-wq round trip) in front of a round that sends nothing.
-  return st.xfer != nullptr ||
+  return st.asset != nullptr ||
          (st.file != nullptr && st.file->stage != FileStage::kNone &&
           st.file->stage != FileStage::kDone);
 }
@@ -1082,9 +1082,9 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     const FileStep step = file_step(*st.file, send_chunk_);
     if (step.head) sink.append(st.file->head);
     if (step.src != FileStep::Src::kNone) {
-      const char* base = step.src == FileStep::Src::kMapping ? st.file->map
+      const char* base = step.src == FileStep::Src::kMapping ? st.file->map_addr
                                                              : st.file->buf.data();
-      lend_body(st, sink, base + step.start, step.body_len, plan);
+      lend_body(st, sink, base + step.start, step.give, plan);
     }
     file_apply(st, step);
     // Still owed: this round is spent.
@@ -1105,23 +1105,23 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     h2_flush_pending(st, sink, &plan);
     return true;
   }
-  if (st.xfer != nullptr) {
-    const AssetEntry& e = *st.xfer;
-    const size_t lim = st.xfer_end;
-    size_t take = lim - st.xfer_off;
+  if (st.asset != nullptr) {
+    const AssetEntry& e = *st.asset;
+    const size_t lim = st.asset_end;
+    size_t take = lim - st.asset_off;
     if (plan.byte_cap != 0 && take > plan.byte_cap) take = plan.byte_cap;
     struct iovec iv[3];
-    const unsigned k = Assets::wire_iov(e, st.xfer_off, take, iv);
+    const unsigned k = Assets::wire_iov(e, st.asset_off, take, iv);
     for (unsigned i = 0; i < k; i++) {
       plan.iov[plan.iovlen++] =
           Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
     }
     plan.byte_total = take;
-    st.xfer_off += take;
-    if (st.xfer_off == lim) {
-      st.xfer = nullptr;
-      st.xfer_off = 0;
-      st.xfer_end = 0;
+    st.asset_off += take;
+    if (st.asset_off == lim) {
+      st.asset = nullptr;
+      st.asset_off = 0;
+      st.asset_end = 0;
     }
     return true;
   }

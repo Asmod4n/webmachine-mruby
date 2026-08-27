@@ -2679,21 +2679,26 @@ enum class FileStage : uint8_t { kNone, kNamed, kRing, kDeliver, kDone };
 // snapshot and by nothing else; applied by file_apply() and by nothing
 // else. A POD returned in registers - purity here is about the DECISION,
 // never about the bytes, which stay exactly where they are.
+// NO RFC - a round of delivery is this server's decision, not HTTP's. The
+// quantities it decides about are HTTP's, and it shares three names with
+// its h2 twin H2SendStep ON PURPOSE: start, give and the fact that a round
+// is measured in bytes offered, not bytes owned.
 struct FileStep {
   // The source is NAMED, not pointed at - the same shape H2SendStep uses,
   // and for the same reason: a round is a decision about which bytes, and
   // an address is an answer to a different question.
   enum class Src : uint8_t { kNone, kWindow, kMapping };
   Src src = Src::kNone;
-  size_t start = 0;  // first byte of the body this round lends
-  size_t body_len = 0;
-  size_t sent_after = 0;
+  size_t start = 0;       // RFC 9110 6.4: first byte of the content this
+                          // round lends
+  size_t give = 0;        // how many - the same word H2SendStep uses
+  size_t sent_after = 0;  // RFC 9110 8.6: content_sent once it lands
   FileStage next = FileStage::kNone;
-  bool head = false;         // the head rides the first round only
-  bool release_map = false;  // the mapping is off the wire and may go back
+  bool head = false;         // RFC 9112 2.1: rides the first round only
+  bool release_map = false;  // munmap: off the wire, may go back
   bool log = false;          // the ONE access line of this transfer
   bool clear = false;        // the transfer is over
-  bool persist = true;
+  bool persist = true;       // RFC 9112 9.3
 };
 
 inline constexpr size_t kResponseFileWindow = 256u * 1024;
@@ -2753,31 +2758,39 @@ class Http1 {
   // padding in 176, which is a cache line every five connections spent
   // on nothing. Widest first, the single-byte members last and together.
   struct Conn {
+    // No RFC: octets received and not yet parsed. The name is this
+    // server's; RFC 9112 2 has no word for a parser's leftover.
     std::string carry;
-    size_t body_skip = 0;
+    size_t content_skip = 0;
     // RFC 9110 6.4: what a bound route's request body still owes -
     // the bytes themselves collect in `carry` behind the head, which
     // keeps the hand-off zero-copy. A konst route keeps skipping.
-    size_t body_need = 0;
-    size_t xfer_off = 0;
-    size_t xfer_end = 0;
+    size_t content_need = 0;
+    // No RFC: a half-open span into the WIRE body of an asset (see
+    // Assets::wire_iov), not into the file - a gzip member's octets are
+    // not the stored ones.
+    size_t asset_off = 0;
+    size_t asset_end = 0;
     // A lent body splits the sink, so the segments around it carry offsets
     // the plan has to claim explicitly: `zc_covered` is how far it got.
     size_t zc_covered = 0;
     H2State* h2 = nullptr;
-    const AssetEntry* xfer = nullptr;
+    const AssetEntry* asset = nullptr;
     WsConn* ws = nullptr;
     SseStream* sse = nullptr;
     const void* peer = nullptr;
-    // A dynamic body this connection was LENT: frozen and rooted from the
-    // handler's return until the round it belongs to has fully drained.
+    // NO RFC and NOT the kernel's: "zc" here is the [tune] knob's word,
+    // zero_copy_threshold, and it means LENT INSTEAD OF COPIED - a dynamic
+    // body frozen and rooted from the handler's return until the round it
+    // belongs to has drained. It is NOT IORING_OP_SEND_ZC; this tree does
+    // not use that opcode anywhere.
     mrb_state* zc_mrb = nullptr;
-    mrb_value zc = {};
+    mrb_value zc_value = {};
     uint8_t listener = 0;
-    uint8_t peer_len = 0;
+    uint8_t peer_len = 0;   // no RFC: the socket's address, already spelled
     bool fresh = true;
     bool packetized = false;
-    bool zc_have = false;
+    bool zc_lent = false;   // a lend is outstanding right now
     bool zc_split = false;
     // response.file: the answer a run DEFERRED to the reactor. `want` = the
     // open is owed, `busy` = the ring is on it, `ready` = the head is
@@ -2791,39 +2804,45 @@ class Http1 {
     // use and kept for the life of the connection (not freed per request)
     // so a connection that repeatedly serves files doesn't thrash malloc;
     // `reset()` and `~Conn()` are the only places that delete it.
+    // THREE sources meet in one struct, and the names say which is which.
+    // The kernel's, by rule: pathname/buf/map_addr/map_length are the
+    // ARGUMENTS they become (openat, io_uring_prep_read, munmap). HTTP's:
+    // head, content_type, field_lines, content_length, content_sent,
+    // status_code, if_modified_since, head_only, persist, minor. And the
+    // access line's copies - the request they describe is gone by the time
+    // the ring answers, so they are taken while it still exists.
     struct FileXfer {
-      std::string path;
-      std::string head;
-      std::string ctype;
-      std::string hdrs;
-      std::string buf;
-      // The access line is owed whatever else happens, and the request it
-      // describes is gone by the time the ring answers - so it is copied.
-      std::string method;
-      std::string target;
-      std::string ref;
-      std::string ua;
-      size_t len = 0;
-      // total is the whole file (what Content-Length promised), sent what
-      // has already gone out. total != sent is the only thing that keeps a
-      // file alive across rounds.
-      size_t total = 0;
-      size_t sent = 0;
+      std::string pathname;      // openat(dirfd, pathname, flags)
+      std::string head;          // RFC 9112 2.1: status-line + fields
+      std::string content_type;  // RFC 9110 8.3
+      std::string field_lines;   // RFC 9112 5: what the run added
+      std::string buf;           // io_uring_prep_read(sqe, fd, buf, ...)
+      std::string method_token;   // RFC 9110 9.1
+      std::string request_target;  // RFC 9112 3.2
+      std::string referer;         // RFC 9110 10.1.3
+      std::string user_agent;      // RFC 9110 10.1.5
+      size_t buf_filled = 0;  // how much of buf the read put there
+      // RFC 9110 8.6: content_length is what Content-Length promised,
+      // content_sent what has already gone out. The two being unequal is
+      // the only thing that keeps a file alive across rounds.
+      size_t content_length = 0;
+      size_t content_sent = 0;
       // A mapped file: lent whole, in chunks no bigger than one send can
       // move. Like buf it deliberately survives file_clear() - the SQE
       // still points into it - and it goes back on the kDone round, which
       // is by construction the round AFTER the last lend.
-      const char* map = nullptr;
-      size_t map_len = 0;
-      bool map_wanted = false;
-      int64_t ims = 0;
-      uint16_t status = 0;
-      uint8_t lflags = 0;
+      const char* map_addr = nullptr;  // munmap(addr, length)
+      size_t map_length = 0;
+      bool map_wanted = false;         // no RFC: above file_map_threshold
+      int64_t if_modified_since = 0;   // RFC 9110 13.1.3
+      uint16_t status_code = 0;        // RFC 9110 15
+      uint8_t log_flags = 0;           // LogRec::flags, see kLogH2
       FileStage stage = FileStage::kNone;
-      bool persist = true;
-      bool head_only = false;
-      bool ims_valid = false;
-      int minor = 1;
+      bool persist = true;             // RFC 9112 9.3
+      bool head_only = false;          // RFC 9110 9.3.2
+      bool if_modified_since_valid = false;
+      int minor = 1;                   // RFC 9112 2.3: HTTP-version's
+                                       // second DIGIT
     };
     FileXfer* file = nullptr;
     // Nothing is owed and nothing is held: the state a fresh connection and
@@ -2832,31 +2851,32 @@ class Http1 {
     void file_clear() {
       if (file == nullptr) return;
       file->stage = FileStage::kNone;
-      file->len = 0;
+      file->buf_filled = 0;
       // The counters end with the transfer they counted. Leaving them for
-      // the next request is how a stale `total` gets read as this one's.
-      file->total = 0;
-      file->sent = 0;
+      // the next request is how a stale content_length gets read as this
+      // one's.
+      file->content_length = 0;
+      file->content_sent = 0;
       file->map_wanted = false;
-      file->status = 0;
-      file->lflags = 0;
-      file->path.clear();
+      file->status_code = 0;
+      file->log_flags = 0;
+      file->pathname.clear();
       file->head.clear();
-      file->ctype.clear();
-      file->hdrs.clear();
-      file->method.clear();
-      file->target.clear();
-      file->ref.clear();
-      file->ua.clear();
+      file->content_type.clear();
+      file->field_lines.clear();
+      file->method_token.clear();
+      file->request_target.clear();
+      file->referer.clear();
+      file->user_agent.clear();
     }
     // The address space goes back. Called from zc_release once the round
     // that borrowed the mapping has drained, and unconditionally when the
     // connection itself ends - a mapping nobody borrowed still has to go.
     void map_release() {
-      if (file == nullptr || file->map == nullptr) return;
-      ::munmap(const_cast<char*>(file->map), file->map_len);
-      file->map = nullptr;
-      file->map_len = 0;
+      if (file == nullptr || file->map_addr == nullptr) return;
+      ::munmap(const_cast<char*>(file->map_addr), file->map_length);
+      file->map_addr = nullptr;
+      file->map_length = 0;
     }
     // The ONE end of the lend window - drained round, closed connection,
     // dead reactor. Never conditional on the round having succeeded.
@@ -2870,9 +2890,9 @@ class Http1 {
       if (h2 != nullptr) h2->content_drain();
       zc_covered = 0;
       zc_split = false;
-      if (!zc_have) return;
-      zc_have = false;
-      resource_body_unlend(zc_mrb, zc);
+      if (!zc_lent) return;
+      zc_lent = false;
+      resource_body_unlend(zc_mrb, zc_value);
       zc_mrb = nullptr;
     }
     // The Ring resets this; `li` is the App's key to "whose connection is
@@ -2884,8 +2904,8 @@ class Http1 {
       file = nullptr;
       peer_len = 0;
       carry.clear();
-      body_skip = 0;
-      body_need = 0;
+      content_skip = 0;
+      content_need = 0;
       listener = li;
       packetized = pkt;
       fresh = true;
@@ -2895,9 +2915,9 @@ class Http1 {
       ws = nullptr;
       sse_free(sse);
       sse = nullptr;
-      xfer = nullptr;
-      xfer_off = 0;
-      xfer_end = 0;
+      asset = nullptr;
+      asset_off = 0;
+      asset_end = 0;
     }
     // The websocket, the stream, the h2 state and a response.file transfer
     // die with the connection.
@@ -2988,7 +3008,7 @@ class Http1 {
   // answer - the split that made the read path ask "map?" and then use the
   // map's length to read with.
   static size_t file_map_len(const Conn& st) {
-    return (st.file != nullptr && st.file->map_wanted) ? st.file->total : 0;
+    return (st.file != nullptr && st.file->map_wanted) ? st.file->content_length : 0;
   }
   // Which shape a resource's answer takes. The five were four `if`s that
   // each decided AND wrote, with `answered` as a shadow flag set in three
@@ -3135,27 +3155,28 @@ class Http1 {
   static FileStep file_step(const Conn::FileXfer& x, size_t chunk) {
     FileStep s;
     s.persist = x.persist;
-    s.sent_after = x.sent;
+    s.sent_after = x.content_sent;
     s.next = x.stage;
     switch (x.stage) {
       case FileStage::kDeliver: {
-        const bool mapped = x.map != nullptr;
-        const size_t left = x.total > x.sent ? x.total - x.sent : 0;
+        const bool mapped = x.map_addr != nullptr;
+        const size_t left =
+            x.content_length > x.content_sent ? x.content_length - x.content_sent : 0;
         // A mapping lends a bounded chunk of itself; a window lends exactly
         // what the read put in it.
-        const size_t take = mapped ? (left < chunk ? left : chunk) : x.len;
+        const size_t take = mapped ? (left < chunk ? left : chunk) : x.buf_filled;
         s.head = !x.head.empty();
         if (take != 0) {
           s.src = mapped ? FileStep::Src::kMapping : FileStep::Src::kWindow;
           // A mapping is walked from where the transfer stands; the window
           // buffer holds only this round's bytes and starts at zero.
-          s.start = mapped ? x.sent : 0;
+          s.start = mapped ? x.content_sent : 0;
         }
-        s.body_len = take;
-        s.sent_after = x.sent + take;
+        s.give = take;
+        s.sent_after = x.content_sent + take;
         // A window is refilled by the ring, so the next round waits on it.
         // A mapping has no read coming to wake it and drives itself.
-        s.next = s.sent_after < x.total
+        s.next = s.sent_after < x.content_length
                      ? (mapped ? FileStage::kDeliver : FileStage::kRing)
                      : FileStage::kDone;
         break;
@@ -3164,7 +3185,7 @@ class Http1 {
         // The last lend has DRAINED - that is what kDone means and the only
         // way to reach it. So this is where the mapping goes back and where
         // the transfer's one access line is owed.
-        s.release_map = x.map != nullptr;
+        s.release_map = x.map_addr != nullptr;
         s.log = true;
         s.clear = true;
         s.next = FileStage::kNone;
@@ -3262,8 +3283,8 @@ class Http1 {
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
   // segment. `prebuilt` takes the status straight out of the shared store.
-  void file_spell(Conn& st, uint16_t status, size_t len, bool bodyless);
-  void file_prebuilt(Conn& st, uint16_t status);
+  void file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless);
+  void file_prebuilt(Conn& st, uint16_t status_code);
   bool ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path, size_t path_len,
                   const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
                   size_t nhdr, const char* rest, size_t rest_len, std::string& sink);
