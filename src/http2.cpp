@@ -101,24 +101,6 @@ const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqVi
   return &out;
 }
 
-// RFC 7541: lane 2 - one per-request field through ls-hpack's encoder.
-bool Http1::h2_enc_field(void* encp, unsigned char*& ep, unsigned char* eend,
-                         const char* name, size_t nlen, const char* val, size_t vlen) {
-  struct lshpack_enc* enc = static_cast<struct lshpack_enc*>(encp);
-  char hbuf[512];
-  if (nlen + 2 + vlen > sizeof(hbuf)) return false;
-  std::memcpy(hbuf, name, nlen);
-  hbuf[nlen] = ':';
-  hbuf[nlen + 1] = ' ';
-  std::memcpy(hbuf + nlen + 2, val, vlen);
-  lsxpack_header_t xh;
-  lsxpack_header_set_offset2(&xh, hbuf, 0, nlen, nlen + 2, vlen);
-  unsigned char* np = lshpack_enc_encode(enc, ep, eend, &xh);
-  if (np == ep) return false;
-  ep = np;
-  return true;
-}
-
 // RFC 7541 6.1/6.2.2: lane 1 - a precomputed block of what never changes.
 void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                            const std::string* allow) {

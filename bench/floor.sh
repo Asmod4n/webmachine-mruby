@@ -54,17 +54,41 @@ fi
 # the server, so a shared misunderstanding would not show up in its
 # numbers. Never report a load number without a wrk number beside it.
 CLIENT="${CLIENT:-wrk}"
+# PROTO=h1 (default) | h2. Only CLIENT=load speaks h2 - wrk is h1 only,
+# and bench/h2.sh keeps h2load as the independent oracle for it.
+PROTO="${PROTO:-h1}"
+STREAMS="${STREAMS:-1}"
 LOADBIN=bench/load/load
 if [ "$CLIENT" = load ]; then
   URING_INC_L=mruby/build/repos/host/mruby-io_uring/include
   PHR_DIR=mruby/build/repos/host/mruby-phr/deps/picohttpparser
   LIBURING_L=mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a
-  if [ ! -x "$LOADBIN" ] || [ bench/load/load.cpp -nt "$LOADBIN" ]; then
+  # The h2 half is built out of src/h2_wire.hpp, so it needs the SERVER's
+  # HPACK too. Linked as the objects rake already built, not compiled
+  # again: same ls-hpack, same flags, no second copy to drift.
+  HPACK_L=mruby/build/host/mrbgems/webmachine-mruby/deps/ls-hpack
+  for o in "$HPACK_L/lshpack.o" "$HPACK_L/deps/xxhash/xxhash.o" "$LIBURING_L"; do
+    [ -f "$o" ] || { echo "$o missing - run: rake compile" >&2; exit 1; }
+  done
+  if [ ! -x "$LOADBIN" ] || [ bench/load/load.cpp -nt "$LOADBIN" ] \
+     || [ src/h2_wire.hpp -nt "$LOADBIN" ]; then
     g++ -O3 -march=native -std=c++20 -I"$URING_INC_L" -I"$PHR_DIR" \
-      bench/load/load.cpp "$PHR_DIR/picohttpparser.c" "$LIBURING_L" -o "$LOADBIN" || exit 1
+      -Isrc -Ideps/ls-hpack -Ideps/ls-hpack/deps/xxhash \
+      bench/load/load.cpp "$PHR_DIR/picohttpparser.c" \
+      "$HPACK_L/lshpack.o" "$HPACK_L/deps/xxhash/xxhash.o" "$LIBURING_L" \
+      -o "$LOADBIN" || exit 1
   fi
 elif [ "$CLIENT" != wrk ]; then
   echo "CLIENT must be wrk or load" >&2
+  exit 2
+fi
+case "$PROTO" in
+  h1) ;;
+  h2) [ "$CLIENT" = load ] || { echo "PROTO=h2 needs CLIENT=load - wrk speaks h1 only" >&2; exit 2; } ;;
+  *) echo "PROTO must be h1 or h2" >&2; exit 2 ;;
+esac
+if [ "$PROTO" = h1 ] && [ "$STREAMS" != 1 ]; then
+  echo "STREAMS needs PROTO=h2 - h1 has one request in flight" >&2
   exit 2
 fi
 
@@ -231,9 +255,11 @@ OUT=$(mktemp)
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
   if [ "$CLIENT" = load ]; then
-    CLI_LINE="load -c$CONNS -d${DURATION}s (one ring, one thread)"
+    CLI_LINE="load -c$CONNS -d${DURATION}s $PROTO"
+    [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
+    CLI_LINE="$CLI_LINE (one ring, one thread)"
   else
-    CLI_LINE="wrk -t1 -c$CONNS -d${DURATION}s"
+    CLI_LINE="wrk -t1 -c$CONNS -d${DURATION}s h1"
   fi
   echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
@@ -258,12 +284,14 @@ OUT=$(mktemp)
   C0=$(parse_child_cpu)
   if [ "$CLIENT" = load ]; then
     # One ring, one thread - the same shape as the reactor it drives.
+    LOAD_PROTO=()
+    [ "$PROTO" = h2 ] && LOAD_PROTO=(--h2 --streams "$STREAMS")
     if [ "$TRANSPORT" = unix ]; then
       "$LOADBIN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-        >"$WORK/cli.out" 2>&1 &
+        "${LOAD_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     else
       "$LOADBIN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-        --seconds "$DURATION" >"$WORK/cli.out" 2>&1 &
+        --seconds "$DURATION" "${LOAD_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     fi
   elif [ "$TRANSPORT" = unix ]; then
     "$WRK" --unix "$SOCK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
@@ -307,6 +335,10 @@ OUT=$(mktemp)
 CLIENT_BOUND=$(cat "$WORK/client_bound" 2>/dev/null || echo 0)
 if [ "$CLIENT_BOUND" = 1 ]; then
   echo "run was client-bound - NOT recorded in $RESULTS" >&2
+elif grep -q "^responses=" "$OUT" && grep -q "bad=[1-9]" "$OUT"; then
+  # bad counts refused streams, non-2xx answers and HPACK desync. A run
+  # that hit any of those measured a server in trouble, not its floor.
+  echo "run had errors (bad != 0) - NOT recorded in $RESULTS" >&2
 elif { grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; } ||
      { grep -q "^responses=" "$OUT" && ! grep -q "rps=0 " "$OUT"; }; then
   cat "$OUT" >> "$RESULTS"
