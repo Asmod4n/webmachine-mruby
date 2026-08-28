@@ -1786,8 +1786,16 @@ struct Resource {
   // means the writer spells THIS Content-Type in a dynamic head
   // instead of using the baked prefix. Empty = prebuilt path,
   // byte-identical to today.
+  //
+  // There is no second flag saying "the head went dynamic", because there
+  // is nothing a flag could say that these two buffers do not: a run needs
+  // its own head exactly when it negotiated a Content-Type (this) or
+  // produced a field line (run_headers). It used to be a bool as well, set
+  // at eight places, and BOTH writers had to OR it with run_headers being
+  // non-empty - which is the proof that it never carried the second half
+  // by itself. One of the eight places forgot to set it, and nothing
+  // broke, for the same reason.
   mutable std::string run_content_type;
-  mutable bool run_head_dynamic = false;
   // n11: create_path's override of request.disp_path.
   mutable std::string run_disp_path;
   mutable bool run_disp_set = false;

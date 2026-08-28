@@ -519,7 +519,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       hdrs.append(res.konst.allow);
     }
     hdrs.append("\r\n", 2);
-    res.run_head_dynamic = true;
   };
 
   const bool ct_dyn = res.cb_content_types_provided.has;
@@ -593,7 +592,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     http::date_core(buf, tmv);
     hdrs.append(buf, http::kDateLen);
     hdrs.append("\r\n", 2);
-    res.run_head_dynamic = true;
   };
 
   // helpers.rb add_caching_headers: ETag, Expires, Last-Modified.
@@ -604,7 +602,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       hdrs.append("ETag: ", 6);
       hdrs.append(res.etag_value);
       hdrs.append("\r\n", 2);
-      res.run_head_dynamic = true;
     }
     epoch_memo(res.cb_expires, &res.expires_asked, &res.expires_present, &res.expires_epoch);
     if (res.expires_present) date_line("Expires: ", 9, res.expires_epoch);
@@ -773,7 +770,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         hdrs.append("Location: ", 10);
         hdrs.append(uri);
         hdrs.append("\r\n", 2);
-        res.run_head_dynamic = true;
       }
       const int h = accept_helper();
       if (h >= 0) return h;
@@ -905,7 +901,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         } else {
           allow_line();
         }
-        res.run_head_dynamic = true;
         status = 200;
         halted = true;
         continue;
@@ -919,7 +914,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           chosen = 0;
           if (ct_dyn) {
             res.run_content_type = active_ct()[0].type;
-            res.run_head_dynamic = true;
           }
           n = Node::kD4;
           continue;
@@ -946,7 +940,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         chosen = idx;
         if (idx != 0 || ct_dyn) {
           res.run_content_type = cts[static_cast<size_t>(idx)].type;
-          res.run_head_dynamic = true;
         }
         n = Node::kD4;
         continue;
@@ -980,7 +973,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             first = false;
           }
           hdrs.append("\r\n", 2);
-          res.run_head_dynamic = true;
         }
         break;
       }
@@ -1033,7 +1025,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           hdrs.append("Location: ", 10);
           hdrs.append(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
           hdrs.append("\r\n", 2);
-          res.run_head_dynamic = true;
           status = n == Node::kL5 ? 307 : 301;
           halted = true;
           continue;
@@ -1493,7 +1484,6 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.run_resp_code = 0;
   res.run_redirect = false;
   res.run_content_type.clear();
-  res.run_head_dynamic = false;
   res.run_disp_path.clear();
   res.run_disp_set = false;
   res.run_have_file = false;

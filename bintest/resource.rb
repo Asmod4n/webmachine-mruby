@@ -422,3 +422,37 @@ assert('resource: the instance is the REQUEST\'s - ivars never cross, always car
     end
   end
 end
+
+# RFC 9110 8.3 / 12.5.1: an INSTANCE-level content_types_provided is a value
+# the fold cannot know, so the prebuilt head cannot carry its Content-Type
+# and the run has to spell its own head. With ONE pair and no Accept there
+# is no Vary and no other field line either, so the run's field buffer stays
+# empty - which makes this the only case where the negotiated type is the
+# whole reason the head goes dynamic. Nothing pinned it before, and dropping
+# that half of the writers' condition passed the entire suite.
+WM_INSTANCE_CT = <<~RUBY_SRC unless defined?(WM_INSTANCE_CT)
+  class OneType < Webmachine::Resource
+    def content_types_provided
+      [['application/vnd.webmachine.test+json', :to_json]]
+    end
+
+    def to_json
+      '{"one":true}'
+    end
+  end
+RUBY_SRC
+
+assert('resource: an instance-level content_types_provided types the answer') do
+  resource_server(wm_app('OneType', WM_INSTANCE_CT)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      # http::with_charset spells charset only for text/*; a +json type
+      # carries no parameter, which is what RFC 9110 8.3 wants here.
+      assert_true head.match?(%r{^Content-Type: application/vnd\.webmachine\.test\+json\r$}i), head
+      assert_false head.match?(/^Vary:/i), "one provided type must not vary: #{head}"
+      assert_equal '{"one":true}', body
+    end
+  end
+end

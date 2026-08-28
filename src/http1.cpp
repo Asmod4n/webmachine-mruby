@@ -950,7 +950,8 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         }
         // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
         // this run spells its own. 500 stays on the exception path below.
-        if (WM_H1_UNLIKELY((b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500)) {
+        if (WM_H1_UNLIKELY((!b->res->run_content_type.empty() || !rhdrs_.empty()) &&
+                           status != 500)) {
           const bool bodyless = status == 204 || status == 304;
           if (bodyless || !have_body) {
             body_.clear();

@@ -664,7 +664,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
           status = 500;
         }
       }
-      dynamic = (b->res->run_head_dynamic || !rhdrs_.empty()) && status != 500;
+      dynamic = (!b->res->run_content_type.empty() || !rhdrs_.empty()) && status != 500;
     } else {
       status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                            b->konst.shortcut[static_cast<size_t>(facts.method)]);
