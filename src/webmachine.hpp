@@ -1841,7 +1841,14 @@ struct Resource {
   mutable int64_t expires_epoch = 0;
   // Marshalled once per run where the app answered dynamically;
   // capacity survives across requests.
+  // The dynamic content_types_provided, marshalled from the app's Array.
+  // It SURVIVES the run on purpose: the handler's method is resolved here,
+  // and re-resolving it per request is a method search per request on the
+  // path that renders every body. marshal_ct compares the app's fresh
+  // answer against this and only rebuilds when it actually differs - which
+  // for every resource that answers the same list each time is never.
   mutable std::vector<TypedHandler> run_content_types_provided;
+  mutable bool run_content_types_marshalled = false;
   mutable std::vector<std::string> run_methods;
   mutable std::vector<std::string> run_variances;
 };

@@ -584,13 +584,34 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   const bool ct_dyn = res.cb_content_types_provided.has;
   // cb.rb content_types_provided: the dynamic answer, marshalled once.
   const auto marshal_ct = [&]() {
-    if (!ct_dyn || !res.run_content_types_provided.empty()) return;
+    if (!ct_dyn || res.run_content_types_marshalled) return;
+    res.run_content_types_marshalled = true;
     const mrb_value v = cbv(res.cb_content_types_provided);
     if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
       mrb_raise(mrb, E_WM_ERROR(mrb),
                 "content_types_provided must answer [[type, handler]] pairs");
     }
-    for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
+    const mrb_int n = RARRAY_LEN(v);
+    // The app answered what it answered last time: the vector already holds
+    // it, resolutions included, and nothing has to be rebuilt or searched
+    // for. A pair that is not [String, Symbol] simply fails to match and
+    // falls into the rebuild below, which names the refusal.
+    std::vector<Resource::TypedHandler>& cur = res.run_content_types_provided;
+    bool same = cur.size() == static_cast<size_t>(n);
+    for (mrb_int j = 0; same && j < n; j++) {
+      const mrb_value pair = RARRAY_PTR(v)[j];
+      same = mrb_array_p(pair) && RARRAY_LEN(pair) >= 2 && mrb_string_p(RARRAY_PTR(pair)[0]) &&
+             mrb_symbol_p(RARRAY_PTR(pair)[1]) &&
+             mrb_symbol(RARRAY_PTR(pair)[1]) == cur[static_cast<size_t>(j)].handler &&
+             cur[static_cast<size_t>(j)].type.size() ==
+                 static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])) &&
+             std::memcmp(cur[static_cast<size_t>(j)].type.data(),
+                         RSTRING_PTR(RARRAY_PTR(pair)[0]),
+                         cur[static_cast<size_t>(j)].type.size()) == 0;
+    }
+    if (same) return;
+    cur.clear();
+    for (mrb_int j = 0; j < n; j++) {
       const mrb_value pair = RARRAY_PTR(v)[j];
       if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                           !mrb_string_p(RARRAY_PTR(pair)[0]) ||
@@ -601,7 +622,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
                      static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
       th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
-      res.run_content_types_provided.push_back(std::move(th));
+      // Resolved HERE, once, not searched for at every render.
+      const Resolved hr = resolve(mrb, res.klass, th.handler);
+      th.m = hr.m;
+      th.fast = hr.fast;
+      cur.push_back(std::move(th));
     }
   };
   // RFC 9110 12.5.1: the list conneg runs against - dynamic or konst-folded.
@@ -1536,7 +1561,7 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   res.expires_asked = false;
   res.expires_present = false;
   res.expires_epoch = 0;
-  res.run_content_types_provided.clear();
+  res.run_content_types_marshalled = false;
   res.run_methods.clear();
   res.run_variances.clear();
   mrb_bool raised = FALSE;
