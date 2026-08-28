@@ -5,6 +5,8 @@ bench/vm/benchmark/
 bench/vm/vm_floor
 bench/vm/ring_body
 bench/echo/echo_bench
+# Built on demand by bench/floor.sh (CLIENT=load); never committed.
+bench/load/load
 # perf.data and any rendered flamegraph from bench/profile.sh - large
 # binary profiling artifacts, host-specific, never committed. The
 # perf-diff FINDING that comes out of them belongs in commit prose,

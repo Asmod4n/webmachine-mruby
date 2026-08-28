@@ -1,11 +1,18 @@
 #!/bin/bash
 # The floor: raw reactor, no HTTP. Its number is the ceiling every later
 # layer is measured against, so the harness line is part of the result -
-# THREADS and CONNS are mandatory, never silent defaults (three separate
-# debugging days in the old tree came from silently differing harnesses).
+# CONNS is mandatory, never a silent default (three separate debugging
+# days in the old tree came from silently differing harnesses).
 #
-#   THREADS=4 CONNS=400 bench/floor.sh            # AF_UNIX (default)
-#   THREADS=4 CONNS=400 TRANSPORT=tcp bench/floor.sh
+# EVERYTHING IS SINGLE-THREADED, both ends. The server is one thread and
+# one ring by measurement (#120), and since #196 the client is too: our own
+# generator saturates it from ONE ring, where wrk needed two threads to
+# reach two thirds of that. A -t knob only invited the question "how many
+# threads did that number cost", which is not a property of webmachine.
+#
+#   CONNS=400 bench/floor.sh                      # AF_UNIX (default)
+#   CONNS=400 TRANSPORT=tcp bench/floor.sh
+#   CONNS=400 CLIENT=wrk bench/floor.sh           # the oracle, -t1
 #   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
 #   IMPL=portable ...  the emergency exit (slipstreamIO, select(2)) -
 #                      what the way out costs, on the same wire
@@ -14,27 +21,56 @@
 #   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
-[ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
-  echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
+[ -n "${CONNS:-}" ] || {
+  echo "CONNS= is mandatory - the harness is part of the number" >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
 IMPL="${IMPL:-uring}"
-case "$IMPL" in
-  uring) BIN=mruby/build/host/bin/webmachine-server ;;
-  epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
-  portable) BIN=mruby/build/portable/bin/webmachine-server ;;
-  pgo) BIN=mruby/build/pgo/bin/webmachine-server ;;
-  *) echo "IMPL must be uring, epoll, portable or pgo" >&2; exit 2 ;;
-esac
-cd "$(dirname "$0")/.." || exit 1
+# BIN=path names the binary directly, for an A/B between two builds of the
+# SAME impl: keep both, alternate them, and the harness line records which
+# one ran. Without it the only way to compare two builds was to copy one
+# over the other between runs, which leaves no trace in the log.
+BIN="${BIN:-}"
+if [ -z "$BIN" ]; then
+  case "$IMPL" in
+    uring) BIN=mruby/build/host/bin/webmachine-server ;;
+    epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
+    portable) BIN=mruby/build/portable/bin/webmachine-server ;;
+    pgo) BIN=mruby/build/pgo/bin/webmachine-server ;;
+    *) echo "IMPL must be uring, epoll, portable or pgo" >&2; exit 2 ;;
+  esac
+  cd "$(dirname "$0")/.." || exit 1
+else
+  cd "$(dirname "$0")/.." || exit 1
+  IMPL="bin:$(basename "$BIN")"
+fi
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
+
+# CLIENT=wrk (default) | load. wrk stays the ORACLE - see #196: our own
+# generator shares phr, the framing assumptions and the ring patterns with
+# the server, so a shared misunderstanding would not show up in its
+# numbers. Never report a load number without a wrk number beside it.
+CLIENT="${CLIENT:-wrk}"
+LOADBIN=bench/load/load
+if [ "$CLIENT" = load ]; then
+  URING_INC_L=mruby/build/repos/host/mruby-io_uring/include
+  PHR_DIR=mruby/build/repos/host/mruby-phr/deps/picohttpparser
+  LIBURING_L=mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a
+  if [ ! -x "$LOADBIN" ] || [ bench/load/load.cpp -nt "$LOADBIN" ]; then
+    g++ -O3 -march=native -std=c++20 -I"$URING_INC_L" -I"$PHR_DIR" \
+      bench/load/load.cpp "$PHR_DIR/picohttpparser.c" "$LIBURING_L" -o "$LOADBIN" || exit 1
+  fi
+elif [ "$CLIENT" != wrk ]; then
+  echo "CLIENT must be wrk or load" >&2
+  exit 2
+fi
 
 WRK="${WRK:-$HOME/wrk/wrk}"
 [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
-if [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
+if [ "$CLIENT" = wrk ] && [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
   # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
   # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
   # run. Refused here, with the fix named. grep -a, not strings(1):
@@ -204,7 +240,12 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  echo "harness: wrk -t$THREADS -c$CONNS -d${DURATION}s impl=$IMPL transport=$TRANSPORT app=${APP:-none} browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  if [ "$CLIENT" = load ]; then
+    CLI_LINE="load -c$CONNS -d${DURATION}s (one ring, one thread)"
+  else
+    CLI_LINE="wrk -t1 -c$CONNS -d${DURATION}s"
+  fi
+  echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own
@@ -225,11 +266,20 @@ OUT=$(mktemp)
   S0=$(cpu_ticks "$SRV")
   snap_times
   C0=$(parse_child_cpu)
-  if [ "$TRANSPORT" = unix ]; then
-    WRK_UNIX="$SOCK" "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+  if [ "$CLIENT" = load ]; then
+    # One ring, one thread - the same shape as the reactor it drives.
+    if [ "$TRANSPORT" = unix ]; then
+      "$LOADBIN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
+        >"$WORK/cli.out" 2>&1 &
+    else
+      "$LOADBIN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
+        --seconds "$DURATION" >"$WORK/cli.out" 2>&1 &
+    fi
+  elif [ "$TRANSPORT" = unix ]; then
+    WRK_UNIX="$SOCK" "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
       "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   else
-    "$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}"s --latency \
+    "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
       "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   fi
   CLI=$!
@@ -238,7 +288,7 @@ OUT=$(mktemp)
   C1=$(parse_child_cpu)
   S1=$(cpu_ticks "$SRV")
   WRKOUT=$(cat "$WORK/cli.out")
-  echo "$WRKOUT" | grep -E "Requests/sec|50%|99%"
+  echo "$WRKOUT" | grep -E "Requests/sec|50%|99%|^responses="
   sysc_wait
   NSYSC=$(sysc_read)
   NDONE=$(echo "$WRKOUT" | grep -o '[0-9]* requests in' | awk '{print $1}')
@@ -247,17 +297,16 @@ OUT=$(mktemp)
   fi
   # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
   # comparison (bench/assets.sh already learned this the hard way): the
-  # server had headroom AND the client was pegged. wrk lawfully spends
-  # more total CPU than we do across THREADS threads; that alone is not
-  # client-bound.
+  # server had headroom AND the client was pegged. Both ends are one
+  # thread now, so "pegged" is one core.
   SU=$((S1 - S0))
   SCPU=$((SU * 100 / HZ / DURATION))
   CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-  if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge $((THREADS * 90)) ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% across $THREADS threads). This measures wrk, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
+  if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge 90 ]; then
+    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Use CLIENT=load, or drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
-    echo "server: ${SCPU}% of one core   client: ${CCPU}% across $THREADS threads"
+    echo "server: ${SCPU}% of one core   client: ${CCPU}% of one core"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
@@ -268,7 +317,8 @@ OUT=$(mktemp)
 CLIENT_BOUND=$(cat "$WORK/client_bound" 2>/dev/null || echo 0)
 if [ "$CLIENT_BOUND" = 1 ]; then
   echo "run was client-bound - NOT recorded in $RESULTS" >&2
-elif grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; then
+elif { grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; } ||
+     { grep -q "^responses=" "$OUT" && ! grep -q "rps=0 " "$OUT"; }; then
   cat "$OUT" >> "$RESULTS"
 else
   echo "run measured nothing - NOT recorded in $RESULTS" >&2
