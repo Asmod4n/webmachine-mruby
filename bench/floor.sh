@@ -13,7 +13,6 @@
 #   CONNS=400 bench/floor.sh                      # AF_UNIX (default)
 #   CONNS=400 TRANSPORT=tcp bench/floor.sh
 #   CONNS=400 CLIENT=wrk bench/floor.sh           # the oracle, -t1
-#   IMPL=epoll ...     the classic-reactor measuring stick, same protocol
 #   IMPL=portable ...  the emergency exit (slipstreamIO, select(2)) -
 #                      what the way out costs, on the same wire
 #   IMPL=pgo ...       the same flags as host plus -fprofile-use, so the
@@ -37,10 +36,9 @@ BIN="${BIN:-}"
 if [ -z "$BIN" ]; then
   case "$IMPL" in
     uring) BIN=mruby/build/host/bin/webmachine-server ;;
-    epoll) BIN=mruby/build/host/bin/webmachine-floor-epoll ;;
     portable) BIN=mruby/build/portable/bin/webmachine-server ;;
     pgo) BIN=mruby/build/pgo/bin/webmachine-server ;;
-    *) echo "IMPL must be uring, epoll, portable or pgo" >&2; exit 2 ;;
+    *) echo "IMPL must be uring, portable or pgo" >&2; exit 2 ;;
   esac
   cd "$(dirname "$0")/.." || exit 1
 else

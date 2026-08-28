@@ -3,7 +3,6 @@ require 'socket'
 require 'tempfile'
 
 SERVER_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SERVER_BIN)
-EPOLL_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-floor-epoll') unless defined?(EPOLL_BIN)
 
 def wm_recv(s, maxlen = 1, deadline = 10)
   IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
@@ -101,27 +100,6 @@ assert('floor: the ring-built TCP listener answers like the unix one') do
   ensure
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
-  end
-end
-
-assert('epoll floor: echo returns every byte (the measuring stick answers alike)') do
-  floor_echo_assertions(false, bin: EPOLL_BIN)
-end
-
-assert('epoll floor: a receive is answered 200, keep-alive holds') do
-  floor_server(bin: EPOLL_BIN) do |sock|
-    UNIXSocket.open(sock) do |s|
-      3.times do
-        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head = +''
-        head << wm_recv(s) until head.end_with?("\r\n\r\n")
-        assert_true head.start_with?('HTTP/1.1 200 OK')
-        len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-        body = +''
-        body << wm_recv(s, len - body.bytesize) while body.bytesize < len
-        assert_equal 'OK', body
-      end
-    end
   end
 end
 

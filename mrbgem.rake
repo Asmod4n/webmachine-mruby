@@ -5,7 +5,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.author  = 'Hendrik Beskow'
   spec.summary = 'Webmachine: the HTTP state model, executed'
 
-  spec.bins = ['webmachine-server', 'webmachine-floor-epoll', 'webmachine-logd']
+  spec.bins = ['webmachine-server', 'webmachine-logd']
 
 
   # SLIPSTREAM_IO_ONLY is the `portable` target's whole declaration
