@@ -358,11 +358,12 @@ mrb_value run_engine_body(mrb_state* mrb, void* ud) {
 }
 
 mrb_value run_engine(mrb_state* mrb, const Resource& res) {
-  // #181: the resource instance belongs to ONE request. initialize is
-  // only called when the class defines one - the fold knows.
-  res.live = res.init_needed
-                 ? mrb_obj_new(mrb, res.klass, 0, nullptr)
-                 : mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
+  // #181: the resource instance belongs to ONE request. Allocate it and
+  // nothing else - mrb_obj_new would search for initialize twice per
+  // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
+  // fold already stands. The call itself, when one is owed, is below,
+  // where the direct-entry path exists.
+  res.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
   const flow::ReqFacts& facts = *res.run_facts;
   const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
   const http::ReqValues* vals = res.run_vals;
@@ -382,6 +383,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     ci->mid = saved;
     return r;
   };
+
+  // #181: the app's own initialize, entered through the resolved method
+  // rather than looked up again. init_needed is false for every resource
+  // that did not override Object's - the implicit one is not a reason to
+  // run anything.
+  if (WM_RES_UNLIKELY(res.init_needed)) {
+    naked(res.init_m, res.init_fast, MRB_SYM(initialize));
+  }
 
   // cb.rb: a value callback - an undef method slot means class-only, called
   // on the class; everything else runs on the live instance.
@@ -1451,17 +1460,16 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   mrb_obj_freeze(mrb, klass);
 
   // What building the per-request instance costs, decided once: the
-  // allocation's type, and whether anyone defined an initialize worth
-  // calling (mrb_obj_new always calls one, lookup and frame included).
+  // allocation's type, and whether the author wrote an initialize at all.
+  // Object's is undef'd on Webmachine::Resource (see gem_init), so this is
+  // a plain "is it defined" and no longer a comparison against a method
+  // every object has.
   out.live_tt = MRB_INSTANCE_TT(out.klass) != 0 ? MRB_INSTANCE_TT(out.klass) : MRB_TT_OBJECT;
-  struct RClass* owner = out.klass;
-  struct RClass* base = mrb->object_class;
-  const mrb_method_t im = mrb_method_search_vm(mrb, &owner, MRB_SYM(initialize));
-  const mrb_method_t bm = mrb_method_search_vm(mrb, &base, MRB_SYM(initialize));
-  out.init_needed = MRB_METHOD_UNDEF_P(im) || MRB_METHOD_UNDEF_P(bm) ||
-                    MRB_METHOD_PROC_P(im) != MRB_METHOD_PROC_P(bm) ||
-                    (MRB_METHOD_PROC_P(im) ? MRB_METHOD_PROC(im) != MRB_METHOD_PROC(bm)
-                                           : MRB_METHOD_FUNC(im) != MRB_METHOD_FUNC(bm));
+  const Resolved init = resolve(mrb, out.klass, MRB_SYM(initialize));
+  out.init_needed = init.defined;
+  out.init_m = init.m;
+  out.init_fast = init.fast;
+  std::fprintf(stderr, "PROBE init_needed=%d live_tt=%d\n", (int)out.init_needed, (int)out.live_tt);
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
@@ -1623,6 +1631,17 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len
 }
 }
 
+// #181: a resource instance belongs to ONE request and the server makes it.
+// Ruby may not - a route names the CLASS, and C++ allocates from it with
+// mrb_obj_alloc. Without this, Resource.new would fail on the undef'd
+// initialize with "undefined method", which says nothing about why.
+mrb_value resource_new_refused(mrb_state* mrb, mrb_value self) {
+  mrb_raise(mrb, E_WM_ERROR(mrb),
+            "a resource is the server's to build, one per request - name the class in a "
+            "route, never an instance");
+  return self;
+}
+
 extern "C" {
 // mruby: the gem's Ruby surface - the base classes and the loop's three doors.
 void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
@@ -1631,7 +1650,21 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
       mrb_define_class_under_id(mrb, wm, MRB_SYM(Error), mrb->eStandardError_class);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(ConfigError), err);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(RouteError), err);
-  mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
+  // mruby: EVERY object carries initialize on the instance, inherited from
+  // Object, unless it is undef'd - so "does this resource define one" could
+  // never be asked, only "does it differ from Object's". Undef it here and
+  // the question becomes the honest one: an initialize on a resource exists
+  // exactly when its author wrote it. The fold then stores the resolved
+  // method and the run enters it directly; mrb_obj_new is not used at all,
+  // because it would search for the same method twice per request.
+  // Webmachine::WebsocketResource and SseResource keep theirs: there
+  // initialize is the documented open hook, it runs once per connection
+  // rather than per request, and sse_open/ws_admit call it unconditionally.
+  struct RClass* res_class =
+      mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
+  mrb_undef_method_id(mrb, res_class, MRB_SYM(initialize));
+  mrb_define_class_method_id(mrb, res_class, MRB_SYM(new), resource_new_refused,
+                             MRB_ARGS_ANY());
   webmachine::ws_init(mrb, wm);
   webmachine::sse_init(mrb, wm);
   webmachine::application_init(mrb, wm);

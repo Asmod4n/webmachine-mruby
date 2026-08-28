@@ -821,7 +821,14 @@ assert('application: request.headers are the head, lowercased; request.body is t
   end
 end
 
-assert('application: request outside a callback refuses instead of reading a dead view') do
+# #181: there is no way for Ruby to hold a resource instance outside the
+# request it belongs to, because there is no way for Ruby to MAKE one - the
+# server allocates from the class, per request. Resource.new used to reach
+# Object's initialize and hand out an instance whose request view was dead;
+# now it refuses by name. The dead-view guard in request.cpp stays as the
+# second line of defence, unreachable from Ruby until on_idle (#80) gives
+# an escaped self somewhere to run.
+assert('application: a resource is the server\'s to build - Resource.new refuses by name') do
   out = ap_refused(<<~RUBY)
     class R < Webmachine::Resource
       def self.to_html
@@ -833,10 +840,11 @@ assert('application: request outside a callback refuses instead of reading a dea
       Webmachine::Application.new do |app|
         app.add_route [:*], R
       end
-      Webmachine::Resource.new.request
+      Webmachine::Resource.new
     end
   RUBY
-  assert_true out.include?('no request being answered'), out
+  assert_true out.include?('one per request'), out
+  assert_false out.include?('undefined method'), out
 end
 
 assert('application: Webmachine.stop drains, then the process ends by itself') do

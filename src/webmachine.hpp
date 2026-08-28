@@ -1679,6 +1679,13 @@ struct Resource {
   // The engine frame is entered as a C++ call, not a Ruby one: no
   // hidden class, no proc, no per-resource object for the GC to mark.
   bool init_needed = false;
+  // mruby: the initialize the fold RESOLVED, entered directly by the run.
+  // Object's is undef'd on Webmachine::Resource, so init_needed is simply
+  // "the author wrote one" - and mrb_obj_new is never used, because it
+  // would search for this same method twice per request (mrb_func_basic_p,
+  // then mrb_funcall_argv) to arrive where the fold already stands.
+  mrb_method_t init_m = {};
+  bool init_fast = false;
   enum mrb_vtype live_tt = MRB_TT_OBJECT;
   mutable mrb_value live = {};
   mutable const flow::ReqFacts* run_facts = nullptr;
