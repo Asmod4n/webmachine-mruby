@@ -160,6 +160,43 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
   return true;
 }
 
+// #202: a `def self.x` is asked HERE, once, and its answer is kept for the
+// life of the process - that is the whole reason the class form exists.
+// The class is frozen right after, so the answer cannot go stale.
+// `spell` turns a String answer into an ETag (RFC 9110 8.8.3); without it
+// the answer is read as a moment (RFC 9110 5.6.7), the way the date fields
+// need it.
+bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, const char* name,
+                bool spell, Resource::KonstValue& out, char* err, size_t errlen) {
+  if (!cb.has || !cb.on_class) return true;
+  out.asked = true;
+  Resolved r;
+  r.m = cb.m;
+  r.fast = cb.fast;
+  r.defined = true;
+  mrb_value v = call_resolved(mrb, r, cb.sym, klass, mrb_class(mrb, klass));
+  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
+    exc_into(mrb, name, err, errlen);
+    return false;
+  }
+  if (mrb_nil_p(v) || mrb_false_p(v)) return true;
+  if (spell) {
+    if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
+    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), out.text);
+    out.present = true;
+    return true;
+  }
+  if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
+  if (WM_RES_UNLIKELY(!mrb_integer_p(v) || mrb->exc != nullptr)) {
+    std::snprintf(err, errlen, "%s must answer a Time or an epoch Integer", name);
+    mrb->exc = nullptr;
+    return false;
+  }
+  out.epoch = static_cast<int64_t>(mrb_integer(v));
+  out.present = true;
+  return true;
+}
+
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens or
 // webmachine-ruby's Array-of-Strings form.
 bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
@@ -653,6 +690,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   const auto ensure_etag = [&]() -> int {
     if (res.etag_asked) return -1;
     res.etag_asked = true;
+    // #202: the class form answered at setup - there is nothing to ask.
+    if (res.konst_etag.asked) {
+      if (res.konst_etag.present) {
+        res.etag_value = res.konst_etag.text;
+        res.etag_present = true;
+      }
+      return -1;
+    }
     if (!res.cb_generate_etag.has) return -1;
     mrb_value v = cbv(res.cb_generate_etag);
     if (mrb_integer_p(v)) return halt_of(v, res.cb_generate_etag.sym);
@@ -665,10 +710,18 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
 
   // cb.rb last_modified/expires: asked at most once - a Time answers via
   // to_i, an Integer is the epoch, nil is not present.
-  const auto epoch_memo = [&](const Resource::ValueCb& cb, bool* asked, bool* present,
-                              int64_t* epoch) {
+  const auto epoch_memo = [&](const Resource::ValueCb& cb, const Resource::KonstValue& konst,
+                              bool* asked, bool* present, int64_t* epoch) {
     if (*asked) return;
     *asked = true;
+    // #202: same as ensure_etag - a class form is a setup answer.
+    if (konst.asked) {
+      if (konst.present) {
+        *epoch = konst.epoch;
+        *present = true;
+      }
+      return;
+    }
     if (!cb.has) return;
     mrb_value v = cbv(cb);
     if (mrb_nil_p(v) || mrb_false_p(v)) return;
@@ -698,10 +751,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     if (res.etag_present) {
       field("ETag", 4, res.etag_value.data(), res.etag_value.size());
     }
-    epoch_memo(res.cb_expires, &res.expires_asked, &res.expires_present, &res.expires_epoch);
+    epoch_memo(res.cb_expires, res.konst_expires, &res.expires_asked, &res.expires_present,
+               &res.expires_epoch);
     if (res.expires_present) date_line("Expires", 7, res.expires_epoch);
-    epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
-               &res.last_modified_epoch);
+    epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+               &res.last_modified_present, &res.last_modified_epoch);
     if (res.last_modified_present) date_line("Last-Modified", 13, res.last_modified_epoch);
     return -1;
   };
@@ -1080,15 +1134,15 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kH12: {
-        epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
-                   &res.last_modified_epoch);
+        epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+                   &res.last_modified_present, &res.last_modified_epoch);
         take(res.last_modified_present && vals != nullptr &&
              res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
-        epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
-                   &res.last_modified_epoch);
+        epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+                   &res.last_modified_present, &res.last_modified_epoch);
         take(!res.last_modified_present || vals == nullptr ||
              res.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
@@ -1357,6 +1411,16 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_generate_etag = value_cb(mrb, klass, MRB_SYM(generate_etag), 0, true);
   out.cb_last_modified = value_cb(mrb, klass, MRB_SYM(last_modified), 0, true);
   out.cb_expires = value_cb(mrb, klass, MRB_SYM(expires), 0, true);
+  // #202: the class forms of the three caching answers are asked once, now.
+  if (WM_RES_UNLIKELY(!bake_value(mrb, klass, out.cb_generate_etag, "generate_etag", true,
+                                  out.konst_etag, err, errlen) ||
+                      !bake_value(mrb, klass, out.cb_last_modified, "last_modified", false,
+                                  out.konst_last_modified, err, errlen) ||
+                      !bake_value(mrb, klass, out.cb_expires, "expires", false, out.konst_expires,
+                                  err, errlen))) {
+    mrb_gc_arena_restore(mrb, ai);
+    return false;
+  }
   out.cb_moved_permanently = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
   out.cb_moved_temporarily = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
   out.cb_post_is_create = value_cb(mrb, klass, MRB_SYM_Q(post_is_create), 0, true);

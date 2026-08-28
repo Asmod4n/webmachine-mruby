@@ -1827,6 +1827,21 @@ struct Resource {
   mutable std::string run_file;
   mutable bool run_have_file = false;
   mutable bool run_file_bad = false;
+  // #202: what a `def self.x` ANSWERED, once, while the app was being set
+  // up. That is what the class form is for - the value belongs to the
+  // process, not to a request, so no request ever enters the VM for it.
+  // `asked` says the class form existed and was evaluated; `present` says
+  // its answer was neither nil nor false.
+  struct KonstValue {
+    bool asked = false;
+    bool present = false;
+    std::string text;   // RFC 9110 8.8.3: the ETag, already spelled
+    int64_t epoch = 0;  // RFC 9110 5.6.7: the moment, for the date fields
+  };
+  KonstValue konst_etag;
+  KonstValue konst_last_modified;
+  KonstValue konst_expires;
+
   // Once-per-run memos: generate_etag / last_modified / expires are
   // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share
   // last_modified), whatever the graph visits.
