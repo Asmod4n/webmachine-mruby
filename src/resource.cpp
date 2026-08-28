@@ -263,6 +263,20 @@ const NamedSym kKonstOnly[] = {
     {MRB_SYM(encodings_provided), "encodings_provided"},
 };
 
+// The mirror of kKonstOnly. `def self.x` means, everywhere in this tree,
+// "asked ONCE while the app is being set up, and the answer is frozen with
+// the class". That is right for a QUESTION and wrong for these five: they
+// do WORK, and work asked once at setup is work that never happens again -
+// a class-level process_post would handle exactly zero POSTs, silently.
+// So the fold refuses them by name instead of folding them.
+const NamedSym kWorkOnly[] = {
+    {MRB_SYM(delete_resource), "delete_resource"},
+    {MRB_SYM(create_path), "create_path"},
+    {MRB_SYM(process_post), "process_post"},
+    {MRB_SYM(finish_request), "finish_request"},
+    {MRB_SYM(handle_exception), "handle_exception"},
+};
+
 // RFC 9110 5.1: case-insensitive token equality, neither side canonical.
 bool ci_eq(const char* a, size_t an, const char* b, size_t bn) {
   if (an != bn) return false;
@@ -1277,6 +1291,16 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       return false;
     }
   }
+  for (const NamedSym& cb : kWorkOnly) {
+    if (WM_RES_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined)) {
+      std::snprintf(err, errlen,
+                    "%s does work, so it runs per request - declare it on the instance (def %s), "
+                    "not on the class: def self.%s would be asked once at setup and never again",
+                    cb.name, cb.name, cb.name);
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+  }
 
   bool ans[sizeof(kBools) / sizeof(kBools[0])];
   for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
@@ -1336,11 +1360,11 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_moved_permanently = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
   out.cb_moved_temporarily = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
   out.cb_post_is_create = value_cb(mrb, klass, MRB_SYM_Q(post_is_create), 0, true);
-  out.cb_create_path = value_cb(mrb, klass, MRB_SYM(create_path), 0, true);
+  out.cb_create_path = value_cb(mrb, klass, MRB_SYM(create_path), 0, false);
   out.cb_base_uri = value_cb(mrb, klass, MRB_SYM(base_uri), 0, true);
-  out.cb_process_post = value_cb(mrb, klass, MRB_SYM(process_post), 0, true);
-  out.cb_finish_request = value_cb(mrb, klass, MRB_SYM(finish_request), 0, true);
-  out.cb_handle_exception = value_cb(mrb, klass, MRB_SYM(handle_exception), 1, true);
+  out.cb_process_post = value_cb(mrb, klass, MRB_SYM(process_post), 0, false);
+  out.cb_finish_request = value_cb(mrb, klass, MRB_SYM(finish_request), 0, false);
+  out.cb_handle_exception = value_cb(mrb, klass, MRB_SYM(handle_exception), 1, false);
   // The fast part: one bit per ValueCb above, set once here so every run
   // asks "does X exist" with one load instead of touching X's own struct.
   out.cb_mask = 0;

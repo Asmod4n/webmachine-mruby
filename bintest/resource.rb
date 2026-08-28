@@ -115,13 +115,19 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
   end
 end
 
+# ACHTUNG (#201): die Antworten hier sind die der ENGINE. Dieselbe
+# Ressource, mit delete_resource als def self. geschrieben, laeuft ueber
+# die Konst-Stufe und antwortet 200 auf beides - POST wie DELETE. Die
+# Engine hat recht (n11 ohne process_post ist ein Programmierfehler, o20
+# ohne Entity ist 204), die Konst-Stufe irrt. Bis #201 das behebt, steht
+# hier festgeschrieben, was richtig ist, nicht was frueher herauskam.
 assert('resource: allowed_methods widens and the flow obeys, Allow speaks the list') do
   src = <<~RUBY
     class WideResource < Webmachine::Resource
       def self.allowed_methods
         'GET HEAD POST DELETE'
       end
-      def self.delete_resource
+      def delete_resource
         true
       end
       def self.delete_completed?
@@ -131,12 +137,16 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
   RUBY
   resource_server(wm_app('WideResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
+      # RFC 9110 9.3.3 / fsm.rb n11: a POST that is not a create and has no
+      # process_post is the app's mistake, and it is named as one.
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head, = resource_read(s)
-      assert_true head.start_with?('HTTP/1.1 200'), "POST expected 200, got #{head.lines.first}"
+      assert_true head.start_with?('HTTP/1.1 500'), "POST expected 500, got #{head.lines.first}"
+      # RFC 9110 15.3.5 / fsm.rb o20: nothing set a body, so no entity.
       s.write("DELETE / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head2, = resource_read(s)
-      assert_true head2.start_with?('HTTP/1.1 200'), "DELETE expected 200, got #{head2.lines.first}"
+      head2 = +''
+      head2 << wm_recv(s) until head2.end_with?("\r\n\r\n")
+      assert_true head2.start_with?('HTTP/1.1 204'), "DELETE expected 204, got #{head2.lines.first}"
       s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head3, = resource_read(s)
       assert_true head3.start_with?('HTTP/1.1 405')
