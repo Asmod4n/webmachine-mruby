@@ -505,20 +505,46 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     return false;
   };
 
-  // RFC 9110 10.2.1: the Allow line, from the dynamic list or the konst join.
-  const auto allow_line = [&]() {
-    hdrs.append("Allow: ", 7);
-    if (res.cb_allowed_methods.has) {
-      bool first = true;
-      for (const std::string& s : res.run_methods) {
-        if (!first) hdrs.append(", ", 2);
-        hdrs.append(s);
-        first = false;
-      }
-    } else {
-      hdrs.append(res.konst.allow);
+  // RFC 9112 5: field-line = field-name ":" OWS field-value OWS CRLF. A
+  // node decides WHICH field it produces; this is the only place that
+  // knows how one is spelled. Every node below used to spell its own,
+  // which is why "Allow: " and "ETag: " carried the colon inside the
+  // literal and every site ended with its own append("\r\n", 2).
+  const auto field = [&](const char* name, size_t nlen, const char* value, size_t vlen) {
+    hdrs.append(name, nlen);
+    hdrs.append(": ", 2);
+    hdrs.append(value, vlen);
+    hdrs.append("\r\n", 2);
+  };
+
+  // RFC 9110 5.6.1: a field whose value is a #rule - a comma-separated
+  // list. The members go in one at a time, so a list never needs a string
+  // built to hold it: `head` is the member that is not in `tail`, empty
+  // when there is none.
+  const auto field_list = [&](const char* name, size_t nlen, const char* head, size_t headn,
+                              const std::vector<std::string>& tail) {
+    hdrs.append(name, nlen);
+    hdrs.append(": ", 2);
+    bool first = true;
+    if (headn != 0) {
+      hdrs.append(head, headn);
+      first = false;
+    }
+    for (const std::string& s : tail) {
+      if (!first) hdrs.append(", ", 2);
+      hdrs.append(s);
+      first = false;
     }
     hdrs.append("\r\n", 2);
+  };
+
+  // RFC 9110 10.2.1: the Allow value, from the dynamic list or the konst join.
+  const auto allow_line = [&]() {
+    if (res.cb_allowed_methods.has) {
+      field_list("Allow", 5, nullptr, 0, res.run_methods);
+    } else {
+      field("Allow", 5, res.konst.allow.data(), res.konst.allow.size());
+    }
   };
 
   const bool ct_dyn = res.cb_content_types_provided.has;
@@ -582,16 +608,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     *present = true;
   };
 
-  // RFC 9110 5.6.7: one dated field line, IMF-fixdate.
+  // RFC 9110 5.6.7: one dated field, IMF-fixdate.
   const auto date_line = [&](const char* name, size_t nlen, int64_t epoch) {
-    hdrs.append(name, nlen);
     struct tm tmv {};
     const time_t t = static_cast<time_t>(epoch);
     gmtime_r(&t, &tmv);
     char buf[http::kDateLen];
     http::date_core(buf, tmv);
-    hdrs.append(buf, http::kDateLen);
-    hdrs.append("\r\n", 2);
+    field(name, nlen, buf, http::kDateLen);
   };
 
   // helpers.rb add_caching_headers: ETag, Expires, Last-Modified.
@@ -599,15 +623,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     const int h = ensure_etag();
     if (h >= 0) return h;
     if (res.etag_present) {
-      hdrs.append("ETag: ", 6);
-      hdrs.append(res.etag_value);
-      hdrs.append("\r\n", 2);
+      field("ETag", 4, res.etag_value.data(), res.etag_value.size());
     }
     epoch_memo(res.cb_expires, &res.expires_asked, &res.expires_present, &res.expires_epoch);
-    if (res.expires_present) date_line("Expires: ", 9, res.expires_epoch);
+    if (res.expires_present) date_line("Expires", 7, res.expires_epoch);
     epoch_memo(res.cb_last_modified, &res.last_modified_asked, &res.last_modified_present,
                &res.last_modified_epoch);
-    if (res.last_modified_present) date_line("Last-Modified: ", 15, res.last_modified_epoch);
+    if (res.last_modified_present) date_line("Last-Modified", 13, res.last_modified_epoch);
     return -1;
   };
 
@@ -767,9 +789,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         res.run_disp_path.assign(uri.data() + at, plen);
         res.run_disp_set = true;
         request_disp_override(uri.data() + at, plen);
-        hdrs.append("Location: ", 10);
-        hdrs.append(uri);
-        hdrs.append("\r\n", 2);
+        field("Location", 8, uri.data(), uri.size());
       }
       const int h = accept_helper();
       if (h >= 0) return h;
@@ -870,9 +890,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           continue;
         }
         if (mrb_string_p(v)) {
-          hdrs.append("WWW-Authenticate: ", 18);
-          hdrs.append(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-          hdrs.append("\r\n", 2);
+          field("WWW-Authenticate", 16, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
         }
         status = 401;
         halted = true;
@@ -893,10 +911,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             const mrb_value key = RARRAY_PTR(keys)[j];
             const mrb_value val = mrb_hash_get(mrb, v, key);
             if (!mrb_string_p(key) || !mrb_string_p(val)) continue;
-            hdrs.append(RSTRING_PTR(key), static_cast<size_t>(RSTRING_LEN(key)));
-            hdrs.append(": ", 2);
-            hdrs.append(RSTRING_PTR(val), static_cast<size_t>(RSTRING_LEN(val)));
-            hdrs.append("\r\n", 2);
+            field(RSTRING_PTR(key), static_cast<size_t>(RSTRING_LEN(key)), RSTRING_PTR(val),
+                  static_cast<size_t>(RSTRING_LEN(val)));
           }
         } else {
           allow_line();
@@ -961,18 +977,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         const bool accept_varies = active_ct().size() > 1;
         if (accept_varies || !res.run_variances.empty()) {
-          hdrs.append("Vary: ", 6);
-          bool first = true;
-          if (accept_varies) {
-            hdrs.append("Accept");
-            first = false;
-          }
-          for (const std::string& s : res.run_variances) {
-            if (!first) hdrs.append(", ", 2);
-            hdrs.append(s);
-            first = false;
-          }
-          hdrs.append("\r\n", 2);
+          field_list("Vary", 4, accept_varies ? "Accept" : nullptr, accept_varies ? 6 : 0,
+                     res.run_variances);
         }
         break;
       }
@@ -1022,9 +1028,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (!cb.has) break;
         const mrb_value v = cbv(cb);
         if (mrb_string_p(v)) {
-          hdrs.append("Location: ", 10);
-          hdrs.append(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-          hdrs.append("\r\n", 2);
+          field("Location", 8, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
           status = n == Node::kL5 ? 307 : 301;
           halted = true;
           continue;
