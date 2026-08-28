@@ -5,7 +5,14 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.author  = 'Hendrik Beskow'
   spec.summary = 'Webmachine: the HTTP state model, executed'
 
-  spec.bins = ['webmachine-server', 'webmachine-logd']
+  # The fuzz binary is the SAME sources with libFuzzer's entry instead of
+  # the CLI's, and it exists ONLY in the build that asked for it - the
+  # shipped server never carries it (#206).
+  # ONE binary in that build, and it is the fuzz one: -fsanitize=fuzzer
+  # goes to every link in a build, so libFuzzer's main would collide with
+  # the server's and the server has no LLVMFuzzerTestOneInput to offer.
+  fuzzing = build.cc.defines.include?('WM_FUZZ_BUILD')
+  spec.bins = fuzzing ? ['webmachine-fuzz'] : ['webmachine-server', 'webmachine-logd']
 
 
   # SLIPSTREAM_IO_ONLY is the `portable` target's whole declaration
