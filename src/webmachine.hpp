@@ -1667,10 +1667,18 @@ struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
   struct RClass* klass = nullptr;
+  // The class's own class - where a `def self.x` lives. Kept because
+  // entering such a method directly needs the class it was found in, and
+  // the fold freezes klass, so this pointer is as stable as klass itself.
+  struct RClass* meta_klass = nullptr;
   uint64_t dynamic = 0;
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
   bool node_fast[flow::kNodeCount] = {};
+  // One bit per node: its callback answers on the CLASS, not on the live
+  // instance. Same reason as ValueCb::on_class - the method is resolved
+  // once, here, and never searched again.
+  uint64_t node_on_class = 0;
   bool dynamic_body = false;
   mrb_sym body_sym = {};
   mrb_method_t body_m = {};
@@ -1717,6 +1725,11 @@ struct Resource {
     mrb_sym sym = {};
     mrb_method_t m = {};
     bool fast = false;
+    // Which receiver: the live instance, or the class itself. The fold
+    // resolves BOTH kinds, so neither is looked up again per request - an
+    // undefined m used to be the marker for "class-only", and it cost a
+    // full mrb_funcall_argv every time it was read.
+    bool on_class = false;
     uint8_t argc = 0;
   };
   ValueCb cb_known_methods;   // instance-level; class-level folds konst

@@ -495,3 +495,57 @@ assert('resource: the conditional example spells its caching fields, then answer
     end
   end
 end
+
+# cb.rb: a value callback written as `def self.x` answers on the CLASS. The
+# fold resolves it there and the run enters it directly - it used to be the
+# one dispatch that searched for its method again on every request. Nothing
+# covered that path: allowed_methods and the boolean nodes fold to konst
+# instead, so a class-level callback never actually reached the engine in a
+# test until this one.
+WM_CLASS_CB = <<~RUBY_SRC unless defined?(WM_CLASS_CB)
+  class ClassCb < Webmachine::Resource
+    def self.generate_etag
+      'class-etag-3'
+    end
+
+    def self.expires
+      1_856_000_000
+    end
+
+    def self.variances
+      ['Accept-Language']
+    end
+
+    def self.is_authorized?(header)
+      header != 'no'
+    end
+
+    def to_html
+      '<html><body>class callbacks</body></html>'
+    end
+  end
+RUBY_SRC
+
+assert('resource: value callbacks on the class answer, and their fields land') do
+  resource_server(wm_app('ClassCb', WM_CLASS_CB)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_true head.match?(/^ETag: "class-etag-3"\r$/i), head
+      assert_true head.match?(/^Expires: Tue, 24 Oct 2028 11:33:20 GMT\r$/i), head
+      assert_true head.match?(/^Vary: Accept-Language\r$/i), head
+      assert_equal '<html><body>class callbacks</body></html>', body
+
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"class-etag-3\"\r\n\r\n")
+      nm = +''
+      nm << wm_recv(s) until nm.end_with?("\r\n\r\n")
+      assert_true nm.start_with?('HTTP/1.1 304 Not Modified'), nm
+
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: no\r\n\r\n")
+      un = +''
+      un << wm_recv(s) until un.end_with?("\r\n\r\n")
+      assert_true un.start_with?('HTTP/1.1 401 Unauthorized'), un
+    end
+  end
+end

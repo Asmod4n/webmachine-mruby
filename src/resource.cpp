@@ -101,6 +101,9 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t
   const Resolved meta = resolve(mrb, mrb_class(mrb, klass), sym);
   if (meta.defined) {
     cb.has = true;
+    cb.m = meta.m;
+    cb.fast = meta.fast;
+    cb.on_class = true;
     cb.argc = argc_of(meta.m, maxargs);
   }
   return cb;
@@ -392,21 +395,43 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     naked(res.init_m, res.init_fast, MRB_SYM(initialize));
   }
 
-  // cb.rb: a value callback - an undef method slot means class-only, called
-  // on the class; everything else runs on the live instance.
+  // cb.rb: the same direct entry as naked, for a `def self.x` - the
+  // receiver is the class and the frame's class is the class's own, which
+  // is where the fold found the method.
+  const auto naked_class = [&](mrb_method_t m, bool fast, mrb_sym sym, mrb_int argc = 0,
+                               const mrb_value* argv = nullptr) -> mrb_value {
+    const mrb_value self = mrb_obj_value(res.klass);
+    // mrb_obj_ptr(self)->c, not mrb_class(mrb, self): the latter is an
+    // out-of-line call into another translation unit, and this build has no
+    // LTO - a call to read one pointer, on the path whose whole point is
+    // not calling anything.
+    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(self)->c != res.meta_klass)) {
+      return mrb_funcall_argv(mrb, self, sym, argc, argv);
+    }
+    mrb_callinfo* ci = mrb->c->ci;
+    const mrb_sym saved = ci->mid;
+    ci->mid = sym;
+    mrb_value r = mrb_yield_with_class(
+        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, self,
+        res.meta_klass);
+    ci->mid = saved;
+    return r;
+  };
+
+  // cb.rb: a value callback - on_class says which receiver, and the method
+  // itself came from the fold either way. It used to be searched again per
+  // request whenever it lived on the class.
   const auto cbv = [&](const Resource::ValueCb& cb, mrb_int argc = 0,
                        const mrb_value* argv = nullptr) -> mrb_value {
-    if (MRB_METHOD_UNDEF_P(cb.m)) {
-      return mrb_funcall_argv(mrb, mrb_obj_value(res.klass), cb.sym, argc, argv);
-    }
+    if (cb.on_class) return naked_class(cb.m, cb.fast, cb.sym, argc, argv);
     return naked(cb.m, cb.fast, cb.sym, argc, argv);
   };
 
-  // flow.rb: one node's callback out of the node tables, class-only via funcall.
+  // flow.rb: one node's callback out of the node tables, either receiver.
   const auto nodecall = [&](Node nd, mrb_int argc, const mrb_value* argv) -> mrb_value {
     const size_t i = static_cast<size_t>(nd);
-    if (MRB_METHOD_UNDEF_P(res.node_m[i])) {
-      return mrb_funcall_argv(mrb, mrb_obj_value(res.klass), res.node_sym[i], argc, argv);
+    if ((res.node_on_class >> i) & 1) {
+      return naked_class(res.node_m[i], res.node_fast[i], res.node_sym[i], argc, argv);
     }
     return naked(res.node_m[i], res.node_fast[i], res.node_sym[i], argc, argv);
   };
@@ -1265,7 +1290,9 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     if (meta.defined) {
       out.dynamic |= uint64_t{1} << at;
       out.node_sym[at] = cb.sym;
-      out.node_fast[at] = false;
+      out.node_m[at] = meta.m;
+      out.node_fast[at] = meta.fast;
+      out.node_on_class |= uint64_t{1} << at;
       out.node_argc[at] = argc_of(meta.m, cb.maxargs);
     }
   }
@@ -1457,6 +1484,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.konst.resolve_shortcuts();
 
   out.klass = mrb_class_ptr(klass);
+  out.meta_klass = mrb_class(mrb, klass);
   mrb_obj_freeze(mrb, klass);
 
   // What building the per-request instance costs, decided once: the
