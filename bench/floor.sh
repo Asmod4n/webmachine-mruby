@@ -5,20 +5,25 @@
 # days in the old tree came from silently differing harnesses).
 #
 # EVERYTHING IS SINGLE-THREADED, both ends. The server is one thread and
-# one ring by measurement (#120), and since #196 the client is too: our own
-# generator saturates it from ONE ring, where wrk needed two threads to
-# reach two thirds of that. A -t knob only invited the question "how many
-# threads did that number cost", which is not a property of webmachine.
+# one ring by measurement (#120), and since #196 the client is too: htgen
+# saturates it from ONE ring. A -t knob only invited the question "how
+# many threads did that number cost", which is not a property of
+# webmachine.
+#
+# ONE generator, htgen. wrk and h2load are gone from this tree - the
+# machine that measures does not have them installed any more, and a
+# script that names a tool nobody can run is a script that lies about
+# how its numbers were made.
 #
 #   CONNS=400 bench/floor.sh                      # AF_UNIX (default)
 #   CONNS=400 TRANSPORT=tcp bench/floor.sh
-#   CONNS=400 CLIENT=wrk bench/floor.sh           # the oracle, -t1
 #   IMPL=portable ...  the emergency exit (slipstreamIO, select(2)) -
 #                      what the way out costs, on the same wire
 #   IMPL=pgo ...       the same flags as host plus -fprofile-use, so the
 #                      A/B against IMPL=uring is PGO and nothing else
 #   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
 #   REQPATH=/cpp ...   which route to ask for, when the app has several
+#   PIPELINE=8 ...     h1 requests in flight per connection (RFC 9112 9.3.2)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
 [ -n "${CONNS:-}" ] || {
@@ -30,7 +35,7 @@ set -u
 # number ends up describing a run nobody performed.
 [ -z "${THREADS:-}" ] || {
   echo "THREADS= is gone from this script: server and client are ONE thread each (#120, #196)." >&2
-  echo "Drop it. bench/assets.sh and bench/h2.sh still take it - h2load has threads." >&2
+  echo "Drop it - no bench script in this tree takes it any more." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
@@ -56,72 +61,50 @@ else
 fi
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
-# CLIENT=wrk (default) | htgen. wrk stays the ORACLE - see #196: htgen
-# shares phr, the framing assumptions and the ring patterns with the
-# server, so a shared misunderstanding would not show up in its numbers.
-# Never report an htgen number without a wrk number beside it.
-CLIENT="${CLIENT:-wrk}"
-# PROTO=h1 (default) | h2. Only CLIENT=htgen speaks h2 - wrk is h1 only,
-# and bench/h2.sh keeps h2load as the independent oracle for it.
+# PROTO=h1 (default) | h2, both spoken by the same client.
 PROTO="${PROTO:-h1}"
 # REQPATH names the route to ask for. The default is the only path a
 # splat app has; an app with several resources (examples/cpp_resource.rb)
 # is A/B'd by pointing this at one of them and then the other.
 REQPATH="${REQPATH:-/}"
 STREAMS="${STREAMS:-1}"
+# PIPELINE=D: h1 requests in flight per connection (RFC 9112 9.3.2).
+# bench/pipeline.sh is the script that sweeps it; here it is one knob so
+# a floor number can be taken at depth without a second harness.
+PIPELINE="${PIPELINE:-1}"
 # htgen used to live here as bench/load. It is its own tool now
 # (github.com/Asmod4n/htgen) - a load generator is not part of an HTTP
 # state model, and it was building against this tree's build directory,
 # which tied a measuring instrument to the thing it measures.
 HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-if [ "$CLIENT" = htgen ]; then
-  [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-    echo "htgen not found. Build it once:" >&2
-    echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-    echo "or point HTGEN= at the binary." >&2
-    exit 1
-  }
-elif [ "$CLIENT" != wrk ]; then
-  echo "CLIENT names WHICH generator, not where it lives: wrk or htgen." >&2
-  echo "A path goes in the generator's own variable - HTGEN=~/htgen/htgen or WRK=..." >&2
+[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
+  echo "htgen not found. Build it once:" >&2
+  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
+  echo "or point HTGEN= at the binary." >&2
+  exit 1
+}
+[ -z "${CLIENT:-}" ] || {
+  echo "CLIENT= is gone: htgen is the only generator this tree measures with." >&2
+  echo "A path goes in HTGEN=." >&2
   exit 2
-fi
+}
 case "$PROTO" in
   h1) ;;
-  h2) [ "$CLIENT" = htgen ] || { echo "PROTO=h2 needs CLIENT=htgen - wrk speaks h1 only" >&2; exit 2; } ;;
+  h2) ;;
   *) echo "PROTO must be h1 or h2" >&2; exit 2 ;;
 esac
 if [ "$PROTO" = h1 ] && [ "$STREAMS" != 1 ]; then
-  echo "STREAMS needs PROTO=h2 - h1 has one request in flight" >&2
+  echo "STREAMS needs PROTO=h2 - h1 multiplexes with PIPELINE, not streams" >&2
+  exit 2
+fi
+if [ "$PROTO" = h2 ] && [ "$PIPELINE" != 1 ]; then
+  echo "PIPELINE is h1's (RFC 9112 9.3.2) - h2 has STREAMS" >&2
   exit 2
 fi
 
-# Only the generator that is about to RUN has to exist. Demanding wrk on
-# a CLIENT=htgen run made the oracle a build dependency of every
-# measurement, which is not what "keep the oracle beside it" means.
-WRK="${WRK:-$HOME/wrk/wrk}"
-if [ "$CLIENT" = wrk ]; then
-  [ -x "$WRK" ] || WRK=$(command -v wrk) || {
-    echo "wrk not found. Point WRK= at it, or run this one with CLIENT=htgen" >&2
-    echo "- but an htgen number needs a wrk number beside it (#196)." >&2
-    exit 1
-  }
-fi
-if [ "$CLIENT" = wrk ] && [ "${TRANSPORT:-unix}" = unix ] && ! "$WRK" --help 2>&1 | grep -q -- "--unix"; then
-  # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
-  # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
-  # run. Refused here, with the fix named. grep -a, not strings(1):
-  # strings is binutils, absent on a stock Pi, and a missing checker
-  # once rejected a correctly patched wrk.
-  echo "$WRK has no --unix - apply bench/wrk-af-unix.patch (see its header)," >&2
-  echo "or run this one with CLIENT=htgen (it speaks AF_UNIX natively) - but an" >&2
-  echo "htgen number needs a wrk number beside it before it leaves the machine." >&2
-  exit 1
-fi
-
 # THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
-# already has, ported here: a number where wrk burned as much CPU as the
-# server describes wrk, not webmachine. cpu_ticks reads the SERVER's own
+# already has, ported here: a number where the client burned as much CPU
+# as the server describes the client, not webmachine. cpu_ticks reads the SERVER's own
 # /proc/pid/stat (utime+stime), never system-wide - see snap_times below
 # for the client's side.
 cpu_ticks() {
@@ -131,7 +114,7 @@ cpu_ticks() {
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 WORK=$(mktemp -d)
 # Split like sysc_wait: the WAIT must run in the shell that backgrounded
-# wrk (a $() subshell is not its parent), only the read below may fork.
+# the client (a $() subshell is not its parent), only the read below may fork.
 snap_times() { times > "$WORK/.times"; }
 parse_child_cpu() {
   awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
@@ -162,14 +145,14 @@ fi
 # Accept-Encoding and Accept-Language are three of the eight headers
 # that clear ReqFacts::plain, and a plain request never walks the flow
 # tree at all - flow::answer returns the konst status on its first
-# branch. wrk's own request carries none of them, so every number this
-# script has ever produced measured the path a browser never takes.
+# branch. A bare generator request carries none of them, so a number
+# taken without BROWSER=1 measures the path a browser never takes.
 BROWSER="${BROWSER:-0}"
-WRK_HDRS=()
+CLI_HDRS=()
 if [ "$BROWSER" = 1 ]; then
-  WRK_HDRS=(-H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            -H 'Accept-Encoding: gzip, deflate'
-            -H 'Accept-Language: en-US,en;q=0.9')
+  CLI_HDRS=(--header 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            --header 'Accept-Encoding: gzip, deflate'
+            --header 'Accept-Language: en-US,en;q=0.9')
 fi
 
 SOCK=/tmp/wm-floor-bench.sock
@@ -269,13 +252,10 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  if [ "$CLIENT" = htgen ]; then
-    CLI_LINE="htgen -c$CONNS -d${DURATION}s $PROTO"
-    [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
-    CLI_LINE="$CLI_LINE (one ring, one thread)"
-  else
-    CLI_LINE="wrk -t1 -c$CONNS -d${DURATION}s h1"
-  fi
+  CLI_LINE="htgen -c$CONNS -d${DURATION}s $PROTO"
+  [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
+  [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
+  CLI_LINE="$CLI_LINE (one ring, one thread)"
   echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
@@ -297,34 +277,28 @@ OUT=$(mktemp)
   S0=$(cpu_ticks "$SRV")
   snap_times
   C0=$(parse_child_cpu)
-  if [ "$CLIENT" = htgen ]; then
-    # One ring, one thread - the same shape as the reactor it drives.
-    HTGEN_PROTO=()
-    [ "$PROTO" = h2 ] && HTGEN_PROTO=(--h2 --streams "$STREAMS")
-    if [ "$TRANSPORT" = unix ]; then
-      "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-        --path "$REQPATH" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
-    else
-      "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-        --seconds "$DURATION" --path "$REQPATH" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
-    fi
-  elif [ "$TRANSPORT" = unix ]; then
-    "$WRK" --unix "$SOCK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
-      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT$REQPATH" >"$WORK/cli.out" 2>&1 &
+  # One ring, one thread - the same shape as the reactor it drives.
+  HTGEN_SHAPE=()
+  [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$STREAMS")
+  [ "$PIPELINE" != 1 ] && HTGEN_SHAPE=(--pipeline "$PIPELINE")
+  if [ "$TRANSPORT" = unix ]; then
+    "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
+      --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.out" 2>&1 &
   else
-    "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
-      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT$REQPATH" >"$WORK/cli.out" 2>&1 &
+    "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
+      --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
+      >"$WORK/cli.out" 2>&1 &
   fi
   CLI=$!
   wait "$CLI" 2>/dev/null
   snap_times
   C1=$(parse_child_cpu)
   S1=$(cpu_ticks "$SRV")
-  WRKOUT=$(cat "$WORK/cli.out")
-  echo "$WRKOUT" | grep -E "Requests/sec|50%|99%|^responses="
+  CLIOUT=$(cat "$WORK/cli.out")
+  echo "$CLIOUT" | grep -E "^responses="
   sysc_wait
   NSYSC=$(sysc_read)
-  NDONE=$(echo "$WRKOUT" | grep -o '[0-9]* requests in' | awk '{print $1}')
+  NDONE=$(echo "$CLIOUT" | grep -o 'responses=[0-9]*' | cut -d= -f2)
   if [ -n "$NSYSC" ] && [ "$NSYSC" -gt 0 ] && [ -n "$NDONE" ]; then
     awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "req/syscall: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
   fi
@@ -336,7 +310,7 @@ OUT=$(mktemp)
   SCPU=$((SU * 100 / HZ / DURATION))
   CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge 90 ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Use CLIENT=htgen, or drive the load from a second machine." >&2
+    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
     echo "server: ${SCPU}% of one core   client: ${CCPU}% of one core"
@@ -344,7 +318,7 @@ OUT=$(mktemp)
   fi
 } | tee "$OUT"
 # A failed or client-bound run writes nothing: the log holds only numbers
-# that describe webmachine, never wrk. CLIENT_BOUND is read back from a
+# that describe webmachine, never the client. CLIENT_BOUND is read back from a
 # file - the block above runs in tee's subshell, its own variables die
 # with it.
 CLIENT_BOUND=$(cat "$WORK/client_bound" 2>/dev/null || echo 0)

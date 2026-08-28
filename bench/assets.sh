@@ -43,7 +43,7 @@
 # difference of two boots (many entries against one), so mruby boot
 # and ring init cancel out and what remains is per-entry setup.
 #
-# Knobs: THREADS/CONNS mandatory (the harness is part of the number),
+# Knobs: CONNS mandatory (the harness is part of the number),
 # SIZES (space-separated asset byte sizes, default "4096 32768 262144
 # 1048576"), ARMS (default all four), DURATION (default 10), REPS
 # (default 1), WARM (passed as WM_WARM_BUDGET; empty = the built-in
@@ -72,13 +72,18 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-[ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
-  echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
+[ -n "${CONNS:-}" ] || {
+  echo "CONNS= is mandatory - the harness is part of the number" >&2
+  exit 2
+}
+[ -z "${THREADS:-}" ] || {
+  echo "THREADS= is gone: both ends are one thread (#120, #196), and the knob only ever" >&2
+  echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
 REPS="${REPS:-1}"
-# PROTO=h1 (default: h2load --h1 -m1, the historical rows) or h2
+# PROTO=h1 (default, the historical rows) or h2
 # (prior knowledge, MULTI streams per connection - the delivery-plan
 # path, where DATA frames interleave and rounds are capacity-bound).
 PROTO="${PROTO:-h1}"
@@ -92,7 +97,13 @@ PORT="${PORT:-8123}"
 LOG="${LOG:-0}"
 SETUP_ENTRIES="${SETUP_ENTRIES:-5000}"
 BIN=mruby/build/host/bin/webmachine-server
-command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
+HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
+  echo "htgen not found. Build it once:" >&2
+  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
+  echo "or point HTGEN= at the binary." >&2
+  exit 1
+}
 command -v zip >/dev/null || { echo "zip not found" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not found" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
@@ -235,12 +246,16 @@ stop_srv() { kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; SRV=; }
 # and PROVES the shape before any number is taken. Every arm proves
 # something the next arm cannot: identity bytes, gzip bytes AND the
 # coding, the 304 status, the 206 status AND the slice.
-ARM_URL= ARM_WIRE=0
+ARM_URL= ARM_WIRE=0 ARM_PATH=
+# The same fields twice, because two tools ask for them: curl proves the
+# arm's shape, htgen drives its load.
 ARM_HDRS=()
+ARM_CLI=()
 arm_setup() {
   local port=$1 arm=$2 sz=$3
   local base="http://127.0.0.1:$port"
   ARM_HDRS=()
+  ARM_CLI=()
   case "$arm" in
     stored)
       ARM_URL="$base/a$sz.bin"
@@ -263,6 +278,7 @@ arm_setup() {
         exit 1
       }
       ARM_HDRS=(-H 'accept-encoding: gzip')
+      ARM_CLI=(--header 'accept-encoding: gzip')
       ;;
     304)
       ARM_URL="$base/a$sz.bin"
@@ -276,6 +292,7 @@ arm_setup() {
              -H "if-none-match: $etag" "$ARM_URL")
       [ "$code" = 304 ] || { echo "size $sz 304: If-None-Match returned $code" >&2; exit 1; }
       ARM_HDRS=(-H "if-none-match: $etag")
+      ARM_CLI=(--header "if-none-match: $etag")
       ;;
     206)
       ARM_URL="$base/a$sz.bin"
@@ -289,8 +306,10 @@ arm_setup() {
         exit 1
       }
       ARM_HDRS=(-H "range: bytes=0-$((half - 1))")
+      ARM_CLI=(--header "range: bytes=0-$((half - 1))")
       ;;
   esac
+  ARM_PATH="${ARM_URL#"$base"}"
   # The wire body, asked of the server instead of derived: curl without
   # --compressed does not decode, so size_download IS what crossed the
   # socket. 304 answers 0 and that is the point of the row.
@@ -304,8 +323,8 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
   for _ in $(seq "$REPS"); do
     local rps s0 s1 c0 c1 cli threads_running
     s0=$(cpu_ticks "$SRV")
-    h2load "${H2FLAGS[@]}" -D"$DURATION" -t"$THREADS" -c"$CONNS" "${ARM_HDRS[@]}" "$ARM_URL" \
-      >"$WORK/cli.out" 2>&1 &
+    "$HTGEN" --host 127.0.0.1 --port "$port" --conns "$CONNS" --seconds "$DURATION" \
+      --path "$ARM_PATH" "${H2FLAGS[@]}" "${ARM_CLI[@]}" >"$WORK/cli.out" 2>&1 &
     cli=$!
     snap_times
     c0=$(parse_child_cpu)
@@ -321,21 +340,21 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     sysc_wait
     local nsysc ndone rsc="-"
     nsysc=$(sysc_read)
-    ndone=$(grep '^requests:' "$WORK/cli.out" | awk '{print $6}')
+    ndone=$(grep -o 'responses=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
-    rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
-    # h2load switches unit on its own (KB/MB/GB per second), so the
-    # column would silently go blank at exactly the sizes it matters
-    # for. Normalise to MB/s here rather than trusting the spelling.
-    mbs=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]*[KMG]B/s' |
-      awk '{ u = substr($0, length($0) - 3, 1); v = substr($0, 1, length($0) - 4) + 0;
-             if (u == "K") v /= 1024; else if (u == "G") v *= 1024;
-             printf "%.2f", v }')
-    [ -n "$rps" ] || { echo "h2load produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
-    # THE CLIENT MUST NOT BE THE BOTTLENECK. If h2load burned as much
-    # cpu as the server, the figure describes h2load. Named refusal,
+    rps=$(grep -o 'rps=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
+    # One unit, always MB/s - h2load switched between KB/MB/GB on its
+    # own and the column went silently blank at exactly the sizes it
+    # mattered for.
+    mbs=$(grep -o 'MB/s=[0-9.]*' "$WORK/cli.out" | cut -d= -f2)
+    [ -n "$rps" ] || { echo "htgen produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
+    grep -q 'bad=0 ' "$WORK/cli.out" || {
+      echo "the client counted bad answers:" >&2; cat "$WORK/cli.out" >&2; exit 1
+    }
+    # THE CLIENT MUST NOT BE THE BOTTLENECK. If the client burned as
+    # much cpu as the server, the figure describes the client. Named refusal,
     # because a client-bound number in bench/results/ is worse than no
     # number - it looks like a verdict forever after. The bodyless arms
     # (304, and 206 at small sizes) hit this first: they are where the
@@ -351,14 +370,14 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     # needs three cores to fill our one lawfully spends more total CPU
     # than we do. A server at >=90% of its one core is the thing being
     # measured, whatever the client burned to get it there.
-    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge 90 ]; then
       # The ARM is refused, the SWEEP continues: killing everything
       # after it once cost the whole large-size half of a run for a
       # marginal 304 arm. The guarantee is unchanged - no client-bound
       # figure is ever written, the row says REFUSED - but the arms
       # that pass still produce their rows.
-      echo "REFUSED on arm $arm, size $sz: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% across $THREADS threads, $threads_running running)." >&2
-      echo "  This measures h2load, not webmachine. Raise THREADS, or drive the load from a second machine." >&2
+      echo "REFUSED on arm $arm, size $sz: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% of its core)." >&2
+      echo "  This measures htgen, not webmachine. Drive the load from a second machine." >&2
       printf 'REFUSED client-bound'
       return
     fi
@@ -396,16 +415,16 @@ boot_ns() {
 }
 
 if [ "$PROTO" = h2 ]; then
-  H2FLAGS=(-m"$MULTI")
-  PROTO_SPELL="h2 -m$MULTI"
+  H2FLAGS=(--h2 --streams "$MULTI")
+  PROTO_SPELL="h2 --streams $MULTI"
 else
-  H2FLAGS=(--h1 -m1)
-  PROTO_SPELL="--h1 -m1"
+  H2FLAGS=()
+  PROTO_SPELL="h1"
 fi
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS warm=${WARM:-default} log=${LOG} $(uname -mr)"
+  echo "harness: assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS warm=${WARM:-default} log=${LOG} $(uname -mr)"
   s0=$(steal_ticks)
   # cpu% = server CPU over the run, percent of ONE core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx
@@ -431,7 +450,7 @@ fi
   s1=$(steal_ticks)
   echo "steal +$((s1 - s0)) ticks over the whole sweep"
   # The rule, self-checked: with the log on, every answered request is
-  # a line - h2load's `done` counts plus the arm proofs' curls. The
+  # a line - the client's own count plus the arm proofs' curls. The
   # exact number varies with the proofs, so the check is "plausibly
   # complete": the file exists and is within the sweep's request count.
   if [ "$LOG" = 1 ]; then

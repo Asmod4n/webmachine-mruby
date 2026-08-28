@@ -23,14 +23,14 @@
 # ONE nginx instance serves the whole sweep (its own architecture; a
 # restart per size would penalize a server that is built to stay up).
 #
-# Knobs as in assets.sh: THREADS/CONNS mandatory, SIZES, ARMS, PROTO
-# (h1 = h2load --h1 -m1, h2 = prior knowledge -mMULTI), MULTI,
+# Knobs as in assets.sh: CONNS mandatory, SIZES, ARMS, PROTO
+# (h1 default, h2 = prior knowledge with --streams MULTI), MULTI,
 # DURATION, REPS, PORT, WORKERS, NGINX (binary override).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-[ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
-  echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
+[ -n "${CONNS:-}" ] || {
+  echo "CONNS= is mandatory - the harness is part of the number" >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
@@ -47,7 +47,18 @@ WORKERS="${WORKERS:-1}"
 # it is scrubbed from the environment before exec either way.
 NGINX="${NGINX_BIN:-${NGINX:-nginx}}"
 command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exit 1; }
-command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
+[ -z "${THREADS:-}" ] || {
+  echo "THREADS= is gone: the client is one thread (#196), and the knob only ever" >&2
+  echo "described h2load, which this tree no longer uses." >&2
+  exit 2
+}
+HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
+  echo "htgen not found. Build it once:" >&2
+  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
+  echo "or point HTGEN= at the binary." >&2
+  exit 1
+}
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
 "$NGINX" -V 2>&1 | grep -q http_v2_module || { echo "this nginx lacks http_v2" >&2; exit 1; }
 "$NGINX" -V 2>&1 | grep -q http_gzip_static_module || { echo "this nginx lacks gzip_static" >&2; exit 1; }
@@ -233,12 +244,14 @@ parse_child_cpu() {
                printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
 }
 
-ARM_URL= ARM_WIRE=0
+ARM_URL= ARM_WIRE=0 ARM_PATH=
 ARM_HDRS=()
+ARM_CLI=()
 arm_setup() {
   local arm=$1 sz=$2
   local base="http://127.0.0.1:$PORT"
   ARM_HDRS=()
+  ARM_CLI=()
   case "$arm" in
     stored)
       ARM_URL="$base/a$sz.bin"
@@ -253,6 +266,7 @@ arm_setup() {
       curl -s --max-time 30 "${CURLP[@]}" --compressed "$ARM_URL" | cmp -s - "$WORK/root/t$sz.txt" || {
         echo "size $sz gzip: decoded bytes differ" >&2; exit 1; }
       ARM_HDRS=(-H 'accept-encoding: gzip')
+      ARM_CLI=(--header 'accept-encoding: gzip')
       ;;
     304)
       ARM_URL="$base/a$sz.bin"
@@ -264,6 +278,7 @@ arm_setup() {
              -H "if-none-match: $etag" "$ARM_URL")
       [ "$code" = 304 ] || { echo "size $sz 304: got $code" >&2; exit 1; }
       ARM_HDRS=(-H "if-none-match: $etag")
+      ARM_CLI=(--header "if-none-match: $etag")
       ;;
     206)
       ARM_URL="$base/a$sz.bin"
@@ -274,8 +289,10 @@ arm_setup() {
       [ "$code" = 206 ] || { echo "size $sz 206: got $code" >&2; exit 1; }
       cmp -s "$WORK/got" "$WORK/slice" || { echo "size $sz 206: wrong window" >&2; exit 1; }
       ARM_HDRS=(-H "range: bytes=0-$((half - 1))")
+      ARM_CLI=(--header "range: bytes=0-$((half - 1))")
       ;;
   esac
+  ARM_PATH="${ARM_URL#"$base"}"
   ARM_WIRE=$(curl -s --max-time 30 "${CURLP[@]}" -o /dev/null -w '%{size_download}' \
              "${ARM_HDRS[@]}" "$ARM_URL")
 }
@@ -286,8 +303,8 @@ measure() {
   for _ in $(seq "$REPS"); do
     local rps s0 s1 c0 c1 cli threads_running
     s0=$(srv_ticks)
-    h2load "${H2FLAGS[@]}" -D"$DURATION" -t"$THREADS" -c"$CONNS" "${ARM_HDRS[@]}" "$ARM_URL" \
-      >"$WORK/cli.out" 2>&1 &
+    "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" --seconds "$DURATION" \
+      --path "$ARM_PATH" "${H2FLAGS[@]}" "${ARM_CLI[@]}" >"$WORK/cli.out" 2>&1 &
     cli=$!
     snap_times
     c0=$(parse_child_cpu)
@@ -303,16 +320,16 @@ measure() {
     sysc_wait
     local nsysc ndone rsc="-"
     nsysc=$(sysc_read)
-    ndone=$(grep '^requests:' "$WORK/cli.out" | awk '{print $6}')
+    ndone=$(grep -o 'responses=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
-    rps=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
-    mbs=$(grep '^finished' "$WORK/cli.out" | grep -o '[0-9.]*[KMG]B/s' |
-      awk '{ u = substr($0, length($0) - 3, 1); v = substr($0, 1, length($0) - 4) + 0;
-             if (u == "K") v /= 1024; else if (u == "G") v *= 1024;
-             printf "%.2f", v }')
-    [ -n "$rps" ] || { echo "h2load produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
+    rps=$(grep -o 'rps=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
+    mbs=$(grep -o 'MB/s=[0-9.]*' "$WORK/cli.out" | cut -d= -f2)
+    [ -n "$rps" ] || { echo "htgen produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
+    grep -q 'bad=0 ' "$WORK/cli.out" || {
+      echo "the client counted bad answers:" >&2; cat "$WORK/cli.out" >&2; exit 1
+    }
     local su=$((s1 - s0))
     local scpu=$((su * 100 / HZ / DURATION))
     local ccpu
@@ -320,9 +337,9 @@ measure() {
     # Client-bound = the server had headroom against its BUDGET
     # (WORKERS cores) while the client was pegged - see bench/assets.sh
     # for why comparing totals was wrong.
-    if [ "$su" -gt 0 ] && [ "$scpu" -lt $((WORKERS * 90)) ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
-      echo "REFUSED on arm $arm, size $sz: nginx had headroom (${scpu}% of ${WORKERS}00%) while the client was pegged (${ccpu}% across $THREADS threads, $threads_running running)." >&2
-      echo "  This measures h2load, not nginx. Raise THREADS or use a second machine." >&2
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt $((WORKERS * 90)) ] && [ "$ccpu" -ge 90 ]; then
+      echo "REFUSED on arm $arm, size $sz: nginx had headroom (${scpu}% of ${WORKERS}00%) while the client was pegged (${ccpu}% of its core)." >&2
+      echo "  This measures htgen, not nginx. Use a second machine." >&2
       printf 'REFUSED client-bound'
       return
     fi
@@ -333,16 +350,16 @@ measure() {
 }
 
 if [ "$PROTO" = h2 ]; then
-  H2FLAGS=(-m"$MULTI")
-  PROTO_SPELL="h2 -m$MULTI"
+  H2FLAGS=(--h2 --streams "$MULTI")
+  PROTO_SPELL="h2 --streams $MULTI"
 else
-  H2FLAGS=(--h1 -m1)
-  PROTO_SPELL="--h1 -m1"
+  H2FLAGS=()
+  PROTO_SPELL="h1"
 fi
 
 {
   echo "==== $(date -u +%FT%RZ) nginx/$("$NGINX" -v 2>&1 | grep -o '[0-9][0-9.]*' | head -1) gzip_static ===="
-  echo "harness: nginx-assets h2load $PROTO_SPELL -t$THREADS -c$CONNS -D${DURATION} reps=$REPS workers=$WORKERS sendfile=on $(uname -mr)"
+  echo "harness: nginx-assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS workers=$WORKERS sendfile=on $(uname -mr)"
   s0=$(steal_ticks)
   # cpu% = server CPU over the run, in percent of ONE core - the
   # column that lets a workers=16 row sit honestly next to a

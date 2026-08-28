@@ -1,17 +1,18 @@
 #!/bin/bash
 # h1 against h2: same server, same route, same client budget, and the
-# SAME CLIENT - h2load speaks both (--h1 forces cleartext HTTP/1.1),
-# so the client machinery cancels out of the comparison entirely.
+# SAME CLIENT - htgen speaks both, so the client machinery cancels out
+# of the comparison entirely.
 #
-# Four legs against / (TCP - h2load does not speak unix sockets):
+# Four legs against /, over AF_UNIX by default (htgen speaks it; set
+# TRANSPORT=tcp for the port):
 #
-#   h2load --h1 -m1     the h1 anchor: 1 outstanding request per
+#   h1                  the anchor: 1 outstanding request per
 #                       connection, which is what real h1 clients do
-#   h2load -m1          h2 under the identical load shape - what the
+#   h2 --streams 1      h2 under the identical load shape - what the
 #                       protocol costs per response. EXPECTATION:
 #                       within noise of the anchor; a real gap is a
 #                       finding.
-#   h2load -m32 / -m64  multiplexing, the thing h1 cannot have
+#   h2 --streams 32/64  multiplexing, the thing h1 cannot have
 #
 # Methodology, learned on the shared-vCPU container (2026-08-20):
 # oversubscribed shapes (c100, t2 client + server on 4 vCPUs) swing
@@ -31,10 +32,10 @@
 # buys, which is also what the older tree concluded when it deleted
 # every taskset it had.
 #
-# Knobs: THREADS/CONNS mandatory (the harness is part of the number) - and
-# CONNS must be >= THREADS, h2load's own requirement (one thread needs at
-# least one connection to drive); it refuses otherwise, and a rep with
-# nothing to show is refused here rather than logged as a blank row.
+# Knobs: CONNS mandatory (the harness is part of the number). A rep with
+# nothing to show is refused rather than logged as a blank row.
+# THREADS is GONE: both ends are one thread (#120, #196), and the knob
+# only ever described h2load.
 # DURATION (default 10), REPS (default 1), PORT (default 8123), APP (default
 # examples/hello.rb; empty = the bare floor). Appends to
 # bench/results/$(hostname).log; failed runs write nothing.
@@ -50,17 +51,32 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-[ -n "${THREADS:-}" ] && [ -n "${CONNS:-}" ] || {
-  echo "THREADS= and CONNS= are mandatory - the harness is part of the number" >&2
+[ -n "${CONNS:-}" ] || {
+  echo "CONNS= is mandatory - the harness is part of the number" >&2
+  exit 2
+}
+[ -z "${THREADS:-}" ] || {
+  echo "THREADS= is gone: both ends are one thread (#120, #196), and the knob only ever" >&2
+  echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
 REPS="${REPS:-1}"
 PORT="${PORT:-8123}"
+# htgen speaks AF_UNIX, which h2load never did - so the default loses the
+# whole TCP stack out of the measurement. TRANSPORT=tcp keeps the old
+# shape for a comparison against an older row.
+TRANSPORT="${TRANSPORT:-unix}"
+SOCK=/tmp/wm-h2bench.sock
 APP="${APP-examples/hello.rb}"
 BIN=mruby/build/host/bin/webmachine-server
-command -v h2load >/dev/null || { echo "h2load not found (nghttp2 package)" >&2; exit 1; }
-h2load --help 2>&1 | grep -q -- --h1 || { echo "this h2load lacks --h1" >&2; exit 1; }
+HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
+  echo "htgen not found. Build it once:" >&2
+  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
+  echo "or point HTGEN= at the binary." >&2
+  exit 1
+}
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
@@ -85,7 +101,7 @@ LOG_ARGS=()
 [ "$LOG" = 1 ] && LOG_ARGS=(--log "/tmp/wm-h2bench-access.$$.log")
 # THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
 # already has (and bench/floor.sh now too), ported here: a number where
-# h2load burned as much CPU as the server describes h2load, not
+# the client burned as much CPU as the server describes the client, not
 # webmachine. cpu_ticks reads the SERVER's own /proc/pid/stat
 # (utime+stime); snap_times/parse_child_cpu read the CLIENT's, via
 # bash's own `times` for its reaped children. Defined and WORK created
@@ -102,9 +118,14 @@ parse_child_cpu() {
                printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
 }
 
-"$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+if [ "$TRANSPORT" = unix ]; then
+  rm -f "$SOCK"
+  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+else
+  "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+fi
 SRV=$!
-trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"; rm -f "$SOCK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat /tmp/wm-h2bench-srv.log >&2; exit 1; }
 grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
@@ -113,7 +134,11 @@ grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
 }
 
 
-URL="http://127.0.0.1:$PORT/"
+if [ "$TRANSPORT" = unix ]; then
+  HTGEN_WHERE=(--sock "$SOCK")
+else
+  HTGEN_WHERE=(--host 127.0.0.1 --port "$PORT")
+fi
 RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 
@@ -180,7 +205,7 @@ sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
 
-run() {  # run <label> <h2load flags...>
+run() {  # run <label> <htgen flags...>
   local label=$1
   shift
   echo "== $label =="
@@ -192,7 +217,8 @@ run() {  # run <label> <h2load flags...>
     srv0=$(cpu_ticks "$SRV")
     snap_times
     c0=$(parse_child_cpu)
-    h2load -D"$DURATION" -t"$THREADS" -c"$CONNS" "$@" "$URL" >"$WORK/h2.out" 2>&1 &
+    "$HTGEN" "${HTGEN_WHERE[@]}" --conns "$CONNS" --seconds "$DURATION" "$@" \
+      >"$WORK/h2.out" 2>&1 &
     cli=$!
     wait "$cli" 2>/dev/null
     snap_times
@@ -202,30 +228,33 @@ run() {  # run <label> <h2load flags...>
     s1=$(steal_ticks)
     sysc_wait
     nsysc=$(sysc_read)
-    line=$(echo "$out" | grep '^finished')
+    line=$(echo "$out" | grep '^responses=')
     if [ -z "$line" ]; then
-      echo "  h2load produced no result - its own words:" >&2
+      echo "  htgen produced no result - its own words:" >&2
       echo "$out" | sed 's/^/    /' >&2
       echo "REFUSED: a rep with nothing to show must not be recorded as a blank row" >&2
       exit 1
     fi
     # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
     # comparison: the server had headroom AND the client was pegged.
-    # h2load lawfully spends more total CPU than we do across THREADS
-    # threads; that alone is not client-bound.
+    # Both ends are one thread, so "pegged" is one core.
     su=$((srv1 - srv0))
     scpu=$((su * 100 / HZ / DURATION))
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge $((THREADS * 90)) ]; then
-      echo "  REFUSED: the server had headroom (${scpu}% of its core) while h2load was pegged (${ccpu}% across $THREADS threads). This measures h2load, not webmachine." >&2
+    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge 90 ]; then
+      echo "  REFUSED: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% of its core). This measures htgen, not webmachine." >&2
       echo "REFUSED: a client-bound rep must not be recorded" >&2
       exit 1
     fi
-    ndone=$(echo "$out" | grep '^requests:' | awk '{print $6}')
+    ndone=$(echo "$line" | grep -o 'responses=[0-9]*' | cut -d= -f2)
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
-    rps=$(echo "$line" | grep -o '[0-9.]* req/s' | grep -o '^[0-9.]*')
+    rps=$(echo "$line" | grep -o 'rps=[0-9]*' | cut -d= -f2)
+    if echo "$line" | grep -qv 'bad=0 '; then
+      echo "  REFUSED: the client counted bad answers - $line" >&2
+      exit 1
+    fi
     echo "  $line (steal +$((s1 - s0)) ticks, req/syscall $rsc, server ${scpu}%, client ${ccpu}%)"
     vals+=("$rps")
   done
@@ -237,9 +266,9 @@ run() {  # run <label> <h2load flags...>
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: h2load -t$THREADS -c$CONNS -D${DURATION} reps=$REPS app=${APP:-none} log=${LOG} port=$PORT $(uname -mr)"
-  run "h1 anchor: h2load --h1 -m1" --h1 -m1
-  run "h2 -m1 (expect: within noise of the anchor)" -m1
-  run "h2 -m32" -m32
-  run "h2 -m64" -m64
+  echo "harness: htgen -c$CONNS -d${DURATION}s reps=$REPS app=${APP:-none} log=${LOG} transport=$TRANSPORT $(uname -mr)"
+  run "h1 anchor: one request in flight"
+  run "h2 --streams 1 (expect: within noise of the anchor)" --h2 --streams 1
+  run "h2 --streams 32" --h2 --streams 32
+  run "h2 --streams 64" --h2 --streams 64
 } | tee -a "$RESULTS"
