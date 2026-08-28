@@ -792,3 +792,78 @@ assert('ws: the resource is THE PEER\'S - two connections keep separate state') 
     b.close
   end
 end
+
+# RFC 6455 5.2/5.5: the header refusals. These used to be a unit test over
+# a second parser that only the test called; now the frames go to the
+# running server, which is the only thing that can be wrong about them.
+def ws_refused(name, frame, code = 1002)
+  ws_server(WS_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s)
+    s.write(frame)
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op, name
+    assert_true payload.bytesize >= 2, "#{name}: a close carries its code"
+    assert_equal code, (payload.getbyte(0) << 8) | payload.getbyte(1), name
+    s.close
+  end
+end
+
+assert('ws: an unmasked client frame is a protocol error (5.1)') do
+  f = ws_frame(0x1, 'x')
+  f.setbyte(1, f.getbyte(1) & 0x7f)
+  ws_refused('unmasked', f)
+end
+
+assert('ws: RSV2 and RSV3 are never negotiated, so they are refused (5.2)') do
+  [0x20, 0x10].each do |bit|
+    f = ws_frame(0x1, 'x')
+    f.setbyte(0, f.getbyte(0) | bit)
+    ws_refused("rsv bit #{bit}", f)
+  end
+end
+
+assert('ws: an opcode RFC 6455 5.2 does not define is refused') do
+  [0x3, 0x7, 0xb, 0xf].each { |op| ws_refused("opcode #{op}", ws_frame(op, 'x')) }
+end
+
+assert('ws: a control frame is never fragmented and never long (5.5)') do
+  ws_refused('fragmented ping', ws_frame(0x9, 'x', fin: false))
+  ws_refused('126-byte ping', ws_frame(0x9, 'y' * 126))
+end
+
+assert('ws: a length must use the shortest encoding that fits (5.2)') do
+  masked = ''.b
+  mask = "\x21\x09\x8f\x3c".b
+  ('x' * 100).bytes.each_with_index { |b, i| masked << (b ^ mask.getbyte(i % 4)).chr }
+  ws_refused('16-bit length of 100', "\x81\xfe".b + ws_be16(100) + mask + masked)
+
+  wide = ''.b
+  wide << 0x81 << (0x80 | 127)
+  7.downto(0) { |i| wide << ((100 >> (i * 8)) & 0xff) }
+  ws_refused('64-bit length of 100', wide.b + mask + masked)
+end
+
+assert('ws: the top bit of a 64-bit length is reserved (5.2)') do
+  wide = ''.b
+  wide << 0x81 << (0x80 | 127) << 0x80
+  7.times { wide << 0 }
+  ws_refused('64-bit length with bit 63 set', wide.b + "\x21\x09\x8f\x3c".b)
+end
+
+assert('ws: a continuation that continues nothing is a protocol error (5.4)') do
+  ws_refused('lone continuation', ws_frame(0x0, 'x'))
+end
+
+assert('ws: two data frames may not interleave (5.4)') do
+  ws_server(WS_ECHO) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s)
+    s.write(ws_frame(0x1, 'one', fin: false))
+    s.write(ws_frame(0x1, 'two'))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1002, (payload.getbyte(0) << 8) | payload.getbyte(1)
+    s.close
+  end
+end

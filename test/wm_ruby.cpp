@@ -1,8 +1,15 @@
 /*
- * Test-only surface, compiled into mrbtest and nothing else (mruby
- * builds test/ * of a gem only for its test binary). src/ never carries
- * test code; this drives the real machinery from outside, the way
- * test/flow_vectors.cpp drives the flow walker.
+ * The ONE unit-test surface this tree has, compiled into mrbtest and
+ * nothing else (mruby builds test/ * of a gem only for its test binary).
+ * src/ never carries test code; this drives the real machinery from
+ * outside.
+ *
+ * Everything else is a bintest against the running server, because the
+ * running server is the authority on whether something works. This file
+ * is the exception, and the reason is below: webmachine-ruby's specs are
+ * an ORACLE we did not write and cannot reach through a socket - they
+ * construct a resource, a request and a response in Ruby and read the
+ * answer back out of objects.
  *
  * WHAT IT IS FOR: webmachine-ruby's own resource specs are the oracle
  * for this tree (spec/webmachine/decision/flow_spec.rb and
@@ -288,9 +295,9 @@ mrb_value digest_b64(mrb_state* mrb, mrb_value) {
 
 }  // namespace
 
-// The gem gets ONE gem_test entry point (test/hpack_vectors.c owns it);
-// this is what it calls for the oracle's C half.
-extern "C" void mrb_webmachine_wm_ruby_init(mrb_state* mrb) {
+// The gem's ONE gem_test entry point - mruby calls this once when mrbtest
+// starts, and the oracle's C half is all there is to register.
+extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
   struct RClass* wm = mrb_module_get_id(mrb, mrb_intern_lit(mrb, "Webmachine"));
   struct RClass* dec = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "Decision"));
   struct RClass* fsm = mrb_define_class_under_id(mrb, dec, mrb_intern_lit(mrb, "FSM"), mrb->object_class);

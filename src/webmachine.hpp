@@ -2563,6 +2563,33 @@ struct Head {
   bool control = false;  // RFC 6455 5.5: opcode has the high bit
 };
 
+// RFC 6455 5.2: how many header octets the NEXT decision needs, given how
+// many have arrived. Two to see the length encoding and the mask bit, then
+// two or eight more for an extended Payload length, then four for the
+// Masking-key. Pure and here, not in the reader, because read_head reads
+// all of them unconditionally - so this is the ONE thing that has to be
+// true before read_head may be called at all.
+inline uint8_t header_need(const unsigned char* h, uint8_t have) {
+  if (have < 2) return 2;
+  const uint8_t len7 = static_cast<uint8_t>(h[1] & 0x7f);
+  const uint8_t ext = len7 == 126 ? 2 : (len7 == 127 ? 8 : 0);
+  return static_cast<uint8_t>(2 + ext + ((h[1] & 0x80) != 0 ? 4 : 0));
+}
+
+// RFC 6455 5.3: transformed-octet-i = original-octet-i XOR
+// masking-key-octet-(i MOD 4). Copying, not in place, because every caller
+// is already moving the octets somewhere - into the control buffer, into
+// the inflate window, into a test's own buffer - and doing both in one
+// pass is what the reader did before this was a function.
+// `key_at` is i's offset within the frame, so a payload delivered in
+// pieces keeps the key aligned across recvs.
+inline void unmask_copy(char* dst, const char* src, size_t n, const unsigned char key[4],
+                        size_t key_at) {
+  for (size_t i = 0; i < n; i++) {
+    dst[i] = static_cast<char>(src[i] ^ key[(key_at + i) & 3]);
+  }
+}
+
 inline Head read_head(const unsigned char* h, bool have_codec) {
   Head o;
   const unsigned char b0 = h[0];
@@ -2630,28 +2657,6 @@ inline Head::Err admit(const Head& h, uint8_t msg_op, bool msg_deflated, uint64_
   if (!h.rsv1 && h.payload_length > max_message) return Head::Err::kTooBig;
   return Head::Err::kNone;
 }
-
-// RFC 6455 5.2: one frame, read out of a buffer - the header's verdict plus
-// where its Payload data begins. `consumed` is not a 6455 term: it is how
-// much of the buffer this frame occupied, which is what a caller reading a
-// stream of frames needs and the wire format does not say.
-struct Frame {
-  uint8_t opcode = 0;           // RFC 6455 5.2: Opcode
-  bool fin = false;             // RFC 6455 5.2: FIN
-  bool rsv1 = false;            // RFC 6455 5.2: RSV1
-  const char* payload = nullptr;  // RFC 6455 5.2: Payload data
-  size_t payload_length = 0;      // RFC 6455 5.2: Payload length
-  size_t consumed = 0;
-};
-
-enum class Parse : uint8_t {
-  kOk,
-  kNeedMore,
-  kError,
-};
-
-Parse parse(char* data, size_t len, size_t max_payload, bool allow_rsv1, Frame& out,
-            uint16_t& code);
 
 size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]);
 

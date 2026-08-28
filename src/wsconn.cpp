@@ -450,14 +450,6 @@ bool begin_frame(WsConn* c, std::string& sink) {
   return true;
 }
 
-// RFC 6455 5.2: how many header bytes the next decision needs.
-uint8_t header_need(const WsConn* c) {
-  if (c->hlen < 2) return 2;
-  const uint8_t len7 = static_cast<uint8_t>(c->hbuf[1] & 0x7f);
-  const uint8_t ext = len7 == 126 ? 2 : (len7 == 127 ? 8 : 0);
-  return static_cast<uint8_t>(2 + ext + ((c->hbuf[1] & 0x80) != 0 ? 4 : 0));
-}
-
 struct FeedCall {
   WsConn* c;
   const char* data;
@@ -476,11 +468,11 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
 
   while (len != 0) {
     if (!c->in_payload) {
-      c->hneed = header_need(c);
+      c->hneed = ws::header_need(c->hbuf, c->hlen);
       while (c->hlen < c->hneed && len != 0) {
         c->hbuf[c->hlen++] = static_cast<unsigned char>(*p++);
         len--;
-        c->hneed = header_need(c);
+        c->hneed = ws::header_need(c->hbuf, c->hlen);
       }
       if (c->hlen < c->hneed) break;
       c->hlen = 0;
@@ -499,18 +491,15 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
 
     size_t take = len < c->remaining ? len : static_cast<size_t>(c->remaining);
     if (c->control) {
-      for (size_t i = 0; i < take; i++) {
-        c->ctl[c->ctl_len++] = static_cast<char>(p[i] ^ c->mask[(c->mask_off + i) & 3]);
-      }
+      ws::unmask_copy(c->ctl + c->ctl_len, p, take, c->mask, c->mask_off);
+      c->ctl_len += take;
     } else {
       char tmp[512];
       size_t done = 0;
       bool broke = false;
       while (done < take) {
         const size_t chunk = take - done < sizeof(tmp) ? take - done : sizeof(tmp);
-        for (size_t i = 0; i < chunk; i++) {
-          tmp[i] = static_cast<char>(p[done + i] ^ c->mask[(c->mask_off + done + i) & 3]);
-        }
+        ws::unmask_copy(tmp, p + done, chunk, c->mask, c->mask_off + done);
         if (c->msg_deflated) {
           const size_t max = c->res->max_message;
           const int rc = c->codec->inflate_some(tmp, chunk, [&](const char* q, size_t qn) {
