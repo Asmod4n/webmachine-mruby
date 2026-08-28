@@ -70,13 +70,13 @@ fi
 
 WRK="${WRK:-$HOME/wrk/wrk}"
 [ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
-if [ "$CLIENT" = wrk ] && [ "${TRANSPORT:-unix}" = unix ] && ! grep -aq WRK_UNIX "$WRK"; then
+if [ "$CLIENT" = wrk ] && [ "${TRANSPORT:-unix}" = unix ] && ! "$WRK" --help 2>&1 | grep -q -- "--unix"; then
   # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
   # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
   # run. Refused here, with the fix named. grep -a, not strings(1):
   # strings is binutils, absent on a stock Pi, and a missing checker
   # once rejected a correctly patched wrk.
-  echo "$WRK is not the WRK_UNIX-patched build - apply bench/wrk-af-unix.patch (see its header)" >&2
+  echo "$WRK has no --unix - apply bench/wrk-af-unix.patch (see its header)" >&2
   exit 1
 fi
 
@@ -134,24 +134,14 @@ if [ "$BROWSER" = 1 ]; then
 fi
 
 SOCK=/tmp/wm-floor-bench.sock
-DUMMY=""
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
   "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
-  # The patched wrk routes every byte over WRK_UNIX but still validates
-  # its URL with one probe connect() to the TCP port - something must
-  # answer that handshake or wrk refuses to start.
-  python3 -c "
-import socket
-s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-s.bind(('127.0.0.1',$PORT)); s.listen(16)
-while True:
-    c,_=s.accept(); c.close()" >/dev/null 2>&1 & DUMMY=$!
 else
   "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
-trap 'kill $SRV $DUMMY 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- requests per syscall -------------------------------------------
 # The point of a ring server is syscall AMORTIZATION - one enter
@@ -276,7 +266,7 @@ OUT=$(mktemp)
         --seconds "$DURATION" >"$WORK/cli.out" 2>&1 &
     fi
   elif [ "$TRANSPORT" = unix ]; then
-    WRK_UNIX="$SOCK" "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
+    "$WRK" --unix "$SOCK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
       "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
   else
     "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
