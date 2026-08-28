@@ -77,7 +77,11 @@ static void enforce_cap() {
   on_disk = len;
 }
 
-// One write(2) per filled batch. A write error is a named refusal.
+// One write(2) per record, both streams: nothing is held back waiting for
+// more traffic. A buffer here would mean the newest entries live only in
+// this process, so a reader sees a log that lags by the buffer and a crash
+// takes the entries that mattered most with it. A write error is a named
+// refusal.
 static void flush_out() {
   size_t off = 0;
   while (off < out.size()) {
@@ -174,7 +178,9 @@ static void spell_peer(const char* sa, size_t salen, bool no_track) {
 static void run_access() {
   std::string in;
   char rbuf[256 * 1024];
-  out.reserve(1u << 20);
+  // One line at a time now, so this only has to be big enough that a single
+  // entry never reallocates. The old MiB was the batch it no longer keeps.
+  out.reserve(1u << 16);
   for (;;) {
     const ssize_t n = ::read(0, rbuf, sizeof rbuf);
     if (n < 0) {
@@ -233,7 +239,7 @@ static void run_access() {
       out.append("\"\n", 2);
 
       off += need;
-      if (out.size() >= (1u << 20)) flush_out();
+      flush_out();
     }
     in.erase(0, off);
   }

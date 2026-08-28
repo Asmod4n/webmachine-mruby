@@ -33,8 +33,11 @@ bool built_ = false;
 bool entered_ = false;
 
 // One webmachine-logd over a socketpair, before the ring exists. Two
-// streams take this road; only the mode word differs.
-int spawn_logd(const char* mode, const char* path, const char* privacy, char* err, size_t errlen) {
+// streams take this road, and they do NOT share a ceiling - see the
+// two call sites for why an access log is a window and an error log
+// is not.
+int spawn_logd(const char* mode, const char* path, const char* privacy,
+               unsigned long long max_bytes, char* err, size_t errlen) {
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
     std::snprintf(err, errlen, "--%s log socketpair: %s", mode, std::strerror(errno));
@@ -51,7 +54,7 @@ int spawn_logd(const char* mode, const char* path, const char* privacy, char* er
     }
   }
   char cap[24];
-  std::snprintf(cap, sizeof cap, "%llu", opts_.log_max_bytes);
+  std::snprintf(cap, sizeof cap, "%llu", max_bytes);
   const pid_t pid = ::fork();
   if (pid < 0) {
     std::snprintf(err, errlen, "--%s log fork: %s", mode, std::strerror(errno));
@@ -237,13 +240,23 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
                    "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
                    "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
     }
+    // The access log is a WINDOW - it answers what happened in the last
+    // so-many bytes. Dropping the oldest is its semantics, not a loss.
     log_fd_ = spawn_logd("access", opts_.log_path,
-                         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", err, errlen);
+                         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon",
+                         opts_.log_max_bytes, err, errlen);
     if (log_fd_ < 0) return false;
     cfg.log_fd = log_fd_;
   }
   if (opts_.error_log_path != nullptr) {
-    err_fd_ = spawn_logd("error", opts_.error_log_path, nullptr, err, errlen);
+    // NO CEILING (0 disables the cap in webmachine-logd). An error log is
+    // not a window: what lands here is a 500 or a Ruby exception with its
+    // backtrace, never ordinary traffic, so it does not grow on its own.
+    // It grows in a fault storm - and that is the one moment where the
+    // FIRST entry is the one that names the cause and everything after it
+    // is consequence. A ceiling that keeps the newest half would throw
+    // away exactly the line worth having.
+    err_fd_ = spawn_logd("error", opts_.error_log_path, nullptr, 0, err, errlen);
     if (err_fd_ < 0) return false;
     cfg.err_fd = err_fd_;
   }
