@@ -1469,7 +1469,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.init_needed = init.defined;
   out.init_m = init.m;
   out.init_fast = init.fast;
-  std::fprintf(stderr, "PROBE init_needed=%d live_tt=%d\n", (int)out.init_needed, (int)out.live_tt);
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
