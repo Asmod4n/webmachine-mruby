@@ -49,42 +49,34 @@ else
 fi
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
-# CLIENT=wrk (default) | load. wrk stays the ORACLE - see #196: our own
-# generator shares phr, the framing assumptions and the ring patterns with
-# the server, so a shared misunderstanding would not show up in its
-# numbers. Never report a load number without a wrk number beside it.
+# CLIENT=wrk (default) | htgen. wrk stays the ORACLE - see #196: htgen
+# shares phr, the framing assumptions and the ring patterns with the
+# server, so a shared misunderstanding would not show up in its numbers.
+# Never report an htgen number without a wrk number beside it.
 CLIENT="${CLIENT:-wrk}"
-# PROTO=h1 (default) | h2. Only CLIENT=load speaks h2 - wrk is h1 only,
+# PROTO=h1 (default) | h2. Only CLIENT=htgen speaks h2 - wrk is h1 only,
 # and bench/h2.sh keeps h2load as the independent oracle for it.
 PROTO="${PROTO:-h1}"
 STREAMS="${STREAMS:-1}"
-LOADBIN=bench/load/load
-if [ "$CLIENT" = load ]; then
-  URING_INC_L=mruby/build/repos/host/mruby-io_uring/include
-  PHR_DIR=mruby/build/repos/host/mruby-phr/deps/picohttpparser
-  LIBURING_L=mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a
-  # The h2 half is built out of src/h2_wire.hpp, so it needs the SERVER's
-  # HPACK too. Linked as the objects rake already built, not compiled
-  # again: same ls-hpack, same flags, no second copy to drift.
-  HPACK_L=mruby/build/host/mrbgems/webmachine-mruby/deps/ls-hpack
-  for o in "$HPACK_L/lshpack.o" "$HPACK_L/deps/xxhash/xxhash.o" "$LIBURING_L"; do
-    [ -f "$o" ] || { echo "$o missing - run: rake compile" >&2; exit 1; }
-  done
-  if [ ! -x "$LOADBIN" ] || [ bench/load/load.cpp -nt "$LOADBIN" ] \
-     || [ src/h2_wire.hpp -nt "$LOADBIN" ]; then
-    g++ -O3 -march=native -std=c++20 -I"$URING_INC_L" -I"$PHR_DIR" \
-      -Isrc -Ideps/ls-hpack -Ideps/ls-hpack/deps/xxhash \
-      bench/load/load.cpp "$PHR_DIR/picohttpparser.c" \
-      "$HPACK_L/lshpack.o" "$HPACK_L/deps/xxhash/xxhash.o" "$LIBURING_L" \
-      -o "$LOADBIN" || exit 1
-  fi
+# htgen used to live here as bench/load. It is its own tool now
+# (github.com/Asmod4n/htgen) - a load generator is not part of an HTTP
+# state model, and it was building against this tree's build directory,
+# which tied a measuring instrument to the thing it measures.
+HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+if [ "$CLIENT" = htgen ]; then
+  [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
+    echo "htgen not found. Build it once:" >&2
+    echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
+    echo "or point HTGEN= at the binary." >&2
+    exit 1
+  }
 elif [ "$CLIENT" != wrk ]; then
-  echo "CLIENT must be wrk or load" >&2
+  echo "CLIENT must be wrk or htgen" >&2
   exit 2
 fi
 case "$PROTO" in
   h1) ;;
-  h2) [ "$CLIENT" = load ] || { echo "PROTO=h2 needs CLIENT=load - wrk speaks h1 only" >&2; exit 2; } ;;
+  h2) [ "$CLIENT" = htgen ] || { echo "PROTO=h2 needs CLIENT=htgen - wrk speaks h1 only" >&2; exit 2; } ;;
   *) echo "PROTO must be h1 or h2" >&2; exit 2 ;;
 esac
 if [ "$PROTO" = h1 ] && [ "$STREAMS" != 1 ]; then
@@ -254,8 +246,8 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  if [ "$CLIENT" = load ]; then
-    CLI_LINE="load -c$CONNS -d${DURATION}s $PROTO"
+  if [ "$CLIENT" = htgen ]; then
+    CLI_LINE="htgen -c$CONNS -d${DURATION}s $PROTO"
     [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
     CLI_LINE="$CLI_LINE (one ring, one thread)"
   else
@@ -282,16 +274,16 @@ OUT=$(mktemp)
   S0=$(cpu_ticks "$SRV")
   snap_times
   C0=$(parse_child_cpu)
-  if [ "$CLIENT" = load ]; then
+  if [ "$CLIENT" = htgen ]; then
     # One ring, one thread - the same shape as the reactor it drives.
-    LOAD_PROTO=()
-    [ "$PROTO" = h2 ] && LOAD_PROTO=(--h2 --streams "$STREAMS")
+    HTGEN_PROTO=()
+    [ "$PROTO" = h2 ] && HTGEN_PROTO=(--h2 --streams "$STREAMS")
     if [ "$TRANSPORT" = unix ]; then
-      "$LOADBIN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-        "${LOAD_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
+      "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
+        "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     else
-      "$LOADBIN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-        --seconds "$DURATION" "${LOAD_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
+      "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
+        --seconds "$DURATION" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     fi
   elif [ "$TRANSPORT" = unix ]; then
     "$WRK" --unix "$SOCK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
@@ -321,7 +313,7 @@ OUT=$(mktemp)
   SCPU=$((SU * 100 / HZ / DURATION))
   CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge 90 ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Use CLIENT=load, or drive the load from a second machine." >&2
+    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Use CLIENT=htgen, or drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
     echo "server: ${SCPU}% of one core   client: ${CCPU}% of one core"
