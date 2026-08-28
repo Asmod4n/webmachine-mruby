@@ -456,3 +456,42 @@ assert('resource: an instance-level content_types_provided types the answer') do
     end
   end
 end
+
+# RFC 9110 13: examples/conditional.rb is the caching resource - two
+# provided types (so Vary), generate_etag, last_modified and expires. It is
+# the only example that drives the value engine's FIELD emission, which is
+# what makes it the load for that path.
+assert('resource: the conditional example spells its caching fields, then answers 304') do
+  src = File.read(File.expand_path('../examples/conditional.rb', __dir__))
+  resource_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i), head
+      assert_true head.match?(/^Vary: Accept\r$/i), head
+      assert_true head.match?(/^ETag: "article-7"\r$/i), head
+      assert_true head.match?(/^Last-Modified: Sun, 24 Aug 2025 01:46:40 GMT\r$/i), head
+      assert_true head.match?(/^Expires: Mon, 25 Aug 2025 01:46:40 GMT\r$/i), head
+      assert_true body.include?('Conditional'), body
+
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"article-7\"\r\n\r\n")
+      nm = +''
+      nm << wm_recv(s) until nm.end_with?("\r\n\r\n")
+      assert_true nm.start_with?('HTTP/1.1 304 Not Modified'), nm
+      assert_true nm.match?(/^ETag: "article-7"\r$/i), nm
+      assert_false nm.match?(/^Content-Length: [1-9]/i), nm
+
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n" \
+              "If-Modified-Since: Sun, 24 Aug 2025 01:46:40 GMT\r\n\r\n")
+      ms = +''
+      ms << wm_recv(s) until ms.end_with?("\r\n\r\n")
+      assert_true ms.start_with?('HTTP/1.1 304 Not Modified'), ms
+
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n")
+      jh, jb = resource_read(s)
+      assert_true jh.match?(%r{^Content-Type: application/json\r$}i), jh
+      assert_equal '{"title":"Conditional"}', jb
+    end
+  end
+end
