@@ -778,7 +778,11 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         h2.head_cache.sec != sec_) {
       unsigned char dbuf[64];
       unsigned char* dp = dbuf;
-      if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+      // NOT indexed: these bytes are kept and sent again for every
+      // answer of this second, and an insert replayed is an insert the
+      // peer performs again each time.
+      if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_),
+                        false)) {
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);

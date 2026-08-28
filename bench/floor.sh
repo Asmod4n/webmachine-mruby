@@ -252,7 +252,10 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
-  CLI_LINE="htgen -c$CONNS -d${DURATION}s $PROTO"
+  # WHICH htgen - not just "htgen". A stale binary earlier in PATH than
+  # the one just built is invisible otherwise, and the number it produces
+  # looks exactly like the number the new one would have produced.
+  CLI_LINE="$HTGEN($(date -r "$HTGEN" +%Y-%m-%dT%H:%M 2>/dev/null || echo '?')) -c$CONNS -d${DURATION}s $PROTO"
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"

@@ -128,8 +128,16 @@ inline uint16_t h2_u16(const unsigned char* p) {
 // field would not fit - the caller then has an error to name, not a
 // truncated block. Shared: the server encodes its response fields with
 // this, the load generator its request pseudo-fields.
+// `index` says whether ls-hpack may put this field in the dynamic table
+// (RFC 7541 6.2.1) or must spell it without one (6.2.2). It matters for
+// any block that is CACHED AND REPLAYED: HPACK is stateful, so replaying
+// an insert makes the peer insert - and evict - once per replay, which
+// on a busy connection is one allocation per answer in every client that
+// talks to us. A block we send more than once must not move the peer's
+// table.
 inline bool h2_enc_field(struct lshpack_enc* enc, unsigned char*& ep, unsigned char* eend,
-                         const char* name, size_t nlen, const char* val, size_t vlen) {
+                         const char* name, size_t nlen, const char* val, size_t vlen,
+                         bool index = true) {
   // NOTHING is checked here, and that is deliberate: what an app can
   // shape is checked where it ENTERS the header buffer - http::
   // field_name_ok / field_value_ok, at response.cpp's Headers#[]= and at
@@ -145,6 +153,11 @@ inline bool h2_enc_field(struct lshpack_enc* enc, unsigned char*& ep, unsigned c
   std::memcpy(hbuf + nlen + 2, val, vlen);
   lsxpack_header_t xh;
   lsxpack_header_set_offset2(&xh, hbuf, 0, nlen, nlen + 2, vlen);
+  // lshpack.c: indexed_type 0 = with incremental indexing, 1 = without,
+  // 2 = never indexed. 1 is the one RFC 7541 6.2.2 describes and the one
+  // a replayed block needs; NEVER_INDEX (6.2.3) would say "sensitive",
+  // which a Date is not.
+  if (!index) xh.indexed_type = 1;
   unsigned char* np = lshpack_enc_encode(enc, ep, eend, &xh);
   if (np == ep) return false;
   ep = np;
