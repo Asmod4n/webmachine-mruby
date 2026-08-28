@@ -1338,7 +1338,16 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
               static_cast<size_t>(chosen) < cts.size() ? static_cast<size_t>(chosen) : 0;
           const Resource::TypedHandler& th = cts[idx];
           const bool prebuilt = !ct_dyn && idx == 0 && !res.dynamic_body;
-          if (!prebuilt) {
+          if (prebuilt) {
+            // The writers own this case: the first pair's body sits in the
+            // bundle's prebuilt 200, head and all, and nothing here improves
+            // on it.
+          } else if (th.has_baked) {
+            // A negotiated pair whose handler is a `def self.` - the answer
+            // was rendered at setup, and o18 is only where it is handed over.
+            res.run_body->assign(th.baked);
+            res.run_have_body = true;
+          } else {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
               v = naked(th.m, th.irep, th.native, th.handler);
@@ -1627,6 +1636,24 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
           th.irep = hr.irep;
           th.native = hr.native;
         }
+        // cb.rb: the class form is answered once, here - for EVERY pair, not
+        // just the first. Asked per request it would be looked up on the
+        // instance, where the name may belong to somebody else entirely.
+        const Resolved hk = resolve(mrb, mrb_class(mrb, klass), th.handler);
+        if (hk.defined) {
+          const mrb_value rendered = call_resolved(mrb, hk, th.handler, klass,
+                                                   mrb_class(mrb, klass));
+          if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
+            mrb->exc == nullptr
+                ? static_cast<void>(std::snprintf(err, errlen,
+                                                  "the body handler must return a String"))
+                : exc_into(mrb, "body handler raised", err, errlen);
+            mrb_gc_arena_restore(mrb, ai);
+            return false;
+          }
+          th.baked.assign(RSTRING_PTR(rendered), static_cast<size_t>(RSTRING_LEN(rendered)));
+          th.has_baked = true;
+        }
         out.content_types_provided.push_back(std::move(th));
       }
     } else {
@@ -1682,6 +1709,12 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
   out.konst.content_type = out.content_types_provided[0].type;
+  // RFC 9110 12.5.1: the fold bakes ONE body, from content_types_provided[0].
+  // A resource offering a second type can be asked for it, and the answer to
+  // that is a body the fold never rendered - so it runs.
+  if (out.content_types_provided.size() > 1) {
+    out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
+  }
 
   bool known[7] = {true, true, true, true, true, true, false};
   if (!out.cb_known_methods.has &&
@@ -1696,6 +1729,17 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
                                    allowed, err, errlen))) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
+  }
+
+  // RFC 9110 9.3.3 / 9.3.4: n11 and o14/p3 are action nodes, and every action
+  // they could take is a callback - process_post, post_is_create?,
+  // content_types_accepted. A resource that allows POST or PUT with not one
+  // callback defined has only the engine's answer (500 at n11, 415 at p3),
+  // and the fold cannot bake an action it will not perform.
+  if (out.cb_mask == 0 &&
+      (allowed[static_cast<size_t>(flow::Method::kPost)] ||
+       allowed[static_cast<size_t>(flow::Method::kPut)])) {
+    out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
   }
 
   out.konst.allow.clear();

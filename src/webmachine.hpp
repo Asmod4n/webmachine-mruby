@@ -331,6 +331,10 @@ struct ReqFacts {
   bool has_if_modified_since = false;
   bool if_modified_since_valid = false;
   bool if_modified_since_future = false;
+  // RFC 9110 12.5.1: whether this request's Accept names a media type
+  // the bound resource offers. True by default so a request without an
+  // Accept header negotiates nothing, exactly as c3 sends it.
+  bool accept_ok = true;
   bool response_has_location = false;
   bool response_has_body = true;
   bool plain = true;
@@ -350,6 +354,7 @@ constexpr bool eval_request(Node id, const ReqFacts& r) {
     case Node::kB9: return r.has_content_md5;
     case Node::kB3: return r.method == Method::kOptions;
     case Node::kC3: return r.has_accept;
+    case Node::kC4: return r.accept_ok;
     case Node::kD4: return r.has_accept_language;
     case Node::kE5: return r.has_accept_charset;
     case Node::kF6: return r.has_accept_encoding;
@@ -382,8 +387,13 @@ constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
   Node n = Node::kB13;
   for (;;) {
     const FlowNode& f = kFlow[static_cast<size_t>(n)];
-    const bool ans =
-        f.kind == Kind::kRequest ? eval_request(n, req) : k.ans[static_cast<size_t>(n)];
+    // c4 reads the request as surely as any kRequest node does - it is the
+    // client's Accept against this resource's types, and no fold can bake
+    // that. The other kConneg nodes (d5/e6/f7) stay konst: languages and
+    // charsets are named refusal in this tree, so their answer never moves.
+    const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
+                         ? eval_request(n, req)
+                         : k.ans[static_cast<size_t>(n)];
     const Target& t = ans ? f.on_true : f.on_false;
     if (t.status != 0) return t.status;
     n = t.node;
@@ -401,7 +411,7 @@ constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
   if (seen[static_cast<size_t>(n)]) return false;
   seen[static_cast<size_t>(n)] = true;
   const FlowNode& f = kFlow[static_cast<size_t>(n)];
-  if (f.kind == Kind::kRequest) return true;
+  if (f.kind == Kind::kRequest || n == Node::kC4) return true;
   const Target& t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
   if (t.status != 0) return false;
   return any_request_node(t.node, k, seen);
@@ -511,6 +521,9 @@ constexpr ReqFacts get_negotiated{.has_accept = true,
                                   .has_accept_encoding = true};
 static_assert(walk(get_negotiated, default_konst(Method::kGet)) == 200,
               "a browser GET negotiates through C4/D5/E6/F7 to 200");
+constexpr ReqFacts get_unacceptable{.has_accept = true, .accept_ok = false};
+static_assert(walk(get_unacceptable, default_konst(Method::kGet)) == 406,
+              "an Accept that names no offered type is 406 at C4, konst tier included");
 constexpr ReqFacts unknown{.method = Method::kOther};
 static_assert(walk(unknown, default_konst(Method::kOther)) == 501,
               "an unknown method dies at B12 with 501");
@@ -1839,6 +1852,12 @@ struct Resource {
     mrb_method_t m = {};
     bool irep = false;
     NativeCb native = nullptr;
+    // cb.rb: a handler written as `def self.x` is asked ONCE, at setup -
+    // the same rule the first pair has always followed. `baked` is what it
+    // answered; without it a negotiated second type would look the handler
+    // up on the INSTANCE and find whatever Object happens to define.
+    std::string baked;
+    bool has_baked = false;
   };
   std::vector<TypedHandler> content_types_provided;
 
@@ -3322,6 +3341,10 @@ class Http1 {
 
   struct Bundle {
     flow::KonstSet konst;
+    // RFC 9110 12.5.1: what c4 weighs an Accept against - the media type
+    // WITHOUT the charset parameter konst.content_type grows here, and
+    // present even for the default route, which has no Resource behind it.
+    std::string accept_type;
     const Resource* res = nullptr;
     std::array<uint16_t, 600> index {};
     bool dynamic_body = false;

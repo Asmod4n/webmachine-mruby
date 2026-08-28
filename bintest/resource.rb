@@ -115,12 +115,12 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
   end
 end
 
-# NOTE (#201): the answers below are the ENGINE's. The same resource,
-# written with delete_resource as a def self., runs over the const tier
-# and answers 200 to both - POST as well as DELETE. The engine is right
-# (n11 without process_post is a programming error, o20 without an
-# entity is 204), the const tier is wrong. Until #201 fixes that, what
-# is nailed down here is what is correct, not what used to come out.
+# NOTE (#201, fixed): these are the answers of BOTH tiers. They used to be
+# the engine's alone - the konst tier answered 200 to a POST with no
+# process_post and to a PUT with no content_types_accepted, because n11 and
+# o14/p3 are ACTION nodes and a fold performs no action. A resource that
+# allows POST or PUT with not one callback defined now runs, so the engine
+# gives the only answer either of them has.
 assert('resource: allowed_methods widens and the flow obeys, Allow speaks the list') do
   src = <<~RUBY
     class WideResource < Webmachine::Resource
@@ -612,6 +612,120 @@ assert('response.headers[]= refuses a name that is not a token, and a value with
           assert_true head.start_with?('HTTP/1.1 200'), "#{mode}: expected 200, got #{head[0, 60]}"
         end
       end
+    end
+  end
+end
+
+assert('resource: an Accept that names no offered type is 406 on both tiers') do
+  # RFC 9110 12.5.1 / 15.5.7, and #201: c4 is the CLIENT's question. The
+  # konst tier bakes one media type and used to answer 200 to any Accept at
+  # all - a resource that offers text/html handed HTML to a client that
+  # asked for image/png. Both spellings of the same resource are pinned here
+  # because the whole point is that they answer alike.
+  konst = <<~RUBY
+    class KonstOne < Webmachine::Resource
+      def self.to_html
+        '<html>K</html>'
+      end
+    end
+  RUBY
+  dyn = <<~RUBY
+    class DynOne < Webmachine::Resource
+      def to_html
+        '<html>D</html>'
+      end
+    end
+  RUBY
+  [['KonstOne', konst], ['DynOne', dyn]].each do |name, src|
+    resource_server(wm_app(name, src)) do |sock|
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: image/png\r\n\r\n")
+        head, = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 406'),
+                    "#{name} expected 406, got #{head.lines.first}"
+        s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: text/html\r\n\r\n")
+        head2, body2 = resource_read(s)
+        assert_true head2.start_with?('HTTP/1.1 200'),
+                    "#{name} expected 200, got #{head2.lines.first}"
+        assert_true body2.include?('html'), "#{name} sent no body: #{body2.inspect}"
+        # RFC 9110 12.5.1: the wildcards, because the konst tier weighs a
+        # type it keeps for its own head - and that one carries a charset
+        # parameter, which no media range ever matches.
+        [['*/*', '*/*'], ['text/*', 'text/*'],
+         ['a q-list', 'image/png;q=0.9, text/html;q=0.2'],
+         ['a browser Accept',
+          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8']].each do |what, av|
+          s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: #{av}\r\n\r\n")
+          h, b = resource_read(s)
+          assert_true h.start_with?('HTTP/1.1 200'),
+                      "#{name} on #{what}: #{h.lines.first}"
+          assert_true b.include?('html'), "#{name} on #{what} sent no body"
+        end
+      end
+    end
+  end
+end
+
+assert('resource: a class-form resource with two types negotiates like an instance one') do
+  # #201: `def self.content_types_provided` defines no callback, so the fold
+  # used to leave the resource konst - and the konst tier knows only the
+  # FIRST type. A client asking for the second got the first one's bytes
+  # under the first one's Content-Type.
+  src = <<~RUBY
+    class ClassConneg < Webmachine::Resource
+      def self.content_types_provided
+        [['text/html', :to_html], ['application/json', :to_json]]
+      end
+      def self.to_html
+        '<html>HTML</html>'
+      end
+      def self.to_json
+        '{"form":"class"}'
+      end
+    end
+  RUBY
+  resource_server(wm_app('ClassConneg', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_true head.match?(%r{^Content-Type: application/json\r$}i),
+                  "wrong type for the second handler: #{head.inspect}"
+      assert_equal '{"form":"class"}', body
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: text/html\r\n\r\n")
+      head2, body2 = resource_read(s)
+      assert_true head2.start_with?('HTTP/1.1 200'), head2.lines.first.to_s
+      assert_equal '<html>HTML</html>', body2
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: image/png\r\n\r\n")
+      head3, = resource_read(s)
+      assert_true head3.start_with?('HTTP/1.1 406'), head3.lines.first.to_s
+    end
+  end
+end
+
+assert('resource: a baked body survives the resource becoming dynamic') do
+  # helpers.rb encode_body and #201: the fold renders a `def self.to_html`
+  # once and the konst tier serves the bake. One instance callback anywhere
+  # binds the resource, and the run then owed the writer a body it never
+  # handed over - the page went out as Content-Length: 0.
+  src = <<~RUBY
+    class BakedBody < Webmachine::Resource
+      def self.to_html
+        '<html>BAKED</html>'
+      end
+      def generate_etag
+        'e-1'
+      end
+    end
+  RUBY
+  resource_server(wm_app('BakedBody', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_true head.match?(/^ETag: "e-1"\r$/i), "no ETag: #{head.inspect}"
+      assert_true head.match?(%r{^Content-Type: text/html}i), "no type: #{head.inspect}"
+      assert_equal '<html>BAKED</html>', body
     end
   end
 end

@@ -93,6 +93,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   b.konst = res->konst;
   b.dynamic_body = res->dynamic_body;
   b.bound = res->dynamic != 0 || res->dynamic_body;
+  b.accept_type = b.konst.content_type;
   b.konst.content_type = http::with_charset(b.konst.content_type);
   b.index = index_;
   std::string ok_extra;
@@ -959,23 +960,40 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             lent = nullptr;
             lent_len = 0;
           }
+          // helpers.rb encode_body: a `def self.to_html` renders at SETUP, so
+          // a run that reaches o18 with one produces no body - the bundle's
+          // prebuilt 200 carries it. That head is not the one being spelled
+          // here, so the bake has to be named, or this answer goes out empty.
+          const bool baked = !bodyless && !have_body && lent == nullptr && status == 200 &&
+                             !b->dynamic_body && !b->konst.body.empty();
           std::string ctype;
           if (!bodyless) {
             if (!b->res->run_content_type.empty()) {
               ctype = http::with_charset(b->res->run_content_type);
             }
-            else if (have_body) ctype = b->konst.content_type;
+            else if (have_body || baked) ctype = b->konst.content_type;
           }
           spell_head(sink, status, date_, ctype, rhdrs_, minor, persist, bodyless,
-                     lent != nullptr ? lent_len : body_.size());
+                     lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size()));
           if (!bodyless && !head_only) {
             if (lent != nullptr) lend_body(st, sink, lent, lent_len, *plan);
-            else sink.append(body_);
+            else sink.append(baked ? b->konst.body : body_);
           }
           have_body = false;
           answered = true;
         }
       } else {
+        // RFC 9110 12.5.1: c4 belongs to the client. The fold left this
+        // resource with exactly one media type (two would have bound it), so
+        // the question is one match, asked here in C++ and never in the VM.
+        // A route that names no media type has nothing to negotiate - the
+        // built-in default answers every Accept, as it did before c4 was
+        // asked at all.
+        if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr &&
+                           !b->accept_type.empty())) {
+          facts.accept_ok =
+              http::choose_media_type(&b->accept_type, 1, vals.accept, vals.accept_len) >= 0;
+        }
         status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                              b->konst.shortcut[static_cast<size_t>(facts.method)]);
       }

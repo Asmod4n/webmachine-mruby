@@ -201,9 +201,13 @@ assert('application: two resources on two routes keep their own body and Allow')
       h4, = ap_read(s)
       assert_true h4.start_with?('HTTP/1.1 405'), h4.lines.first.to_s
       assert_true h4.match?(/^Allow: GET, HEAD, POST\r$/i), h4
+      # RFC 9110 9.3.3 / fsm.rb n11, and #201: Wide allows POST and defines
+      # nothing to answer one with. This used to be a 200 - the konst tier
+      # walked past n11 without performing it - and the engine has always
+      # called it what it is.
       s.write("POST /wide HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
       h5, = ap_read(s)
-      assert_true h5.start_with?('HTTP/1.1 200'), h5.lines.first.to_s
+      assert_true h5.start_with?('HTTP/1.1 500'), h5.lines.first.to_s
     end
   end
 end

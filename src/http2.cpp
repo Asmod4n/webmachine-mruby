@@ -657,8 +657,20 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       }
       dynamic = (!b->res->run_content_type.empty() || !rhdrs_.empty()) && status != 500;
     } else {
-      status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
-                           b->konst.shortcut[static_cast<size_t>(facts.method)]);
+      // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
+      // they belong to the stream - so the one negotiated bit is answered on
+      // a copy, and only when the client sent an Accept at all.
+      // A stream reached from a parked frame carries facts but no Values -
+      // the bytes died with the frame. No Accept bytes, nothing to weigh,
+      // and c3 already sent this request the way it went before.
+      flow::ReqFacts cf = facts;
+      if (WM_UNLIKELY(facts.has_accept && vals != nullptr && vals->accept != nullptr &&
+                      !b->accept_type.empty())) {
+        cf.accept_ok =
+            http::choose_media_type(&b->accept_type, 1, vals->accept, vals->accept_len) >= 0;
+      }
+      status = flow::answer(cf, b->konst.per_method[static_cast<size_t>(cf.method)],
+                           b->konst.shortcut[static_cast<size_t>(cf.method)]);
     }
   }
 
@@ -669,17 +681,21 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   if (dynamic) {
     const bool bodyless = status == 204 || status == 304;
     if (bodyless || !have_body) body_.clear();
+    // The same bake h1 names: a `def self.to_html` renders at setup, and the
+    // block being built here is not the prebuilt one that carries it.
+    const bool baked = !bodyless && !have_body && !lent_have && status == 200 &&
+                       !b->dynamic_body && !b->konst.body.empty();
     std::string ctype;
     if (!bodyless) {
       if (!b->res->run_content_type.empty()) ctype = http::with_charset(b->res->run_content_type);
-      else if (have_body) ctype = b->konst.content_type;
+      else if (have_body || baked) ctype = b->konst.content_type;
     }
     h2_build_block(dynblk, status, ctype.empty() ? nullptr : &ctype, nullptr);
     // A status that sends no body cleared body_ above, and a lend it does
     // not carry is handed back below - the same order h1 spells it in.
     const bool use_lent = lent_have && !bodyless && have_body;
-    body = use_lent ? lent : body_.data();
-    blen = use_lent ? lent_len : body_.size();
+    body = use_lent ? lent : (baked ? b->konst.body.data() : body_.data());
+    blen = use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size());
     blk = &dynblk;
   } else if (have_body && status == 200) {
     body = lent_have ? lent : body_.data();
