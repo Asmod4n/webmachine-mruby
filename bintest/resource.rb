@@ -115,12 +115,12 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
   end
 end
 
-# ACHTUNG (#201): die Antworten hier sind die der ENGINE. Dieselbe
-# Ressource, mit delete_resource als def self. geschrieben, laeuft ueber
-# die Konst-Stufe und antwortet 200 auf beides - POST wie DELETE. Die
-# Engine hat recht (n11 ohne process_post ist ein Programmierfehler, o20
-# ohne Entity ist 204), die Konst-Stufe irrt. Bis #201 das behebt, steht
-# hier festgeschrieben, was richtig ist, nicht was frueher herauskam.
+# NOTE (#201): the answers below are the ENGINE's. The same resource,
+# written with delete_resource as a def self., runs over the const tier
+# and answers 200 to both - POST as well as DELETE. The engine is right
+# (n11 without process_post is a programming error, o20 without an
+# entity is 204), the const tier is wrong. Until #201 fixes that, what
+# is nailed down here is what is correct, not what used to come out.
 assert('resource: allowed_methods widens and the flow obeys, Allow speaks the list') do
   src = <<~RUBY
     class WideResource < Webmachine::Resource

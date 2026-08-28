@@ -1,34 +1,36 @@
-# Regeln fuer dieses Repo
+# Rules for this repository
 
-## Zwei Branches, mehr nicht (2026-08-28)
+Everything in this repository is written in English: file contents,
+comments, documentation, and commit messages. No German, not one word.
 
-Es gibt genau zwei Branches:
+## Two branches, no more
 
-- `next` - hier laeuft die gesamte Entwicklung.
-- `master` - hier landet nur, was als Feature fertig ist.
+There are exactly two branches:
 
-Kein Themen-, Bench- oder Experiment-Branch daneben. Wer etwas
-ausprobiert, probiert es auf `next` aus. Ist ein Feature fertig,
-wandert es nach `master` - und erst dann.
+- `next` - all development happens here.
+- `master` - only finished features land here.
 
-Vor dem Push pruefen, dass es bei den zweien bleibt:
+No topic, bench, or experiment branch beside them. Whoever tries
+something out tries it out on `next`. When a feature is done, it moves
+to `master` - and not before.
 
-    git ls-remote --heads origin   # nur master und next
+Check before pushing that it stays at those two:
 
-## Keine Session-URLs
+    git ls-remote --heads origin   # master and next only
 
-Eine Claude-Session-URL (`https://claude.ai/code/session_...`, ob als
-`Claude-Session:`-Trailer oder nackt) gehoert an keine Stelle, die das
-Repo verlaesst oder in ihm bleibt: Commit-Messages, PR-Titel und
--Bodies, Issue- und Review-Kommentare, Code-Kommentare, Doku. Das gilt
-auch dort, wo ein Werkzeug-Default sie vorsieht. `Co-Authored-By:`
-bleibt erlaubt.
+## No session URLs
+
+A Claude session URL (`https://claude.ai/code/session_...`, whether as
+a `Claude-Session:` trailer or bare) belongs nowhere that leaves the
+repository or stays in it: commit messages, PR titles and bodies, issue
+and review comments, code comments, documentation. That holds even
+where a tool default puts one there. `Co-Authored-By:` stays allowed.
 
     git log --format='%B' <range> | grep -c 'claude.ai/code/session'
 
-muss 0 sein.
+must be 0.
 
-## Keine Bang-Methoden
+## No bang methods
 
-Keine Methoden mit `!`. Oeffentliche Faehigkeitsfragen sind
-`?`-Praedikate (Muster: `KTLS::Socket#ktls_available?`).
+No methods with `!`. Public capability questions are `?` predicates
+(pattern: `KTLS::Socket#ktls_available?`).
