@@ -15,62 +15,6 @@
 #include "../../src/webmachine.hpp"
 
 namespace {
-struct Echo {
-  struct Conn {
-    const void* peer = nullptr;
-    uint8_t peer_len = 0;
-    // Echo keeps no per-connection state.
-    void reset(uint8_t, bool) {}
-  };
-  // The same shape webmachine.hpp's Plan has, and for the same reason: it
-  // becomes a struct msghdr, so it carries that struct's names.
-  struct Plan {
-    struct Seg {
-      const char* iov_base;
-      size_t off;  // not ABI: where in the sink, when iov_base is null
-      size_t iov_len;
-    };
-    static constexpr unsigned kSegs = 1;
-    Seg iov[kSegs] = {};
-    unsigned iovlen = 0;
-    size_t byte_total = 0;
-    size_t byte_cap = 0;
-  };
-  // The byte proof: what arrived goes back, nothing else.
-  bool feed(Conn&, const char* data, size_t len, std::string& sink, Plan*) {
-    sink.append(data, len);
-    return true;
-  }
-  // Echo owes nothing between feeds.
-  bool more(Conn&, std::string&, Plan&) { return true; }
-  // Echo logs nothing.
-  webmachine::Logger* access_log() { return nullptr; }
-  // And nothing in echo can raise.
-  webmachine::Logger* error_log() { return nullptr; }
-  // Nothing is ever owed.
-  bool pending(const Conn&) const { return false; }
-  // Echo has no source of its own.
-  bool timed(const Conn&) const { return false; }
-  // Echo keeps nothing fresh.
-  void on_tick() {}
-  // response.file's half of the App contract. Echo never names a file, so
-  // file_take is the only one the Ring can ever reach - the rest exist
-  // because the template instantiates every branch, not because they run.
-  const char* file_take(Conn&) { return nullptr; }
-  // Echo never names a file, so nothing is ever mapped for it either.
-  void file_mapped(Conn&, const char*, size_t) {}
-  static size_t file_map_len(const Conn&) { return 0; }
-  void file_abandon(Conn&) {}
-  void set_send_timeout(int) {}
-  static bool file_answerable(const Conn&) { return false; }
-  void file_reject(Conn&) {}
-  void file_error(Conn&, const char*) {}
-  bool file_stat(Conn&, const struct statx&, size_t*) { return false; }
-  char* file_buffer(Conn&, size_t) { return nullptr; }
-  void file_ready_now(Conn&, size_t) {}
-  static void file_release(Conn&) {}
-};
-
 // Does io_uring exist on THIS machine? Read from URING_AVAILABLE, which
 // mruby-io-uring already answered during mrb_open().
 bool uring_present(mrb_state* mrb) {
@@ -79,30 +23,10 @@ bool uring_present(mrb_state* mrb) {
   if (!mrb_const_defined(mrb, obj, k)) return false;
   return mrb_bool(mrb_const_get(mrb, obj, k));
 }
-
-// The echo floor's own loop; the HTTP server's lives in src/server.cpp.
-int serve_echo(const webmachine::RingConfig& cfg, bool have_uring) {
-  char err[512] = "";
-  if (!webmachine::server_backend_ok(have_uring, err, sizeof(err))) {
-    std::fprintf(stderr, "webmachine: %s\n", err);
-    return 1;
-  }
-  Echo app;
-  webmachine::Ring<Echo> ring(app);
-  if (!ring.init(cfg, err, sizeof(err))) {
-    std::fprintf(stderr, "webmachine: %s\n", err);
-    return 1;
-  }
-  std::fprintf(stderr, "webmachine: echo floor up, pid %d, %s\n", getpid(),
-               cfg.listeners[0].unix_path != nullptr ? cfg.listeners[0].unix_path : "tcp");
-  ring.run();
-  return 0;
-}
 }
 
 // The CLI states what this INVOCATION decides; `main` states what is served.
 int main(int argc, char** argv) {
-  bool echo = false;
   const char* pidfile = nullptr;
   webmachine::ServerOptions opts;
   const char* cli_unix = nullptr;
@@ -157,15 +81,13 @@ int main(int argc, char** argv) {
       pidfile = argv[++i];
     } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
       config_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--echo") == 0) {
-      echo = true;
     } else {
       std::fprintf(stderr,
                    "usage: %s [--config FILE.toml] [--unix PATH | --port N] [--app FILE.mrb] "
                    "[--assets FILE.zip] [--docroot DIR] [--mime-types FILE] "
                    "[--log FILE [--log-privacy none|anon|full]] [--error-log FILE] "
                    "[--log-max-bytes N] "
-                   "[--zero-copy-threshold N] [--pidfile PATH] [--echo]\n"
+                   "[--zero-copy-threshold N] [--pidfile PATH]\n"
                    "  --config reads the same choices from a TOML file; typed flags beat it,\n"
                    "  and both beat the app's conf. Without --config, a ./webmachine.toml is\n"
                    "  used when present (and announced).\n"
@@ -289,29 +211,6 @@ int main(int argc, char** argv) {
   opts.error_log_path = error_log_path;
   if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
   opts.have_uring = uring_present(mrb);
-
-  if (echo) {
-    webmachine::RingConfig cfg;
-    cfg.nlisteners = 1;
-    cfg.stop_fd = opts.stop_fd;
-    cfg.sq_entries = opts.sq_entries;
-    cfg.backlog = opts.backlog;
-    cfg.header_timeout = opts.header_timeout;
-    cfg.send_timeout = opts.send_timeout;
-    cfg.idle_timeout = opts.idle_timeout;
-    if (cli_unix != nullptr) {
-      cfg.listeners[0].unix_path = cli_unix;
-    } else if (cli_port != 0) {
-      cfg.listeners[0].port = cli_port;
-    } else {
-      std::fprintf(stderr, "webmachine: --echo needs --unix or --port\n");
-      mrb_close(mrb);
-      return 2;
-    }
-    const int rc = serve_echo(cfg, opts.have_uring);
-    mrb_close(mrb);
-    return rc;
-  }
 
   webmachine::server_options(opts);
 

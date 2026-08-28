@@ -9,11 +9,10 @@ def wm_recv(s, maxlen = 1, deadline = 10)
   s.readpartial(maxlen)
 end
 
-def floor_server(echo: false, bundles: false, bin: SERVER_BIN)
-  sock = "/tmp/wm-floor-#{$$}-#{echo ? 'e' : 'r'}#{bundles ? 'b' : ''}#{bin.equal?(SERVER_BIN) ? '' : 'p'}.sock"
+def floor_server(bundles: false)
+  sock = "/tmp/wm-floor-#{$$}-#{bundles ? 'b' : 'r'}.sock"
   File.unlink(sock) if File.exist?(sock)
-  args = [bin, '--unix', sock]
-  args << '--echo' if echo
+  args = [SERVER_BIN, '--unix', sock]
   err = "/tmp/wm-floor-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => bundles ? '1' : '0' }, *args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
@@ -28,35 +27,6 @@ def floor_server(echo: false, bundles: false, bin: SERVER_BIN)
     Process.wait(pid) rescue nil
     File.unlink(sock) rescue nil
   end
-end
-
-def floor_echo_assertions(bundles, bin: SERVER_BIN)
-  floor_server(echo: true, bundles: bundles, bin: bin) do |sock|
-    UNIXSocket.open(sock) do |s|
-      sent = +''
-      60.times do
-        seg = Random.bytes(20)
-        s.write(seg)
-        sent << seg
-        sleep 0.002
-      end
-      got = +''
-      got << wm_recv(s, 65536) while got.bytesize < sent.bytesize
-      assert_equal sent.bytesize, got.bytesize
-      assert_equal sent, got
-    end
-    UNIXSocket.open(sock) do |s|
-      blob = Random.bytes(3 * 4096 + 123)
-      s.write(blob)
-      got = +''
-      got << wm_recv(s, 65536) while got.bytesize < blob.bytesize
-      assert_equal blob, got
-    end
-  end
-end
-
-assert('floor: echo returns every byte, small segments and large blobs') do
-  floor_echo_assertions(false)
 end
 
 assert('floor: a receive is answered 200, keep-alive holds') do
@@ -113,10 +83,4 @@ assert('floor: TERM removes the unix socket path') do
   Process.kill('TERM', pid)
   Process.wait(pid)
   assert_false File.exist?(sock)
-end
-
-if ENV['WM_TEST_BUNDLES'] == '1'
-  assert('floor: the same bytes survive with recv bundles on (density check)') do
-    floor_echo_assertions(true)
-  end
 end

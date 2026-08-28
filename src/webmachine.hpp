@@ -3606,9 +3606,9 @@ struct RingConfig {
   int send_timeout = 0;
   int idle_timeout = 0;
   int stop_fd = -1;
-  // The VM to raise into when the reactor cannot go on. Null for the
-  // floor binary, which owns its process and may end it; set for the
-  // gem, which does NOT - see Ring::fatal.
+  // The VM to raise into when the reactor cannot go on. REQUIRED - init()
+  // refuses without it, because the alternative is a library that ends
+  // somebody else's process. See Ring::fatal.
   mrb_state* mrb = nullptr;
 };
 
@@ -3672,6 +3672,11 @@ class Ring {
   // listen as ONE linked chain, every CQE checked, a failure naming its stage.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
     mrb_ = cfg.mrb;
+    if (mrb_ == nullptr) {
+      std::snprintf(err, errlen, "RingConfig::mrb is required - the reactor raises rather "
+                                 "than ending a process it does not own");
+      return false;
+    }
     int rc = 0;
     raise_memlock();
     constexpr unsigned kSqWanted = 32768;
@@ -4080,15 +4085,20 @@ class Ring {
     std::unique_ptr<struct iovec[]> msg_iov;
   };
 
-  // io_uring_enter(2): the reactor cannot go on, and it is not this
-  // library's place to decide what that means for the process. With a VM
-  // it raises - the embedder's Ruby sees Webmachine::Error and chooses.
-  // Without one (the floor binary, which owns its process) it says so and
-  // ends. This is the ONLY place either of those happens.
+  // The reactor cannot go on, and it is not this library's place to
+  // decide what that means for the process - it is embedded, and the
+  // process belongs to somebody else. So it raises, and the embedder's
+  // Ruby sees Webmachine::Error and chooses. There is no second branch:
+  // init() refuses a RingConfig without a VM, so this always has one.
   [[noreturn]] void fatal(const char* what) {
-    if (mrb_ != nullptr) mrb_raise(mrb_, E_WM_ERROR(mrb_), what);
-    std::fprintf(stderr, "webmachine: %s\n", what);
-    std::exit(1);
+    mrb_raise(mrb_, E_WM_ERROR(mrb_), what);
+    // mruby declares mrb_raise mrb_noreturn, but that macro (common.h)
+    // resolves to NOTHING under -std=c++20: it asks for __GNUC__ &&
+    // !__STRICT_ANSI__, and a strict -std= (rather than -std=gnu=) defines
+    // __STRICT_ANSI__. So the compiler cannot see what is true either way -
+    // with MRB_USE_CXX_EXCEPTION the raise throws, without it it longjmps -
+    // and warns that a [[noreturn]] function returns. This says it instead.
+    __builtin_unreachable();
   }
 
   // Never null on return: a full SQ is drained by submitting it, and the
