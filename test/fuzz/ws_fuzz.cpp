@@ -39,19 +39,36 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                           reinterpret_cast<const char*>(data) + size);
     size_t off = 0;
     for (;;) {
-      webmachine::ws::Frame f;
-      uint16_t code = 0;
-      const webmachine::ws::Parse r = webmachine::ws::parse(
-          buf.data() + off, buf.size() - off, 1u << 20, pass != 0, f, code);
-      if (r != webmachine::ws::Parse::kOk) break;
-      if (f.opcode == webmachine::ws::kClose) {
+      // RFC 6455 5.2 in the order the reader demands it: header_need says
+      // how many octets the next decision wants, and only once they have
+      // all arrived may read_head touch them - it reads unconditionally.
+      const unsigned char* h = reinterpret_cast<const unsigned char*>(buf.data()) + off;
+      const size_t left = buf.size() - off;
+      if (left < 2) break;
+      const uint8_t have = left > 14 ? 14 : static_cast<uint8_t>(left);
+      const uint8_t need = webmachine::ws::header_need(h, have);
+      if (need > left) break;
+      const webmachine::ws::Head hd = webmachine::ws::read_head(h, pass != 0);
+      if (hd.err != webmachine::ws::Head::Err::kNone) break;
+      if (hd.payload_length > (1u << 20)) break;
+      if (need + hd.payload_length > left) break;
+
+      // The unmask is the other half a stranger's bytes reach, and it
+      // writes - so it gets its own buffer of exactly the promised size.
+      std::vector<char> plain(static_cast<size_t>(hd.payload_length) + 1);
+      webmachine::ws::unmask_copy(plain.data(), buf.data() + off + need,
+                                  static_cast<size_t>(hd.payload_length),
+                                  h + hd.masking_key_at, 0);
+      if (hd.opcode == webmachine::ws::kClose) {
         uint16_t cc = 0;
         const char* reason = nullptr;
         size_t rlen = 0;
-        webmachine::ws::read_close(f.payload, f.len, cc, &reason, &rlen);
+        webmachine::ws::read_close(plain.data(), static_cast<size_t>(hd.payload_length), cc,
+                                   &reason, &rlen);
       }
-      if (f.consumed == 0) break;
-      off += f.consumed;
+      const size_t consumed = need + static_cast<size_t>(hd.payload_length);
+      if (consumed == 0) break;
+      off += consumed;
       if (off >= buf.size()) break;
     }
   }

@@ -191,6 +191,7 @@ build_target() {
     -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
     -fno-sanitize=alignment \
     -Imruby/include -Imruby/build/host/include \
+    -Imruby/build/repos/host/mruby-io_uring/include \
     -Imruby/build/repos/host/mruby-phr/deps/picohttpparser \
     -Ideps/ls-hpack -Imruby/build/repos/host/mruby-string-is-utf8/include \
     -Ideps/miniz -Imruby/build/host/mrbgems/webmachine-mruby/miniz \

@@ -33,7 +33,7 @@
 // 7.2.2 puts back, the reset a stream that ended demands.
 //
 //   tools/fuzz.sh wsdeflate
-#include "../../src/wsdeflate.hpp"  // NOLINT: instrumented, not linked
+#include "../../src/webmachine.hpp"  // NOLINT: wsdeflate folded in here (741d09a); header-only, so including it instruments it
 
 #include <cstdint>
 #include <cstring>

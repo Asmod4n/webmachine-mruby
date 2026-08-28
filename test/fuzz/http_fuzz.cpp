@@ -18,7 +18,7 @@
 // nothing else.
 //
 //   tools/fuzz.sh   (every target; this one is 'http')
-#include "../../src/http.hpp"  // NOLINT: header-only, instrumented here
+#include "../../src/webmachine.hpp"  // NOLINT: http:: folded in here (741d09a); header-only, instrumented here
 
 #include <cstdint>
 #include <string>
