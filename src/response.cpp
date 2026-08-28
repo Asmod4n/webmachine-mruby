@@ -133,6 +133,14 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
   if (!mrb_string_p(v)) {
     mrb_raise(mrb, E_TYPE_ERROR, "response.headers[]= takes a String value, or nil to delete");
   }
+  if (!http::field_name_ok(k, static_cast<size_t>(klen))) {
+    mrb_raise(mrb, E_WM_ERROR(mrb), "response.headers[]= wants a field name that is a token "
+                                    "(RFC 9110 5.6.2) - no spaces, no colon, no CR or LF");
+  }
+  if (!http::field_value_ok(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)))) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "response.headers[]= wants a field value without CR, LF or NUL (RFC 9110 5.5)");
+  }
   if (found) buf.erase(h.start, h.end - h.start);
   append_field(buf, k, static_cast<size_t>(klen), RSTRING_PTR(v),
               static_cast<size_t>(RSTRING_LEN(v)));
@@ -350,6 +358,12 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
     if (mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(httponly))))) {
       line.append("; HttpOnly", 10);
     }
+  }
+  // Same gate: the cookie's name, value and every attribute came from the
+  // app, and they end up in ONE field value.
+  if (!http::field_value_ok(line.data(), line.size())) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "response.set_cookie wants no CR, LF or NUL in name, value or attributes");
   }
   append_field(*r->run_headers, "Set-Cookie", 10, line.data(), line.size());
   return mrb_nil_value();

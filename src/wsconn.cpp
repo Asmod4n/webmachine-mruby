@@ -742,7 +742,13 @@ bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink) {
   mrb_bool raised = FALSE;
   const mrb_value r = mrb_protect_error(mrb, feed_body, &call, &raised);
   if (raised) {
-    mrb->exc = mrb_obj_ptr(r);
+    // Only an exception object may be stored in mrb->exc; mrb_obj_ptr on
+    // an immediate (Integer, Symbol, nil) would read its bits as a
+    // pointer. Same check as resource.cpp's take_pending.
+    if (mrb_exception_p(r)) mrb->exc = mrb_obj_ptr(r);
+    else mrb->exc = mrb_obj_ptr(mrb_exc_new_lit(mrb, E_WM_ERROR(mrb),
+                                                "the websocket handler ended without an "
+                                                "exception object"));
     if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;

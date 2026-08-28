@@ -559,3 +559,59 @@ assert('resource: value callbacks on the class answer, and their fields land') d
     end
   end
 end
+
+# RFC 9110 5.1 / 5.5: no app string becomes a field line unchecked. Every
+# byte an app can put into an answer's head passes http::field_name_ok /
+# field_value_ok, and this asks for that AT THE WIRE - a spliced field
+# would show up as a second status line's worth of head, or as a header
+# the resource never named.
+assert('a resource cannot splice a field into its own answer') do
+  src = <<~'APP'
+    class Splicer < Webmachine::Resource
+      def generate_etag
+        "v1\r\nX-Injected: yes"
+      end
+
+      def to_html
+        '<html><body>hi</body></html>'
+      end
+    end
+  APP
+  resource_server(wm_app('Splicer', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+      head, = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 500'), "expected a 500, got: #{head[0, 60]}"
+      assert_false head.include?('X-Injected'), "the field was spliced in:\n#{head}"
+    end
+  end
+end
+
+assert('response.headers[]= refuses a name that is not a token, and a value with CRLF') do
+  src = <<~'APP'
+    class Setter < Webmachine::Resource
+      def to_html
+        case request.headers['x-mode']
+        when 'name' then response.headers["X\r\nX-Injected"] = 'yes'
+        when 'value' then response.headers['X-Ok'] = "a\r\nX-Injected: yes"
+        else response.headers['X-Ok'] = 'plain'
+        end
+        '<html><body>hi</body></html>'
+      end
+    end
+  APP
+  resource_server(wm_app('Setter', src)) do |sock|
+    [['name', true], ['value', true], ['plain', false]].each do |mode, must_fail|
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\nX-Mode: #{mode}\r\nConnection: close\r\n\r\n")
+        head, = resource_read(s)
+        assert_false head.include?('X-Injected'), "#{mode} spliced a field in:\n#{head}"
+        if must_fail
+          assert_true head.start_with?('HTTP/1.1 500'), "#{mode}: expected 500, got #{head[0, 60]}"
+        else
+          assert_true head.start_with?('HTTP/1.1 200'), "#{mode}: expected 200, got #{head[0, 60]}"
+        end
+      end
+    end
+  end
+end

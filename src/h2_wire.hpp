@@ -68,6 +68,20 @@ inline constexpr size_t kH2FrameHeaderLen = 9;
 inline constexpr uint32_t kH2MaxFrameSize = 16384;
 inline constexpr int64_t kH2DefaultWindow = 65535;
 inline constexpr uint32_t kH2MaxConcurrentStreams = 256;
+// RFC 7541 4.2 / RFC 9113 6.5.2: SETTINGS_HEADER_TABLE_SIZE arrives as a
+// 32-bit number with NO upper bound in either RFC - the peer is telling
+// us how large a dynamic table its decoder will keep, and how large a
+// one our encoder may therefore build. A peer may name 4294967295. Using
+// LESS than the peer allows is always legal (RFC 7541 4.2: the encoder
+// decides), so the number is CLAMPED here rather than handed to the
+// encoder as it arrived. Without this the peer sizes our allocation.
+inline constexpr uint32_t kH2EncTableMax = 65536;
+// RFC 7541 4.2: the DECODER's table size is whatever this side announced
+// in SETTINGS_HEADER_TABLE_SIZE. We announce nothing, so RFC 9113 6.5.2's
+// default stands - and it is stated to the decoder here rather than left
+// to agree with ls-hpack's own default by luck. One number, one place;
+// if the SETTINGS frame ever names a size, it names THIS.
+inline constexpr uint32_t kH2DecTableSize = 4096;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
 
 // RFC 9113 4.1: the 9-byte frame header; stream id at offset 5.
@@ -116,6 +130,13 @@ inline uint16_t h2_u16(const unsigned char* p) {
 // this, the load generator its request pseudo-fields.
 inline bool h2_enc_field(struct lshpack_enc* enc, unsigned char*& ep, unsigned char* eend,
                          const char* name, size_t nlen, const char* val, size_t vlen) {
+  // NOTHING is checked here, and that is deliberate: what an app can
+  // shape is checked where it ENTERS the header buffer - http::
+  // field_name_ok / field_value_ok, at response.cpp's Headers#[]= and at
+  // resource.cpp's `field`. By the time a line reaches this encoder it
+  // has already passed that gate, so a second check would guard against
+  // something no user can reach. The pointers cannot be null either:
+  // they are our own literals and std::string::data().
   char hbuf[512];
   if (nlen + 2 + vlen > sizeof(hbuf)) return false;
   std::memcpy(hbuf, name, nlen);

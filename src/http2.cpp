@@ -141,6 +141,9 @@ void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype
 // RFC 9113 3.4: this side's half of the preface, a SETTINGS frame.
 bool Http1::h2_begin(Conn& st, std::string& sink) {
   st.h2 = new H2State();
+  // The encoder allocates; without it there is no answer to send, so the
+  // connection ends here rather than at the first field.
+  if (!st.h2->hpack_ready) return false;
   unsigned char payload[6];
   payload[0] = 0;
   payload[1] = kH2SettingsMaxConcurrentStreams;
@@ -198,7 +201,13 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     quads[nq++] = xh.name_len;
     quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
     quads[nq++] = xh.val_len;
-    used += xh.val_offset + xh.val_len;
+    // lshpack.h states what one decode writes into the buffer we lent:
+    // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
+    // val_offset + val_len is short by exactly those extra bytes (the
+    // HTTP/1.x CRLF the decoder appends), so the NEXT field's window
+    // began inside bytes this one had just written. Their number, not
+    // ours.
+    used += static_cast<size_t>(xh.name_len) + xh.val_len + lshpack_dec_extra_bytes(&h2.dec);
   }
   h2.frag.clear();
 
@@ -1318,7 +1327,12 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           const uint32_t v = h2_u32(p + e + 2);
           switch (id) {
             case kH2SettingsHeaderTableSize:
-              lshpack_enc_set_max_capacity(&h2.enc, v);
+              // Clamped, never forwarded raw: this is a peer-chosen
+              // 32-bit number and neither RFC 9113 6.5.2 nor RFC 7541
+              // 4.2 bounds it. Encoding with a SMALLER table than the
+              // peer permits is always legal, so the ceiling is ours.
+              lshpack_enc_set_max_capacity(&h2.enc,
+                                           v > kH2EncTableMax ? kH2EncTableMax : v);
               break;
             case kH2SettingsEnablePush:
               if (v > 1) return h2_error(st0, kH2ProtocolError, sink);
