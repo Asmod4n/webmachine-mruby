@@ -1463,9 +1463,41 @@ inline void uri_join(const char* base, size_t blen, const char* path, size_t pay
   out.append(path, payload_length);
 }
 
-template <class OnWire>
+// RFC 9110 5.1 / 5.6.2: a field name is a token. Every byte an app can
+// put into an answer's head passes one of the two writers that call this
+// - response.cpp's Headers#[]= and resource.cpp's `field` - so this is
+// where the shape is decided and nowhere after. Without it an app that
+// answers `generate_etag` with "v1\r\nSet-Cookie: a=b", or names an
+// options() key with a CRLF in it, splices whole fields into the answer
+// - and an app that echoes a request header into a response one hands
+// that splice to whoever sent the request.
+inline bool field_name_ok(const char* p, size_t n) {
+  if (n == 0) return false;
+  for (size_t i = 0; i < n; i++) {
+    const unsigned char c = static_cast<unsigned char>(p[i]);
+    const bool tchar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9') || c == '!' || c == '#' || c == '$' ||
+                       c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
+                       c == '-' || c == '.' || c == '^' || c == '_' || c == '`' ||
+                       c == '|' || c == '~';
+    if (!tchar) return false;
+  }
+  return true;
+}
+
+// RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
+// is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
+// byte a malformed h2 field, so one rule serves both writers.
+inline bool field_value_ok(const char* p, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0') return false;
+  }
+  return true;
+}
+
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // every name this layer does not own falls through to the framer's functor.
+template <class OnWire>
 inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
                           flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
   switch (nlen) {
@@ -1663,6 +1695,19 @@ namespace webmachine {
 // The run_* slots below are ours and no source names them: they hold what
 // ONE request's callbacks produced, are reset at frame entry, and keep
 // their capacity across requests on purpose.
+// A C++ resource callback. Arguments arrive as ARGUMENTS, never through
+// mrb_get_args, so the function never reads the callinfo and may be
+// entered straight from C++ - which is what makes it cheaper than the
+// same callback written in Ruby, instead of dearer.
+using NativeCb = mrb_value (*)(mrb_state* mrb, mrb_value self, mrb_int argc,
+                               const mrb_value* argv);
+
+// Define one on a resource class. Ruby can still call it - a wrapper is
+// registered as an ordinary method - but the fold records the raw
+// pointer, and the engine calls THAT.
+void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
+                   mrb_aspec aspec = MRB_ARGS_ANY());
+
 struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
@@ -1674,15 +1719,13 @@ struct Resource {
   uint64_t dynamic = 0;
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
-  bool node_fast[flow::kNodeCount] = {};
+  bool node_irep[flow::kNodeCount] = {};
+  NativeCb node_native[flow::kNodeCount] = {};
   // One bit per node: its callback answers on the CLASS, not on the live
   // instance. Same reason as ValueCb::on_class - the method is resolved
   // once, here, and never searched again.
   uint64_t node_on_class = 0;
   bool dynamic_body = false;
-  mrb_sym body_sym = {};
-  mrb_method_t body_m = {};
-  bool body_fast = false;
   bool gzip_offered = false;
   // The engine frame is entered as a C++ call, not a Ruby one: no
   // hidden class, no proc, no per-resource object for the GC to mark.
@@ -1693,7 +1736,7 @@ struct Resource {
   // would search for this same method twice per request (mrb_func_basic_p,
   // then mrb_funcall_argv) to arrive where the fold already stands.
   mrb_method_t init_m = {};
-  bool init_fast = false;
+  bool init_irep = false;
   enum mrb_vtype live_tt = MRB_TT_OBJECT;
   mutable mrb_value live = {};
   mutable const flow::ReqFacts* run_facts = nullptr;
@@ -1724,7 +1767,16 @@ struct Resource {
     bool has = false;
     mrb_sym sym = {};
     mrb_method_t m = {};
-    bool fast = false;
+    bool irep = false;
+    // A C++ callback registered through define_native, and the reason it
+    // is a SEPARATE pointer rather than "call the cfunc we resolved":
+    // mruby hands a cfunc its arguments through the callinfo the VM
+    // pushed (vm.c: check_argument_count, then MRB_METHOD_FUNC(m)(mrb,
+    // self)), so calling one from a C++ frame gives it the CALLER's
+    // registers and mrb_get_args reads a stranger's. Only a function
+    // whose convention we set can be entered directly - the same trick
+    // the VM plays on mrb_attr_reader, which it recognises by pointer.
+    NativeCb native = nullptr;
     // Which receiver: the live instance, or the class itself. The fold
     // resolves BOTH kinds, so neither is looked up again per request - an
     // undefined m used to be the marker for "class-only", and it cost a
@@ -1755,7 +1807,7 @@ struct Resource {
   // this value callback exist", one bit per ValueCb above, so a node
   // handler that only needs the yes/no (most calls, most of the time)
   // never has to load the ValueCb struct itself - the payload (sym/m/
-  // fast/argc) is only touched once the bit says the answer is yes. Set
+  // irep/argc) is only touched once the bit says the answer is yes. Set
   // once at fold, read every run.
   enum CbBit : uint32_t {
     kCbKnownMethods = 1u << 0,
@@ -1785,7 +1837,8 @@ struct Resource {
     std::string type;
     mrb_sym handler = {};
     mrb_method_t m = {};
-    bool fast = false;
+    bool irep = false;
+    NativeCb native = nullptr;
   };
   std::vector<TypedHandler> content_types_provided;
 
@@ -2213,10 +2266,17 @@ struct H2State {
   };
   std::vector<Lend> retired;
 
+  // ls-hpack: lshpack_enc_init ALLOCATES and returns -1 when it could
+  // not - the one call of the four that can fail. Ignoring it left an
+  // encoder that was never built, to be handed to lshpack_enc_encode on
+  // the first answer. A constructor cannot refuse, so it records, and
+  // h2_begin refuses.
+  bool hpack_ready = false;
   // RFC 9113: allocated only when the preface was spoken, never before.
   H2State() {
-    lshpack_enc_init(&enc);
+    hpack_ready = lshpack_enc_init(&enc) == 0;
     lshpack_dec_init(&dec);
+    lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
   }
   // RFC 9113: the decoder dies with the connection - and so does every
   // lend the streams still hold. h1's ~Conn, one tier down: unconditional,

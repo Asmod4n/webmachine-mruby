@@ -14,6 +14,10 @@ MRuby::Build.new('debug') do |conf|
   conf.cc.defines  << 'MRB_UTF8_STRING'
   conf.cxx.defines << 'MRB_UTF8_STRING'
 
+  # bintest/cpp_resource.rb needs the example binary to exist (#207).
+  conf.cc.defines  << 'WM_EXAMPLES'
+  conf.cxx.defines << 'WM_EXAMPLES'
+
   conf.gembox 'stdlib'
   conf.gembox 'stdlib-ext'
   conf.gembox 'stdlib-io'

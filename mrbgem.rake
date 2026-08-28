@@ -14,6 +14,15 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   fuzzing = build.cc.defines.include?('WM_FUZZ_BUILD')
   spec.bins = fuzzing ? ['webmachine-fuzz'] : ['webmachine-server', 'webmachine-logd']
 
+  # The C++ resource example (#207) is a BINARY, because that is what a
+  # C++ resource is: an embedder's own main, linking this library and
+  # defining resource classes before the app file routes them. It is
+  # built where it can be exercised - build_config_debug.rb, so bintest
+  # reaches it, and build_config_example.rb, which carries the host
+  # flags so its number may be compared with the host build's. The
+  # shipped binaries never carry it.
+  spec.bins += ['webmachine-example'] if build.cc.defines.include?('WM_EXAMPLES')
+
 
   # SLIPSTREAM_IO_ONLY is the `portable` target's whole declaration
   # (build_config.rb): no liburing in this binary, on any host. mruby

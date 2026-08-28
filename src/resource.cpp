@@ -52,8 +52,51 @@ mrb_method_t resolve_alias(mrb_method_t m) {
 struct Resolved {
   mrb_method_t m = {};
   bool defined = false;
-  bool fast = false;
+  bool irep = false;
+  NativeCb native = nullptr;
 };
+
+// Which (class, name) pairs were registered as C++ callbacks. Consulted
+// at FOLD time only - the answer is copied into the slot, so a request
+// never looks anything up. A vector because an app has a handful of
+// these and a hash would cost more to build than it ever saves.
+struct NativeEntry {
+  struct RClass* c;
+  mrb_sym sym;
+  NativeCb fn;
+};
+std::vector<NativeEntry>& native_table() {
+  static std::vector<NativeEntry> t;
+  return t;
+}
+
+// Ruby must be able to call the same method, so an ordinary cfunc is
+// registered too; it collects the arguments the normal way and hands
+// them on. The engine skips this wrapper entirely.
+mrb_value native_shim(mrb_state* mrb, mrb_value self) {
+  mrb_value* argv = nullptr;
+  mrb_int argc = 0;
+  mrb_get_args(mrb, "*", &argv, &argc);
+  struct RClass* c = mrb_class(mrb, self);
+  const mrb_sym mid = mrb->c->ci->mid;
+  for (struct RClass* k = c; k != nullptr; k = k->super) {
+    for (const NativeEntry& e : native_table()) {
+      if (e.c == k && e.sym == mid) return e.fn(mrb, self, argc, argv);
+    }
+  }
+  mrb_raisef(mrb, E_WM_ERROR(mrb), "%s lost its native body", mrb_sym_name(mrb, mid));
+  return mrb_nil_value();
+}
+
+// The one place a native callback is looked up by (class, name).
+NativeCb native_of(struct RClass* c, mrb_sym sym) {
+  for (struct RClass* k = c; k != nullptr; k = k->super) {
+    for (const NativeEntry& e : native_table()) {
+      if (e.c == k && e.sym == sym) return e.fn;
+    }
+  }
+  return nullptr;
+}
 
 // mruby: where does this symbol answer, and may we enter its proc directly?
 Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
@@ -61,7 +104,10 @@ Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
   struct RClass* owner = c;
   r.m = resolve_alias(mrb_method_search_vm(mrb, &owner, sym));
   r.defined = !MRB_METHOD_UNDEF_P(r.m);
-  r.fast = r.defined && !MRB_METHOD_CFUNC_P(r.m);
+  r.irep = r.defined && !MRB_METHOD_CFUNC_P(r.m);
+  // Ours? Then the slot carries the function itself and the engine
+  // enters it directly - no lookup, no callinfo, no VM.
+  if (r.defined && !r.irep) r.native = native_of(owner, sym);
   return r;
 }
 
@@ -93,7 +139,8 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t
   if (inst.defined) {
     cb.has = true;
     cb.m = inst.m;
-    cb.fast = inst.fast;
+    cb.irep = inst.irep;
+    cb.native = inst.native;
     cb.argc = argc_of(inst.m, maxargs);
     return cb;
   }
@@ -102,7 +149,8 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t
   if (meta.defined) {
     cb.has = true;
     cb.m = meta.m;
-    cb.fast = meta.fast;
+    cb.irep = meta.irep;
+    cb.native = meta.native;
     cb.on_class = true;
     cb.argc = argc_of(meta.m, maxargs);
   }
@@ -129,14 +177,58 @@ mrb_value setup_call_body(mrb_state* mrb, void* ud) {
 }
 
 // mruby: invoke a resolved method at SETUP time; a raise stays pending.
+struct NativeCall {
+  NativeCb fn;
+  mrb_value self;
+  mrb_int argc;
+  const mrb_value* argv;
+};
+
+// The yield body a native call runs under mrb_protect_error - a C++
+// callback may raise like any other, and an unguarded raise here would
+// unwind through frames that are not ready for it.
+mrb_value native_call_body(mrb_state* mrb, void* ud) {
+  const NativeCall* c = static_cast<const NativeCall*>(ud);
+  return c->fn(mrb, c->self, c->argc, c->argv);
+}
+
+// mruby: mrb_protect_error hands back WHATEVER was pending (vm.c: it
+// returns mrb_obj_value(mrb->exc) and clears it), and mrb->exc is a
+// struct RObject* - so only an exception object may be stored there.
+// mrb_obj_ptr on anything else reads a Fixnum's bits as a pointer, and
+// mruby's immediates (Integer, Symbol, nil, true, false) carry no
+// object at all. Checked once, here, for every protected call.
+void take_pending(mrb_state* mrb, mrb_value v) {
+  if (!WM_RES_UNLIKELY(!mrb_exception_p(v))) {
+    mrb->exc = mrb_obj_ptr(v);
+    return;
+  }
+  mrb->exc = mrb_obj_ptr(
+      mrb_exc_new_lit(mrb, E_WM_ERROR(mrb), "a callback ended without an exception object"));
+}
+
+mrb_value call_native(mrb_state* mrb, NativeCb fn, mrb_value self, mrb_int argc,
+                      const mrb_value* argv) {
+  NativeCall ctx{fn, self, argc, argv};
+  mrb_bool raised = FALSE;
+  mrb_value v = mrb_protect_error(mrb, native_call_body, &ctx, &raised);
+  if (WM_RES_UNLIKELY(raised)) {
+    take_pending(mrb, v);
+    return mrb_nil_value();
+  }
+  mrb_gc_protect(mrb, v);
+  return v;
+}
+
 mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_value self,
                         struct RClass* c) {
-  if (!r.fast) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
+  if (r.native != nullptr) return call_native(mrb, r.native, self, 0, nullptr);
+  if (!r.irep) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
   SetupCall ctx{MRB_METHOD_PROC(r.m), sym, self, c};
   mrb_bool raised = FALSE;
   mrb_value v = mrb_protect_error(mrb, setup_call_body, &ctx, &raised);
   if (WM_RES_UNLIKELY(raised)) {
-    mrb->exc = mrb_obj_ptr(v);
+    take_pending(mrb, v);
     return mrb_nil_value();
   }
   mrb_gc_protect(mrb, v);
@@ -172,7 +264,8 @@ bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, co
   out.asked = true;
   Resolved r;
   r.m = cb.m;
-  r.fast = cb.fast;
+  r.irep = cb.irep;
+  r.native = cb.native;
   r.defined = true;
   mrb_value v = call_resolved(mrb, r, cb.sym, klass, mrb_class(mrb, klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
@@ -423,9 +516,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   const http::ReqValues* vals = res.run_vals;
   std::string& hdrs = *res.run_headers;
 
-  const auto naked = [&](mrb_method_t m, bool fast, mrb_sym sym, mrb_int argc = 0,
-                         const mrb_value* argv = nullptr) -> mrb_value {
-    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(res.live)->c != res.klass)) {
+  const auto naked = [&](mrb_method_t m, bool irep, NativeCb native, mrb_sym sym,
+                         mrb_int argc = 0, const mrb_value* argv = nullptr) -> mrb_value {
+    // The cheapest of the three tiers: our own C++ body, entered with the
+    // arguments in hand. It never reads the callinfo, so there is nothing
+    // to build for it.
+    if (native != nullptr) return call_native(mrb, native, res.live, argc, argv);
+    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(res.live)->c != res.klass)) {
       return mrb_funcall_argv(mrb, res.live, sym, argc, argv);
     }
     mrb_callinfo* ci = mrb->c->ci;
@@ -443,20 +540,21 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // that did not override Object's - the implicit one is not a reason to
   // run anything.
   if (WM_RES_UNLIKELY(res.init_needed)) {
-    naked(res.init_m, res.init_fast, MRB_SYM(initialize));
+    naked(res.init_m, res.init_irep, nullptr, MRB_SYM(initialize));
   }
 
   // cb.rb: the same direct entry as naked, for a `def self.x` - the
   // receiver is the class and the frame's class is the class's own, which
   // is where the fold found the method.
-  const auto naked_class = [&](mrb_method_t m, bool fast, mrb_sym sym, mrb_int argc = 0,
-                               const mrb_value* argv = nullptr) -> mrb_value {
+  const auto naked_class = [&](mrb_method_t m, bool irep, NativeCb native, mrb_sym sym,
+                               mrb_int argc = 0, const mrb_value* argv = nullptr) -> mrb_value {
     const mrb_value self = mrb_obj_value(res.klass);
+    if (native != nullptr) return call_native(mrb, native, self, argc, argv);
     // mrb_obj_ptr(self)->c, not mrb_class(mrb, self): the latter is an
     // out-of-line call into another translation unit, and this build has no
     // LTO - a call to read one pointer, on the path whose whole point is
     // not calling anything.
-    if (WM_RES_UNLIKELY(!fast || mrb_obj_ptr(self)->c != res.meta_klass)) {
+    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(self)->c != res.meta_klass)) {
       return mrb_funcall_argv(mrb, self, sym, argc, argv);
     }
     mrb_callinfo* ci = mrb->c->ci;
@@ -474,17 +572,19 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // request whenever it lived on the class.
   const auto cbv = [&](const Resource::ValueCb& cb, mrb_int argc = 0,
                        const mrb_value* argv = nullptr) -> mrb_value {
-    if (cb.on_class) return naked_class(cb.m, cb.fast, cb.sym, argc, argv);
-    return naked(cb.m, cb.fast, cb.sym, argc, argv);
+    if (cb.on_class) return naked_class(cb.m, cb.irep, cb.native, cb.sym, argc, argv);
+    return naked(cb.m, cb.irep, cb.native, cb.sym, argc, argv);
   };
 
   // flow.rb: one node's callback out of the node tables, either receiver.
   const auto nodecall = [&](Node nd, mrb_int argc, const mrb_value* argv) -> mrb_value {
     const size_t i = static_cast<size_t>(nd);
     if ((res.node_on_class >> i) & 1) {
-      return naked_class(res.node_m[i], res.node_fast[i], res.node_sym[i], argc, argv);
+      return naked_class(res.node_m[i], res.node_irep[i], res.node_native[i], res.node_sym[i],
+                         argc, argv);
     }
-    return naked(res.node_m[i], res.node_fast[i], res.node_sym[i], argc, argv);
+    return naked(res.node_m[i], res.node_irep[i], res.node_native[i], res.node_sym[i], argc,
+                 argv);
   };
 
   // flow.rb decision_test: ANY callback may halt with an Integer status.
@@ -596,6 +696,17 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // which is why "Allow: " and "ETag: " carried the colon inside the
   // literal and every site ended with its own append("\r\n", 2).
   const auto field = [&](const char* name, size_t nlen, const char* value, size_t vlen) {
+    // The gate for everything an app puts into the head: an ETag, a
+    // Location, a WWW-Authenticate, a Vary member, and with options()
+    // the field NAME too. Checked here because here is the only place
+    // that spells a field; a raise inside the run frame is a 500, which
+    // is the honest answer to a resource that made an unspellable one.
+    if (WM_RES_UNLIKELY(!http::field_name_ok(name, nlen) ||
+                        !http::field_value_ok(value, vlen))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb),
+                "a field this resource produced is not spellable: the name must be a token "
+                "(RFC 9110 5.6.2) and the value must carry no CR, LF or NUL (5.5)");
+    }
     hdrs.append(name, nlen);
     hdrs.append(": ", 2);
     hdrs.append(value, vlen);
@@ -616,6 +727,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       first = false;
     }
     for (const std::string& s : tail) {
+      // Same gate, one member at a time: Allow's members come from
+      // allowed_methods and Vary's from variances, both app Strings.
+      if (WM_RES_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
+        mrb_raise(mrb, E_WM_ERROR(mrb),
+                  "a list field this resource produced carries CR, LF or NUL (RFC 9110 5.5)");
+      }
       if (!first) hdrs.append(", ", 2);
       hdrs.append(s);
       first = false;
@@ -676,7 +793,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       // Resolved HERE, once, not searched for at every render.
       const Resolved hr = resolve(mrb, res.klass, th.handler);
       th.m = hr.m;
-      th.fast = hr.fast;
+      th.irep = hr.irep;
+      th.native = hr.native;
       cur.push_back(std::move(th));
     }
   };
@@ -1223,7 +1341,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           if (!prebuilt) {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
-              v = naked(th.m, th.fast, th.handler);
+              v = naked(th.m, th.irep, th.native, th.handler);
             } else if (ct_dyn) {
               v = mrb_funcall_argv(mrb, res.live, th.handler, 0, nullptr);
             } else {
@@ -1366,7 +1484,8 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.dynamic |= uint64_t{1} << at;
       out.node_sym[at] = cb.sym;
       out.node_m[at] = inst.m;
-      out.node_fast[at] = inst.fast;
+      out.node_irep[at] = inst.irep;
+      out.node_native[at] = inst.native;
       out.node_argc[at] = argc_of(inst.m, cb.maxargs);
       continue;
     }
@@ -1385,7 +1504,8 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.dynamic |= uint64_t{1} << at;
       out.node_sym[at] = cb.sym;
       out.node_m[at] = inst.m;
-      out.node_fast[at] = inst.fast;
+      out.node_irep[at] = inst.irep;
+      out.node_native[at] = inst.native;
       out.node_argc[at] = argc_of(inst.m, cb.maxargs);
       continue;
     }
@@ -1394,7 +1514,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.dynamic |= uint64_t{1} << at;
       out.node_sym[at] = cb.sym;
       out.node_m[at] = meta.m;
-      out.node_fast[at] = meta.fast;
+      out.node_irep[at] = meta.irep;
       out.node_on_class |= uint64_t{1} << at;
       out.node_argc[at] = argc_of(meta.m, cb.maxargs);
     }
@@ -1504,7 +1624,8 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
         const Resolved hr = resolve(mrb, mrb_class_ptr(klass), th.handler);
         if (hr.defined) {
           th.m = hr.m;
-          th.fast = hr.fast;
+          th.irep = hr.irep;
+          th.native = hr.native;
         }
         out.content_types_provided.push_back(std::move(th));
       }
@@ -1515,7 +1636,8 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       const Resolved hr = resolve(mrb, mrb_class_ptr(klass), MRB_SYM(to_html));
       if (hr.defined) {
         th.m = hr.m;
-        th.fast = hr.fast;
+        th.irep = hr.irep;
+        th.native = hr.native;
       }
       out.content_types_provided.push_back(std::move(th));
     }
@@ -1557,9 +1679,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.konst.body.assign(RSTRING_PTR(rendered), RSTRING_LEN(rendered));
     } else if (!MRB_METHOD_UNDEF_P(first.m)) {
       out.dynamic_body = true;
-      out.body_sym = first.handler;
-      out.body_m = first.m;
-      out.body_fast = first.fast;
     }
   }
   out.konst.content_type = out.content_types_provided[0].type;
@@ -1609,7 +1728,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   const Resolved init = resolve(mrb, out.klass, MRB_SYM(initialize));
   out.init_needed = init.defined;
   out.init_m = init.m;
-  out.init_fast = init.fast;
+  out.init_irep = init.irep;
   mrb_gc_arena_restore(mrb, ai);
   return true;
 }
@@ -1769,7 +1888,18 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len
             request_target_len, status_code, message, message_len, backtrace.data(),
             backtrace.size());
 }
+
+// The public door for a C++ resource callback (#207). The wrapper keeps
+// the method callable from Ruby - an app may still subclass and call
+// super, and a bintest may poke it - while the fold records the raw
+// pointer so the engine never goes through the wrapper at all.
+void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
+                   mrb_aspec aspec) {
+  native_table().push_back(NativeEntry{c, sym, fn});
+  mrb_define_method_id(mrb, c, sym, native_shim, aspec);
 }
+}
+
 
 // #181: a resource instance belongs to ONE request and the server makes it.
 // Ruby may not - a route names the CLASS, and C++ allocates from it with
