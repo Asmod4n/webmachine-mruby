@@ -241,7 +241,9 @@ run() {  # run <label> <htgen flags...>
     su=$((srv1 - srv0))
     scpu=$((su * 100 / HZ / DURATION))
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge 90 ]; then
+    # Headroom is a GAP, not "below 90" - see bench/floor.sh: 89 against 90
+    # is not headroom, it is two saturated ends.
+    if [ "$su" -gt 0 ] && [ "$ccpu" -ge 90 ] && [ "$scpu" -le $((${ccpu%.*} - 15)) ]; then
       echo "  REFUSED: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% of its core). This measures htgen, not webmachine." >&2
       echo "REFUSED: a client-bound rep must not be recorded" >&2
       exit 1

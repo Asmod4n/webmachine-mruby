@@ -309,11 +309,19 @@ OUT=$(mktemp)
   # comparison (bench/assets.sh already learned this the hard way): the
   # server had headroom AND the client was pegged. Both ends are one
   # thread now, so "pegged" is one core.
+  # HEADROOM IS A GAP, not "below 90". The rule refused a run where the
+  # server sat at 89 and the client at 90 - one point apart, inside the
+  # noise of a percentage derived from /proc over the run, and with no
+  # headroom to speak of. What it must catch is the case the number
+  # LIES about: the client at its limit while the server has real room
+  # left. So the client must be pegged AND the server at least
+  # kHeadroom points below it.
   SU=$((S1 - S0))
   SCPU=$((SU * 100 / HZ / DURATION))
   CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-  if [ "$SU" -gt 0 ] && [ "$SCPU" -lt 90 ] && [ "$CCPU" -ge 90 ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core) while the client was pegged (${CCPU}% of its core). This measures the client, not webmachine. Drive the load from a second machine." >&2
+  HEADROOM=15
+  if [ "$SU" -gt 0 ] && [ "$CCPU" -ge 90 ] && [ "$SCPU" -le $((${CCPU%.*} - HEADROOM)) ]; then
+    echo "REFUSED: the server had headroom (${SCPU}% of its core, ${HEADROOM}+ points under the client's ${CCPU}%) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
     echo "server: ${SCPU}% of one core   client: ${CCPU}% of one core"

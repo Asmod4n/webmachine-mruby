@@ -370,7 +370,9 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     # needs three cores to fill our one lawfully spends more total CPU
     # than we do. A server at >=90% of its one core is the thing being
     # measured, whatever the client burned to get it there.
-    if [ "$su" -gt 0 ] && [ "$scpu" -lt 90 ] && [ "$ccpu" -ge 90 ]; then
+    # Headroom is a GAP, not "below 90" - see bench/floor.sh: 89 against 90
+    # is not headroom, it is two saturated ends.
+    if [ "$su" -gt 0 ] && [ "$ccpu" -ge 90 ] && [ "$scpu" -le $((${ccpu%.*} - 15)) ]; then
       # The ARM is refused, the SWEEP continues: killing everything
       # after it once cost the whole large-size half of a run for a
       # marginal 304 arm. The guarantee is unchanged - no client-bound
