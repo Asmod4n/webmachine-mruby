@@ -199,6 +199,9 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (!app_registered_all(specs_, kMaxListeners, err, errlen)) return false;
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;
+  // The gem is embedded: a reactor that has to give up raises into this
+  // VM instead of ending someone else's process.
+  cfg.mrb = mrb;
   cfg.backlog = opts_.backlog;
   cfg.header_timeout = opts_.header_timeout;
   cfg.send_timeout = opts_.send_timeout;

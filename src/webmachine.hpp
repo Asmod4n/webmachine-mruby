@@ -3606,6 +3606,10 @@ struct RingConfig {
   int send_timeout = 0;
   int idle_timeout = 0;
   int stop_fd = -1;
+  // The VM to raise into when the reactor cannot go on. Null for the
+  // floor binary, which owns its process and may end it; set for the
+  // gem, which does NOT - see Ring::fatal.
+  mrb_state* mrb = nullptr;
 };
 
 namespace detail {
@@ -3667,6 +3671,7 @@ class Ring {
   // Everything through the ring: unlink, socket_direct, setsockopt, bind,
   // listen as ONE linked chain, every CQE checked, a failure naming its stage.
   bool init(const RingConfig& cfg, char* err, size_t errlen) {
+    mrb_ = cfg.mrb;
     int rc = 0;
     raise_memlock();
     constexpr unsigned kSqWanted = 32768;
@@ -4075,19 +4080,42 @@ class Ring {
     std::unique_ptr<struct iovec[]> msg_iov;
   };
 
-  // Never null: a full SQ is submitted and retried once, and a ring that
-  // still cannot take an SQE is a broken ring.
+  // io_uring_enter(2): the reactor cannot go on, and it is not this
+  // library's place to decide what that means for the process. With a VM
+  // it raises - the embedder's Ruby sees Webmachine::Error and chooses.
+  // Without one (the floor binary, which owns its process) it says so and
+  // ends. This is the ONLY place either of those happens.
+  [[noreturn]] void fatal(const char* what) {
+    if (mrb_ != nullptr) mrb_raise(mrb_, E_WM_ERROR(mrb_), what);
+    std::fprintf(stderr, "webmachine: %s\n", what);
+    std::exit(1);
+  }
+
+  // Never null on return: a full SQ is drained by submitting it, and the
+  // retry then has room. io_uring_enter(2) can refuse that submit, and
+  // its ANSWER is the thing worth reading - EINTR and EAGAIN are ordinary
+  // and retried, EBUSY means the CQ is full and completions must be
+  // reaped before anything else can go in, which this call cannot do
+  // re-entrantly. Ignoring the answer, as this did, turned a recoverable
+  // ring into "broken" and then killed the process over it.
   struct io_uring_sqe* sqe() {
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (WM_LIKELY(s != nullptr)) return s;
-    io_uring_submit(&ring_);
-    s = io_uring_get_sqe(&ring_);
-    if (WM_UNLIKELY(s == nullptr)) {
-      std::fprintf(stderr, "webmachine: SQ (%u entries) stuck after submit; ring is broken\n",
-                   sq_entries_);
-      std::exit(1);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      const int rc = io_uring_submit(&ring_);
+      if (rc < 0 && rc != -EINTR && rc != -EAGAIN) {
+        char msg[160];
+        std::snprintf(msg, sizeof msg,
+                      "SQ (%u entries) full and io_uring_enter refused it: %s",
+                      sq_entries_, std::strerror(-rc));
+        fatal(msg);
+      }
+      s = io_uring_get_sqe(&ring_);
+      if (WM_LIKELY(s != nullptr)) return s;
     }
-    return s;
+    char msg[160];
+    std::snprintf(msg, sizeof msg, "SQ (%u entries) stuck after 8 submits", sq_entries_);
+    fatal(msg);
   }
 
   static constexpr uint32_t kStreamAccess = 0;
@@ -4149,9 +4177,10 @@ class Ring {
     if (lg == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
       if (stream == kStreamError && cqe->res == -ECANCELED) return;
-      std::fprintf(stderr, "webmachine: %s log write failed: %s - refusing to drop lines\n",
-                   stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
-      std::exit(1);
+      char msg[160];
+      std::snprintf(msg, sizeof msg, "%s log write failed: %s - refusing to drop lines",
+                    stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
+      fatal(msg);
     }
     if (stream == kStreamError) {
       if (gen == 1) return;
@@ -4846,6 +4875,8 @@ class Ring {
   int log_fd_ = -1;
   int err_fd_ = -1;
   unsigned sq_entries_ = 0;
+  // Whose exception this is, when the reactor has to give up. See fatal().
+  mrb_state* mrb_ = nullptr;
   int backlog_ = 511;
   int header_timeout_ = 60;
   int send_timeout_ = 60;
