@@ -18,10 +18,19 @@
 #   IMPL=pgo ...       the same flags as host plus -fprofile-use, so the
 #                      A/B against IMPL=uring is PGO and nothing else
 #   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
+#   REQPATH=/cpp ...   which route to ask for, when the app has several
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
 [ -n "${CONNS:-}" ] || {
   echo "CONNS= is mandatory - the harness is part of the number" >&2
+  exit 2
+}
+# THREADS was a knob here until #120 and #196 made both ends one thread.
+# Refused rather than ignored: a silently dropped harness knob is how a
+# number ends up describing a run nobody performed.
+[ -z "${THREADS:-}" ] || {
+  echo "THREADS= is gone from this script: server and client are ONE thread each (#120, #196)." >&2
+  echo "Drop it. bench/assets.sh and bench/h2.sh still take it - h2load has threads." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"
@@ -55,6 +64,10 @@ CLIENT="${CLIENT:-wrk}"
 # PROTO=h1 (default) | h2. Only CLIENT=htgen speaks h2 - wrk is h1 only,
 # and bench/h2.sh keeps h2load as the independent oracle for it.
 PROTO="${PROTO:-h1}"
+# REQPATH names the route to ask for. The default is the only path a
+# splat app has; an app with several resources (examples/cpp_resource.rb)
+# is A/B'd by pointing this at one of them and then the other.
+REQPATH="${REQPATH:-/}"
 STREAMS="${STREAMS:-1}"
 # htgen used to live here as bench/load. It is its own tool now
 # (github.com/Asmod4n/htgen) - a load generator is not part of an HTTP
@@ -69,7 +82,8 @@ if [ "$CLIENT" = htgen ]; then
     exit 1
   }
 elif [ "$CLIENT" != wrk ]; then
-  echo "CLIENT must be wrk or htgen" >&2
+  echo "CLIENT names WHICH generator, not where it lives: wrk or htgen." >&2
+  echo "A path goes in the generator's own variable - HTGEN=~/htgen/htgen or WRK=..." >&2
   exit 2
 fi
 case "$PROTO" in
@@ -82,15 +96,26 @@ if [ "$PROTO" = h1 ] && [ "$STREAMS" != 1 ]; then
   exit 2
 fi
 
+# Only the generator that is about to RUN has to exist. Demanding wrk on
+# a CLIENT=htgen run made the oracle a build dependency of every
+# measurement, which is not what "keep the oracle beside it" means.
 WRK="${WRK:-$HOME/wrk/wrk}"
-[ -x "$WRK" ] || WRK=$(command -v wrk) || { echo "wrk not found" >&2; exit 1; }
+if [ "$CLIENT" = wrk ]; then
+  [ -x "$WRK" ] || WRK=$(command -v wrk) || {
+    echo "wrk not found. Point WRK= at it, or run this one with CLIENT=htgen" >&2
+    echo "- but an htgen number needs a wrk number beside it (#196)." >&2
+    exit 1
+  }
+fi
 if [ "$CLIENT" = wrk ] && [ "${TRANSPORT:-unix}" = unix ] && ! "$WRK" --help 2>&1 | grep -q -- "--unix"; then
   # An unpatched wrk silently ignores WRK_UNIX, talks TCP to the probe
   # dummy instead, and measures a perfect 0.00 - seen on the Pi's first
   # run. Refused here, with the fix named. grep -a, not strings(1):
   # strings is binutils, absent on a stock Pi, and a missing checker
   # once rejected a correctly patched wrk.
-  echo "$WRK has no --unix - apply bench/wrk-af-unix.patch (see its header)" >&2
+  echo "$WRK has no --unix - apply bench/wrk-af-unix.patch (see its header)," >&2
+  echo "or run this one with CLIENT=htgen (it speaks AF_UNIX natively) - but an" >&2
+  echo "htgen number needs a wrk number beside it before it leaves the machine." >&2
   exit 1
 fi
 
@@ -251,7 +276,7 @@ OUT=$(mktemp)
   else
     CLI_LINE="wrk -t1 -c$CONNS -d${DURATION}s h1"
   fi
-  echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own
@@ -278,17 +303,17 @@ OUT=$(mktemp)
     [ "$PROTO" = h2 ] && HTGEN_PROTO=(--h2 --streams "$STREAMS")
     if [ "$TRANSPORT" = unix ]; then
       "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-        "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
+        --path "$REQPATH" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     else
       "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-        --seconds "$DURATION" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
+        --seconds "$DURATION" --path "$REQPATH" "${HTGEN_PROTO[@]}" >"$WORK/cli.out" 2>&1 &
     fi
   elif [ "$TRANSPORT" = unix ]; then
     "$WRK" --unix "$SOCK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
-      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
+      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT$REQPATH" >"$WORK/cli.out" 2>&1 &
   else
     "$WRK" -t1 -c"$CONNS" -d"${DURATION}"s --latency \
-      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT/" >"$WORK/cli.out" 2>&1 &
+      "${WRK_HDRS[@]}" "http://127.0.0.1:$PORT$REQPATH" >"$WORK/cli.out" 2>&1 &
   fi
   CLI=$!
   wait "$CLI" 2>/dev/null
