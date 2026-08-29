@@ -782,44 +782,73 @@ assert('assets: a pack alone serves, and everything it does not name is 404') do
   end
 end
 
-assert('assets: the shipped cat pack serves every status it holds, unchanged') do
-  # share/http-cats.zip, built by `rake cats`. CC BY 2.0 asks that the
-  # images be named, linked and stated as unchanged - the last of those is
-  # a claim about BYTES, so it is checked here rather than asserted in a
-  # README: what the tier serves is what the archive holds.
-  pack = File.expand_path('../share/http-cats.zip', __dir__)
-  skip "no #{pack} - run rake cats" unless File.exist?(pack)
-  sock = "/tmp/wm-cats-#{$$}.sock"
+assert('assets: the shipped error-page pack serves a page, a problem document and a cat') do
+  # share/error-pages.zip, built by `rake error_pages`. Three claims are
+  # checked here rather than asserted in a README, because all three are
+  # claims about BYTES: that the pages reference the cat beside them, that
+  # the JSON is an RFC 9457 problem document, and that the images are
+  # unchanged - which is the half of CC BY 2.0 that a file can prove.
+  pack = File.expand_path('../share/error-pages.zip', __dir__)
+  skip "no #{pack} - run rake error_pages" unless File.exist?(pack)
+  sock = "/tmp/wm-ep-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-cats-#{$$}.log"
+  err = "/tmp/wm-ep-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', pack,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "cat server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  raise "error-page server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
     UNIXSocket.open(sock) do |s|
-      [400, 404, 418, 451, 500, 503].each do |code|
+      [[404, 'Not Found'], [418, '(Unused)'], [451, 'Unavailable For Legal Reasons'],
+       [500, 'Internal Server Error'], [503, 'Service Unavailable']].each do |code, phrase|
+        s.write("GET /errors/#{code}.html HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.html: #{head.lines.first}"
+        assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i), head
+        assert_true body.include?(">#{code}<"), "#{code}.html does not name its status"
+        assert_true body.include?(phrase), "#{code}.html does not name its phrase"
+        # The picture it points at is in this same pack, so the page needs
+        # nothing from anywhere else.
+        assert_true body.include?(%(src="/cats/#{code}.jpg")), "#{code}.html points elsewhere"
+        # CC BY 2.0: creator, licence link, and whether it was changed.
+        assert_true body.include?('Tomomi Imura'), "#{code}.html drops the attribution"
+        assert_true body.include?('creativecommons.org/licenses/by/2.0/'), body
+        assert_true body.include?('unchanged'), "#{code}.html drops the change statement"
+        # No stylesheet, no script, no font: an error page must not depend
+        # on a second request to anything but its own cat.
+        assert_false body.match?(/<link|<script/i), "#{code}.html fetches something"
+
+        s.write("GET /errors/#{code}.json HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.json: #{head.lines.first}"
+        assert_true head.match?(%r{^Content-Type: application/json\r$}i), head
+        # RFC 9457 problem details: type, title, status - and no cat, since
+        # whoever reads this wants the status, not a picture.
+        assert_true body.include?(%("status":#{code})), body
+        assert_true body.include?(%("title":"#{phrase}")), body
+        assert_true body.include?('"type":"about:blank"'), body
+        assert_false body.include?('cat'), "#{code}.json carries a cat"
+
         s.write("GET /cats/#{code}.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
         head, body = a_read(s)
-        assert_true head.start_with?('HTTP/1.1 200'), "#{code}: #{head.lines.first}"
+        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.jpg: #{head.lines.first}"
         assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i), head
-        # A JPEG starts SOI and ends EOI. Anything that resized or
-        # re-encoded on the way would still satisfy the first and is
-        # unlikely to satisfy both against a stored entry.
         assert_equal "\xFF\xD8".b, body[0, 2].b
         assert_equal "\xFF\xD9".b, body[-2, 2].b
       end
-      # The attribution travels inside the archive, and is reachable.
-      s.write("GET /cats/NOTICE.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+      # The terms travel inside the archive.
+      s.write("GET /NOTICE.txt HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_true body.include?('CC BY 2.0'), body
       assert_true body.include?('Tomomi Imura'), body
       assert_true body.include?('CHANGES: NONE'), body
-      # Below 400 there is no cat, by the pack's own definition.
-      s.write("GET /cats/302.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = a_read(s)
-      assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
+      # Below 400 nothing is served: the pack starts where errors do.
+      ['/errors/302.html', '/errors/200.json', '/cats/302.jpg'].each do |path|
+        s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 404'), "#{path}: #{head.lines.first}"
+      end
     end
   ensure
     Process.kill('TERM', pid) rescue nil

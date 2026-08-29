@@ -97,33 +97,193 @@ task :portable_smoke do
   wm_smoke('portable', 'portable')
 end
 
-CATS_ZIP = File.expand_path('share/http-cats.zip', __dir__)
-CATS_NOTICE = <<~TEXT
-  HTTP status cats
-  ================
+ERROR_PACK = File.expand_path('share/error-pages.zip', __dir__)
 
-  Images: "HTTP Status Cats" by Tomomi Imura (@girlie_mac),
-          https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/
-  Fetched from the http.cat service by @rogeriopvl, https://http.cat/
+# The status name, and WHERE THE NAME COMES FROM. The tree's own
+# flow::reason() covers what the flow can reach and answers "Response" for
+# everything else; a pack that ships a page per status needs the wider
+# table, and in this tree a table names its source - including the entries
+# whose source is "nobody registered this, a vendor shipped it".
+ERROR_STATUS = {
+  400 => ['Bad Request',                     'RFC 9110'],
+  401 => ['Unauthorized',                    'RFC 9110'],
+  402 => ['Payment Required',                'RFC 9110'],
+  403 => ['Forbidden',                       'RFC 9110'],
+  404 => ['Not Found',                       'RFC 9110'],
+  405 => ['Method Not Allowed',              'RFC 9110'],
+  406 => ['Not Acceptable',                  'RFC 9110'],
+  407 => ['Proxy Authentication Required',   'RFC 9110'],
+  408 => ['Request Timeout',                 'RFC 9110'],
+  409 => ['Conflict',                        'RFC 9110'],
+  410 => ['Gone',                            'RFC 9110'],
+  411 => ['Length Required',                 'RFC 9110'],
+  412 => ['Precondition Failed',             'RFC 9110'],
+  413 => ['Content Too Large',               'RFC 9110'],
+  414 => ['URI Too Long',                    'RFC 9110'],
+  415 => ['Unsupported Media Type',          'RFC 9110'],
+  416 => ['Range Not Satisfiable',           'RFC 9110'],
+  417 => ['Expectation Failed',              'RFC 9110'],
+  418 => ['(Unused)',                        'RFC 9110 reserves it; RFC 2324 made the joke'],
+  419 => ['Page Expired',                    'Laravel, not registered'],
+  420 => ['Enhance Your Calm',               'Twitter, not registered'],
+  421 => ['Misdirected Request',             'RFC 9110'],
+  422 => ['Unprocessable Content',           'RFC 9110'],
+  423 => ['Locked',                          'RFC 4918'],
+  424 => ['Failed Dependency',               'RFC 4918'],
+  425 => ['Too Early',                       'RFC 8470'],
+  426 => ['Upgrade Required',                'RFC 9110'],
+  428 => ['Precondition Required',           'RFC 6585'],
+  429 => ['Too Many Requests',               'RFC 6585'],
+  431 => ['Request Header Fields Too Large', 'RFC 6585'],
+  444 => ['No Response',                     'nginx, not registered'],
+  450 => ['Blocked by Windows Parental Controls', 'Microsoft, not registered'],
+  451 => ['Unavailable For Legal Reasons',   'RFC 7725'],
+  495 => ['SSL Certificate Error',           'nginx, not registered'],
+  496 => ['SSL Certificate Required',        'nginx, not registered'],
+  497 => ['HTTP Request Sent to HTTPS Port', 'nginx, not registered'],
+  498 => ['Invalid Token',                   'Esri, not registered'],
+  499 => ['Client Closed Request',           'nginx, not registered'],
+  500 => ['Internal Server Error',           'RFC 9110'],
+  501 => ['Not Implemented',                 'RFC 9110'],
+  502 => ['Bad Gateway',                     'RFC 9110'],
+  503 => ['Service Unavailable',             'RFC 9110'],
+  504 => ['Gateway Timeout',                 'RFC 9110'],
+  506 => ['Variant Also Negotiates',         'RFC 2295'],
+  507 => ['Insufficient Storage',            'RFC 4918'],
+  508 => ['Loop Detected',                   'RFC 5842'],
+  509 => ['Bandwidth Limit Exceeded',        'Apache/cPanel, not registered'],
+  510 => ['Not Extended',                    'RFC 2774'],
+  511 => ['Network Authentication Required', 'RFC 6585'],
+  521 => ['Web Server Is Down',              'Cloudflare, not registered'],
+  522 => ['Connection Timed Out',            'Cloudflare, not registered'],
+  523 => ['Origin Is Unreachable',           'Cloudflare, not registered'],
+  525 => ['SSL Handshake Failed',            'Cloudflare, not registered'],
+  530 => ['Site Frozen',                     'Cloudflare, not registered'],
+  599 => ['Network Connect Timeout Error',   'not registered']
+}.freeze
 
-  Licence: Creative Commons Attribution 2.0 (CC BY 2.0)
-           https://creativecommons.org/licenses/by/2.0/
+ERROR_NOTICE = <<~TEXT
+  webmachine-mruby error pages
+  ============================
 
-  CHANGES: NONE. Every image in this pack is the byte-for-byte JPEG that
-  https://http.cat/<status>.jpg served. Nothing was resized, recompressed,
-  cropped or re-encoded, so the "angeben, ob Aenderungen vorgenommen wurden"
-  half of the attribution has one honest answer: no.
+  errors/<status>.html   the pages, Apache-2.0 with this server
+  errors/<status>.json   RFC 9457 problem documents, same licence
+  cats/<status>.jpg      the pictures, see below
+
+  The pictures are "HTTP Status Cats" by Tomomi Imura (@girlie_mac),
+
+      https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/
+
+  licensed under Creative Commons Attribution 2.0 (CC BY 2.0),
+
+      https://creativecommons.org/licenses/by/2.0/
+
+  fetched through the http.cat service by @rogeriopvl (https://http.cat/).
+
+  CHANGES: NONE. Every image is the byte-for-byte JPEG the service served,
+  not resized, not recompressed, not cropped, not re-encoded - so the
+  "angeben, ob Aenderungen vorgenommen wurden" half of the attribution has
+  one honest answer: no.
+
+  CC BY 2.0 covers the images only. The pages are ours and carry this
+  server's Apache-2.0.
 
   This notice travels inside the pack on purpose. A zip is what gets copied
-  around, so the terms have to be in it - not only in the repository it was
+  around, so the terms have to be in it, not only in the repository it was
   built from.
 TEXT
 
+# The SOF marker, so a page can state the picture's real width and height
+# and the layout does not jump when it arrives.
+def jpeg_size(b)
+  i = 2
+  while i < b.bytesize - 1
+    break unless b.getbyte(i) == 0xFF
+    m = b.getbyte(i + 1)
+    if m == 0xD8 || m == 0xD9 || (0xD0..0xD7).cover?(m)
+      i += 2
+      next
+    end
+    return [b[i + 7, 2].unpack1('n'), b[i + 5, 2].unpack1('n')] if [0xC0, 0xC1, 0xC2].include?(m)
+    break if m == 0xDA
+    i += 2 + b[i + 2, 2].unpack1('n')
+  end
+  nil
+end
+
+def html_escape(s)
+  s.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')
+end
+
+# One page, standing alone: no stylesheet, no script, no font to fetch. The
+# only thing it asks for is the cat beside it in this same pack - and the
+# 5xx pages are the ones most likely to be seen while something is broken,
+# so nothing here may depend on a second request succeeding except that.
+def error_html(code, phrase, source, dims)
+  title = "#{code} #{html_escape(phrase)}"
+  img =
+    if dims
+      %(  <img src="/cats/#{code}.jpg" width="#{dims[0]}" height="#{dims[1]}"\n) +
+        %(       alt="A cat, illustrating HTTP #{code} #{html_escape(phrase)}">\n)
+    else
+      ''
+    end
+  # CC BY 2.0 asks for the creator, a link to the licence, and whether it
+  # was changed. All three, on the page that shows the picture.
+  credit =
+    if dims
+      "  <p class=c>Cat by <a href=\"https://girliemac.com/blog/2011/12/18/" \
+        "the-day-i-seized-the-interweb-http-status-cats/\">Tomomi Imura</a>, " \
+        "<a href=\"https://creativecommons.org/licenses/by/2.0/\">CC BY 2.0</a>, unchanged\n"
+    else
+      ''
+    end
+  <<~HTML
+    <!doctype html>
+    <html lang=en>
+    <meta charset=utf-8>
+    <meta name=viewport content="width=device-width,initial-scale=1">
+    <title>#{title}</title>
+    <style>
+    :root{color-scheme:light dark;--bg:#fbfbfa;--fg:#1a1a1a;--dim:#6b6b6b;--rule:#e2e2df}
+    @media (prefers-color-scheme:dark){
+      :root{--bg:#15161a;--fg:#e8e8e6;--dim:#8a8a92;--rule:#2a2c33}}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+      background:var(--bg);color:var(--fg);padding:2rem 1rem;
+      font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    main{max-width:40rem;text-align:center}
+    .n{font-size:clamp(3.5rem,14vw,6rem);font-weight:700;letter-spacing:-.04em;
+      line-height:1;margin:0;font-variant-numeric:tabular-nums}
+    h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
+    img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
+    .s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
+    .c{margin:1.2rem 0 0;padding-top:1.2rem;border-top:1px solid var(--rule);
+      color:var(--dim);font-size:.75rem}
+    a{color:inherit}
+    </style>
+    <main>
+      <p class=n>#{code}</p>
+      <h1>#{html_escape(phrase)}</h1>
+    #{img}  <p class=s>#{html_escape(source)}</p>
+    #{credit}</main>
+  HTML
+end
+
+# RFC 9457 problem details: type, title, status, and nothing invented. No
+# cat - a machine reading this wants the status, not a picture.
+def error_json(code, phrase)
+  require 'json'
+  JSON.generate('type' => 'about:blank', 'title' => phrase, 'status' => code) + "\n"
+end
+
 # The pack format the asset tier reads: stored or deflate, nothing else
-# (#170/#177). Everything here is STORED - a JPEG does not compress, and
-# the notice is too small for it to matter. One fixed timestamp keeps the
-# zip reproducible, so a rebuild shows up as a rebuild and not as noise.
-def cats_zip(entries)
+# (#170/#177). Everything here is STORED - measured on the cats, a deflate
+# entry always leaves as gzip, even to a client that sent no
+# Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
+# One fixed timestamp keeps the zip reproducible, so a rebuild shows up as
+# a rebuild and not as noise.
+def error_zip(entries)
   out = +''.b
   cd = +''.b
   dtime = 0
@@ -143,28 +303,36 @@ def cats_zip(entries)
   out
 end
 
-desc 'rebuild share/http-cats.zip from http.cat (every status >= 400)'
-task :cats do
+desc 'rebuild share/error-pages.zip: a page and a problem document per status, with the cats'
+task :error_pages do
   require 'zlib'
   require 'open-uri'
-  got = []
-  (400..599).each do |code|
+  cats = {}
+  ERROR_STATUS.each_key do |code|
     body = begin
       URI.parse("https://http.cat/#{code}.jpg").open(
-        'User-Agent' => 'webmachine-mruby cats packer', read_timeout: 20
+        'User-Agent' => 'webmachine-mruby error-pages packer', read_timeout: 20
       ) { |f| f.read }
     rescue StandardError
       next
     end
-    next unless body.start_with?("\xFF\xD8".b)
-    got << [format('cats/%d.jpg', code), body]
+    next unless body.b.start_with?("\xFF\xD8".b)
+    cats[code] = body.b
     print "#{code} "
   end
   puts
-  raise 'http.cat answered with no images at all' if got.empty?
-  entries = [['cats/NOTICE.txt', CATS_NOTICE]] + got.sort_by { |n, _| n }
-  File.binwrite(CATS_ZIP, cats_zip(entries))
-  puts "share/http-cats.zip: #{got.size} cats, #{File.size(CATS_ZIP)} bytes"
+  raise 'http.cat answered with no images at all' if cats.empty?
+
+  entries = [['NOTICE.txt', ERROR_NOTICE]]
+  ERROR_STATUS.each do |code, (phrase, source)|
+    cat = cats[code]
+    entries << ["errors/#{code}.html", error_html(code, phrase, source, cat && jpeg_size(cat))]
+    entries << ["errors/#{code}.json", error_json(code, phrase)]
+    entries << ["cats/#{code}.jpg", cat] if cat
+  end
+  File.binwrite(ERROR_PACK, error_zip(entries))
+  puts "share/error-pages.zip: #{ERROR_STATUS.size} statuses, #{cats.size} cats, " \
+       "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
 end
 
 desc 'remove build output (keeps the mruby checkout)'

@@ -28,11 +28,37 @@ Refresh it verbatim from upstream; do not edit it here:
     curl -o share/mime.types \
       https://raw.githubusercontent.com/apache/httpd/trunk/docs/conf/mime.types
 
-## http-cats.zip
+## error-pages.zip
 
-An asset pack — the same format `--assets` reads — holding one JPEG per
-HTTP status code from 400 upwards, 55 of them, keyed `cats/<status>.jpg`.
-`rake cats` rebuilds it from source.
+An asset pack - the same format `--assets` reads - holding, for every HTTP
+status from 400 upwards that a picture exists for, three entries:
+
+    errors/<status>.html   a standalone page, ours, Apache-2.0
+    errors/<status>.json   an RFC 9457 problem document, ours
+    cats/<status>.jpg      the picture, CC BY 2.0, see below
+    NOTICE.txt             the terms, inside the archive
+
+55 statuses, 166 entries. `rake error_pages` fetches and rebuilds it.
+
+The **pages** stand alone: no stylesheet, no script, no font, light and
+dark from `prefers-color-scheme`, and the picture's real width and height
+read out of its SOF marker so the layout does not jump. The only thing a
+page asks for is the cat beside it in this same pack - an error page must
+not depend on a second request to somewhere else, and a 5xx page is the
+one most likely to be read while something is already broken.
+
+The **problem documents** follow RFC 9457: `type`, `title`, `status`, and
+nothing invented. No cat - whatever reads JSON wants the status, not a
+picture. (Served from this pack they carry `application/json`, by
+extension; the media type RFC 9457 asks for is
+`application/problem+json`, which is the error path's to set when it
+serves the same bytes itself.)
+
+Each page names **where its status comes from**: an RFC where one exists,
+and "nginx, not registered" or "Cloudflare, not registered" where none
+does. Fifteen of the 55 are vendor inventions, and the page says so.
+
+### The pictures
 
 *HTTP Status Cats* are by **Tomomi Imura** (@girlie_mac), published under
 the **Creative Commons Attribution 2.0** licence
@@ -42,20 +68,34 @@ commercial use and derivatives and asks no ShareAlike, so it sits beside
 this tree's Apache-2.0 without touching it, and anyone redistributing
 this server may redistribute the pack.
 
-What the licence asks in return, and how it is answered:
-
 | the licence asks | this pack |
 |---|---|
-| name the creator | Tomomi Imura, in `NOTICE`, in `cats/NOTICE.txt` inside the zip, and here |
-| link the licence | the deed URL, in all three places |
-| say whether it was changed | **not changed** — every entry is the byte-for-byte JPEG `http.cat` served |
-| no further restrictions | the pack is a plain zip with a notice in it, nothing wrapped, nothing locked |
+| name the creator | Tomomi Imura, in `NOTICE`, in `NOTICE.txt` inside the zip, on every page that shows a picture, and here |
+| link the licence | the deed URL, in all four places |
+| say whether it was changed | **not changed** - every image is the byte-for-byte JPEG `http.cat` served |
+| no further restrictions | a plain zip with a notice in it, nothing wrapped, nothing locked |
 
-The images are **stored**, not deflated: a JPEG does not compress, and the
-asset tier reads stored and deflate only. The notice sits inside the
-archive on purpose — a zip is what gets copied around, so the terms have
-to travel with the bytes rather than stay behind in this repository.
+### Everything is stored, nothing is deflated
 
-They are NOT compiled into the binary. `mime.types` is, because a lookup
-must answer without a data file beside it; 1.5 MB of cats must not be, and
-#184 went the other way. They are served like any other pack.
+The asset tier reads stored and deflate, and this pack is stored
+throughout. Measured on the cats:
+
+| | stored | deflate |
+|---|---|---|
+| archive, 55 images | 1 569 342 | 1 434 434 (-8.6%) |
+| wire, `404.jpg` | 38 532 identity | 37 025 gzip (-3.9%) |
+| `Accept-Encoding: identity` | 200 | **406** |
+| `curl -o cat.jpg`, no `--compressed` | a JPEG | **a gzip file** |
+
+A stored entry always leaves as identity, even for a client offering
+gzip - the tier hands the archive through, it does not compress on the
+fly. A deflate entry always leaves as gzip, including to a client that
+sent no `Accept-Encoding` at all, and `file` calls what curl saved "gzip
+compressed data". Four percent on the wire does not buy a broken download
+and a 406. The pages would deflate far better than the images do, and
+they are stored for the same reason: this pack must be readable by
+whatever asks for it.
+
+The pack is **not** compiled into the binary. `mime.types` is, because a
+lookup must answer without a data file beside it; 1.6 MB of pages and
+cats must not be, and #184 went the other way.

@@ -6,10 +6,10 @@ https://github.com/Asmod4n/webmachine-mruby
 and is licensed under the Apache License, Version 2.0.
 
 --------------------------------------------------------------------
-share/http-cats.zip
+share/error-pages.zip
 --------------------------------------------------------------------
 
-The asset pack share/http-cats.zip contains "HTTP Status Cats" by
+The asset pack share/error-pages.zip contains "HTTP Status Cats" by
 Tomomi Imura (@girlie_mac):
 
     https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/
@@ -21,7 +21,9 @@ licensed under Creative Commons Attribution 2.0 (CC BY 2.0):
 The images were fetched through the http.cat service by @rogeriopvl
 (https://http.cat/) and are included UNCHANGED - not resized, not
 recompressed, not cropped, not re-encoded. The same notice is carried
-inside the archive as cats/NOTICE.txt, so it travels with the pack.
+inside the archive as NOTICE.txt, so it travels with the pack. The
+pages in that archive (errors/*.html, errors/*.json) are ours and carry
+the Apache-2.0 above.
 
 CC BY 2.0 applies to those images only. It does not apply to, and does
 not change, the Apache-2.0 licence of everything else in this
