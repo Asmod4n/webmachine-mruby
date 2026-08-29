@@ -53,6 +53,35 @@ unrelated. Bintest: **219/219**.
 4. `README.md` and `share/README.md` are updated; `docs/` was not
    checked for stale references.
 
+## Measurement, and what came out of it
+
+`bench/floor.sh` prints three things it did not before: user against sys
+for both ends, and what ELSE ran during the run. That was not cosmetic -
+it settled two questions.
+
+- **h1 over a unix socket measures the socket.** 8% user / 91% sys on the
+  server; the client 0% user / 90% sys. The server's own work - parse,
+  route, flow, spell - is **83 ns per request**. Everything else is the
+  kernel copying, and on AF_UNIX the copy is billed to whoever called
+  send, which is why a client that "does almost nothing" burns a core.
+- **h2 inverts it**: 78% user / 16% sys, because 128 streams amortise one
+  syscall over 128 answers. Same server work per request (~89 ns), 52x
+  less kernel. So #191 (PGO) and #208 matter on h2; #190 (phr/AVX2) is
+  h1-only and stays under 1% of the whole.
+- The machine carries 10-18% of a core of background (Plasma, 4K120), and
+  run-to-run spread is ~10%. Nothing smaller than that is provable there;
+  `other:` now says how much was in the way.
+
+Out of that came `80de29d`: content-type is inserted into the peer's
+HPACK table once per connection and referenced afterwards. **83.0 -> 57.0
+bytes per h2 answer, -31%**, bad=0 over 4.77M responses. Byte counts, not
+timings, so the compositor has no vote.
+
+Two clock reads per reactor round, both vDSO, no syscall
+(CLOCK_MONOTONIC_COARSE 5.6 ns, time() 2.7 ns, 15M calls -> 34 syscalls
+total). There is nothing to win there; the fine CLOCK_REALTIME at 21 ns
+is the one we already avoid.
+
 ## Build, on a cold container
 
 The hook installs `liburing-dev`, the submodules and rake. Then:
