@@ -67,9 +67,13 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
           rescue ArgumentError => e
             lines << "order:\#{e.message}"
           end
+          # A bare Integer IS a source - hiredis hands its event
+          # callbacks an int and has no object to offer.
+          bare = Webmachine::Watcher.new(r.fileno, :r) { }
+          lines << "bare:\#{bare.source}"
           begin
             Webmachine::Watcher.new('not a socket', :r) { }
-          rescue ArgumentError => e
+          rescue TypeError => e
             lines << "source_type:\#{e.message}"
           end
           begin
@@ -102,6 +106,9 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
   assert_true out.include?('order:a watcher waits for :r, :w or :rw'), out
   # A source is something with a descriptor, refused where the mistake
   # was made rather than somewhere inside the reactor.
-  assert_true out.include?('source_type:a watcher watches something with a fileno'), out
+  # One conversion covers both shapes: an Integer passes through, anything
+  # else is asked for its fileno, and something with none says so itself.
+  assert_true out.match?(/^bare:\d+$/), out
+  assert_true out.include?("source_type:can't convert String into Integer"), out
   assert_true out.include?('no_block:a watcher without a block'), out
 end

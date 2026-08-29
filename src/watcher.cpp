@@ -118,27 +118,26 @@ mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "o|o&", &source, &events, &blk);
 
-  // A source is something with a descriptor. Asked as a question rather
-  // than assumed, so a String or a Hash is refused here - where the
-  // mistake was made - and not somewhere inside the reactor.
-  if (!mrb_respond_to(mrb, source, MRB_SYM(fileno))) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR,
-               "a watcher watches something with a fileno, and %C has none",
-               mrb_obj_class(mrb, source));
-  }
   if (mrb_nil_p(blk)) {
     mrb_raise(mrb, E_ARGUMENT_ERROR,
               "a watcher without a block would have nothing to do when it fires");
   }
 
-  // Asked ONCE, here, while there is still a VM to ask in.
-  const mrb_value fdv = mrb_funcall_id(mrb, source, MRB_SYM(fileno), 0);
-  if (!mrb_integer_p(fdv) || mrb_integer(fdv) < 0) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher needs a descriptor, and fileno answered %v", fdv);
+  // THE descriptor, asked once, here, while there is still a VM to ask
+  // in. One conversion covers both shapes a source comes in: an Integer
+  // is already what is wanted and passes straight through, anything else
+  // is asked for its fileno, and something that has none raises on its
+  // own with a message naming the type and the method.
+  //
+  // Both shapes are real. A socket answers fileno; hiredis hands its
+  // event callbacks a bare int and has no object to offer at all.
+  const mrb_int fd = mrb_integer(mrb_type_convert(mrb, source, MRB_TT_INTEGER, MRB_SYM(fileno)));
+  if (fd < 0) {
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher needs a descriptor, and this one is %i", fd);
   }
 
   auto* d = new WatcherData();
-  d->fd = static_cast<int>(mrb_integer(fdv));
+  d->fd = static_cast<int>(fd);
   d->events = mask_of(mrb, events);
   mrb_data_init(self, d, &watcher_type);
 
