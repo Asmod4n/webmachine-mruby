@@ -166,9 +166,30 @@ ERROR_NOTICE = <<~TEXT
   webmachine-mruby error pages
   ============================
 
-  errors/<status>.html   the pages, Apache-2.0 with this server
-  errors/<status>.json   RFC 9457 problem documents, same licence
+  errors/error.html      the page TEMPLATE (mustache)
+  errors/error.json      the problem-document TEMPLATE (mustache)
   cats/<status>.jpg      the pictures, see below
+
+  The server renders these ONCE at startup, one page per status it can
+  answer with, and emits the result as the body of the response that
+  failed. Nothing in here is reached by a request: an error is delivered
+  by the route that produced it, not by a second trip through the router.
+
+  Replace either template and the server renders yours instead. The slots
+  it fills:
+
+    {{status}}     404
+    {{title}}      Not Found
+    {{source}}     "RFC 9110", or "nginx, not registered"
+    {{#cat}}       present only when this pack holds a picture for the
+                   status; inside it, {{cat_url}}, {{cat_width}} and
+                   {{cat_height}}
+    {{#message}}   the 500 only: what the resource's handle_exception
+                   returned - webmachine-ruby's own name for the hook -
+                   or, when it defines none, the exception message and
+                   its backtrace. Escaped by {{ }}, which is the whole
+                   reason this goes through a template
+    {{#backtrace}} the json template's own slot for the frames
 
   The pictures are "HTTP Status Cats" by Tomomi Imura (@girlie_mac),
 
@@ -183,106 +204,72 @@ ERROR_NOTICE = <<~TEXT
   CHANGES: NONE. Every image is the byte-for-byte JPEG the service served,
   not resized, not recompressed, not cropped, not re-encoded - so the
   "angeben, ob Aenderungen vorgenommen wurden" half of the attribution has
-  one honest answer: no.
+  one honest answer: no. (The service itself serves 750x600, already
+  smaller than the originals; "unchanged" is measured against what it
+  served, and that is all it claims.)
 
-  CC BY 2.0 covers the images only. The pages are ours and carry this
+  CC BY 2.0 covers the images only. The templates are ours and carry this
   server's Apache-2.0.
 
-  This notice travels inside the pack on purpose. A zip is what gets copied
-  around, so the terms have to be in it, not only in the repository it was
-  built from.
+  This notice travels inside the pack on purpose. A zip is what gets
+  copied around, so the terms have to be in it, not only in the
+  repository it was built from.
 TEXT
 
-# The SOF marker, so a page can state the picture's real width and height
-# and the layout does not jump when it arrives.
-def jpeg_size(b)
-  i = 2
-  while i < b.bytesize - 1
-    break unless b.getbyte(i) == 0xFF
-    m = b.getbyte(i + 1)
-    if m == 0xD8 || m == 0xD9 || (0xD0..0xD7).cover?(m)
-      i += 2
-      next
-    end
-    return [b[i + 7, 2].unpack1('n'), b[i + 5, 2].unpack1('n')] if [0xC0, 0xC1, 0xC2].include?(m)
-    break if m == 0xDA
-    i += 2 + b[i + 2, 2].unpack1('n')
-  end
-  nil
-end
-
-def html_escape(s)
-  s.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')
-end
-
-# One page, standing alone: no stylesheet, no script, no font to fetch. The
-# only thing it asks for is the cat beside it in this same pack - and the
-# 5xx pages are the ones most likely to be seen while something is broken,
-# so nothing here may depend on a second request succeeding except that.
-def error_html(code, phrase, source, dims)
-  title = "#{code} #{html_escape(phrase)}"
-  img =
-    if dims
-      %(  <img src="/cats/#{code}.jpg" width="#{dims[0]}" height="#{dims[1]}"\n) +
-        %(       alt="A cat, illustrating HTTP #{code} #{html_escape(phrase)}">\n)
-    else
-      ''
-    end
-  # CC BY 2.0 asks for the creator, a link to the licence, and whether it
-  # was changed. All three, on the page that shows the picture.
-  credit =
-    if dims
-      "  <p class=c>Cat by <a href=\"https://girliemac.com/blog/2011/12/18/" \
-        "the-day-i-seized-the-interweb-http-status-cats/\">Tomomi Imura</a>, " \
-        "<a href=\"https://creativecommons.org/licenses/by/2.0/\">CC BY 2.0</a>, unchanged\n"
-    else
-      ''
-    end
-  <<~HTML
-    <!doctype html>
-    <html lang=en>
-    <meta charset=utf-8>
-    <meta name=viewport content="width=device-width,initial-scale=1">
-    <title>#{title}</title>
-    <style>
-    :root{color-scheme:light dark;--bg:#fbfbfa;--fg:#1a1a1a;--dim:#6b6b6b;--rule:#e2e2df}
-    @media (prefers-color-scheme:dark){
-      :root{--bg:#15161a;--fg:#e8e8e6;--dim:#8a8a92;--rule:#2a2c33}}
-    *{box-sizing:border-box}
-    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-      background:var(--bg);color:var(--fg);padding:2rem 1rem;
-      font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    main{max-width:40rem;text-align:center}
-    .n{font-size:clamp(3.5rem,14vw,6rem);font-weight:700;letter-spacing:-.04em;
-      line-height:1;margin:0;font-variant-numeric:tabular-nums}
-    h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
-    img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
-    .s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
-    .c{margin:1.2rem 0 0;padding-top:1.2rem;border-top:1px solid var(--rule);
-      color:var(--dim);font-size:.75rem}
-    a{color:inherit}
-    </style>
-    <main>
-      <p class=n>#{code}</p>
-      <h1>#{html_escape(phrase)}</h1>
-    #{img}  <p class=s>#{html_escape(source)}</p>
-    #{credit}</main>
-  HTML
-end
+# ONE template for every status. What differs between a 404 and a 503 is
+# three strings and a picture, and a template is the shape that says so.
+# Rendered once at startup - nothing in here costs a request.
+ERROR_HTML_TEMPLATE = <<~HTML
+  <!doctype html>
+  <html lang=en>
+  <meta charset=utf-8>
+  <meta name=viewport content="width=device-width,initial-scale=1">
+  <title>{{status}} {{title}}</title>
+  <style>
+  :root{color-scheme:light dark;--bg:#fbfbfa;--fg:#1a1a1a;--dim:#6b6b6b;--rule:#e2e2df}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#15161a;--fg:#e8e8e6;--dim:#8a8a92;--rule:#2a2c33}}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);color:var(--fg);padding:2rem 1rem;
+    font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:40rem;text-align:center}
+  .n{font-size:clamp(3.5rem,14vw,6rem);font-weight:700;letter-spacing:-.04em;
+    line-height:1;margin:0;font-variant-numeric:tabular-nums}
+  h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
+  img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
+  .s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
+  .m{margin:1.2rem 0 0;padding:.8rem 1rem;border-radius:.4rem;background:rgba(127,127,127,.12);
+    text-align:left;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+  .c{margin:1.2rem 0 0;padding-top:1.2rem;border-top:1px solid var(--rule);
+    color:var(--dim);font-size:.75rem}
+  a{color:inherit}
+  </style>
+  <main>
+    <p class=n>{{status}}</p>
+    <h1>{{title}}</h1>
+  {{#cat}}  <img src="{{cat_url}}" width="{{cat_width}}" height="{{cat_height}}"
+         alt="A cat, illustrating HTTP {{status}} {{title}}">
+  {{/cat}}  <p class=s>{{source}}</p>
+  {{#message}}  <p class=m>{{message}}</p>
+  {{/message}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
+  {{/cat}}</main>
+HTML
 
 # RFC 9457 problem details: type, title, status, and nothing invented. No
-# cat - a machine reading this wants the status, not a picture.
-def error_json(code, phrase)
-  require 'json'
-  JSON.generate('type' => 'about:blank', 'title' => phrase, 'status' => code) + "\n"
-end
+# cat - whatever reads JSON wants the status, not a picture. "detail" is
+# the member RFC 9457 reserves for exactly what the 500 has to say, and it
+# appears only when there is something to say.
+#
+# {{{...}}} is raw ON PURPOSE: mustache escapes for HTML, and &amp; inside
+# a JSON string would be wrong. The titles come from the server's own
+# table; the message is JSON-escaped by the server before it gets here,
+# because that is an encoding job and not a template's.
+ERROR_JSON_TEMPLATE = <<~JSON
+  {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
+JSON
 
-# The pack format the asset tier reads: stored or deflate, nothing else
-# (#170/#177). Everything here is STORED - measured on the cats, a deflate
-# entry always leaves as gzip, even to a client that sent no
-# Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
-# One fixed timestamp keeps the zip reproducible, so a rebuild shows up as
-# a rebuild and not as noise.
 def error_zip(entries)
   out = +''.b
   cd = +''.b
@@ -303,7 +290,7 @@ def error_zip(entries)
   out
 end
 
-desc 'rebuild share/error-pages.zip: a page and a problem document per status, with the cats'
+desc 'rebuild share/error-pages.zip: the two error templates and the cats'
 task :error_pages do
   require 'zlib'
   require 'open-uri'
@@ -323,15 +310,15 @@ task :error_pages do
   puts
   raise 'http.cat answered with no images at all' if cats.empty?
 
-  entries = [['NOTICE.txt', ERROR_NOTICE]]
-  ERROR_STATUS.each do |code, (phrase, source)|
-    cat = cats[code]
-    entries << ["errors/#{code}.html", error_html(code, phrase, source, cat && jpeg_size(cat))]
-    entries << ["errors/#{code}.json", error_json(code, phrase)]
-    entries << ["cats/#{code}.jpg", cat] if cat
-  end
+  # TWO templates, not a page per status. What differs between a 404 and a
+  # 503 is three strings and a picture; the server holds the table and
+  # renders once at startup.
+  entries = [['NOTICE.txt', ERROR_NOTICE],
+             ['errors/error.html', ERROR_HTML_TEMPLATE],
+             ['errors/error.json', ERROR_JSON_TEMPLATE]]
+  cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
   File.binwrite(ERROR_PACK, error_zip(entries))
-  puts "share/error-pages.zip: #{ERROR_STATUS.size} statuses, #{cats.size} cats, " \
+  puts "share/error-pages.zip: 2 templates, #{cats.size} cats, " \
        "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
 end
 

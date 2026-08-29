@@ -782,78 +782,68 @@ assert('assets: a pack alone serves, and everything it does not name is 404') do
   end
 end
 
-assert('assets: the shipped error-page pack serves a page, a problem document and a cat') do
-  # share/error-pages.zip, built by `rake error_pages`. Three claims are
-  # checked here rather than asserted in a README, because all three are
-  # claims about BYTES: that the pages reference the cat beside them, that
-  # the JSON is an RFC 9457 problem document, and that the images are
-  # unchanged - which is the half of CC BY 2.0 that a file can prove.
+# The pack is a SOURCE, not something to serve: the server renders its two
+# templates once at startup and emits the result as the body of whatever
+# failed. So this reads the archive rather than asking a server for it -
+# every entry is stored, which makes a local header all it takes.
+def a_pack_entries(path)
+  raw = File.binread(path)
+  out = {}
+  off = 0
+  while off + 30 <= raw.bytesize && raw[off, 4] == "PK\x03\x04".b
+    method, = raw[off + 8, 2].unpack('v')
+    csize, usize, nlen, elen = raw[off + 18, 12].unpack('VVvv')
+    name = raw[off + 30, nlen]
+    raise "#{name} is not stored (method #{method})" unless method.zero?
+    out[name] = raw[off + 30 + nlen + elen, csize]
+    raise "#{name} is short" unless out[name].bytesize == usize
+    off += 30 + nlen + elen + csize
+  end
+  out
+end
+
+assert('assets: the shipped pack carries the two templates, their slots, and unchanged cats') do
   pack = File.expand_path('../share/error-pages.zip', __dir__)
   skip "no #{pack} - run rake error_pages" unless File.exist?(pack)
-  sock = "/tmp/wm-ep-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-ep-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', pack,
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "error-page server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    UNIXSocket.open(sock) do |s|
-      [[404, 'Not Found'], [418, '(Unused)'], [451, 'Unavailable For Legal Reasons'],
-       [500, 'Internal Server Error'], [503, 'Service Unavailable']].each do |code, phrase|
-        s.write("GET /errors/#{code}.html HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = a_read(s)
-        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.html: #{head.lines.first}"
-        assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i), head
-        assert_true body.include?(">#{code}<"), "#{code}.html does not name its status"
-        assert_true body.include?(phrase), "#{code}.html does not name its phrase"
-        # The picture it points at is in this same pack, so the page needs
-        # nothing from anywhere else.
-        assert_true body.include?(%(src="/cats/#{code}.jpg")), "#{code}.html points elsewhere"
-        # CC BY 2.0: creator, licence link, and whether it was changed.
-        assert_true body.include?('Tomomi Imura'), "#{code}.html drops the attribution"
-        assert_true body.include?('creativecommons.org/licenses/by/2.0/'), body
-        assert_true body.include?('unchanged'), "#{code}.html drops the change statement"
-        # No stylesheet, no script, no font: an error page must not depend
-        # on a second request to anything but its own cat.
-        assert_false body.match?(/<link|<script/i), "#{code}.html fetches something"
+  e = a_pack_entries(pack)
 
-        s.write("GET /errors/#{code}.json HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = a_read(s)
-        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.json: #{head.lines.first}"
-        assert_true head.match?(%r{^Content-Type: application/json\r$}i), head
-        # RFC 9457 problem details: type, title, status - and no cat, since
-        # whoever reads this wants the status, not a picture.
-        assert_true body.include?(%("status":#{code})), body
-        assert_true body.include?(%("title":"#{phrase}")), body
-        assert_true body.include?('"type":"about:blank"'), body
-        assert_false body.include?('cat'), "#{code}.json carries a cat"
-
-        s.write("GET /cats/#{code}.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = a_read(s)
-        assert_true head.start_with?('HTTP/1.1 200'), "#{code}.jpg: #{head.lines.first}"
-        assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i), head
-        assert_equal "\xFF\xD8".b, body[0, 2].b
-        assert_equal "\xFF\xD9".b, body[-2, 2].b
-      end
-      # The terms travel inside the archive.
-      s.write("GET /NOTICE.txt HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = a_read(s)
-      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
-      assert_true body.include?('CC BY 2.0'), body
-      assert_true body.include?('Tomomi Imura'), body
-      assert_true body.include?('CHANGES: NONE'), body
-      # Below 400 nothing is served: the pack starts where errors do.
-      ['/errors/302.html', '/errors/200.json', '/cats/302.jpg'].each do |path|
-        s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, = a_read(s)
-        assert_true head.start_with?('HTTP/1.1 404'), "#{path}: #{head.lines.first}"
-      end
-    end
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    File.unlink(err) rescue nil
+  html = e['errors/error.html']
+  assert_true html != nil, 'no errors/error.html in the pack'
+  # The slots the NOTICE promises an operator who replaces this file.
+  ['{{status}}', '{{title}}', '{{source}}', '{{#cat}}', '{{cat_url}}',
+   '{{cat_width}}', '{{cat_height}}', '{{#message}}'].each do |slot|
+    assert_true html.include?(slot), "the html template lost #{slot}"
   end
+  # {{message}}, not {{{message}}}: what a callback raised is escaped, and
+  # that is the whole reason the 500 goes through a template at all.
+  assert_true html.include?('{{message}}'), 'the html template stopped escaping the message'
+  assert_false html.include?('{{{message}}}'), 'the html template emits the message RAW'
+  # A page that fetches a stylesheet or a script is a page that fails when
+  # the thing it would fetch it from is what broke.
+  assert_false html.match?(/<link|<script/i), 'the html template fetches something'
+
+  json = e['errors/error.json']
+  assert_true json != nil, 'no errors/error.json in the pack'
+  # RFC 9457: type, title, status, and detail where there is something to
+  # detail. Raw inside JSON, because HTML escaping there would be wrong.
+  assert_true json.include?('"type":"about:blank"'), json
+  assert_true json.include?('"status":{{status}}'), json
+  assert_true json.include?('{{{title}}}'), json
+  assert_true json.include?('"detail"'), json
+  assert_false json.include?('cat'), 'the json template carries a cat'
+
+  assert_true e['NOTICE.txt'].include?('CC BY 2.0'), 'the notice lost the licence'
+  assert_true e['NOTICE.txt'].include?('Tomomi Imura'), 'the notice lost the creator'
+  assert_true e['NOTICE.txt'].include?('CHANGES: NONE'), 'the notice lost the change statement'
+
+  cats = e.keys.select { |k| k.start_with?('cats/') }
+  assert_true cats.size >= 50, "only #{cats.size} cats in the pack"
+  cats.each do |k|
+    b = e[k]
+    # "Unchanged" is a claim about bytes: still a whole JPEG, SOI to EOI.
+    assert_equal "\xFF\xD8".b, b[0, 2].b
+    assert_equal "\xFF\xD9".b, b[-2, 2].b
+  end
+  # Nothing below 400 - the pack starts where errors do.
+  assert_false cats.any? { |k| k[%r{cats/(\d+)}, 1].to_i < 400 }, 'a cat below 400'
 end
