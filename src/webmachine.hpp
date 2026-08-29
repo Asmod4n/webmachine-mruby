@@ -4,6 +4,7 @@
 
 #include <mruby.h>
 #include <mruby/class.h>
+#include <mruby/hash.h>
 #include <mruby/presym.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1726,6 +1727,11 @@ void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
 // ever passes the handle on.
 struct AssetEntry;
 
+// #30: how many watchers one connection may run. It is what fits in the
+// tag's spare byte, and 256 is far past anything a connection has reason
+// to hold.
+inline constexpr unsigned kMaxWatchers = 256;
+
 struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
@@ -3046,6 +3052,10 @@ class Http1 {
     // no removal has to be waited for.
     mrb_state* w_mrb = nullptr;
     mrb_value w_hash = {};
+    // Added but not yet on the ring. Http1 cannot arm anything - it has
+    // no ring - so it leaves the slot here and the reactor collects it,
+    // the same way response.file leaves a path for arm_file_open.
+    std::vector<int> w_pending;
     uint8_t listener = 0;
     uint8_t peer_len = 0;   // no RFC: the socket's address, already spelled
     bool fresh = true;
@@ -3155,10 +3165,48 @@ class Http1 {
       resource_body_unlend(zc_mrb, zc_value);
       zc_mrb = nullptr;
     }
+    // #30: take one in. The slot is the watcher's one name - the key it
+    // is filed under here and the field its completions carry back - so
+    // there is nothing to translate between the ring and the hash.
+    // Returns the slot, or -1 when this connection is already holding
+    // as many as a tag can name.
+    int watchers_add(mrb_state* mrb, mrb_value w) {
+      if (w_mrb == nullptr) {
+        w_hash = mrb_hash_new(mrb);
+        mrb_gc_register(mrb, w_hash);
+        w_mrb = mrb;
+      }
+      for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
+        if (!mrb_nil_p(mrb_hash_get(mrb, w_hash, mrb_int_value(mrb, i)))) continue;
+        watcher_set_slot(w, i);
+        mrb_hash_set(mrb, w_hash, mrb_int_value(mrb, i), w);
+        w_pending.push_back(i);
+        return i;
+      }
+      return -1;
+    }
+
+    mrb_value watchers_at(int slot) const {
+      if (w_mrb == nullptr) return mrb_nil_value();
+      return mrb_hash_get(w_mrb, w_hash, mrb_int_value(w_mrb, slot));
+    }
+
+    // Gone for good: cancelled by the caller, then emptied here, so the
+    // sweep that comes later finds nothing to free and nothing to cancel
+    // a second time.
+    void watchers_drop(int slot) {
+      if (w_mrb == nullptr) return;
+      const mrb_value w = watchers_at(slot);
+      if (mrb_nil_p(w)) return;
+      watcher_disarm(w);
+      mrb_hash_delete_key(w_mrb, w_hash, mrb_int_value(w_mrb, slot));
+    }
+
     // #30: let the watchers go. Unrooting the hash is the whole of it -
     // the watchers become collectable, and each one's CDATA destructor
     // is what finally takes its descriptor out of the ring.
     void watchers_release() {
+      w_pending.clear();
       if (w_mrb == nullptr) return;
       mrb_gc_unregister(w_mrb, w_hash);
       w_mrb = nullptr;
@@ -3921,10 +3969,8 @@ enum : uint8_t {
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
 }
-// #30: which watcher, on top of which connection. 8 bits is 256 watchers
-// on one connection, which is far past anything a connection has reason
-// to hold.
-inline constexpr unsigned kMaxWatchers = 256;
+// #30: which watcher, on top of which connection - 8 bits of the tag,
+// so kMaxWatchers of them (declared further up, where Conn needs it).
 inline uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
   return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
 }
