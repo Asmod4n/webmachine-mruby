@@ -2352,6 +2352,13 @@ struct H2State {
   struct {
     std::string bytes;
     size_t head_len = 0;
+    // RFC 7541 6.2.1: the SAME head, spelled with the insert instead of
+    // the reference. A dynamic-table entry has to reach the peer once
+    // before anything may point at it, and `bytes` is replayed verbatim
+    // for the rest of the second - so the response that BUILDS the entry
+    // carries this form, and every one after it carries `bytes`.
+    std::string prime;
+    bool primed = false;
     bool has_data = false;
     uint16_t status = 0;
     uint16_t route = 0xffff;

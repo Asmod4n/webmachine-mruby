@@ -834,23 +834,62 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   } else {
     if (h2.head_cache.status != status || h2.head_cache.route != route ||
         h2.head_cache.sec != sec_) {
+      // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
+      // answer this route ever gives, so it goes into the peer's dynamic
+      // table ONCE and is a one-byte reference after that. Encoded
+      // twice: ls-hpack answers the first call with the insert and the
+      // second with the index it just made, which is exactly the two
+      // forms this cache needs. Only the 200 has one - the shared status
+      // blocks carry no content-type, and a bound route never reaches
+      // this branch.
+      const std::string* ct =
+          (status == 200 && b != nullptr && !b->konst.content_type.empty())
+              ? &b->konst.content_type
+              : nullptr;
+      unsigned char pbuf[256];
+      unsigned char rbuf[256];
+      size_t plen = 0;
+      size_t rlen = 0;
+      if (ct != nullptr) {
+        unsigned char* pp = pbuf;
+        unsigned char* rp = rbuf;
+        if (!h2_enc_field(&h2.enc, pp, pbuf + sizeof(pbuf), "content-type", 12, ct->data(),
+                          ct->size()) ||
+            !h2_enc_field(&h2.enc, rp, rbuf + sizeof(rbuf), "content-type", 12, ct->data(),
+                          ct->size())) {
+          return h2_error(st0, kH2InternalError, sink);
+        }
+        plen = static_cast<size_t>(pp - pbuf);
+        rlen = static_cast<size_t>(rp - rbuf);
+        // The block that carried the literal is the wrong one now: the
+        // shared 200 spells :status and nothing else.
+        blk = &h2_store_[index_[200]];
+      }
       unsigned char dbuf[64];
       unsigned char* dp = dbuf;
       // NOT indexed: these bytes are kept and sent again for every
       // answer of this second, and an insert replayed is an insert the
-      // peer performs again each time.
+      // peer performs again each time. content-type above may be
+      // indexed for the opposite reason - it is inserted once and the
+      // cache then replays the REFERENCE, never the insert.
       if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_),
                         false)) {
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);
       unsigned char fh[kH2FrameHeaderLen];
-      h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + dlen), kH2Headers,
-                          kH2FlagEndHeaders, 0);
-      h2.head_cache.bytes.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-      h2.head_cache.bytes.append(blk->bytes);
-      h2.head_cache.bytes.append(reinterpret_cast<const char*>(dbuf), dlen);
+      const auto build = [&](std::string& out, const unsigned char* cbuf, size_t clen) {
+        h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + clen + dlen),
+                            kH2Headers, kH2FlagEndHeaders, 0);
+        out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+        out.append(blk->bytes);
+        if (clen != 0) out.append(reinterpret_cast<const char*>(cbuf), clen);
+        out.append(reinterpret_cast<const char*>(dbuf), dlen);
+      };
+      build(h2.head_cache.bytes, rbuf, rlen);
       h2.head_cache.head_len = h2.head_cache.bytes.size();
+      h2.head_cache.primed = ct == nullptr;
+      if (ct != nullptr) build(h2.head_cache.prime, pbuf, plen);
       h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
                                !b->konst.body.empty() &&
                                b->konst.body.size() <= kH2MergeBody;
@@ -859,10 +898,17 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       h2.head_cache.route = route;
       h2.head_cache.sec = sec_;
     }
-    merged = !no_data && h2.head_cache.has_data &&
+    // One answer per connection carries the insert; it is never merged
+    // with a DATA frame, because it is one response in a second and the
+    // merge exists for the other thousands.
+    const bool prime = !h2.head_cache.primed;
+    merged = !prime && !no_data && h2.head_cache.has_data &&
              budget >= static_cast<int64_t>(blen) && blen <= h2.peer_max_frame;
     const size_t hoff = sink.size();
-    if (merged) {
+    if (prime) {
+      sink.append(h2.head_cache.prime);
+      h2.head_cache.primed = true;
+    } else if (merged) {
       sink.append(h2.head_cache.bytes);
     } else {
       sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
