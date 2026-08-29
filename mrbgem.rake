@@ -88,6 +88,13 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # of bodies is as large as the set of request targets.
   spec.add_dependency 'mruby-mustache', github: 'Asmod4n/mruby-mustache', branch: 'main'
 
+  # TLS: the handshake is this process's, the record layer is the
+  # kernel's (.DESIGN.md "TLS"). The gem brings include/ktls.h - mruby
+  # puts a dependency's include/ on this one's compiler path - and the
+  # vendored OpenSSL >= 3.0 it links, which is also where SHA1() for the
+  # websocket handshake comes from once this is in the build.
+  spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'claude/c-api'
+
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
   spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"
@@ -171,18 +178,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   GEN
   spec.cxx.include_paths << mime_gen
 
-  unless spec.cc.search_header('openssl/sha.h')
-    abort <<~MSG
-      webmachine-mruby: OpenSSL headers not found.
-
-      The websocket handshake (#175) needs SHA1() out of libcrypto -
-      one function, no TLS. The library is on every server
-      distribution; only its headers are a separate package:
-
-        Debian/Ubuntu   apt install libssl-dev
-        RHEL/Fedora     dnf install openssl-devel
-        Alpine          apk add openssl-dev
-    MSG
-  end
-  spec.linker.libraries << 'crypto'
+  # SHA1() for the websocket handshake (#175) comes out of the SAME
+  # libcrypto the key exchange uses - mruby-ktls vendors it and exports
+  # its headers, and this gem no longer names the machine's. The
+  # distribution's may be LibreSSL, or an OpenSSL without kTLS; two
+  # libcryptos in one address space is a bug waiting for a link order.
 end
