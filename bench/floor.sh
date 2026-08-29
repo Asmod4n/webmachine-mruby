@@ -117,6 +117,13 @@ cpu_ticks() {
     "/proc/$1/stat" 2>/dev/null || echo "0 0"
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+# The whole machine's busy ticks, all cores, from /proc/stat's first line.
+# The env: line above samples 200ms BEFORE the run; this one is read
+# across the run itself, because what a ten-second run competed with is
+# not what the 200ms before it looked like.
+machine_busy() {
+  awk 'NR==1 { print $2+$3+$4+$7+$8+$9 }' /proc/stat
+}
 WORK=$(mktemp -d)
 # Split like sysc_wait: the WAIT must run in the shell that backgrounded
 # the client (a $() subshell is not its parent), only the read below may fork.
@@ -285,6 +292,7 @@ OUT=$(mktemp)
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   sysc_begin "$SRV" "$DURATION"
   read -r SU0 SS0 <<<"$(cpu_ticks "$SRV")"
+  M0=$(machine_busy)
   snap_times
   read -r CU0 CS0 <<<"$(parse_child_cpu)"
   # One ring, one thread - the same shape as the reactor it drives.
@@ -302,6 +310,7 @@ OUT=$(mktemp)
   CLI=$!
   wait "$CLI" 2>/dev/null
   snap_times
+  M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
   read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
   CLIOUT=$(cat "$WORK/cli.out")
@@ -336,7 +345,12 @@ OUT=$(mktemp)
     echo "REFUSED: the server had headroom (${SCPU}% of its core (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CCPU}% (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
-    echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)"
+    # What ELSE ran. Same unit as the two numbers beside it, so a run
+    # that came out low can be read at a glance: the machine was busy
+    # with something, or it was not and the answer is elsewhere.
+    OTHER=$(awk -v m0="$M0" -v m1="$M1" -v hz="$HZ" -v d="$DURATION" -v sc="$SCPU" -v cc="$CCPU" \
+      'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
+    echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
