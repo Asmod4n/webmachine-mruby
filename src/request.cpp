@@ -100,10 +100,14 @@ mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
   const char* p = v->spans.splat.p;
   size_t n = v->spans.splat.n;
   size_t at = 0;
+  // One String per segment, and a splat takes as many as the client
+  // sends. The array is rooted before the save.
+  const int ai = mrb_gc_arena_save(mrb);
   while (at < n) {
     size_t seg = at;
     while (at < n && p[at] != '/') at++;
     mrb_ary_push(mrb, a, lend(mrb, p + seg, at - seg));
+    mrb_gc_arena_restore(mrb, ai);
     if (at < n) at++;
   }
   return a;
@@ -156,6 +160,11 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
   const char* p = v->request_target + v->path_len + 1;
   const size_t n = v->request_target_len - v->path_len - 1;
   size_t at = 0;
+  // Two Strings per pair, and the pair count is the client's to choose:
+  // held to the end they would fill a 100-slot MRB_GC_FIXED_ARENA at ~50
+  // pairs. The hash is rooted before the save, so it keeps what it was
+  // handed and the restore only drops the temporaries.
+  const int ai = mrb_gc_arena_save(mrb);
   while (at < n) {
     const size_t start = at;
     while (at < n && p[at] != '&' && p[at] != ';') at++;
@@ -169,6 +178,7 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
     const mrb_value val =
         eq < len ? decoded(mrb, p + start + eq + 1, len - eq - 1) : mrb_str_new(mrb, "", 0);
     mrb_hash_set(mrb, h, key, val);
+    mrb_gc_arena_restore(mrb, ai);
   }
   return h;
 }
@@ -294,6 +304,9 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
   const char* p = RSTRING_PTR(raw);
   const size_t n = static_cast<size_t>(RSTRING_LEN(raw));
   size_t at = 0;
+  // As in req_query: the cookie count is the client's, so each pair's
+  // Strings are dropped once the hash holds them.
+  const int ai = mrb_gc_arena_save(mrb);
   while (at < n) {
     while (at < n && (p[at] == ' ' || p[at] == '\t')) at++;
     const size_t start = at;
@@ -308,6 +321,7 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
     // Frozen key: hash.c h_key_for would otherwise dup it (ea96df2).
     mrb_hash_set(mrb, h, mrb_str_new_frozen(mrb, p + start, eq - start),
                  mrb_str_new(mrb, p + eq + 1, end - eq - 1));
+    mrb_gc_arena_restore(mrb, ai);
   }
   return h;
 }
