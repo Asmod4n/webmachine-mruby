@@ -366,6 +366,61 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
   if (!head_only) sink.append(data, dlen);
 }
 
+// RFC 9110 6.3: the run named a file rather than spelling a body, and
+// opening one is disk work that does not belong in a reactor step. The
+// framing is copied onto the connection, the reactor drives openat2/
+// statx/read through the ring, and `more` puts the result on the wire.
+// A name this process already refused takes the same 404 the kernel's
+// own refusal would, spelled here since no ring trip is owed.
+bool Http1::answer_from_file(Round& r, uint16_t status) {
+  const char* fp = nullptr;
+  size_t fpn = 0;
+  bool fbad = false;
+  if (!resource_file_wanted(*r.b->res, &fp, &fpn, &fbad) || status != 200) return false;
+
+  Conn& st = r.st;
+  // resource_run never lends a body a run also named a file for (see the
+  // O18 body handler), so nothing is lent here - zc_release() still runs,
+  // for its h2-backlog drain.
+  st.zc_release();
+  if (st.file == nullptr) st.file = new Conn::FileXfer();
+  st.file->pathname.assign(fp, fpn);
+  st.file->field_lines = rhdrs_;
+  st.file->content_type = !r.b->res->run_content_type.empty()
+                              ? http::with_charset(r.b->res->run_content_type)
+                              : r.b->konst.content_type;
+  st.file->minor = r.minor;
+  st.file->persist = r.persist;
+  st.file->head_only = r.head_only;
+  st.file->if_modified_since_valid =
+      r.facts.has_if_modified_since && r.facts.if_modified_since_valid;
+  st.file->if_modified_since = r.vals.if_modified_since_epoch;
+  st.file->log_flags = r.lflags;
+  st.file->method_token.assign(r.method, r.method_len);
+  st.file->request_target.assign(r.path, r.path_len);
+  st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
+  st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
+  st.file->stage = FileStage::kNamed;
+  if (fbad) file_reject(st);
+
+  size_t off = r.off;
+  if (r.content_length != 0) {
+    const size_t avail = r.viewlen - off;
+    const size_t skip = r.content_length < avail ? r.content_length : avail;
+    off += skip;
+    st.content_skip = r.content_length - skip;
+  }
+  if (!r.persist) {
+    st.carry.clear();
+    st.content_skip = 0;
+  } else if (r.in_place) {
+    st.carry.assign(r.view + off, r.viewlen - off);
+  } else {
+    st.carry.erase(0, off);
+  }
+  return true;
+}
+
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
   if (alog_.enabled) {
     log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
@@ -995,55 +1050,13 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         // name this process already refused takes the same 404 the kernel's
         // own refusal takes, spelled right here since no ring trip is owed.
         {
-          const char* fp = nullptr;
-          size_t fpn = 0;
-          bool fbad = false;
-          if (WM_H1_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad)) && status == 200) {
+          Round r{st,   b,        view,      viewlen,  off + static_cast<size_t>(ret),
+                  static_cast<size_t>(ret), in_place, method,   method_len,
+                  path, path_len, minor,     persist,  head_only,
+                  content_length, lflags,   facts,    vals};
+          if (WM_H1_UNLIKELY(answer_from_file(r, status))) {
             body_.clear();
             have_body = false;
-            // resource_run never lends a body a run also named a file for
-            // (see the O18 body handler), so lent/lent_len are already
-            // nullptr/0 here - zc_release() still runs, for its h2-backlog
-            // drain.
-            st.zc_release();
-            if (st.file == nullptr) st.file = new Conn::FileXfer();
-            st.file->pathname.assign(fp, fpn);
-            st.file->field_lines = rhdrs_;
-            st.file->content_type = !b->res->run_content_type.empty()
-                                        ? http::with_charset(b->res->run_content_type)
-                                        : b->konst.content_type;
-            st.file->minor = minor;
-            st.file->persist = persist;
-            st.file->head_only = head_only;
-            st.file->if_modified_since_valid =
-                facts.has_if_modified_since && facts.if_modified_since_valid;
-            st.file->if_modified_since = vals.if_modified_since_epoch;
-            st.file->log_flags = lflags;
-            st.file->method_token.assign(method, method_len);
-            st.file->request_target.assign(path, path_len);
-            st.file->referer.assign(vals.log_ref != nullptr ? vals.log_ref : "", vals.log_ref_len);
-            st.file->user_agent.assign(vals.log_ua != nullptr ? vals.log_ua : "", vals.log_ua_len);
-            st.file->stage = FileStage::kNamed;
-            if (fbad) file_reject(st);
-            off += static_cast<size_t>(ret);
-            if (content_length != 0) {
-              const size_t avail = viewlen - off;
-              const size_t skip = content_length < avail ? content_length : avail;
-              off += skip;
-              st.content_skip = content_length - skip;
-            }
-            // The answer is still owed, so this returns TRUE even when the
-            // connection ends after it - `more` closes it once the bytes are
-            // out, the way every other deferred answer here ends.
-            const size_t rest = viewlen - off;
-            if (!persist) {
-              st.carry.clear();
-              st.content_skip = 0;
-            } else if (in_place) {
-              st.carry.assign(view + off, rest);
-            } else {
-              st.carry.erase(0, off);
-            }
             return true;
           }
         }

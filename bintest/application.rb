@@ -1097,8 +1097,8 @@ end
 assert('application: response.error_asset answers with the mapped entry, byte for byte') do
   pack = ap_shipped_error_assets
   skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
-  want = ap_zip_entry(pack, 'cats/418.jpg')
-  assert_true want != nil, 'no cats/418.jpg in the shipped error assets'
+  want = ap_zip_entry(pack, '418.jpg')
+  assert_true want != nil, 'no 418.jpg in the shipped error assets'
 
   sock = "/tmp/wm-ap-ea-#{$$}.sock"
   ap_server(AP_EASSET, sock: sock,
@@ -1146,7 +1146,7 @@ assert('application: an error_asset the archive does not carry is refused by nam
     # The name the APP wrote, so a typo reads as a typo and not as a
     # request that went astray.
     assert_true text.include?('no-such-cat.jpg'), text
-    assert_true text.include?('is not in the error assets'), text
+    assert_true text.include?('the error assets hold no'), text
   ensure
     File.unlink(log) rescue nil
   end
@@ -1187,8 +1187,8 @@ end
 assert('application: error assets are found beside the binary, with no flag at all') do
   pack = ap_shipped_error_assets
   skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
-  want = ap_zip_entry(pack, 'cats/404.jpg')
-  assert_true want != nil, 'no cats/404.jpg in the shipped error assets'
+  want = ap_zip_entry(pack, '404.jpg')
+  assert_true want != nil, 'no 404.jpg in the shipped error assets'
 
   sock = "/tmp/wm-ap-find-#{$$}.sock"
   # NO --error-assets. The route below leaves /favicon.ico unrouted, and

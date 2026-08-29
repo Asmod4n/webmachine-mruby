@@ -3613,6 +3613,35 @@ class Http1 {
   // before there were pages at all.
   void spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status, bool head_only,
                    int media, const ErrorPages::Fields& f, std::string& sink);
+  // What one request round already knows by the time the head is parsed.
+  // A step that leaves the straight line takes this instead of twenty
+  // arguments - which is what made those steps stay inline before.
+  struct Round {
+    Conn& st;
+    const Bundle* b;
+    const char* view;
+    size_t viewlen;
+    size_t off;
+    size_t head_len;
+    bool in_place;
+    const char* method;
+    size_t method_len;
+    const char* path;
+    size_t path_len;
+    int minor;
+    bool persist;
+    bool head_only;
+    size_t content_length;
+    uint8_t lflags;
+    const flow::ReqFacts& facts;
+    const http::ReqValues& vals;
+  };
+
+  // RFC 9110 6.3: response.file named a file, so no body is spelled here
+  // - the framing goes onto the connection and the reactor drives
+  // openat2/statx/read. Answers whether it took the round.
+  bool answer_from_file(Round& r, uint16_t status);
+
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
   // segment. `prebuilt` takes the status straight out of the shared store.
@@ -3850,6 +3879,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
 
 #define WM_LIKELY(x) __builtin_expect(!!(x), 1)
 #define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 
 namespace webmachine {
 inline constexpr uint32_t kMaxListeners = 16;

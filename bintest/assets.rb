@@ -802,66 +802,57 @@ def a_pack_entries(path)
   out
 end
 
-assert('assets: the shipped pack carries the two templates, their slots, and unchanged cats') do
+# The archive's central directory, because that is where an entry's
+# comment lives - the upstream validators ride there rather than in a
+# file of their own (PKWARE APPNOTE 4.4.18).
+def a_pack_central(path)
+  raw = File.binread(path)
+  eocd = raw.rindex("PK\x05\x06".b) or return {}
+  n, _cdsize, cdoff = raw[eocd + 10, 10].unpack('vVV')
+  out = {}
+  off = cdoff
+  n.times do
+    break unless raw[off, 4] == "PK\x01\x02".b
+    csize, _usize, nlen, elen, clen = raw[off + 20, 14].unpack('VVvvv')
+    lho = raw[off + 42, 4].unpack1('V')
+    name = raw[off + 46, nlen]
+    comment = clen.zero? ? '' : raw[off + 46 + nlen + elen, clen]
+    lnlen, lelen = raw[lho + 26, 4].unpack('vv')
+    out[name] = [raw[lho + 30 + lnlen + lelen, csize], comment]
+    off += 46 + nlen + elen + clen
+  end
+  out
+end
+
+assert('assets: the shipped error assets are pictures, named by their status') do
   pack = File.expand_path('../share/error-assets.zip', __dir__)
   skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
   e = a_pack_entries(pack)
 
-  html = e['errors/error.html']
-  assert_true html != nil, 'no errors/error.html in the error assets'
-  # The slots the NOTICE promises an operator who replaces this file.
-  ['{{status}}', '{{title}}', '{{source}}', '{{#cat}}', '{{cat_url}}',
-   '{{cat_width}}', '{{cat_height}}', '{{#message}}'].each do |slot|
-    assert_true html.include?(slot), "the html template lost #{slot}"
+  # NOTHING BUT PICTURES, and nothing nested. The name in the archive is
+  # the name response.error_asset takes and the name /error_assets/
+  # serves, so a replaced file needs no directory anyone had to be told
+  # about. The templates live in Webmachine::ErrorResource.
+  assert_true e.size >= 50, "only #{e.size} entries"
+  e.each_key do |k|
+    assert_true k.match?(/\A[1-5]\d\d\.jpg\z/), "#{k} is not a status picture"
   end
-  # {{message}}, not {{{message}}}: what a callback raised is escaped, and
-  # that is the whole reason the 500 goes through a template at all.
-  assert_true html.include?('{{message}}'), 'the html template stopped escaping the message'
-  assert_false html.include?('{{{message}}}'), 'the html template emits the message RAW'
-  # A page that fetches a stylesheet or a script is a page that fails when
-  # the thing it would fetch it from is what broke.
-  assert_false html.match?(/<link|<script/i), 'the html template fetches something'
 
-  json = e['errors/error.json']
-  assert_true json != nil, 'no errors/error.json in the error assets'
-  # RFC 9457: type, title, status, and detail where there is something to
-  # detail. Raw inside JSON, because HTML escaping there would be wrong.
-  assert_true json.include?('"type":"about:blank"'), json
-  assert_true json.include?('"status":{{status}}'), json
-  assert_true json.include?('{{{title}}}'), json
-  assert_true json.include?('"detail"'), json
-  assert_false json.include?('cat'), 'the json template carries a cat'
-
-  assert_true e['NOTICE.txt'].include?('CC BY 2.0'), 'the notice lost the licence'
-  assert_true e['NOTICE.txt'].include?('Tomomi Imura'), 'the notice lost the creator'
-  assert_true e['NOTICE.txt'].include?('CHANGES: NONE'), 'the notice lost the change statement'
-
-  # Geometry and provenance, so the server needs no JPEG reader. Nine of
-  # the pictures are portrait, and http.cat's own pages declare 750x600
-  # for all of them - which is why this comes from file(1) and not from
-  # the service.
-  index = e['cats/index.txt']
-  assert_true index != nil, 'no cats/index.txt in the error assets'
-  seen = {}
-  index.each_line do |l|
-    next if l.start_with?('#')
-    code, w, h, n, etag, = l.chomp.split("\t")
-    assert_true w.to_i.positive? && h.to_i.positive?, "#{code}: #{w}x#{h}"
-    assert_equal e["cats/#{code}.jpg"].bytesize, n.to_i
-    assert_true etag.to_s.start_with?('"'), "#{code}: no upstream etag"
-    seen[code.to_i] = [w.to_i, h.to_i]
-  end
-  assert_true seen.values.any? { |w, h| h > w }, 'the index calls every picture landscape'
-
-  cats = e.keys.select { |k| k.start_with?('cats/') && k.end_with?('.jpg') }
-  assert_true cats.size >= 50, "only #{cats.size} cats in the error assets"
-  cats.each do |k|
-    b = e[k]
+  e.each do |k, b|
     # "Unchanged" is a claim about bytes: still a whole JPEG, SOI to EOI.
-    assert_equal "\xFF\xD8".b, b[0, 2].b
-    assert_equal "\xFF\xD9".b, b[-2, 2].b
+    assert_equal "\xFF\xD8".b, b[0, 2].b, k
+    assert_equal "\xFF\xD9".b, b[-2, 2].b, k
+    # Nothing below 400 - the error assets start where errors do.
+    assert_true k.to_i >= 400, "#{k} is not an error"
   end
-  # Nothing below 400 - the error assets starts where errors do.
-  assert_false cats.any? { |k| k[%r{cats/(\d+)}, 1].to_i < 400 }, 'a cat below 400'
-  assert_equal cats.size, seen.size
+
+  # The validators a rebuild needs, in each entry's own comment: with
+  # them `rake error_assets` asks http.cat what changed instead of
+  # fetching 1.5 MB again.
+  central = a_pack_central(pack)
+  assert_equal e.size, central.size
+  etagged = central.count { |_k, (_b, c)| c.to_s.start_with?('"') }
+  assert_true etagged >= 50, "only #{etagged} entries carry an upstream etag"
+  _bytes, comment = central['404.jpg']
+  assert_true comment.include?("\t"), '404.jpg comment is not etag TAB last-modified'
 end

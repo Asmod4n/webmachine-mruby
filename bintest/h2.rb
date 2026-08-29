@@ -867,8 +867,8 @@ end
 assert('h2: response.error_asset parks in the mapping and the window drips it out whole') do
   pack = File.expand_path('../share/error-assets.zip', __dir__)
   skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
-  want = h2_zip_entry(pack, 'cats/418.jpg')
-  assert_true want != nil, 'no cats/418.jpg in the shipped error assets'
+  want = h2_zip_entry(pack, '418.jpg')
+  assert_true want != nil, 'no 418.jpg in the shipped error assets'
 
   h2_error_assets_server(pack) do |sock|
     UNIXSocket.open(sock) do |s|
