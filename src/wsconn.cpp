@@ -13,7 +13,12 @@
 #include <cstdio>
 #include <cstring>
 
-extern "C" mrb_int mrb_proc_arity(const struct RProc* p);
+// mruby's internal header, not a copy of one line out of it - see the
+// note in resource.cpp. A copied signature keeps compiling after mruby
+// changes it; an included one does not.
+extern "C" {
+#include <mruby/internal.h>
+}
 
 namespace webmachine {
 namespace wsdeflate {

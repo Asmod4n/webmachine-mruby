@@ -22,8 +22,24 @@
 
 #define WM_RES_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
-extern "C" mrb_value mrb_exc_backtrace(mrb_state* mrb, mrb_value exc);
-extern "C" mrb_int mrb_proc_arity(const struct RProc* p);
+// mrb_exc_backtrace and mrb_proc_arity live in mruby's INTERNAL header,
+// which a gem may use - a gem is compiled together with mruby, so there
+// is no ABI boundary here of the kind an outside consumer would face.
+//
+// What a gem may NOT do is copy the declarations out. A hand-written
+// `extern "C" mrb_int mrb_proc_arity(const struct RProc*)` is a private
+// second opinion about a signature nobody promised to keep: mruby is
+// cloned fresh from master by the Rakefile, and if one of these changes
+// shape, a copied declaration still compiles, still links, and calls
+// with the wrong signature - corruption with no diagnostic anywhere.
+// Including the header means the compiler checks, and a change upstream
+// stops the build instead of the server.
+//
+// The wrapper is needed because internal.h carries no extern "C" guard
+// of its own.
+extern "C" {
+#include <mruby/internal.h>
+}
 
 namespace webmachine {
 namespace {
