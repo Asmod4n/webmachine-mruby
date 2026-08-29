@@ -1157,10 +1157,13 @@ assert('application: response.error_asset without error assets says so, and how 
   log = "/tmp/wm-ap-ea3-#{$$}.errlog"
   File.unlink(log) if File.exist?(log)
   begin
-    # No --error-assets: the server found none, and the app is told which
-    # knob it forgot rather than served a body it never named.
+    # /dev/null names a file that is not an archive, so this server ends
+    # up with no error assets - which is the state under test. Leaving the
+    # flag off no longer reaches it: a server with nothing named now finds
+    # the shipped file beside its own binary.
     ap_server(AP_EASSET, sock: sock,
-              args: ['--unix', sock, '--error-log', log]) do |s|
+              args: ['--unix', sock, '--error-assets', '/dev/null',
+                     '--error-log', log]) do |s|
       UNIXSocket.open(s) do |c|
         c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
         head, = ap_read(c)
@@ -1173,5 +1176,72 @@ assert('application: response.error_asset without error assets says so, and how 
     assert_true text.include?('ConfigError'), text
   ensure
     File.unlink(log) rescue nil
+  end
+end
+
+# #210: a server started out of its own build tree finds the error assets
+# lying in that tree, with no flag and nothing installed. This is the case
+# that was silently broken: the lookup knew only the XDG directories, so a
+# server run from a checkout answered every error in plain text and never
+# said why - which reads exactly like conneg picking the wrong type.
+assert('application: error assets are found beside the binary, with no flag at all') do
+  pack = ap_shipped_error_assets
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
+  want = ap_zip_entry(pack, 'cats/404.jpg')
+  assert_true want != nil, 'no cats/404.jpg in the shipped error assets'
+
+  sock = "/tmp/wm-ap-find-#{$$}.sock"
+  # NO --error-assets. The route below leaves /favicon.ico unrouted, and
+  # the Accept is the one a browser sends for a picture: image/* carries
+  # q=0.8 over */* at q=0.5, so a picture is what it asked for.
+  ap_server(AP_FIZZ, sock: sock, args: ['--unix', sock]) do |s, _out, err|
+    UNIXSocket.open(s) do |c|
+      c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\n" \
+              "Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n\r\n")
+      head, body = ap_read(c)
+      assert_true head.start_with?('HTTP/1.1 404'), head
+      assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i),
+                  "no picture: #{head[/^Content-Type:.*$/i]}"
+      assert_equal want, body.b
+    end
+    # And it says which file it took, so an operator can tell a server
+    # with pictures from one without at a glance.
+    text = File.read(err) rescue ''
+    assert_true text.include?('error assets from'), text
+  end
+end
+
+# RFC 9110 12.5.1: the SAME path answers html or a picture depending on
+# what the client asked for, and a browser asks two different things.
+# Typing the URL is a navigation: text/html is named with no q, so q=1.0,
+# and image/jpeg is named by nothing but */*;q=0.8 - html wins, and must.
+# Fetching it as a picture names no text/html at all, and image/*;q=0.8
+# beats */*;q=0.5 - the picture wins. Neither is a bug in the other's
+# favour, which is why both are written down here.
+assert('application: a navigation gets the page, a picture fetch gets the picture') do
+  pack = ap_shipped_error_assets
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
+  nav = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,' \
+        'image/png,image/svg+xml,*/*;q=0.8'
+  img = 'image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5'
+
+  sock = "/tmp/wm-ap-conneg-#{$$}.sock"
+  ap_server(AP_FIZZ, sock: sock,
+            args: ['--unix', sock, '--error-assets', pack]) do |s|
+    UNIXSocket.open(s) do |c|
+      c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\nAccept: #{nav}\r\n\r\n")
+      head, body = ap_read(c)
+      assert_true head.start_with?('HTTP/1.1 404'), head
+      assert_true head.match?(%r{^Content-Type: text/html}i),
+                  "a navigation got #{head[/^Content-Type:.*$/i]}"
+      assert_true body.include?('404'), body[0, 200]
+
+      c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\nAccept: #{img}\r\n\r\n")
+      head, body = ap_read(c)
+      assert_true head.start_with?('HTTP/1.1 404'), head
+      assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i),
+                  "a picture fetch got #{head[/^Content-Type:.*$/i]}"
+      assert_equal "\xFF\xD8".b, body.b[0, 2]
+    end
   end
 end

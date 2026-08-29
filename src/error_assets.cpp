@@ -10,6 +10,7 @@
 #include <mruby/variable.h>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -162,6 +163,30 @@ std::string error_assets_path(const char* configured) {
     }
     if (end == std::string::npos) break;
     at = end + 1;
+  }
+  // Nothing installed. A server started out of its own build tree is the
+  // ordinary case while a thing is being written, and it should find the
+  // file lying right there rather than answer every error in plain text
+  // because nobody ran `make install` yet. So: walk UP from the binary
+  // and take the first ancestor that carries the shipped layout. That is
+  // one stat per level at startup, and it covers both shapes with the
+  // same walk - /usr/bin -> /usr/share/webmachine-mruby/, and a build
+  // directory somewhere under the checkout -> the checkout's share/.
+  char exe[4096];
+  const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (n <= 0) return std::string();
+  exe[n] = '\0';
+  std::string dir(exe, static_cast<size_t>(n));
+  for (int up = 0; up < 12; up++) {
+    const size_t slash = dir.rfind('/');
+    if (slash == std::string::npos || slash == 0) break;
+    dir.resize(slash);
+    // The installed spelling first: it is the one an operator can also
+    // reach through XDG, so a tree that has both stays consistent.
+    const std::string shared = dir + "/share" + kLeaf;
+    if (exists(shared)) return shared;
+    const std::string flat = dir + "/share/error-assets.zip";
+    if (exists(flat)) return flat;
   }
   return std::string();
 }
