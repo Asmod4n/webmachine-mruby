@@ -1979,6 +1979,20 @@ void response_bind(const Resource* res);
 // Assets is declared further down - this only needs the name.
 class Assets;
 void response_bind_error_assets(Assets* a);
+
+// Webmachine::Watcher - a description, never a registration. Ruby builds
+// one and hands it back; the server arms it. The mask, the abort flag and
+// the handle live in its CDATA and NOT in its iv table, which holds
+// exactly the two things a GC has to see: the source and the block.
+void watcher_init_class(mrb_state* mrb, struct RClass* wm);
+bool watcher_p(mrb_state* mrb, mrb_value v);
+unsigned watcher_events_mask(mrb_value v);
+bool watcher_aborted_p(mrb_value v);
+int watcher_fd(mrb_value v);
+void watcher_armed(mrb_value v, struct io_uring* ring);
+void watcher_disarm(mrb_value v);
+mrb_value watcher_source_of(mrb_state* mrb, mrb_value v);
+mrb_value watcher_block_of(mrb_state* mrb, mrb_value v);
 }
 
 namespace webmachine::gzip {
@@ -3015,6 +3029,21 @@ class Http1 {
     // not use that opcode anywhere.
     mrb_state* zc_mrb = nullptr;
     mrb_value zc_value = {};
+    // #30: every watcher this connection is running, keyed by the
+    // watcher's own mrb_obj_id - nothing is invented to name them with.
+    //
+    // It is an mruby Hash and not a C++ map because these are Ruby
+    // objects: a watcher nobody holds is collected, and with it the
+    // source and block it keeps alive. ONE gc_register roots the hash
+    // and the hash roots them all, instead of one registration each.
+    //
+    // The connection is the right owner because the watchers die with
+    // it, and a completion arriving late for a connection already gone
+    // is discarded by the generation guard every other op relies on -
+    // `!c.live || c.gen != gen`. So nothing here counts anything, and
+    // no removal has to be waited for.
+    mrb_state* w_mrb = nullptr;
+    mrb_value w_hash = {};
     uint8_t listener = 0;
     uint8_t peer_len = 0;   // no RFC: the socket's address, already spelled
     bool fresh = true;
@@ -3124,10 +3153,20 @@ class Http1 {
       resource_body_unlend(zc_mrb, zc_value);
       zc_mrb = nullptr;
     }
+    // #30: let the watchers go. Unrooting the hash is the whole of it -
+    // the watchers become collectable, and each one's CDATA destructor
+    // is what finally takes its descriptor out of the ring.
+    void watchers_release() {
+      if (w_mrb == nullptr) return;
+      mrb_gc_unregister(w_mrb, w_hash);
+      w_mrb = nullptr;
+      w_hash = mrb_nil_value();
+    }
     // The Ring resets this; `li` is the App's key to "whose connection is
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
       zc_release();
+      watchers_release();
       map_release();
       delete file;
       file = nullptr;

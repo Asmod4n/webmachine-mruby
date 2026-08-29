@@ -1987,6 +1987,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   webmachine::application_init(mrb, wm);
   webmachine::request_init(mrb, wm);
   webmachine::response_init(mrb, wm);
+  webmachine::watcher_init_class(mrb, wm);
   webmachine::server_init(mrb, wm);
 }
 
