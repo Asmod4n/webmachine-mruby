@@ -17,6 +17,11 @@ namespace {
 // request.cpp's view_, and set the same way by response_bind below.
 const Resource* cur_ = nullptr;
 
+// #210: the error assets of THIS server, or nothing when it found
+// none. Bound once at setup by response_bind_error_assets, never per
+// run - the zip is open for the server's whole life.
+Assets* error_assets_ = nullptr;
+
 // Neither class owns anything: the data pointer is a view over the
 // C++ buffers response_bind points cur_ at, never allocated storage of
 // its own - so a handle that outlives its run is inert, not dangling.
@@ -271,6 +276,57 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   return v;
 }
 
+// #210: response.error_asset("404.jpg") - an entry of the error assets
+// becomes this answer's body, with the media type the file recorded for
+// it. Not response.file: nothing is opened and nothing goes through the
+// ring, because these bytes are already mapped.
+//
+// Nothing is copied and nothing new is written: the run records THE
+// ENTRY, and the writers put it on the wire through the very accessors
+// the asset tier uses for a mounted file - Assets::wire_iov/copy_wire
+// on h1, Content::Src::kAsset on h2. The zip is mmap'd for as long as
+// the server lives, so the handle outlives every stream that parks on
+// it.
+mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
+  const Resource* r = live(mrb);
+  mrb_value v;
+  mrb_get_args(mrb, "o", &v);
+  if (mrb_nil_p(v)) return v;
+  if (!mrb_string_p(v)) {
+    mrb_raise(mrb, E_TYPE_ERROR, "response.error_asset takes a String");
+  }
+  if (error_assets_ == nullptr) {
+    mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
+              "response.error_asset needs error assets and this server found none. Name a "
+              "file: --error-assets FILE.zip, or install one where the system keeps shipped "
+              "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
+  }
+  // The name is resolved EXACTLY the way /error_assets/<name> is, so
+  // what an app names here and what the route serves are one thing:
+  // /cats/ first, then the archive's root, which is where a replaced
+  // error assets file is free to put whatever it carries.
+  char name[kMaxHead];
+  const size_t n = static_cast<size_t>(RSTRING_LEN(v));
+  if (n == 0 || n + 7 >= sizeof(name)) {
+    mrb_raise(mrb, E_WM_ERROR(mrb), "response.error_asset: no such entry");
+  }
+  std::memcpy(name, "/cats/", 6);
+  std::memcpy(name + 6, RSTRING_PTR(v), n);
+  const AssetEntry* e = error_assets_->find(name, n + 6);
+  // "/cats/" already ends in the slash the second spelling needs, so the
+  // fallback is the SAME buffer read five bytes in: "/<name>".
+  if (e == nullptr) e = error_assets_->find(name + 5, n + 1);
+  if (e == nullptr || e->deflated) {
+    // Named by the app, so refused by name: a miss here is a typo in the
+    // app, not a request that went astray.
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: %v is not in the error assets", v);
+  }
+  r->run_content_type.assign(e->content_type);
+  r->run_asset = e;
+  r->run_have_body = true;
+  return v;
+}
+
 // RFC 9110 15.4.4: webmachine-ruby's own spelling of a redirect - an
 // optional Location plus the flag n11/p11 read back. `redirect_to`
 // below is the exact same function under its alias name.
@@ -388,6 +444,12 @@ mrb_value resource_response(mrb_state* mrb, mrb_value) {
 // silently touching whatever run is live now.
 void response_bind(const Resource* res) { cur_ = res; }
 
+// #210: the error assets, bound once at setup the way response_bind
+// binds a resource per run. nullptr when this server found none, and
+// response.error_asset then refuses by name rather than answering
+// something it does not have.
+void response_bind_error_assets(Assets* a) { error_assets_ = a; }
+
 // RFC 9110: Webmachine::Response and Webmachine::Response::Headers,
 // defined once at gem init. Neither is ever `new`'d by an app - the
 // run frame is the only thing that builds one, via Resource#response.
@@ -402,6 +464,7 @@ void response_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, c, MRB_SYM_E(body), resp_body_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(file), resp_file, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM_E(file), resp_file_set, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, c, MRB_SYM(error_asset), resp_error_asset, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(do_redirect), resp_do_redirect, MRB_ARGS_OPT(1));
   mrb_define_method_id(mrb, c, MRB_SYM(redirect_to), resp_do_redirect, MRB_ARGS_OPT(1));
   mrb_define_method_id(mrb, c, MRB_SYM_Q(is_redirect), resp_is_redirect, MRB_ARGS_NONE());

@@ -706,6 +706,16 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     blk = &errblk;
     return true;
   };
+  // #210 response.error_asset: the run named an entry of the error
+  // assets, and this stream carries it the way the asset tier's own
+  // streams carry one - Content::Src::kAsset, parked and framed by
+  // h2_flush_pending against the window. Nothing is rooted: the entry
+  // lives in a mapping that outlives every stream that parks on it.
+  const AssetEntry* run_asset =
+      (b != nullptr && b->res != nullptr) ? b->res->run_asset : nullptr;
+  // Its wire length is the answer's length: what h2_build_block declares,
+  // what the access log counts, and what END_STREAM is measured against.
+  const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
   if (dynamic) {
     const bool bodyless = status == 204 || status == 304;
     if (bodyless || !have_body) body_.clear();
@@ -722,12 +732,16 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     // A status that sends no body cleared body_ above, and a lend it does
     // not carry is handed back below - the same order h1 spells it in.
     const bool use_lent = lent_have && !bodyless && have_body;
-    body = use_lent ? lent : (baked ? b->konst.body.data() : body_.data());
-    blen = use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size());
+    const bool use_asset = run_asset != nullptr && !bodyless && have_body;
+    // An asset's octets are never framed from `body` - h2_flush_pending
+    // reads them out of the mapping - so only its length is set here.
+    body = use_asset ? nullptr : (use_lent ? lent : (baked ? b->konst.body.data() : body_.data()));
+    blen = use_asset ? asset_len
+                     : (use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size()));
     blk = &dynblk;
   } else if (have_body && status == 200) {
-    body = lent_have ? lent : body_.data();
-    blen = lent_have ? lent_len : body_.size();
+    body = run_asset != nullptr ? nullptr : (lent_have ? lent : body_.data());
+    blen = run_asset != nullptr ? asset_len : (lent_have ? lent_len : body_.size());
     blk = &h2_store_[(*idx)[200]];
   } else if (status == 500 && b != nullptr && b->bound) {
     if (elog_.enabled) {
@@ -784,6 +798,18 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   if (lent_have) {
     H2Stream& keep = h2.open(stream_id);
     keep.response_content.take_lent(lent_mrb, lent_v, lent, lent_len);
+    keep.end_headers = true;
+    keep.half_closed_remote = true;
+  }
+  // #210: and an asset parks the same way the asset TIER parks one, with
+  // the same Src - so h2_flush_pending frames it out of the mapping and
+  // the sweep there closes the stream once the window has let all of it
+  // through. A head-only answer, or a status that sends nothing, takes
+  // no stream: no_data covers both.
+  const bool asset_data = run_asset != nullptr && !no_data;
+  if (asset_data) {
+    H2Stream& keep = h2.open(stream_id);
+    keep.response_content.take_asset(run_asset, 0, blen);
     keep.end_headers = true;
     keep.half_closed_remote = true;
   }
@@ -938,7 +964,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // plan - gives it the window, the frames and the external segment, the
   // same way the asset tier's `src` is delivered.
   size_t give = 0;
-  if (!lent_have && !no_data) {
+  if (!lent_have && !asset_data && !no_data) {
     if (merged) {
       give = blen;
     } else {
@@ -974,7 +1000,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   }
   // A lent stream is never closed here: its bytes have not been framed yet,
   // and the sweep at the end of h2_flush_pending closes it once they are.
-  if (!lent_have && (no_data || give == blen)) h2.close_stream(stream_id);
+  if (!lent_have && !asset_data && (no_data || give == blen)) h2.close_stream(stream_id);
   return true;
 }
 

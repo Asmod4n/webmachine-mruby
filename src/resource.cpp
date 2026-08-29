@@ -1357,12 +1357,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
               mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
             }
-            // response.file= already named the answer - this String (the
-            // handler's own '' by convention) is dead on arrival, so
-            // neither the freeze+register interlock nor the copy is worth
-            // taking. The caller reads run_have_file first and never looks
-            // at run_body/run_have_body for this run.
-            if (!res.run_have_file) {
+            // response.file= and response.error_asset already named the
+            // answer - this String (the handler's own '' by convention) is
+            // dead on arrival, so neither the freeze+register interlock nor
+            // the copy is worth taking. The caller reads run_have_file and
+            // run_asset first and never looks at run_body/run_have_body for
+            // this run.
+            if (!res.run_have_file && res.run_asset == nullptr) {
               const size_t blen = static_cast<size_t>(RSTRING_LEN(v));
               // Already frozen means the app kept this String, so a second
               // connection may be holding it too - and the release would
@@ -1792,6 +1793,7 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
   headers->clear();
   res.run_body = body;
   res.run_have_body = false;
+  res.run_asset = nullptr;
   res.run_zc_min = zc_min;
   res.run_zc_have = false;
   res.run_status = 0;

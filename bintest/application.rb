@@ -1035,3 +1035,143 @@ ensure
   File.unlink(err) rescue nil
   File.unlink(sock) rescue nil
 end
+
+# #210 response.error_asset: an app names an entry of the error assets and
+# THOSE bytes are the answer. Not response.file - nothing is opened and
+# nothing goes through the ring, because the archive is mmap'd for as long
+# as the server runs, so what the answer carries is a pointer into that map.
+AP_EASSET = <<~RUBY unless defined?(AP_EASSET)
+  class Teapot < Webmachine::Resource
+    def content_types_provided
+      [['image/jpeg', :pic]]
+    end
+
+    def pic
+      response.error_asset('418.jpg')
+      # The same '' convention response.file= already asks for: the answer
+      # is already named, so this String is dead on arrival.
+      ''
+    end
+  end
+
+  class Typo < Webmachine::Resource
+    def content_types_provided
+      [['image/jpeg', :pic]]
+    end
+
+    def pic
+      response.error_asset('no-such-cat.jpg')
+      ''
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes do |route|
+        route.add ['teapot'], Teapot
+        route.add ['typo'], Typo
+      end
+    end
+  end
+RUBY
+
+def ap_shipped_error_assets
+  File.expand_path('../share/error-assets.zip', __dir__)
+end
+
+# The entry as the archive really holds it, so "these bytes" is a claim
+# about bytes and not about a length that happens to agree.
+def ap_zip_entry(path, name)
+  raw = File.binread(path)
+  off = 0
+  while off + 30 <= raw.bytesize && raw[off, 4] == "PK\x03\x04".b
+    csize, _usize, nlen, elen = raw[off + 18, 12].unpack('VVvv')
+    found = raw[off + 30, nlen]
+    body = raw[off + 30 + nlen + elen, csize]
+    return body if found == name
+    off += 30 + nlen + elen + csize
+  end
+  nil
+end
+
+assert('application: response.error_asset answers with the mapped entry, byte for byte') do
+  pack = ap_shipped_error_assets
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
+  want = ap_zip_entry(pack, 'cats/418.jpg')
+  assert_true want != nil, 'no cats/418.jpg in the shipped error assets'
+
+  sock = "/tmp/wm-ap-ea-#{$$}.sock"
+  ap_server(AP_EASSET, sock: sock,
+            args: ['--unix', sock, '--error-assets', pack]) do |s|
+    UNIXSocket.open(s) do |c|
+      # Twice on ONE connection: a lend that was not handed back, or a
+      # pointer the run frame owned, shows up on the second answer.
+      2.times do |i|
+        c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
+        head, body = ap_read(c)
+        assert_true head.start_with?('HTTP/1.1 200 OK'), "#{i}: #{head}"
+        assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i), head
+        assert_equal want.bytesize, body.bytesize
+        assert_equal want, body.b
+      end
+      # RFC 9110 9.3.2: HEAD carries the length it would have sent - and
+      # sends none of it, so this reads the head ALONE. ap_read would sit
+      # here waiting for a body that is never coming.
+      c.write("HEAD /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
+      head = +''
+      head << ap_recv(c) until head.end_with?("\r\n\r\n")
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_true head.include?("Content-Length: #{want.bytesize}\r\n"), head
+    end
+  end
+end
+
+assert('application: an error_asset the archive does not carry is refused by name') do
+  pack = ap_shipped_error_assets
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
+  sock = "/tmp/wm-ap-ea2-#{$$}.sock"
+  log = "/tmp/wm-ap-ea2-#{$$}.errlog"
+  File.unlink(log) if File.exist?(log)
+  begin
+    ap_server(AP_EASSET, sock: sock,
+              args: ['--unix', sock, '--error-assets', pack, '--error-log', log]) do |s|
+      UNIXSocket.open(s) do |c|
+        c.write("GET /typo HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
+        head, = ap_read(c)
+        assert_true head.start_with?('HTTP/1.1 500'), head
+      end
+    end
+    20.times { break if File.exist?(log) && !File.read(log).empty?; sleep 0.1 }
+    text = File.read(log)
+    # The name the APP wrote, so a typo reads as a typo and not as a
+    # request that went astray.
+    assert_true text.include?('no-such-cat.jpg'), text
+    assert_true text.include?('is not in the error assets'), text
+  ensure
+    File.unlink(log) rescue nil
+  end
+end
+
+assert('application: response.error_asset without error assets says so, and how to fix it') do
+  sock = "/tmp/wm-ap-ea3-#{$$}.sock"
+  log = "/tmp/wm-ap-ea3-#{$$}.errlog"
+  File.unlink(log) if File.exist?(log)
+  begin
+    # No --error-assets: the server found none, and the app is told which
+    # knob it forgot rather than served a body it never named.
+    ap_server(AP_EASSET, sock: sock,
+              args: ['--unix', sock, '--error-log', log]) do |s|
+      UNIXSocket.open(s) do |c|
+        c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
+        head, = ap_read(c)
+        assert_true head.start_with?('HTTP/1.1 500'), head
+      end
+    end
+    20.times { break if File.exist?(log) && !File.read(log).empty?; sleep 0.1 }
+    text = File.read(log)
+    assert_true text.include?('--error-assets'), text
+    assert_true text.include?('ConfigError'), text
+  ensure
+    File.unlink(log) rescue nil
+  end
+end

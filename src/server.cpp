@@ -315,6 +315,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
                                 errlen)) {
     return false;
   }
+  // #210: and the same assets under response.error_asset("404.jpg"),
+  // so an app can answer with one of these pictures wherever it likes,
+  // not only where the error resource does.
+  response_bind_error_assets(error_assets_up_ ? &error_assets_ : nullptr);
   if (opts_.log_path != nullptr) http_->enable_access_log();
   if (opts_.error_log_path != nullptr) http_->enable_error_log();
   // A typed flag and [tune] beat the app's conf, and all three beat the

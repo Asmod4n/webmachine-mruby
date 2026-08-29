@@ -1721,6 +1721,11 @@ using NativeCb = mrb_value (*)(mrb_state* mrb, mrb_value self, mrb_int argc,
 void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
                    mrb_aspec aspec = MRB_ARGS_ANY());
 
+// #210: a run may hand over one of these (response.error_asset). The
+// definition is further down, with the tier that owns it - a run only
+// ever passes the handle on.
+struct AssetEntry;
+
 struct Resource {
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
@@ -1755,6 +1760,13 @@ struct Resource {
   mutable const flow::ReqFacts* run_facts = nullptr;
   mutable std::string* run_body = nullptr;
   mutable bool run_have_body = false;
+  // #210 response.error_asset: THE ENTRY, not its bytes. The error assets
+  // are mmap'd for the life of the process, and both writers already know
+  // how to put a mapped entry on the wire - Assets::wire_len/wire_iov/
+  // copy_wire on h1, Content::Src::kAsset on h2 - so this run hands over
+  // the same handle the asset tier hands over, and nothing is rooted,
+  // copied or released for it.
+  mutable const AssetEntry* run_asset = nullptr;
   mutable uint16_t run_status = 0;
   // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
   // own String is frozen and rooted and LENT to the writer, instead of
@@ -1964,6 +1976,9 @@ bool resource_file_wanted(const Resource& res, const char** ptr, size_t* len, bo
 // after it.
 void response_init(mrb_state* mrb, struct RClass* wm);
 void response_bind(const Resource* res);
+// Assets is declared further down - this only needs the name.
+class Assets;
+void response_bind_error_assets(Assets* a);
 }
 
 namespace webmachine::gzip {

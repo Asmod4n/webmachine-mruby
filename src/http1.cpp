@@ -963,6 +963,30 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           st.zc_mrb = b->res->mrb;
           st.zc_lent = true;
         }
+        // #210 response.error_asset: the run named an entry of the error
+        // assets, and an entry goes on the wire the way the asset tier
+        // already puts one there - through Assets' own accessors, which
+        // are the one place that knows an entry's wire form. It lives in
+        // a mapping that outlives every request, so nothing here is
+        // rooted and nothing is released: a plan carries the segment
+        // (wire_iov), and without one the bytes are copied (copy_wire).
+        if (WM_H1_UNLIKELY(b->res->run_asset != nullptr)) {
+          const AssetEntry& ae = *b->res->run_asset;
+          const size_t n = Assets::wire_len(ae);
+          if (plan != nullptr) {
+            struct iovec iv[3];
+            const unsigned k = Assets::wire_iov(ae, 0, n, iv);
+            // One segment for a stored entry; a deflated one would be
+            // three, and response.error_asset refuses those - the head
+            // spelled here carries no Content-Encoding to declare them.
+            lent = k == 1 ? static_cast<const char*>(iv[0].iov_base) : nullptr;
+            lent_len = k == 1 ? iv[0].iov_len : 0;
+          }
+          if (lent == nullptr) {
+            body_.clear();
+            Assets::copy_wire(ae, 0, n, body_);
+          }
+        }
         // response.file: the run named a file instead of spelling a body,
         // and opening one is disk work that does not belong in a reactor
         // step. NOTHING is answered here - the framing this answer will need

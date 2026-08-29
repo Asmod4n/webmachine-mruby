@@ -806,3 +806,97 @@ assert('h2: an insert between two cache hits does not move what the head points 
     end
   end
 end
+
+# #210 response.error_asset over h2: the entry is parked as Src::kAsset -
+# the SAME source the asset tier parks a mounted file under - so its octets
+# are framed out of the mapping by h2_flush_pending, against the window,
+# and never copied into an answer buffer.
+H2_EASSET_APP = <<~RUBY unless defined?(H2_EASSET_APP)
+  class Teapot < Webmachine::Resource
+    def content_types_provided
+      [['image/jpeg', :pic]]
+    end
+
+    def pic
+      response.error_asset('418.jpg')
+      ''
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes do |route|
+        route.add [:*], Teapot
+      end
+    end
+  end
+RUBY
+
+def h2_error_assets_server(pack)
+  app = wm_compile(H2_EASSET_APP)
+  sock = "/tmp/wm-h2-ea-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-h2-ea-stderr-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, '--unix', sock, '--app', app.path,
+              '--error-assets', pack, out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "h2 server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    yield sock
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    app&.unlink
+  end
+end
+
+def h2_zip_entry(path, name)
+  raw = File.binread(path)
+  off = 0
+  while off + 30 <= raw.bytesize && raw[off, 4] == "PK\x03\x04".b
+    csize, _usize, nlen, elen = raw[off + 18, 12].unpack('VVvv')
+    found = raw[off + 30, nlen]
+    body = raw[off + 30 + nlen + elen, csize]
+    return body if found == name
+    off += 30 + nlen + elen + csize
+  end
+  nil
+end
+
+assert('h2: response.error_asset parks in the mapping and the window drips it out whole') do
+  pack = File.expand_path('../share/error-assets.zip', __dir__)
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
+  want = h2_zip_entry(pack, 'cats/418.jpg')
+  assert_true want != nil, 'no cats/418.jpg in the shipped error assets'
+
+  h2_error_assets_server(pack) do |sock|
+    UNIXSocket.open(sock) do |s|
+      # SETTINGS_INITIAL_WINDOW_SIZE = 1000: the picture cannot leave in one
+      # round, so it HAS to survive parking - which is the whole claim.
+      h2_handshake(s, [4, 1000].pack('nN'))
+      s.write(h2_frame(1, 0x05, 1, h2_path_block('/teapot') + h2_lit('accept', 'image/jpeg')))
+      t, f, = h2_until(s, 1)
+      assert_equal 1, t
+      assert_equal 0, f & 0x01, 'the HEADERS ended the stream - no picture followed'
+
+      got = +''.b
+      frames = 0
+      200.times do
+        break if got.bytesize >= want.bytesize
+        s.write(h2_frame(8, 0, 1, [2000].pack('N')))
+        s.write(h2_frame(8, 0, 0, [2000].pack('N')))
+        t2, f2, st2, pay = h2_next(s)
+        next unless t2 == 0 && st2 == 1
+        got << pay
+        frames += 1
+        break if (f2 & 0x01) != 0
+      end
+      # More than one DATA frame, or the window never bit and this proves
+      # nothing about parking.
+      assert_true frames > 1, "the whole picture left in #{frames} frame(s)"
+      assert_equal want.bytesize, got.bytesize
+      assert_equal want, got
+    end
+  end
+end
