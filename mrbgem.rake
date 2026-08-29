@@ -51,8 +51,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # mruby: the VM as a guest - every gem this build carries is named
   # here, core ones included, and no build config names a gembox.
   %w[
-    mruby-error
-    mruby-metaprog
     mruby-object-ext
     mruby-kernel-ext
     mruby-class-ext
