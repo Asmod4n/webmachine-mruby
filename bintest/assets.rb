@@ -781,3 +781,50 @@ assert('assets: a pack alone serves, and everything it does not name is 404') do
     end
   end
 end
+
+assert('assets: the shipped cat pack serves every status it holds, unchanged') do
+  # share/http-cats.zip, built by `rake cats`. CC BY 2.0 asks that the
+  # images be named, linked and stated as unchanged - the last of those is
+  # a claim about BYTES, so it is checked here rather than asserted in a
+  # README: what the tier serves is what the archive holds.
+  pack = File.expand_path('../share/http-cats.zip', __dir__)
+  skip "no #{pack} - run rake cats" unless File.exist?(pack)
+  sock = "/tmp/wm-cats-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-cats-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', pack,
+              out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "cat server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    UNIXSocket.open(sock) do |s|
+      [400, 404, 418, 451, 500, 503].each do |code|
+        s.write("GET /cats/#{code}.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = a_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "#{code}: #{head.lines.first}"
+        assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i), head
+        # A JPEG starts SOI and ends EOI. Anything that resized or
+        # re-encoded on the way would still satisfy the first and is
+        # unlikely to satisfy both against a stored entry.
+        assert_equal "\xFF\xD8".b, body[0, 2].b
+        assert_equal "\xFF\xD9".b, body[-2, 2].b
+      end
+      # The attribution travels inside the archive, and is reachable.
+      s.write("GET /cats/NOTICE.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_true body.include?('CC BY 2.0'), body
+      assert_true body.include?('Tomomi Imura'), body
+      assert_true body.include?('CHANGES: NONE'), body
+      # Below 400 there is no cat, by the pack's own definition.
+      s.write("GET /cats/302.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    File.unlink(err) rescue nil
+  end
+end
