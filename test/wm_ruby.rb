@@ -59,11 +59,5 @@ assert('wm-ruby oracle: the shim drives the real flow') do
   assert_equal 'test resource', res.body
 end
 
-assert('wm-ruby oracle: the digest helpers the Content-MD5 cases need') do
-  assert_equal 'd41d8cd98f00b204e9800998ecf8427e', Webmachine::TestDigest.md5_hex('')
-  assert_equal '900150983cd24fb0d6963f7d28e17f72', Webmachine::TestDigest.md5_hex('abc')
-  assert_equal 'Zg==', Webmachine::TestDigest.b64('f')
-  assert_equal 'Zm9vYmFy', Webmachine::TestDigest.b64('foobar')
-end
 
 $wm_cases.each { |name, blk| assert(name) { blk.call } } if $wm_cases

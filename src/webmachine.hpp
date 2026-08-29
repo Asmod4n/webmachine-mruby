@@ -65,7 +65,7 @@ namespace webmachine::flow {
 // Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
 // its node names. Each edge's clause is in kFlow's `clause` column.
 enum class Node : uint8_t {
-  kB13, kB12, kB11, kB10, kB9, kB9a, kB9b, kB8, kB7, kB6, kB5, kB4, kB3,
+  kB13, kB12, kB11, kB10, kB9b, kB8, kB7, kB6, kB5, kB4, kB3,
   kC3, kC4, kD4, kD5, kE5, kE6, kF6, kF7,
   kG7, kG8, kG9, kG11, kH7, kH10, kH11, kH12,
   kI4, kI7, kI12, kI13, kJ18,
@@ -111,11 +111,7 @@ inline constexpr FlowNode kFlow[] = {
     {Node::kB11, Kind::kResource, "uri_too_long?", "RFC 9110 15.5.15 (414)",
      halt(414), to(Node::kB10)},
     {Node::kB10, Kind::kResource, "allowed_methods", "RFC 9110 15.5.6 (405) + 10.2.1 Allow",
-     to(Node::kB9), halt(405)},
-    {Node::kB9, Kind::kRequest, nullptr, "RFC 1864 (historic): Content-MD5 present?",
-     to(Node::kB9a), to(Node::kB9b)},
-    {Node::kB9a, Kind::kResource, "validate_content_checksum", "RFC 1864: checksum match or 400",
-     to(Node::kB9b), halt(400)},
+     to(Node::kB9b), halt(405)},
     {Node::kB9b, Kind::kResource, "malformed_request?", "RFC 9110 15.5.1 (400)",
      halt(400), to(Node::kB8)},
     {Node::kB8, Kind::kResource, "is_authorized?", "RFC 9110 15.5.2 (401) + 11.6.1 WWW-Authenticate",
@@ -302,7 +298,6 @@ enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOthe
 // request alone. Every field is a FIELD OF THE SPECIFICATION and now
 // spells it out - has_if_unmodified_since used to sit next to ius_valid,
 // the same header abbreviated in one line and not in the next.
-//   has_content_md5             RFC 1864 (historic)
 //   has_accept*                 RFC 9110 12.5.1-12.5.4
 //   has_if_match, *_star        RFC 9110 13.1.1
 //   has_if_unmodified_since     RFC 9110 13.1.4
@@ -315,7 +310,6 @@ enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOthe
 //                               any RFC defines
 struct ReqFacts {
   Method method = Method::kGet;
-  bool has_content_md5 = false;
   bool has_accept = false;
   bool has_accept_language = false;
   bool has_accept_charset = false;
@@ -349,7 +343,6 @@ struct KonstAnswers {
 // never from the VM.
 constexpr bool eval_request(Node id, const ReqFacts& r) {
   switch (id) {
-    case Node::kB9: return r.has_content_md5;
     case Node::kB3: return r.method == Method::kOptions;
     case Node::kC3: return r.has_accept;
     case Node::kC4: return r.accept_ok;
@@ -468,7 +461,6 @@ constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m) {
   set(Node::kB12, m != Method::kOther);
   set(Node::kB11, false);
   set(Node::kB10, m == Method::kGet || m == Method::kHead);
-  set(Node::kB9a, true);
   set(Node::kB9b, false);
   set(Node::kB8, true);
   set(Node::kB7, false);
@@ -1095,12 +1087,10 @@ struct ReqValues {
   const char* content_type = nullptr;
   size_t content_type_len = 0;
   // The values the 1:1 runtime reads: c4 negotiates against Accept
-  // (12.5.1), b9a checks Content-MD5 (RFC 1864), request.base_uri and
-  // request.cookies read Host (7.2) and Cookie (RFC 6265).
+  // (12.5.1), request.base_uri and request.cookies read Host (7.2) and
+  // Cookie (RFC 6265).
   const char* accept = nullptr;
   size_t accept_len = 0;
-  const char* content_md5 = nullptr;
-  size_t content_md5_len = 0;
   const char* host = nullptr;
   size_t host_len = 0;
   const char* cookie = nullptr;
@@ -1566,15 +1556,6 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.if_match_star = star_value(value, vlen);
         vals.if_match = value;
         vals.if_match_len = vlen;
-        return;
-      }
-      break;
-    case 11:
-      if (tok_eq(name, nlen, "content-md5", 11)) {
-        facts.has_content_md5 = true;
-        facts.plain = false;
-        vals.content_md5 = value;
-        vals.content_md5_len = vlen;
         return;
       }
       break;

@@ -1,5 +1,4 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
-#define OPENSSL_SUPPRESS_DEPRECATED 1
 #include "webmachine.hpp"
 
 #include <mruby/array.h>
@@ -12,7 +11,6 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 
-#include <openssl/md5.h>
 #include <simdutf.h>
 
 #include <cstdio>
@@ -384,7 +382,7 @@ const BoolCb kBools[] = {
     {Node::kO18b, MRB_SYM_Q(multiple_choices), "multiple_choices?", false, 0},
 };
 
-// flow.rb b8/b9a: value-semantics nodes riding the node tables; a class-only
+// flow.rb b8: a value-semantics node riding the node tables; a class-only
 // version keeps an undef method slot and is funcalled on the class.
 struct NodeValueCb {
   Node node;
@@ -393,7 +391,6 @@ struct NodeValueCb {
 };
 const NodeValueCb kNodeValues[] = {
     {Node::kB8, MRB_SYM_Q(is_authorized), 1},
-    {Node::kB9a, MRB_SYM(validate_content_checksum), 0},
 };
 
 struct NamedSym {
@@ -445,35 +442,6 @@ bool headers_has_location(const std::string& h) {
     at = eol + 2;
   }
   return false;
-}
-
-// RFC 1864: decode64(Content-MD5) against MD5(body) spelled as 32 lowercase
-// hex characters - webmachine-ruby compares against the HEXDIGEST string.
-bool content_md5_ok(const Resource& res) {
-  const http::ReqValues* v = res.run_vals;
-  if (v == nullptr || v->content_md5 == nullptr) return true;
-  const char* bp = "";
-  size_t bn = 0;
-  if (res.run_req != nullptr && res.run_req->content != nullptr) {
-    bp = res.run_req->content;
-    bn = res.run_req->content_len;
-  }
-  unsigned char dg[MD5_DIGEST_LENGTH];
-  MD5(reinterpret_cast<const unsigned char*>(bp), bn, dg);
-  char hex[32];
-  static const char kHexDigit[] = "0123456789abcdef";
-  for (int i = 0; i < 16; i++) {
-    hex[i * 2] = kHexDigit[dg[i] >> 4];
-    hex[i * 2 + 1] = kHexDigit[dg[i] & 15];
-  }
-  const size_t cap =
-      simdutf::maximal_binary_length_from_base64(v->content_md5, v->content_md5_len);
-  std::string dec;
-  dec.resize(cap);
-  const simdutf::result r =
-      simdutf::base64_to_binary(v->content_md5, v->content_md5_len, dec.data());
-  if (r.error != simdutf::error_code::SUCCESS) return false;
-  return r.count == 32 && std::memcmp(dec.data(), hex, 32) == 0;
 }
 
 // RFC 9110: THE runtime tier - webmachine-ruby's value semantics for the
@@ -1100,34 +1068,6 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         take(ok);
         continue;
       }
-      case Node::kB9a: {
-        bool pass = false;
-        bool settled = false;
-        if ((res.dynamic >> static_cast<size_t>(Node::kB9a)) & 1) {
-          const mrb_value v = nodecall(n, 0, nullptr);
-          if (mrb_integer_p(v)) {
-            status = halt_of(v, res.node_sym[static_cast<size_t>(n)]);
-            halted = true;
-            continue;
-          }
-          if (mrb_true_p(v)) {
-            pass = true;
-            settled = true;
-          } else if (mrb_false_p(v)) {
-            settled = true;
-          }
-        }
-        if (!settled) pass = content_md5_ok(res);
-        if (pass) {
-          take(true);
-          continue;
-        }
-        res.run_body->assign("Content-MD5 header does not match request body.");
-        res.run_have_body = true;
-        status = 400;
-        halted = true;
-        continue;
-      }
       case Node::kB8: {
         if (((res.dynamic >> static_cast<size_t>(Node::kB8)) & 1) == 0) break;
         const size_t i = static_cast<size_t>(Node::kB8);
@@ -1514,7 +1454,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     }
   }
 
-  // flow.rb b8/b9a: value-semantics nodes - instance method into the node
+  // flow.rb b8: a value-semantics node - instance method into the node
   // tables, a class-only one as an undef slot the engine funcalls on the class.
   for (const NodeValueCb& cb : kNodeValues) {
     const size_t at = static_cast<size_t>(cb.node);

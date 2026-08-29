@@ -32,11 +32,7 @@
  * src/request.cpp and src/response.cpp). Only the FSM needs C, because
  * only it touches the flow.
  *
- * Also here: Webmachine::TestDigest, the two library calls the specs
- * lean on that this VM has no gem for - Digest::MD5.hexdigest and
- * Base64.encode64, for the Content-MD5 cases of b9a (RFC 1864).
  */
-#define OPENSSL_SUPPRESS_DEPRECATED 1
 #include "../src/webmachine.hpp"
 
 #include <mruby/array.h>
@@ -47,7 +43,6 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 
-#include <openssl/md5.h>
 #include <picohttpparser.h>
 #include <simdutf.h>
 
@@ -101,8 +96,8 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
     store.append(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
     // Lowercased in place: h1 arrives case-insensitive and h2 demands
     // lowercase (RFC 9113 8.2), and header_switch matches against
-    // lowercase literals. The VALUE is left alone - Content-MD5 is
-    // base64, where case is meaning.
+    // lowercase literals. The VALUE is left alone: a header this
+    // rewrites is a header the flow would then read wrong.
     for (size_t j = koff; j < voff; j++) {
       char& c = store[j];
       if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
@@ -267,34 +262,6 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-// RFC 1864: Digest::MD5.hexdigest, which b9a's oracle cases need to
-// build a Content-MD5 with.
-mrb_value digest_md5_hex(mrb_state* mrb, mrb_value) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  unsigned char d[MD5_DIGEST_LENGTH];
-  MD5(reinterpret_cast<const unsigned char*>(p), static_cast<size_t>(n), d);
-  static const char kHex[] = "0123456789abcdef";
-  char hex[MD5_DIGEST_LENGTH * 2];
-  for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
-    hex[2 * i] = kHex[(d[i] >> 4) & 0xf];
-    hex[2 * i + 1] = kHex[d[i] & 0xf];
-  }
-  return mrb_str_new(mrb, hex, sizeof hex);
-}
-
-// RFC 4648: Base64.encode64 without its trailing newline - decode64
-// ignores that byte, so the two spell the same Content-MD5.
-mrb_value digest_b64(mrb_state* mrb, mrb_value) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  std::string out(simdutf::base64_length_from_binary(static_cast<size_t>(n)), '\0');
-  const size_t w = simdutf::binary_to_base64(p, static_cast<size_t>(n), out.data());
-  return mrb_str_new(mrb, out.data(), w);
-}
-
 }  // namespace
 
 // The gem's ONE gem_test entry point - mruby calls this once when mrbtest
@@ -307,7 +274,4 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
   mrb_define_method_id(mrb, fsm, mrb_intern_lit(mrb, "initialize"), fsm_init, MRB_ARGS_REQ(3));
   mrb_define_method_id(mrb, fsm, mrb_intern_lit(mrb, "run"), fsm_run, MRB_ARGS_NONE());
 
-  struct RClass* dig = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "TestDigest"));
-  mrb_define_module_function_id(mrb, dig, mrb_intern_lit(mrb, "md5_hex"), digest_md5_hex, MRB_ARGS_REQ(1));
-  mrb_define_module_function_id(mrb, dig, mrb_intern_lit(mrb, "b64"), digest_b64, MRB_ARGS_REQ(1));
 }

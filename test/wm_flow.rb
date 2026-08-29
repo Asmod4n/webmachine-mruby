@@ -41,6 +41,9 @@ WM_LM_MINUS1   = 'Sun, 09 Sep 2001 01:46:39 GMT'
 WM_LM_MINUS1K  = 'Sun, 09 Sep 2001 01:30:00 GMT'
 WM_FUTURE_DATE = 'Fri, 01 Jan 2100 00:00:00 GMT'
 
+# The request body every case that needs one sends.
+WM_BODY = 'This is the body.'
+
 
 def wm_res_b13
   Class.new(WmSpecResource) do
@@ -108,84 +111,6 @@ end
 wm_case('flow b9b: a malformed request answers 400') do
   assert_equal 400, wm_run(wm_res_b9_malformed).code
 end
-
-WM_B9_BODY = 'This is the body.'
-
-def wm_res_b9_md5
-  Class.new(WmSpecResource) do
-    def allowed_methods
-      %w[POST]
-    end
-
-    def process_post
-      true
-    end
-
-    def validate_content_checksum
-      $wm_validation
-    end
-  end
-end
-
-def wm_b9_headers(md5 = :none)
-  h = wm_h('Content-Type' => 'text/plain')
-  h['Content-MD5'] = md5 unless md5 == :none
-  h
-end
-
-def wm_run_b9(md5 = :none)
-  wm_run(wm_res_b9_md5, 'POST', wm_b9_headers(md5), WM_B9_BODY)
-end
-
-def wm_b9_sum(of)
-  Webmachine::TestDigest.b64(Webmachine::TestDigest.md5_hex(of))
-end
-
-wm_case('flow b9a: a Content-MD5 that matches the body answers 204') do
-  $wm_validation = nil
-  assert_equal 204, wm_run_b9(wm_b9_sum(WM_B9_BODY)).code
-end
-
-wm_case('flow b9a: a Content-MD5 with a nil value bypasses validation (204)') do
-  $wm_validation = nil
-  assert_equal 204, wm_run_b9(nil).code
-end
-
-wm_case('flow b9a: an empty Content-MD5 answers 400') do
-  $wm_validation = nil
-  assert_equal 400, wm_run_b9('').code
-end
-
-wm_case('flow b9a: a non-hashed, non-encoded Content-MD5 answers 400') do
-  $wm_validation = nil
-  assert_equal 400, wm_run_b9(WM_B9_BODY).code
-end
-
-wm_case('flow b9a: a matching digest that is not Base64 answers 400') do
-  $wm_validation = nil
-  assert_equal 400, wm_run_b9(Webmachine::TestDigest.md5_hex(WM_B9_BODY)).code
-end
-
-wm_case('flow b9a: a Content-MD5 that does not match the body answers 400') do
-  $wm_validation = nil
-  assert_equal 400, wm_run_b9(wm_b9_sum('thiswillnotmatchthehash')).code
-end
-
-wm_case('flow b9a: the resource invalidating the checksum answers 400') do
-  $wm_validation = false
-  assert_equal 400, wm_run_b9(wm_b9_sum('thiswillnotmatchthehash')).code
-end
-
-wm_case('flow b9a: the resource validating the checksum does not answer 400') do
-  $wm_validation = true
-  assert_true wm_run_b9(wm_b9_sum('thiswillnotmatchthehash')).code != 400
-end
-
-wm_case('flow b9a: a status returned while validating is the answer') do
-  $wm_validation = 500
-  assert_equal 500, wm_run_b9(wm_b9_sum('thiswillnotmatchthehash')).code
-end
-
 
 def wm_res_b8
   Class.new(WmSpecResource) do
@@ -273,13 +198,13 @@ end
 
 wm_case('flow b5: an unknown Content-Type answers 415') do
   h = wm_h('Content-Type' => 'application/x-unknown-type',
-           'Content-Length' => WM_B9_BODY.size.to_s)
-  assert_equal 415, wm_run(wm_res_b5, 'POST', h, WM_B9_BODY).code
+           'Content-Length' => WM_BODY.size.to_s)
+  assert_equal 415, wm_run(wm_res_b5, 'POST', h, WM_BODY).code
 end
 
 wm_case('flow b5: a known Content-Type does not answer 415') do
-  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_B9_BODY.size.to_s)
-  assert_true wm_run(wm_res_b5, 'POST', h, WM_B9_BODY).code != 415
+  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_BODY.size.to_s)
+  assert_true wm_run(wm_res_b5, 'POST', h, WM_BODY).code != 415
 end
 
 
@@ -477,12 +402,12 @@ end
 
 wm_case('flow j18: POST with If-None-Match * answers 412') do
   h = wm_h('Content-Type' => 'text/plain', 'If-None-Match' => '*')
-  assert_equal 412, wm_run(wm_res_inm, 'POST', h, WM_B9_BODY).code
+  assert_equal 412, wm_run(wm_res_inm, 'POST', h, WM_BODY).code
 end
 
 wm_case('flow j18: POST with the ETag inside If-None-Match answers 412') do
   h = wm_h('Content-Type' => 'text/plain', 'If-None-Match' => '"etag"')
-  assert_equal 412, wm_run(wm_res_inm, 'POST', h, WM_B9_BODY).code
+  assert_equal 412, wm_run(wm_res_inm, 'POST', h, WM_BODY).code
 end
 
 def wm_res_no_etag
@@ -559,13 +484,13 @@ end
 
 wm_case('flow i7: PUT on a missing resource leaves the k7 branch (no 404/410/303)') do
   h = wm_h('Content-Type' => 'text/plain')
-  code = wm_run(wm_res_i7, 'PUT', h, WM_B9_BODY).code
+  code = wm_run(wm_res_i7, 'PUT', h, WM_BODY).code
   assert_true code != 404 && code != 410 && code != 303
 end
 
 wm_case('flow i7: a method other than PUT never reaches i4 (no 409)') do
   h = wm_h('Content-Type' => 'text/plain')
-  assert_true wm_run(wm_res_i7, 'POST', h, WM_B9_BODY).code != 409
+  assert_true wm_run(wm_res_i7, 'POST', h, WM_BODY).code != 409
 end
 
 
@@ -583,16 +508,16 @@ end
 
 wm_case('flow i4: a moved resource answers 301 and Location') do
   $wm_location = 'http://localhost:8098/newuri'
-  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_B9_BODY.size.to_s)
-  res = wm_run(wm_res_i4, 'PUT', h, WM_B9_BODY)
+  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_BODY.size.to_s)
+  res = wm_run(wm_res_i4, 'PUT', h, WM_BODY)
   assert_equal 301, res.code
   assert_equal 'http://localhost:8098/newuri', res.headers['Location']
 end
 
 wm_case('flow i4: a resource that has not moved does not answer 301') do
   $wm_location = false
-  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_B9_BODY.size.to_s)
-  assert_true wm_run(wm_res_i4, 'PUT', h, WM_B9_BODY).code != 301
+  h = wm_h('Content-Type' => 'text/plain', 'Content-Length' => WM_BODY.size.to_s)
+  assert_true wm_run(wm_res_i4, 'PUT', h, WM_BODY).code != 301
 end
 
 
@@ -668,7 +593,7 @@ wm_case('flow n5: a POST a gone resource disallows answers 410') do
   $wm_moved_temp = false
   $wm_allow_missing = false
   h = wm_h('Content-Type' => 'text/plain')
-  assert_equal 410, wm_run(wm_res_gone, 'POST', h, WM_B9_BODY).code
+  assert_equal 410, wm_run(wm_res_gone, 'POST', h, WM_BODY).code
 end
 
 wm_case('flow n5: a POST a gone resource allows does not answer 410') do
@@ -676,7 +601,7 @@ wm_case('flow n5: a POST a gone resource allows does not answer 410') do
   $wm_moved_temp = false
   $wm_allow_missing = true
   h = wm_h('Content-Type' => 'text/plain')
-  assert_true wm_run(wm_res_gone, 'POST', h, WM_B9_BODY).code != 410
+  assert_true wm_run(wm_res_gone, 'POST', h, WM_BODY).code != 410
 end
 
 
@@ -708,13 +633,13 @@ end
 wm_case('flow m7: a POST the resource disallows answers 404') do
   $wm_allow_missing = false
   h = wm_h('Content-Type' => 'text/plain')
-  assert_equal 404, wm_run(wm_res_l7, 'POST', h, WM_B9_BODY).code
+  assert_equal 404, wm_run(wm_res_l7, 'POST', h, WM_BODY).code
 end
 
 wm_case('flow m7: a POST the resource allows does not answer 404') do
   $wm_allow_missing = true
   h = wm_h('Content-Type' => 'text/plain')
-  assert_true wm_run(wm_res_l7, 'POST', h, WM_B9_BODY).code != 404
+  assert_true wm_run(wm_res_l7, 'POST', h, WM_BODY).code != 404
 end
 
 
@@ -770,7 +695,7 @@ end
     $wm_exist = exist
     $wm_new_loc = '/foo/bar'
     h = wm_h('Content-Type' => 'text/plain')
-    res = wm_run(wm_res_n11, 'POST', h, WM_B9_BODY)
+    res = wm_run(wm_res_n11, 'POST', h, WM_BODY)
     assert_equal 303, res.code
     assert_equal '/foo/bar', res.headers['Location']
   end
@@ -779,7 +704,7 @@ end
     $wm_exist = exist
     $wm_new_loc = nil
     h = wm_h('Content-Type' => 'text/plain')
-    assert_true wm_run(wm_res_n11, 'POST', h, WM_B9_BODY).code != 303
+    assert_true wm_run(wm_res_n11, 'POST', h, WM_BODY).code != 303
   end
 end
 
@@ -1040,14 +965,14 @@ end
     $wm_exist = exist
     $wm_body = 'Hello, world!'
     h = entity ? wm_h('content-type' => 'text/plain') : wm_h
-    assert_true wm_run(wm_res_o20, method, h, entity ? WM_B9_BODY : nil).code != 204
+    assert_true wm_run(wm_res_o20, method, h, entity ? WM_BODY : nil).code != 204
   end
 
   wm_case("flow o20: no response body answers 204 (#{method}, exists:#{exist})") do
     $wm_exist = exist
     $wm_body = nil
     h = entity ? wm_h('content-type' => 'text/plain') : wm_h
-    assert_equal 204, wm_run(wm_res_o20, method, h, entity ? WM_B9_BODY : nil).code
+    assert_equal 204, wm_run(wm_res_o20, method, h, entity ? WM_BODY : nil).code
   end
 end
 

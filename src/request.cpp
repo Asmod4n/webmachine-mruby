@@ -286,10 +286,6 @@ mrb_value req_if_modified_since(mrb_state* mrb, mrb_value) {
 mrb_value req_if_unmodified_since(mrb_state* mrb, mrb_value) {
   return req_header(mrb, "if-unmodified-since", 19);
 }
-// RFC 1864: the checksum b9a validates.
-mrb_value req_content_md5(mrb_state* mrb, mrb_value) {
-  return req_header(mrb, "content-md5", 11);
-}
 // RFC 9110 7.2: the authority this request named.
 mrb_value req_host(mrb_state* mrb, mrb_value) {
   return req_header(mrb, "host", 4);
@@ -413,7 +409,6 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
                        MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(if_unmodified_since), req_if_unmodified_since,
                        MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, req, MRB_SYM(content_md5), req_content_md5, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(host), req_host, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(cookies), req_cookies, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, req, MRB_SYM(base_uri), req_base_uri, MRB_ARGS_NONE());
