@@ -2850,6 +2850,10 @@ class Assets;
 struct AssetEntry;
 
 inline constexpr size_t kMaxHead = 8192;
+// #210: the one path the error assets answer under. Reserved, so an
+// operator's own tree can never collide with it.
+inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
+inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
 inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
 inline constexpr size_t kCompressFloor = 1280;
@@ -3161,7 +3165,7 @@ class Http1 {
   // rather than owning it - the h1 model (#173) is bytes in, bytes out,
   // and a caller that never calls this gets the bodyless statuses it
   // always got.
-  bool open_error_assets(mrb_state* mrb, char* err, size_t errlen);
+  bool open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, size_t errlen);
 
   void on_tick();
 
@@ -3570,6 +3574,9 @@ class Http1 {
   std::vector<Variants> store_prefix_;
   std::array<uint16_t, 600> index_ {};
   ErrorPages err_pages_;
+  // Not the operator's --assets: the pictures an error page names, under
+  // their own reserved prefix, mounted whether or not anything else is.
+  Assets* error_assets_ = nullptr;
   std::vector<H2Block> h2_store_;
   H2Block h2_asset405_;
   H2Block h2_asset406_;
@@ -3663,6 +3670,10 @@ const struct open_how* docroot_how();
 // purpose - it is the reason those two beat the file.
 struct ServerOptions {
   const char* assets_path = nullptr;
+  // #210: the file an error answer may hand over - the shipped one by
+  // default, or the operator's, in which case whatever they put in it is
+  // what response.error_asset can name.
+  const char* error_assets_path = nullptr;
   const char* docroot_path = nullptr;
   const char* mime_types_path = nullptr;
   const char* log_path = nullptr;

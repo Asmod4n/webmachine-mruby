@@ -487,7 +487,11 @@ void ErrorPages::read_cats(Assets& assets) {
     if (e == nullptr || e->deflated) continue;
     Cat c;
     c.entry = e;
-    c.url.assign(path);
+    // What the PAGE says, which is the reserved prefix - not the name
+    // the file happens to use inside itself.
+    char url[40];
+    std::snprintf(url, sizeof url, "%s%u.jpg", kErrorAssetsPrefix, status);
+    c.url.assign(url);
     c.width = w;
     c.height = h;
     cat_index_[status] = static_cast<int16_t>(cats_.size());

@@ -339,8 +339,9 @@ void Http1::assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefi
 // #210: the error pages render in a VM this layer does not own. Called
 // once, after the bundles exist; a caller that never calls it keeps the
 // bodyless statuses (#173: bytes in, bytes out, no VM required).
-bool Http1::open_error_assets(mrb_state* mrb, char* err, size_t errlen) {
-  return err_pages_.open(mrb, assets_, err, errlen);
+bool Http1::open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, size_t errlen) {
+  error_assets_ = error_assets;
+  return err_pages_.open(mrb, error_assets, err, errlen);
 }
 
 // RFC 9110 15: the error answer - the prebuilt status line and Date, then
@@ -797,9 +798,29 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       }
     }
 
-    if (assets_ != nullptr) {
-      if (AssetEntry* ae = assets_->find(path, path_len)) {
-        const uint16_t as = assets_->verdict(*ae, facts.method, facts, vals);
+    // #210: the error assets answer under one reserved prefix, always,
+    // and without the operator mounting anything - a page that names a
+    // picture has to be able to hand it over. Everything else belongs to
+    // whoever passed --assets. The file names its entries cats/<status>
+    // .jpg; the URL does not repeat the directory.
+    Assets* tier = assets_;
+    const char* apath = path;
+    size_t alen = path_len;
+    char abuf[kMaxHead];
+    if (error_assets_ != nullptr && path_len > kErrorAssetsPrefixLen &&
+        std::memcmp(path, kErrorAssetsPrefix, kErrorAssetsPrefixLen) == 0) {
+      const size_t rest = path_len - kErrorAssetsPrefixLen;
+      if (rest + 6 < sizeof(abuf)) {
+        std::memcpy(abuf, "/cats/", 6);
+        std::memcpy(abuf + 6, path + kErrorAssetsPrefixLen, rest);
+        tier = error_assets_;
+        apath = abuf;
+        alen = rest + 6;
+      }
+    }
+    if (tier != nullptr) {
+      if (AssetEntry* ae = tier->find(apath, alen)) {
+        const uint16_t as = tier->verdict(*ae, facts.method, facts, vals);
         const AssetStep step = asset_step(*ae, as, head_only, facts.method, vals, warm_budget_);
         const Assets::ConnectionOption conn =
             minor >= 1 ? (persist ? Assets::kNoConnectionField : Assets::kConnClose)
@@ -812,14 +833,14 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             break;
           }
           case AssetStep::HeadKind::kUnsatisfiable:
-            assets_->answer_416_head(*ae, conn, date_, sink);
+            tier->answer_416_head(*ae, conn, date_, sink);
             break;
           case AssetStep::HeadKind::kRange:
-            assets_->answer_206_head(*ae, conn, step.first_byte_pos,
+            tier->answer_206_head(*ae, conn, step.first_byte_pos,
                                      step.first_byte_pos + step.content_length - 1, date_, sink);
             break;
           case AssetStep::HeadKind::kNormal:
-            assets_->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
+            tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
             break;
         }
         bool started_xfer = false;

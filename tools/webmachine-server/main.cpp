@@ -45,6 +45,8 @@ int main(int argc, char** argv) {
       opts.app_path = argv[++i];
     } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
       opts.assets_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--error-assets") == 0 && i + 1 < argc) {
+      opts.error_assets_path = argv[++i];
     } else if (std::strcmp(argv[i], "--docroot") == 0 && i + 1 < argc) {
       opts.docroot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--mime-types") == 0 && i + 1 < argc) {
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
                    "SERVE\n"
                    "  --app FILE.mrb           the application, as bytecode\n"
                    "  --assets FILE.zip        assets from one mapping; alone, 404s the rest\n"
+                   "  --error-assets FILE.zip  what an error answer may hand over\n"
                    "  --docroot DIR            the only directory response.file may reach\n"
                    "  --mime-types FILE        this media-type database, not the machine's\n"
                    "\n"

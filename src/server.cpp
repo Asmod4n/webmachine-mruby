@@ -26,6 +26,11 @@ std::vector<std::vector<const SseResource*>> sse_resources_;
 int log_fd_ = -1;
 int err_fd_ = -1;
 Assets assets_;
+// #210: not the operator's. The pictures an error page names, found
+// wherever the system keeps shipped data, and answered under their own
+// reserved prefix whether or not --assets was given.
+Assets error_assets_;
+bool error_assets_up_ = false;
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
@@ -226,11 +231,27 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     }
   }
 
-  if (opts_.assets_path != nullptr) {
+  const std::string error_assets_file = error_assets_path(opts_.error_assets_path);
+  if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
     if (!mime_.load(opts_.mime_types_path, err, errlen)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
+  }
+  if (opts_.assets_path != nullptr) {
     if (!assets_.open(opts_.assets_path, mime_, err, errlen)) return false;
+  }
+  if (!error_assets_file.empty()) {
+    // A picture is no reason not to start: an unreadable one is said
+    // out loud and the pages render without it.
+    char eerr[512] = "";
+    if (error_assets_.open(error_assets_file.c_str(), mime_, eerr, sizeof eerr)) {
+      error_assets_up_ = true;
+      std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
+    } else {
+      std::fprintf(stderr, "webmachine: error assets at %s unusable (%s) - pages without "
+                           "pictures\n",
+                   error_assets_file.c_str(), eerr);
+    }
   }
 
   if (opts_.log_path != nullptr) {
@@ -290,7 +311,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.
-  if (!http_->open_error_assets(mrb, err, errlen)) return false;
+  if (!http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr, err,
+                                errlen)) {
+    return false;
+  }
   if (opts_.log_path != nullptr) http_->enable_access_log();
   if (opts_.error_log_path != nullptr) http_->enable_error_log();
   // A typed flag and [tune] beat the app's conf, and all three beat the
