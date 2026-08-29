@@ -4999,7 +4999,7 @@ class Ring {
     file_wake(idx);
   }
 
-  // SO_MEMINFO through the ring - SOL_SOCKET is the only level it allows.
+  // SO_MEMINFO through the ring.
   void arm_meminfo(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
