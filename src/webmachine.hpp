@@ -3637,10 +3637,23 @@ class Http1 {
     const http::ReqValues& vals;
   };
 
+  // What a step that may take the round over answers with.
+  enum class Took : uint8_t {
+    kNo,           // not this step's request; the straight line continues
+    kNextRequest,  // answered, and the pipeline may hold another
+    kOwed,         // answered so far as it can be; bytes are still owed
+    kClose         // answered, and the connection ends
+  };
+
   // RFC 9110 6.3: response.file named a file, so no body is spelled here
   // - the framing goes onto the connection and the reactor drives
   // openat2/statx/read. Answers whether it took the round.
   bool answer_from_file(Round& r, uint16_t status);
+
+  // RFC 9110 6.3 / RFC 9111: a mounted archive answers this target, head
+  // and body, without the flow or the VM. /error_assets/ resolves against
+  // the error archive, everything else against --assets.
+  Took answer_from_assets(Round& r, std::string& sink, Plan* plan);
 
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // response.file's answer, head only - the bytes ride after it as a lent

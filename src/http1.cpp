@@ -366,6 +366,114 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
   if (!head_only) sink.append(data, dlen);
 }
 
+// RFC 9110 6.3 / RFC 9111: a mounted archive answers this target on its
+// own - conditional requests, ranges and refusals included - without the
+// flow or the VM. /error_assets/ is resolved against the error archive,
+// which is always mounted; everything else against --assets.
+Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
+  Assets* tier = assets_;
+  const char* apath = r.path;
+  size_t alen = r.path_len;
+  char abuf[kMaxHead];
+  if (error_assets_ != nullptr && r.path_len > kErrorAssetsPrefixLen &&
+      std::memcmp(r.path, kErrorAssetsPrefix, kErrorAssetsPrefixLen) == 0) {
+    const size_t rest = r.path_len - kErrorAssetsPrefixLen;
+    if (rest + 1 < sizeof(abuf)) {
+      abuf[0] = '/';
+      std::memcpy(abuf + 1, r.path + kErrorAssetsPrefixLen, rest);
+      tier = error_assets_;
+      apath = abuf;
+      alen = rest + 1;
+    }
+  }
+  if (tier == nullptr) return Took::kNo;
+  AssetEntry* ae = tier->find(apath, alen);
+  if (ae == nullptr) return Took::kNo;
+      const uint16_t as = tier->verdict(*ae, r.facts.method, r.facts, r.vals);
+      const AssetStep step = asset_step(*ae, as, r.head_only, r.facts.method, r.vals, warm_budget_);
+      const Assets::ConnectionOption conn =
+          r.minor >= 1 ? (r.persist ? Assets::kNoConnectionField : Assets::kConnClose)
+                     : (r.persist ? Assets::kKeepAlive : Assets::kConnClose);
+      switch (step.head) {
+        case AssetStep::HeadKind::kRefusal: {
+          const Variants& sv = variants(step.status_code);
+          sink.append(r.minor >= 1 ? (r.persist ? sv.plain.bytes : sv.close.bytes)
+                                 : (r.persist ? sv.keep.bytes : sv.close.bytes));
+          break;
+        }
+        case AssetStep::HeadKind::kUnsatisfiable:
+          tier->answer_416_head(*ae, conn, date_, sink);
+          break;
+        case AssetStep::HeadKind::kRange:
+          tier->answer_206_head(*ae, conn, step.first_byte_pos,
+                                   step.first_byte_pos + step.content_length - 1, date_, sink);
+          break;
+        case AssetStep::HeadKind::kNormal:
+          tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
+          break;
+      }
+      bool started_xfer = false;
+      if (step.sends_content) {
+        if (step.copy_content) {
+          Assets::copy_wire(*ae, step.first_byte_pos, step.content_length, sink);
+        } else {
+          r.st.asset = ae;
+          r.st.asset_off = step.first_byte_pos;
+          r.st.asset_end = step.first_byte_pos + step.content_length;
+          started_xfer = true;
+        }
+      }
+      if (alog_.enabled) {
+        log_access(alog_, r.st.peer, r.st.peer_len, r.method, r.method_len, r.path, r.path_len, r.lflags,
+                   step.status_code, step.sends_content ? step.content_length : 0, r.vals.log_ref,
+                   r.vals.log_ref_len, r.vals.log_ua, r.vals.log_ua_len);
+      }
+      // The head this answered is consumed here, not by the caller -
+      // the caller only learns r.off once the round is taken.
+      r.off += r.head_len;
+      if (r.content_length != 0) {
+        const size_t avail = r.viewlen - r.off;
+        const size_t skip = r.content_length < avail ? r.content_length : avail;
+        r.off += skip;
+        r.st.content_skip = r.content_length - skip;
+      }
+      if (!r.persist) {
+        r.st.carry.clear();
+        r.st.content_skip = 0;
+        return Took::kClose;
+      }
+      if (started_xfer) {
+        const size_t rest = r.viewlen - r.off;
+        if (r.in_place) r.st.carry.assign(r.view + r.off, rest);
+        else r.st.carry.erase(0, r.off);
+        if (plan != nullptr) {
+          const size_t room = plan->byte_cap == 0 ? r.st.asset_end - r.st.asset_off
+                              : plan->byte_cap > sink.size() ? plan->byte_cap - sink.size()
+                                                             : 0;
+          size_t take = r.st.asset_end - r.st.asset_off;
+          if (take > room) take = room;
+          if (take > 0) {
+            claim_sink(r.st, sink, *plan);
+            struct iovec iv[3];
+            const unsigned k = Assets::wire_iov(*r.st.asset, r.st.asset_off, take, iv);
+            for (unsigned i = 0; i < k; i++) {
+              plan->iov[plan->iovlen++] =
+                  Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+            }
+            plan->byte_total += take;
+            r.st.asset_off += take;
+            if (r.st.asset_off == r.st.asset_end) {
+              r.st.asset = nullptr;
+              r.st.asset_off = 0;
+              r.st.asset_end = 0;
+            }
+          }
+        }
+        return Took::kOwed;
+      }
+  return Took::kNextRequest;
+}
+
 // RFC 9110 6.3: the run named a file rather than spelling a body, and
 // opening one is disk work that does not belong in a reactor step. The
 // framing is copied onto the connection, the reactor drives openat2/
@@ -858,103 +966,15 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     // picture has to be able to hand it over. Everything else belongs to
     // whoever passed --assets. The file names its entries cats/<status>
     // .jpg; the URL does not repeat the directory.
-    Assets* tier = assets_;
-    const char* apath = path;
-    size_t alen = path_len;
-    char abuf[kMaxHead];
-    if (error_assets_ != nullptr && path_len > kErrorAssetsPrefixLen &&
-        std::memcmp(path, kErrorAssetsPrefix, kErrorAssetsPrefixLen) == 0) {
-      const size_t rest = path_len - kErrorAssetsPrefixLen;
-      if (rest + 1 < sizeof(abuf)) {
-        abuf[0] = '/';
-        std::memcpy(abuf + 1, path + kErrorAssetsPrefixLen, rest);
-        tier = error_assets_;
-        apath = abuf;
-        alen = rest + 1;
-      }
-    }
-    if (tier != nullptr) {
-      if (AssetEntry* ae = tier->find(apath, alen)) {
-        const uint16_t as = tier->verdict(*ae, facts.method, facts, vals);
-        const AssetStep step = asset_step(*ae, as, head_only, facts.method, vals, warm_budget_);
-        const Assets::ConnectionOption conn =
-            minor >= 1 ? (persist ? Assets::kNoConnectionField : Assets::kConnClose)
-                       : (persist ? Assets::kKeepAlive : Assets::kConnClose);
-        switch (step.head) {
-          case AssetStep::HeadKind::kRefusal: {
-            const Variants& sv = variants(step.status_code);
-            sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
-                                   : (persist ? sv.keep.bytes : sv.close.bytes));
-            break;
-          }
-          case AssetStep::HeadKind::kUnsatisfiable:
-            tier->answer_416_head(*ae, conn, date_, sink);
-            break;
-          case AssetStep::HeadKind::kRange:
-            tier->answer_206_head(*ae, conn, step.first_byte_pos,
-                                     step.first_byte_pos + step.content_length - 1, date_, sink);
-            break;
-          case AssetStep::HeadKind::kNormal:
-            tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
-            break;
-        }
-        bool started_xfer = false;
-        if (step.sends_content) {
-          if (step.copy_content) {
-            Assets::copy_wire(*ae, step.first_byte_pos, step.content_length, sink);
-          } else {
-            st.asset = ae;
-            st.asset_off = step.first_byte_pos;
-            st.asset_end = step.first_byte_pos + step.content_length;
-            started_xfer = true;
-          }
-        }
-        if (alog_.enabled) {
-          log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags,
-                     step.status_code, step.sends_content ? step.content_length : 0, vals.log_ref,
-                     vals.log_ref_len, vals.log_ua, vals.log_ua_len);
-        }
-        off += static_cast<size_t>(ret);
-        if (content_length != 0) {
-          const size_t avail = viewlen - off;
-          const size_t skip = content_length < avail ? content_length : avail;
-          off += skip;
-          st.content_skip = content_length - skip;
-        }
-        if (!persist) {
-          st.carry.clear();
-          st.content_skip = 0;
-          return false;
-        }
-        if (started_xfer) {
-          const size_t rest = viewlen - off;
-          if (in_place) st.carry.assign(view + off, rest);
-          else st.carry.erase(0, off);
-          if (plan != nullptr) {
-            const size_t room = plan->byte_cap == 0 ? st.asset_end - st.asset_off
-                                : plan->byte_cap > sink.size() ? plan->byte_cap - sink.size()
-                                                               : 0;
-            size_t take = st.asset_end - st.asset_off;
-            if (take > room) take = room;
-            if (take > 0) {
-              claim_sink(st, sink, *plan);
-              struct iovec iv[3];
-              const unsigned k = Assets::wire_iov(*st.asset, st.asset_off, take, iv);
-              for (unsigned i = 0; i < k; i++) {
-                plan->iov[plan->iovlen++] =
-                    Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
-              }
-              plan->byte_total += take;
-              st.asset_off += take;
-              if (st.asset_off == st.asset_end) {
-                st.asset = nullptr;
-                st.asset_off = 0;
-                st.asset_end = 0;
-              }
-            }
-          }
-          return true;
-        }
+    {
+      Round r{st,   nullptr, view, viewlen, off, static_cast<size_t>(ret),
+              in_place, method, method_len, path, path_len, minor, persist, head_only,
+              content_length, lflags, facts, vals};
+      const Took took = answer_from_assets(r, sink, plan);
+      if (WM_H1_UNLIKELY(took != Took::kNo)) {
+        off = r.off;
+        if (took == Took::kClose) return false;
+        if (took == Took::kOwed) return true;
         continue;
       }
     }
