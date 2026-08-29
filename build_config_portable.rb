@@ -14,10 +14,5 @@ MRuby::Build.new('portable') do |conf|
     c.flags.delete('-g')
   end
 
-  conf.gembox 'stdlib'
-  conf.gembox 'stdlib-ext'
-  conf.gembox 'stdlib-io'
-  conf.gembox 'math'
-  conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem File.expand_path(File.dirname(__FILE__))
 end

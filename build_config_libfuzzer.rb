@@ -30,10 +30,5 @@ MRuby::Build.new('libfuzzer') do |conf|
   conf.cc.defines  << 'MRB_UTF8_STRING' << 'WM_FUZZ_BUILD'
   conf.cxx.defines << 'MRB_UTF8_STRING' << 'WM_FUZZ_BUILD'
 
-  conf.gembox 'stdlib'
-  conf.gembox 'stdlib-ext'
-  conf.gembox 'stdlib-io'
-  conf.gembox 'math'
-  conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem File.expand_path(File.dirname(__FILE__))
 end

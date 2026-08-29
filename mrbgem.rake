@@ -32,7 +32,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   portable = build.cc.defines.include?('SLIPSTREAM_IO_ONLY')
 
   spec.add_dependency 'mruby-io-uring' unless portable
-  spec.add_dependency 'mruby-slipstreamio'
+  spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'main'
 
   uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-io-uring/build/lib/liburing.a")
   if !portable && spec.cc.search_header('sys/epoll.h') &&
@@ -47,6 +47,35 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
       build in build_config.rb.
     MSG
   end
+
+  # mruby: the VM as a guest - every gem this build carries is named
+  # here, core ones included, and no build config names a gembox.
+  %w[
+    mruby-error
+    mruby-metaprog
+    mruby-object-ext
+    mruby-kernel-ext
+    mruby-class-ext
+    mruby-proc-ext
+    mruby-symbol-ext
+    mruby-string-ext
+    mruby-numeric-ext
+    mruby-array-ext
+    mruby-hash-ext
+    mruby-range-ext
+    mruby-compar-ext
+    mruby-enum-ext
+    mruby-fiber
+    mruby-enumerator
+    mruby-toplevel-ext
+    mruby-sprintf
+    mruby-time
+    mruby-struct
+    mruby-data
+    mruby-io
+    mruby-dir
+    mruby-errno
+  ].each { |g| spec.add_dependency g }
 
   spec.add_dependency 'mruby-phr'
 
@@ -158,6 +187,4 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     MSG
   end
   spec.linker.libraries << 'crypto'
-
-  spec.add_test_dependency 'mruby-string-ext'
 end

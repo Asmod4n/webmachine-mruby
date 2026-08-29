@@ -18,10 +18,5 @@ MRuby::Build.new('debug') do |conf|
   conf.cc.defines  << 'WM_EXAMPLES'
   conf.cxx.defines << 'WM_EXAMPLES'
 
-  conf.gembox 'stdlib'
-  conf.gembox 'stdlib-ext'
-  conf.gembox 'stdlib-io'
-  conf.gembox 'math'
-  conf.gem github: 'Asmod4n/slipstreamIO', branch: 'main'
   conf.gem File.expand_path(File.dirname(__FILE__))
 end
