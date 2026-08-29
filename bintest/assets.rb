@@ -836,7 +836,24 @@ assert('assets: the shipped pack carries the two templates, their slots, and unc
   assert_true e['NOTICE.txt'].include?('Tomomi Imura'), 'the notice lost the creator'
   assert_true e['NOTICE.txt'].include?('CHANGES: NONE'), 'the notice lost the change statement'
 
-  cats = e.keys.select { |k| k.start_with?('cats/') }
+  # Geometry and provenance, so the server needs no JPEG reader. Nine of
+  # the pictures are portrait, and http.cat's own pages declare 750x600
+  # for all of them - which is why this comes from file(1) and not from
+  # the service.
+  index = e['cats/index.txt']
+  assert_true index != nil, 'no cats/index.txt in the pack'
+  seen = {}
+  index.each_line do |l|
+    next if l.start_with?('#')
+    code, w, h, n, etag, = l.chomp.split("\t")
+    assert_true w.to_i.positive? && h.to_i.positive?, "#{code}: #{w}x#{h}"
+    assert_equal e["cats/#{code}.jpg"].bytesize, n.to_i
+    assert_true etag.to_s.start_with?('"'), "#{code}: no upstream etag"
+    seen[code.to_i] = [w.to_i, h.to_i]
+  end
+  assert_true seen.values.any? { |w, h| h > w }, 'the index calls every picture landscape'
+
+  cats = e.keys.select { |k| k.start_with?('cats/') && k.end_with?('.jpg') }
   assert_true cats.size >= 50, "only #{cats.size} cats in the pack"
   cats.each do |k|
     b = e[k]
@@ -846,4 +863,5 @@ assert('assets: the shipped pack carries the two templates, their slots, and unc
   end
   # Nothing below 400 - the pack starts where errors do.
   assert_false cats.any? { |k| k[%r{cats/(\d+)}, 1].to_i < 400 }, 'a cat below 400'
+  assert_equal cats.size, seen.size
 end

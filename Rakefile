@@ -104,6 +104,12 @@ ERROR_PACK = File.expand_path('share/error-pages.zip', __dir__)
 # everything else; a pack that ships a page per status needs the wider
 # table, and in this tree a table names its source - including the entries
 # whose source is "nobody registered this, a vendor shipped it".
+#
+# Checked against http.cat's own alt texts (2026-08-28). They disagree on
+# three, and on two of them they are simply older: "Request-URI Too Long"
+# is RFC 2616's name for 414, which RFC 9110 renamed to "URI Too Long",
+# and "Unprocessable Entity" is RFC 4918's 422, renamed to "Unprocessable
+# Content". Their pictures are the source of the cat, not of the name.
 ERROR_STATUS = {
   400 => ['Bad Request',                     'RFC 9110'],
   401 => ['Unauthorized',                    'RFC 9110'],
@@ -123,7 +129,7 @@ ERROR_STATUS = {
   415 => ['Unsupported Media Type',          'RFC 9110'],
   416 => ['Range Not Satisfiable',           'RFC 9110'],
   417 => ['Expectation Failed',              'RFC 9110'],
-  418 => ['(Unused)',                        'RFC 9110 reserves it; RFC 2324 made the joke'],
+  418 => ["I'm a teapot",                    'RFC 2324; RFC 9110 reserves 418 as unused'],
   419 => ['Page Expired',                    'Laravel, not registered'],
   420 => ['Enhance Your Calm',               'Twitter, not registered'],
   421 => ['Misdirected Request',             'RFC 9110'],
@@ -168,6 +174,9 @@ ERROR_NOTICE = <<~TEXT
 
   errors/error.html      the page TEMPLATE (mustache)
   errors/error.json      the problem-document TEMPLATE (mustache)
+  cats/index.txt         status, width, height, bytes, and what the
+                         upstream service said the picture's validators
+                         were - tab separated, one line per status
   cats/<status>.jpg      the pictures, see below
 
   The server renders these ONCE at startup, one page per status it can
@@ -270,6 +279,52 @@ ERROR_JSON_TEMPLATE = <<~JSON
   {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
 JSON
 
+# The picture's real geometry, from file(1) - in the standard install of
+# every distro this would be rebuilt on, and this task is a developer's
+# tool, never something a server runs.
+#
+# It has to be read from the FILE. http.cat does deliver dimensions, on
+# its /status/<code> pages, and they are wrong for nine of the 55:
+# 414, 422, 495, 498, 509, 521, 523, 525 and 530 are 600x750 and every
+# page claims 750x600. That is a layout constant, not a measurement, and
+# using it would cause exactly the reflow the numbers exist to prevent.
+# The image headers carry no geometry at all (checked 2026-08-28:
+# content-type, content-length, etag, last-modified, and nothing else).
+#
+# file(1)'s output is human-readable and not an API - the wording has
+# moved between versions - so this takes the LAST WxH it finds and
+# refuses loudly rather than shipping a zero.
+def jpeg_size(path)
+  out = `file -b #{path.shellescape}`
+  raise "file(1) said nothing about #{path}" unless $?.success?
+  m = out.scan(/(\d+)x(\d+)/).last
+  raise "file(1) found no geometry in #{path}: #{out.strip}" unless m
+  w = m[0].to_i
+  h = m[1].to_i
+  raise "file(1) gave #{w}x#{h} for #{path}" unless w.positive? && h.positive?
+  [w, h]
+end
+
+# Reading back what a previous run wrote. Everything in this pack is
+# stored, so a local header is the whole format.
+def read_pack(path)
+  raw = File.binread(path)
+  out = {}
+  off = 0
+  while off + 30 <= raw.bytesize && raw[off, 4] == "PK\x03\x04".b
+    csize, _usize, nlen, elen = raw[off + 18, 12].unpack('VVvv')
+    name = raw[off + 30, nlen]
+    out[name] = raw[off + 30 + nlen + elen, csize]
+    off += 30 + nlen + elen + csize
+  end
+  out
+end
+
+# The pack format the asset tier reads: stored or deflate, nothing else
+# (#170/#177). Everything here is STORED - measured on the cats, a deflate
+# entry always leaves as gzip, even to a client that sent no
+# Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
+# One fixed timestamp keeps the zip reproducible.
 def error_zip(entries)
   out = +''.b
   cd = +''.b
@@ -294,21 +349,66 @@ desc 'rebuild share/error-pages.zip: the two error templates and the cats'
 task :error_pages do
   require 'zlib'
   require 'open-uri'
+  require 'shellwords'
+  require 'tmpdir'
+  # What the last build recorded, so a rebuild can ASK instead of fetch:
+  # http.cat serves an etag, and an image that has not changed upstream
+  # answers 304 and costs nothing.
+  have = {}
+  if File.exist?(ERROR_PACK)
+    old_entries = read_pack(ERROR_PACK)
+    (old_entries['cats/index.txt'] || '').each_line do |l|
+      next if l.start_with?('#')
+      code, _w, _h, _n, etag, lastmod = l.chomp.split("\t")
+      next unless code
+      have[code.to_i] = { etag: etag, lastmod: lastmod,
+                          bytes: old_entries["cats/#{code}.jpg"] }
+    end
+  end
+
   cats = {}
+  meta = {}
+  fetched = 0
   ERROR_STATUS.each_key do |code|
-    body = begin
-      URI.parse("https://http.cat/#{code}.jpg").open(
-        'User-Agent' => 'webmachine-mruby error-pages packer', read_timeout: 20
-      ) { |f| f.read }
+    known = have[code]
+    headers = { 'User-Agent' => 'webmachine-mruby error-pages packer', read_timeout: 20 }
+    if known && known[:etag].to_s != '' && known[:bytes]
+      headers['If-None-Match'] = known[:etag]
+    end
+    body = nil
+    etag = nil
+    lastmod = nil
+    begin
+      URI.parse("https://http.cat/#{code}.jpg").open(headers) do |f|
+        body = f.read
+        etag = f.meta['etag'].to_s
+        lastmod = f.meta['last-modified'].to_s
+      end
+      fetched += 1
+    rescue OpenURI::HTTPError => e
+      # 304 means upstream still holds exactly what the last build did.
+      raise unless e.io.status.first.to_s == '304' && known && known[:bytes]
+      body = known[:bytes]
+      etag = known[:etag]
+      lastmod = known[:lastmod]
     rescue StandardError
       next
     end
     next unless body.b.start_with?("\xFF\xD8".b)
+    tmp = File.join(Dir.tmpdir, "wm-cat-#{$$}-#{code}.jpg")
+    File.binwrite(tmp, body.b)
+    dims = begin
+      jpeg_size(tmp)
+    ensure
+      File.unlink(tmp) rescue nil
+    end
     cats[code] = body.b
+    meta[code] = [dims[0], dims[1], cats[code].bytesize, etag, lastmod]
     print "#{code} "
   end
   puts
   raise 'http.cat answered with no images at all' if cats.empty?
+  puts "  #{fetched} fetched, #{cats.size - fetched} unchanged upstream"
 
   # TWO templates, not a page per status. What differs between a 404 and a
   # 503 is three strings and a picture; the server holds the table and
@@ -316,6 +416,11 @@ task :error_pages do
   entries = [['NOTICE.txt', ERROR_NOTICE],
              ['errors/error.html', ERROR_HTML_TEMPLATE],
              ['errors/error.json', ERROR_JSON_TEMPLATE]]
+  # Geometry and provenance, so the server needs no JPEG reader and the
+  # next rebuild can ask upstream instead of downloading.
+  index = +"# status\twidth\theight\tbytes\tupstream etag\tupstream last-modified\n"
+  cats.keys.sort.each { |code| index << ([code] + meta[code]).join("\t") << "\n" }
+  entries << ['cats/index.txt', index]
   cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
   File.binwrite(ERROR_PACK, error_zip(entries))
   puts "share/error-pages.zip: 2 templates, #{cats.size} cats, " \

@@ -35,10 +35,34 @@ templates and the pictures:
 
     errors/error.html   the page template (mustache)
     errors/error.json   the problem-document template (mustache)
+    cats/index.txt      geometry and provenance, one line per status
     cats/<status>.jpg   the pictures, CC BY 2.0, see below
     NOTICE.txt          the terms, inside the archive
 
-`rake error_pages` fetches and rebuilds it. 58 entries, 1.6 MB.
+`rake error_pages` fetches and rebuilds it. 59 entries, 1.6 MB.
+
+### Why the geometry rides along
+
+The server needs a picture's width and height to keep the page from
+reflowing when it arrives, and it must not parse a JPEG to get them. So
+`rake error_pages` reads them once with `file(1)` and writes them into
+`cats/index.txt`, tab separated:
+
+    # status  width  height  bytes  upstream etag     upstream last-modified
+    404       750    600     38532  "697fc6f8-9684"   Sun, 01 Feb 2026 21:34:48 GMT
+
+**They cannot be taken from http.cat.** The service does publish
+dimensions, on its `/status/<code>` pages - and they are wrong for nine
+of the 55. `414`, `422`, `495`, `498`, `509`, `521`, `523`, `525` and
+`530` are 600x750 pictures, and every page declares 750x600. That is a
+layout constant, not a measurement, and trusting it would cause exactly
+the reflow the numbers exist to prevent. The image responses carry no
+geometry at all - `content-type`, `content-length`, `etag`,
+`last-modified`, and nothing else.
+
+The etag and last-modified are the upstream service's, kept so a rebuild
+can ask instead of download: `rake error_pages` sends `If-None-Match`
+and a picture that has not changed answers 304 and costs nothing.
 
 ### It is a source, not a route
 
