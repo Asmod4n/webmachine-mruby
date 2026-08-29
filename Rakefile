@@ -18,6 +18,35 @@ task test: MRUBY_DIR do
   Rake::Task[:portable_smoke].invoke
 end
 
+SMOKE_APP = <<~RUBY
+  class Smoke < Webmachine::Resource
+    def self.to_html
+      'OK'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], Smoke }
+    end
+  end
+RUBY
+
+# The server refuses to start with nothing to serve, so a smoke brings its
+# own resource - one route, one baked body.
+def wm_smoke_app
+  return @wm_smoke_app if @wm_smoke_app
+  mrbc = [File.expand_path('mruby/build/host/mrbc/bin/mrbc', __dir__),
+          File.expand_path('mruby/bin/mrbc', __dir__)].find { |c| File.executable?(c) }
+  raise 'no mrbc to compile the smoke app - run rake compile first' unless mrbc
+  rb = "/tmp/wm-smoke-app-#{$$}.rb"
+  mrb = "/tmp/wm-smoke-app-#{$$}.mrb"
+  File.write(rb, SMOKE_APP)
+  sh "#{mrbc} -o #{mrb} #{rb}"
+  File.unlink(rb) rescue nil
+  @wm_smoke_app = mrb
+end
+
 def wm_smoke(build_name, label)
   require 'socket'
   bin = File.expand_path("mruby/build/#{build_name}/bin/webmachine-server", __dir__)
@@ -26,7 +55,7 @@ def wm_smoke(build_name, label)
   sock = "/tmp/wm-#{build_name}-smoke-#{$$}.sock"
   log = "/tmp/wm-#{build_name}-smoke-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(bin, '--unix', sock, out: File::NULL, err: log)
+  pid = spawn(bin, '--unix', sock, '--app', wm_smoke_app, out: File::NULL, err: log)
   begin
     200.times do
       break if File.socket?(sock)

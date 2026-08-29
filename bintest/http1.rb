@@ -3,11 +3,41 @@ require 'socket'
 
 H1_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(H1_BIN)
 
+# The floor these tests speak to: one splat route, one baked body, nothing
+# else. It used to be the server's own built-in default - a Resource nobody
+# folded, which is why it had no media type and answered out of nowhere.
+# That is gone; a server with nothing to serve refuses to start.
+H1_APP = <<~RUBY unless defined?(H1_APP)
+  class Floor < Webmachine::Resource
+    def self.to_html
+      'OK'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], Floor }
+    end
+  end
+RUBY
+
+def h1_app_mrb
+  return $h1_app_mrb if $h1_app_mrb
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  rb = "/tmp/wm-h1-app-#{$$}.rb"
+  mrb = "/tmp/wm-h1-app-#{$$}.mrb"
+  File.write(rb, H1_APP)
+  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the h1 floor app'
+  File.unlink(rb) rescue nil
+  $h1_app_mrb = mrb
+end
+
 def h1_server
   sock = "/tmp/wm-h1-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h1-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H1_BIN, '--unix', sock, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, H1_BIN, '--unix', sock, '--app', h1_app_mrb,
+              out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   unless File.socket?(sock)
     Process.kill('TERM', pid) rescue nil

@@ -93,6 +93,8 @@ int main(int argc, char** argv) {
                    "  used when present (and announced).\n"
                    "  --unix/--port OVERRIDE the listener the app's conf named; without an\n"
                    "  app (or without a conf listener) one of them is required.\n"
+                   "  --app or --assets is REQUIRED: a server with nothing to serve refuses\n"
+                   "  to start. A pack alone answers what it holds and 404s the rest.\n"
                    "  --docroot is the ONE directory `response.file = \"rel/path\"` may\n"
                    "  reach. It is resolved to a canonical absolute path and opened once\n"
                    "  at startup, and every per-request open is an openat2(2) against\n"
@@ -221,8 +223,16 @@ int main(int argc, char** argv) {
       mrb_close(mrb);
       return 1;
     }
+  } else if (opts.assets_path != nullptr) {
+    // A pack alone is something to serve. Everything it does not name is
+    // a 404, because no resource stands behind it.
+    webmachine::app_assets_only();
   } else {
-    webmachine::app_default();
+    std::fprintf(stderr,
+                 "webmachine: nothing to serve - name an application with --app FILE.mrb "
+                 "(or app = in the config), or a pack with --assets FILE.zip\n");
+    mrb_close(mrb);
+    return 1;
   }
 
   int rc = 0;

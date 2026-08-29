@@ -3490,7 +3490,7 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen);
 bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
                         size_t errlen);
 
-AppSpec* app_default();
+AppSpec* app_assets_only();
 
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port);
 

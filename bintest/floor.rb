@@ -9,10 +9,38 @@ def wm_recv(s, maxlen = 1, deadline = 10)
   s.readpartial(maxlen)
 end
 
+# The server refuses to start with nothing to serve. The floor tests are
+# about the reactor and the listener, so they carry the smallest resource
+# there is: one splat route, one baked body.
+FLOOR_APP = <<~RUBY unless defined?(FLOOR_APP)
+  class Floor < Webmachine::Resource
+    def self.to_html
+      'OK'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], Floor }
+    end
+  end
+RUBY
+
+def floor_app
+  return $floor_app if $floor_app
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  rb = "/tmp/wm-floor-app-#{$$}.rb"
+  mrb = "/tmp/wm-floor-app-#{$$}.mrb"
+  File.write(rb, FLOOR_APP)
+  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the floor app'
+  File.unlink(rb) rescue nil
+  $floor_app = mrb
+end
+
 def floor_server(bundles: false)
   sock = "/tmp/wm-floor-#{$$}-#{bundles ? 'b' : 'r'}.sock"
   File.unlink(sock) if File.exist?(sock)
-  args = [SERVER_BIN, '--unix', sock]
+  args = [SERVER_BIN, '--unix', sock, '--app', floor_app]
   err = "/tmp/wm-floor-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => bundles ? '1' : '0' }, *args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
@@ -50,7 +78,7 @@ assert('floor: the ring-built TCP listener answers like the unix one') do
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--port', port.to_s,
-              out: File::NULL, err: err)
+              '--app', floor_app, out: File::NULL, err: err)
   begin
     s = nil
     100.times do
@@ -77,7 +105,7 @@ assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
   pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--unix', sock,
-              out: File::NULL, err: File::NULL)
+              '--app', floor_app, out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   assert_true File.socket?(sock)
   Process.kill('TERM', pid)

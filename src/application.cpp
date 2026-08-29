@@ -475,14 +475,17 @@ bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* 
   return true;
 }
 
-// No --app: one splat route on webmachine-ruby's unbound resource.
-AppSpec* app_default() {
+// A pack and no app: the asset tier answers before routing, so this app
+// exists only to BE a listener's app - no routes, no resources, and every
+// path the pack does not name is a 404. There is deliberately no resource
+// here: an unfolded one answers out of nowhere, with no media type and no
+// callback behind any of it (#201).
+AppSpec* app_assets_only() {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
-  s->table.open();
-  s->table.splat();
-  s->table.commit();
-  s->resources.push_back(std::unique_ptr<Resource>(new Resource()));
+  // No open()/commit() here: that pair IS a route - the one with an empty
+  // token list, which is the root path. An empty table matches nothing, and
+  // that is the point.
   s->registered = true;
   registered_.push_back(s);
   return s;

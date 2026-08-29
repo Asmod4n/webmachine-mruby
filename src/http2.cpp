@@ -664,8 +664,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       // the bytes died with the frame. No Accept bytes, nothing to weigh,
       // and c3 already sent this request the way it went before.
       flow::ReqFacts cf = facts;
-      if (WM_UNLIKELY(facts.has_accept && vals != nullptr && vals->accept != nullptr &&
-                      !b->accept_type.empty())) {
+      if (WM_UNLIKELY(facts.has_accept && vals != nullptr && vals->accept != nullptr)) {
         cf.accept_ok =
             http::choose_media_type(&b->accept_type, 1, vals->accept, vals->accept_len) >= 0;
       }

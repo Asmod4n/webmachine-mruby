@@ -1018,3 +1018,20 @@ assert('application: a refusal is catchable BY CLASS, not by luck') do
     assert_true text.include?('route=Webmachine::RouteError'), text
   end
 end
+
+assert('application: a server with nothing to serve refuses to start') do
+  # There is no built-in resource any more. What answered before was a
+  # Resource that never went through the fold - no media type, no callback
+  # behind any answer - and it is exactly the shape #201 was about.
+  err = "/tmp/wm-ap-nothing-#{$$}.log"
+  sock = "/tmp/wm-ap-nothing-#{$$}.sock"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--unix', sock, out: File::NULL, err: err)
+  Process.wait(pid)
+  assert_false $?.exitstatus == 0, 'server came up with nothing to serve'
+  text = File.read(err) rescue ''
+  assert_true text.include?('nothing to serve'), text
+  assert_false File.exist?(sock), 'a refused server left a listening socket behind'
+ensure
+  File.unlink(err) rescue nil
+  File.unlink(sock) rescue nil
+end

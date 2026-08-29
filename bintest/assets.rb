@@ -178,7 +178,7 @@ assert('assets: the CRC ETag drives 304 and 412') do
   end
 end
 
-assert('assets: only GET/HEAD; misses fall through to the app tier') do
+assert('assets: only GET/HEAD; a miss falls through, and with no app that is a 404') do
   a_server(a_the_zip) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST /site.css HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -189,9 +189,12 @@ assert('assets: only GET/HEAD; misses fall through to the app tier') do
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
+      # The pack does not hold it and no app was named, so nothing stands
+      # behind this path. It used to be a 200 from the built-in default
+      # resource, which is gone.
       s.write("GET /missing.css HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = a_read(s)
-      assert_true head.start_with?('HTTP/1.1 200')
+      assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
       assert_false head.match?(/^Content-Encoding/i)
     end
   end
@@ -610,7 +613,10 @@ assert('access log: --log writes combined lines through the record daemon') do
   assert_true lines[0].include?('"GET /img.bin HTTP/1.1" 200 768'), lines[0]
   assert_true lines[0].include?('probe/1'), lines[0]
   assert_true lines[0].include?('http://r.example/\\"q'), lines[0]
-  assert_true lines[1].include?(' 200 '), lines[1]
+  # /miss is in no pack and behind no route. It used to be a 200: the server
+  # without --app invented a splat route on a Resource nobody folded. That
+  # resource is gone, and a path nothing serves is a 404.
+  assert_true lines[1].include?(' 404 '), lines[1]
 ensure
   File.unlink(logf) rescue nil
   File.unlink(sock) rescue nil
@@ -753,4 +759,25 @@ ensure
   File.unlink(logf) rescue nil
   File.unlink(errf) rescue nil
   zf&.unlink
+end
+
+assert('assets: a pack alone serves, and everything it does not name is 404') do
+  # Stored, not deflated: this test is about what a pack alone serves, and a
+  # deflate-only entry has no identity to offer - that is the tier's own 406
+  # and it has its own test.
+  a_server(a_build_zip([['only.txt', 'in the pack', 0]])) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /only.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = a_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'in the pack', body
+      # No app means no routes at all - not a splat route onto a resource the
+      # fold never saw. The server stays up and says 404.
+      ['/miss', '/'].each do |path|
+        s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
+        h, = a_read(s)
+        assert_true h.start_with?('HTTP/1.1 404'), "#{path}: #{h.lines.first}"
+      end
+    end
+  end
 end

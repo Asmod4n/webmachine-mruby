@@ -38,13 +38,25 @@ def h2_app(name, src)
   RUBY
 end
 
-def h2_server(app_source = nil)
-  args = []
-  app = nil
-  if app_source
-    app = wm_compile(app_source)
-    args = ['--app', app.path]
+# Every server needs something to serve, so an h2 test that does not name a
+# resource gets the smallest one: a splat route with a baked body.
+H2_FLOOR_APP = <<~RUBY unless defined?(H2_FLOOR_APP)
+  class H2Floor < Webmachine::Resource
+    def self.to_html
+      'OK'
+    end
   end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], H2Floor }
+    end
+  end
+RUBY
+
+def h2_server(app_source = nil)
+  app = wm_compile(app_source || H2_FLOOR_APP)
+  args = ['--app', app.path]
   sock = "/tmp/wm-h2-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2-stderr-#{$$}.log"

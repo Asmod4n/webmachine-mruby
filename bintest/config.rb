@@ -11,7 +11,36 @@ def cfg_write(toml)
   f
 end
 
+# The server refuses to start with nothing to serve, and these tests are
+# about the LISTENER, not about what answers on it - so they all carry the
+# same one-route app.
+CFG_APP = <<~RUBY unless defined?(CFG_APP)
+  class CfgFloor < Webmachine::Resource
+    def self.to_html
+      'OK'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], CfgFloor }
+    end
+  end
+RUBY
+
+def cfg_app
+  return $cfg_app if $cfg_app
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  rb = "/tmp/wm-cfg-app-#{$$}.rb"
+  mrb = "/tmp/wm-cfg-app-#{$$}.mrb"
+  File.write(rb, CFG_APP)
+  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the config floor app'
+  File.unlink(rb) rescue nil
+  $cfg_app = mrb
+end
+
 def cfg_spawn(args, err)
+  args = ['--app', cfg_app] + args unless args.include?('--app')
   spawn({ 'WM_BUNDLE' => '0' }, CFG_BIN, *args, out: File::NULL, err: err)
 end
 

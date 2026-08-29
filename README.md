@@ -59,6 +59,10 @@ Precedence is CLI > `webmachine.toml` > the app's `conf`. Static files
 are served from a ZIP (`--assets`), gzip synthesized from the archive's
 own deflate stream.
 
+**One of `--app` and `--assets` is required** - a server with nothing to
+serve says so and exits. A pack on its own is a valid server: it answers
+what it holds and 404s everything else.
+
 Both logs are opt-in and separate — separate files, separate writers,
 no field in common. `--log` is the access log and anonymizes addresses
 by default; `--error-log` is what a callback *raised*: class, message

@@ -986,11 +986,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         // RFC 9110 12.5.1: c4 belongs to the client. The fold left this
         // resource with exactly one media type (two would have bound it), so
         // the question is one match, asked here in C++ and never in the VM.
-        // A route that names no media type has nothing to negotiate - the
-        // built-in default answers every Accept, as it did before c4 was
-        // asked at all.
-        if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr &&
-                           !b->accept_type.empty())) {
+        if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr)) {
           facts.accept_ok =
               http::choose_media_type(&b->accept_type, 1, vals.accept, vals.accept_len) >= 0;
         }

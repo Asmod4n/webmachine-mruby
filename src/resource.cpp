@@ -1596,6 +1596,14 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
         return false;
       }
       content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
+      // RFC 9110 8.3 / 12.5.1: a resource that names no media type cannot
+      // be negotiated with, and c4 would have nothing to weigh an Accept
+      // against. Said here, once, instead of guarded on every request.
+      if (WM_RES_UNLIKELY(content_type.empty())) {
+        std::snprintf(err, errlen, "content_type must name a media type, not an empty String");
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
+      }
     }
   }
 
