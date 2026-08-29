@@ -34,6 +34,11 @@ struct WatcherData {
   // descriptors there as well. Nothing here has to change when IOCP
   // arrives underneath.
   int fd = -1;
+  // #30: WHICH watcher, on the connection running it. The one name a
+  // watcher has: it is the key it is filed under and the field the
+  // completion carries back, so nothing has to be translated between
+  // the ring and the hash.
+  int slot = -1;
   // POLLIN, POLLOUT, or both. Stored as poll's own bits rather than the
   // symbol, because that is what the ring is handed and what comes back.
   unsigned events = POLLIN;
@@ -198,6 +203,15 @@ bool watcher_aborted_p(mrb_value v) {
 int watcher_fd(mrb_value v) {
   const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
   return d != nullptr ? d->fd : -1;
+}
+
+int watcher_slot(mrb_value v) {
+  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->slot : -1;
+}
+
+void watcher_set_slot(mrb_value v, int slot) {
+  static_cast<WatcherData*>(DATA_PTR(v))->slot = slot;
 }
 
 // Armed: remember the ring, so the destructor can cancel on its own if

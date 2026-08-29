@@ -1989,6 +1989,8 @@ bool watcher_p(mrb_state* mrb, mrb_value v);
 unsigned watcher_events_mask(mrb_value v);
 bool watcher_aborted_p(mrb_value v);
 int watcher_fd(mrb_value v);
+int watcher_slot(mrb_value v);
+void watcher_set_slot(mrb_value v, int slot);
 void watcher_armed(mrb_value v, struct io_uring* ring);
 void watcher_disarm(mrb_value v);
 mrb_value watcher_source_of(mrb_state* mrb, mrb_value v);
@@ -3907,13 +3909,26 @@ enum : uint8_t {
   kAccept = 1, kRecv = 2, kSend = 3, kClose = 4, kSetup = 5, kStop = 6, kShutdown = 7,
   kMeminfo = 8, kLog = 9, kPeer = 10,
   // response.file: one kind per stage, so the tag needs no second field.
-  kFileOpen = 11, kFileStat = 12, kFileRead = 13, kFileClose = 14
+  kFileOpen = 11, kFileStat = 12, kFileRead = 13, kFileClose = 14,
+  // #30: a watcher firing. This one DOES need a second field - a
+  // connection may run several - and bits 48..55 of the tag were never
+  // spoken for, so the slot goes there and the layout is unchanged.
+  kWatch = 15
 };
+
 
 // user_data: kind(8) | gen(16) | idx(32); gen guards a reused slot.
 inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
   return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
 }
+// #30: which watcher, on top of which connection. 8 bits is 256 watchers
+// on one connection, which is far past anything a connection has reason
+// to hold.
+inline constexpr unsigned kMaxWatchers = 256;
+inline uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
+  return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
+}
+inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); }
 
 enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
 
