@@ -35,12 +35,44 @@ Suite: **2921 OK, 0 KO**; the 3 crashes are mruby-regexp on this mruby
 HEAD (`instance_variable_set` missing without mruby-metaprog) and are
 unrelated. Bintest: **219/219**.
 
+## Late additions, and one thing left unproven
+
+- An error answer can be a PICTURE. A browser fetching an <img> sends
+  image/* and none of the text forms, so it used to get a page it cannot
+  render; it now gets the status's cat, whole, as image/jpeg. The form is
+  declared in content_types_provided like the others but has NO method:
+  the picture is not rendered, it IS the asset, lent out of the mapping.
+  Offered only while there is a cat for that status.
+- Accept that names types and none of ours (and only reaches us through
+  */*) gets text/plain, not the 1.6 KB page. A subtype range counts as
+  naming us - image/*;q=0.8 IS a preference for our jpeg, which is how
+  the picture above gets chosen at all.
+- content-type is inserted into the peer's HPACK table once per
+  connection and referenced after (80de29d): 110 -> 84 bytes per h2
+  answer on the real machine, sys 15% -> 11%, 9.59M -> 10.24M rps per
+  server core.
+- **Unproven, and it matters**: that insert made the head cache hold an
+  INDEX, and every later insert shifts it. The dynamic path does insert
+  (a /bound answer's HEADERS shrinks 62 -> 30 bytes, which is its date
+  being inserted then referenced), so a cached index CAN go stale.
+  h2.enc_ins counts inserts and invalidates the cache, and that is the
+  fix - but bintest/h2.rb's "an insert between two cache hits" case
+  passes with AND without it, because it only compares server-side bytes
+  and has no decoder. A test that discriminates needs to decode the
+  third answer's block. Until then the fix is reasoned, not demonstrated.
+- Route tokens are one path segment: ['/'] is now a named setup refusal
+  ("the root is the empty list"), where it used to be silently accepted
+  and 404 everything.
+- --help is a flag list with the effect per flag; the essays are gone.
+- Vocabulary: there are no "packs", only assets. share/error-assets.zip,
+  src/error_assets.cpp, WM_ERROR_ASSETS, open_error_assets.
+
 ## What is NOT done
 
 1. **`conf.disable_http_cats`.** The user's call: the route serving the
    cats should be there **by default** — no `--assets` needed — and this
    switch turns it off. Today the cats only appear when the operator
-   passes `--assets share/error-pages.zip`. Needs deciding: how the
+   passes `--assets share/error-assets.zip`. Needs deciding: how the
    default pack is found at runtime (path next to the binary? env?), and
    whether it is a second `Assets` mount or a merged lookup.
 2. **Asset-tier refusals** (405/406/416 out of `Assets::answer_head`)

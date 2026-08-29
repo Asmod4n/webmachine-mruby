@@ -339,7 +339,7 @@ void Http1::assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefi
 // #210: the error pages render in a VM this layer does not own. Called
 // once, after the bundles exist; a caller that never calls it keeps the
 // bodyless statuses (#173: bytes in, bytes out, no VM required).
-bool Http1::open_error_pages(mrb_state* mrb, char* err, size_t errlen) {
+bool Http1::open_error_assets(mrb_state* mrb, char* err, size_t errlen) {
   return err_pages_.open(mrb, assets_, err, errlen);
 }
 
@@ -350,15 +350,19 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
                         bool head_only, int media, const ErrorPages::Fields& f,
                         std::string& sink) {
   std::string body;
-  if (!err_pages_.render(status, media, f, body)) {
+  size_t plen = 0;
+  const char* pbody = err_pages_.pack_body(status, media, &plen);
+  if (pbody == nullptr && !err_pages_.render(status, media, f, body)) {
     sink.append(bodyless.bytes);
     return;
   }
+  const char* data = pbody != nullptr ? pbody : body.data();
+  const size_t dlen = pbody != nullptr ? plen : body.size();
   sink.append(prefix.bytes);
   sink.append("Content-Type: ").append(err_pages_.media_type(media)).append("\r\n");
   char cl[40];
-  sink.append(cl, http::spell_content_length(cl, body.size()));
-  if (!head_only) sink.append(body);
+  sink.append(cl, http::spell_content_length(cl, dlen));
+  if (!head_only) sink.append(data, dlen);
 }
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
@@ -370,7 +374,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   // target to name: the page for the status, and that is all it can say.
   const ErrorPages::Fields f;
   spell_error(prefixes(status).close, variants(status).close, status, false,
-              err_pages_.media_for(nullptr, 0), f, sink);
+              err_pages_.media_for(status, nullptr, 0), f, sink);
   st.carry.clear();
   st.content_skip = 0;
   st.content_need = 0;
@@ -1101,7 +1105,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                                : (persist ? pv.keep : pv.close),
                     minor >= 1 ? (persist ? bv.plain : bv.close)
                                : (persist ? bv.keep : bv.close),
-                    500, head_only, err_pages_.media_for(vals.accept, vals.accept_len), f,
+                    500, head_only, err_pages_.media_for(500, vals.accept, vals.accept_len), f,
                     sink);
         break;
       }
@@ -1126,7 +1130,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                  : (persist ? pv.keep : pv.close),
                       bodyless, status, head_only,
-                      err_pages_.media_for(vals.accept, vals.accept_len), f, sink);
+                      err_pages_.media_for(status, vals.accept, vals.accept_len), f, sink);
         } else {
           sink.append(bodyless.bytes);
         }

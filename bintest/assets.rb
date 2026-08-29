@@ -189,7 +189,7 @@ assert('assets: only GET/HEAD; a miss falls through, and with no app that is a 4
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_true head.match?(/^Content-Encoding: gzip\r$/i)
-      # The pack does not hold it and no app was named, so nothing stands
+      # The error assets does not hold it and no app was named, so nothing stands
       # behind this path. It used to be a 200 from the built-in default
       # resource, which is gone.
       s.write("GET /missing.css HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -545,7 +545,7 @@ def a_refusal(zip_bytes)
   pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
               out: File::NULL, err: err)
   Process.wait(pid)
-  raise 'the server came up on a pack it should have refused' if File.socket?(sock)
+  raise 'the server came up on an asset file it should have refused' if File.socket?(sock)
   File.read(err)
 ensure
   File.unlink(sock) rescue nil
@@ -761,16 +761,16 @@ ensure
   zf&.unlink
 end
 
-assert('assets: a pack alone serves, and everything it does not name is 404') do
-  # Stored, not deflated: this test is about what a pack alone serves, and a
+assert('assets: an asset file alone serves, and everything it does not name is 404') do
+  # Stored, not deflated: this test is about what an asset file alone serves, and a
   # deflate-only entry has no identity to offer - that is the tier's own 406
   # and it has its own test.
-  a_server(a_build_zip([['only.txt', 'in the pack', 0]])) do |sock|
+  a_server(a_build_zip([['only.txt', 'in the error assets', 0]])) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /only.txt HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
-      assert_equal 'in the pack', body
+      assert_equal 'in the error assets', body
       # No app means no routes at all - not a splat route onto a resource the
       # fold never saw. The server stays up and says 404.
       ['/miss', '/'].each do |path|
@@ -782,7 +782,7 @@ assert('assets: a pack alone serves, and everything it does not name is 404') do
   end
 end
 
-# The pack is a SOURCE, not something to serve: the server renders its two
+# The error assets is a SOURCE, not something to serve: the server renders its two
 # templates once at startup and emits the result as the body of whatever
 # failed. So this reads the archive rather than asking a server for it -
 # every entry is stored, which makes a local header all it takes.
@@ -803,12 +803,12 @@ def a_pack_entries(path)
 end
 
 assert('assets: the shipped pack carries the two templates, their slots, and unchanged cats') do
-  pack = File.expand_path('../share/error-pages.zip', __dir__)
-  skip "no #{pack} - run rake error_pages" unless File.exist?(pack)
+  pack = File.expand_path('../share/error-assets.zip', __dir__)
+  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
   e = a_pack_entries(pack)
 
   html = e['errors/error.html']
-  assert_true html != nil, 'no errors/error.html in the pack'
+  assert_true html != nil, 'no errors/error.html in the error assets'
   # The slots the NOTICE promises an operator who replaces this file.
   ['{{status}}', '{{title}}', '{{source}}', '{{#cat}}', '{{cat_url}}',
    '{{cat_width}}', '{{cat_height}}', '{{#message}}'].each do |slot|
@@ -823,7 +823,7 @@ assert('assets: the shipped pack carries the two templates, their slots, and unc
   assert_false html.match?(/<link|<script/i), 'the html template fetches something'
 
   json = e['errors/error.json']
-  assert_true json != nil, 'no errors/error.json in the pack'
+  assert_true json != nil, 'no errors/error.json in the error assets'
   # RFC 9457: type, title, status, and detail where there is something to
   # detail. Raw inside JSON, because HTML escaping there would be wrong.
   assert_true json.include?('"type":"about:blank"'), json
@@ -841,7 +841,7 @@ assert('assets: the shipped pack carries the two templates, their slots, and unc
   # for all of them - which is why this comes from file(1) and not from
   # the service.
   index = e['cats/index.txt']
-  assert_true index != nil, 'no cats/index.txt in the pack'
+  assert_true index != nil, 'no cats/index.txt in the error assets'
   seen = {}
   index.each_line do |l|
     next if l.start_with?('#')
@@ -854,14 +854,14 @@ assert('assets: the shipped pack carries the two templates, their slots, and unc
   assert_true seen.values.any? { |w, h| h > w }, 'the index calls every picture landscape'
 
   cats = e.keys.select { |k| k.start_with?('cats/') && k.end_with?('.jpg') }
-  assert_true cats.size >= 50, "only #{cats.size} cats in the pack"
+  assert_true cats.size >= 50, "only #{cats.size} cats in the error assets"
   cats.each do |k|
     b = e[k]
     # "Unchanged" is a claim about bytes: still a whole JPEG, SOI to EOI.
     assert_equal "\xFF\xD8".b, b[0, 2].b
     assert_equal "\xFF\xD9".b, b[-2, 2].b
   end
-  # Nothing below 400 - the pack starts where errors do.
+  # Nothing below 400 - the error assets starts where errors do.
   assert_false cats.any? { |k| k[%r{cats/(\d+)}, 1].to_i < 400 }, 'a cat below 400'
   assert_equal cats.size, seen.size
 end

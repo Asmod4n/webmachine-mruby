@@ -97,11 +97,11 @@ task :portable_smoke do
   wm_smoke('portable', 'portable')
 end
 
-ERROR_PACK = File.expand_path('share/error-pages.zip', __dir__)
+ERROR_ASSETS = File.expand_path('share/error-assets.zip', __dir__)
 
 # The status name, and WHERE THE NAME COMES FROM. The tree's own
 # flow::reason() covers what the flow can reach and answers "Response" for
-# everything else; a pack that ships a page per status needs the wider
+# everything else; an asset file that ships a page per status needs the wider
 # table, and in this tree a table names its source - including the entries
 # whose source is "nobody registered this, a vendor shipped it".
 #
@@ -180,13 +180,13 @@ ERROR_NOTICE = <<~TEXT
   This pack holds PICTURES. The pages themselves live in the server, as
   Webmachine::ErrorResource - a server with no pack still has to be able
   to say what went wrong, so the templates cannot live out here. What
-  this pack decides is whether a page has a picture: a status with no
+  these error assets decides is whether a page has a picture: a status with no
   cats/<status>.jpg renders without one.
 
   The page is rendered when the error happens, by the route that produced
   it - nothing in here is reached by a second trip through the router.
   The picture is: the page names it by URL, the way any page names an
-  image, and the asset tier serves it from this pack.
+  image, and the asset tier serves it from these error assets.
 
   To change a page, reopen the class rather than editing an archive:
 
@@ -220,7 +220,7 @@ ERROR_NOTICE = <<~TEXT
   CC BY 2.0 covers the images only. The templates are ours and carry this
   server's Apache-2.0.
 
-  This notice travels inside the pack on purpose. A zip is what gets
+  This notice travels inside the error assets on purpose. A zip is what gets
   copied around, so the terms have to be in it, not only in the
   repository it was built from.
 TEXT
@@ -253,7 +253,7 @@ def jpeg_size(path)
   [w, h]
 end
 
-# Reading back what a previous run wrote. Everything in this pack is
+# Reading back what a previous run wrote. Everything in these error assets is
 # stored, so a local header is the whole format.
 def read_pack(path)
   raw = File.binread(path)
@@ -268,7 +268,7 @@ def read_pack(path)
   out
 end
 
-# The pack format the asset tier reads: stored or deflate, nothing else
+# The error assets format the asset tier reads: stored or deflate, nothing else
 # (#170/#177). Everything here is STORED - measured on the cats, a deflate
 # entry always leaves as gzip, even to a client that sent no
 # Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
@@ -293,8 +293,8 @@ def error_zip(entries)
   out
 end
 
-desc 'rebuild share/error-pages.zip: the two error templates and the cats'
-task :error_pages do
+desc 'rebuild share/error-assets.zip: the two error templates and the cats'
+task :error_assets do
   require 'zlib'
   require 'open-uri'
   require 'shellwords'
@@ -303,8 +303,8 @@ task :error_pages do
   # http.cat serves an etag, and an image that has not changed upstream
   # answers 304 and costs nothing.
   have = {}
-  if File.exist?(ERROR_PACK)
-    old_entries = read_pack(ERROR_PACK)
+  if File.exist?(ERROR_ASSETS)
+    old_entries = read_pack(ERROR_ASSETS)
     (old_entries['cats/index.txt'] || '').each_line do |l|
       next if l.start_with?('#')
       code, _w, _h, _n, etag, lastmod = l.chomp.split("\t")
@@ -319,7 +319,7 @@ task :error_pages do
   fetched = 0
   ERROR_STATUS.each_key do |code|
     known = have[code]
-    headers = { 'User-Agent' => 'webmachine-mruby error-pages packer', read_timeout: 20 }
+    headers = { 'User-Agent' => 'webmachine-mruby error-assets packer', read_timeout: 20 }
     if known && known[:etag].to_s != '' && known[:bytes]
       headers['If-None-Match'] = known[:etag]
     end
@@ -369,9 +369,9 @@ task :error_pages do
   cats.keys.sort.each { |code| index << ([code] + meta[code]).join("\t") << "\n" }
   entries << ['cats/index.txt', index]
   cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
-  File.binwrite(ERROR_PACK, error_zip(entries))
-  puts "share/error-pages.zip: #{cats.size} cats, " \
-       "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
+  File.binwrite(ERROR_ASSETS, error_zip(entries))
+  puts "share/error-assets.zip: #{cats.size} cats, " \
+       "#{entries.size} entries, #{File.size(ERROR_ASSETS)} bytes"
 end
 
 desc 'remove build output (keeps the mruby checkout)'

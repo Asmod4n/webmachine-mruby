@@ -2137,6 +2137,11 @@ class Assets {
 // spells the name the status LINE carries; these two answer the page's
 // question, which is not the same set - 15 of the 54 statuses with a
 // page are vendor inventions, and the page says so.
+// XDG Base Directory Specification over FHS: where the shipped error
+// pack is looked for when nobody named one. Empty when there is none -
+// a missing picture is no reason not to start.
+std::string error_assets_path(const char* configured);
+
 const char* status_title(uint16_t status);
 const char* status_source(uint16_t status);
 
@@ -2164,8 +2169,14 @@ class ErrorPages {
 
   // RFC 9110 12.5.1: which form this client can read, as an index into
   // what the error resource offers. -1 when it offers nothing.
-  int media_for(const char* accept, size_t len) const;
+  int media_for(uint16_t status, const char* accept, size_t len) const;
+  // The picture IS the answer for an image form: not rendered, lent out
+  // of the error assets's mapping. nullptr when this slot is not one, or when
+  // this status has no cat.
+  const char* pack_body(uint16_t status, int slot, size_t* len) const;
   const char* media_type(int slot) const;
+  bool named_ours(const char* accept, size_t len) const;
+  static bool names_anything(const char* accept, size_t len);
 
   // fsm.rb handle_exception, on the error resource and nowhere else.
   bool exception_text(mrb_value exc, std::string& out);
@@ -2195,11 +2206,15 @@ class ErrorPages {
   struct Handler {
     mrb_sym sym = 0;
     std::string type;
+    // An image form is answered from the error assets, so no method is called
+    // and none has to exist.
+    bool from_pack = false;
   };
   struct Cat {
     std::string url;
     unsigned width = 0;
     unsigned height = 0;
+    const AssetEntry* entry = nullptr;
   };
   void read_cats(Assets& assets);
 
@@ -2211,8 +2226,11 @@ class ErrorPages {
   std::vector<std::string> types_;
   // The way out when Accept matches nothing offered: text/plain, by name.
   int plain_ = 0;
+  // And what a client with no Accept at all gets: the first form that is
+  // not a picture.
+  int html_ = 0;
   // The same shape the status store uses: a slot per status into a dense
-  // list, 0 for the statuses this pack has no picture for.
+  // list, 0 for the statuses these error assets has no picture for.
   std::vector<Cat> cats_;
   std::array<int16_t, 600> cat_index_ {};
   bool ready_ = false;
@@ -2349,9 +2367,19 @@ struct H2State {
 
   std::vector<H2Stream> streams;
 
+  // RFC 7541 2.3.3 / 4.1: every insert into the dynamic table shifts the
+  // index of everything older by one. A cached head that REFERENCES an
+  // entry is therefore only valid while nothing has been inserted since
+  // it was built - and the dynamic path inserts freely (its date, and
+  // every field line an app sets). Counted here, compared below: over-
+  // counting only costs a rebuild, under-counting would replay an index
+  // that has moved.
+  uint64_t enc_ins = 0;
+
   struct {
     std::string bytes;
     size_t head_len = 0;
+    uint64_t enc_ins = 0;
     // RFC 7541 6.2.1: the SAME head, spelled with the insert instead of
     // the reference. A dynamic-table entry has to reach the peer once
     // before anything may point at it, and `bytes` is replayed verbatim
@@ -3133,7 +3161,7 @@ class Http1 {
   // rather than owning it - the h1 model (#173) is bytes in, bytes out,
   // and a caller that never calls this gets the bodyless statuses it
   // always got.
-  bool open_error_pages(mrb_state* mrb, char* err, size_t errlen);
+  bool open_error_assets(mrb_state* mrb, char* err, size_t errlen);
 
   void on_tick();
 

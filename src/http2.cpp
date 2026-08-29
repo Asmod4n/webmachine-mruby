@@ -688,17 +688,21 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   H2Block errblk;
   std::string err_body;
   const auto error_page = [&](uint16_t s, const ErrorPages::Fields& f) {
-    const int m = err_pages_.media_for(vals != nullptr ? vals->accept : nullptr,
+    const int m = err_pages_.media_for(s, vals != nullptr ? vals->accept : nullptr,
                                        vals != nullptr ? vals->accept_len : 0);
-    if (!err_pages_.render(s, m, f, err_body)) return false;
+    size_t plen = 0;
+    const char* pbody = err_pages_.pack_body(s, m, &plen);
+    if (pbody == nullptr && !err_pages_.render(s, m, f, err_body)) return false;
     const std::string ctype(err_pages_.media_type(m));
     // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the
     // page it now carries must not cost it that field.
     const std::string* allow =
         (s == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
     h2_build_block(errblk, s, &ctype, allow);
-    body = err_body.data();
-    blen = err_body.size();
+    // The picture is lent where it lies; a rendered page comes out of
+    // err_body, which outlives the framing below.
+    body = pbody != nullptr ? pbody : err_body.data();
+    blen = pbody != nullptr ? plen : err_body.size();
     blk = &errblk;
     return true;
   };
@@ -801,9 +805,14 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     unsigned char ebuf[2048];
     unsigned char* ep = ebuf;
     unsigned char* const eend = ebuf + sizeof(ebuf);
+    // Indexed, unlike the cached path's: this head is spelled once and
+    // thrown away, so an insert here costs nothing to replay - but it
+    // DOES move every index a cached head may be holding, which is what
+    // enc_ins counts.
     if (!h2_enc_field(&h2.enc, ep, eend, "date", 4, date_, sizeof(date_))) {
       return h2_error(st0, kH2InternalError, sink);
     }
+    h2.enc_ins++;
     std::string name;
     size_t at = 0;
     while (at < rhdrs_.size()) {
@@ -821,6 +830,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
                           eol - vs)) {
           return h2_error(st0, kH2InternalError, sink);
         }
+        h2.enc_ins++;
       }
       at = eol + 2;
     }
@@ -833,7 +843,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     sink.append(reinterpret_cast<const char*>(ebuf), elen);
   } else {
     if (h2.head_cache.status != status || h2.head_cache.route != route ||
-        h2.head_cache.sec != sec_) {
+        h2.head_cache.sec != sec_ || h2.head_cache.enc_ins != h2.enc_ins) {
       // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
       // answer this route ever gives, so it goes into the peer's dynamic
       // table ONCE and is a one-byte reference after that. Encoded
@@ -861,6 +871,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         }
         plen = static_cast<size_t>(pp - pbuf);
         rlen = static_cast<size_t>(rp - rbuf);
+        h2.enc_ins++;
         // The block that carried the literal is the wrong one now: the
         // shared 200 spells :status and nothing else.
         blk = &h2_store_[index_[200]];
@@ -897,6 +908,9 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       h2.head_cache.status = status;
       h2.head_cache.route = route;
       h2.head_cache.sec = sec_;
+      // Taken AFTER the encodes above, so the reference this head holds
+      // and the table it points into are recorded together.
+      h2.head_cache.enc_ins = h2.enc_ins;
     }
     // One answer per connection carries the insert; it is never merged
     // with a DATA frame, because it is one response in a second and the

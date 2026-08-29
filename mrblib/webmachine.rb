@@ -40,6 +40,14 @@ module Webmachine
     def self.content_types_provided
       [['text/html; charset=utf-8', :to_html_error],
        ['application/problem+json', :to_json_error],
+       # A browser fetching an <img> sends image/* and nothing this list
+       # otherwise has, so it would get a page it cannot render. It can
+       # have the picture instead - the same cat the HTML page links to,
+       # as the whole body. This form has NO method: the picture is not
+       # rendered, it IS the asset, and the server lends it straight out
+       # of the error assets's mapping. It is offered only while the error assets holds a
+       # cat for the status.
+       ['image/jpeg', :from_the_pack],
        # RFC 6839 3.1: +json is its own media type, so a client that
        # asked for application/json has NOT asked for problem+json. It
        # meant the same thing, though, so the same handler answers both -

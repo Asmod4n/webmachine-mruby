@@ -738,3 +738,71 @@ assert('h2: a parked request negotiates on the Accept it actually sent') do
     end
   end
 end
+
+# RFC 7541 2.3.3: a dynamic-table insert shifts the index of every older
+# entry by one. The head cache freezes an INDEX for content-type and
+# replays it for the rest of the second, so anything that inserts in
+# between moves what that index points at - and the dynamic path inserts
+# freely, for its own date and for every field line an app sets.
+#
+# The order below is the one that breaks it: konst route (cache built,
+# content-type indexed), bound route (inserts), konst route again (cache
+# hit). Without the fix the third answer's content-type resolves to
+# whatever the insert pushed into that slot.
+assert('h2: an insert between two cache hits does not move what the head points at') do
+  src = <<~RUBY
+    class Konst < Webmachine::Resource
+      def self.to_html
+        '<p>konst</p>'
+      end
+    end
+
+    class Bound < Webmachine::Resource
+      def to_html
+        response.headers['X-Run'] = 'yes'
+        '<p>bound</p>'
+      end
+    end
+  RUBY
+  app = <<~RUBY
+    #{src}
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['bound'], Bound
+          route.add [:*], Konst
+        end
+      end
+    end
+  RUBY
+  h2_server(app) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      seen = []
+      [['/k', 1], ['/bound', 3], ['/k', 5], ['/k', 7]].each do |path, id|
+        s.write(h2_frame(1, 0x05, id, h2_method_path_block('GET', path)))
+        type, _, _, block = h2_next(s)
+        assert_equal 1, type, "stream #{id}: expected HEADERS"
+        seen << block
+        h2_next(s) # the DATA that follows
+      end
+      # The two later konst answers are cache hits. Whatever the first
+      # one said content-type is, they have to say the same - a moved
+      # index shows up as a different byte string here, and as a
+      # different header at any real client.
+      # RFC 7541 6.2.1: 0x5f is "literal with incremental indexing, name
+      # index 31" - content-type being INSERTED. The value beside it is
+      # Huffman-coded, so this is checked by shape and not by looking for
+      # "text/html" in the bytes.
+      assert_true seen[0].bytes.include?(0x5f),
+                  "the first konst head must INSERT content-type: #{seen[0].inspect}"
+      assert_false seen[2].bytes.include?(0x5f),
+                   "the later ones must reference it, not insert again: #{seen[2].inspect}"
+      assert_equal seen[2], seen[3],
+                   'two cache hits in the same second must be the same bytes'
+      assert_true seen[2].bytesize < seen[0].bytesize,
+                  "the reference must be shorter than the insert: " \
+                  "#{seen[2].bytesize} vs #{seen[0].bytesize}"
+    end
+  end
+end

@@ -28,7 +28,7 @@ Refresh it verbatim from upstream; do not edit it here:
     curl -o share/mime.types \
       https://raw.githubusercontent.com/apache/httpd/trunk/docs/conf/mime.types
 
-## error-pages.zip
+## error-assets.zip
 
 An asset pack holding the pictures the error pages show:
 
@@ -36,7 +36,7 @@ An asset pack holding the pictures the error pages show:
     cats/<status>.jpg   the pictures, CC BY 2.0, see below
     NOTICE.txt          the terms, inside the archive
 
-`rake error_pages` fetches and rebuilds it.
+`rake error_assets` fetches and rebuilds it.
 
 The templates are NOT in here. They live in `Webmachine::ErrorResource`
 (mrblib/webmachine.rb), because a server with no pack still has to be
@@ -53,14 +53,14 @@ that class, not to edit a zip:
       end
     end
 
-The pack only decides whether a page HAS a picture: a status with no
+The error assets only decides whether a page HAS a picture: a status with no
 `cats/<status>.jpg` renders without one.
 
 ### Why the geometry rides along
 
 The server needs a picture's width and height to keep the page from
 reflowing when it arrives, and it must not parse a JPEG to get them. So
-`rake error_pages` reads them once with `file(1)` and writes them into
+`rake error_assets` reads them once with `file(1)` and writes them into
 `cats/index.txt`, tab separated:
 
     # status  width  height  bytes  upstream etag     upstream last-modified
@@ -76,21 +76,21 @@ geometry at all - `content-type`, `content-length`, `etag`,
 `last-modified`, and nothing else.
 
 The etag and last-modified are the upstream service's, kept so a rebuild
-can ask instead of download: `rake error_pages` sends `If-None-Match`
+can ask instead of download: `rake error_assets` sends `If-None-Match`
 and a picture that has not changed answers 304 and costs nothing.
 
 ### It is a source, not a route
 
 An error is delivered by the route that produced it. A page fetched from
 `/errors/404.html` would be a second trip through the same router that
-just failed to find anything, so nothing in this pack is meant to be
+just failed to find anything, so nothing in these error assets is meant to be
 served: the server reads the templates at STARTUP, renders one page per
 status it can answer with, and appends the result as the body of the
 response that failed. The wire path stays one `append` of prebuilt bytes.
 
-The picture is the one exception, and it is the reason the pack exists at
+The picture is the one exception, and it is the reason the error assets exists at
 all: the cats are far too big to compile in, and the server looks them up
-in the pack directly - no router involved.
+in the error assets directly - no router involved.
 
 ### The slots
 
@@ -99,7 +99,7 @@ in the pack directly - no router involved.
 | `{{status}}` | 404 |
 | `{{title}}` | Not Found |
 | `{{source}}` | `RFC 9110`, or `nginx, not registered` |
-| `{{#cat}}` | present only when the pack holds a picture for that status; inside it `{{cat_url}}`, `{{cat_width}}`, `{{cat_height}}` |
+| `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{cat_url}}`, `{{cat_width}}`, `{{cat_height}}` |
 | `{{#target}}` | the request target - a 404 that does not say what was not found is a 404 about nothing |
 | `{{#message}}` | the 500 only: what `Webmachine::ErrorResource#handle_exception` made of the exception. It lives there and nowhere else: a `handle_exception` on an ordinary resource is ignored, because how an exception becomes text is one decision for the server rather than a per-route one |
 
@@ -122,9 +122,9 @@ the **Creative Commons Attribution 2.0** licence
 through the `http.cat` service by @rogeriopvl. CC BY 2.0 permits
 commercial use and derivatives and asks no ShareAlike, so it sits beside
 this tree's Apache-2.0 without touching it, and anyone redistributing
-this server may redistribute the pack.
+this server may redistribute the error assets.
 
-| the licence asks | this pack |
+| the licence asks | these error assets |
 |---|---|
 | name the creator | Tomomi Imura, in `NOTICE`, in `NOTICE.txt` inside the zip, on every rendered page that shows a picture, and here |
 | link the licence | the deed URL, in all four places |
@@ -133,7 +133,7 @@ this server may redistribute the pack.
 
 ### Everything is stored, nothing is deflated
 
-The asset tier reads stored and deflate, and this pack is stored
+The asset tier reads stored and deflate, and these error assets is stored
 throughout. Measured on the cats:
 
 | | stored | deflate |
@@ -150,6 +150,6 @@ sent no `Accept-Encoding` at all, and `file` calls what curl saved "gzip
 compressed data". Four percent on the wire does not buy a broken download
 and a 406.
 
-The pack is **not** compiled into the binary. `mime.types` is, because a
+The error assets is **not** compiled into the binary. `mime.types` is, because a
 lookup must answer without a data file beside it; 1.6 MB of pictures must
 not be, and #184 went the other way.

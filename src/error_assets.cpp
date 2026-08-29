@@ -9,15 +9,18 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 
+#include <sys/stat.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace webmachine {
 namespace {
 
 // PKWARE APPNOTE: an entry this tier may read straight out of the mapping.
-// The pack builder stores the index (rake error_pages), so a deflated one
-// is a pack built by something else - refused by name rather than
+// The error assets builder stores the index (rake error_assets), so a deflated one
+// is an asset file built by something else - refused by name rather than
 // inflated here, because setup is not the place to grow a second
 // decompressor.
 bool pack_text(Assets& assets, const char* path, size_t len, std::string& out, char* err,
@@ -25,7 +28,7 @@ bool pack_text(Assets& assets, const char* path, size_t len, std::string& out, c
   const AssetEntry* e = assets.find(path, len);
   if (e == nullptr) return false;
   if (e->deflated) {
-    std::snprintf(err, errlen, "asset pack: %s is deflated - the error pack stores its text",
+    std::snprintf(err, errlen, "asset pack: %s is deflated - the error assets stores its text",
                   path);
     return false;
   }
@@ -120,7 +123,50 @@ mrb_value handler_body(mrb_state* mrb, void* ud) {
 
 }  // namespace
 
-// RFC 9110 15: what this status is called, from the same list the pack is
+// XDG Base Directory Specification, and the FHS underneath it: shipped
+// read-only data lives in <datadir>/<package>, and XDG's own defaults
+// for XDG_DATA_DIRS are "/usr/local/share:/usr/share" - the FHS pair.
+// So one search order covers a distro package, a local build and a
+// container image, without any of them being special-cased and without
+// walking from argv[0], which is a trick rather than a convention.
+//
+// An explicit path always wins; it is the only one that may fail loudly.
+std::string error_assets_path(const char* configured) {
+  const auto exists = [](const std::string& p) {
+    struct stat st {};
+    return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+  };
+  if (configured != nullptr && configured[0] != '\0') return std::string(configured);
+  if (const char* env = ::getenv("WM_ERROR_ASSETS"); env != nullptr && env[0] != '\0') {
+    return std::string(env);
+  }
+  static constexpr const char* kLeaf = "/webmachine-mruby/error-assets.zip";
+  if (const char* home = ::getenv("XDG_DATA_HOME"); home != nullptr && home[0] == '/') {
+    const std::string p = std::string(home) + kLeaf;
+    if (exists(p)) return p;
+  } else if (const char* h = ::getenv("HOME"); h != nullptr && h[0] == '/') {
+    const std::string p = std::string(h) + "/.local/share" + kLeaf;
+    if (exists(p)) return p;
+  }
+  const char* dirs = ::getenv("XDG_DATA_DIRS");
+  const std::string list =
+      (dirs != nullptr && dirs[0] != '\0') ? std::string(dirs) : "/usr/local/share:/usr/share";
+  size_t at = 0;
+  while (at <= list.size()) {
+    const size_t end = list.find(':', at);
+    const std::string dir = list.substr(at, end == std::string::npos ? std::string::npos
+                                                                    : end - at);
+    if (!dir.empty() && dir[0] == '/') {
+      const std::string p = dir + kLeaf;
+      if (exists(p)) return p;
+    }
+    if (end == std::string::npos) break;
+    at = end + 1;
+  }
+  return std::string();
+}
+
+// RFC 9110 15: what this status is called, from the same list the error assets is
 // built from - reason() covers what the status LINE needs, which is not
 // the same set.
 const char* status_title(uint16_t status) {
@@ -216,7 +262,13 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
       Handler h;
       h.sym = mrb_symbol(hnd);
       h.type.assign(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type)));
-      if (!mrb_respond_to(mrb, res_, h.sym)) {
+      // An image form is the error assets's picture, whole. Nothing renders it,
+      // so it names no method that has to exist - and it is worth
+      // offering only while there is an asset file to take it from.
+      h.from_pack = h.type.compare(0, 6, "image/") == 0;
+      if (h.from_pack) {
+        if (assets == nullptr) continue;
+      } else if (!mrb_respond_to(mrb, res_, h.sym)) {
         std::snprintf(err, errlen, "error pages: %s names %s, which is not defined",
                       h.type.c_str(), mrb_sym_name(mrb, h.sym));
         mrb_gc_arena_restore(mrb, ai);
@@ -242,6 +294,16 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
       break;
     }
   }
+  // What a client with no Accept at all gets. The first form the list
+  // names, unless that one is a picture - a client that said nothing
+  // did not ask for one.
+  html_ = 0;
+  for (size_t i = 0; i < have_.size(); i++) {
+    if (!have_[i].from_pack) {
+      html_ = static_cast<int>(i);
+      break;
+    }
+  }
   exc_sym_ = MRB_SYM(handle_exception);
   if (assets != nullptr) read_cats(*assets);
   ready_ = true;
@@ -255,16 +317,99 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
 // First match in table order, which is html, then json, then the rest.
 // With three forms that is honest; the day this list is ten long, Accept
 // has to be weighed with its q-values instead.
-int ErrorPages::media_for(const char* accept, size_t len) const {
+int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const {
   if (have_.empty()) return -1;
+  // A form the error assets cannot answer for THIS status is not on offer for
+  // it: the picture exists per status, not per server.
+  const bool have_cat = status < 600 && cat_index_[status] > 0;
   // The same weighing c4 does for a resource - q-values, both wildcard
   // forms, provided order breaking ties. An Accept nothing matches still
   // gets an answer: an error is not a representation of the resource, so
   // there is nothing here to 406 about. text/plain is the way out,
   // because every client can read it.
-  if (accept == nullptr || len == 0) return 0;
-  const int pick = http::choose_media_type(types_.data(), types_.size(), accept, len);
-  return pick >= 0 ? pick : plain_;
+  if (accept == nullptr || len == 0) return html_;
+  // choose_media_type weighs the whole list, so a missing picture is
+  // taken out of the list rather than out of its answer.
+  std::vector<std::string> offer;
+  std::vector<int> slot;
+  offer.reserve(types_.size());
+  slot.reserve(types_.size());
+  for (size_t i = 0; i < have_.size(); i++) {
+    if (have_[i].from_pack && !have_cat) continue;
+    offer.push_back(types_[i]);
+    slot.push_back(static_cast<int>(i));
+  }
+  if (offer.empty()) return plain_;
+  const int at = http::choose_media_type(offer.data(), offer.size(), accept, len);
+  if (at < 0) return plain_;
+  const int pick = slot[static_cast<size_t>(at)];
+  // RFC 9110 12.5.1 leaves the tie to the server, and a tie is what a
+  // wildcard makes of every form we have. A client that NAMED types and
+  // named none of ours has an opinion, and the honest reading of "*/*;
+  // q=0.5" behind it is "anything, at half preference" - not "your
+  // styled page". A browser fetching an image sends exactly that, and a
+  // 1.6 KB page it cannot render is bytes it throws away.
+  //
+  // So: named nothing of ours, but named SOMETHING - the cheapest form.
+  // Named one of ours, or named nothing at all (curl's bare */*), the
+  // negotiation above stands.
+  if (named_ours(accept, len) || !names_anything(accept, len)) return pick;
+  return plain_;
+}
+
+// The picture IS the answer: the error assets's bytes, lent where they lie.
+const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const {
+  if (slot < 0 || static_cast<size_t>(slot) >= have_.size()) return nullptr;
+  if (!have_[static_cast<size_t>(slot)].from_pack) return nullptr;
+  if (status >= 600) return nullptr;
+  const int16_t at = cat_index_[status];
+  if (at <= 0) return nullptr;
+  const Cat& c = cats_[static_cast<size_t>(at)];
+  if (c.entry == nullptr) return nullptr;
+  *len = c.entry->uncompressed_size;
+  return c.entry->file_data;
+}
+
+// RFC 9110 12.5.1: does this Accept name one of the forms we offer, as a
+// type and subtype rather than through a range?
+bool ErrorPages::named_ours(const char* accept, size_t len) const {
+  const auto has = [&](const char* t, size_t tlen) {
+    for (size_t i = 0; i + tlen <= len; i++) {
+      if (std::memcmp(accept + i, t, tlen) == 0) return true;
+    }
+    return false;
+  };
+  for (const Handler& h : have_) {
+    const char* t = h.type.c_str();
+    const char* semi = std::strchr(t, ';');
+    const size_t tlen = semi != nullptr ? static_cast<size_t>(semi - t) : h.type.size();
+    if (has(t, tlen)) return true;
+    // RFC 9110 12.5.1: "image/*" is a preference for every image type,
+    // and it carries its own q - a browser fetching a picture writes
+    // image/*;q=0.8 above */*;q=0.5 precisely to say which it would
+    // rather have. That is naming us, and it is not the same as the
+    // */* that means "if you must".
+    const char* slash = std::strchr(t, '/');
+    if (slash == nullptr) continue;
+    std::string range(t, static_cast<size_t>(slash - t) + 1);
+    range += '*';
+    if (has(range.data(), range.size())) return true;
+  }
+  return false;
+}
+
+// Does it name any concrete type at all, or is it wildcards only? A
+// client with no opinion is not a client to be given the cheap answer.
+bool ErrorPages::names_anything(const char* accept, size_t len) {
+  size_t at = 0;
+  while (at < len) {
+    while (at < len && (accept[at] == ' ' || accept[at] == '\t' || accept[at] == ',')) at++;
+    size_t end = at;
+    while (end < len && accept[end] != ',' && accept[end] != ';') end++;
+    if (end > at && !(end - at == 3 && std::memcmp(accept + at, "*/*", 3) == 0)) return true;
+    while (at < len && accept[at] != ',') at++;
+  }
+  return false;
 }
 
 const char* ErrorPages::media_type(int slot) const {
@@ -312,9 +457,9 @@ bool ErrorPages::exception_text(mrb_value exc, std::string& out) {
   return true;
 }
 
-// The pack's cats/index.txt: status, width, height, and the rest this
+// The error assets's cats/index.txt: status, width, height, and the rest this
 // tier does not need. A status with no line and no picture renders
-// without {{#cat}}, which is what a pack that carries none does.
+// without {{#cat}}, which is what an asset file that carries none does.
 void ErrorPages::read_cats(Assets& assets) {
   // Slot 0 is "no picture", the way index_ reserves its own zero, so the
   // dense list opens with one entry nothing points at.
@@ -334,8 +479,14 @@ void ErrorPages::read_cats(Assets& assets) {
     if (status < 100 || status > 599 || w == 0 || h == 0) continue;
     char path[32];
     const int n = std::snprintf(path, sizeof path, "/cats/%u.jpg", status);
-    if (n <= 0 || assets.find(path, static_cast<size_t>(n)) == nullptr) continue;
+    if (n <= 0) continue;
+    const AssetEntry* e = assets.find(path, static_cast<size_t>(n));
+    // PKWARE APPNOTE: the error assets stores its pictures, so file_data is the
+    // JPEG itself. A deflated one would need inflating per answer, which
+    // is not what an error path is for.
+    if (e == nullptr || e->deflated) continue;
     Cat c;
+    c.entry = e;
     c.url.assign(path);
     c.width = w;
     c.height = h;

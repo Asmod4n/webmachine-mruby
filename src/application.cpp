@@ -185,7 +185,33 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* 
                  "%s: :* is the tail of a route - nothing may follow it", who);
     }
     if (mrb_string_p(t)) {
-      if (!table.literal(RSTRING_PTR(t), static_cast<size_t>(RSTRING_LEN(t)))) {
+      // RFC 3986 3.3: a path is segments SEPARATED by "/", so a segment
+      // can never contain one - match() splits on them before a literal
+      // is ever compared. A route carrying one therefore matches nothing
+      // at all, and the way that showed up was every request 404ing with
+      // the routes looking right. ['/'] is the near-universal way to
+      // write it wrong: the root is the EMPTY list, because the root has
+      // no segments.
+      const char* lit = RSTRING_PTR(t);
+      const size_t litlen = static_cast<size_t>(RSTRING_LEN(t));
+      if (std::memchr(lit, '/', litlen) != nullptr) {
+        table.abandon();
+        if (litlen == 1) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "%s: [\"/\"] is a route with one segment named \"/\", which no request "
+                     "can have - the root is the empty list, add [], YourResource", who);
+        }
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "%s: a route token is ONE path segment, and %v carries a \"/\" - split it "
+                   "into one token per segment", who, t);
+      }
+      if (litlen == 0) {
+        table.abandon();
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "%s: an empty token is a segment no request can have - to route the root, "
+                   "pass no tokens at all", who);
+      }
+      if (!table.literal(lit, litlen)) {
         table.abandon();
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s: a literal token is too long", who);
       }
