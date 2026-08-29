@@ -30,16 +30,31 @@ Refresh it verbatim from upstream; do not edit it here:
 
 ## error-pages.zip
 
-An asset pack holding what the server renders its ERROR PAGES from - two
-templates and the pictures:
+An asset pack holding the pictures the error pages show:
 
-    errors/error.html   the page template (mustache)
-    errors/error.json   the problem-document template (mustache)
     cats/index.txt      geometry and provenance, one line per status
     cats/<status>.jpg   the pictures, CC BY 2.0, see below
     NOTICE.txt          the terms, inside the archive
 
-`rake error_pages` fetches and rebuilds it. 59 entries, 1.6 MB.
+`rake error_pages` fetches and rebuilds it.
+
+The templates are NOT in here. They live in `Webmachine::ErrorResource`
+(mrblib/webmachine.rb), because a server with no pack still has to be
+able to say what went wrong - and the way to change a page is to reopen
+that class, not to edit a zip:
+
+    class Webmachine::ErrorResource
+      def self.content_types_provided
+        super + [['application/xml', :to_xml_error]]
+      end
+
+      def to_xml_error(e)
+        "<error status=\"#{e['status']}\">#{e['title']}</error>"
+      end
+    end
+
+The pack only decides whether a page HAS a picture: a status with no
+`cats/<status>.jpg` renders without one.
 
 ### Why the geometry rides along
 
@@ -85,17 +100,19 @@ in the pack directly - no router involved.
 | `{{title}}` | Not Found |
 | `{{source}}` | `RFC 9110`, or `nginx, not registered` |
 | `{{#cat}}` | present only when the pack holds a picture for that status; inside it `{{cat_url}}`, `{{cat_width}}`, `{{cat_height}}` |
-| `{{#message}}` | the 500 only: what the resource's `handle_exception` returned, or - when it defines none - the exception message and its backtrace |
+| `{{#target}}` | the request target - a 404 that does not say what was not found is a 404 about nothing |
+| `{{#message}}` | the 500 only: what `Webmachine::ErrorResource#handle_exception` made of the exception. It lives there and nowhere else: a `handle_exception` on an ordinary resource is ignored, because how an exception becomes text is one decision for the server rather than a per-route one |
 
-Replace either template and the server renders yours instead. The status,
-its name and where the name comes from are the server's table, not the
-template's: fifteen of the statuses it knows are vendor inventions rather
-than registered, and `{{source}}` says which.
+Every handler is handed this same Hash. The status, its name and where
+the name comes from are the server's table, not the template's: fifteen
+of the statuses it knows are vendor inventions rather than registered,
+and `{{source}}` says which.
 
-`{{message}}` is **escaped**, and that is the whole reason the 500 goes
-through a template. What a callback raised routinely carries request data
-(`raise "bad id: #{params[:id]}"`), and it used to be the response body
-verbatim under `Content-Type: text/html`.
+`{{target}}` and `{{message}}` are **escaped**, and that is the whole
+reason they go through a template. A target is whatever the client typed,
+and what a callback raised routinely carries request data (`raise "bad
+id: #{params[:id]}"`) - it used to be the response body verbatim under
+`Content-Type: text/html`.
 
 ### The pictures
 

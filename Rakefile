@@ -172,33 +172,33 @@ ERROR_NOTICE = <<~TEXT
   webmachine-mruby error pages
   ============================
 
-  errors/error.html      the page TEMPLATE (mustache)
-  errors/error.json      the problem-document TEMPLATE (mustache)
   cats/index.txt         status, width, height, bytes, and what the
                          upstream service said the picture's validators
                          were - tab separated, one line per status
   cats/<status>.jpg      the pictures, see below
 
-  The server renders these ONCE at startup, one page per status it can
-  answer with, and emits the result as the body of the response that
-  failed. Nothing in here is reached by a request: an error is delivered
-  by the route that produced it, not by a second trip through the router.
+  This pack holds PICTURES. The pages themselves live in the server, as
+  Webmachine::ErrorResource - a server with no pack still has to be able
+  to say what went wrong, so the templates cannot live out here. What
+  this pack decides is whether a page has a picture: a status with no
+  cats/<status>.jpg renders without one.
 
-  Replace either template and the server renders yours instead. The slots
-  it fills:
+  The page is rendered when the error happens, by the route that produced
+  it - nothing in here is reached by a second trip through the router.
+  The picture is: the page names it by URL, the way any page names an
+  image, and the asset tier serves it from this pack.
 
-    {{status}}     404
-    {{title}}      Not Found
-    {{source}}     "RFC 9110", or "nginx, not registered"
-    {{#cat}}       present only when this pack holds a picture for the
-                   status; inside it, {{cat_url}}, {{cat_width}} and
-                   {{cat_height}}
-    {{#message}}   the 500 only: what the resource's handle_exception
-                   returned - webmachine-ruby's own name for the hook -
-                   or, when it defines none, the exception message and
-                   its backtrace. Escaped by {{ }}, which is the whole
-                   reason this goes through a template
-    {{#backtrace}} the json template's own slot for the frames
+  To change a page, reopen the class rather than editing an archive:
+
+    class Webmachine::ErrorResource
+      def self.content_types_provided
+        super + [['application/xml', :to_xml_error]]
+      end
+
+      def to_xml_error(e)
+        "<error status=\"\#{e['status']}\">\#{e['title']}</error>"
+      end
+    end
 
   The pictures are "HTTP Status Cats" by Tomomi Imura (@girlie_mac),
 
@@ -226,22 +226,6 @@ ERROR_NOTICE = <<~TEXT
 TEXT
 
 
-
-# The two templates live in src/error_pages.cpp, as the raw string
-# literals the server compiles into every binary - a server with no pack
-# still has to be able to say what went wrong. The pack is built FROM
-# them, so the copy an operator edits and the copy the binary carries
-# start out identical and cannot drift.
-def cpp_template(marker)
-  src = File.read(File.expand_path('src/error_pages.cpp', __dir__))
-  m = src.match(/R"#{marker}\((.*?)\)#{marker}"/m)
-  raise "src/error_pages.cpp: no R\"#{marker}(...)#{marker}\" literal" unless m
-  m[1]
-end
-
-ERROR_HTML_TEMPLATE = cpp_template('WM_HTML')
-ERROR_JSON_TEMPLATE = cpp_template('WM_JSON')
-ERROR_TEXT_TEMPLATE = cpp_template('WM_TEXT')
 
 # The picture's real geometry, from file(1) - in the standard install of
 # every distro this would be rebuilt on, and this task is a developer's
@@ -374,13 +358,11 @@ task :error_pages do
   raise 'http.cat answered with no images at all' if cats.empty?
   puts "  #{fetched} fetched, #{cats.size - fetched} unchanged upstream"
 
-  # TWO templates, not a page per status. What differs between a 404 and a
-  # 503 is three strings and a picture; the server holds the table and
-  # renders once at startup.
-  entries = [['NOTICE.txt', ERROR_NOTICE],
-             ['errors/error.html', ERROR_HTML_TEMPLATE],
-             ['errors/error.json', ERROR_JSON_TEMPLATE],
-             ['errors/error.txt',  ERROR_TEXT_TEMPLATE]]
+  # Pictures and provenance, nothing else. The templates live in
+  # Webmachine::ErrorResource (mrblib/webmachine.rb), because a server
+  # with no pack still has to be able to say what went wrong - and the
+  # way to change a page is to reopen that class, not to edit a zip.
+  entries = [['NOTICE.txt', ERROR_NOTICE]]
   # Geometry and provenance, so the server needs no JPEG reader and the
   # next rebuild can ask upstream instead of downloading.
   index = +"# status\twidth\theight\tbytes\tupstream etag\tupstream last-modified\n"
@@ -388,31 +370,7 @@ task :error_pages do
   entries << ['cats/index.txt', index]
   cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
   File.binwrite(ERROR_PACK, error_zip(entries))
-  puts "share/error-pages.zip: 3 templates, #{cats.size} cats, " \
-       "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
-end
-
-desc 'refresh only the two templates in share/error-pages.zip (no network)'
-task :error_templates do
-  require 'zlib'
-  raise "#{ERROR_PACK} does not exist - run rake error_pages" unless File.exist?(ERROR_PACK)
-  old = read_pack(ERROR_PACK)
-  entries = old.map do |name, data|
-    case name
-    when 'errors/error.html' then [name, ERROR_HTML_TEMPLATE]
-    when 'errors/error.json' then [name, ERROR_JSON_TEMPLATE]
-    when 'errors/error.txt'  then [name, ERROR_TEXT_TEMPLATE]
-    when 'NOTICE.txt'        then [name, ERROR_NOTICE]
-    else [name, data]
-    end
-  end
-  # A pack built before the third template existed does not carry it yet.
-  unless entries.any? { |name, _| name == 'errors/error.txt' }
-    at = entries.index { |name, _| name == 'errors/error.json' }
-    entries.insert(at + 1, ['errors/error.txt', ERROR_TEXT_TEMPLATE])
-  end
-  File.binwrite(ERROR_PACK, error_zip(entries))
-  puts "share/error-pages.zip: templates and notice refreshed from src/error_pages.cpp, " \
+  puts "share/error-pages.zip: #{cats.size} cats, " \
        "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
 end
 

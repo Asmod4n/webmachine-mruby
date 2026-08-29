@@ -1813,7 +1813,6 @@ struct Resource {
   ValueCb cb_base_uri;
   ValueCb cb_process_post;
   ValueCb cb_finish_request;  // after the walk, ALWAYS (fsm.rb ensure)
-  ValueCb cb_handle_exception;
 
   // The old fast part, back: `dynamic` above answers "is this flow NODE
   // decided by the VM" in one load; `cb_mask` is the same idea for "does
@@ -1839,7 +1838,6 @@ struct Resource {
     kCbBaseUri = 1u << 13,
     kCbProcessPost = 1u << 14,
     kCbFinishRequest = 1u << 15,
-    kCbHandleException = 1u << 16,
   };
   uint32_t cb_mask = 0;
 
@@ -1946,7 +1944,7 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, const ReqView* req, std::string* body,
                       bool* have_body, std::string* headers, size_t zc_min = 0);
 
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len);
+bool resource_exception_take(const Resource& res, mrb_value* out);
 
 // The body a bound run LENT rather than copied: the value the connection
 // has to hold until its send drains, and the bytes it may point at.
@@ -2142,12 +2140,15 @@ class Assets {
 const char* status_title(uint16_t status);
 const char* status_source(uint16_t status);
 
-// #210: the error page and the problem document, as mustache templates.
-// Compiled once, rendered PER RESPONSE - a 404 names what was not found,
-// so the set of bodies is the set of request targets and there is nothing
-// a boot could have prepared. Nothing here is reached by a request: an
-// error is delivered by the route that produced it, never by a second
-// trip through the router.
+// #210: the error resource. Always there, never routed - the route that
+// produced the error calls it, so an error is delivered by whoever made
+// it and not by a second trip through the router. A handler is named
+// to_<ext>_error, the way an ordinary resource names to_html, and this
+// holds the ones Webmachine::ErrorResource actually answers to.
+//
+// Rendered PER RESPONSE: a 404 names what was not found, so the set of
+// bodies is the set of request targets and there is nothing a boot could
+// have prepared.
 class ErrorPages {
  public:
   ErrorPages() = default;
@@ -2155,30 +2156,32 @@ class ErrorPages {
   ErrorPages(const ErrorPages&) = delete;
   ErrorPages& operator=(const ErrorPages&) = delete;
 
-  // The pack's errors/error.html and errors/error.json win over the
-  // built-in ones, which is the whole edit path for an operator who does
-  // not rebuild. A template that does not compile is a startup refusal
-  // with a name.
+  // One instance of the class, and the handlers it answers to. A class
+  // that answers to none, or that raises being built, is a startup
+  // refusal with a name.
   bool open(mrb_state* mrb, Assets* assets, char* err, size_t errlen);
   bool ready() const { return ready_; }
 
-  // RFC 9110 12.5.1: which of the three an error answer speaks. NOT the
-  // resource's content_types_provided - an error is not a representation
-  // of the resource, so what it offers has no say here. Accept decides,
-  // and text/plain catches the client that will take neither of the
-  // first two.
-  enum class Media : uint8_t { kHtml, kJson, kText };
-  static Media media_for(const char* accept, size_t len);
-  // The whole field line, for h1; the value alone, for h2's encoder.
-  static const char* media_type(Media m);
-  static const char* media_value(Media m);
+  // RFC 9110 12.5.1: which form this client can read, as an index into
+  // what the error resource offers. -1 when it offers nothing.
+  int media_for(const char* accept, size_t len) const;
+  const char* media_type(int slot) const;
+
+  // fsm.rb handle_exception, on the error resource and nowhere else.
+  bool exception_text(mrb_value exc, std::string& out);
 
   // What ONE answer adds to the status: the target it was about, and -
-  // for a 500 - what handle_exception returned, or the exception's own
-  // message and backtrace when the resource declared no hook.
+  // for a 500 - what handle_exception made of the exception.
   struct Fields {
     const char* target = nullptr;
     size_t target_len = 0;
+    // RFC 9110 9: the method, because for a 405 THAT is what went wrong -
+    // the target was fine. And the Allow the same answer carries, so the
+    // page can name what it would have taken.
+    const char* method = nullptr;
+    size_t method_len = 0;
+    const char* allow = nullptr;
+    size_t allow_len = 0;
     const char* message = nullptr;
     size_t message_len = 0;
     const char* backtrace = nullptr;
@@ -2186,9 +2189,13 @@ class ErrorPages {
   };
   // false when there is no page to offer - the caller still owes an
   // answer and falls back to the bodyless status.
-  bool render(uint16_t status, Media m, const Fields& f, std::string& out);
+  bool render(uint16_t status, int slot, const Fields& f, std::string& out);
 
  private:
+  struct Handler {
+    mrb_sym sym = 0;
+    std::string type;
+  };
   struct Cat {
     std::string url;
     unsigned width = 0;
@@ -2197,11 +2204,15 @@ class ErrorPages {
   void read_cats(Assets& assets);
 
   mrb_state* mrb_ = nullptr;
-  mrb_value html_ = mrb_nil_value();
-  mrb_value json_ = mrb_nil_value();
-  mrb_value text_ = mrb_nil_value();
+  mrb_value res_ = mrb_nil_value();
+  mrb_sym exc_sym_ = 0;
+  std::vector<Handler> have_;
+  // The same strings again, laid out the way choose_media_type wants them.
+  std::vector<std::string> types_;
+  // The way out when Accept matches nothing offered: text/plain, by name.
+  int plain_ = 0;
   // The same shape the status store uses: a slot per status into a dense
-  // list, -1 for the statuses this pack has no picture for.
+  // list, 0 for the statuses this pack has no picture for.
   std::vector<Cat> cats_;
   std::array<int16_t, 600> cat_index_ {};
   bool ready_ = false;
@@ -3465,7 +3476,7 @@ class Http1 {
   // bodyless status goes out instead, which is what this server sent
   // before there were pages at all.
   void spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status, bool head_only,
-                   ErrorPages::Media media, const ErrorPages::Fields& f, std::string& sink);
+                   int media, const ErrorPages::Fields& f, std::string& sink);
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
   // segment. `prebuilt` takes the status straight out of the shared store.
@@ -3492,9 +3503,13 @@ class Http1 {
                    size_t blk_len, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
+  // `target` rides beside `req` because an error answer needs it even
+  // when no route matched - a 404 names what was not found, and that is
+  // exactly the case where there is no ReqView (#210).
   bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts,
                  const http::ReqValues* vals, bool head_only, uint16_t route,
-                 const ReqView* req, std::string& sink);
+                 const ReqView* req, const char* target, size_t target_len,
+                 std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();

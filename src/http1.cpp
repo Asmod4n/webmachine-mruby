@@ -347,7 +347,7 @@ bool Http1::open_error_pages(mrb_state* mrb, char* err, size_t errlen) {
 // the page rendered for THIS request. RFC 9110 9.3.2: a HEAD carries the
 // Content-Length a GET would have sent, and no body.
 void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status,
-                        bool head_only, ErrorPages::Media media, const ErrorPages::Fields& f,
+                        bool head_only, int media, const ErrorPages::Fields& f,
                         std::string& sink) {
   std::string body;
   if (!err_pages_.render(status, media, f, body)) {
@@ -355,7 +355,7 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
     return;
   }
   sink.append(prefix.bytes);
-  sink.append(ErrorPages::media_type(media));
+  sink.append("Content-Type: ").append(err_pages_.media_type(media)).append("\r\n");
   char cl[40];
   sink.append(cl, http::spell_content_length(cl, body.size()));
   if (!head_only) sink.append(body);
@@ -370,7 +370,7 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   // target to name: the page for the status, and that is all it can say.
   const ErrorPages::Fields f;
   spell_error(prefixes(status).close, variants(status).close, status, false,
-              ErrorPages::Media::kHtml, f, sink);
+              err_pages_.media_for(nullptr, 0), f, sink);
   st.carry.clear();
   st.content_skip = 0;
   st.content_need = 0;
@@ -1047,13 +1047,15 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     AnswerStep astep = answer_step(status, answered, have_body, body_.size(), lent_len,
                                    lent != nullptr, b != nullptr && b->gzip_ok,
                                    b != nullptr && b->bound);
-    const char* exc_body = nullptr;
-    size_t exc_len = 0;
+    mrb_value exc_value = mrb_nil_value();
     if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
       if (elog_.enabled) {
         log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
       }
-      if (resource_exception_begin(*b->res, &exc_body, &exc_len)) astep.answered = true;
+      // #210: handle_exception lives on the error resource and nowhere
+      // else, so the exception object itself is what crosses over - not
+      // a message some resource already made of it.
+      if (resource_exception_take(*b->res, &exc_value)) astep.answered = true;
       else astep.shape = AnswerStep::Shape::kStatus;
     }
     switch (astep.shape) {
@@ -1084,22 +1086,22 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                  body_.data(), body_.size(), head_only);
         break;
       case AnswerStep::Shape::kException: {
-        // resource_exception_begin hands out RSTRING_PTR of an exception
-        // it has just UNROOTED (it clears mrb->exc), and rendering
-        // allocates - so the message is copied before anything else runs.
-        const std::string message(exc_body, exc_len);
+        std::string message;
+        err_pages_.exception_text(exc_value, message);
         const Variants& pv = store_prefix_[(*idx)[500]];
         const Variants& bv = store_[(*idx)[500]];
         ErrorPages::Fields f;
         f.target = path;
         f.target_len = path_len;
+        f.method = method;
+        f.method_len = method_len;
         f.message = message.data();
         f.message_len = message.size();
         spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                : (persist ? pv.keep : pv.close),
                     minor >= 1 ? (persist ? bv.plain : bv.close)
                                : (persist ? bv.keep : bv.close),
-                    500, head_only, ErrorPages::media_for(vals.accept, vals.accept_len), f,
+                    500, head_only, err_pages_.media_for(vals.accept, vals.accept_len), f,
                     sink);
         break;
       }
@@ -1115,10 +1117,16 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           ErrorPages::Fields f;
           f.target = path;
           f.target_len = path_len;
+          f.method = method;
+          f.method_len = method_len;
+          if (status == 405 && b != nullptr && !b->konst.allow.empty()) {
+            f.allow = b->konst.allow.data();
+            f.allow_len = b->konst.allow.size();
+          }
           spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                  : (persist ? pv.keep : pv.close),
                       bodyless, status, head_only,
-                      ErrorPages::media_for(vals.accept, vals.accept_len), f, sink);
+                      err_pages_.media_for(vals.accept, vals.accept_len), f, sink);
         } else {
           sink.append(bodyless.bytes);
         }

@@ -70,6 +70,14 @@ def cppr_undate(answer)
   answer.sub(/^Date: [^\r\n]*\r\n/, '')
 end
 
+# #210: an error page names the request target, so two answers ABOUT TWO
+# DIFFERENT PATHS differ in that one string - and in the Content-Length
+# it moves. Both are normalized the way Date is: replaced, not dropped,
+# so everything else still has to match byte for byte.
+def cppr_untarget(answer, path)
+  answer.sub(/^Content-Length: \d+\r\n/, "Content-Length: N\r\n").gsub(path, '/TARGET')
+end
+
 def cppr_h2_frame(type, flags, stream, payload = ''.b)
   len = payload.bytesize
   [(len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, type, flags].pack('C5') +
@@ -127,8 +135,8 @@ assert('#207 h1: the C++ resource and the Ruby one answer the same bytes') do
       # refusal has to match too, Allow header included; what it must
       # NOT do is differ between C++ and Ruby.
       %w[OPTIONS POST].each do |m|
-        a = cppr_undate(cppr_ask(sock, m, cpp))
-        b = cppr_undate(cppr_ask(sock, m, rb))
+        a = cppr_untarget(cppr_undate(cppr_ask(sock, m, cpp)), cpp)
+        b = cppr_untarget(cppr_undate(cppr_ask(sock, m, rb)), rb)
         assert_equal b, a, "#{m} #{cpp} differs from #{m} #{rb}"
       end
     end

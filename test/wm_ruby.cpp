@@ -223,14 +223,16 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
       webmachine::resource_run(f->res, facts, &vals, &rv, &body, &have_body, &field_lines);
   mrb->jmp = saved_jmp;
 
-  // The no-handler 500 leaves the raise pending for the wire writer
-  // (resource_exception_begin); the shim plays that writer here, so
-  // the exception becomes the body and mrb is clean again.
+  // A raise leaves the exception pending for the wire writer
+  // (resource_exception_take); the shim plays that writer here, and
+  // spells what the writer's error resource would have spelled - the
+  // exception's class and message - so mrb is clean again.
   if (mrb->exc != nullptr) {
-    const char* ep = nullptr;
-    size_t en = 0;
-    if (webmachine::resource_exception_begin(f->res, &ep, &en)) {
-      body.assign(ep, en);
+    mrb_value exc = mrb_nil_value();
+    if (webmachine::resource_exception_take(f->res, &exc)) {
+      body.assign(mrb_obj_classname(mrb, exc));
+      const mrb_value m = mrb_funcall_argv(mrb, exc, mrb_intern_lit(mrb, "message"), 0, nullptr);
+      if (mrb_string_p(m)) body.append(": ").append(RSTRING_PTR(m), RSTRING_LEN(m));
       have_body = true;
     }
     mrb->exc = nullptr;

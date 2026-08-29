@@ -1060,6 +1060,12 @@ def wm_res_raising
   end
 end
 
+# webmachine-ruby lets a resource define handle_exception. This server
+# does not (#210): the hook lives on Webmachine::ErrorResource and
+# nowhere else, because what an exception says on the wire is one
+# decision for the server rather than a per-route one. A resource that
+# defines one is IGNORED - the raise stays pending and the error resource
+# spells the answer.
 def wm_res_handling
   Class.new(WmSpecResource) do
     def handle_exception(e)
@@ -1072,14 +1078,19 @@ def wm_res_handling
   end
 end
 
-wm_case('flow on error: an inherited handle_exception answers 500') do
+wm_case('flow on error: a raise answers 500') do
   assert_equal 500, wm_run(wm_res_raising).code
 end
 
-wm_case('flow on error: a defined handle_exception answers 500') do
+wm_case('flow on error: a resource that defines handle_exception still answers 500') do
   assert_equal 500, wm_run(wm_res_handling).code
 end
 
-wm_case('flow on error: a defined handle_exception can define the body') do
-  assert_equal 'error', wm_run(wm_res_handling).body
+wm_case('flow on error: a resource handle_exception is ignored, the raise survives it') do
+  # The shim spells what the error resource would: class and message.
+  assert_equal 'RuntimeError: oracle', wm_run(wm_res_handling).body
+end
+
+wm_case('flow on error: with no hook anywhere, the raise is still what reaches the writer') do
+  assert_equal 'RuntimeError: oracle', wm_run(wm_res_raising).body
 end

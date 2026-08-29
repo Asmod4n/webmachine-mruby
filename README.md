@@ -66,8 +66,15 @@ what it holds and 404s everything else.
 Both logs are opt-in and separate — separate files, separate writers,
 no field in common. `--log` is the access log and anonymizes addresses
 by default; `--error-log` is what a callback *raised*: class, message
-and backtrace, while the peer still sees only a 500. Compile the app
-with `mrbc -g` for frames that name a file and a line.
+and backtrace. Compile the app with `mrbc -g` for frames that name a
+file and a line.
+
+What the *peer* sees of that raise is a separate decision, and it is
+made in one place — `Webmachine::ErrorResource#handle_exception`, which
+by default answers the exception's class and message. Return `nil` there
+and a 500 says nothing but "500". A `handle_exception` on an ordinary
+resource is ignored: how an exception becomes text is one decision for
+the server, not a per-route one.
 `--log-max-bytes` is a hard ceiling on each file, 500 MB by default —
 at the cap the oldest lines go, in place, so a busy server cannot fill
 the disk. `0` turns the ceiling off.

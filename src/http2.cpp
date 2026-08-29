@@ -253,7 +253,10 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     rv.fields = nh != 0 ? hv : nullptr;
     rv.field_count = nh;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
-    if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, sink)) return false;
+    if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, target.data(),
+                   target.size(), sink)) {
+      return false;
+    }
     h2_log(st0, facts, target.data(), target.size());
     return true;
   }
@@ -425,7 +428,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     // be lent for the length of the answer.
     rv.fields = hv;
     rv.field_count = nh;
-    if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv, sink)) {
+    if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv,
+                   path_val, path_vlen, sink)) {
       return false;
     }
     h2_log(st0, facts, path_val, path_vlen);
@@ -601,7 +605,8 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 // min(connection, stream) is PARKED, never written.
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, bool head_only, uint16_t route,
-                      const ReqView* req, std::string& sink) {
+                      const ReqView* req, const char* target, size_t target_len,
+                      std::string& sink) {
   H2State& h2 = *st0.h2;
 
   const Bundle* b = nullptr;
@@ -683,11 +688,15 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   H2Block errblk;
   std::string err_body;
   const auto error_page = [&](uint16_t s, const ErrorPages::Fields& f) {
-    const ErrorPages::Media m = ErrorPages::media_for(
-        vals != nullptr ? vals->accept : nullptr, vals != nullptr ? vals->accept_len : 0);
+    const int m = err_pages_.media_for(vals != nullptr ? vals->accept : nullptr,
+                                       vals != nullptr ? vals->accept_len : 0);
     if (!err_pages_.render(s, m, f, err_body)) return false;
-    const std::string ctype(ErrorPages::media_value(m));
-    h2_build_block(errblk, s, &ctype, nullptr);
+    const std::string ctype(err_pages_.media_type(m));
+    // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the
+    // page it now carries must not cost it that field.
+    const std::string* allow =
+        (s == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
+    h2_build_block(errblk, s, &ctype, allow);
     body = err_body.data();
     blen = err_body.size();
     blk = &errblk;
@@ -722,16 +731,16 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
                     req != nullptr ? req->request_target : nullptr,
                     req != nullptr ? req->request_target_len : 0, 500);
     }
-    const char* bp = nullptr;
-    size_t bl = 0;
-    // resource_exception_begin unroots the exception it reads from, and
-    // rendering allocates - so the message is copied first, the same way
-    // h1 copies it.
+    // #210: handle_exception lives on the error resource and nowhere
+    // else, so the exception object itself is what crosses over.
     std::string message;
-    if (resource_exception_begin(*b->res, &bp, &bl)) message.assign(bp, bl);
+    mrb_value exc = mrb_nil_value();
+    if (resource_exception_take(*b->res, &exc)) err_pages_.exception_text(exc, message);
     ErrorPages::Fields f;
-    f.target = req != nullptr ? req->request_target : nullptr;
-    f.target_len = req != nullptr ? req->request_target_len : 0;
+    f.target = target;
+    f.target_len = target_len;
+    f.method = req != nullptr ? req->method_token : nullptr;
+    f.method_len = req != nullptr ? req->method_token_len : 0;
     f.message = message.data();
     f.message_len = message.size();
     if (!error_page(500, f)) blk = &h2_store_[(*idx)[500]];
@@ -744,8 +753,14 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     bool spelled = false;
     if (status >= 400) {
       ErrorPages::Fields f;
-      f.target = req != nullptr ? req->request_target : nullptr;
-      f.target_len = req != nullptr ? req->request_target_len : 0;
+      f.target = target;
+      f.target_len = target_len;
+      f.method = req != nullptr ? req->method_token : nullptr;
+      f.method_len = req != nullptr ? req->method_token_len : 0;
+      if (status == 405 && b != nullptr && !b->konst.allow.empty()) {
+        f.allow = b->konst.allow.data();
+        f.allow_len = b->konst.allow.size();
+      }
       spelled = error_page(status, f);
     }
     if (!spelled) blk = &h2_store_[(*idx)[status]];
@@ -1283,7 +1298,10 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           rv.fields = nh != 0 ? hv : nullptr;
           rv.field_count = nh;
           const ReqView* rvp = h2_parked_view(st0, target, rv);
-          if (!h2_answer(st0, stream, facts, &pvals, head_only, route, rvp, sink)) return false;
+          if (!h2_answer(st0, stream, facts, &pvals, head_only, route, rvp, target.data(),
+                         target.size(), sink)) {
+            return false;
+          }
           h2_log(st0, facts, target.data(), target.size());
         }
         break;

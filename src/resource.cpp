@@ -404,7 +404,6 @@ const NamedSym kWorkOnly[] = {
     {MRB_SYM(create_path), "create_path"},
     {MRB_SYM(process_post), "process_post"},
     {MRB_SYM(finish_request), "finish_request"},
-    {MRB_SYM(handle_exception), "handle_exception"},
 };
 
 // RFC 9110 5.1: case-insensitive token equality, neither side canonical.
@@ -469,26 +468,20 @@ bool content_md5_ok(const Resource& res) {
 struct RescueCtx {
   const Resource* res;
   mrb_value exc;
-  bool handled = false;
 };
 
-// fsm.rb: the raise path - handle_exception when the app declared one,
-// then finish_request, both inside their own guarded frame.
+// fsm.rb: the raise path - finish_request, inside its own guarded frame.
+// handle_exception is NOT here: it lives on Webmachine::ErrorResource and
+// nowhere else (#210), because what an exception says on the wire is one
+// decision for the server rather than a per-route one. A resource that
+// defines its own is ignored.
 mrb_value run_rescue_body(mrb_state* mrb, void* ud) {
   RescueCtx& rc = *static_cast<RescueCtx*>(ud);
   const Resource& res = *rc.res;
-  if (res.cb_handle_exception.has && !mrb_nil_p(res.live)) {
-    rc.handled = true;
-    mrb_value e = rc.exc;
-    const mrb_value recv =
-        MRB_METHOD_UNDEF_P(res.cb_handle_exception.m) ? mrb_obj_value(res.klass) : res.live;
-    mrb_funcall_argv(mrb, recv, res.cb_handle_exception.sym,
-                     res.cb_handle_exception.argc != 0 ? 1 : 0, &e);
-    if (res.cb_finish_request.has) {
-      const mrb_value frecv =
-          MRB_METHOD_UNDEF_P(res.cb_finish_request.m) ? mrb_obj_value(res.klass) : res.live;
-      mrb_funcall_argv(mrb, frecv, res.cb_finish_request.sym, 0, nullptr);
-    }
+  if (res.cb_finish_request.has && !mrb_nil_p(res.live)) {
+    const mrb_value frecv =
+        MRB_METHOD_UNDEF_P(res.cb_finish_request.m) ? mrb_obj_value(res.klass) : res.live;
+    mrb_funcall_argv(mrb, frecv, res.cb_finish_request.sym, 0, nullptr);
   }
   return mrb_nil_value();
 }
@@ -1557,7 +1550,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_base_uri = value_cb(mrb, klass, MRB_SYM(base_uri), 0, true);
   out.cb_process_post = value_cb(mrb, klass, MRB_SYM(process_post), 0, false);
   out.cb_finish_request = value_cb(mrb, klass, MRB_SYM(finish_request), 0, false);
-  out.cb_handle_exception = value_cb(mrb, klass, MRB_SYM(handle_exception), 1, false);
   // The fast part: one bit per ValueCb above, set once here so every run
   // asks "does X exist" with one load instead of touching X's own struct.
   out.cb_mask = 0;
@@ -1577,7 +1569,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   if (out.cb_base_uri.has) out.cb_mask |= Resource::kCbBaseUri;
   if (out.cb_process_post.has) out.cb_mask |= Resource::kCbProcessPost;
   if (out.cb_finish_request.has) out.cb_mask |= Resource::kCbFinishRequest;
-  if (out.cb_handle_exception.has) out.cb_mask |= Resource::kCbHandleException;
   // kC3 is a request-kind node: its dynamic bit forces the run tier without
   // touching any konst answer.
   if (out.cb_mask != 0) out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
@@ -1787,7 +1778,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
-// it, handle_exception owns the raise path when the app declared it.
+// it, and a raise leaves the exception pending for the error resource.
 uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, const ReqView* req, std::string* body,
                       bool* have_body, std::string* headers, size_t zc_min) {
@@ -1834,17 +1825,18 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
     res.run_zc_have = false;
   }
   if (WM_RES_UNLIKELY(raised != FALSE)) {
-    // fsm.rb: handle_exception owns the raise when the app declared it,
-    // and finish_request still runs. Both may raise again, so they get
-    // their own guarded frame - the rare path pays for a second one.
+    // fsm.rb: finish_request still runs on the raise path, and it may
+    // raise again, so it gets its own guarded frame - the rare path pays
+    // for a second one.
     RescueCtx rc = {&res, thrown};
     mrb_bool again = FALSE;
     const mrb_value second = mrb_protect_error(mrb, run_rescue_body, &rc, &again);
-    // The writer's contract (resource_exception_begin): with nothing that
-    // handled it, the exception is still pending when this returns.
+    // The writer's contract (resource_exception_take): the exception is
+    // still pending when this returns, because the error resource is what
+    // turns it into words.
     if (again != FALSE) {
       if (mrb_exception_p(second)) mrb->exc = mrb_obj_ptr(second);
-    } else if (!rc.handled && mrb_exception_p(thrown)) {
+    } else if (mrb_exception_p(thrown)) {
       mrb->exc = mrb_obj_ptr(thrown);
     }
     status = res.run_resp_code != 0 ? res.run_resp_code : 500;
@@ -1897,15 +1889,16 @@ void resource_body_unlend(mrb_state* mrb, mrb_value v) {
   mrb_basic_ptr(v)->frozen = 0;
 }
 
-// RFC 9110 15.6.1: the pending exception's message, lent for the 500 body.
-bool resource_exception_begin(const Resource& res, const char** ptr, size_t* len) {
+// RFC 9110 15.6.1: the pending exception ITSELF, for the error resource's
+// handle_exception (#210) - what an exception says is one decision for
+// the server, made in Ruby, not a message some resource already made.
+// Rooted in the arena on the way out: clearing mrb->exc unroots it, and
+// everything the caller does next allocates.
+bool resource_exception_take(const Resource& res, mrb_value* out) {
   if (res.mrb->exc == nullptr) return false;
-  struct RException* e = reinterpret_cast<struct RException*>(res.mrb->exc);
+  *out = mrb_obj_value(res.mrb->exc);
   res.mrb->exc = nullptr;
-  if (e->mesg == nullptr || e->mesg->tt != MRB_TT_STRING) return false;
-  const mrb_value mesg = mrb_obj_value(e->mesg);
-  *ptr = RSTRING_PTR(mesg);
-  *len = static_cast<size_t>(RSTRING_LEN(mesg));
+  mrb_gc_protect(res.mrb, *out);
   return true;
 }
 

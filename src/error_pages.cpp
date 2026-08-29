@@ -15,66 +15,23 @@
 namespace webmachine {
 namespace {
 
-// #210: THE page. It lives here, in the code, because a server with no
-// asset pack still has to be able to say what went wrong - and an
-// operator who wants a different one puts errors/error.html in the pack,
-// which wins. `rake error_pages` reads these two literals into the pack,
-// so the copy an operator edits and the copy every binary carries cannot
-// drift.
-constexpr const char kHtmlTemplate[] = R"WM_HTML(<!doctype html>
-<html lang=en>
-<meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>{{status}} {{title}}</title>
-<style>
-:root{color-scheme:light dark;--bg:#fbfbfa;--fg:#1a1a1a;--dim:#6b6b6b;--rule:#e2e2df}
-@media (prefers-color-scheme:dark){
-  :root{--bg:#15161a;--fg:#e8e8e6;--dim:#8a8a92;--rule:#2a2c33}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-  background:var(--bg);color:var(--fg);padding:2rem 1rem;
-  font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-main{max-width:40rem;text-align:center}
-.n{font-size:clamp(3.5rem,14vw,6rem);font-weight:700;letter-spacing:-.04em;
-  line-height:1;margin:0;font-variant-numeric:tabular-nums}
-h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
-img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
-.s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
-.t{margin:0 0 1.6rem;color:var(--dim);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,
-  Consolas,monospace;overflow-wrap:anywhere}
-.m{margin:1.2rem 0 0;padding:.8rem 1rem;border-radius:.4rem;background:rgba(127,127,127,.12);
-  text-align:left;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  white-space:pre-wrap;overflow-wrap:anywhere}
-.c{margin:1.2rem 0 0;padding-top:1.2rem;border-top:1px solid var(--rule);
-  color:var(--dim);font-size:.75rem}
-a{color:inherit}
-</style>
-<main>
-  <p class=n>{{status}}</p>
-  <h1>{{title}}</h1>
-{{#target}}  <p class=t>{{target}}</p>
-{{/target}}{{#cat}}  <img src="{{cat_url}}" width="{{cat_width}}" height="{{cat_height}}"
-       alt="A cat, illustrating HTTP {{status}} {{title}}">
-{{/cat}}  <p class=s>{{source}}</p>
-{{#message}}  <p class=m>{{message}}</p>
-{{/message}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
-{{/cat}}</main>
-)WM_HTML";
-
-constexpr const char kJsonTemplate[] = R"WM_JSON({"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#instance}},"instance":"{{{instance}}}"{{/instance}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
-)WM_JSON";
-
-// RFC 2046 4.1: when a client will take neither the page nor the problem
-// document, it still gets an answer it can read. No escaping here on
-// purpose - text/plain interprets no markup, so {{{ }}} is the correct
-// spelling and an escape would only put &amp; in front of a human.
-constexpr const char kTextTemplate[] = R"WM_TEXT({{status}} {{{title}}}
-{{#target}}{{{target}}}
-{{/target}}{{#message}}
-{{{message}}}
-{{/message}}
-{{{source}}}
-)WM_TEXT";
+// PKWARE APPNOTE: an entry this tier may read straight out of the mapping.
+// The pack builder stores the index (rake error_pages), so a deflated one
+// is a pack built by something else - refused by name rather than
+// inflated here, because setup is not the place to grow a second
+// decompressor.
+bool pack_text(Assets& assets, const char* path, size_t len, std::string& out, char* err,
+               size_t errlen) {
+  const AssetEntry* e = assets.find(path, len);
+  if (e == nullptr) return false;
+  if (e->deflated) {
+    std::snprintf(err, errlen, "asset pack: %s is deflated - the error pack stores its text",
+                  path);
+    return false;
+  }
+  out.assign(e->file_data, e->uncompressed_size);
+  return true;
+}
 
 // RFC 9110 15 and the registries around it. reason() already spells the
 // name for the status line; this table exists for the second half - a
@@ -149,6 +106,18 @@ const Face* face_for(uint16_t status) {
   return nullptr;
 }
 
+// mruby: the handler call, under mrb_protect_error - it is app code from
+// the moment somebody reopens the class, and app code raises.
+struct HandlerCall {
+  mrb_value self;
+  mrb_sym sym;
+  mrb_value arg;
+};
+mrb_value handler_body(mrb_state* mrb, void* ud) {
+  const HandlerCall* c = static_cast<const HandlerCall*>(ud);
+  return mrb_funcall_argv(mrb, c->self, c->sym, 1, &c->arg);
+}
+
 }  // namespace
 
 // RFC 9110 15: what this status is called, from the same list the pack is
@@ -166,182 +135,180 @@ const char* status_source(uint16_t status) {
   return f != nullptr ? f->source : "not registered";
 }
 
-}  // namespace webmachine
-
-namespace webmachine {
-namespace {
-
-// PKWARE APPNOTE: an entry this tier may read straight out of the mapping.
-// The pack builder stores the templates and the index (rake error_pages),
-// so a deflated one is a pack built by something else - refused by name
-// rather than inflated here, because setup is not the place to grow a
-// second decompressor.
-bool pack_text(Assets& assets, const char* path, size_t len, std::string& out, char* err,
-               size_t errlen) {
-  const AssetEntry* e = assets.find(path, len);
-  if (e == nullptr) return false;
-  if (e->deflated) {
-    std::snprintf(err, errlen, "asset pack: %s is deflated - the error pack stores its text",
-                  path);
-    return false;
-  }
-  out.assign(e->file_data, e->uncompressed_size);
-  return true;
-}
-
-// mruby: Mustache::Template.compile(src), under mrb_protect_error - an
-// operator's own template may not parse, and that is a startup refusal
-// with a name, not a crash.
-struct CompileCall {
-  const std::string* src;
-};
-mrb_value compile_body(mrb_state* mrb, void* ud) {
-  const CompileCall* c = static_cast<const CompileCall*>(ud);
-  struct RClass* m = mrb_module_get_id(mrb, MRB_SYM(Mustache));
-  struct RClass* t = mrb_class_get_under_id(mrb, m, MRB_SYM(Template));
-  mrb_value s = mrb_str_new(mrb, c->src->data(), static_cast<mrb_int>(c->src->size()));
-  return mrb_funcall_id(mrb, mrb_obj_value(t), MRB_SYM(compile), 1, s);
-}
-
-// mruby: template.render(context), under the same guard.
-struct RenderCall {
-  mrb_value tmpl;
-  mrb_value ctx;
-};
-mrb_value render_body(mrb_state* mrb, void* ud) {
-  const RenderCall* c = static_cast<const RenderCall*>(ud);
-  return mrb_funcall_id(mrb, c->tmpl, MRB_SYM(render), 1, c->ctx);
-}
-
-// RFC 8259 7: the six characters a JSON string may not carry raw. The
-// json template takes {{{ }}} for the message because mustache escapes
-// for HTML, and &amp; inside a JSON string would be a lie - so the
-// encoding job is done here, where the encoding is known.
-void json_escape(const char* p, size_t n, std::string& out) {
-  for (size_t i = 0; i < n; i++) {
-    const unsigned char c = static_cast<unsigned char>(p[i]);
-    switch (c) {
-      case '"':  out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (c < 0x20) {
-          char u[7];
-          std::snprintf(u, sizeof u, "\\u%04x", c);
-          out += u;
-        } else {
-          out += static_cast<char>(c);
-        }
-    }
-  }
-}
-
-}  // namespace
-
-// RFC 9110 12.5.1: which of the three this client can read. An error is
-// not a representation of the resource, so content_types_provided has no
-// say - only Accept does, and a client that will take neither the page
-// nor the problem document still gets something it can read.
-ErrorPages::Media ErrorPages::media_for(const char* accept, size_t len) {
-  if (accept == nullptr || len == 0) return Media::kHtml;
-  const auto has = [&](const char* needle, size_t nlen) {
-    if (nlen > len) return false;
-    for (size_t i = 0; i + nlen <= len; i++) {
-      if (std::memcmp(accept + i, needle, nlen) == 0) return true;
-    }
-    return false;
-  };
-  // Named first, in the order a page is the more useful answer.
-  if (has("text/html", 9)) return Media::kHtml;
-  // RFC 6839 3.1: the +json structured syntax suffix counts, so
-  // application/problem+json and every other +json land here too.
-  if (has("/json", 5) || has("+json", 5)) return Media::kJson;
-  // A wildcard is a client with no opinion, and a client with no opinion
-  // is nearly always a browser.
-  if (has("*/*", 3) || has("text/*", 6)) return Media::kHtml;
-  return Media::kText;
-}
-
-// RFC 9457 3: the problem document has its own media type, and it is not
-// application/json.
-const char* ErrorPages::media_type(Media m) {
-  switch (m) {
-    case Media::kJson: return "Content-Type: application/problem+json\r\n";
-    case Media::kText: return "Content-Type: text/plain; charset=utf-8\r\n";
-    case Media::kHtml: break;
-  }
-  return "Content-Type: text/html; charset=utf-8\r\n";
-}
-
-// The same three, as the value h2's field encoder wants.
-const char* ErrorPages::media_value(Media m) {
-  switch (m) {
-    case Media::kJson: return "application/problem+json";
-    case Media::kText: return "text/plain; charset=utf-8";
-    case Media::kHtml: break;
-  }
-  return "text/html; charset=utf-8";
-}
 
 ErrorPages::~ErrorPages() {
-  if (mrb_ == nullptr) return;
-  if (!mrb_nil_p(html_)) mrb_gc_unregister(mrb_, html_);
-  if (!mrb_nil_p(json_)) mrb_gc_unregister(mrb_, json_);
-  if (!mrb_nil_p(text_)) mrb_gc_unregister(mrb_, text_);
+  if (mrb_ != nullptr && !mrb_nil_p(res_)) mrb_gc_unregister(mrb_, res_);
 }
 
-// #210: both templates compiled once. Rooted with mrb_gc_register, not
-// the arena: these outlive every arena mark the setup path takes.
+// #210: one instance of Webmachine::ErrorResource, and the handlers it
+// answers to. Rooted with mrb_gc_register, not the arena: it outlives
+// every arena mark the setup path takes and every one a request takes.
 bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) {
   mrb_ = mrb;
-  std::string html(kHtmlTemplate);
-  std::string json(kJsonTemplate);
-  std::string text(kTextTemplate);
-  if (assets != nullptr) {
-    // The pack's copy wins - that is the whole edit path for an operator
-    // who does not rebuild the server.
-    std::string t;
-    if (pack_text(*assets, "/errors/error.html", 18, t, err, errlen)) html.swap(t);
-    else if (err[0] != '\0') return false;
-    t.clear();
-    if (pack_text(*assets, "/errors/error.json", 18, t, err, errlen)) json.swap(t);
-    else if (err[0] != '\0') return false;
-    t.clear();
-    if (pack_text(*assets, "/errors/error.txt", 17, t, err, errlen)) text.swap(t);
-    else if (err[0] != '\0') return false;
-    read_cats(*assets);
+  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+  if (wm == nullptr) {
+    std::snprintf(err, errlen, "error pages: Webmachine is not defined");
+    return false;
   }
+  if (!mrb_const_defined_at(mrb, mrb_obj_value(wm), MRB_SYM(ErrorResource))) {
+    std::snprintf(err, errlen, "error pages: Webmachine::ErrorResource is not defined");
+    return false;
+  }
+  struct RClass* klass = mrb_class_get_under_id(mrb, wm, MRB_SYM(ErrorResource));
   const int ai = mrb_gc_arena_save(mrb);
-  const std::string* sources[3] = {&html, &json, &text};
-  static constexpr const char* kNames[3] = {"errors/error.html", "errors/error.json",
-                                            "errors/error.txt"};
-  for (int pass = 0; pass < 3; pass++) {
-    CompileCall c{sources[pass]};
-    mrb_bool raised = FALSE;
-    const mrb_value t = mrb_protect_error(mrb, compile_body, &c, &raised);
+  mrb_bool raised = FALSE;
+  {
+    // A class body that raises (a template of its own that does not
+    // parse) is a startup refusal with a name, not a crash on the first
+    // 404.
+    HandlerCall c{mrb_obj_value(klass), MRB_SYM(new), mrb_nil_value()};
+    const mrb_value obj = mrb_protect_error(
+        mrb,
+        [](mrb_state* m, void* ud) -> mrb_value {
+          const HandlerCall* cc = static_cast<const HandlerCall*>(ud);
+          return mrb_funcall_argv(m, cc->self, cc->sym, 0, nullptr);
+        },
+        &c, &raised);
     if (raised) {
-      const char* which = kNames[pass];
-      std::string why = "does not compile";
-      if (mrb_exception_p(t)) {
-        const mrb_value m = mrb_funcall_id(mrb, t, MRB_SYM(message), 0);
-        if (mrb_string_p(m)) why.assign(RSTRING_PTR(m), RSTRING_LEN(m));
-      }
-      std::snprintf(err, errlen, "error pages: %s: %s", which, why.c_str());
+      std::snprintf(err, errlen, "error pages: Webmachine::ErrorResource.new raised");
       mrb->exc = nullptr;
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
-    if (pass == 0) html_ = t;
-    else if (pass == 1) json_ = t;
-    else text_ = t;
-    mrb_gc_register(mrb, t);
+    res_ = obj;
+    mrb_gc_register(mrb, res_);
   }
   mrb_gc_arena_restore(mrb, ai);
+
+  // cb.rb content_types_provided: the same word an ordinary resource
+  // uses, and the whole negotiation. What it lists is what an error may
+  // be spelled as; the order breaks ties, so the first entry is what a
+  // client with no opinion gets.
+  {
+    HandlerCall c{mrb_obj_value(klass), MRB_SYM(content_types_provided), mrb_nil_value()};
+    const mrb_value v = mrb_protect_error(
+        mrb,
+        [](mrb_state* m, void* ud) -> mrb_value {
+          const HandlerCall* cc = static_cast<const HandlerCall*>(ud);
+          return mrb_funcall_argv(m, cc->self, cc->sym, 0, nullptr);
+        },
+        &c, &raised);
+    if (raised || !mrb_array_p(v)) {
+      std::snprintf(err, errlen,
+                    "error pages: ErrorResource.content_types_provided must answer "
+                    "[[type, handler]] pairs");
+      mrb->exc = nullptr;
+      mrb_gc_arena_restore(mrb, ai);
+      return false;
+    }
+    const mrb_int n = RARRAY_LEN(v);
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_value pair = mrb_ary_ref(mrb, v, i);
+      if (!mrb_array_p(pair) || RARRAY_LEN(pair) < 2) continue;
+      const mrb_value type = mrb_ary_ref(mrb, pair, 0);
+      const mrb_value hnd = mrb_ary_ref(mrb, pair, 1);
+      if (!mrb_string_p(type) || !mrb_symbol_p(hnd)) {
+        std::snprintf(err, errlen,
+                      "error pages: content_types_provided pairs are [String, Symbol]");
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
+      }
+      Handler h;
+      h.sym = mrb_symbol(hnd);
+      h.type.assign(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type)));
+      if (!mrb_respond_to(mrb, res_, h.sym)) {
+        std::snprintf(err, errlen, "error pages: %s names %s, which is not defined",
+                      h.type.c_str(), mrb_sym_name(mrb, h.sym));
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
+      }
+      have_.push_back(std::move(h));
+    }
+  }
+  mrb_gc_arena_restore(mrb, ai);
+  if (have_.empty()) {
+    std::snprintf(err, errlen, "error pages: ErrorResource offers no content type");
+    return false;
+  }
+  types_.reserve(have_.size());
+  for (const Handler& h : have_) types_.push_back(h.type);
+  // The way out, by name: whatever a client asked for, text/plain is
+  // something every one of them can read. Only when the list does not
+  // offer it at all does the last entry stand in.
+  plain_ = static_cast<int>(have_.size()) - 1;
+  for (size_t i = 0; i < have_.size(); i++) {
+    if (have_[i].type.compare(0, 10, "text/plain") == 0) {
+      plain_ = static_cast<int>(i);
+      break;
+    }
+  }
+  exc_sym_ = MRB_SYM(handle_exception);
+  if (assets != nullptr) read_cats(*assets);
   ready_ = true;
+  return true;
+}
+
+// RFC 9110 12.5.1: which form this client can read. An error is not a
+// representation of the resource, so content_types_provided has no say -
+// only Accept does, weighed against what the error resource offers.
+//
+// First match in table order, which is html, then json, then the rest.
+// With three forms that is honest; the day this list is ten long, Accept
+// has to be weighed with its q-values instead.
+int ErrorPages::media_for(const char* accept, size_t len) const {
+  if (have_.empty()) return -1;
+  // The same weighing c4 does for a resource - q-values, both wildcard
+  // forms, provided order breaking ties. An Accept nothing matches still
+  // gets an answer: an error is not a representation of the resource, so
+  // there is nothing here to 406 about. text/plain is the way out,
+  // because every client can read it.
+  if (accept == nullptr || len == 0) return 0;
+  const int pick = http::choose_media_type(types_.data(), types_.size(), accept, len);
+  return pick >= 0 ? pick : plain_;
+}
+
+const char* ErrorPages::media_type(int slot) const {
+  if (slot < 0 || static_cast<size_t>(slot) >= have_.size()) return "text/plain; charset=utf-8";
+  return have_[static_cast<size_t>(slot)].type.c_str();
+}
+
+// mruby: what a resource that raised has to say. fsm.rb's handle_exception,
+// on the error resource and nowhere else - how an exception becomes text
+// is one decision for the server, not a per-route one.
+bool ErrorPages::exception_text(mrb_value exc, std::string& out) {
+  if (!ready_) return false;
+  const int ai = mrb_gc_arena_save(mrb_);
+  HandlerCall c{res_, exc_sym_, exc};
+  mrb_bool raised = FALSE;
+  const mrb_value v = mrb_protect_error(mrb_, handler_body, &c, &raised);
+  if (raised) {
+    mrb_->exc = nullptr;
+    mrb_gc_arena_restore(mrb_, ai);
+    return false;
+  }
+  // The one thing this server fixes about handle_exception is the shape
+  // of its answer: a String, or an Array joined with CRLF. What goes in
+  // it - a backtrace included - is the app's call, not this layer's.
+  if (mrb_string_p(v)) {
+    out.assign(RSTRING_PTR(v), RSTRING_LEN(v));
+  } else if (mrb_array_p(v)) {
+    const mrb_int n = RARRAY_LEN(v);
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_value e = mrb_ary_ref(mrb_, v, i);
+      if (!out.empty()) out.append("\r\n");
+      if (mrb_string_p(e)) {
+        out.append(RSTRING_PTR(e), static_cast<size_t>(RSTRING_LEN(e)));
+      } else {
+        const mrb_value st = mrb_obj_as_string(mrb_, e);
+        if (mrb_string_p(st)) out.append(RSTRING_PTR(st), static_cast<size_t>(RSTRING_LEN(st)));
+      }
+    }
+  } else {
+    // nil is an answer: "this 500 says nothing but 500".
+    mrb_gc_arena_restore(mrb_, ai);
+    return false;
+  }
+  mrb_gc_arena_restore(mrb_, ai);
   return true;
 }
 
@@ -377,11 +344,12 @@ void ErrorPages::read_cats(Assets& assets) {
   }
 }
 
-// #210: one error body. Rendered per response - a 404 names what was not
-// found, so there is nothing here a boot could have prepared.
-bool ErrorPages::render(uint16_t status, Media m, const Fields& f, std::string& out) {
-  if (!ready_) return false;
-  const bool want_json = m == Media::kJson;
+// #210: one error body. The Hash built here is what every handler is
+// handed, and it is also the template context - status, title, source,
+// target, and for a 500 the message. Rendered per response: a 404 names
+// what was not found, so there is nothing a boot could have prepared.
+bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string& out) {
+  if (!ready_ || slot < 0 || static_cast<size_t>(slot) >= have_.size()) return false;
   mrb_state* mrb = mrb_;
   const int ai = mrb_gc_arena_save(mrb);
   mrb_value ctx = mrb_hash_new(mrb);
@@ -389,57 +357,34 @@ bool ErrorPages::render(uint16_t status, Media m, const Fields& f, std::string& 
     mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, key),
                  mrb_str_new(mrb, val, static_cast<mrb_int>(len)));
   };
-  const auto put_cstr = [&](const char* key, const char* val) {
-    put(key, val, std::strlen(val));
-  };
   mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
-  put_cstr("title", status_title(status));
-  put_cstr("source", status_source(status));
-
-  std::string scratch;
-  if (f.target != nullptr && f.target_len != 0) {
-    if (want_json) {
-      scratch.clear();
-      json_escape(f.target, f.target_len, scratch);
-      put("instance", scratch.data(), scratch.size());
-    } else {
-      put("target", f.target, f.target_len);
-    }
+  put("title", status_title(status), std::strlen(status_title(status)));
+  put("source", status_source(status), std::strlen(status_source(status)));
+  if (f.target != nullptr && f.target_len != 0) put("target", f.target, f.target_len);
+  if (f.method != nullptr && f.method_len != 0) put("method", f.method, f.method_len);
+  if (f.allow != nullptr && f.allow_len != 0) put("allow", f.allow, f.allow_len);
+  if (f.message != nullptr && f.message_len != 0) put("message", f.message, f.message_len);
+  if (f.backtrace != nullptr && f.backtrace_len != 0) {
+    put("backtrace", f.backtrace, f.backtrace_len);
   }
-  if (f.message != nullptr && f.message_len != 0) {
-    if (want_json) {
-      scratch.clear();
-      json_escape(f.message, f.message_len, scratch);
-      put("message", scratch.data(), scratch.size());
-    } else {
-      put("message", f.message, f.message_len);
-    }
-  }
-  if (want_json && f.backtrace != nullptr && f.backtrace_len != 0) {
-    scratch.clear();
-    json_escape(f.backtrace, f.backtrace_len, scratch);
-    put("backtrace", scratch.data(), scratch.size());
-  }
-  if (m == Media::kHtml) {
-    const int16_t slot = status < 600 ? cat_index_[status] : 0;
-    if (slot > 0) {
-      const Cat& c = cats_[static_cast<size_t>(slot)];
-      mrb_value cat = mrb_hash_new(mrb);
-      mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_url"),
-                   mrb_str_new(mrb, c.url.data(), static_cast<mrb_int>(c.url.size())));
-      mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_width"),
-                   mrb_fixnum_value(static_cast<mrb_int>(c.width)));
-      mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_height"),
-                   mrb_fixnum_value(static_cast<mrb_int>(c.height)));
-      mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
-    }
+  const int16_t cslot = status < 600 ? cat_index_[status] : 0;
+  if (cslot > 0) {
+    const Cat& c = cats_[static_cast<size_t>(cslot)];
+    mrb_value cat = mrb_hash_new(mrb);
+    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_url"),
+                 mrb_str_new(mrb, c.url.data(), static_cast<mrb_int>(c.url.size())));
+    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_width"),
+                 mrb_fixnum_value(static_cast<mrb_int>(c.width)));
+    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_height"),
+                 mrb_fixnum_value(static_cast<mrb_int>(c.height)));
+    mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
   }
 
-  RenderCall rc{m == Media::kJson ? json_ : (m == Media::kText ? text_ : html_), ctx};
+  HandlerCall c{res_, have_[static_cast<size_t>(slot)].sym, ctx};
   mrb_bool raised = FALSE;
-  const mrb_value body = mrb_protect_error(mrb, render_body, &rc, &raised);
+  const mrb_value body = mrb_protect_error(mrb, handler_body, &c, &raised);
   if (raised || !mrb_string_p(body)) {
-    // A template that raises has no page to offer, and the caller still
+    // A handler that raises has no page to offer, and the caller still
     // owes the client an answer - it falls back to the bodyless status.
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
