@@ -268,24 +268,51 @@ def read_pack(path)
   out
 end
 
+# The comments live in the CENTRAL directory, not beside the data, so
+# reading them back means walking that instead of the local headers.
+def read_pack_with_comments(path)
+  raw = File.binread(path)
+  eocd = raw.rindex("PK\x05\x06".b) or return {}
+  n, _cdsize, cdoff = raw[eocd + 10, 10].unpack('vVV')
+  out = {}
+  off = cdoff
+  n.times do
+    break unless raw[off, 4] == "PK\x01\x02".b
+    csize, _usize, nlen, elen, clen = raw[off + 20, 14].unpack('VVvvv')
+    lho = raw[off + 42, 4].unpack1('V')
+    name = raw[off + 46, nlen]
+    comment = clen.zero? ? '' : raw[off + 46 + nlen + elen, clen]
+    lnlen, lelen = raw[lho + 26, 4].unpack('vv')
+    out[name] = [raw[lho + 30 + lnlen + lelen, csize], comment]
+    off += 46 + nlen + elen + clen
+  end
+  out
+end
+
 # The error assets format the asset tier reads: stored or deflate, nothing else
 # (#170/#177). Everything here is STORED - measured on the cats, a deflate
 # entry always leaves as gzip, even to a client that sent no
 # Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
 # One fixed timestamp keeps the zip reproducible.
+# PKWARE APPNOTE 4.4.18: the central directory carries a comment per
+# entry. That is where an image's upstream validators go - the archive
+# ships pictures and nothing else, and a rebuild still gets to ask
+# http.cat whether anything changed.
 def error_zip(entries)
   out = +''.b
   cd = +''.b
   dtime = 0
   ddate = ((2026 - 1980) << 9) | (8 << 5) | 28
-  entries.each do |name, data|
+  entries.each do |name, data, comment|
     data = data.b
+    comment = (comment || '').b
     crc = Zlib.crc32(data)
     lho = out.bytesize
     out << [0x04034b50, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
             name.bytesize, 0].pack('VvvvvvVVVvv') << name.b << data
     cd << [0x02014b50, 20, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
-           name.bytesize, 0, 0, 0, 0, 0, lho].pack('VvvvvvvVVVvvvvvVV') << name.b
+           name.bytesize, 0, comment.bytesize, 0, 0, 0, lho].pack('VvvvvvvVVVvvvvvVV') <<
+          name.b << comment
   end
   cd_off = out.bytesize
   out << cd
@@ -304,13 +331,11 @@ task :error_assets do
   # answers 304 and costs nothing.
   have = {}
   if File.exist?(ERROR_ASSETS)
-    old_entries = read_pack(ERROR_ASSETS)
-    (old_entries['cats/index.txt'] || '').each_line do |l|
-      next if l.start_with?('#')
-      code, _w, _h, _n, etag, lastmod = l.chomp.split("\t")
+    read_pack_with_comments(ERROR_ASSETS).each do |name, (bytes, comment)|
+      code = name[/\A(\d+)\.jpg\z/, 1]
       next unless code
-      have[code.to_i] = { etag: etag, lastmod: lastmod,
-                          bytes: old_entries["cats/#{code}.jpg"] }
+      etag, lastmod = comment.to_s.split("\t")
+      have[code.to_i] = { etag: etag, lastmod: lastmod, bytes: bytes }
     end
   end
 
@@ -358,17 +383,15 @@ task :error_assets do
   raise 'http.cat answered with no images at all' if cats.empty?
   puts "  #{fetched} fetched, #{cats.size - fetched} unchanged upstream"
 
-  # Pictures and provenance, nothing else. The templates live in
-  # Webmachine::ErrorResource (mrblib/webmachine.rb), because a server
-  # with no pack still has to be able to say what went wrong - and the
-  # way to change a page is to reopen that class, not to edit a zip.
-  entries = [['NOTICE.txt', ERROR_NOTICE]]
-  # Geometry and provenance, so the server needs no JPEG reader and the
-  # next rebuild can ask upstream instead of downloading.
-  index = +"# status\twidth\theight\tbytes\tupstream etag\tupstream last-modified\n"
-  cats.keys.sort.each { |code| index << ([code] + meta[code]).join("\t") << "\n" }
-  entries << ['cats/index.txt', index]
-  cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
+  # PICTURES AND NOTHING ELSE, named by the status they illustrate, at
+  # the root - so the name in the archive is the name a caller writes,
+  # with no directory anyone had to be told about. The templates live in
+  # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
+  # in share/README.md.
+  entries = cats.keys.sort.map do |code|
+    _w, _h, _n, etag, lastmod = meta[code]
+    ["#{code}.jpg", cats[code], "#{etag}\t#{lastmod}"]
+  end
   File.binwrite(ERROR_ASSETS, error_zip(entries))
   puts "share/error-assets.zip: #{cats.size} cats, " \
        "#{entries.size} entries, #{File.size(ERROR_ASSETS)} bytes"

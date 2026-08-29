@@ -62,12 +62,8 @@ struct open_how {
 #endif
 
 namespace webmachine::flow {
-// NO RFC NAMES THESE. The node letters are webmachine's own - Alan Dean
-// and Justin Sheehy's HTTP decision diagram, which webmachine-ruby walks
-// and which this table IS. RFC 9110 describes the same decisions but
-// gives them no names and no order, so there is nothing to rename to:
-// per the rule, webmachine's names stay and each entry cites the clause
-// its edge implements (see kFlow's `clause` column, one RFC per node).
+// Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
+// its node names. Each edge's clause is in kFlow's `clause` column.
 enum class Node : uint8_t {
   kB13, kB12, kB11, kB10, kB9, kB9a, kB9b, kB8, kB7, kB6, kB5, kB4, kB3,
   kC3, kC4, kD4, kD5, kE5, kE6, kF6, kF7,
@@ -251,19 +247,20 @@ constexpr bool ids_in_order() {
 }
 static_assert(ids_in_order(), "kFlow order must match Node order");
 
-// Proof: an edge names a real node or a real status.
-constexpr bool edge_valid(const Target& t) {
+constexpr bool target_names_a_node_or_a_status(const Target& t) {
   if (t.status == 0) return t.node < Node::kCount;
   return t.status >= 100 && t.status <= 599;
 }
-// Proof: every edge of every node.
-constexpr bool edges_valid() {
+constexpr bool both_targets_of_every_node_name_one() {
   for (size_t i = 0; i < kNodeCount; i++) {
-    if (!edge_valid(kFlow[i].on_true) || !edge_valid(kFlow[i].on_false)) return false;
+    if (!target_names_a_node_or_a_status(kFlow[i].on_true) ||
+        !target_names_a_node_or_a_status(kFlow[i].on_false)) {
+      return false;
+    }
   }
   return true;
 }
-static_assert(edges_valid(), "every edge continues or halts");
+static_assert(both_targets_of_every_node_name_one(), "every edge continues or halts");
 
 // Proof: every path from here halts within the node count - no cycle.
 constexpr bool terminates(Node n, size_t depth) {
@@ -406,16 +403,15 @@ struct Shortcut {
   bool always = false;
 };
 
-// Does any reachable node read the request? Explores BOTH branches at a
-// kRequest node, since either may be taken.
-constexpr bool any_request_node(Node n, const KonstAnswers& k, bool* seen) {
+// c4 counts as one, for the reason walk() gives above.
+constexpr bool reaches_a_node_that_reads_the_request(Node n, const KonstAnswers& k, bool* seen) {
   if (seen[static_cast<size_t>(n)]) return false;
   seen[static_cast<size_t>(n)] = true;
   const FlowNode& f = kFlow[static_cast<size_t>(n)];
   if (f.kind == Kind::kRequest || n == Node::kC4) return true;
   const Target& t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
   if (t.status != 0) return false;
-  return any_request_node(t.node, k, seen);
+  return reaches_a_node_that_reads_the_request(t.node, k, seen);
 }
 
 // RFC 9110: what the graph would say when it has nothing to decide -
@@ -426,7 +422,7 @@ constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
   plain_facts.method = m;
   s.status = walk(plain_facts, k);
   bool seen[kNodeCount] = {};
-  s.always = !any_request_node(Node::kB13, k, seen);
+  s.always = !reaches_a_node_that_reads_the_request(Node::kB13, k, seen);
   return s;
 }
 
@@ -438,35 +434,34 @@ constexpr uint16_t answer(const ReqFacts& req, const KonstAnswers& k, const Shor
 }
 
 namespace detail {
+// The whole remaining walk from N, unrolled: K's answers are constants,
+// so only kRequest nodes survive as branches.
 template <KonstAnswers K, Node N>
-// RFC 9110: the compiled walk's one node, konst vector as a template
-// parameter so the compiler folds it away.
-constexpr uint16_t step(const ReqFacts& req) {
+constexpr uint16_t status_reached_from(const ReqFacts& req) {
   constexpr FlowNode f = kFlow[static_cast<size_t>(N)];
   if constexpr (f.kind != Kind::kRequest) {
     constexpr Target t = K.ans[static_cast<size_t>(N)] ? f.on_true : f.on_false;
     if constexpr (t.status != 0) return t.status;
-    else return step<K, t.node>(req);
+    else return status_reached_from<K, t.node>(req);
   } else {
     if (eval_request(N, req)) {
       if constexpr (f.on_true.status != 0) return f.on_true.status;
-      else return step<K, f.on_true.node>(req);
+      else return status_reached_from<K, f.on_true.node>(req);
     } else {
       if constexpr (f.on_false.status != 0) return f.on_false.status;
-      else return step<K, f.on_false.node>(req);
+      else return status_reached_from<K, f.on_false.node>(req);
     }
   }
 }
 }
 
 template <KonstAnswers K>
-// RFC 9110: the compiled walk, measured against the interpreted one.
 constexpr uint16_t walk_compiled(const ReqFacts& req) {
-  return detail::step<K, Node::kB13>(req);
+  return detail::status_reached_from<K, Node::kB13>(req);
 }
 
 // RFC 9110: webmachine-ruby's Resource defaults, folded per method.
-constexpr KonstAnswers default_konst(Method m) {
+constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m) {
   KonstAnswers k{};
   const auto set = [&](Node n, bool v) { k.ans[static_cast<size_t>(n)] = v; };
   set(Node::kB13, true);
@@ -500,7 +495,7 @@ struct KonstSet {
   std::string content_type;
   // RFC 9110: a resource that overrides nothing - webmachine-ruby's defaults.
   KonstSet() {
-    for (uint8_t m = 0; m < 7; m++) per_method[m] = default_konst(static_cast<Method>(m));
+    for (uint8_t m = 0; m < 7; m++) per_method[m] = answers_of_an_unoverridden_resource(static_cast<Method>(m));
     resolve_shortcuts();
   }
   // RFC 9110: the shortcuts are derived from per_method; whoever changes
@@ -514,39 +509,39 @@ struct KonstSet {
 
 namespace proof {
 constexpr ReqFacts get_plain{};
-static_assert(walk(get_plain, default_konst(Method::kGet)) == 200,
+static_assert(walk(get_plain, answers_of_an_unoverridden_resource(Method::kGet)) == 200,
               "plain GET on the default resource is 200");
 constexpr ReqFacts get_negotiated{.has_accept = true,
                                   .has_accept_language = true,
                                   .has_accept_charset = true,
                                   .has_accept_encoding = true};
-static_assert(walk(get_negotiated, default_konst(Method::kGet)) == 200,
+static_assert(walk(get_negotiated, answers_of_an_unoverridden_resource(Method::kGet)) == 200,
               "a browser GET negotiates through C4/D5/E6/F7 to 200");
 constexpr ReqFacts get_unacceptable{.has_accept = true, .accept_ok = false};
-static_assert(walk(get_unacceptable, default_konst(Method::kGet)) == 406,
+static_assert(walk(get_unacceptable, answers_of_an_unoverridden_resource(Method::kGet)) == 406,
               "an Accept that names no offered type is 406 at C4, konst tier included");
 constexpr ReqFacts unknown{.method = Method::kOther};
-static_assert(walk(unknown, default_konst(Method::kOther)) == 501,
+static_assert(walk(unknown, answers_of_an_unoverridden_resource(Method::kOther)) == 501,
               "an unknown method dies at B12 with 501");
 constexpr ReqFacts options{.method = Method::kOptions};
-static_assert(walk(options, default_konst(Method::kOptions)) == 405,
+static_assert(walk(options, answers_of_an_unoverridden_resource(Method::kOptions)) == 405,
               "OPTIONS not in default allowed_methods dies at B10 like anything else");
 constexpr KonstAnswers options_allowed = [] {
-  KonstAnswers k = default_konst(Method::kOptions);
+  KonstAnswers k = answers_of_an_unoverridden_resource(Method::kOptions);
   k.ans[static_cast<size_t>(Node::kB10)] = true;
   return k;
 }();
 static_assert(walk(options, options_allowed) == 200,
               "OPTIONS answers 200 from options() once allowed (B3)");
 constexpr ReqFacts del{.method = Method::kDelete};
-static_assert(walk(del, default_konst(Method::kDelete)) == 405,
+static_assert(walk(del, answers_of_an_unoverridden_resource(Method::kDelete)) == 405,
               "default allowed_methods is GET/HEAD: DELETE is 405 at B10");
 constexpr ReqFacts if_none_match_star{.has_if_none_match = true, .if_none_match_star = true};
-static_assert(walk(if_none_match_star, default_konst(Method::kGet)) == 304,
+static_assert(walk(if_none_match_star, answers_of_an_unoverridden_resource(Method::kGet)) == 304,
               "GET with If-None-Match: * on an existing resource is 304");
 constexpr ReqFacts im_star_missing{.has_if_match = true, .if_match_star = true};
 constexpr KonstAnswers missing = [] {
-  KonstAnswers k = default_konst(Method::kGet);
+  KonstAnswers k = answers_of_an_unoverridden_resource(Method::kGet);
   k.ans[static_cast<size_t>(Node::kG7)] = false;
   return k;
 }();
@@ -554,9 +549,9 @@ static_assert(walk(im_star_missing, missing) == 412,
               "If-Match: * against a missing resource is 412 (H7)");
 static_assert(walk(get_plain, missing) == 404,
               "GET on a never-existed resource is 404 (L7)");
-static_assert(walk_compiled<default_konst(Method::kGet)>(get_plain) == 200);
-static_assert(walk_compiled<default_konst(Method::kDelete)>(del) == 405);
-static_assert(walk_compiled<default_konst(Method::kGet)>(if_none_match_star) == 304);
+static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kGet)>(get_plain) == 200);
+static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kDelete)>(del) == 405);
+static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kGet)>(if_none_match_star) == 304);
 static_assert(walk_compiled<missing>(im_star_missing) == 412);
 static_assert(walk_compiled<missing>(get_plain) == 404);
 }
@@ -2249,8 +2244,6 @@ class ErrorPages {
   };
   struct Cat {
     std::string url;
-    unsigned width = 0;
-    unsigned height = 0;
     const AssetEntry* entry = nullptr;
   };
   void read_cats(Assets& assets);

@@ -93,7 +93,7 @@ module Webmachine
         <p class=n>{{status}}</p>
         <h1>{{title}}</h1>
       {{#target}}  <p class=t>{{target}}</p>
-      {{/target}}{{#cat}}  <img src="{{cat_url}}" width="{{cat_width}}" height="{{cat_height}}"
+      {{/target}}{{#cat}}  <img src="{{cat_url}}"
              alt="A cat, illustrating HTTP {{status}} {{title}}">
       {{/cat}}  <p class=s>{{source}}</p>
       {{#message}}  <p class=m>{{message}}</p>

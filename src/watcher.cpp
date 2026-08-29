@@ -13,61 +13,31 @@
 namespace webmachine {
 namespace {
 
-// What a watcher IS, and it is deliberately not much: a mask, a flag, and
-// the handle the server armed it under. None of these is a Ruby object,
-// so none of them belongs in the instance-variable table - only `source`
-// and `block` do, because those are the two things the GC has to see.
-//
-// RData carries both (include/mruby/data.h: an iv table AND a data
-// pointer), so this costs one small allocation and leaves the iv table
-// holding exactly the two references that must not be collected.
+// Nothing here is a Ruby object; `source` and `block` are, and live in
+// the iv table. RData carries both (mruby/data.h).
 struct WatcherData {
-  // THE DESCRIPTOR, taken once at construction and never asked for
-  // again. It has to be here rather than fetched from the source when
-  // wanted, because the place that needs it most is the destructor
-  // below - and calling .fileno on a Ruby object while the GC is
-  // sweeping is not something to attempt.
-  //
-  // `int` and not a platform handle type, and that survives Windows
-  // too: enough POSIX software was ported through shims that never
-  // learned what a SOCKET is, so the C runtime hands out int
-  // descriptors there as well. Nothing here has to change when IOCP
-  // arrives underneath.
+  // Taken once in initialize; the destructor cannot ask a sweeping GC
+  // for it. int, not a handle type - Windows CRT hands out int fds too.
   int fd = -1;
-  // #30: WHICH watcher, on the connection running it. The one name a
-  // watcher has: it is the key it is filed under and the field the
-  // completion carries back, so nothing has to be translated between
-  // the ring and the hash.
+  // #30: the key on Http1::Conn's hash, and bits 48..55 of the tag.
   int slot = -1;
-  // POLLIN, POLLOUT, or both. Stored as poll's own bits rather than the
-  // symbol, because that is what the ring is handed and what comes back.
+  // POLLIN, POLLOUT or both.
   unsigned events = POLLIN;
-  // Said by the user, read by the server after the block returns. A
-  // watcher runs until this is set - running on is the default, and
-  // stopping is the one thing that needs saying.
+  // Set by watcher.abort, read after the block returns.
   bool aborted = false;
-  // Armed, and on which ring - so the destructor can take the poll off
-  // again without asking anybody anything.
   struct io_uring* ring = nullptr;
   bool armed = false;
 };
 
-// The safety net, NOT the normal path. A watcher reaching the GC still
-// armed means nobody tidied up - a raise on the way out of a callback is
-// how that happens - and then the poll has to come off the ring here, or
-// it keeps firing at a connection that is gone.
-//
-// In the ordinary case this does nothing: the connection cancels the
-// poll itself and empties the CDATA, so by the time the sweep arrives
-// there is no pointer left.
+// Reached only when nobody disarmed first - a raise out of a callback.
+// Http1::Conn::watchers_drop empties the CDATA, so the usual sweep finds
+// nothing here.
 void watcher_free(mrb_state*, void* p) {
   auto* d = static_cast<WatcherData*>(p);
   if (d == nullptr) return;
   if (d->armed && d->ring != nullptr && d->fd >= 0) {
     struct io_uring_sqe* s = io_uring_get_sqe(d->ring);
     if (s != nullptr) {
-      // By DESCRIPTOR, which is all this destructor knows and all it
-      // needs to: it takes off whatever is armed on that fd.
       io_uring_prep_cancel_fd(s, d->fd, IORING_ASYNC_CANCEL_ALL);
       io_uring_sqe_set_data64(s, 0);
       io_uring_submit(d->ring);
@@ -84,9 +54,7 @@ WatcherData* live(mrb_state* mrb, mrb_value self) {
   return d;
 }
 
-// :r, :w, :rw and nothing else. The ORDER menu is this short on purpose -
-// what ARRIVES is a wider set (revents), and the two are not the same
-// thing, which is why they do not share a name.
+// What may be ORDERED. What arrives (revents) is a wider set.
 unsigned mask_of(mrb_state* mrb, mrb_value v) {
   if (!mrb_symbol_p(v)) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher waits for :r, :w or :rw, not %v", v);
@@ -106,12 +74,8 @@ mrb_value sym_of(mrb_state* mrb, unsigned mask) {
   return mrb_symbol_value(MRB_SYM(r));
 }
 
-// Watcher.new(source, :r) { |revents, watcher| ... }
-//
-// Building one ARMS NOTHING. A watcher is a description - a source, what
-// to wait for, and what to do when that happens - and the server does the
-// arming when a resource hands one back. Ruby never touches the ring, so
-// there is nothing here that could stop the loop.
+// Watcher.new(source, :r) { |revents, watcher| ... } - a description.
+// Arming happens when a resource hands one back; see #30.
 mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   mrb_value source;
   mrb_value events = mrb_symbol_value(MRB_SYM(r));
@@ -123,14 +87,8 @@ mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
               "a watcher without a block would have nothing to do when it fires");
   }
 
-  // THE descriptor, asked once, here, while there is still a VM to ask
-  // in. One conversion covers both shapes a source comes in: an Integer
-  // is already what is wanted and passes straight through, anything else
-  // is asked for its fileno, and something that has none raises on its
-  // own with a message naming the type and the method.
-  //
-  // Both shapes are real. A socket answers fileno; hiredis hands its
-  // event callbacks a bare int and has no object to offer at all.
+  // An Integer passes through; anything else is asked for fileno.
+  // mruby-hiredis hands its event callbacks a bare int.
   const mrb_int fd = mrb_integer(mrb_type_convert(mrb, source, MRB_TT_INTEGER, MRB_SYM(fileno)));
   if (fd < 0) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher needs a descriptor, and this one is %i", fd);
@@ -141,10 +99,7 @@ mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   d->events = mask_of(mrb, events);
   mrb_data_init(self, d, &watcher_type);
 
-  // THE iv TABLE, and only these two. Both are Ruby objects the watcher
-  // outlives its caller holding: a source nobody else keeps would be
-  // collected under the reactor, and a block nobody else keeps would
-  // leave the watcher firing into nothing.
+  // The only two the GC has to see.
   mrb_iv_set(mrb, self, MRB_IVSYM(source), source);
   mrb_iv_set(mrb, self, MRB_IVSYM(block), blk);
   return self;
@@ -162,9 +117,7 @@ mrb_value watcher_events(mrb_state* mrb, mrb_value self) {
   return sym_of(mrb, live(mrb, self)->events);
 }
 
-// Change what this watcher waits for, from now on. The registration is
-// not replaced - the server updates it in place - so readiness arriving
-// while this is being said cannot fall between two chairs.
+// IORING_POLL_UPDATE_EVENTS on the armed poll; no re-registration.
 mrb_value watcher_events_set(mrb_state* mrb, mrb_value self) {
   mrb_value v;
   mrb_get_args(mrb, "o", &v);
@@ -172,8 +125,6 @@ mrb_value watcher_events_set(mrb_state* mrb, mrb_value self) {
   return v;
 }
 
-// Stop. The one word this side of the API needs, because running on is
-// what a watcher does when nobody says anything.
 mrb_value watcher_abort(mrb_state* mrb, mrb_value self) {
   live(mrb, self)->aborted = true;
   return self;
@@ -185,8 +136,6 @@ mrb_value watcher_aborted(mrb_state* mrb, mrb_value self) {
 
 }  // namespace
 
-// The server's side of the same object. Nothing here reaches into the iv
-// table for the mask or the flag, because they are not there.
 bool watcher_p(mrb_state* mrb, mrb_value v) {
   return mrb_data_p(v) && DATA_TYPE(v) == &watcher_type;
 }
@@ -213,19 +162,14 @@ void watcher_set_slot(mrb_value v, int slot) {
   static_cast<WatcherData*>(DATA_PTR(v))->slot = slot;
 }
 
-// Armed: remember the ring, so the destructor can cancel on its own if
-// it ever has to.
 void watcher_armed(mrb_value v, struct io_uring* ring) {
   auto* d = static_cast<WatcherData*>(DATA_PTR(v));
   d->ring = ring;
   d->armed = true;
 }
 
-// THE NORMAL WAY OUT, and the connection's job. Cancelling belongs to
-// the caller - it holds the ring and knows the round it is in - and this
-// only empties the object afterwards: the data is freed and both the
-// pointer and the type are cleared, so the sweep that comes later finds
-// nothing to free and nothing to cancel a second time.
+// Empties the CDATA after the caller has cancelled, so watcher_free
+// finds nothing.
 void watcher_disarm(mrb_value v) {
   auto* d = static_cast<WatcherData*>(DATA_PTR(v));
   if (d == nullptr) return;

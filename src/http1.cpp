@@ -810,12 +810,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     if (error_assets_ != nullptr && path_len > kErrorAssetsPrefixLen &&
         std::memcmp(path, kErrorAssetsPrefix, kErrorAssetsPrefixLen) == 0) {
       const size_t rest = path_len - kErrorAssetsPrefixLen;
-      if (rest + 6 < sizeof(abuf)) {
-        std::memcpy(abuf, "/cats/", 6);
-        std::memcpy(abuf + 6, path + kErrorAssetsPrefixLen, rest);
+      if (rest + 1 < sizeof(abuf)) {
+        abuf[0] = '/';
+        std::memcpy(abuf + 1, path + kErrorAssetsPrefixLen, rest);
         tier = error_assets_;
         apath = abuf;
-        alen = rest + 6;
+        alen = rest + 1;
       }
     }
     if (tier != nullptr) {

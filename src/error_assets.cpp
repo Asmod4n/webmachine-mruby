@@ -482,43 +482,24 @@ bool ErrorPages::exception_text(mrb_value exc, std::string& out) {
   return true;
 }
 
-// The error assets's cats/index.txt: status, width, height, and the rest this
-// tier does not need. A status with no line and no picture renders
-// without {{#cat}}, which is what an asset file that carries none does.
+// A picture per status, named by it: 404.jpg is the one a 404 gets. The
+// archive holds nothing else, so its own entry list is the index.
 void ErrorPages::read_cats(Assets& assets) {
-  // Slot 0 is "no picture", the way index_ reserves its own zero, so the
-  // dense list opens with one entry nothing points at.
+  // Slot 0 is "no picture", the way index_ reserves its own zero.
   cats_.emplace_back();
-  char err[256] = {};
-  std::string index;
-  if (!pack_text(assets, "/cats/index.txt", 15, index, err, sizeof err)) return;
-  size_t at = 0;
-  while (at < index.size()) {
-    size_t eol = index.find('\n', at);
-    if (eol == std::string::npos) eol = index.size();
-    const std::string line = index.substr(at, eol - at);
-    at = eol + 1;
-    if (line.empty() || line[0] == '#') continue;
-    unsigned status = 0, w = 0, h = 0;
-    if (std::sscanf(line.c_str(), "%u\t%u\t%u", &status, &w, &h) != 3) continue;
-    if (status < 100 || status > 599 || w == 0 || h == 0) continue;
-    char path[32];
-    const int n = std::snprintf(path, sizeof path, "/cats/%u.jpg", status);
-    if (n <= 0) continue;
-    const AssetEntry* e = assets.find(path, static_cast<size_t>(n));
-    // PKWARE APPNOTE: the error assets stores its pictures, so file_data is the
-    // JPEG itself. A deflated one would need inflating per answer, which
-    // is not what an error path is for.
-    if (e == nullptr || e->deflated) continue;
+  for (const AssetEntry& e : assets.entries()) {
+    // PKWARE APPNOTE: a deflated entry would need inflating per answer,
+    // which is not what an error path is for.
+    if (e.deflated) continue;
+    unsigned status = 0;
+    char tail[8] = {};
+    if (std::sscanf(e.file_name.c_str(), "%u.%3s", &status, tail) != 2) continue;
+    if (std::strcmp(tail, "jpg") != 0) continue;
+    if (status < 100 || status > 599) continue;
+    if (cat_index_[status] != 0) continue;
     Cat c;
-    c.entry = e;
-    // What the PAGE says, which is the reserved prefix - not the name
-    // the file happens to use inside itself.
-    char url[40];
-    std::snprintf(url, sizeof url, "%s%u.jpg", kErrorAssetsPrefix, status);
-    c.url.assign(url);
-    c.width = w;
-    c.height = h;
+    c.entry = &e;
+    c.url.assign(kErrorAssetsPrefix).append(e.file_name);
     cat_index_[status] = static_cast<int16_t>(cats_.size());
     cats_.push_back(std::move(c));
   }
@@ -553,10 +534,6 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
     mrb_value cat = mrb_hash_new(mrb);
     mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_url"),
                  mrb_str_new(mrb, c.url.data(), static_cast<mrb_int>(c.url.size())));
-    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_width"),
-                 mrb_fixnum_value(static_cast<mrb_int>(c.width)));
-    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_height"),
-                 mrb_fixnum_value(static_cast<mrb_int>(c.height)));
     mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
   }
 

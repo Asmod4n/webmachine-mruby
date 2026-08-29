@@ -301,25 +301,16 @@ mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
               "file: --error-assets FILE.zip, or install one where the system keeps shipped "
               "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
   }
-  // The name is resolved EXACTLY the way /error_assets/<name> is, so
-  // what an app names here and what the route serves are one thing:
-  // /cats/ first, then the archive's root, which is where a replaced
-  // error assets file is free to put whatever it carries.
   char name[kMaxHead];
   const size_t n = static_cast<size_t>(RSTRING_LEN(v));
-  if (n == 0 || n + 7 >= sizeof(name)) {
+  if (n == 0 || n + 2 >= sizeof(name)) {
     mrb_raise(mrb, E_WM_ERROR(mrb), "response.error_asset: no such entry");
   }
-  std::memcpy(name, "/cats/", 6);
-  std::memcpy(name + 6, RSTRING_PTR(v), n);
-  const AssetEntry* e = error_assets_->find(name, n + 6);
-  // "/cats/" already ends in the slash the second spelling needs, so the
-  // fallback is the SAME buffer read five bytes in: "/<name>".
-  if (e == nullptr) e = error_assets_->find(name + 5, n + 1);
+  name[0] = '/';
+  std::memcpy(name + 1, RSTRING_PTR(v), n);
+  const AssetEntry* e = error_assets_->find(name, n + 1);
   if (e == nullptr || e->deflated) {
-    // Named by the app, so refused by name: a miss here is a typo in the
-    // app, not a request that went astray.
-    mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: %v is not in the error assets", v);
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: the error assets hold no %v", v);
   }
   r->run_content_type.assign(e->content_type);
   r->run_asset = e;
