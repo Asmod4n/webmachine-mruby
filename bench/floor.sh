@@ -107,18 +107,25 @@ fi
 # as the server describes the client, not webmachine. cpu_ticks reads the SERVER's own
 # /proc/pid/stat (utime+stime), never system-wide - see snap_times below
 # for the client's side.
+# utime and stime SEPARATELY, because their ratio is the question this
+# harness could not answer: on AF_UNIX the kernel bills a copy to the
+# process that CALLED send, so a client that "does almost nothing" still
+# pays for moving every response byte. A client that is mostly sys is
+# the socket; a client that is mostly user is its own loop.
 cpu_ticks() {
-  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
-    "/proc/$1/stat" 2>/dev/null || echo 0
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12], f[13] }' \
+    "/proc/$1/stat" 2>/dev/null || echo "0 0"
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 WORK=$(mktemp -d)
 # Split like sysc_wait: the WAIT must run in the shell that backgrounded
 # the client (a $() subshell is not its parent), only the read below may fork.
 snap_times() { times > "$WORK/.times"; }
+# times(1) line 2 is the CHILDREN's user and sys - the same split as
+# above, from the other side.
 parse_child_cpu() {
   awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
-               printf "%.2f", u[1]*60 + u[2] + sy[1]*60 + sy[2] }' "$WORK/.times"
+               printf "%.2f %.2f", u[1]*60 + u[2], sy[1]*60 + sy[2] }' "$WORK/.times"
 }
 
 # The server loads bytecode only (#100). A .rb APP is compiled here
@@ -277,9 +284,9 @@ OUT=$(mktemp)
   [ "$TOTAL" -gt 0 ] && BUSYPCT=$((100*BUSY/TOTAL)) || BUSYPCT=0
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   sysc_begin "$SRV" "$DURATION"
-  S0=$(cpu_ticks "$SRV")
+  read -r SU0 SS0 <<<"$(cpu_ticks "$SRV")"
   snap_times
-  C0=$(parse_child_cpu)
+  read -r CU0 CS0 <<<"$(parse_child_cpu)"
   # One ring, one thread - the same shape as the reactor it drives.
   HTGEN_SHAPE=()
   [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$STREAMS")
@@ -295,8 +302,8 @@ OUT=$(mktemp)
   CLI=$!
   wait "$CLI" 2>/dev/null
   snap_times
-  C1=$(parse_child_cpu)
-  S1=$(cpu_ticks "$SRV")
+  read -r CU1 CS1 <<<"$(parse_child_cpu)"
+  read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
   CLIOUT=$(cat "$WORK/cli.out")
   echo "$CLIOUT" | grep -E "^responses="
   sysc_wait
@@ -316,15 +323,20 @@ OUT=$(mktemp)
   # LIES about: the client at its limit while the server has real room
   # left. So the client must be pegged AND the server at least
   # kHeadroom points below it.
-  SU=$((S1 - S0))
+  SU=$(( (SU1 - SU0) + (SS1 - SS0) ))
   SCPU=$((SU * 100 / HZ / DURATION))
-  CCPU=$(awk -v a="$C1" -v b="$C0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
+  SUPCT=$(( (SU1 - SU0) * 100 / HZ / DURATION ))
+  SSPCT=$(( (SS1 - SS0) * 100 / HZ / DURATION ))
+  CCPU=$(awk -v a="$CU1" -v b="$CU0" -v c="$CS1" -v e="$CS0" -v d="$DURATION" \
+    'BEGIN { printf "%.0f", (a - b + c - e) * 100 / d }')
+  CUPCT=$(awk -v a="$CU1" -v b="$CU0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
+  CSPCT=$(awk -v a="$CS1" -v b="$CS0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   HEADROOM=15
   if [ "$SU" -gt 0 ] && [ "$CCPU" -ge 90 ] && [ "$SCPU" -le $((${CCPU%.*} - HEADROOM)) ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core, ${HEADROOM}+ points under the client's ${CCPU}%) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
+    echo "REFUSED: the server had headroom (${SCPU}% of its core (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CCPU}% (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
-    echo "server: ${SCPU}% of one core   client: ${CCPU}% of one core"
+    echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
