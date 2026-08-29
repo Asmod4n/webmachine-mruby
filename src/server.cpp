@@ -287,6 +287,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         opts_.assets_path != nullptr ? &assets_ : nullptr));
+  // #210: the error pages render in the app's VM. A template the pack
+  // carries and that does not parse is a startup refusal with a name -
+  // the operator hears it here, not on the first 404.
+  if (!http_->open_error_pages(mrb, err, errlen)) return false;
   if (opts_.log_path != nullptr) http_->enable_access_log();
   if (opts_.error_log_path != nullptr) http_->enable_error_log();
   // A typed flag and [tune] beat the app's conf, and all three beat the

@@ -56,6 +56,11 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   spec.add_dependency 'mruby-toml'
 
+  # The error pages are mustache templates (#210). They are rendered per
+  # response, not once at boot: a 404 names what was not found, so the set
+  # of bodies is as large as the set of request targets.
+  spec.add_dependency 'mruby-mustache', github: 'Asmod4n/mruby-mustache', branch: 'main'
+
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
   spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"

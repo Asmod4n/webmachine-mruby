@@ -71,12 +71,17 @@ void Http1::build_variants(Variants& v, uint16_t status, const char* extra, cons
   build(v.close, "Connection: close\r\n");
 }
 
-// RFC 9110 15: one status into the shared store, date offset kept.
+// RFC 9110 15: one status into the shared store, date offset kept - and
+// beside it the same answer WITHOUT `body`, which is where an error that
+// has a page to show puts its own Content-Type and Content-Length (#210).
 void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   Variants v;
   build_variants(v, status, extra, body, kDatePlaceholder);
+  Variants p;
+  build_variants(p, status, extra, "", kDatePlaceholder);
   index_[status] = static_cast<uint16_t>(store_.size());
   store_.push_back(std::move(v));
+  store_prefix_.push_back(std::move(p));
 }
 
 // RFC 9110 5.6.7: the 29 date bytes, once a second, in place.
@@ -137,6 +142,13 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     prefix(ok.close, b.ok_prefix.close);
   }
   b.index[200] = static_cast<uint16_t>(store_.size());
+  {
+    // The twin of every store_ push: store_prefix_ is addressed by the
+    // same index, so the two vectors have to grow together (#210).
+    Variants p200;
+    build_variants(p200, 200, ok_extra.c_str(), "", kDatePlaceholder);
+    store_prefix_.push_back(std::move(p200));
+  }
   store_.push_back(std::move(ok));
   {
     H2Block hb;
@@ -144,6 +156,13 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     h2_store_.push_back(std::move(hb));
   }
   b.index[405] = static_cast<uint16_t>(store_.size());
+  {
+    // RFC 9110 15.5.6: the 405 page keeps its Allow, and adds the page's
+    // own Content-Type behind it.
+    Variants p405;
+    build_variants(p405, 405, allow.c_str(), "", kDatePlaceholder);
+    store_prefix_.push_back(std::move(p405));
+  }
   store_.push_back(std::move(m405));
   {
     H2Block hb;
@@ -279,6 +298,7 @@ void Http1::on_tick() {
   const char* core = date_;
 
   for (Variants& v : store_) patch_date(v, core);
+  for (Variants& v : store_prefix_) patch_date(v, core);
   for (Bundle& b : bundles_) {
     patch_date(b.ok_head, core);
     if (b.dynamic_body) patch_date(b.ok_prefix, core);
@@ -316,12 +336,41 @@ void Http1::assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefi
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
+// #210: the error pages render in a VM this layer does not own. Called
+// once, after the bundles exist; a caller that never calls it keeps the
+// bodyless statuses (#173: bytes in, bytes out, no VM required).
+bool Http1::open_error_pages(mrb_state* mrb, char* err, size_t errlen) {
+  return err_pages_.open(mrb, assets_, err, errlen);
+}
+
+// RFC 9110 15: the error answer - the prebuilt status line and Date, then
+// the page rendered for THIS request. RFC 9110 9.3.2: a HEAD carries the
+// Content-Length a GET would have sent, and no body.
+void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status,
+                        bool head_only, ErrorPages::Media media, const ErrorPages::Fields& f,
+                        std::string& sink) {
+  std::string body;
+  if (!err_pages_.render(status, media, f, body)) {
+    sink.append(bodyless.bytes);
+    return;
+  }
+  sink.append(prefix.bytes);
+  sink.append(ErrorPages::media_type(media));
+  char cl[40];
+  sink.append(cl, http::spell_content_length(cl, body.size()));
+  if (!head_only) sink.append(body);
+}
+
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
   if (alog_.enabled) {
     log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
                nullptr, 0);
   }
-  sink.append(variants(status).close.bytes);
+  // Nothing is parsed on this path, so there is no Accept to weigh and no
+  // target to name: the page for the status, and that is all it can say.
+  const ErrorPages::Fields f;
+  spell_error(prefixes(status).close, variants(status).close, status, false,
+              ErrorPages::Media::kHtml, f, sink);
   st.carry.clear();
   st.content_skip = 0;
   st.content_need = 0;
@@ -1034,16 +1083,45 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                                   : (persist ? b->ok_prefix.keep : b->ok_prefix.close),
                  body_.data(), body_.size(), head_only);
         break;
-      case AnswerStep::Shape::kException:
-        assemble(sink, minor >= 1 ? (persist ? b->err_prefix.plain : b->err_prefix.close)
-                                  : (persist ? b->err_prefix.keep : b->err_prefix.close),
-                 exc_body, exc_len, head_only);
+      case AnswerStep::Shape::kException: {
+        // resource_exception_begin hands out RSTRING_PTR of an exception
+        // it has just UNROOTED (it clears mrb->exc), and rendering
+        // allocates - so the message is copied before anything else runs.
+        const std::string message(exc_body, exc_len);
+        const Variants& pv = store_prefix_[(*idx)[500]];
+        const Variants& bv = store_[(*idx)[500]];
+        ErrorPages::Fields f;
+        f.target = path;
+        f.target_len = path_len;
+        f.message = message.data();
+        f.message_len = message.size();
+        spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
+                               : (persist ? pv.keep : pv.close),
+                    minor >= 1 ? (persist ? bv.plain : bv.close)
+                               : (persist ? bv.keep : bv.close),
+                    500, head_only, ErrorPages::media_for(vals.accept, vals.accept_len), f,
+                    sink);
         break;
+      }
       case AnswerStep::Shape::kStatus: {
         const Variants& sv =
             (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
-        sink.append(minor >= 1 ? (persist ? sv.plain.bytes : sv.close.bytes)
-                               : (persist ? sv.keep.bytes : sv.close.bytes));
+        const Resp& bodyless = minor >= 1 ? (persist ? sv.plain : sv.close)
+                                          : (persist ? sv.keep : sv.close);
+        // RFC 9110 15: only a 4xx or 5xx has something to explain. A 204,
+        // a 304 or a redirect is an answer, and answers carry no page.
+        if (status >= 400) {
+          const Variants& pv = store_prefix_[(*idx)[status]];
+          ErrorPages::Fields f;
+          f.target = path;
+          f.target_len = path_len;
+          spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
+                                 : (persist ? pv.keep : pv.close),
+                      bodyless, status, head_only,
+                      ErrorPages::media_for(vals.accept, vals.accept_len), f, sink);
+        } else {
+          sink.append(bodyless.bytes);
+        }
         break;
       }
     }

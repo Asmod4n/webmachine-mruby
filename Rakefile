@@ -225,59 +225,23 @@ ERROR_NOTICE = <<~TEXT
   repository it was built from.
 TEXT
 
-# ONE template for every status. What differs between a 404 and a 503 is
-# three strings and a picture, and a template is the shape that says so.
-# Rendered once at startup - nothing in here costs a request.
-ERROR_HTML_TEMPLATE = <<~HTML
-  <!doctype html>
-  <html lang=en>
-  <meta charset=utf-8>
-  <meta name=viewport content="width=device-width,initial-scale=1">
-  <title>{{status}} {{title}}</title>
-  <style>
-  :root{color-scheme:light dark;--bg:#fbfbfa;--fg:#1a1a1a;--dim:#6b6b6b;--rule:#e2e2df}
-  @media (prefers-color-scheme:dark){
-    :root{--bg:#15161a;--fg:#e8e8e6;--dim:#8a8a92;--rule:#2a2c33}}
-  *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-    background:var(--bg);color:var(--fg);padding:2rem 1rem;
-    font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  main{max-width:40rem;text-align:center}
-  .n{font-size:clamp(3.5rem,14vw,6rem);font-weight:700;letter-spacing:-.04em;
-    line-height:1;margin:0;font-variant-numeric:tabular-nums}
-  h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
-  img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
-  .s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
-  .m{margin:1.2rem 0 0;padding:.8rem 1rem;border-radius:.4rem;background:rgba(127,127,127,.12);
-    text-align:left;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    white-space:pre-wrap;overflow-wrap:anywhere}
-  .c{margin:1.2rem 0 0;padding-top:1.2rem;border-top:1px solid var(--rule);
-    color:var(--dim);font-size:.75rem}
-  a{color:inherit}
-  </style>
-  <main>
-    <p class=n>{{status}}</p>
-    <h1>{{title}}</h1>
-  {{#cat}}  <img src="{{cat_url}}" width="{{cat_width}}" height="{{cat_height}}"
-         alt="A cat, illustrating HTTP {{status}} {{title}}">
-  {{/cat}}  <p class=s>{{source}}</p>
-  {{#message}}  <p class=m>{{message}}</p>
-  {{/message}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
-  {{/cat}}</main>
-HTML
 
-# RFC 9457 problem details: type, title, status, and nothing invented. No
-# cat - whatever reads JSON wants the status, not a picture. "detail" is
-# the member RFC 9457 reserves for exactly what the 500 has to say, and it
-# appears only when there is something to say.
-#
-# {{{...}}} is raw ON PURPOSE: mustache escapes for HTML, and &amp; inside
-# a JSON string would be wrong. The titles come from the server's own
-# table; the message is JSON-escaped by the server before it gets here,
-# because that is an encoding job and not a template's.
-ERROR_JSON_TEMPLATE = <<~JSON
-  {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
-JSON
+
+# The two templates live in src/error_pages.cpp, as the raw string
+# literals the server compiles into every binary - a server with no pack
+# still has to be able to say what went wrong. The pack is built FROM
+# them, so the copy an operator edits and the copy the binary carries
+# start out identical and cannot drift.
+def cpp_template(marker)
+  src = File.read(File.expand_path('src/error_pages.cpp', __dir__))
+  m = src.match(/R"#{marker}\((.*?)\)#{marker}"/m)
+  raise "src/error_pages.cpp: no R\"#{marker}(...)#{marker}\" literal" unless m
+  m[1]
+end
+
+ERROR_HTML_TEMPLATE = cpp_template('WM_HTML')
+ERROR_JSON_TEMPLATE = cpp_template('WM_JSON')
+ERROR_TEXT_TEMPLATE = cpp_template('WM_TEXT')
 
 # The picture's real geometry, from file(1) - in the standard install of
 # every distro this would be rebuilt on, and this task is a developer's
@@ -415,7 +379,8 @@ task :error_pages do
   # renders once at startup.
   entries = [['NOTICE.txt', ERROR_NOTICE],
              ['errors/error.html', ERROR_HTML_TEMPLATE],
-             ['errors/error.json', ERROR_JSON_TEMPLATE]]
+             ['errors/error.json', ERROR_JSON_TEMPLATE],
+             ['errors/error.txt',  ERROR_TEXT_TEMPLATE]]
   # Geometry and provenance, so the server needs no JPEG reader and the
   # next rebuild can ask upstream instead of downloading.
   index = +"# status\twidth\theight\tbytes\tupstream etag\tupstream last-modified\n"
@@ -423,7 +388,31 @@ task :error_pages do
   entries << ['cats/index.txt', index]
   cats.keys.sort.each { |code| entries << ["cats/#{code}.jpg", cats[code]] }
   File.binwrite(ERROR_PACK, error_zip(entries))
-  puts "share/error-pages.zip: 2 templates, #{cats.size} cats, " \
+  puts "share/error-pages.zip: 3 templates, #{cats.size} cats, " \
+       "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
+end
+
+desc 'refresh only the two templates in share/error-pages.zip (no network)'
+task :error_templates do
+  require 'zlib'
+  raise "#{ERROR_PACK} does not exist - run rake error_pages" unless File.exist?(ERROR_PACK)
+  old = read_pack(ERROR_PACK)
+  entries = old.map do |name, data|
+    case name
+    when 'errors/error.html' then [name, ERROR_HTML_TEMPLATE]
+    when 'errors/error.json' then [name, ERROR_JSON_TEMPLATE]
+    when 'errors/error.txt'  then [name, ERROR_TEXT_TEMPLATE]
+    when 'NOTICE.txt'        then [name, ERROR_NOTICE]
+    else [name, data]
+    end
+  end
+  # A pack built before the third template existed does not carry it yet.
+  unless entries.any? { |name, _| name == 'errors/error.txt' }
+    at = entries.index { |name, _| name == 'errors/error.json' }
+    entries.insert(at + 1, ['errors/error.txt', ERROR_TEXT_TEMPLATE])
+  end
+  File.binwrite(ERROR_PACK, error_zip(entries))
+  puts "share/error-pages.zip: templates and notice refreshed from src/error_pages.cpp, " \
        "#{entries.size} entries, #{File.size(ERROR_PACK)} bytes"
 end
 

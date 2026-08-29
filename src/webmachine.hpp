@@ -2134,6 +2134,78 @@ class Assets {
   AssetEntry::Head s405_[3];  // RFC 9110 15.5.6
   AssetEntry::Head s406_[3];  // RFC 9110 15.5.7
 };
+
+// RFC 9110 15: what a status is called and who registered it. reason()
+// spells the name the status LINE carries; these two answer the page's
+// question, which is not the same set - 15 of the 54 statuses with a
+// page are vendor inventions, and the page says so.
+const char* status_title(uint16_t status);
+const char* status_source(uint16_t status);
+
+// #210: the error page and the problem document, as mustache templates.
+// Compiled once, rendered PER RESPONSE - a 404 names what was not found,
+// so the set of bodies is the set of request targets and there is nothing
+// a boot could have prepared. Nothing here is reached by a request: an
+// error is delivered by the route that produced it, never by a second
+// trip through the router.
+class ErrorPages {
+ public:
+  ErrorPages() = default;
+  ~ErrorPages();
+  ErrorPages(const ErrorPages&) = delete;
+  ErrorPages& operator=(const ErrorPages&) = delete;
+
+  // The pack's errors/error.html and errors/error.json win over the
+  // built-in ones, which is the whole edit path for an operator who does
+  // not rebuild. A template that does not compile is a startup refusal
+  // with a name.
+  bool open(mrb_state* mrb, Assets* assets, char* err, size_t errlen);
+  bool ready() const { return ready_; }
+
+  // RFC 9110 12.5.1: which of the three an error answer speaks. NOT the
+  // resource's content_types_provided - an error is not a representation
+  // of the resource, so what it offers has no say here. Accept decides,
+  // and text/plain catches the client that will take neither of the
+  // first two.
+  enum class Media : uint8_t { kHtml, kJson, kText };
+  static Media media_for(const char* accept, size_t len);
+  // The whole field line, for h1; the value alone, for h2's encoder.
+  static const char* media_type(Media m);
+  static const char* media_value(Media m);
+
+  // What ONE answer adds to the status: the target it was about, and -
+  // for a 500 - what handle_exception returned, or the exception's own
+  // message and backtrace when the resource declared no hook.
+  struct Fields {
+    const char* target = nullptr;
+    size_t target_len = 0;
+    const char* message = nullptr;
+    size_t message_len = 0;
+    const char* backtrace = nullptr;
+    size_t backtrace_len = 0;
+  };
+  // false when there is no page to offer - the caller still owes an
+  // answer and falls back to the bodyless status.
+  bool render(uint16_t status, Media m, const Fields& f, std::string& out);
+
+ private:
+  struct Cat {
+    std::string url;
+    unsigned width = 0;
+    unsigned height = 0;
+  };
+  void read_cats(Assets& assets);
+
+  mrb_state* mrb_ = nullptr;
+  mrb_value html_ = mrb_nil_value();
+  mrb_value json_ = mrb_nil_value();
+  mrb_value text_ = mrb_nil_value();
+  // The same shape the status store uses: a slot per status into a dense
+  // list, -1 for the statuses this pack has no picture for.
+  std::vector<Cat> cats_;
+  std::array<int16_t, 600> cat_index_ {};
+  bool ready_ = false;
+};
 }
 
 #include "h2_wire.hpp"
@@ -3039,6 +3111,12 @@ class Http1 {
   Http1(const RouteTable& table, const Resource* const* resources, size_t nroutes,
         Assets* assets = nullptr);
 
+  // #210: the error pages render in a VM, and this layer is handed one
+  // rather than owning it - the h1 model (#173) is bytes in, bytes out,
+  // and a caller that never calls this gets the bodyless statuses it
+  // always got.
+  bool open_error_pages(mrb_state* mrb, char* err, size_t errlen);
+
   void on_tick();
 
   bool pending(const Conn& st) const;
@@ -3376,6 +3454,18 @@ class Http1 {
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];
   }
+  // The same status without its Content-Length and terminator: what an
+  // error answer that HAS a page puts its own two fields behind.
+  const Variants& prefixes(uint16_t status) const {
+    return store_prefix_[index_[status]];
+  }
+  // RFC 9110 15: the error answer this connection gets - the prebuilt
+  // status line and Date, then the page rendered for THIS request. When
+  // there is no page (no VM handed over, or a template that raised) the
+  // bodyless status goes out instead, which is what this server sent
+  // before there were pages at all.
+  void spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status, bool head_only,
+                   ErrorPages::Media media, const ErrorPages::Fields& f, std::string& sink);
   bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
   // segment. `prebuilt` takes the status straight out of the shared store.
@@ -3427,7 +3517,9 @@ class Http1 {
   std::vector<const WsResource*> ws_res_;
   std::vector<const SseResource*> sse_res_;
   std::vector<Variants> store_;
+  std::vector<Variants> store_prefix_;
   std::array<uint16_t, 600> index_ {};
+  ErrorPages err_pages_;
   std::vector<H2Block> h2_store_;
   H2Block h2_asset405_;
   H2Block h2_asset406_;

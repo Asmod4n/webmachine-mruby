@@ -677,6 +677,22 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   size_t blen = 0;
   const H2Block* blk;
   H2Block dynblk;
+  // #210 / #146: an error carries the same page here that h1 spells. It
+  // outlives the framing below, because a body the window cannot finish
+  // is copied onto the stream from THIS buffer.
+  H2Block errblk;
+  std::string err_body;
+  const auto error_page = [&](uint16_t s, const ErrorPages::Fields& f) {
+    const ErrorPages::Media m = ErrorPages::media_for(
+        vals != nullptr ? vals->accept : nullptr, vals != nullptr ? vals->accept_len : 0);
+    if (!err_pages_.render(s, m, f, err_body)) return false;
+    const std::string ctype(ErrorPages::media_value(m));
+    h2_build_block(errblk, s, &ctype, nullptr);
+    body = err_body.data();
+    blen = err_body.size();
+    blk = &errblk;
+    return true;
+  };
   if (dynamic) {
     const bool bodyless = status == 204 || status == 304;
     if (bodyless || !have_body) body_.clear();
@@ -708,19 +724,31 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     }
     const char* bp = nullptr;
     size_t bl = 0;
-    if (resource_exception_begin(*b->res, &bp, &bl)) {
-      body = bp;
-      blen = bl;
-      blk = &b->h2_err;
-    } else {
-      blk = &h2_store_[(*idx)[500]];
-    }
+    // resource_exception_begin unroots the exception it reads from, and
+    // rendering allocates - so the message is copied first, the same way
+    // h1 copies it.
+    std::string message;
+    if (resource_exception_begin(*b->res, &bp, &bl)) message.assign(bp, bl);
+    ErrorPages::Fields f;
+    f.target = req != nullptr ? req->request_target : nullptr;
+    f.target_len = req != nullptr ? req->request_target_len : 0;
+    f.message = message.data();
+    f.message_len = message.size();
+    if (!error_page(500, f)) blk = &h2_store_[(*idx)[500]];
   } else if (status == 200) {
     body = b->konst.body.data();
     blen = b->konst.body.size();
     blk = &h2_store_[(*idx)[200]];
   } else {
-    blk = &h2_store_[(*idx)[status]];
+    // RFC 9110 15: only a 4xx or 5xx has something to explain.
+    bool spelled = false;
+    if (status >= 400) {
+      ErrorPages::Fields f;
+      f.target = req != nullptr ? req->request_target : nullptr;
+      f.target_len = req != nullptr ? req->request_target_len : 0;
+      spelled = error_page(status, f);
+    }
+    if (!spelled) blk = &h2_store_[(*idx)[status]];
   }
 
   const bool no_data = head_only || blen == 0;
