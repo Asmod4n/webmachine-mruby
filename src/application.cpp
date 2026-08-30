@@ -108,6 +108,29 @@ mrb_value conf_docroot_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.certificate = PATH and conf.private_key = PATH. Paths, not bytes:
+// acme renews them under this process and a path can be read again, which
+// a string handed over once cannot.
+mrb_value conf_certificate_set(mrb_state* mrb, mrb_value self) {
+  const char* p;
+  mrb_int n;
+  mrb_get_args(mrb, "s", &p, &n);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.certificate is empty");
+  s->cert_path.assign(p, static_cast<size_t>(n));
+  return mrb_nil_value();
+}
+
+mrb_value conf_private_key_set(mrb_state* mrb, mrb_value self) {
+  const char* p;
+  mrb_int n;
+  mrb_get_args(mrb, "s", &p, &n);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.private_key is empty");
+  s->key_path.assign(p, static_cast<size_t>(n));
+  return mrb_nil_value();
+}
+
 // conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
@@ -121,18 +144,16 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s is not scheme://host[:port]", u.c_str());
   }
   const std::string scheme = u.substr(0, sep);
-  if (scheme == "https") {
-    mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
-           "conf.url names https, and there is no TLS in this tree (#110/#112/#157 are "
-           "parked). The name is reserved so today's 443 app file runs when TLS returns");
+  if (scheme != "http" && scheme != "https") {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url scheme %s is not http or https",
+               scheme.c_str());
   }
-  if (scheme != "http") {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url scheme %s is not http", scheme.c_str());
-  }
+  const bool tls = scheme == "https";
+  s->tls = tls;
   std::string rest = u.substr(sep + 3);
   const size_t slash = rest.find('/');
   if (slash != std::string::npos) rest.resize(slash);
-  int port = 80;
+  int port = tls ? 443 : 80;
   const size_t colon = rest.rfind(':');
   if (colon != std::string::npos) {
     const std::string ps = rest.substr(colon + 1);
@@ -163,10 +184,11 @@ mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
       n = std::snprintf(buf, sizeof(buf), "unix://%s", s->unix_path.c_str());
       break;
     case AppSpec::Form::kUrl:
-      n = std::snprintf(buf, sizeof(buf), "http://%s:%d", s->url_host.c_str(), s->port);
+      n = std::snprintf(buf, sizeof(buf), "%s://%s:%d", s->tls ? "https" : "http",
+                        s->url_host.c_str(), s->port);
       break;
     case AppSpec::Form::kPort:
-      n = std::snprintf(buf, sizeof(buf), "http://0.0.0.0:%d", s->port);
+      n = std::snprintf(buf, sizeof(buf), "%s://0.0.0.0:%d", s->tls ? "https" : "http", s->port);
       break;
     case AppSpec::Form::kNone: return mrb_nil_value();
   }
@@ -422,6 +444,10 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(file_map_threshold), conf_map_set,
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(zero_copy_threshold), conf_zc_set,
+                       MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(certificate), conf_certificate_set,
+                       MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(private_key), conf_private_key_set,
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(docroot), conf_docroot_set,
                        MRB_ARGS_REQ(1));

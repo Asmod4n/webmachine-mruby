@@ -8,6 +8,7 @@
 #include <mruby/presym.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ktls.h>
 #include <liburing.h>
 #include <linux/sock_diag.h>
 #include <netinet/in.h>
@@ -3750,6 +3751,12 @@ struct AppSpec {
   // conf.docroot = PATH; empty = this app said nothing. --docroot and
   // [server] docroot both beat it, same order as every other choice here.
   std::string docroot;
+  // conf.certificate = PATH, conf.private_key = PATH, and whether
+  // conf.url said https. All three have to agree, and server.cpp is
+  // where that is checked - a listener either serves TLS or does not.
+  std::string cert_path;
+  std::string key_path;
+  bool tls = false;
 };
 
 void application_init(mrb_state* mrb, struct RClass* wm);
@@ -3947,6 +3954,13 @@ inline uint64_t raise_nofile() {
 struct ListenerSpec {
   const char* unix_path = nullptr;
   int port = 0;
+  // The PEM this listener answers with, already read - server.cpp owns
+  // the bytes and outlives the ring. Both or neither: a listener with a
+  // certificate is a TLS listener, and there is no other switch.
+  const char* cert_pem = nullptr;
+  size_t cert_len = 0;
+  const char* key_pem = nullptr;
+  size_t key_len = 0;
 };
 
 // What the reactor needs and nothing else - already resolved, already
@@ -3978,7 +3992,10 @@ enum : uint8_t {
   // #30: a watcher firing. This one DOES need a second field - a
   // connection may run several - and bits 48..55 of the tag were never
   // spoken for, so the slot goes there and the layout is unchanged.
-  kWatch = 15
+  kWatch = 15,
+  // The handover, one kind per setsockopt so a failing CQE says which:
+  // TCP_ULP first, then the two crypto_info blobs.
+  kTlsUlp = 16, kTlsTx = 17, kTlsRx = 18
 };
 
 
@@ -4019,6 +4036,10 @@ class Ring {
   // The ring exit is what ends surviving connections, and what unlinks a
   // unix listener's path.
   ~Ring() {
+    for (ktls_keys*& k : tls_keys_) {
+      ktls_keys_free(k);
+      k = nullptr;
+    }
     if (ring_up_) {
       close_listeners();
       unsigned n = 0;
@@ -4135,6 +4156,7 @@ class Ring {
     }
     for (uint32_t li = 0; li < cfg.nlisteners; li++) {
       if (!setup_listener(li, cfg.listeners[li], err, errlen)) return false;
+      if (!setup_listener_keys(li, cfg.listeners[li], err, errlen)) return false;
     }
     nlisteners_ = cfg.nlisteners;
 
@@ -4451,6 +4473,38 @@ class Ring {
     typename App::Conn app;
 
     std::unique_ptr<struct iovec[]> msg_iov;
+
+    // Everything TLS on this connection, and nothing on a connection that
+    // is not one - most servers run a plaintext listener beside the TLS
+    // one, and a cleartext slot pays a pointer.
+    //
+    // The exchange is freed the moment the keys are copied out: it holds
+    // an OpenSSL SSL and its buffers, which is the largest thing this
+    // process would otherwise carry per connection, and after the
+    // handover there is nothing left for it to do. What outlives it is
+    // `info`, because the setsockopt the kernel is still working on
+    // points into it.
+    struct Tls {
+      ktls_exchange* x = nullptr;
+      // The two crypto_info blobs, copied out of the exchange. The
+      // largest is ChaCha20-Poly1305: 12 iv, 32 key, 0 salt, 8 rec_seq
+      // plus the 4-byte header.
+      unsigned char info[2][64] = {};
+      size_t info_len[2] = {};
+      // recvmsg needs a msghdr that outlives the submit, and a multishot
+      // one outlives many completions; the kernel reads namelen and
+      // controllen out of it to size what it writes into each buffer.
+      struct msghdr recv_msg {};
+      // RFC 8446 4.6.1: plaintext a peer put in the same flight as its
+      // Finished. The kernel's stream starts at sequence zero and cannot
+      // be handed a backlog, so this waits here until the socket has both
+      // keys and then goes to the App ahead of anything the wire brings.
+      std::string early;
+      bool handshaking = true;
+      bool offloaded = false;
+      ~Tls() { ktls_exchange_free(x); }
+    };
+    std::unique_ptr<Tls> tls;
   };
 
   // The reactor cannot go on, and it is not this library's place to
@@ -4576,6 +4630,50 @@ class Ring {
     lg->in_flight = false;
   }
 
+  // The certificate a TLS listener answers with, and the two suites this
+  // build speaks. Once per listener, at boot: every exchange this
+  // listener ever opens is opened from it.
+  bool setup_listener_keys(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
+    if (spec.cert_pem == nullptr) return true;
+    if (!ktls_available()) {
+      const int rc = ktls_load_module();
+      if (rc != 0 || !ktls_available()) {
+        std::snprintf(err, errlen,
+                      "listener %u serves TLS and this kernel has no tls ULP "
+                      "(modprobe tls): %s",
+                      li, ktls_last_error());
+        return false;
+      }
+    }
+    ktls_keys* k = ktls_keys_server(spec.cert_pem, spec.cert_len, spec.key_pem, spec.key_len);
+    if (k == nullptr) {
+      std::snprintf(err, errlen, "listener %u certificate: %s", li, ktls_last_error());
+      return false;
+    }
+    // AES first where the machine has the instructions, ChaCha first
+    // otherwise (.DESIGN.md "Two suites, and why not three").
+    const char* suites = ktls_aes_is_fast()
+                             ? "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256"
+                             : "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
+    if (ktls_keys_set_ciphers(k, suites) != 0) {
+      std::snprintf(err, errlen, "listener %u ciphers: %s", li, ktls_last_error());
+      ktls_keys_free(k);
+      return false;
+    }
+    // Both, in preference order. Nothing downstream reads the answer:
+    // RFC 9113 3.4's preface is the first thing an h2 client sends, and
+    // Http1::feed_parse already decides on it - over TLS those bytes
+    // arrive exactly as they do in the clear.
+    static const char* const kProtocols[] = {"h2", "http/1.1"};
+    if (ktls_keys_set_alpn(k, kProtocols, 2) != 0) {
+      std::snprintf(err, errlen, "listener %u alpn: %s", li, ktls_last_error());
+      ktls_keys_free(k);
+      return false;
+    }
+    tls_keys_[li] = k;
+    return true;
+  }
+
   // The listeners leave through the ring; idempotent, or a later accept
   // would lose its slot.
   void close_listeners() {
@@ -4599,15 +4697,162 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kAccept, 0, li));
   }
 
-  // Multishot recv out of the buffer ring, bundles where the kernel offers them.
+  // Room for the ONE cmsg an offloaded socket carries, TLS_GET_RECORD_TYPE.
+  static constexpr size_t kTlsCmsgSpace = CMSG_SPACE(sizeof(unsigned char));
+
+  // Multishot recv out of the buffer ring, bundles where the kernel offers
+  // them - and two other shapes for a connection that is doing TLS.
   void arm_recv(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
+    if (WM_UNLIKELY(c.tls != nullptr)) {
+      if (!c.tls->offloaded) {
+        // ONE completion at a time while the exchange runs. The moment it
+        // is done this process must stop reading: bytes it takes off the
+        // socket after that are records the kernel's own record layer is
+        // about to be made responsible for, and nothing here could decrypt
+        // them once the exchange is freed. A multishot recv has no pause,
+        // so the handshake does not use one.
+        io_uring_prep_recv(s, static_cast<int>(idx), nullptr, 0, 0);
+        s->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
+        s->buf_group = kBufGroup;
+        io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
+        return;
+      }
+      // Offloaded: never a plain recv (.DESIGN.md "Never a plain recv on an
+      // offloaded socket"). A record that is not application data is EIO on
+      // recv and a control message on recvmsg. The kernel sizes what it
+      // writes into each buffer from these two lengths, so the msghdr has to
+      // outlive the submit - it lives in Tls for that reason.
+      c.tls->recv_msg = msghdr{};
+      c.tls->recv_msg.msg_controllen = kTlsCmsgSpace;
+      io_uring_prep_recvmsg_multishot(s, static_cast<int>(idx), &c.tls->recv_msg, 0);
+      s->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
+      s->buf_group = kBufGroup;
+      io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
+      return;
+    }
     io_uring_prep_recv_multishot(s, static_cast<int>(idx), nullptr, 0, 0);
     s->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
     s->buf_group = kBufGroup;
     if (bundles_) s->ioprio |= IORING_RECVSEND_BUNDLE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
+  }
+
+  // The handshake, and the only thing this connection does until it is
+  // over. mruby-ktls names no descriptor: bytes that arrived go in through
+  // feed, bytes that must go out come back through take, and the socket
+  // stays the reactor's - so what comes out of here is an ordinary send on
+  // the same slot, through the same ring, as everything else.
+  void tls_advance(uint32_t idx) {
+    Conn& c = conns_[idx];
+    ktls_step step = KTLS_READING;
+    if (WM_UNLIKELY(ktls_exchange_step(c.tls->x, &step) != 0)) {
+      begin_close(idx);
+      return;
+    }
+    // Unconditional and after the step, because ktls.h says a step that
+    // answers KTLS_READING may still owe bytes.
+    std::string& sink = c.sending ? c.next : c.out;
+    for (;;) {
+      char buf[4096];
+      const size_t n = ktls_exchange_take(c.tls->x, buf, sizeof buf);
+      if (n == 0) break;
+      sink.append(buf, n);
+    }
+    if (step != KTLS_DONE) {
+      if (!c.sending && !c.out.empty()) arm_send(idx);
+      arm_recv(idx);
+      return;
+    }
+    // Everything the exchange still holds is read HERE, in the order
+    // ktls.h asks for: the backlog first, because draining it can consume
+    // a post-handshake record, and the crypto_info last, because that is
+    // where the record sequence is finally settled.
+    c.tls->handshaking = false;
+    for (;;) {
+      char buf[4096];
+      const size_t n = ktls_exchange_backlog(c.tls->x, buf, sizeof buf);
+      if (n == 0) break;
+      c.tls->early.append(buf, n);
+    }
+    for (int dir = 0; dir < 2; dir++) {
+      size_t len = 0;
+      const void* info = ktls_crypto_info(c.tls->x, static_cast<ktls_direction>(dir), &len);
+      if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[dir])) {
+        begin_close(idx);
+        return;
+      }
+      std::memcpy(c.tls->info[dir], info, len);
+      c.tls->info_len[dir] = len;
+    }
+    // Freed now, not after the handover: it holds an SSL and its buffers,
+    // the largest thing this process would otherwise carry per connection,
+    // and nothing above still reads from it. What the setsockopts point at
+    // is the copy in `info`.
+    ktls_exchange_free(c.tls->x);
+    c.tls->x = nullptr;
+
+    // The last flight is already TLS records. It has to reach the wire as
+    // itself - from the TLS_TX setsockopt on, the kernel encrypts what this
+    // process sends, and encrypting them twice is what a peer would see.
+    if (!c.out.empty()) {
+      if (!c.sending) arm_send(idx);
+      return;
+    }
+    tls_handover(idx);
+  }
+
+  // ULP first, then a key per direction, linked so the order is the
+  // kernel's to keep rather than three completions to sort out. The
+  // options go on the DIRECT descriptor through the ring, like every
+  // other option this reactor sets.
+  void tls_handover(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (io_uring_sq_space_left(&ring_) < 3) io_uring_submit(&ring_);
+    static const char kUlp[] = "tls";
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), SOL_TCP, TCP_ULP,
+                           const_cast<char*>(kUlp), sizeof kUlp - 1);
+    s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsUlp, c.gen, idx));
+
+    s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
+                           ktls_optname(KTLS_TX), c.tls->info[KTLS_TX],
+                           static_cast<uint32_t>(c.tls->info_len[KTLS_TX]));
+    s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsTx, c.gen, idx));
+
+    s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
+                           ktls_optname(KTLS_RX), c.tls->info[KTLS_RX],
+                           static_cast<uint32_t>(c.tls->info_len[KTLS_RX]));
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsRx, c.gen, idx));
+  }
+
+  // The last of the three. From here the socket is the kernel's record
+  // layer and this connection is an ordinary one again - except that its
+  // recv is a recvmsg, and that anything the peer pipelined behind its
+  // Finished has been waiting and goes first.
+  void on_tls_ready(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen || c.tls == nullptr) return;
+    if (WM_UNLIKELY(cqe->res < 0)) {
+      begin_close(idx);
+      return;
+    }
+    c.tls->offloaded = true;
+    c.deadline_s = now_s_ + header_timeout_;
+    if (!c.tls->early.empty()) {
+      std::string early;
+      early.swap(c.tls->early);
+      deliver(idx, early.data(), early.size(), true);
+      if (!c.live) return;
+    }
+    arm_recv(idx);
   }
 
   // One sendmsg for the whole round; MSG_MORE when the App still owes bytes.
@@ -4653,6 +4898,9 @@ class Ring {
     // wants in the log, so the line is owed here too - with the bytes that
     // really went out.
     app_.file_abandon(c.app);
+    // Nothing is owed to it any more, and it is the biggest thing this
+    // slot holds. The slot itself is kept - reset() and ~Conn own that.
+    c.tls.reset();
     c.live = false;
     live_clear(idx);
     if (live_ != 0) live_--;
@@ -4692,6 +4940,18 @@ class Ring {
                              IPPROTO_TCP, TCP_NODELAY, const_cast<int*>(&kOne), sizeof(kOne));
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, idx));
+    }
+    // A listener with a certificate hands its peer an exchange before it
+    // hands it anything else; arm_recv reads this to know which shape it
+    // is submitting, so it is set before the first read is armed.
+    c.tls.reset();
+    if (WM_UNLIKELY(tls_keys_[li] != nullptr)) {
+      c.tls.reset(new typename Conn::Tls());
+      c.tls->x = ktls_exchange_open(tls_keys_[li], KTLS_SERVER);
+      if (WM_UNLIKELY(c.tls->x == nullptr)) {
+        begin_close(idx);
+        return;
+      }
     }
     arm_meminfo(idx);
     if (log_fd_ >= 0 && !unix_listener_[li]) arm_peer(idx);
@@ -4734,6 +4994,11 @@ class Ring {
       return;
     }
 
+    if (WM_UNLIKELY(c.tls != nullptr)) {
+      on_recv_tls(idx, bid0, total, cqe->flags);
+      return;
+    }
+
     std::string& sink = c.sending ? c.next : c.out;
     bool closing = false;
     size_t left = total;
@@ -4756,6 +5021,17 @@ class Ring {
       replenish_++;
     }
 
+    finish_round(idx, req, closing);
+    if (!c.live) return;
+    if (!(cqe->flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
+  }
+
+  // What a round owes once the App has seen its bytes: the answer on the
+  // wire, an open the run deferred, and the close it may have asked for.
+  // Shared, because bytes reach the App from three places - the buffer
+  // ring, an offloaded socket's recvmsg, and the backlog a handshake left.
+  void finish_round(uint32_t idx, typename App::Plan& req, bool closing) {
+    Conn& c = conns_[idx];
     if (!c.sending) {
       if (req.iovlen != 0) {
         take_plan(c, req);
@@ -4774,9 +5050,74 @@ class Ring {
     if (WM_UNLIKELY(closing)) {
       if (c.sending) c.close_after_send = true;
       else begin_close(idx);
+    }
+  }
+
+  // ONE contiguous stretch of plaintext to the App, and the round it
+  // finishes. `last` is what lets a Plan form, so a caller that has the
+  // whole of what arrived says so.
+  void deliver(uint32_t idx, const char* data, size_t len, bool last) {
+    Conn& c = conns_[idx];
+    typename App::Plan req;
+    req.byte_cap = c.round_cap;
+    typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
+    std::string& sink = c.sending ? c.next : c.out;
+    const bool closing = !app_.feed(c.app, data, len, sink, plan);
+    finish_round(idx, req, closing);
+  }
+
+  // The same buffers, for a connection doing TLS. Before the handover the
+  // bytes are records only the exchange can read; after it they are
+  // plaintext the kernel already decrypted, and what they arrive in is a
+  // recvmsg's own layout rather than the payload alone.
+  void on_recv_tls(uint32_t idx, uint32_t bid0, size_t total, uint32_t flags) {
+    Conn& c = conns_[idx];
+    const size_t off = static_cast<size_t>(bid0) * kBufSize;
+    replenish_++;
+
+    if (c.tls->handshaking) {
+      if (WM_UNLIKELY(total > kBufSize || ktls_exchange_feed(c.tls->x, pool_ + off, total) != 0)) {
+        begin_close(idx);
+        return;
+      }
+      tls_advance(idx);
       return;
     }
-    if (!(cqe->flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
+
+    // Between the handshake finishing and the last of the three
+    // setsockopts landing, nothing is armed and nothing may arrive - so a
+    // completion here belongs to a socket that is already the kernel's.
+    struct io_uring_recvmsg_out* o =
+        io_uring_recvmsg_validate(pool_ + off, static_cast<int>(total), &c.tls->recv_msg);
+    if (WM_UNLIKELY(o == nullptr)) {
+      begin_close(idx);
+      return;
+    }
+    // An alert or a post-handshake record reaches a plain recv as EIO and
+    // nothing else; here it says which it is (.DESIGN.md "Never a plain
+    // recv on an offloaded socket"). A KeyUpdate is answerable rather
+    // than fatal, and that answer is not built yet - so for now anything
+    // that is not the stream ends the connection, which is at least what
+    // it is rather than an unexplained EIO.
+    ktls_record record = KTLS_RECORD_UNKNOWN;
+    for (struct cmsghdr* cm = io_uring_recvmsg_cmsg_firsthdr(o, &c.tls->recv_msg); cm != nullptr;
+         cm = io_uring_recvmsg_cmsg_nexthdr(o, &c.tls->recv_msg, cm)) {
+      if (cm->cmsg_level == ktls_sol_tls() && cm->cmsg_type == ktls_record_type_cmsg()) {
+        record = ktls_record_type(CMSG_DATA(cm), cm->cmsg_len - CMSG_LEN(0));
+      }
+    }
+    if (WM_UNLIKELY(record != KTLS_RECORD_DATA)) {
+      begin_close(idx);
+      return;
+    }
+    const void* payload = io_uring_recvmsg_payload(o, &c.tls->recv_msg);
+    const size_t len =
+        io_uring_recvmsg_payload_length(o, static_cast<int>(total), &c.tls->recv_msg);
+    if (len != 0) {
+      deliver(idx, static_cast<const char*>(payload), len, true);
+      if (!c.live) return;
+    }
+    if (!(flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
   }
 
   // What the kernel took, and what is still owed.
@@ -4804,6 +5145,18 @@ class Ring {
     c.out.clear();
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
+    // The handshake's own bytes, now on the wire as themselves. Only once
+    // nothing is left may the kernel be given the write key.
+    if (WM_UNLIKELY(c.tls != nullptr) && !c.tls->offloaded) {
+      if (c.next.empty()) {
+        if (c.tls->handshaking) arm_recv(idx);
+        else tls_handover(idx);
+        return;
+      }
+      c.out.swap(c.next);
+      arm_send(idx);
+      return;
+    }
     if (!c.next.empty()) {
       c.out.swap(c.next);
       arm_send(idx);
@@ -5148,6 +5501,14 @@ class Ring {
         }
         break;
       case detail::kShutdown: break;
+      // The first two only report: a failure in either cancels the rest of
+      // the chain, and the third is where the socket is finally the
+      // kernel's, so that is the one that acts.
+      case detail::kTlsUlp:
+      case detail::kTlsTx:
+        if (WM_UNLIKELY(cqe->res < 0)) begin_close(idx);
+        break;
+      case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
       case detail::kStop: stop_ = true; break;
       default: break;
     }
@@ -5264,6 +5625,9 @@ class Ring {
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};
+  // Null on a listener that serves cleartext, which is also how a slot
+  // knows which it is - there is no second flag to keep in step.
+  ktls_keys* tls_keys_[kMaxListeners] = {};
   int bound_port_[kMaxListeners] = {};
   std::vector<std::string> unix_paths_;
   uint32_t nlisteners_ = 0;

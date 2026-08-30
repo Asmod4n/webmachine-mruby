@@ -64,6 +64,19 @@ ensure
   app.unlink
 end
 
+# Like ap_refused, but WITHOUT --unix: some refusals are about the
+# listener the app named, and an override would answer before them.
+def ap_refused_unaided(app_source)
+  app = ap_compile(app_source)
+  err = "/tmp/wm-ap-unaided-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  Process.wait(pid)
+  raise 'server came up but must have refused' if $?.exitstatus == 0
+  File.read(err)
+ensure
+  app.unlink
+end
+
 AP_FIZZ = <<~RUBY unless defined?(AP_FIZZ)
   class MyResource < Webmachine::Resource
     def self.to_html
@@ -443,8 +456,8 @@ assert('application: conf.adapter does not exist - a swallowed setting is a lie'
   assert_true out.include?('NoMethodError'), out
 end
 
-assert('application: the ssl/certificate names do not exist at all') do
-  %w[ssl ssl_options certificate certificate_key].each do |name|
+assert('application: webmachine-ruby spells TLS three ways this tree does not') do
+  %w[ssl ssl_options certificate_key].each do |name|
     out = ap_refused(ap_one_route(<<~BODY))
       app.conf.port = 8080
       app.conf.#{name} = 'whatever'
@@ -455,14 +468,62 @@ assert('application: the ssl/certificate names do not exist at all') do
   end
 end
 
-assert('application: an https url refuses with the same TLS reason') do
+assert('application: https, a certificate and a key are one decision') do
+  # A certificate without https: the listener would carry keys it never
+  # offers, which is a config that means two things at once.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.conf.port = 8080
+    app.conf.certificate = '/nonexistent/cert.pem'
+    app.conf.private_key = '/nonexistent/key.pem'
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('not https'), out
+
+  # https without either of them.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'https://example.com' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('conf.certificate'), out
+  assert_true out.include?('conf.private_key'), out
+
+  # https with only one of them, named by which one is missing.
   out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.url = 'https://example.com'
+      conf.certificate = '/nonexistent/cert.pem'
     end
     app.add_route [:*], R
   BODY
-  assert_true out.include?('no TLS in this tree'), out
+  assert_true out.include?('only the certificate'), out
+end
+
+assert('application: an https listener says which file it could not read') do
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure do |conf|
+      conf.url = 'https://example.com:0'
+      conf.certificate = '/nonexistent/cert.pem'
+      conf.private_key = '/nonexistent/key.pem'
+    end
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('/nonexistent/cert.pem'), out
+  assert_true out.include?('No such file'), out
+end
+
+assert('application: the kernel has no record layer on a unix socket') do
+  # --unix overrides the listener the app named, so this app ends up
+  # asking for TLS where setsockopt(IPPROTO_TCP, TCP_ULP) is ENOTSUP.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.configure do |conf|
+      conf.url = 'https://example.com'
+      conf.certificate = '/nonexistent/cert.pem'
+      conf.private_key = '/nonexistent/key.pem'
+    end
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('unix socket'), out
+  assert_true out.include?('TCP ULP'), out
 end
 
 assert('application: route.assets is a signpost, route.sse is a real route kind') do

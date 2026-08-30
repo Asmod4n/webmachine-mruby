@@ -11,9 +11,11 @@
 #include <mruby/presym.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace webmachine {
@@ -82,6 +84,80 @@ int spawn_logd(const char* mode, const char* path, const char* privacy,
 
 // The listener table, straight out of the registry: registration order
 // IS listener order.
+// The PEM bytes a TLS listener answers with. Read at boot and kept
+// here because ListenerSpec only points at them and the ring outlives
+// the call that filled it in. Two per listener, indexed by listener.
+std::vector<std::string> pem_;
+
+// A whole file, or false with the reason spelled. Small by nature: a
+// certificate chain and a key, not a body.
+bool read_pem(const std::string& path, std::string& out, const char* what, char* err,
+              size_t errlen) {
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (f == nullptr) {
+    std::snprintf(err, errlen, "conf.%s %s: %s", what, path.c_str(), std::strerror(errno));
+    return false;
+  }
+  out.clear();
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) != 0) out.append(buf, n);
+  const bool bad = std::ferror(f) != 0;
+  std::fclose(f);
+  if (bad) {
+    std::snprintf(err, errlen, "conf.%s %s: read failed", what, path.c_str());
+    return false;
+  }
+  if (out.empty()) {
+    std::snprintf(err, errlen, "conf.%s %s is empty", what, path.c_str());
+    return false;
+  }
+  return true;
+}
+
+// https, a certificate and a key are one decision spelled three ways, so
+// naming any of them means naming all of them.
+bool build_listener_tls(RingConfig& cfg, char* err, size_t errlen) {
+  pem_.assign(specs_.size() * 2, std::string());
+  for (size_t i = 0; i < specs_.size(); i++) {
+    const AppSpec& spec = *specs_[i];
+    const bool named_files = !spec.cert_path.empty() || !spec.key_path.empty();
+    if (!spec.tls && !named_files) continue;
+    if (!spec.tls) {
+      std::snprintf(err, errlen,
+                    "application %zu names a certificate but its listener is not https - "
+                    "conf.url = \"https://...\" is what turns TLS on",
+                    i);
+      return false;
+    }
+    if (spec.cert_path.empty() || spec.key_path.empty()) {
+      std::snprintf(err, errlen,
+                    "application %zu serves https and needs both conf.certificate and "
+                    "conf.private_key; it named %s",
+                    i, spec.cert_path.empty() ? "only the key" : "only the certificate");
+      return false;
+    }
+    if (cfg.listeners[i].unix_path != nullptr) {
+      std::snprintf(err, errlen,
+                    "application %zu serves https on a unix socket. TLS there is a real "
+                    "thing, but the kernel's record layer is a TCP ULP - setsockopt("
+                    "IPPROTO_TCP, TCP_ULP) on AF_UNIX is ENOTSUP - and this server has no "
+                    "record layer of its own to fall back to",
+                    i);
+      return false;
+    }
+    std::string& cert = pem_[i * 2];
+    std::string& key = pem_[i * 2 + 1];
+    if (!read_pem(spec.cert_path, cert, "certificate", err, errlen)) return false;
+    if (!read_pem(spec.key_path, key, "private_key", err, errlen)) return false;
+    cfg.listeners[i].cert_pem = cert.data();
+    cfg.listeners[i].cert_len = cert.size();
+    cfg.listeners[i].key_pem = key.data();
+    cfg.listeners[i].key_len = key.size();
+  }
+  return true;
+}
+
 bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
@@ -212,6 +288,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   cfg.send_timeout = opts_.send_timeout;
   cfg.idle_timeout = opts_.idle_timeout;
   if (!build_listeners(cfg, err, errlen)) return false;
+  if (!build_listener_tls(cfg, err, errlen)) return false;
 
   // server.docroot: a typed flag beats [server], and both beat the app's
   // conf - the same order --unix and --port already follow. The canonical
@@ -364,7 +441,8 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     if (cfg.listeners[i].unix_path != nullptr) {
       std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i, cfg.listeners[i].unix_path);
     } else {
-      std::fprintf(stderr, "webmachine:   [%u] tcp port %d\n", i, ring_->bound_port(i));
+      std::fprintf(stderr, "webmachine:   [%u] tcp port %d%s\n", i, ring_->bound_port(i),
+                   cfg.listeners[i].cert_pem != nullptr ? ", tls" : "");
     }
   }
   built_ = true;
