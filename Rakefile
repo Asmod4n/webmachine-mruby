@@ -172,16 +172,18 @@ ERROR_NOTICE = <<~TEXT
   webmachine-mruby error pages
   ============================
 
-  cats/index.txt         status, width, height, bytes, and what the
-                         upstream service said the picture's validators
-                         were - tab separated, one line per status
-  cats/<status>.jpg      the pictures, see below
+  <status>.jpg           the pictures, one per status, at the root
+
+  There is no index: the archive's own entry list is one, and each
+  entry's comment carries what the upstream service said the picture's
+  validators were - its ETag and Last-Modified, tab separated - so a
+  rebuild can ask instead of download.
 
   This pack holds PICTURES. The pages themselves live in the server, as
   Webmachine::ErrorResource - a server with no pack still has to be able
   to say what went wrong, so the templates cannot live out here. What
   these error assets decides is whether a page has a picture: a status with no
-  cats/<status>.jpg renders without one.
+  <status>.jpg renders without one.
 
   The page is rendered when the error happens, by the route that produced
   it - nothing in here is reached by a second trip through the router.
@@ -225,33 +227,6 @@ ERROR_NOTICE = <<~TEXT
   repository it was built from.
 TEXT
 
-
-
-# The picture's real geometry, from file(1) - in the standard install of
-# every distro this would be rebuilt on, and this task is a developer's
-# tool, never something a server runs.
-#
-# It has to be read from the FILE. http.cat does deliver dimensions, on
-# its /status/<code> pages, and they are wrong for nine of the 55:
-# 414, 422, 495, 498, 509, 521, 523, 525 and 530 are 600x750 and every
-# page claims 750x600. That is a layout constant, not a measurement, and
-# using it would cause exactly the reflow the numbers exist to prevent.
-# The image headers carry no geometry at all (checked 2026-08-28:
-# content-type, content-length, etag, last-modified, and nothing else).
-#
-# file(1)'s output is human-readable and not an API - the wording has
-# moved between versions - so this takes the LAST WxH it finds and
-# refuses loudly rather than shipping a zero.
-def jpeg_size(path)
-  out = `file -b #{path.shellescape}`
-  raise "file(1) said nothing about #{path}" unless $?.success?
-  m = out.scan(/(\d+)x(\d+)/).last
-  raise "file(1) found no geometry in #{path}: #{out.strip}" unless m
-  w = m[0].to_i
-  h = m[1].to_i
-  raise "file(1) gave #{w}x#{h} for #{path}" unless w.positive? && h.positive?
-  [w, h]
-end
 
 # Reading back what a previous run wrote. Everything in these error assets is
 # stored, so a local header is the whole format.
@@ -298,9 +273,15 @@ end
 # entry. That is where an image's upstream validators go - the archive
 # ships pictures and nothing else, and a rebuild still gets to ask
 # http.cat whether anything changed.
-def error_zip(entries)
+# The notice rides in the archive's own comment field, not as an entry:
+# the pack is pictures and nothing else, and read_cats reads every entry
+# as one. A comment travels with the file wherever it is copied, which is
+# what CC BY 2.0 asks for and what a zip handed to somebody else would
+# otherwise arrive without.
+def error_zip(entries, archive_comment = '')
   out = +''.b
   cd = +''.b
+  archive_comment = archive_comment.b
   dtime = 0
   ddate = ((2026 - 1980) << 9) | (8 << 5) | 28
   entries.each do |name, data, comment|
@@ -316,7 +297,8 @@ def error_zip(entries)
   end
   cd_off = out.bytesize
   out << cd
-  out << [0x06054b50, 0, 0, entries.size, entries.size, cd.bytesize, cd_off, 0].pack('VvvvvVVv')
+  out << [0x06054b50, 0, 0, entries.size, entries.size, cd.bytesize, cd_off,
+          archive_comment.bytesize].pack('VvvvvVVv') << archive_comment
   out
 end
 
@@ -325,7 +307,6 @@ task :error_assets do
   require 'zlib'
   require 'open-uri'
   require 'shellwords'
-  require 'tmpdir'
   # What the last build recorded, so a rebuild can ASK instead of fetch:
   # http.cat serves an etag, and an image that has not changed upstream
   # answers 304 and costs nothing.
@@ -368,15 +349,8 @@ task :error_assets do
       next
     end
     next unless body.b.start_with?("\xFF\xD8".b)
-    tmp = File.join(Dir.tmpdir, "wm-cat-#{$$}-#{code}.jpg")
-    File.binwrite(tmp, body.b)
-    dims = begin
-      jpeg_size(tmp)
-    ensure
-      File.unlink(tmp) rescue nil
-    end
     cats[code] = body.b
-    meta[code] = [dims[0], dims[1], cats[code].bytesize, etag, lastmod]
+    meta[code] = [etag, lastmod]
     print "#{code} "
   end
   puts
@@ -389,10 +363,10 @@ task :error_assets do
   # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
   # in share/README.md.
   entries = cats.keys.sort.map do |code|
-    _w, _h, _n, etag, lastmod = meta[code]
+    etag, lastmod = meta[code]
     ["#{code}.jpg", cats[code], "#{etag}\t#{lastmod}"]
   end
-  File.binwrite(ERROR_ASSETS, error_zip(entries))
+  File.binwrite(ERROR_ASSETS, error_zip(entries, ERROR_NOTICE))
   puts "share/error-assets.zip: #{cats.size} cats, " \
        "#{entries.size} entries, #{File.size(ERROR_ASSETS)} bytes"
 end

@@ -30,11 +30,17 @@ Refresh it verbatim from upstream; do not edit it here:
 
 ## error-assets.zip
 
-An asset pack holding the pictures the error pages show:
+An asset pack holding the pictures the error pages show, and nothing
+else:
 
-    cats/index.txt      geometry and provenance, one line per status
-    cats/<status>.jpg   the pictures, CC BY 2.0, see below
-    NOTICE.txt          the terms, inside the archive
+    <status>.jpg        one per status, at the root, CC BY 2.0, see below
+
+There is no index and no directory: the archive's own entry list is the
+index, and `404.jpg` is both the name inside it and the name a caller
+writes. Each entry's ZIP comment carries the two fields a rebuild needs -
+the upstream ETag and Last-Modified, tab separated - and the archive's
+own comment carries the licence, so the terms travel with the file
+wherever it is copied rather than only with this repository.
 
 `rake error_assets` fetches and rebuilds it.
 
@@ -53,40 +59,36 @@ that class, not to edit a zip:
       end
     end
 
-The error assets only decides whether a page HAS a picture: a status with no
-`cats/<status>.jpg` renders without one.
+The pack only decides whether a page HAS a picture: a status with no
+`<status>.jpg` renders without one.
 
-### Why the geometry rides along
+### Asking instead of downloading
 
-The server needs a picture's width and height to keep the page from
-reflowing when it arrives, and it must not parse a JPEG to get them. So
-`rake error_assets` reads them once with `file(1)` and writes them into
-`cats/index.txt`, tab separated:
+The ETag and Last-Modified in each entry's comment are the upstream
+service's own. A rebuild sends `If-None-Match` with them, and a picture
+that has not changed answers 304 and costs nothing - so `rake
+error_assets` on an unchanged upstream fetches no bytes at all and says
+how many it skipped.
 
-    # status  width  height  bytes  upstream etag     upstream last-modified
-    404       750    600     38532  "697fc6f8-9684"   Sun, 01 Feb 2026 21:34:48 GMT
+The image responses carry nothing else worth keeping: `content-type`,
+`content-length`, `etag`, `last-modified`. In particular they carry no
+geometry, and neither does this pack - the page names no width or height
+on the picture, so nothing here has one to give.
 
-**They cannot be taken from http.cat.** The service does publish
-dimensions, on its `/status/<code>` pages - and they are wrong for nine
-of the 55. `414`, `422`, `495`, `498`, `509`, `521`, `523`, `525` and
-`530` are 600x750 pictures, and every page declares 750x600. That is a
-layout constant, not a measurement, and trusting it would cause exactly
-the reflow the numbers exist to prevent. The image responses carry no
-geometry at all - `content-type`, `content-length`, `etag`,
-`last-modified`, and nothing else.
-
-The etag and last-modified are the upstream service's, kept so a rebuild
-can ask instead of download: `rake error_assets` sends `If-None-Match`
-and a picture that has not changed answers 304 and costs nothing.
-
-### It is a source, not a route
+### The page is not a route; the picture is
 
 An error is delivered by the route that produced it. A page fetched from
 `/errors/404.html` would be a second trip through the same router that
-just failed to find anything, so nothing in these error assets is meant to be
-served: the server reads the templates at STARTUP, renders one page per
-status it can answer with, and appends the result as the body of the
-response that failed. The wire path stays one `append` of prebuilt bytes.
+just failed to find anything, so no page is served from anywhere: the
+server renders one at STARTUP for every status it can answer with and
+appends those bytes to the response that failed. The wire path is one
+`append`, and for every 4xx it is the same bytes every time.
+
+The pictures are the exception, and they have to be: an `<img>` is a
+second request by definition. They are mounted at `/error_assets/`, which
+is where the `cat_url` in a rendered page points - `/error_assets/404.jpg`
+is entry `404.jpg` of this archive, answered by the asset tier like any
+other file, conditional requests and ranges included.
 
 The picture is the one exception, and it is the reason the error assets exists at
 all: the cats are far too big to compile in, and the server looks them up
@@ -126,10 +128,10 @@ this server may redistribute the error assets.
 
 | the licence asks | these error assets |
 |---|---|
-| name the creator | Tomomi Imura, in `NOTICE`, in `NOTICE.txt` inside the zip, on every rendered page that shows a picture, and here |
+| name the creator | Tomomi Imura, in `NOTICE`, in the zip's own archive comment, on every rendered page that shows a picture, and here |
 | link the licence | the deed URL, in all four places |
 | say whether it was changed | **not changed** - every image is the byte-for-byte JPEG `http.cat` served (which is itself 750x600, already smaller than the originals; "unchanged" is measured against what the service served) |
-| no further restrictions | a plain zip with a notice in it, nothing wrapped, nothing locked |
+| no further restrictions | a plain zip carrying its notice, nothing wrapped, nothing locked |
 
 ### Everything is stored, nothing is deflated
 
