@@ -7,7 +7,10 @@ MRuby::Build.new('pgo') do |conf|
   mode = ENV['WM_PGO']
   pgo = case mode
         when 'gen'
-          ["-fprofile-generate=#{dir}"]
+          # -ftest-coverage writes the .gcno notes gcov reads names from;
+          # -fprofile-generate alone writes .gcda only -fprofile-use can
+          # decode. Compile-time notes, nothing in the running binary.
+          ["-fprofile-generate=#{dir}", '-ftest-coverage']
         when 'use'
           ["-fprofile-use=#{dir}", '-fprofile-correction',
            '-fprofile-partial-training', '-Wno-missing-profile']
