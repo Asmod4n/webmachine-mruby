@@ -1294,3 +1294,18 @@ harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, o
 env: runnable=1/991 busy=0% (200ms sample)
 responses=18312875 bad=0 seconds=10.000 rps=1831284 bytes=1508858210 MB/s=143.90 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=238093519 tx_MB/s=22.71
 server: 93% of one core (90u/2s)   client: 10% of one core (10u/0s)   other: 14% of one core
+==== 2026-08-30T16:19Z repo=2c92866 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/2210 busy=2% (200ms sample)
+responses=85367568 bad=0 seconds=10.000 rps=8536655 bytes=7170876400 MB/s=683.86 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1109791216 tx_MB/s=105.84
+server: 94% of one core (82u/12s)   client: 80% of one core (70u/10s)   other: 213% of one core
+==== 2026-08-30T16:20Z repo=2c92866 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1089 busy=0% (200ms sample)
+responses=97253601 bad=0 seconds=10.000 rps=9725333 bytes=8169303172 MB/s=779.08 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1264311309 tx_MB/s=120.57
+server: 99% of one core (86u/13s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-08-30T16:20Z repo=2c92866 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/counter_inplace.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1080 busy=0% (200ms sample)
+responses=27875622 bad=0 seconds=10.000 rps=2787561 bytes=2313677314 MB/s=220.65 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=362410894 tx_MB/s=34.56
+server: 99% of one core (95u/4s)   client: 20% of one core (20u/0s)   other: 18% of one core
