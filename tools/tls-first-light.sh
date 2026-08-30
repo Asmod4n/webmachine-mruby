@@ -1,0 +1,128 @@
+#!/bin/sh
+# Does a browser get h2 over TLS out of this server?
+#
+# Six steps, easiest first, each answering a different question - a
+# browser is last because it is the only one that will not say what went
+# wrong. Everything lands in a temporary directory that is named at the
+# end and not deleted, so a failing step can be looked at.
+#
+#   tools/tls-first-light.sh [port]
+#
+# Needs: a debug build (MRUBY_CONFIG=build_config_debug.rb rake compile),
+# openssl and curl on the path, and the tls module in the kernel.
+set -eu
+
+port=${1:-8443}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+bin=$root/mruby/build/debug/bin/webmachine-server
+mrbc=$root/mruby/build/host/mrbc/bin/mrbc
+work=$(mktemp -d)
+fails=0
+
+say() { printf '\n== %s\n' "$1"; }
+ok()  { printf '   %-56s %s\n' "$2" "$1"; [ "$1" = ok ] || fails=$((fails + 1)); }
+
+[ -x "$bin" ]  || { echo "no debug binary at $bin - rake compile first"; exit 1; }
+[ -x "$mrbc" ] || { echo "no mrbc at $mrbc - rake compile first"; exit 1; }
+
+say "1. does this kernel have the record layer at all?"
+if [ -r /proc/modules ] && grep -q '^tls ' /proc/modules; then
+  ok ok "the tls module is loaded"
+else
+  printf '   the tls module is not loaded. Trying to load it.\n'
+  if modprobe tls 2>/dev/null && grep -q '^tls ' /proc/modules 2>/dev/null; then
+    ok ok "modprobe tls"
+  else
+    ok FAILED "modprobe tls - nothing below this line can work"
+    echo "   (run: sudo modprobe tls)"
+    exit 1
+  fi
+fi
+
+say "2. a certificate a browser can be told to trust"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+  -keyout "$work/key.pem" -out "$work/cert.pem" -days 30 -nodes \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1
+[ -s "$work/cert.pem" ] && ok ok "a self-signed P-256 certificate for localhost" \
+                        || ok FAILED "openssl req"
+
+cat > "$work/app.rb" <<APP
+class Hello < Webmachine::Resource
+  def self.to_html
+    '<html><body><h1>h2 over tls</h1></body></html>'
+  end
+end
+
+def main
+  Webmachine::Application.new do |app|
+    app.configure do |conf|
+      conf.url = 'https://localhost:$port'
+      conf.certificate = '$work/cert.pem'
+      conf.private_key = '$work/key.pem'
+    end
+    app.routes { |route| route.add [:*], Hello }
+  end
+end
+APP
+"$mrbc" -o "$work/app.mrb" "$work/app.rb" >/dev/null
+
+say "3. does the server come up on a TLS listener?"
+"$bin" --app "$work/app.mrb" >"$work/out.log" 2>"$work/err.log" &
+server=$!
+trap 'kill $server 2>/dev/null || true' EXIT INT TERM
+i=0
+while [ $i -lt 100 ]; do
+  if ! kill -0 $server 2>/dev/null; then
+    ok FAILED "the server exited during startup"
+    sed 's/^/   | /' "$work/err.log"
+    echo "   files in $work"
+    exit 1
+  fi
+  (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break
+  i=$((i + 1))
+  sleep 0.1
+done
+grep -q ', tls' "$work/err.log" && ok ok "it says the listener is tls" \
+                                || ok FAILED "the startup line does not mention tls"
+
+say "4. does the handshake finish, and on which suite?"
+hs=$(printf 'Q\n' | openssl s_client -connect "127.0.0.1:$port" \
+       -CAfile "$work/cert.pem" -alpn h2,http/1.1 -servername localhost 2>&1 || true)
+echo "$hs" | grep -q 'Verification: OK' \
+  && ok ok "the certificate verifies" || ok FAILED "verification"
+suite=$(echo "$hs" | sed -n 's/^.*Cipher is \(TLS_[A-Z0-9_]*\).*$/\1/p' | head -1)
+[ -n "$suite" ] && ok ok "negotiated $suite" || ok FAILED "no suite was negotiated"
+echo "$hs" | grep -q 'ALPN protocol: h2' \
+  && ok ok "ALPN settled on h2" || ok FAILED "ALPN did not settle on h2"
+
+say "5. does a request come back - the kernel encrypting both ways?"
+body=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
+         -w '\n%{http_version} %{http_code}' "https://localhost:$port/" 2>&1 || true)
+echo "$body" | grep -q 'h2 over tls' \
+  && ok ok "the body arrived" || ok FAILED "no body: $body"
+echo "$body" | grep -q '^2 200$' \
+  && ok ok "over HTTP/2, status 200" || ok FAILED "not h2/200: $(echo "$body" | tail -1)"
+
+say "6. and again on the same connection, which is where a browser lives"
+# One -o per URL: curl applies a single one to the first URL only, and the
+# bodies would otherwise land in the answer being compared.
+many=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
+       -w '%{http_code} ' \
+       -o /dev/null "https://localhost:$port/"  -o /dev/null "https://localhost:$port/a" \
+       -o /dev/null "https://localhost:$port/b" -o /dev/null "https://localhost:$port/c" 2>&1 || true)
+[ "$many" = "200 200 200 200 " ] \
+  && ok ok "four requests, one connection" || ok FAILED "got: $many"
+
+printf '\n'
+if [ $fails -eq 0 ]; then
+  echo "all ok - point a browser at https://localhost:$port/ and accept the"
+  echo "self-signed certificate; its network panel should say h2."
+  echo "the server is still running as pid $server, files in $work"
+  trap - EXIT INT TERM
+else
+  echo "$fails step(s) failed. The server's own log:"
+  sed 's/^/   | /' "$work/err.log"
+  echo "files in $work"
+fi
+exit $fails

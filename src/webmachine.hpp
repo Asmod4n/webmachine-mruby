@@ -4646,16 +4646,9 @@ class Ring {
   // listener ever opens is opened from it.
   bool setup_listener_keys(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
     if (spec.cert_pem == nullptr) return true;
-    if (!ktls_available()) {
-      const int rc = ktls_load_module();
-      if (rc != 0 || !ktls_available()) {
-        std::snprintf(err, errlen,
-                      "listener %u serves TLS and this kernel has no tls ULP "
-                      "(modprobe tls): %s",
-                      li, ktls_last_error());
-        return false;
-      }
-    }
+    // The certificate BEFORE the kernel, deliberately: both can be wrong
+    // at once, and the one the operator can fix is the one worth saying.
+    // It also means a machine without the module still checks the config.
     ktls_keys* k = ktls_keys_server(spec.cert_pem, spec.cert_len, spec.key_pem, spec.key_len);
     if (k == nullptr) {
       std::snprintf(err, errlen, "listener %u certificate: %s", li, ktls_last_error());
@@ -4680,6 +4673,17 @@ class Ring {
       std::snprintf(err, errlen, "listener %u alpn: %s", li, ktls_last_error());
       ktls_keys_free(k);
       return false;
+    }
+    if (!ktls_available()) {
+      const int rc = ktls_load_module();
+      if (rc != 0 || !ktls_available()) {
+        std::snprintf(err, errlen,
+                      "listener %u serves TLS and this kernel has no tls ULP "
+                      "(modprobe tls): %s",
+                      li, ktls_last_error());
+        ktls_keys_free(k);
+        return false;
+      }
     }
     tls_keys_[li] = k;
     return true;
