@@ -573,6 +573,16 @@ void date_line(Run& r, const char* name, size_t nlen, int64_t epoch) {
   field(r, name, nlen, buf, http::kDateLen);
 }
 
+// RFC 9110 12.5.2/12.5.3/12.5.4: what follows the Accept nodes. d4, e5 and
+// f6 each ask whether the request named their field, and the conneg node
+// behind each is reachable only through it, so a request naming none of the
+// three walks d4 -> e5 -> f6 -> g7 and cannot say a word on the way.
+Node after_accept(const flow::ReqFacts& facts) {
+  return facts.has_accept_language || facts.has_accept_charset || facts.has_accept_encoding
+             ? Node::kD4
+             : Node::kG7;
+}
+
 // fsm.rb run: one step's edge, out of the graph table.
 void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f, bool a) {
   const flow::Target& t = a ? f.on_true : f.on_false;
@@ -1216,7 +1226,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           if (r.ct_dyn) {
             res.run_content_type = active_ct(r)[0].type;
           }
-          n = Node::kD4;
+          n = after_accept(facts);
           continue;
         }
         n = Node::kC4;
@@ -1242,7 +1252,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (idx != 0 || r.ct_dyn) {
           res.run_content_type = cts[static_cast<size_t>(idx)].type;
         }
-        n = Node::kD4;
+        n = after_accept(facts);
         continue;
       }
       case Node::kG7: {
@@ -1437,6 +1447,16 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         n = Node::kO18b;
         continue;
+      }
+      case Node::kG8: {
+        // RFC 9110 13: g9/g11, h11/h12, i13/k13/j18 and l14/l15/l17 all hang
+        // off their own has_*, so a request naming none of the four
+        // conditional fields walks g8 -> h10 -> i12 -> l13 -> m16.
+        if (!facts.names_a_conditional_field()) {
+          n = Node::kM16;
+          continue;
+        }
+        break;
       }
       case Node::kO20: {
         take_edge(n, status, halted, res.run_have_body);

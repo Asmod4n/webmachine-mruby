@@ -75,6 +75,18 @@
 # are not something anyone should turn on.
 #
 set -u
+
+# STREAMS is floor.sh's name for h2 multiplexing depth; here it is MULTI,
+# which also picks the mode (1 = diff, >1 = load). Passing the other name
+# used to be accepted and dropped, so a run asked for at c16 --streams 128
+# quietly measured ONE connection and ONE stream - the number then
+# described a latency probe while its caller believed it was load.
+[ -z "${STREAMS:-}" ] || {
+  echo "STREAMS= is floor.sh's knob. Here it is MULTI= - and MULTI also picks" >&2
+  echo "the mode: 1 is diff (-c1), anything above is load at that depth." >&2
+  echo "You probably want: MULTI=$STREAMS CONNS=${CONNS:-16}" >&2
+  exit 2
+}
 cd "$(dirname "$0")/.." || exit 1
 
 # Debian/Ubuntu's /usr/bin/perf is a wrapper that refuses to run
