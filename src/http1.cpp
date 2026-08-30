@@ -447,19 +447,12 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
                         bool head_only, int media, const ErrorPages::Fields& f,
                         std::string& sink) {
   std::string body;
-  size_t plen = 0;
-  const char* pbody = err_pages_.pack_body(status, media, &plen);
-  // An answer with nothing of its own to say is the page this status
-  // always sends: lent, not rendered.
-  if (pbody == nullptr && f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
-    pbody = err_pages_.prepared_body(status, media, &plen);
-  }
-  if (pbody == nullptr && !err_pages_.render(status, media, f, body)) {
+  size_t dlen = 0;
+  const char* data = err_pages_.body_for(status, media, f, body, &dlen);
+  if (data == nullptr) {
     sink.append(bodyless.bytes);
     return;
   }
-  const char* data = pbody != nullptr ? pbody : body.data();
-  const size_t dlen = pbody != nullptr ? plen : body.size();
   sink.append(prefix.bytes);
   sink.append("Content-Type: ").append(err_pages_.media_type(media)).append("\r\n");
   char cl[40];
@@ -1127,7 +1120,24 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           const bool baked = !bodyless && !have_body && lent == nullptr && status == 200 &&
                              !b->dynamic_body && !b->konst.body.empty();
           std::string ctype;
-          if (!bodyless) {
+          std::string epage;
+          // RFC 9110 15: a 4xx or 5xx is owed the page its status carries,
+          // and a run that wrote a field of its own - a 405's Allow, most
+          // often - lands here instead of at spell_error. Without this it
+          // goes out as the bare status: the same answer the prebuilt one
+          // gives, minus the page the prebuilt one has.
+          if (status >= 400 && !bodyless && !have_body && lent == nullptr) {
+            const int em = err_pages_.media_for(status, vals.accept, vals.accept_len);
+            size_t elen = 0;
+            const ErrorPages::Fields none;
+            const char* ep = err_pages_.body_for(status, em, none, epage, &elen);
+            if (ep != nullptr) {
+              body_.assign(ep, elen);
+              have_body = true;
+              ctype = err_pages_.media_type(em);
+            }
+          }
+          if (!bodyless && ctype.empty()) {
             if (!b->res->run_content_type.empty()) {
               ctype = http::with_charset(b->res->run_content_type);
             }
@@ -1226,6 +1236,13 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         f.message = message.data();
         f.message_len = message.size();
         f.fingerprint = ef_hash;
+        // A ship build says what was thrown and where the log has the rest; a
+        // debug build is already telling you about itself, so the trace goes
+        // on the page too.
+        if (kDebugBuild) {
+          f.backtrace = ef.backtrace;
+          f.backtrace_len = ef.backtrace_len;
+        }
         spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                : (persist ? pv.keep : pv.close),
                     minor >= 1 ? (persist ? bv.plain : bv.close)

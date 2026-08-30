@@ -567,6 +567,21 @@ void ErrorPages::read_prepared() {
   }
 }
 
+const char* ErrorPages::body_for(uint16_t status, int slot, const Fields& f, std::string& held,
+                                 size_t* len) {
+  const char* lent = pack_body(status, slot, len);
+  if (lent != nullptr) return lent;
+  // An answer with nothing of its own to say is the page this status
+  // always sends.
+  if (f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
+    lent = prepared_body(status, slot, len);
+    if (lent != nullptr) return lent;
+  }
+  if (!render(status, slot, f, held)) return nullptr;
+  *len = held.size();
+  return held.data();
+}
+
 const char* ErrorPages::prepared_body(uint16_t status, int slot, size_t* len) const {
   if (!ready_ || status >= 600 || slot < 0) return nullptr;
   if (prep_index_[status] <= 0) return nullptr;

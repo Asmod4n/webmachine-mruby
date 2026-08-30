@@ -22,9 +22,9 @@ module Webmachine
   #   end
   #
   # Every handler is handed the same Hash, which is also the template
-  # context: status, title, source, and - for a 500 - id, message and
-  # backtrace. cat is present only when the asset pack holds a picture for
-  # the status.
+  # context: status, title, source, and - for a 500 - id, message and, in
+  # a debug build, backtrace. cat is present only when the asset pack
+  # holds a picture for the status.
   #
   # handle_exception lives here too, and only here.
   class ErrorResource
@@ -94,7 +94,8 @@ module Webmachine
              alt="A cat, illustrating HTTP {{status}} {{title}}">
       {{/cat}}  <p class=s>{{source}}</p>
       {{#message}}  <p class=m>{{message}}</p>
-      {{/message}}{{#id}}  <p class=s>Reference {{id}}</p>
+      {{/message}}{{#backtrace}}  <p class=m>{{backtrace}}</p>
+      {{/backtrace}}{{#id}}  <p class=s>Reference {{id}}</p>
       {{/id}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
       {{/cat}}</main>
 
@@ -120,7 +121,9 @@ module Webmachine
       {{{message}}}
       {{/message}}
       {{{source}}}
-      {{#id}}Reference {{{id}}}
+      {{#backtrace}}
+      {{{backtrace}}}
+      {{/backtrace}}{{#id}}Reference {{{id}}}
       {{/id}}
     WM_TEXT
 

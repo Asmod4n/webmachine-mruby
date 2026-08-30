@@ -1068,6 +1068,15 @@ inline void log_internal_error(Logger& lg, const void* peer, size_t peer_len,
   log_error(lg, f);
 }
 
+// Which build this is. mruby's enable_debug defines MRB_DEBUG and the
+// ship configs do not, so this is the build's own word for itself and
+// not a second switch to keep in step with the first.
+#ifdef MRB_DEBUG
+inline constexpr bool kDebugBuild = true;
+#else
+inline constexpr bool kDebugBuild = false;
+#endif
+
 // The raise half of the facts, read off the VM. Defined in resource.cpp,
 // which is where a VM is. The caller has already filled what it knows of
 // the request and owns `backtrace`, which the facts point into - so the
@@ -2589,6 +2598,13 @@ class ErrorPages {
   // false when there is no page to offer - the caller still owes an
   // answer and falls back to the bodyless status.
   bool render(uint16_t status, int slot, const Fields& f, std::string& out);
+  // The bytes this status answers with, whichever way this build has
+  // them: the picture where the error assets hold one, the page prepared
+  // at boot where the answer names no failure of its own, a render where
+  // it does. `held` is the caller's storage and is used for that last
+  // case only - the other two are lent where they lie. Null when this
+  // build can spell no page at all.
+  const char* body_for(uint16_t status, int slot, const Fields& f, std::string& held, size_t* len);
 
  private:
   struct Handler {

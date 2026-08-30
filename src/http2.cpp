@@ -240,23 +240,19 @@ bool Http1::h2_error_page(uint16_t status, const ErrorPages::Fields& f,
   const int m = err_pages_.media_for(status, vals != nullptr ? vals->accept : nullptr,
                                      vals != nullptr ? vals->accept_len : 0);
   size_t plen = 0;
-  const char* pbody = err_pages_.pack_body(status, m, &plen);
-  // An answer with nothing of its own to say is the page this status
-  // always sends: lent, not rendered.
-  if (pbody == nullptr && f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
-    pbody = err_pages_.prepared_body(status, m, &plen);
-  }
-  if (pbody == nullptr && !err_pages_.render(status, m, f, page.rendered)) return false;
+  const char* pbody = err_pages_.body_for(status, m, f, page.rendered, &plen);
+  if (pbody == nullptr) return false;
   const std::string ctype(err_pages_.media_type(m));
   // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
   // it now carries must not cost it that field.
   const std::string* allow =
       (status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
   h2_build_block(page.block, status, &ctype, allow);
-  // The picture is lent where it lies; a rendered page comes out of
-  // page.rendered, which outlives the framing at the call site.
-  body = pbody != nullptr ? pbody : page.rendered.data();
-  blen = pbody != nullptr ? plen : page.rendered.size();
+  // Lent where it lies, whether that is the picture in the mapping or the
+  // page prepared at boot; a render lands in page.rendered, which
+  // outlives the framing at the call site either way.
+  body = pbody;
+  blen = plen;
   blk = &page.block;
   return true;
 }
@@ -768,7 +764,23 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     const bool baked = !bodyless && !have_body && !lent_have && status == 200 &&
                        !b->dynamic_body && !b->konst.body.empty();
     std::string ctype;
-    if (!bodyless) {
+    std::string epage;
+    // The same debt h1 pays here: a 4xx or 5xx whose run wrote a field of
+    // its own never reaches h2_error_page, and would go out as a bare
+    // status with the page missing.
+    if (status >= 400 && !bodyless && !have_body && !lent_have && run_asset == nullptr) {
+      const int em = err_pages_.media_for(status, vals != nullptr ? vals->accept : nullptr,
+                                          vals != nullptr ? vals->accept_len : 0);
+      size_t elen = 0;
+      const ErrorPages::Fields none;
+      const char* ep = err_pages_.body_for(status, em, none, epage, &elen);
+      if (ep != nullptr) {
+        body_.assign(ep, elen);
+        have_body = true;
+        ctype = err_pages_.media_type(em);
+      }
+    }
+    if (!bodyless && ctype.empty()) {
       if (!b->res->run_content_type.empty()) ctype = http::with_charset(b->res->run_content_type);
       else if (have_body || baked) ctype = b->konst.content_type;
     }
@@ -819,6 +831,13 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     f.message = message.data();
     f.message_len = message.size();
     f.fingerprint = ef_hash;
+    // A ship build says what was thrown and where the log has the rest; a
+    // debug build is already telling you about itself, so the trace goes
+    // on the page too.
+    if (kDebugBuild) {
+      f.backtrace = ef.backtrace;
+      f.backtrace_len = ef.backtrace_len;
+    }
     if (!h2_error_page(500, f, vals, b, err_page, body, blen, blk)) {
       blk = &h2_store_[(*idx)[500]];
     }

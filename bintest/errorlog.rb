@@ -4,6 +4,10 @@ require 'tempfile'
 
 ELOG_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(ELOG_BIN)
 
+# mruby's enable_debug is what build/debug has and the ship builds do not
+# - the same line the server reads as kDebugBuild.
+ELOG_DEBUG_BUILD = (ENV['BUILD_DIR'] || 'build/host').include?('debug')
+
 def elog_compile(source)
   src = Tempfile.new(['wm-elog', '.rb'])
   src.write(source)
@@ -77,7 +81,15 @@ assert('error log: a raise lands with class, message and trace') do
     answer = elog_get(sock, '/boom')
     assert_include answer, '500'
     assert_include answer, 'the resource said no'
-    assert_false answer.include?('to_html')
+    # #210: a ship build says what was thrown and leaves the trace to the
+    # log; a debug build is already telling you about itself, so the page
+    # carries it too. Which one is under test is which one BUILD_DIR
+    # names.
+    if ELOG_DEBUG_BUILD
+      assert_include answer, ':in to_html'
+    else
+      assert_false answer.include?('to_html')
+    end
 
     lines = elog_await(log, 2).lines
     head = lines.first.to_s
