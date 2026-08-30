@@ -39,7 +39,7 @@
 # saturate it - it silently could not at deep multiplexing on forgecore,
 # reading as a server-side cost that was actually client starvation),
 # CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
-# ASSETS + ASSET_CODING + TARGET (see below).
+# ASSETS + ASSET_CODING + REQPATH (see below).
 #
 # EVENT= is the perf event the recording samples. Unset, perf takes its
 # own default (cycles, or the software clock it falls back to where no
@@ -89,7 +89,7 @@
 #
 # ASSETS profiles the ASSET TIER instead of an app. Give it a byte
 # count and a one-entry pack of that size is built here and hammered;
-# give it a path to a .zip and it is served as-is, with TARGET naming
+# give it a path to a .zip and it is served as-is, with REQPATH naming
 # the entry. ASSET_CODING (stored|gzip, default stored) picks which
 # shape the built pack has, and they are different code: stored is one
 # span straight out of the mapping, gzip is three segments around it
@@ -192,7 +192,15 @@ PERF_MMAP="${PERF_MMAP:-8}"
 PORT="${PORT:-8123}"
 ASSETS="${ASSETS:-}"
 ASSET_CODING="${ASSET_CODING:-stored}"
-TARGET="${TARGET:-/}"
+# REQPATH is the path to ask for. It was TARGET here while bench/floor.sh
+# called the same thing REQPATH, so no line could be carried from one
+# script to the other (#34).
+[ -z "${TARGET:-}" ] || {
+  echo "TARGET= is REQPATH= in this script now - the name bench/floor.sh already used." >&2
+  echo "Same meaning: the path to ask for." >&2
+  exit 2
+}
+REQPATH="${REQPATH:-/}"
 # An asset run has nothing to ask an app for; loading one anyway would
 # put mruby in the profile for no reason. An explicit APP= still wins.
 if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
@@ -276,19 +284,19 @@ if [ -n "$ASSETS" ]; then
   case "$ASSETS" in
     *[!0-9]*)
       [ -f "$ASSETS" ] || { echo "ASSETS=$ASSETS is neither a byte count nor a file" >&2; exit 1; }
-      [ "$TARGET" != / ] || { echo "TARGET= must name an entry when ASSETS is a pack" >&2; exit 1; }
+      [ "$REQPATH" != / ] || { echo "REQPATH= must name an entry when ASSETS is a pack" >&2; exit 1; }
       ZIP="$ASSETS"
       ;;
     *)
       command -v zip >/dev/null || { echo "zip not found" >&2; exit 1; }
       # The built pack holds exactly one entry and names it itself.
-      [ "$TARGET" = / ] || { echo "TARGET= only applies when ASSETS names a pack - the built one has one entry" >&2; exit 1; }
+      [ "$REQPATH" = / ] || { echo "REQPATH= only applies when ASSETS names a pack - the built one has one entry" >&2; exit 1; }
       case "$ASSET_CODING" in
         stored)
           # urandom, forced stored: the body IS the file-backed span.
           head -c "$ASSETS" /dev/urandom > "$WORK/a.bin"
           (cd "$WORK" && zip -q -0 -X pack.zip a.bin) || exit 1
-          TARGET=/a.bin
+          REQPATH=/a.bin
           ;;
         gzip)
           # This tree's own sources, repeated to length: real text, so
@@ -299,7 +307,7 @@ if [ -n "$ASSETS" ]; then
           for _ in $(seq $(( (ASSETS + cl - 1) / cl ))); do cat "$WORK/corpus"; done |
             head -c "$ASSETS" > "$WORK/t.txt"
           (cd "$WORK" && zip -q -9 -X pack.zip t.txt) || exit 1
-          TARGET=/t.txt
+          REQPATH=/t.txt
           HDRS=(-H 'accept-encoding: gzip')
           CLI_HDRS=(--header 'accept-encoding: gzip')
           ;;
@@ -314,7 +322,7 @@ fi
 OUT=bench/profile
 mkdir -p "$OUT"
 WM_SOCK=/tmp/wm-profile-bench.sock
-echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} target $TARGET coding ${ASSETS:+$ASSET_CODING}"
+echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} path $REQPATH coding ${ASSETS:+$ASSET_CODING}"
 if [ "$PROTO" = h1 ]; then
   echo "harness: htgen --sock -c$CONNS -d${DURATION}s h1 (unix socket, no TCP/nftables)"
 else
@@ -409,16 +417,16 @@ leg() {
     exit 1
   fi
   SRVPID=$srvpid
-  # PROVE THE TARGET, and not with the status code: a server started
+  # PROVE THE PATH, and not with the status code: a server started
   # with --assets and no app answers 200 with a two-byte body for any
   # name the pack does not hold, so a typo profiles the default
   # resource and looks exactly like a hit. The ETag is the tell - only
   # the asset tier sends one.
   if [ -n "$ASSETS" ]; then
     curl -s --max-time 10 --unix-socket "$WM_SOCK" -D "$WORK/hdr" -o /dev/null \
-         "${HDRS[@]}" "http://localhost$TARGET"
+         "${HDRS[@]}" "http://localhost$REQPATH"
     grep -qi '^etag:' "$WORK/hdr" || {
-      echo "$TARGET did not come back from the asset tier (no ETag) - the pack does not hold that name" >&2
+      echo "$REQPATH did not come back from the asset tier (no ETag) - the pack does not hold that name" >&2
       kill -TERM "$srvpid"; exit 1
     }
     if [ "$ASSET_CODING" = gzip ] && [ -z "${ASSETS%%[0-9]*}" ]; then
@@ -440,7 +448,7 @@ leg() {
   fi
   local cliout
   cliout=$("$HTGEN" --sock "$WM_SOCK" --conns "$LEGCONNS" --seconds "$DURATION" \
-             --path "$TARGET" "$@" "${CLI_HDRS[@]}" 2>&1)
+             --path "$REQPATH" "$@" "${CLI_HDRS[@]}" 2>&1)
   echo "$cliout" | grep '^responses='
   [ -n "$statpid" ] && wait "$statpid" 2>/dev/null
   if [ "$STAT" = 1 ] && [ -s "$WORK/stat.out" ]; then
