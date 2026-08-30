@@ -2271,6 +2271,11 @@ struct Resource {
   KonstValue konst_etag;
   KonstValue konst_last_modified;
   KonstValue konst_expires;
+  // #202: whether this resource has ANY of the three caching answers to
+  // give - a class form that answered at setup, or a callback still to
+  // ask. Decided once when the resource is baked, because the answer
+  // cannot change afterwards, and o18 asks it on every GET.
+  bool has_caching = false;
 
   // Once-per-run memos: generate_etag / last_modified / expires are
   // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share

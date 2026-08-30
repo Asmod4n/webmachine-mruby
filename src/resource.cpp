@@ -862,6 +862,10 @@ void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue&
 }
 
 int add_caching(Run& r) {
+    // #202: a resource with none of the three answers has nothing to ask
+    // for, and o18 asks on every GET. Three calls that could only answer
+    // "no" are three calls that do not happen.
+    if (!r.res.has_caching) return -1;
     const int h = ensure_etag(r);
     if (h >= 0) return h;
     if (r.res.etag_present) {
@@ -1611,6 +1615,15 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
+  // A konst that was asked and answered nothing is an answer: the
+  // callback behind it is not asked again. So there is something to say
+  // only where a konst holds a value, or where no konst was taken and a
+  // callback is still there to ask.
+  out.has_caching =
+      out.konst_etag.present || (!out.konst_etag.asked && out.cb_generate_etag.has) ||
+      out.konst_last_modified.present ||
+      (!out.konst_last_modified.asked && out.cb_last_modified.has) ||
+      out.konst_expires.present || (!out.konst_expires.asked && out.cb_expires.has);
   out.cb_moved_permanently = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
   out.cb_moved_temporarily = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
   out.cb_post_is_create = value_cb(mrb, klass, MRB_SYM_Q(post_is_create), 0, true);
