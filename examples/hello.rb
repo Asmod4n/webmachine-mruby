@@ -7,6 +7,6 @@ end
 def main
   Webmachine::Application.new do |app|
     app.conf.port = 8080
-    app.add_route [:*], HelloWorld
+    app.add_route [], HelloWorld
   end
 end
