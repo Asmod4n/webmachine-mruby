@@ -52,23 +52,23 @@ void spell_hex8(char* out, uint32_t v) {
 
 // APPNOTE 4.5.2: an extra field block is a run of (id, size, payload),
 // and a reader skips the ids it does not know. 0x574D is this tree's,
-// written by the error_assets task: `width="750" height="600"`, the text
-// a page puts on the <img>, so nothing here has a number to spell.
-constexpr uint16_t kExtraSizeAttributes = 0x574d;
+// written by the error_assets task: the finished <img> for the picture,
+// so nothing here has a URL to join or a number to spell.
+constexpr uint16_t kExtraImgTag = 0x574d;
 
 struct Borrowed {
   const char* text = nullptr;
   size_t len = 0;
 };
 
-Borrowed size_attributes_of(const unsigned char* extra, size_t len) {
+Borrowed img_tag_of(const unsigned char* extra, size_t len) {
   Borrowed b;
   size_t off = 0;
   while (off + 4 <= len) {
     const uint16_t id = MZ_READ_LE16(extra + off);
     const size_t size = MZ_READ_LE16(extra + off + 2);
     if (off + 4 + size > len) break;
-    if (id == kExtraSizeAttributes && size != 0) {
+    if (id == kExtraImgTag && size != 0) {
       b.text = reinterpret_cast<const char*>(extra + off + 4);
       b.len = size;
       break;
@@ -210,9 +210,9 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
-    const Borrowed sa = size_attributes_of(base + extra_off, extra_len);
-    e.size_attributes = sa.text;
-    e.size_attributes_len = sa.len;
+    const Borrowed tag = img_tag_of(base + extra_off, extra_len);
+    e.img_tag = tag.text;
+    e.img_tag_len = tag.len;
     entries_.push_back(std::move(e));
   }
 

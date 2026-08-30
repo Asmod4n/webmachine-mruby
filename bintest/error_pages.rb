@@ -183,19 +183,21 @@ assert('error pages: conf.disable_http_cats leaves the pages and drops the pictu
   true
 end
 
-# The pack carries the <img> attributes (assets.rb checks they are
-# written), and the page hands them on unchanged: a browser that has
-# them lays the space out before the picture arrives and does not
-# reflow. Unescaped is the point - {{cat_size}} would arrive as
-# width=&quot;750&quot; and mean nothing.
+# The pack carries the whole <img> (assets.rb checks what is written),
+# and the page emits it as it stands. Unescaped is the point - through
+# {{ }} the tag would arrive as &lt;img and mean nothing - and the alt
+# has to name the status the page's own <h1> names, which is the thing
+# a second table would eventually get wrong.
 assert('error pages: the page names the size of the picture it shows') do
   epg_server do |sock, _log|
     body = epg_ask(sock, '/no-such-route').split("\r\n\r\n", 2)[1].to_s
     skip 'this build ships no error assets' unless body.include?('<img src=')
-    m = body.match(/<img src="[^"]+" width="(\d+)" height="(\d+)"/)
-    assert_true !m.nil?, 'the img names no size'
+    m = body.match(/<img src="[^"]+" width="(\d+)" height="(\d+)" alt="([^"]*)">/)
+    assert_true !m.nil?, 'the page carries no finished img'
     assert_true m[1].to_i > 0 && m[2].to_i > 0, "the img is #{m[1]}x#{m[2]}"
-    assert_false body.include?('&quot;'), 'the attributes came through escaped'
+    assert_false body.include?('&lt;img'), 'the tag came through escaped'
+    # What the picture is said to be, and what the page says it is.
+    assert_include m[3], body[%r{<h1>([^<]+)</h1>}, 1]
   end
   true
 end

@@ -2448,11 +2448,11 @@ struct AssetEntry {
   char etag[10] = {};
   char last_modified[http::kDateLen] = {};
   std::string content_type;
-  // APPNOTE 4.5: the pack's own extra field 0x574D, which holds the <img>
-  // attributes for this picture the way a page spells them. Null on an
-  // entry that carries none.
-  const char* size_attributes = nullptr;
-  size_t size_attributes_len = 0;
+  // APPNOTE 4.5: the pack's own extra field 0x574D, which holds the whole
+  // <img> for this picture - src, size and alt - as a page emits it. Null
+  // on an entry that carries none.
+  const char* img_tag = nullptr;
+  size_t img_tag_len = 0;
 
   // RFC 9112 2.1: a status-line and a header section, complete, ending in
   // the empty line - everything of a response except its content.
@@ -2625,7 +2625,6 @@ class ErrorPages {
     bool from_pack = false;
   };
   struct Cat {
-    std::string url;
     const AssetEntry* entry = nullptr;
   };
   void read_cats(Assets& assets);

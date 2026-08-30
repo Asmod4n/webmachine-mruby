@@ -492,9 +492,10 @@ void ErrorPages::read_cats(Assets& assets) {
     if (std::strcmp(tail, "jpg") != 0) continue;
     if (status < 100 || status > 599) continue;
     if (cat_index_[status] != 0) continue;
+    // Nothing but the entry: the <img> it carries is the whole answer.
+    if (e.img_tag == nullptr) continue;
     Cat c;
     c.entry = &e;
-    c.url.assign(kErrorAssetsPrefix).append(e.file_name);
     cat_index_[status] = static_cast<int16_t>(cats_.size());
     cats_.push_back(std::move(c));
   }
@@ -521,15 +522,9 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   if (cslot > 0) {
     const Cat& c = cats_[static_cast<size_t>(cslot)];
     mrb_value cat = mrb_hash_new(mrb);
-    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_url"),
-                 mrb_str_new(mrb, c.url.data(), static_cast<mrb_int>(c.url.size())));
-    // The pack carries the <img> attributes already spelled, so the page
-    // reserves the space before the picture lands and nothing here counts
-    // digits.
-    if (c.entry->size_attributes != nullptr) {
-      hash_put_str(mrb, cat, "cat_size", c.entry->size_attributes,
-                   c.entry->size_attributes_len);
-    }
+    // The pack carries the <img> finished - src, size and alt - so the
+    // page lends it out and joins nothing.
+    hash_put_str(mrb, cat, "cat_tag", c.entry->img_tag, c.entry->img_tag_len);
     mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
   }
 

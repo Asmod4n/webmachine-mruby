@@ -99,74 +99,44 @@ end
 
 ERROR_ASSETS = File.expand_path('share/error-assets.zip', __dir__)
 
-# The status name, and WHERE THE NAME COMES FROM. The tree's own
-# flow::reason() covers what the flow can reach and answers "Response" for
-# everything else; an asset file that ships a page per status needs the wider
-# table, and in this tree a table names its source - including the entries
-# whose source is "nobody registered this, a vendor shipped it".
+# WHICH pictures the pack carries. Not their names: a page's <h1> and the
+# alt text on its picture have to say the same thing, so both come from
+# the server's own table (kFaces in src/error_assets.cpp, falling back to
+# http::reason the way status_title does) and this list only decides what
+# gets fetched.
 #
-# Checked against http.cat's own alt texts (2026-08-28). They disagree on
-# three, and on two of them they are simply older: "Request-URI Too Long"
-# is RFC 2616's name for 414, which RFC 9110 renamed to "URI Too Long",
-# and "Unprocessable Entity" is RFC 4918's 422, renamed to "Unprocessable
-# Content". Their pictures are the source of the cat, not of the name.
-ERROR_STATUS = {
-  400 => ['Bad Request',                     'RFC 9110'],
-  401 => ['Unauthorized',                    'RFC 9110'],
-  402 => ['Payment Required',                'RFC 9110'],
-  403 => ['Forbidden',                       'RFC 9110'],
-  404 => ['Not Found',                       'RFC 9110'],
-  405 => ['Method Not Allowed',              'RFC 9110'],
-  406 => ['Not Acceptable',                  'RFC 9110'],
-  407 => ['Proxy Authentication Required',   'RFC 9110'],
-  408 => ['Request Timeout',                 'RFC 9110'],
-  409 => ['Conflict',                        'RFC 9110'],
-  410 => ['Gone',                            'RFC 9110'],
-  411 => ['Length Required',                 'RFC 9110'],
-  412 => ['Precondition Failed',             'RFC 9110'],
-  413 => ['Content Too Large',               'RFC 9110'],
-  414 => ['URI Too Long',                    'RFC 9110'],
-  415 => ['Unsupported Media Type',          'RFC 9110'],
-  416 => ['Range Not Satisfiable',           'RFC 9110'],
-  417 => ['Expectation Failed',              'RFC 9110'],
-  418 => ["I'm a teapot",                    'RFC 2324; RFC 9110 reserves 418 as unused'],
-  419 => ['Page Expired',                    'Laravel, not registered'],
-  420 => ['Enhance Your Calm',               'Twitter, not registered'],
-  421 => ['Misdirected Request',             'RFC 9110'],
-  422 => ['Unprocessable Content',           'RFC 9110'],
-  423 => ['Locked',                          'RFC 4918'],
-  424 => ['Failed Dependency',               'RFC 4918'],
-  425 => ['Too Early',                       'RFC 8470'],
-  426 => ['Upgrade Required',                'RFC 9110'],
-  428 => ['Precondition Required',           'RFC 6585'],
-  429 => ['Too Many Requests',               'RFC 6585'],
-  431 => ['Request Header Fields Too Large', 'RFC 6585'],
-  444 => ['No Response',                     'nginx, not registered'],
-  450 => ['Blocked by Windows Parental Controls', 'Microsoft, not registered'],
-  451 => ['Unavailable For Legal Reasons',   'RFC 7725'],
-  495 => ['SSL Certificate Error',           'nginx, not registered'],
-  496 => ['SSL Certificate Required',        'nginx, not registered'],
-  497 => ['HTTP Request Sent to HTTPS Port', 'nginx, not registered'],
-  498 => ['Invalid Token',                   'Esri, not registered'],
-  499 => ['Client Closed Request',           'nginx, not registered'],
-  500 => ['Internal Server Error',           'RFC 9110'],
-  501 => ['Not Implemented',                 'RFC 9110'],
-  502 => ['Bad Gateway',                     'RFC 9110'],
-  503 => ['Service Unavailable',             'RFC 9110'],
-  504 => ['Gateway Timeout',                 'RFC 9110'],
-  506 => ['Variant Also Negotiates',         'RFC 2295'],
-  507 => ['Insufficient Storage',            'RFC 4918'],
-  508 => ['Loop Detected',                   'RFC 5842'],
-  509 => ['Bandwidth Limit Exceeded',        'Apache/cPanel, not registered'],
-  510 => ['Not Extended',                    'RFC 2774'],
-  511 => ['Network Authentication Required', 'RFC 6585'],
-  521 => ['Web Server Is Down',              'Cloudflare, not registered'],
-  522 => ['Connection Timed Out',            'Cloudflare, not registered'],
-  523 => ['Origin Is Unreachable',           'Cloudflare, not registered'],
-  525 => ['SSL Handshake Failed',            'Cloudflare, not registered'],
-  530 => ['Site Frozen',                     'Cloudflare, not registered'],
-  599 => ['Network Connect Timeout Error',   'not registered']
-}.freeze
+# 418 is here and not in kFaces: the picture ships, the page has no name
+# for the status, and both stay true of whatever this bakes.
+ERROR_CODES = [
+  400, 401, 402, 403, 404, 405, 406, 407, 408, 409,
+  410, 411, 412, 413, 414, 415, 416, 417, 418, 419,
+  420, 421, 422, 423, 424, 425, 426, 428, 429, 431,
+  444, 450, 451, 495, 496, 497, 498, 499, 500, 501,
+  502, 503, 504, 506, 507, 508, 509, 510, 511, 521,
+  522, 523, 525, 530, 599
+].freeze
+
+# kErrorAssetsPrefix in src/webmachine.hpp: where the server mounts this
+# pack, and therefore the src of every picture in it.
+def error_assets_prefix
+  File.read(File.expand_path('src/webmachine.hpp', __dir__))[
+    /kErrorAssetsPrefix\[\] = "([^"]*)"/, 1] or
+    raise 'src/webmachine.hpp: no kErrorAssetsPrefix to build the picture URLs from'
+end
+
+# RFC 9110 15: what the server calls each status, read out of the source
+# that answers with it rather than copied to a second place that can drift.
+def status_titles
+  face = File.read(File.expand_path('src/error_assets.cpp', __dir__))
+  table = face[/constexpr Face kFaces\[\] = \{(.*?)\n\};/m, 1] or
+    raise 'src/error_assets.cpp: no kFaces table to read the status names from'
+  out = {}
+  File.read(File.expand_path('src/webmachine.hpp', __dir__))[/constexpr const char\* reason\(uint16_t status\) \{(.*?)\n\}/m, 1]
+    .scan(/case (\d+): return "([^"]*)";/) { |code, name| out[code.to_i] = name }
+  table.scan(/\{\s*(\d+),\s*"([^"]*)"/) { |code, name| out[code.to_i] = name }
+  raise 'no status names found' if out.empty?
+  out
+end
 
 ERROR_NOTICE = <<~TEXT
   webmachine-mruby error pages
@@ -237,9 +207,9 @@ TEXT
 # and they are used: the entry's own timestamp, and an extra field.
 # APPNOTE 4.5.2: extra field header ids are PKWARE's to hand out. This one
 # is NOT registered - "WM" as two bytes, picked to sit clear of the ids
-# the format's own extensions use. It carries the picture's size AS THE
-# PAGE SPELLS IT - `width="750" height="600"`, the attributes and not two
-# numbers - so the server appends what it read and spells nothing.
+# the format's own extensions use. It carries THE FINISHED <img> for the
+# picture - src, size and alt, the bytes a page emits - so the server
+# appends what it read and spells nothing.
 WM_EXTRA_ID = 0x574d
 
 def read_pack_entries(path)
@@ -260,7 +230,7 @@ def read_pack_entries(path)
     mtime = fields[0x5455] && fields[0x5455].bytesize >= 5 ?
             fields[0x5455][1, 4].unpack1('l<') : nil
     out[name] = { bytes: raw[lho + 30 + lnlen + lelen, csize], etag: comment,
-                  mtime: mtime, size_attrs: fields[WM_EXTRA_ID] }
+                  mtime: mtime, tag: fields[WM_EXTRA_ID] }
     off += 46 + nlen + elen + clen
   end
   out
@@ -320,13 +290,23 @@ def dos_stamp(unix)
    (t.hour << 11) | (t.min << 5) | (t.sec / 2)]
 end
 
+# The whole <img>, as the page emits it. Everything in it is known here:
+# the mount point and the status name from the server's own sources, the
+# geometry from file(1). The server appends this and spells nothing.
+def img_tag(prefix, code, title, size_attrs)
+  alt = "A cat, illustrating HTTP #{[code, title].join(' ').strip}"
+  raise "#{code}: #{alt.inspect} needs escaping, and a baked tag does not escape" if
+    alt.match?(/[&<>"]/)
+  %Q{<img src="#{prefix}#{code}.jpg" #{size_attrs} alt="#{alt}">}
+end
+
 # Two fields: Info-ZIP's extended timestamp (0x5455, flag 1 = the
 # modification time follows, as a signed 32-bit Unix time), and this
-# tree's own with the attributes the page puts on the <img>.
-def entry_extra(mtime, size_attrs)
+# tree's own with the finished <img> for this picture.
+def entry_extra(mtime, tag)
   ext = +''.b
   ext << [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
-  ext << [WM_EXTRA_ID, size_attrs.bytesize].pack('vv') << size_attrs.b
+  ext << [WM_EXTRA_ID, tag.bytesize].pack('vv') << tag.b
   ext
 end
 
@@ -347,11 +327,11 @@ def error_zip(entries, archive_comment = '')
   out = +''.b
   cd = +''.b
   archive_comment = archive_comment.b
-  entries.each do |name, data, etag, mtime, size_attrs|
+  entries.each do |name, data, etag, mtime, tag|
     data = data.b
     etag = (etag || '').b
     ddate, dtime = dos_stamp(mtime)
-    extra = entry_extra(mtime, size_attrs)
+    extra = entry_extra(mtime, tag)
     crc = Zlib.crc32(data)
     lho = out.bytesize
     out << [0x04034b50, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
@@ -388,7 +368,9 @@ task :error_assets do
   cats = {}
   meta = {}
   fetched = 0
-  ERROR_STATUS.each_key do |code|
+  prefix = error_assets_prefix
+  titles = status_titles
+  ERROR_CODES.each do |code|
     known = have[code]
     headers = { 'User-Agent' => 'webmachine-mruby error-assets packer', read_timeout: 20 }
     if known && known[:bytes]
@@ -413,20 +395,23 @@ task :error_assets do
       size_attrs = size_attributes(body.b)
       fetched += 1
     rescue OpenURI::HTTPError => e
-      # 304 means upstream still holds exactly what the last build did,
-      # so what the last build wrote down still describes it.
+      # 304 means upstream still holds exactly what the last build did.
       raise unless e.io.status.first.to_s == '304' && known && known[:bytes]
       body = known[:bytes]
       etag = known[:etag]
       lastmod = known[:mtime] ? Time.at(known[:mtime]).utc.httpdate : nil
-      size_attrs = known[:size_attrs]
+      # The picture is the same one; the tag around it need not be. Its
+      # size is the half only the bytes know, and it is read back out of
+      # what the last build wrote rather than measured again.
+      size_attrs = known[:tag].to_s[/width="\d+" height="\d+"/]
       raise "#{code}.jpg is unchanged upstream but the pack carries no size " \
             "for it - delete #{ERROR_ASSETS} and rebuild" unless size_attrs
     rescue StandardError
       next
     end
     cats[code] = body.b
-    meta[code] = [etag, http_seconds(lastmod), size_attrs]
+    meta[code] = [etag, http_seconds(lastmod),
+                  img_tag(prefix, code, titles[code], size_attrs)]
     print "#{code} "
   end
   puts
@@ -439,8 +424,8 @@ task :error_assets do
   # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
   # in share/README.md.
   entries = cats.keys.sort.map do |code|
-    etag, mtime, size_attrs = meta[code]
-    ["#{code}.jpg", cats[code], etag, mtime, size_attrs]
+    etag, mtime, tag = meta[code]
+    ["#{code}.jpg", cats[code], etag, mtime, tag]
   end
   File.binwrite(ERROR_ASSETS, error_zip(entries, ERROR_NOTICE))
   puts "share/error-assets.zip: #{cats.size} cats, " \

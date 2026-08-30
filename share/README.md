@@ -41,10 +41,10 @@ writes. What a rebuild and a page need rides where ZIP puts each of
 them: the upstream ETag in the entry's comment, the upstream second in
 the entry's own timestamp and in Info-ZIP's extended timestamp field
 (0x5455, which keeps the second the DOS stamp rounds away), and the
-picture's size in an extra field of this tree's own (0x574D) - not as
-numbers but as the page spells them, `width="750" height="600"`. The
-archive's own comment carries the licence, so the terms travel with the
-file wherever it is copied rather than only with this repository.
+finished `<img>` for the picture in an extra field of this tree's own
+(0x574D) - src, size and alt, the bytes a page emits. The archive's own
+comment carries the licence, so the terms travel with the file wherever
+it is copied rather than only with this repository.
 
 `rake error_assets` fetches and rebuilds it.
 
@@ -77,16 +77,22 @@ bytes at all and says how many it skipped.
 
 The size is not something a response carries, so `file(1)` measures a
 picture in the one moment it arrives and the entry keeps the answer. A
-304 brings no bytes and needs no measuring - the field travels from the
-old pack into the new one - so a rebuild against an unchanged upstream
+304 brings no bytes and needs no measuring - the size travels out of the
+old pack into the new tag - so a rebuild against an unchanged upstream
 runs `file(1)` not once.
 
-What the entry keeps is the finished `width="750" height="600"`, because
-that is what has to appear in the page. The server hands the field
-through: nothing at boot turns a number back into digits, and nothing at
-request time does either - the rendered page is bytes long before the
-first request. It is what lets a browser reserve the space before the
-picture lands.
+What the entry keeps is the whole tag, because that is what has to appear
+in the page:
+
+    <img src="/error_assets/404.jpg" width="750" height="600" alt="A cat, illustrating HTTP 404 Not Found">
+
+Everything in it is known while the pack is being built. The mount point
+is `kErrorAssetsPrefix` and the status name is `kFaces`, both read out of
+the sources that answer with them - a rebuild that found a second copy of
+either would eventually ship a picture whose alt text disagrees with the
+page's own `<h1>`, which is why the Rakefile no longer keeps one. The
+server appends the field and joins nothing; the width and height in it
+let a browser reserve the space before the picture lands.
 
 ### The page is not a route; the picture is
 
@@ -114,7 +120,7 @@ in the error assets directly - no router involved.
 | `{{status}}` | 404 |
 | `{{title}}` | Not Found |
 | `{{source}}` | `RFC 9110`, or `nginx, not registered` |
-| `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{cat_url}}` and `{{{cat_size}}}`, the `<img>` attributes straight out of the pack - raw, because escaped quotes are not attributes |
+| `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{{cat_tag}}}`, the finished `<img>` straight out of the pack - raw, because an escaped tag is text |
 | `{{#id}}` | the 16 hex digits the failure is named by - the same ones the error log leads its record with, and the only thing tying the two together |
 | `{{#message}}` | the 500 only: what `Webmachine::ErrorResource#handle_exception` made of the exception. It lives there and nowhere else: a `handle_exception` on an ordinary resource is ignored, because how an exception becomes text is one decision for the server rather than a per-route one |
 | `{{#backtrace}}` | the debug build only (#210): where it was raised |

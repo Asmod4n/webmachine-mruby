@@ -884,10 +884,13 @@ assert('assets: the shipped error assets are pictures, named by their status') d
     f = a_extra_fields(extra)
     assert_true f.key?(0x5455) && f[0x5455].bytesize >= 5, "#{k} carries no upstream second"
     assert_true f[0x5455][1, 4].unpack1('l<') > 0, "#{k} has no upstream second"
-    # Not two numbers: the attributes as the page spells them, so the
-    # boot render appends the field and counts no digits.
-    assert_true f.key?(0x574d), "#{k} carries no size attributes"
-    assert_true f[0x574d].match?(/\Awidth="[1-9]\d*" height="[1-9]\d*"\z/),
-                "#{k} size attributes are #{f[0x574d].inspect}"
+    # Not parts a page would have to join: the finished <img>, with the
+    # src it is served from, the size only the bytes know and the alt
+    # naming the same status the page's <h1> does.
+    assert_true f.key?(0x574d), "#{k} carries no <img>"
+    tag = f[0x574d]
+    want = '\A<img src="/error_assets/' + Regexp.escape(k) +
+           '" width="[1-9]\d*" height="[1-9]\d*" alt="[^"<>&]+">\z'
+    assert_true tag.match?(Regexp.new(want)), "#{k} carries #{tag.inspect}"
   end
 end
