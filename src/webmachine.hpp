@@ -259,15 +259,31 @@ constexpr bool both_targets_of_every_node_name_one() {
 }
 static_assert(both_targets_of_every_node_name_one(), "every edge continues or halts");
 
-// Proof: every path from here halts within the node count - no cycle.
-constexpr bool terminates(Node n, size_t depth) {
-  if (depth > kNodeCount) return false;
-  const FlowNode& f = kFlow[static_cast<size_t>(n)];
-  const bool t = f.on_true.status != 0 || terminates(f.on_true.node, depth + 1);
-  const bool fl = f.on_false.status != 0 || terminates(f.on_false.node, depth + 1);
-  return t && fl;
+// Proof: no cycle, and so every path from here halts.
+//
+// A depth-first walk that colours each node - kUnseen, kOnThePath,
+// kFinished - where a node met again while it is still ON the path is a
+// back edge, which is what a cycle is. Each node is entered once and
+// left once, so this walks the GRAPH; the earlier form walked every
+// PATH through it, which is exponential in the number of branches and
+// crashed gcc 16's constexpr evaluator outright.
+enum : uint8_t { kUnseen = 0, kOnThePath = 1, kFinished = 2 };
+constexpr bool no_cycle_from(Node n, uint8_t (&colour)[kNodeCount]) {
+  const size_t i = static_cast<size_t>(n);
+  if (colour[i] == kOnThePath) return false;
+  if (colour[i] == kFinished) return true;
+  colour[i] = kOnThePath;
+  const FlowNode& f = kFlow[i];
+  if (f.on_true.status == 0 && !no_cycle_from(f.on_true.node, colour)) return false;
+  if (f.on_false.status == 0 && !no_cycle_from(f.on_false.node, colour)) return false;
+  colour[i] = kFinished;
+  return true;
 }
-static_assert(terminates(Node::kB13, 0), "the flow is acyclic from B13");
+constexpr bool the_flow_is_acyclic() {
+  uint8_t colour[kNodeCount] = {};
+  return no_cycle_from(Node::kB13, colour);
+}
+static_assert(the_flow_is_acyclic(), "the flow is acyclic from B13");
 
 // Proof: reachability, both branches from every node.
 constexpr void mark(Node n, bool (&seen)[kNodeCount]) {
