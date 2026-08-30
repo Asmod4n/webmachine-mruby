@@ -33,7 +33,8 @@ Refresh it verbatim from upstream; do not edit it here:
 An asset pack holding the pictures the error pages show, and nothing
 else:
 
-    <status>.jpg        one per status, at the root, CC BY 2.0, see below
+    <status>.jpg        one per error status, 400 to 599, at the root,
+                        CC BY 2.0, see below
 
 There is no index and no directory: the archive's own entry list is the
 index, and `404.jpg` is both the name inside it and the name a caller
@@ -64,7 +65,9 @@ that class, not to edit a zip:
     end
 
 The pack only decides whether a page HAS a picture: a status with no
-`<status>.jpg` renders without one.
+`<status>.jpg` renders without one. Nothing under 400 is read at all -
+an answer that did not fail gets no page, so a picture for one would be
+a file with nowhere to go.
 
 ### Asking instead of downloading
 

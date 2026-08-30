@@ -2641,14 +2641,18 @@ class ErrorPages {
   // And what a client with no Accept at all gets: the first form that is
   // not a picture.
   int html_ = 0;
+  // Both tables below are indexed by status - kFirstError: an answer under
+  // 400 did not fail and has no page, and 600 is not a status.
+  static constexpr uint16_t kFirstError = 400;
+  static constexpr uint16_t kPastLastError = 600;
   // The same shape the status store uses: a slot per status into a dense
   // list, 0 for the statuses these error assets has no picture for.
   std::vector<Cat> cats_;
-  std::array<int16_t, 600> cat_index_ {};
+  std::array<int16_t, kPastLastError - kFirstError> cat_index_ {};
   // One page per status and rendered form, status-major with a row of
   // have_.size(). 0 in the index is "this status has none prepared".
   std::vector<std::string> prepared_;
-  std::array<int16_t, 600> prep_index_ {};
+  std::array<int16_t, kPastLastError - kFirstError> prep_index_ {};
   bool ready_ = false;
 };
 }

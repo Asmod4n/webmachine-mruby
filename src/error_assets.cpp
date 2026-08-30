@@ -333,7 +333,8 @@ int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const
   if (have_.empty()) return -1;
   // A form the error assets cannot answer for THIS status is not on offer for
   // it: the picture exists per status, not per server.
-  const bool have_cat = status < 600 && cat_index_[status] > 0;
+  const bool have_cat = status >= kFirstError && status < kPastLastError &&
+                        cat_index_[status - kFirstError] > 0;
   // The same weighing c4 does for a resource - q-values, both wildcard
   // forms, provided order breaking ties. An Accept nothing matches still
   // gets an answer: an error is not a representation of the resource, so
@@ -373,8 +374,8 @@ int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const
 const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const {
   if (slot < 0 || static_cast<size_t>(slot) >= have_.size()) return nullptr;
   if (!have_[static_cast<size_t>(slot)].from_pack) return nullptr;
-  if (status >= 600) return nullptr;
-  const int16_t at = cat_index_[status];
+  if (status < kFirstError || status >= kPastLastError) return nullptr;
+  const int16_t at = cat_index_[status - kFirstError];
   if (at <= 0) return nullptr;
   const Cat& c = cats_[static_cast<size_t>(at)];
   if (c.entry == nullptr) return nullptr;
@@ -490,13 +491,15 @@ void ErrorPages::read_cats(Assets& assets) {
     char tail[8] = {};
     if (std::sscanf(e.file_name.c_str(), "%u.%3s", &status, tail) != 2) continue;
     if (std::strcmp(tail, "jpg") != 0) continue;
-    if (status < 100 || status > 599) continue;
-    if (cat_index_[status] != 0) continue;
+    // An answer below 400 is not a failure and gets no page, so a picture
+    // for one is a file the pack was not built to hold.
+    if (status < kFirstError || status >= kPastLastError) continue;
+    if (cat_index_[status - kFirstError] != 0) continue;
     // Nothing but the entry: the <img> it carries is the whole answer.
     if (e.img_tag == nullptr) continue;
     Cat c;
     c.entry = &e;
-    cat_index_[status] = static_cast<int16_t>(cats_.size());
+    cat_index_[status - kFirstError] = static_cast<int16_t>(cats_.size());
     cats_.push_back(std::move(c));
   }
 }
@@ -518,7 +521,9 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   if (f.backtrace != nullptr && f.backtrace_len != 0) {
     hash_put_str(mrb, ctx, "backtrace", f.backtrace, f.backtrace_len);
   }
-  const int16_t cslot = status < 600 ? cat_index_[status] : 0;
+  const int16_t cslot = status >= kFirstError && status < kPastLastError
+                            ? cat_index_[status - kFirstError]
+                            : 0;
   if (cslot > 0) {
     const Cat& c = cats_[static_cast<size_t>(cslot)];
     mrb_value cat = mrb_hash_new(mrb);
@@ -559,7 +564,7 @@ void ErrorPages::read_prepared() {
   for (const Face& face : kFaces) {
     row = prepared_.size() / width;
     prepared_.resize(prepared_.size() + width);
-    prep_index_[face.status] = static_cast<int16_t>(row);
+    prep_index_[face.status - kFirstError] = static_cast<int16_t>(row);
     for (slot = 0; slot < width; slot++) {
       if (have_[slot].from_pack) continue;
       if (render(face.status, static_cast<int>(slot), nothing, page)) {
@@ -585,10 +590,11 @@ const char* ErrorPages::body_for(uint16_t status, int slot, const Fields& f, std
 }
 
 const char* ErrorPages::prepared_body(uint16_t status, int slot, size_t* len) const {
-  if (!ready_ || status >= 600 || slot < 0) return nullptr;
-  if (prep_index_[status] <= 0) return nullptr;
+  if (!ready_ || status < kFirstError || status >= kPastLastError || slot < 0) return nullptr;
+  const int16_t row = prep_index_[status - kFirstError];
+  if (row <= 0) return nullptr;
   const std::string& page =
-      prepared_[static_cast<size_t>(prep_index_[status]) * have_.size() +
+      prepared_[static_cast<size_t>(row) * have_.size() +
                 static_cast<size_t>(slot)];
   if (page.empty()) return nullptr;
   *len = page.size();

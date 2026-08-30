@@ -115,6 +115,7 @@ ERROR_CODES = [
   502, 503, 504, 506, 507, 508, 509, 510, 511, 521,
   522, 523, 525, 530, 599
 ].freeze
+ERROR_CODES.each { |c| raise "#{c} is not an error" if c < 400 || c > 599 }
 
 # kErrorAssetsPrefix in src/webmachine.hpp: where the server mounts this
 # pack, and therefore the src of every picture in it.
@@ -124,16 +125,20 @@ def error_assets_prefix
     raise 'src/webmachine.hpp: no kErrorAssetsPrefix to build the picture URLs from'
 end
 
-# RFC 9110 15: what the server calls each status, read out of the source
-# that answers with it rather than copied to a second place that can drift.
+# RFC 9110 15: what the server calls each error, read out of the source
+# that answers with it rather than copied to a second place that can
+# drift. Both tables also name statuses that are not errors; 399 and
+# below never reach a page here, so they are not carried around either.
 def status_titles
-  face = File.read(File.expand_path('src/error_assets.cpp', __dir__))
-  table = face[/constexpr Face kFaces\[\] = \{(.*?)\n\};/m, 1] or
-    raise 'src/error_assets.cpp: no kFaces table to read the status names from'
   out = {}
-  File.read(File.expand_path('src/webmachine.hpp', __dir__))[/constexpr const char\* reason\(uint16_t status\) \{(.*?)\n\}/m, 1]
-    .scan(/case (\d+): return "([^"]*)";/) { |code, name| out[code.to_i] = name }
-  table.scan(/\{\s*(\d+),\s*"([^"]*)"/) { |code, name| out[code.to_i] = name }
+  reason = File.read(File.expand_path('src/webmachine.hpp', __dir__))[
+    /constexpr const char\* reason\(uint16_t status\) \{(.*?)\n\}/m, 1] or
+    raise 'src/webmachine.hpp: no reason() to read the status names from'
+  faces = File.read(File.expand_path('src/error_assets.cpp', __dir__))[
+    /constexpr Face kFaces\[\] = \{(.*?)\n\};/m, 1] or
+    raise 'src/error_assets.cpp: no kFaces table to read the status names from'
+  reason.scan(/case (\d+): return "([^"]*)";/) { |c, n| out[c.to_i] = n if c.to_i >= 400 }
+  faces.scan(/\{\s*(\d+),\s*"([^"]*)"/) { |c, n| out[c.to_i] = n if c.to_i >= 400 }
   raise 'no status names found' if out.empty?
   out
 end
