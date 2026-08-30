@@ -4761,7 +4761,14 @@ class Ring {
       sink.append(buf, n);
     }
     if (step != KTLS_DONE) {
-      if (!c.sending && !c.out.empty()) arm_send(idx);
+      // EXACTLY ONE read is armed at a time, and whoever writes last
+      // arms it: a flight going out means on_send does, because two
+      // reads on one connection would feed the exchange two halves of
+      // the peer's next flight in whatever order they completed.
+      if (c.sending || !c.out.empty()) {
+        if (!c.sending) arm_send(idx);
+        return;
+      }
       arm_recv(idx);
       return;
     }
@@ -4796,7 +4803,8 @@ class Ring {
     // The last flight is already TLS records. It has to reach the wire as
     // itself - from the TLS_TX setsockopt on, the kernel encrypts what this
     // process sends, and encrypting them twice is what a peer would see.
-    if (!c.out.empty()) {
+    // A send already in flight counts: what it did not take is in c.next.
+    if (c.sending || !c.out.empty()) {
       if (!c.sending) arm_send(idx);
       return;
     }
@@ -4898,9 +4906,15 @@ class Ring {
     // wants in the log, so the line is owed here too - with the bytes that
     // really went out.
     app_.file_abandon(c.app);
-    // Nothing is owed to it any more, and it is the biggest thing this
-    // slot holds. The slot itself is kept - reset() and ~Conn own that.
-    c.tls.reset();
+    // The exchange goes now - it is the biggest thing this slot holds and
+    // nothing submitted points into it. The struct around it does NOT: a
+    // handover's three setsockopts read c.tls->info and a multishot
+    // recvmsg writes through c.tls->recv_msg, and either may still be with
+    // the kernel. It goes when the slot is accepted into again.
+    if (c.tls != nullptr) {
+      ktls_exchange_free(c.tls->x);
+      c.tls->x = nullptr;
+    }
     c.live = false;
     live_clear(idx);
     if (live_ != 0) live_--;
