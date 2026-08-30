@@ -291,6 +291,11 @@ OUT=$(mktemp)
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
   echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"} transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  # cflags above is what the CONFIG asks for; this is what the binary was
+  # actually built with and what it will load. A host that updated its
+  # packages between two runs changes the second and not the first.
+  . bench/buildline.sh
+  wm_build_line "$BIN"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own

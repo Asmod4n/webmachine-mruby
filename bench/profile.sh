@@ -323,6 +323,10 @@ OUT=bench/profile
 mkdir -p "$OUT"
 WM_SOCK=/tmp/wm-profile-bench.sock
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} path $REQPATH coding ${ASSETS:+$ASSET_CODING}"
+# Which binary, built with what, running on what. A profile without this
+# is a share of a machine nobody wrote down.
+. bench/buildline.sh
+wm_build_line "$BIN"
 if [ "$PROTO" = h1 ]; then
   echo "harness: htgen --sock -c$CONNS -d${DURATION}s h1 (unix socket, no TCP/nftables)"
 else
