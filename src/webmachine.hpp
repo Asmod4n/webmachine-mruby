@@ -3995,7 +3995,10 @@ enum : uint8_t {
   kWatch = 15,
   // The handover, one kind per setsockopt so a failing CQE says which:
   // TCP_ULP first, then the two crypto_info blobs.
-  kTlsUlp = 16, kTlsTx = 17, kTlsRx = 18
+  kTlsUlp = 16, kTlsTx = 17, kTlsRx = 18,
+  // close_notify on the way out; nothing waits for it, the tag only
+  // keeps its completion from being read as some other slot's.
+  kTlsBye = 19
 };
 
 
@@ -4495,6 +4498,14 @@ class Ring {
       // one outlives many completions; the kernel reads namelen and
       // controllen out of it to size what it writes into each buffer.
       struct msghdr recv_msg {};
+      // RFC 8446 6.1's close_notify, kept here for the same reason as
+      // recv_msg: it is submitted and then waited for, so the header,
+      // the control buffer and the alert itself all outlive the call
+      // that spelled them.
+      struct msghdr bye_msg {};
+      struct iovec bye_iov {};
+      unsigned char bye[2] = {1, 0};  // warning, close_notify
+      unsigned char bye_control[CMSG_SPACE(1)] = {};
       // RFC 8446 4.6.1: plaintext a peer put in the same flight as its
       // Finished. The kernel's stream starts at sequence zero and cannot
       // be handed a backlog, so this waits here until the socket has both
@@ -4793,12 +4804,11 @@ class Ring {
       std::memcpy(c.tls->info[dir], info, len);
       c.tls->info_len[dir] = len;
     }
-    // Freed now, not after the handover: it holds an SSL and its buffers,
-    // the largest thing this process would otherwise carry per connection,
-    // and nothing above still reads from it. What the setsockopts point at
-    // is the copy in `info`.
-    ktls_exchange_free(c.tls->x);
-    c.tls->x = nullptr;
+    // The SSL and its buffers go now - the largest thing this process
+    // would otherwise carry per connection, and nothing above still reads
+    // from them. The exchange itself stays for the connection's life,
+    // because the traffic secrets are what answers a KeyUpdate.
+    ktls_exchange_release(c.tls->x);
 
     // The last flight is already TLS records. It has to reach the wire as
     // itself - from the TLS_TX setsockopt on, the kernel encrypts what this
@@ -4840,6 +4850,36 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kTlsRx, c.gen, idx));
   }
 
+  // RFC 8446 4.6.3, answered: turn the receive secret one notch and put
+  // the new crypto_info on the socket. The kernel restarts that
+  // direction's sequence at zero, which is what a key change leaves,
+  // and the exchange keeps the secret precisely for this - it is why
+  // ktls_exchange_release exists rather than a free.
+  //
+  // ULP is already on, so this is one option and not a chain, and the
+  // read is armed again only once the kernel has the key.
+  void tls_next_receive_key(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
+      begin_close(idx);
+      return;
+    }
+    size_t len = 0;
+    const void* info = ktls_crypto_info(c.tls->x, KTLS_RX, &len);
+    if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[KTLS_RX])) {
+      begin_close(idx);
+      return;
+    }
+    std::memcpy(c.tls->info[KTLS_RX], info, len);
+    c.tls->info_len[KTLS_RX] = len;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
+                           ktls_optname(KTLS_RX), c.tls->info[KTLS_RX],
+                           static_cast<uint32_t>(len));
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsRx, c.gen, idx));
+  }
+
   // The last of the three. From here the socket is the kernel's record
   // layer and this connection is an ordinary one again - except that its
   // recv is a recvmsg, and that anything the peer pipelined behind its
@@ -4850,6 +4890,12 @@ class Ring {
     if (!c.live || c.gen != gen || c.tls == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
       begin_close(idx);
+      return;
+    }
+    // A KeyUpdate lands here too - same option, same completion - and
+    // there is no backlog and no deadline to reset for that one.
+    if (c.tls->offloaded) {
+      arm_recv(idx);
       return;
     }
     c.tls->offloaded = true;
@@ -4893,6 +4939,41 @@ class Ring {
   void live_set(uint32_t idx) { live_bits_[idx >> 6] |= 1ULL << (idx & 63); }
   void live_clear(uint32_t idx) { live_bits_[idx >> 6] &= ~(1ULL << (idx & 63)); }
 
+  // RFC 8446 6.1: without it a peer cannot tell a finished stream from a
+  // truncated one. Nothing here builds a record - the kernel does, from
+  // the type this control message names - so it is a sendmsg like any
+  // other, linked ahead of the shutdown that follows it.
+  //
+  // Only where the socket already IS the kernel's: before the handover
+  // there is no key to encrypt an alert with, and a cleartext one would
+  // be noise on the wire.
+  void arm_close_notify(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (c.tls == nullptr || !c.tls->offloaded) return;
+    const int cmsg_type = ktls_record_type_set_cmsg();
+    if (WM_UNLIKELY(cmsg_type < 0)) return;
+
+    typename Conn::Tls& t = *c.tls;
+    t.bye_iov.iov_base = t.bye;
+    t.bye_iov.iov_len = sizeof t.bye;
+    t.bye_msg = msghdr{};
+    t.bye_msg.msg_iov = &t.bye_iov;
+    t.bye_msg.msg_iovlen = 1;
+    t.bye_msg.msg_control = t.bye_control;
+    t.bye_msg.msg_controllen = sizeof t.bye_control;
+    struct cmsghdr* cm = CMSG_FIRSTHDR(&t.bye_msg);
+    cm->cmsg_level = ktls_sol_tls();
+    cm->cmsg_type = cmsg_type;
+    cm->cmsg_len = CMSG_LEN(1);
+    if (WM_UNLIKELY(ktls_record_type_encode(KTLS_RECORD_ALERT, CMSG_DATA(cm), 1) != 1)) return;
+    t.bye_msg.msg_controllen = CMSG_SPACE(1);
+
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_sendmsg(s, static_cast<int>(idx), &t.bye_msg, MSG_NOSIGNAL);
+    s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsBye, c.gen, idx));
+  }
+
   // shutdown BEFORE close_direct, linked: close_direct alone leaves the
   // socket open and the peer never sees FIN.
   void begin_close(uint32_t idx) {
@@ -4918,7 +4999,8 @@ class Ring {
     c.live = false;
     live_clear(idx);
     if (live_ != 0) live_--;
-    if (io_uring_sq_space_left(&ring_) < 2) io_uring_submit(&ring_);
+    if (io_uring_sq_space_left(&ring_) < 3) io_uring_submit(&ring_);
+    arm_close_notify(idx);
     struct io_uring_sqe* s = sqe();
     io_uring_prep_shutdown(s, static_cast<int>(idx), SHUT_RDWR);
     s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
@@ -5109,10 +5191,7 @@ class Ring {
     }
     // An alert or a post-handshake record reaches a plain recv as EIO and
     // nothing else; here it says which it is (.DESIGN.md "Never a plain
-    // recv on an offloaded socket"). A KeyUpdate is answerable rather
-    // than fatal, and that answer is not built yet - so for now anything
-    // that is not the stream ends the connection, which is at least what
-    // it is rather than an unexplained EIO.
+    // recv on an offloaded socket").
     ktls_record record = KTLS_RECORD_UNKNOWN;
     for (struct cmsghdr* cm = io_uring_recvmsg_cmsg_firsthdr(o, &c.tls->recv_msg); cm != nullptr;
          cm = io_uring_recvmsg_cmsg_nexthdr(o, &c.tls->recv_msg, cm)) {
@@ -5121,7 +5200,13 @@ class Ring {
       }
     }
     if (WM_UNLIKELY(record != KTLS_RECORD_DATA)) {
-      begin_close(idx);
+      // An alert ends the connection because that is what one is for -
+      // close_notify included, which is the ordinary way a peer leaves.
+      if (record != KTLS_RECORD_HANDSHAKE) {
+        begin_close(idx);
+        return;
+      }
+      tls_next_receive_key(idx);
       return;
     }
     const void* payload = io_uring_recvmsg_payload(o, &c.tls->recv_msg);
@@ -5523,6 +5608,9 @@ class Ring {
         if (WM_UNLIKELY(cqe->res < 0)) begin_close(idx);
         break;
       case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
+      // The connection is already going; a peer that will not take the
+      // alert is not a thing this end can do anything about.
+      case detail::kTlsBye: break;
       case detail::kStop: stop_ = true; break;
       default: break;
     }
