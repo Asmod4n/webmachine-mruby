@@ -30,7 +30,8 @@ bool h2_has_upper(const char* s, size_t n) {
     if ((ge_a & ~ge_z1 & ~w & kHigh) != 0) return true;
   }
   for (; i < n; i++) {
-    if (static_cast<unsigned char>(s[i]) - 'A' < 26u) return true;
+    const unsigned c = static_cast<unsigned char>(s[i]);
+    if (c - 'A' < 26u) return true;
   }
   return false;
 }

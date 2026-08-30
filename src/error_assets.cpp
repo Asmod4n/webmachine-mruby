@@ -19,24 +19,6 @@
 namespace webmachine {
 namespace {
 
-// PKWARE APPNOTE: an entry this tier may read straight out of the mapping.
-// The error assets builder stores the index (rake error_assets), so a deflated one
-// is an asset file built by something else - refused by name rather than
-// inflated here, because setup is not the place to grow a second
-// decompressor.
-bool pack_text(Assets& assets, const char* path, size_t len, std::string& out, char* err,
-               size_t errlen) {
-  const AssetEntry* e = assets.find(path, len);
-  if (e == nullptr) return false;
-  if (e->deflated) {
-    std::snprintf(err, errlen, "asset pack: %s is deflated - the error assets stores its text",
-                  path);
-    return false;
-  }
-  out.assign(e->file_data, e->uncompressed_size);
-  return true;
-}
-
 // RFC 9110 15 and the registries around it. reason() already spells the
 // name for the status line; this table exists for the second half - a
 // page that says "RFC 9110" under a 404 and "Cloudflare, not registered"
