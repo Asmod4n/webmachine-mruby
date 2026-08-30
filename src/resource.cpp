@@ -579,174 +579,130 @@ void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f,
   }
 }
 
-mrb_value run_engine(mrb_state* mrb, const Resource& res);
+mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
+mrb_value naked_class(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
+mrb_value cbv(Run& r, const Resource::ValueCb& cb, mrb_int argc = 0, const mrb_value* argv = nullptr);
+mrb_value nodecall(Run& r, Node nd, mrb_int argc, const mrb_value* argv);
+mrb_value arg_for(Run& r, Node nd);
+void marshal_methods(Run& r, const Resource::ValueCb& cb);
+void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t headn, const std::vector<std::string>& tail);
+void allow_line(Run& r);
+void marshal_ct(Run& r);
+int ensure_etag(Run& r);
+void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue& konst, bool* asked, bool* present, int64_t* epoch);
+int add_caching(Run& r);
+bool param_find(const char* s, size_t n, const char* key, size_t kn, const char** vout, size_t* vn);
+int accept_helper(Run& r);
+int run_n11(Run& r);
 
-// mruby: the ONE guarded entry per request. Without a jmpbuf on the
-// state a raise reaches mrb_exc_raise with mrb->jmp NULL, which prints
-// and calls abort() - so the frame is not optional. mrb_protect_error
-// buys it for a C function pointer, with no method lookup and no
-// object to construct.
-mrb_value run_engine_body(mrb_state* mrb, void* ud) {
-  return run_engine(mrb, *static_cast<const Resource*>(ud));
-}
-
-mrb_value run_engine(mrb_state* mrb, const Resource& res) {
-  // #181: the resource instance belongs to ONE request. Allocate it and
-  // nothing else - mrb_obj_new would search for initialize twice per
-  // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
-  // fold already stands. The call itself, when one is owed, is below,
-  // where the direct-entry path exists.
-  res.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
-  Run r{mrb,
-        res,
-        *res.run_facts,
-        res.konst.per_method[static_cast<size_t>(res.run_facts->method)],
-        res.run_vals,
-        *res.run_headers,
-        Node::kB13,
-        0,
-        false,
-        0,
-        res.cb_content_types_provided.has};
-  const flow::ReqFacts& facts = r.facts;
-  const flow::KonstAnswers& k = r.k;
-  const http::ReqValues* vals = r.vals;
-  std::string& hdrs = r.hdrs;
-
-  const auto naked = [&](mrb_method_t m, bool irep, NativeCb native, mrb_sym sym,
-                         mrb_int argc = 0, const mrb_value* argv = nullptr) -> mrb_value {
+mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc, const mrb_value* argv) {
     // The cheapest of the three tiers: our own C++ body, entered with the
     // arguments in hand. It never reads the callinfo, so there is nothing
     // to build for it.
-    if (native != nullptr) return call_native(mrb, native, res.live, argc, argv);
-    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(res.live)->c != res.klass)) {
-      return mrb_funcall_argv(mrb, res.live, sym, argc, argv);
+    if (native != nullptr) return call_native(r.mrb, native, r.res.live, argc, argv);
+    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(r.res.live)->c != r.res.klass)) {
+      return mrb_funcall_argv(r.mrb, r.res.live, sym, argc, argv);
     }
-    mrb_callinfo* ci = mrb->c->ci;
+    mrb_callinfo* ci = r.mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value answer = mrb_yield_with_class(
-        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, res.live,
-        res.klass);
+        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, r.res.live,
+        r.res.klass);
     ci->mid = saved;
     return answer;
-  };
+}
 
-  // #181: the app's own initialize, entered through the resolved method
-  // rather than looked up again. init_needed is false for every resource
-  // that did not override Object's - the implicit one is not a reason to
-  // run anything.
-  if (WM_RES_UNLIKELY(res.init_needed)) {
-    naked(res.init_m, res.init_irep, nullptr, MRB_SYM(initialize));
-  }
-
-  // cb.rb: the same direct entry as naked, for a `def self.x` - the
-  // receiver is the class and the frame's class is the class's own, which
-  // is where the fold found the method.
-  const auto naked_class = [&](mrb_method_t m, bool irep, NativeCb native, mrb_sym sym,
-                               mrb_int argc = 0, const mrb_value* argv = nullptr) -> mrb_value {
-    const mrb_value self = mrb_obj_value(res.klass);
-    if (native != nullptr) return call_native(mrb, native, self, argc, argv);
-    // mrb_obj_ptr(self)->c, not mrb_class(mrb, self): the latter is an
+mrb_value naked_class(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc, const mrb_value* argv) {
+    const mrb_value self = mrb_obj_value(r.res.klass);
+    if (native != nullptr) return call_native(r.mrb, native, self, argc, argv);
+    // mrb_obj_ptr(self)->c, not mrb_class(r.mrb, self): the latter is an
     // out-of-line call into another translation unit, and this build has no
     // LTO - a call to read one pointer, on the path whose whole point is
     // not calling anything.
-    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(self)->c != res.meta_klass)) {
-      return mrb_funcall_argv(mrb, self, sym, argc, argv);
+    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(self)->c != r.res.meta_klass)) {
+      return mrb_funcall_argv(r.mrb, self, sym, argc, argv);
     }
-    mrb_callinfo* ci = mrb->c->ci;
+    mrb_callinfo* ci = r.mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value answer = mrb_yield_with_class(
-        mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, self,
-        res.meta_klass);
+        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, self,
+        r.res.meta_klass);
     ci->mid = saved;
     return answer;
-  };
+}
 
-  // cb.rb: a value callback - on_class says which receiver, and the method
-  // itself came from the fold either way. It used to be searched again per
-  // request whenever it lived on the class.
-  const auto cbv = [&](const Resource::ValueCb& cb, mrb_int argc = 0,
-                       const mrb_value* argv = nullptr) -> mrb_value {
-    if (cb.on_class) return naked_class(cb.m, cb.irep, cb.native, cb.sym, argc, argv);
-    return naked(cb.m, cb.irep, cb.native, cb.sym, argc, argv);
-  };
+mrb_value cbv(Run& r, const Resource::ValueCb& cb, mrb_int argc, const mrb_value* argv) {
+    if (cb.on_class) return naked_class(r, cb.m, cb.irep, cb.native, cb.sym, argc, argv);
+    return naked(r, cb.m, cb.irep, cb.native, cb.sym, argc, argv);
+}
 
-  // flow.rb: one node's callback out of the node tables, either receiver.
-  const auto nodecall = [&](Node nd, mrb_int argc, const mrb_value* argv) -> mrb_value {
+mrb_value nodecall(Run& r, Node nd, mrb_int argc, const mrb_value* argv) {
     const size_t i = static_cast<size_t>(nd);
-    if ((res.node_on_class >> i) & 1) {
-      return naked_class(res.node_m[i], res.node_irep[i], res.node_native[i], res.node_sym[i],
+    if ((r.res.node_on_class >> i) & 1) {
+      return naked_class(r, r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i], r.res.node_sym[i],
                          argc, argv);
     }
-    return naked(res.node_m[i], res.node_irep[i], res.node_native[i], res.node_sym[i], argc,
+    return naked(r, r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i], r.res.node_sym[i], argc,
                  argv);
-  };
+}
 
-  // flow.rb decision_test: ANY callback may halt with an Integer status.
-
-  // RFC 9110: what ONE node's callback is handed. webmachine-ruby's
-  // signatures decide this, and a method that declared the parameter must
-  // not be called with nothing; one that declared none gets nothing.
-  const auto arg_for = [&](Node nd) -> mrb_value {
+mrb_value arg_for(Run& r, Node nd) {
     switch (nd) {
       case Node::kB8:
-        return vals != nullptr && vals->authorization != nullptr
-                   ? mrb_str_new(mrb, vals->authorization, vals->authorization_len)
+        return r.vals != nullptr && r.vals->authorization != nullptr
+                   ? mrb_str_new(r.mrb, r.vals->authorization, r.vals->authorization_len)
                    : mrb_nil_value();
       case Node::kB11:
-        return res.run_req != nullptr && res.run_req->request_target != nullptr
-                   ? mrb_str_new(mrb, res.run_req->request_target, res.run_req->request_target_len)
+        return r.res.run_req != nullptr && r.res.run_req->request_target != nullptr
+                   ? mrb_str_new(r.mrb, r.res.run_req->request_target, r.res.run_req->request_target_len)
                    : mrb_nil_value();
       case Node::kB6: {
-        const mrb_value rq = mrb_funcall_argv(mrb, res.live, MRB_SYM(request), 0, nullptr);
-        const mrb_value hs = mrb_funcall_argv(mrb, rq, MRB_SYM(headers), 0, nullptr);
-        const mrb_value out = mrb_hash_new(mrb);
+        const mrb_value rq = mrb_funcall_argv(r.mrb, r.res.live, MRB_SYM(request), 0, nullptr);
+        const mrb_value hs = mrb_funcall_argv(r.mrb, rq, MRB_SYM(headers), 0, nullptr);
+        const mrb_value out = mrb_hash_new(r.mrb);
         if (mrb_hash_p(hs)) {
-          const mrb_value keys = mrb_hash_keys(mrb, hs);
+          const mrb_value keys = mrb_hash_keys(r.mrb, hs);
           for (mrb_int j = 0; j < RARRAY_LEN(keys); j++) {
             const mrb_value key = RARRAY_PTR(keys)[j];
             if (!mrb_string_p(key) || RSTRING_LEN(key) < 8) continue;
             if (!http::tok_eq(RSTRING_PTR(key), 8, "content-", 8)) continue;
-            mrb_hash_set(mrb, out, key, mrb_hash_get(mrb, hs, key));
+            mrb_hash_set(r.mrb, out, key, mrb_hash_get(r.mrb, hs, key));
           }
         }
         return out;
       }
       case Node::kB5:
-        return vals != nullptr && vals->content_type != nullptr
-                   ? mrb_str_new(mrb, vals->content_type, vals->content_type_len)
+        return r.vals != nullptr && r.vals->content_type != nullptr
+                   ? mrb_str_new(r.mrb, r.vals->content_type, r.vals->content_type_len)
                    : mrb_nil_value();
       case Node::kB4:
         return mrb_int_value(
-            mrb, static_cast<mrb_int>(res.run_req != nullptr ? res.run_req->content_len : 0));
+            r.mrb, static_cast<mrb_int>(r.res.run_req != nullptr ? r.res.run_req->content_len : 0));
       default:
         return mrb_nil_value();
     }
-  };
+}
 
-  // RFC 9110 9.1: this request's method, by name.
-
-  // RFC 9110 9.1: one method-list answer (Array or token String), marshalled
-  // once into run_methods.
-  const auto marshal_methods = [&](const Resource::ValueCb& cb) {
-    res.run_methods.clear();
-    const mrb_value v = cbv(cb);
+void marshal_methods(Run& r, const Resource::ValueCb& cb) {
+  mrb_state* mrb = r.mrb;
+    r.res.run_methods.clear();
+    const mrb_value v = cbv(r, cb);
     if (mrb_array_p(v)) {
       for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
         const mrb_value s = RARRAY_PTR(v)[j];
         if (WM_RES_UNLIKELY(!mrb_string_p(s))) {
-          mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer method Strings",
-                     mrb_sym_name(mrb, cb.sym));
+          mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer method Strings",
+                     mrb_sym_name(r.mrb, cb.sym));
         }
-        res.run_methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+        r.res.run_methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
       }
       return;
     }
     if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
-      mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
-                 mrb_sym_name(mrb, cb.sym));
+      mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
+                 mrb_sym_name(r.mrb, cb.sym));
     }
     const char* p = RSTRING_PTR(v);
     const char* end = p + RSTRING_LEN(v);
@@ -754,61 +710,48 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       while (p < end && (*p == ' ' || *p == ',')) p++;
       const char* tok = p;
       while (p < end && *p != ' ' && *p != ',') p++;
-      if (tok != p) res.run_methods.emplace_back(tok, static_cast<size_t>(p - tok));
+      if (tok != p) r.res.run_methods.emplace_back(tok, static_cast<size_t>(p - tok));
     }
-  };
+}
 
-  // flow.rb b10/b12: include?(request.method) over the marshalled list.
-
-  // RFC 9112 5: field-line = field-name ":" OWS field-value OWS CRLF. A
-  // node decides WHICH field it produces; this is the only place that
-  // knows how one is spelled. Every node below used to spell its own,
-  // which is why "Allow: " and "ETag: " carried the colon inside the
-  // literal and every site ended with its own append("\r\n", 2).
-
-  // RFC 9110 5.6.1: a field whose value is a #rule - a comma-separated
-  // list. The members go in one at a time, so a list never needs a string
-  // built to hold it: `head` is the member that is not in `tail`, empty
-  // when there is none.
-  const auto field_list = [&](const char* name, size_t nlen, const char* head, size_t headn,
-                              const std::vector<std::string>& tail) {
-    hdrs.append(name, nlen);
-    hdrs.append(": ", 2);
+void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t headn, const std::vector<std::string>& tail) {
+  mrb_state* mrb = r.mrb;
+    r.hdrs.append(name, nlen);
+    r.hdrs.append(": ", 2);
     bool first = true;
     if (headn != 0) {
-      hdrs.append(head, headn);
+      r.hdrs.append(head, headn);
       first = false;
     }
     for (const std::string& s : tail) {
       // Same gate, one member at a time: Allow's members come from
       // allowed_methods and Vary's from variances, both app Strings.
       if (WM_RES_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
-        mrb_raise(mrb, E_WM_ERROR(mrb),
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
                   "a list field this resource produced carries CR, LF or NUL (RFC 9110 5.5)");
       }
-      if (!first) hdrs.append(", ", 2);
-      hdrs.append(s);
+      if (!first) r.hdrs.append(", ", 2);
+      r.hdrs.append(s);
       first = false;
     }
-    hdrs.append("\r\n", 2);
-  };
+    r.hdrs.append("\r\n", 2);
+}
 
-  // RFC 9110 10.2.1: the Allow value, from the dynamic list or the konst join.
-  const auto allow_line = [&]() {
-    if (res.cb_allowed_methods.has) {
-      field_list("Allow", 5, nullptr, 0, res.run_methods);
+void allow_line(Run& r) {
+    if (r.res.cb_allowed_methods.has) {
+      field_list(r, "Allow", 5, nullptr, 0, r.res.run_methods);
     } else {
-      field(r, "Allow", 5, res.konst.allow.data(), res.konst.allow.size());
+      field(r, "Allow", 5, r.res.konst.allow.data(), r.res.konst.allow.size());
     }
-  };
+}
 
-  // cb.rb content_types_provided: the dynamic answer, marshalled once.
-  const auto marshal_ct = [&]() {
-    if (!r.ct_dyn || res.run_content_types_marshalled) return;
-    res.run_content_types_marshalled = true;
-    const mrb_value v = cbv(res.cb_content_types_provided);
+void marshal_ct(Run& r) {
+  mrb_state* mrb = r.mrb;
+    if (!r.ct_dyn || r.res.run_content_types_marshalled) return;
+    r.res.run_content_types_marshalled = true;
+    const mrb_value v = cbv(r, r.res.cb_content_types_provided);
     if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
-      mrb_raise(mrb, E_WM_ERROR(mrb),
+      mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
                 "content_types_provided must answer [[type, handler]] pairs");
     }
     const mrb_int count = RARRAY_LEN(v);
@@ -816,7 +759,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     // it, resolutions included, and nothing has to be rebuilt or searched
     // for. A pair that is not [String, Symbol] simply fails to match and
     // falls into the rebuild below, which names the refusal.
-    std::vector<Resource::TypedHandler>& cur = res.run_content_types_provided;
+    std::vector<Resource::TypedHandler>& cur = r.res.run_content_types_provided;
     bool same = cur.size() == static_cast<size_t>(count);
     for (mrb_int j = 0; same && j < count; j++) {
       const mrb_value pair = RARRAY_PTR(v)[j];
@@ -836,49 +779,44 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                           !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                           !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided pairs are [String, Symbol]");
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "content_types_provided pairs are [String, Symbol]");
       }
       Resource::TypedHandler th;
       th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
                      static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
       th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
       // Resolved HERE, once, not searched for at every render.
-      const Resolved hr = resolve(mrb, res.klass, th.handler);
+      const Resolved hr = resolve(r.mrb, r.res.klass, th.handler);
       th.m = hr.m;
       th.irep = hr.irep;
       th.native = hr.native;
       cur.push_back(std::move(th));
     }
-  };
-  // RFC 9110 12.5.1: the list conneg runs against - dynamic or konst-folded.
+}
 
-  // cb.rb generate_etag: asked at most once per run; g11, k13 and the
-  // caching headers all read the same memo.
-  const auto ensure_etag = [&]() -> int {
-    if (res.etag_asked) return -1;
-    res.etag_asked = true;
+int ensure_etag(Run& r) {
+    if (r.res.etag_asked) return -1;
+    r.res.etag_asked = true;
     // #202: the class form answered at setup - there is nothing to ask.
-    if (res.konst_etag.asked) {
-      if (res.konst_etag.present) {
-        res.etag_value = res.konst_etag.text;
-        res.etag_present = true;
+    if (r.res.konst_etag.asked) {
+      if (r.res.konst_etag.present) {
+        r.res.etag_value = r.res.konst_etag.text;
+        r.res.etag_present = true;
       }
       return -1;
     }
-    if (!res.cb_generate_etag.has) return -1;
-    mrb_value v = cbv(res.cb_generate_etag);
-    if (mrb_integer_p(v)) return halt_of(r, v, res.cb_generate_etag.sym);
+    if (!r.res.cb_generate_etag.has) return -1;
+    mrb_value v = cbv(r, r.res.cb_generate_etag);
+    if (mrb_integer_p(v)) return halt_of(r, v, r.res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
-    if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
-    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), res.etag_value);
-    res.etag_present = true;
+    if (!mrb_string_p(v)) v = mrb_obj_as_string(r.mrb, v);
+    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), r.res.etag_value);
+    r.res.etag_present = true;
     return -1;
-  };
+}
 
-  // cb.rb last_modified/expires: asked at most once - a Time answers via
-  // to_i, an Integer is the epoch, nil is not present.
-  const auto epoch_memo = [&](const Resource::ValueCb& cb, const Resource::KonstValue& konst,
-                              bool* asked, bool* present, int64_t* epoch) {
+void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue& konst, bool* asked, bool* present, int64_t* epoch) {
+  mrb_state* mrb = r.mrb;
     if (*asked) return;
     *asked = true;
     // #202: same as ensure_etag - a class form is a setup answer.
@@ -890,41 +828,33 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       return;
     }
     if (!cb.has) return;
-    mrb_value v = cbv(cb);
+    mrb_value v = cbv(r, cb);
     if (mrb_nil_p(v) || mrb_false_p(v)) return;
-    if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
+    if (!mrb_integer_p(v)) v = mrb_funcall_argv(r.mrb, v, MRB_SYM(to_i), 0, nullptr);
     if (WM_RES_UNLIKELY(!mrb_integer_p(v))) {
-      mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
-                 mrb_sym_name(mrb, cb.sym));
+      mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
+                 mrb_sym_name(r.mrb, cb.sym));
     }
     *epoch = static_cast<int64_t>(mrb_integer(v));
     *present = true;
-  };
+}
 
-  // RFC 9110 5.6.7: one dated field, IMF-fixdate.
-
-  // helpers.rb add_caching_headers: ETag, Expires, Last-Modified.
-  const auto add_caching = [&]() -> int {
-    const int h = ensure_etag();
+int add_caching(Run& r) {
+    const int h = ensure_etag(r);
     if (h >= 0) return h;
-    if (res.etag_present) {
-      field(r, "ETag", 4, res.etag_value.data(), res.etag_value.size());
+    if (r.res.etag_present) {
+      field(r, "ETag", 4, r.res.etag_value.data(), r.res.etag_value.size());
     }
-    epoch_memo(res.cb_expires, res.konst_expires, &res.expires_asked, &res.expires_present,
-               &res.expires_epoch);
-    if (res.expires_present) date_line(r, "Expires", 7, res.expires_epoch);
-    epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
-               &res.last_modified_present, &res.last_modified_epoch);
-    if (res.last_modified_present) date_line(r, "Last-Modified", 13, res.last_modified_epoch);
+    epoch_memo(r, r.res.cb_expires, r.res.konst_expires, &r.res.expires_asked, &r.res.expires_present,
+               &r.res.expires_epoch);
+    if (r.res.expires_present) date_line(r, "Expires", 7, r.res.expires_epoch);
+    epoch_memo(r, r.res.cb_last_modified, r.res.konst_last_modified, &r.res.last_modified_asked,
+               &r.res.last_modified_present, &r.res.last_modified_epoch);
+    if (r.res.last_modified_present) date_line(r, "Last-Modified", 13, r.res.last_modified_epoch);
     return -1;
-  };
+}
 
-  // helpers.rb accept_helper: the request's Content-Type against
-  // content_types_accepted - exact, type/* or */* - then yield the handler.
-  // MediaType#match?: every parameter the accepted type carries must be
-  // present with an equal value in the request's Content-Type.
-  const auto param_find = [](const char* s, size_t n, const char* key, size_t kn,
-                             const char** vout, size_t* vn) -> bool {
+bool param_find(const char* s, size_t n, const char* key, size_t kn, const char** vout, size_t* vn) {
     size_t i = 0;
     while (i < n && s[i] != ';') i++;
     while (i < n) {
@@ -952,21 +882,23 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       }
     }
     return false;
-  };
-  const auto accept_helper = [&]() -> int {
+}
+
+int accept_helper(Run& r) {
+  mrb_state* mrb = r.mrb;
     const char* ct = "application/octet-stream";
     size_t ct_full = 24;
-    if (vals != nullptr && vals->content_type != nullptr) {
-      ct = vals->content_type;
-      ct_full = vals->content_type_len;
+    if (r.vals != nullptr && r.vals->content_type != nullptr) {
+      ct = r.vals->content_type;
+      ct_full = r.vals->content_type_len;
     }
     size_t ctn = 0;
     while (ctn < ct_full && ct[ctn] != ';') ctn++;
     while (ctn > 0 && (ct[ctn - 1] == ' ' || ct[ctn - 1] == '\t')) ctn--;
-    if (!res.cb_content_types_accepted.has) return 415;
-    const mrb_value v = cbv(res.cb_content_types_accepted);
+    if (!r.res.cb_content_types_accepted.has) return 415;
+    const mrb_value v = cbv(r, r.res.cb_content_types_accepted);
     if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
-      mrb_raise(mrb, E_WM_ERROR(mrb),
+      mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
                 "content_types_accepted must answer [[type, Symbol]] pairs");
     }
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
@@ -974,7 +906,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                           !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                           !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_accepted pairs are [String, Symbol]");
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "content_types_accepted pairs are [String, Symbol]");
       }
       const char* pt = RSTRING_PTR(RARRAY_PTR(pair)[0]);
       const size_t pt_full = static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]));
@@ -1021,40 +953,39 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       }
       if (!hit) continue;
       const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
-      const mrb_value answer = mrb_funcall_argv(mrb, res.live, hs, 0, nullptr);
+      const mrb_value answer = mrb_funcall_argv(r.mrb, r.res.live, hs, 0, nullptr);
       if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
       return -1;
     }
     return 415;
-  };
+}
 
-  // flow.rb n11: post_is_create?/create_path/base_uri or process_post; the
-  // 303 answer needs a Location the run already set.
-  const auto run_n11 = [&]() -> int {
+int run_n11(Run& r) {
+  mrb_state* mrb = r.mrb;
     mrb_value pic = mrb_false_value();
-    if (res.cb_post_is_create.has) pic = cbv(res.cb_post_is_create);
+    if (r.res.cb_post_is_create.has) pic = cbv(r, r.res.cb_post_is_create);
     if (mrb_test(pic)) {
-      if (WM_RES_UNLIKELY(!res.cb_create_path.has)) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
+      if (WM_RES_UNLIKELY(!r.res.cb_create_path.has)) {
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "post_is_create? is true but create_path answered nil");
       }
-      const mrb_value cp = cbv(res.cb_create_path);
-      if (mrb_integer_p(cp)) return halt_of(r, cp, res.cb_create_path.sym);
+      const mrb_value cp = cbv(r, r.res.cb_create_path);
+      if (mrb_integer_p(cp)) return halt_of(r, cp, r.res.cb_create_path.sym);
       if (WM_RES_UNLIKELY(mrb_nil_p(cp))) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "post_is_create? is true but create_path answered nil");
       }
       if (WM_RES_UNLIKELY(!mrb_string_p(cp))) {
-        mrb_raise(mrb, E_TYPE_ERROR, "create_path must answer a String path");
+        mrb_raise(r.mrb, E_TYPE_ERROR, "create_path must answer a String path");
       }
       mrb_value base = mrb_nil_value();
-      if (res.cb_base_uri.has) base = cbv(res.cb_base_uri);
+      if (r.res.cb_base_uri.has) base = cbv(r, r.res.cb_base_uri);
       {
         std::string b;
         if (mrb_string_p(base)) {
           b.assign(RSTRING_PTR(base), static_cast<size_t>(RSTRING_LEN(base)));
         } else {
           b.assign("http://");
-          if (vals != nullptr && vals->host != nullptr) {
-            b.append(vals->host, vals->host_len);
+          if (r.vals != nullptr && r.vals->host != nullptr) {
+            b.append(r.vals->host, r.vals->host_len);
           } else {
             b.append("localhost");
           }
@@ -1072,29 +1003,129 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           }
         }
         const size_t plen = http::path_only(uri.data() + at, uri.size() - at);
-        res.run_disp_path.assign(uri.data() + at, plen);
-        res.run_disp_set = true;
+        r.res.run_disp_path.assign(uri.data() + at, plen);
+        r.res.run_disp_set = true;
         request_disp_override(uri.data() + at, plen);
         field(r, "Location", 8, uri.data(), uri.size());
       }
-      const int h = accept_helper();
+      const int h = accept_helper(r);
       if (h >= 0) return h;
     } else {
-      if (WM_RES_UNLIKELY(!res.cb_process_post.has)) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "process_post answered false, which is invalid");
+      if (WM_RES_UNLIKELY(!r.res.cb_process_post.has)) {
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "process_post answered false, which is invalid");
       }
-      const mrb_value pp = cbv(res.cb_process_post);
-      if (mrb_integer_p(pp)) return halt_of(r, pp, res.cb_process_post.sym);
+      const mrb_value pp = cbv(r, r.res.cb_process_post);
+      if (mrb_integer_p(pp)) return halt_of(r, pp, r.res.cb_process_post.sym);
       if (WM_RES_UNLIKELY(!mrb_true_p(pp))) {
-        mrb_raise(mrb, E_WM_ERROR(mrb), "process_post must answer true or a response code");
+        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "process_post must answer true or a response code");
       }
     }
-    if (res.run_redirect) {
-      if (headers_has_location(hdrs)) return 303;
-      mrb_raise(mrb, E_WM_ERROR(mrb), "do_redirect requires a Location header");
+    if (r.res.run_redirect) {
+      if (headers_has_location(r.hdrs)) return 303;
+      mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "do_redirect requires a Location header");
     }
     return -1;
-  };
+}
+
+mrb_value run_engine(mrb_state* mrb, const Resource& res);
+
+// mruby: the ONE guarded entry per request. Without a jmpbuf on the
+// state a raise reaches mrb_exc_raise with mrb->jmp NULL, which prints
+// and calls abort() - so the frame is not optional. mrb_protect_error
+// buys it for a C function pointer, with no method lookup and no
+// object to construct.
+mrb_value run_engine_body(mrb_state* mrb, void* ud) {
+  return run_engine(mrb, *static_cast<const Resource*>(ud));
+}
+
+mrb_value run_engine(mrb_state* mrb, const Resource& res) {
+  // #181: the resource instance belongs to ONE request. Allocate it and
+  // nothing else - mrb_obj_new would search for initialize twice per
+  // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
+  // fold already stands. The call itself, when one is owed, is below,
+  // where the direct-entry path exists.
+  res.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
+  Run r{mrb,
+        res,
+        *res.run_facts,
+        res.konst.per_method[static_cast<size_t>(res.run_facts->method)],
+        res.run_vals,
+        *res.run_headers,
+        Node::kB13,
+        0,
+        false,
+        0,
+        res.cb_content_types_provided.has};
+  const flow::ReqFacts& facts = r.facts;
+  const flow::KonstAnswers& k = r.k;
+  const http::ReqValues* vals = r.vals;
+  std::string& hdrs = r.hdrs;
+
+
+  // #181: the app's own initialize, entered through the resolved method
+  // rather than looked up again. init_needed is false for every resource
+  // that did not override Object's - the implicit one is not a reason to
+  // run anything.
+  if (WM_RES_UNLIKELY(res.init_needed)) {
+    naked(r, res.init_m, res.init_irep, nullptr, MRB_SYM(initialize));
+  }
+
+  // cb.rb: the same direct entry as naked, for a `def self.x` - the
+  // receiver is the class and the frame's class is the class's own, which
+  // is where the fold found the method.
+
+  // cb.rb: a value callback - on_class says which receiver, and the method
+  // itself came from the fold either way. It used to be searched again per
+  // request whenever it lived on the class.
+
+  // flow.rb: one node's callback out of the node tables, either receiver.
+
+  // flow.rb decision_test: ANY callback may halt with an Integer status.
+
+  // RFC 9110: what ONE node's callback is handed. webmachine-ruby's
+  // signatures decide this, and a method that declared the parameter must
+  // not be called with nothing; one that declared none gets nothing.
+
+  // RFC 9110 9.1: this request's method, by name.
+
+  // RFC 9110 9.1: one method-list answer (Array or token String), marshalled
+  // once into run_methods.
+
+  // flow.rb b10/b12: include?(request.method) over the marshalled list.
+
+  // RFC 9112 5: field-line = field-name ":" OWS field-value OWS CRLF. A
+  // node decides WHICH field it produces; this is the only place that
+  // knows how one is spelled. Every node below used to spell its own,
+  // which is why "Allow: " and "ETag: " carried the colon inside the
+  // literal and every site ended with its own append("\r\n", 2).
+
+  // RFC 9110 5.6.1: a field whose value is a #rule - a comma-separated
+  // list. The members go in one at a time, so a list never needs a string
+  // built to hold it: `head` is the member that is not in `tail`, empty
+  // when there is none.
+
+  // RFC 9110 10.2.1: the Allow value, from the dynamic list or the konst join.
+
+  // cb.rb content_types_provided: the dynamic answer, marshalled once.
+  // RFC 9110 12.5.1: the list conneg runs against - dynamic or konst-folded.
+
+  // cb.rb generate_etag: asked at most once per run; g11, k13 and the
+  // caching headers all read the same memo.
+
+  // cb.rb last_modified/expires: asked at most once - a Time answers via
+  // to_i, an Integer is the epoch, nil is not present.
+
+  // RFC 9110 5.6.7: one dated field, IMF-fixdate.
+
+  // helpers.rb add_caching_headers: ETag, Expires, Last-Modified.
+
+  // helpers.rb accept_helper: the request's Content-Type against
+  // content_types_accepted - exact, type/* or */* - then yield the handler.
+  // MediaType#match?: every parameter the accepted type carries must be
+  // present with an equal value in the request's Content-Type.
+
+  // flow.rb n11: post_is_create?/create_path/base_uri or process_post; the
+  // 303 answer needs a Location the run already set.
 
   Node n = Node::kB13;
   uint16_t status = 0;
@@ -1113,15 +1144,15 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     switch (n) {
       case Node::kB12: {
         if (!res.cb_known_methods.has) break;
-        marshal_methods(res.cb_known_methods);
+        marshal_methods(r, res.cb_known_methods);
         take(methods_contain(r));
         continue;
       }
       case Node::kB10: {
         if (!res.cb_allowed_methods.has) break;
-        marshal_methods(res.cb_allowed_methods);
+        marshal_methods(r, res.cb_allowed_methods);
         const bool ok = methods_contain(r);
-        if (!ok) allow_line();
+        if (!ok) allow_line(r);
         take(ok);
         continue;
       }
@@ -1129,8 +1160,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (((res.dynamic >> static_cast<size_t>(Node::kB8)) & 1) == 0) break;
         const size_t i = static_cast<size_t>(Node::kB8);
         mrb_value a = mrb_nil_value();
-        if (res.node_argc[i] != 0) a = arg_for(n);
-        const mrb_value v = nodecall(n, res.node_argc[i], &a);
+        if (res.node_argc[i] != 0) a = arg_for(r, n);
+        const mrb_value v = nodecall(r, n, res.node_argc[i], &a);
         if (mrb_true_p(v)) {
           take(true);
           continue;
@@ -1153,7 +1184,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           continue;
         }
         if (res.cb_options.has) {
-          const mrb_value v = cbv(res.cb_options);
+          const mrb_value v = cbv(r, res.cb_options);
           if (WM_RES_UNLIKELY(!mrb_hash_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "options must answer a Hash of header fields");
           }
@@ -1166,14 +1197,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
                   static_cast<size_t>(RSTRING_LEN(val)));
           }
         } else {
-          allow_line();
+          allow_line(r);
         }
         status = 200;
         halted = true;
         continue;
       }
       case Node::kC3: {
-        marshal_ct();
+        marshal_ct(r);
         if (WM_RES_UNLIKELY(active_ct(r).empty())) {
           mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided answered no pairs");
         }
@@ -1213,7 +1244,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       }
       case Node::kG7: {
         if (res.cb_variances.has) {
-          const mrb_value v = cbv(res.cb_variances);
+          const mrb_value v = cbv(r, res.cb_variances);
           if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "variances must answer an Array of Strings");
           }
@@ -1228,13 +1259,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         const bool accept_varies = active_ct(r).size() > 1;
         if (accept_varies || !res.run_variances.empty()) {
-          field_list("Vary", 4, accept_varies ? "Accept" : nullptr, accept_varies ? 6 : 0,
+          field_list(r, "Vary", 4, accept_varies ? "Accept" : nullptr, accept_varies ? 6 : 0,
                      res.run_variances);
         }
         break;
       }
       case Node::kG11: {
-        const int h = ensure_etag();
+        const int h = ensure_etag(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
           halted = true;
@@ -1246,7 +1277,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kK13: {
-        const int h = ensure_etag();
+        const int h = ensure_etag(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
           halted = true;
@@ -1258,14 +1289,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kH12: {
-        epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+        epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                    &res.last_modified_present, &res.last_modified_epoch);
         take(res.last_modified_present && vals != nullptr &&
              res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
-        epoch_memo(res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+        epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                    &res.last_modified_present, &res.last_modified_epoch);
         take(!res.last_modified_present || vals == nullptr ||
              res.last_modified_epoch > vals->if_modified_since_epoch);
@@ -1277,7 +1308,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const Resource::ValueCb& cb =
             n == Node::kL5 ? res.cb_moved_temporarily : res.cb_moved_permanently;
         if (!cb.has) break;
-        const mrb_value v = cbv(cb);
+        const mrb_value v = cbv(r, cb);
         if (mrb_string_p(v)) {
           field(r, "Location", 8, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
           status = n == Node::kL5 ? 307 : 301;
@@ -1293,7 +1324,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kN11: {
-        const int h = run_n11();
+        const int h = run_n11(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
           halted = true;
@@ -1307,7 +1338,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const size_t i = static_cast<size_t>(n);
         bool conflict;
         if ((res.dynamic >> i) & 1) {
-          const mrb_value v = nodecall(n, 0, nullptr);
+          const mrb_value v = nodecall(r, n, 0, nullptr);
           if (mrb_integer_p(v)) {
             status = halt_of(r, v, res.node_sym[i]);
             halted = true;
@@ -1322,7 +1353,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        const int h = accept_helper();
+        const int h = accept_helper(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
           halted = true;
@@ -1333,7 +1364,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       }
       case Node::kO18: {
         if (facts.method == flow::Method::kGet || facts.method == flow::Method::kHead) {
-          const int h = add_caching();
+          const int h = add_caching(r);
           if (h >= 0) {
             status = static_cast<uint16_t>(h);
             halted = true;
@@ -1356,7 +1387,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           } else {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
-              v = naked(th.m, th.irep, th.native, th.handler);
+              v = naked(r, th.m, th.irep, th.native, th.handler);
             } else if (r.ct_dyn) {
               v = mrb_funcall_argv(mrb, res.live, th.handler, 0, nullptr);
             } else {
@@ -1423,8 +1454,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     } else if ((res.dynamic >> static_cast<size_t>(n)) & 1) {
       const size_t i = static_cast<size_t>(n);
       mrb_value a = mrb_nil_value();
-      if (res.node_argc[i] != 0) a = arg_for(n);
-      const mrb_value v = nodecall(n, res.node_argc[i], &a);
+      if (res.node_argc[i] != 0) a = arg_for(r, n);
+      const mrb_value v = nodecall(r, n, res.node_argc[i], &a);
       // ANY callback may answer with an Integer, and then that integer
       // IS the response status - webmachine-ruby's own convention.
       if (WM_RES_UNLIKELY(mrb_integer_p(v))) {
@@ -1443,12 +1474,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // caching headers; finish_request runs LAST and may rename the status
   // through response.code=.
   if (status == 304) {
-    const int h = add_caching();
+    const int h = add_caching(r);
     if (h >= 0) status = static_cast<uint16_t>(h);
   }
   res.run_resp_code = status;
   res.run_status = status;
-  if (res.cb_finish_request.has) cbv(res.cb_finish_request);
+  if (res.cb_finish_request.has) cbv(r, res.cb_finish_request);
   res.run_status = res.run_resp_code;
   return mrb_nil_value();
 }
