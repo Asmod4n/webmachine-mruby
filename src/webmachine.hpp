@@ -4482,6 +4482,11 @@ class Ring {
     struct msghdr msg {};
 
     unsigned msg_iovlen = 0;
+    // How much of `out` the kernel has already taken. Only ever non-zero
+    // on an offloaded connection, which is the only one that resumes a
+    // send; everywhere else MSG_WAITALL makes one send the whole round.
+    // A plan resumes by advancing its own iovecs - see plan_drop_front.
+    size_t out_sent = 0;
     uint16_t gen = 0;
     uint8_t listener = 0;
     bool live = false;
@@ -4965,18 +4970,46 @@ class Ring {
     arm_recv(idx);
   }
 
-  // One sendmsg for the whole round; MSG_MORE when the App still owes bytes.
-  // MSG_WAITALL: the kernel finishes a short send itself, so this round is
-  // one operation and there is no resume offset to carry. What it cannot
-  // finish it reports as fewer bytes, and for a response body that is not
-  // resumable anyway - see on_send.
+  // What the kernel took, dropped off the front of a plan: whole segments
+  // go, the first partial one is trimmed. Nothing is allocated and
+  // nothing copied - the segments that stay point at the same asset
+  // mappings and lent Strings they already did.
+  static void plan_drop_front(Conn& c, size_t took) {
+    unsigned seg = 0;
+    while (seg < c.msg_iovlen && took >= c.msg_iov[seg].iov_len) {
+      took -= c.msg_iov[seg].iov_len;
+      seg++;
+    }
+    if (seg < c.msg_iovlen && took != 0) {
+      c.msg_iov[seg].iov_base = static_cast<char*>(c.msg_iov[seg].iov_base) + took;
+      c.msg_iov[seg].iov_len -= took;
+    }
+    const unsigned left = c.msg_iovlen - seg;
+    for (unsigned i = 0; i < left; i++) c.msg_iov[i] = c.msg_iov[seg + i];
+    c.msg_iovlen = left;
+  }
+
+  // One sendmsg for the round; MSG_MORE when the App still owes bytes.
+  //
+  // MSG_WAITALL where the kernel takes it: it finishes a short send
+  // itself, so the round is one operation and there is no offset to
+  // carry. An OFFLOADED connection cannot have it - tls_sw_sendmsg
+  // answers EOPNOTSUPP for any flag outside MSG_MORE, MSG_DONTWAIT,
+  // MSG_NOSIGNAL, MSG_SPLICE_PAGES and MSG_EOR - so that one asks for no
+  // retry and resumes itself, out of `out_sent` or its own iovecs.
+  //
+  // The lend survives either way: resource.cpp freezes and roots the
+  // String and zc_release hands it back when the ROUND drains, never
+  // when one send returns.
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
-    const int flags =
-        MSG_NOSIGNAL | MSG_WAITALL | (app_.pending(c.app) ? MSG_MORE : 0);
+    const bool resumes = c.tls != nullptr && c.tls->offloaded;
+    const int flags = MSG_NOSIGNAL | (resumes ? 0 : MSG_WAITALL) |
+                      (app_.pending(c.app) ? MSG_MORE : 0);
     if (c.msg_iovlen == 0) {
-      io_uring_prep_send(s, static_cast<int>(idx), c.out.data(), c.out.size(), flags);
+      io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.out_sent,
+                         c.out.size() - c.out_sent, flags);
     } else {
       c.msg = msghdr{};
       c.msg.msg_iov = c.msg_iov.get();
@@ -5083,6 +5116,7 @@ class Ring {
     c.deadline_s = now_s_ + header_timeout_;
     c.listener = static_cast<uint8_t>(li);
     c.out.clear();
+    c.out_sent = 0;
     c.next.clear();
     c.app.reset(static_cast<uint8_t>(li), !unix_listener_[li]);
     if (!unix_listener_[li]) {
@@ -5323,16 +5357,28 @@ class Ring {
     // has no restart point and an h2 frame cut in half breaks the whole
     // connection's framing. So the only answer is to drop it.
     const size_t took = static_cast<size_t>(cqe->res);
-    const size_t offered = c.msg_iovlen != 0 ? c.plan_byte_total : c.out.size();
+    const size_t offered = c.msg_iovlen != 0 ? c.plan_byte_total : c.out.size() - c.out_sent;
     if (WM_UNLIKELY(took != offered)) {
+      // Nobody retried this one, so what is left is still owed and the
+      // stream carries on where it stopped. That is the one thing a
+      // half-written response CAN do; what it cannot do is start again.
       if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
-        conn_failed("tls: a short send on an offloaded socket", -EIO);
+        if (c.msg_iovlen != 0) {
+          plan_drop_front(c, took);
+          c.plan_byte_total -= took;
+        } else {
+          c.out_sent += took;
+        }
+        c.deadline_s = now_s_ + send_timeout_;
+        arm_send(idx);
+        return;
       }
       begin_close(idx);
       return;
     }
     c.deadline_s = now_s_ + send_timeout_;
     c.out.clear();
+    c.out_sent = 0;
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
     // The handshake's own bytes, now on the wire as themselves. Only once
