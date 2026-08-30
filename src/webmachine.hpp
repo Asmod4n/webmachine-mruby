@@ -4168,6 +4168,10 @@ struct AppSpec {
   mrb_value ready = mrb_nil_value();
   bool have_ready = false;
   bool registered = false;
+  // conf.disable_http_cats = true; -1 = this app said nothing. The pack
+  // is one mount for the process, so the first app with an opinion is the
+  // one it follows - the same order every other conf answer here takes.
+  int8_t disable_http_cats = -1;
   // conf.zero_copy_threshold = N; -1 = this app said nothing.
   long long zero_copy_threshold = -1;
   // conf.file_map_threshold = N; -1 = this app said nothing.

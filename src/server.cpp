@@ -308,7 +308,15 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     }
   }
 
-  const std::string error_assets_file = error_assets_path(opts_.error_assets_path);
+  // conf.disable_http_cats: the first app with an opinion decides, the way
+  // every other conf answer is taken. Asked BEFORE the pack is looked for,
+  // because "off" means it is never opened, not opened and ignored.
+  int8_t no_cats = -1;
+  for (size_t i = 0; no_cats < 0 && i < specs_.size(); i++) {
+    no_cats = specs_[i]->disable_http_cats;
+  }
+  const std::string error_assets_file =
+      no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
     if (!mime_.load(opts_.mime_types_path, err, errlen)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
@@ -329,6 +337,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
                            "pictures\n",
                    error_assets_file.c_str(), eerr);
     }
+  } else if (no_cats == 1) {
+    // Asked for, so not a complaint: the pages still render, they just
+    // show no picture, and nothing is mounted at /error_assets/.
+    std::fprintf(stderr, "webmachine: conf.disable_http_cats - error pages without pictures\n");
   } else {
     // Silence here is what makes a server look like it is answering
     // errors wrong: it answers them in plain text because it never found

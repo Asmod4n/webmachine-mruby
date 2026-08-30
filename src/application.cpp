@@ -50,6 +50,18 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// conf.disable_http_cats = true. The pictures are a default, not a
+// requirement: a server that wants its errors plain says so here and the
+// pack is never opened, so nothing renders a picture and /error_assets/
+// answers nothing.
+mrb_value conf_disable_http_cats_set(mrb_state* mrb, mrb_value self) {
+  mrb_bool v;
+  mrb_get_args(mrb, "b", &v);
+  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
+  s->disable_http_cats = v ? 1 : 0;
+  return mrb_nil_value();
+}
+
 // conf.unix_path = PATH.
 mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   const char* p;
@@ -438,6 +450,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   MRB_SET_INSTANCE_TT(conf_class_, MRB_TT_CDATA);
   mrb_gc_register(mrb, mrb_obj_value(conf_class_));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(port), conf_port_set, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(disable_http_cats),
+                       conf_disable_http_cats_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(unix_path), conf_unix_set,
                        MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(url), conf_url_set, MRB_ARGS_REQ(1));

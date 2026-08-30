@@ -124,3 +124,61 @@ assert('error pages: the reference on the page is the one in the log') do
   end
   true
 end
+
+# conf.disable_http_cats: the pictures are a default, not a requirement.
+# The pack is never opened, so no page names one and nothing is mounted at
+# /error_assets/ - and the page itself still renders, because the
+# templates were never in the pack to begin with.
+EPG_NO_CATS = <<~APP
+  class Ok < Webmachine::Resource
+    def to_html
+      '<html><body>ok</body></html>'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.conf.disable_http_cats = true
+      app.add_route [], Ok
+    end
+  end
+APP
+
+assert('error pages: conf.disable_http_cats leaves the pages and drops the pictures') do
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  src = Tempfile.new(['wm-nocats', '.rb'])
+  src.write(EPG_NO_CATS)
+  src.close
+  app = Tempfile.new(['wm-nocats', '.mrb'])
+  app.close
+  raise 'mrbc failed' unless system(mrbc, '-o', app.path, src.path)
+
+  pack = File.expand_path('../share/error-assets.zip', __dir__)
+  sock = "/tmp/wm-nocats-#{$$}.sock"
+  err = "/tmp/wm-nocats-stderr-#{$$}.log"
+  File.unlink(sock) rescue nil
+  pid = spawn(EPG_BIN, '--unix', sock, '--app', app.path, '--error-assets', pack,
+              out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    answer = epg_ask(sock, '/no-such-route')
+    assert_equal 404, answer[%r{\AHTTP/1\.1 (\d+)}, 1].to_i
+    # The page is there - it never lived in the pack.
+    assert_include answer, 'Not Found'
+    # The picture is not, and neither is the route it would have come from.
+    assert_false answer.include?('img src')
+    assert_false answer.include?('/error_assets/')
+    picture = epg_ask(sock, '/error_assets/404.jpg')
+    assert_equal 404, picture[%r{\AHTTP/1\.1 (\d+)}, 1].to_i
+    # And the operator was told, once, that this was asked for.
+    assert_include File.read(err), 'conf.disable_http_cats'
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    [sock, err].each { |f| File.unlink(f) rescue nil }
+    app.unlink
+    src.unlink
+  end
+  true
+end

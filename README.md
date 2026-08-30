@@ -85,6 +85,12 @@ reference must never point at a line that has since moved.
 A 4xx reaches neither: nothing raised, so there is nothing to explain
 and no reference to hand out.
 
+The pages show a cat per status, from a pack the server finds on its own
+or is given with `--error-assets FILE.zip`. `app.conf.disable_http_cats =
+true` turns that off: the pack is never opened, so no page names a
+picture and nothing is mounted at `/error_assets/`. The pages themselves
+stay - they live in `Webmachine::ErrorResource`, not in the pack.
+
 What the *peer* sees of that raise is a separate decision, and it is
 made in one place — `Webmachine::ErrorResource#handle_exception`, which
 by default answers the exception's class and message. Return `nil` there
