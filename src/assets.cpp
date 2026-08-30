@@ -63,6 +63,14 @@ void build_head(AssetEntry::Head& h, const char* status_line, const char* connec
 }
 
 // RFC 9112 9.3: the same head in all three connection spellings.
+// RFC 9110 15.5.6 and 12.5.3: what these two refusals carry besides the
+// status - the same fields whether the answer has a page behind them or
+// not, which is why they are named once and spelled twice.
+constexpr char kStatus405[] = "HTTP/1.1 405 Method Not Allowed";
+constexpr char kStatus406[] = "HTTP/1.1 406 Not Acceptable";
+constexpr char kAllowField[] = "Allow: GET, HEAD\r\n";
+constexpr char kVaryField[] = "Vary: Accept-Encoding\r\n";
+
 void build_triple(AssetEntry::Head (&h)[3], const char* status_line, const std::string& fields) {
   for (uint8_t c = Assets::kNoConnectionField; c <= Assets::kConnClose; c++) {
     build_head(h[c], status_line, Assets::kConnectionLine[c], fields);
@@ -217,10 +225,8 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     }
   }
 
-  build_triple(s405_, "HTTP/1.1 405 Method Not Allowed",
-               "Allow: GET, HEAD\r\nContent-Length: 0\r\n");
-  build_triple(s406_, "HTTP/1.1 406 Not Acceptable",
-               "Vary: Accept-Encoding\r\nContent-Length: 0\r\n");
+  build_triple(s405_, kStatus405, std::string(kAllowField) + "Content-Length: 0\r\n");
+  build_triple(s406_, kStatus406, std::string(kVaryField) + "Content-Length: 0\r\n");
   return true;
 }
 
@@ -303,7 +309,20 @@ void Assets::patch_date(AssetEntry::Head& h, const char* date, time_t unix_secon
 
 // RFC 9112: the header section for a verdict this tier owns. Never body bytes.
 void Assets::answer_head(AssetEntry& e, uint16_t status_code, ConnectionOption conn,
-                         const char* date, time_t unix_seconds, std::string& sink) {
+                         const char* date, time_t unix_seconds, std::string& sink,
+                         const char* body_type, size_t body_len) {
+  // A refusal the caller has a page for cannot take the prebuilt head:
+  // that one declares no body, and a page's length is not known until
+  // there is a page. The fields are the same either way.
+  if (body_type != nullptr && (status_code == 405 || status_code == 406)) {
+    sink.append(status_code == 405 ? kStatus405 : kStatus406).append("\r\nDate: ");
+    sink.append(date, http::kDateLen);
+    sink.append("\r\n").append(kConnectionLine[conn]);
+    sink.append(status_code == 405 ? kAllowField : kVaryField);
+    sink.append("Content-Type: ").append(body_type).append("\r\n");
+    sink.append("Content-Length: ").append(std::to_string(body_len)).append("\r\n\r\n");
+    return;
+  }
   AssetEntry::Head* h;
   switch (status_code) {
     case 200: h = &e.head_200[conn]; break;
@@ -336,13 +355,14 @@ void Assets::answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t 
 
 // RFC 9110 15.5.17: the unsatisfied form names the complete length.
 void Assets::answer_416_head(const AssetEntry& e, ConnectionOption conn, const char* date,
-                             std::string& sink) {
+                             std::string& sink, const char* body_type, size_t body_len) {
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
   sink.append(date, http::kDateLen);
   sink.append("\r\n").append(kConnectionLine[conn]);
-  if (e.deflated) sink.append("Vary: Accept-Encoding\r\n");
-  sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e)));
-  sink.append("\r\nContent-Length: 0\r\n\r\n");
+  if (e.deflated) sink.append(kVaryField);
+  sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e))).append("\r\n");
+  if (body_type != nullptr) sink.append("Content-Type: ").append(body_type).append("\r\n");
+  sink.append("Content-Length: ").append(std::to_string(body_len)).append("\r\n\r\n");
 }
 
 // RFC 1952 2.2: [off, off+n) of the wire body as POINTERS - the gzip

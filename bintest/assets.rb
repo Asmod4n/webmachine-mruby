@@ -182,9 +182,15 @@ assert('assets: only GET/HEAD; a miss falls through, and with no app that is a 4
   a_server(a_the_zip) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST /site.css HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
-      head, = a_read(s)
+      head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 405')
       assert_true head.match?(/^Allow: GET, HEAD\r$/i)
+      # #210: a refusal this tier owns explains itself like every other
+      # 4xx. The tier spells its own field around the page, and the page
+      # is the one the status always sends.
+      assert_true head.match?(%r{^Content-Type: text/html}i)
+      assert_include body, '405'
+      assert_include body, 'Method Not Allowed'
       s.write("GET /site.css?v=1 HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = a_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
@@ -477,9 +483,13 @@ assert('ranges: 416, ignored forms, If-Range, HEAD') do
     etag = format('"%08x"', Zlib.crc32(A_BIG))
     UNIXSocket.open(sock) do |s|
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=999999999-\r\n\r\n")
-      head, = a_read(s)
+      head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 416 Range Not Satisfiable')
       assert_true head.match?(%r{^Content-Range: bytes \*/#{A_BIG.bytesize}\r$}i)
+      # #210: the complete length AND the page - the field the status owes
+      # is spelled around the body, not instead of it.
+      assert_true head.match?(%r{^Content-Type: text/html}i)
+      assert_include body, 'Range Not Satisfiable'
       ['bytes=0-1,5-6', 'chapters=1-2', 'bytes=9-5'].each do |r|
         s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: #{r}\r\n\r\n")
         head, body = a_read(s)

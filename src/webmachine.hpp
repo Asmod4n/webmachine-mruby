@@ -2490,13 +2490,18 @@ class Assets {
   uint16_t verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
                    const http::ReqValues& vals) const;
 
+  // A caller that has a body for the status - an error page - passes its
+  // type and length, and the head names them instead of declaring none.
+  // The bytes themselves are the caller's to append: this tier spells
+  // heads and lends its own file data, and a page is neither.
   void answer_head(AssetEntry& e, uint16_t status_code, ConnectionOption conn, const char* date,
-                   time_t unix_seconds, std::string& sink);
+                   time_t unix_seconds, std::string& sink, const char* body_type = nullptr,
+                   size_t body_len = 0);
 
   void answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t first_byte_pos,
                        size_t last_byte_pos, const char* date, std::string& sink);
   void answer_416_head(const AssetEntry& e, ConnectionOption conn, const char* date,
-                       std::string& sink);
+                       std::string& sink, const char* body_type = nullptr, size_t body_len = 0);
 
   // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
   // header and 8 trailer octets of a gzip member, or the stored bytes

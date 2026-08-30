@@ -488,24 +488,50 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   const Assets::ConnectionOption conn =
       r.minor >= 1 ? (r.persist ? Assets::kNoConnectionField : Assets::kConnClose)
                    : (r.persist ? Assets::kKeepAlive : Assets::kConnClose);
+  // #210: a refusal this tier owns is a 4xx like any other, and a 4xx
+  // explains itself. The page is the one every 4xx sends; what differs is
+  // what the tier spells around it - a 405's Allow, a 406's Vary, a 416's
+  // Content-Range - so the tier writes the head and is handed the body to
+  // declare in it.
+  std::string epage;
+  size_t eblen = 0;
+  const char* ebody = nullptr;
+  const char* ectype = nullptr;
+  if (step.status_code >= 400 && step.head != AssetStep::HeadKind::kRefusal) {
+    const int em = err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len);
+    const ErrorPages::Fields none;
+    ebody = err_pages_.body_for(step.status_code, em, none, epage, &eblen);
+    if (ebody != nullptr) ectype = err_pages_.media_type(em);
+    else eblen = 0;
+  }
   switch (step.head) {
     case AssetStep::HeadKind::kRefusal: {
+      // 412 and 501 carry no field of this tier's own, so they are spelled
+      // the way every other status of theirs is.
+      const Variants& pv = prefixes(step.status_code);
       const Variants& sv = variants(step.status_code);
-      sink.append(r.minor >= 1 ? (r.persist ? sv.plain.bytes : sv.close.bytes)
-                               : (r.persist ? sv.keep.bytes : sv.close.bytes));
+      const bool plain = r.minor >= 1;
+      const ErrorPages::Fields none;
+      spell_error(plain ? (r.persist ? pv.plain : pv.close) : (r.persist ? pv.keep : pv.close),
+                  plain ? (r.persist ? sv.plain : sv.close) : (r.persist ? sv.keep : sv.close),
+                  step.status_code, r.head_only,
+                  err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len), none,
+                  sink);
       break;
     }
     case AssetStep::HeadKind::kUnsatisfiable:
-      tier->answer_416_head(*ae, conn, date_, sink);
+      tier->answer_416_head(*ae, conn, date_, sink, ectype, eblen);
       break;
     case AssetStep::HeadKind::kRange:
       tier->answer_206_head(*ae, conn, step.first_byte_pos,
                             step.first_byte_pos + step.content_length - 1, date_, sink);
       break;
     case AssetStep::HeadKind::kNormal:
-      tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink);
+      tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink, ectype, eblen);
       break;
   }
+  const bool sent_page = ebody != nullptr && !r.head_only;
+  if (sent_page) sink.append(ebody, eblen);
   bool started_xfer = false;
   if (step.sends_content) {
     if (step.copy_content) {
@@ -519,7 +545,8 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   }
   if (alog_.enabled) {
     log_access(alog_, r.st.peer, r.st.peer_len, r.method, r.method_len, r.path, r.path_len, r.lflags,
-               step.status_code, step.sends_content ? step.content_length : 0, r.vals.log_ref,
+               step.status_code, step.sends_content ? step.content_length : (sent_page ? eblen : 0),
+               r.vals.log_ref,
                r.vals.log_ref_len, r.vals.log_ua, r.vals.log_ua_len);
   }
   // The head this answered is consumed here, not by the caller -
