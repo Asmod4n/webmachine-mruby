@@ -73,3 +73,29 @@ Only the debug config is built while developing:
 
 `portable_smoke` failing at the end of a debug `rake test` is expected -
 there is no portable binary. Nothing else may fail.
+
+## Renaming is clang-refactor's job, not a regex's
+
+A rename in C or C++ is an AST question, and a regex cannot answer it.
+Use the tool that can, wherever the rename is a symbol:
+
+    /usr/lib/llvm-18/bin/clang-refactor local-rename \
+      -p mruby/build/debug -i \
+      --old-qualified-name=OLD --new-name=NEW src/FILE.cpp
+
+`compile_commands.json` for `-p` is written by every debug build.
+`clang-rename` is the older spelling of the same thing and is also
+installed; `clangd` is not, and `apt install clangd-18` gets it if a
+full language server is ever wanted.
+
+This is written down because a regex rename cost real time here: a
+local `mrb_value r` was shadowing a `Run& r` in the same function, so a
+substitution that looked correct handed one function the other's `r`.
+The compiler caught it, which was luck rather than method - a rename
+that stays type-correct would not have been caught at all.
+
+What clang-refactor does NOT do: `extract` is marked WIP upstream and
+cannot turn a capturing lambda into a function that takes its state as
+a parameter. That transform stays manual, and its safety net is that a
+free function cannot capture, so every missed dependency is a compile
+error.
