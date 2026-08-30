@@ -709,54 +709,54 @@ mrb_value arg_for(Run& r, Node nd) {
 
 void marshal_methods(Run& r, const Resource::ValueCb& cb) {
   mrb_state* mrb = r.mrb;
-    r.res.run_methods.clear();
-    const mrb_value v = cbv(r, cb);
-    if (mrb_array_p(v)) {
-      for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
-        const mrb_value s = RARRAY_PTR(v)[j];
-        if (WM_RES_UNLIKELY(!mrb_string_p(s))) {
-          mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer method Strings",
-                     mrb_sym_name(r.mrb, cb.sym));
-        }
-        r.res.run_methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+  r.res.run_methods.clear();
+  const mrb_value v = cbv(r, cb);
+  if (mrb_array_p(v)) {
+    for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
+      const mrb_value s = RARRAY_PTR(v)[j];
+      if (WM_RES_UNLIKELY(!mrb_string_p(s))) {
+        mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer method Strings",
+                   mrb_sym_name(mrb, cb.sym));
       }
-      return;
+      r.res.run_methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
     }
-    if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
-      mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
-                 mrb_sym_name(r.mrb, cb.sym));
-    }
-    const char* p = RSTRING_PTR(v);
-    const char* end = p + RSTRING_LEN(v);
-    while (p < end) {
-      while (p < end && (*p == ' ' || *p == ',')) p++;
-      const char* tok = p;
-      while (p < end && *p != ' ' && *p != ',') p++;
-      if (tok != p) r.res.run_methods.emplace_back(tok, static_cast<size_t>(p - tok));
-    }
+    return;
+  }
+  if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
+               mrb_sym_name(mrb, cb.sym));
+  }
+  const char* p = RSTRING_PTR(v);
+  const char* end = p + RSTRING_LEN(v);
+  while (p < end) {
+    while (p < end && (*p == ' ' || *p == ',')) p++;
+    const char* tok = p;
+    while (p < end && *p != ' ' && *p != ',') p++;
+    if (tok != p) r.res.run_methods.emplace_back(tok, static_cast<size_t>(p - tok));
+  }
 }
 
 void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t headn, const std::vector<std::string>& tail) {
   mrb_state* mrb = r.mrb;
-    r.hdrs.append(name, nlen);
-    r.hdrs.append(": ", 2);
-    bool first = true;
-    if (headn != 0) {
-      r.hdrs.append(head, headn);
-      first = false;
+  r.hdrs.append(name, nlen);
+  r.hdrs.append(": ", 2);
+  bool first = true;
+  if (headn != 0) {
+    r.hdrs.append(head, headn);
+    first = false;
+  }
+  for (const std::string& s : tail) {
+    // Same gate, one member at a time: Allow's members come from
+    // allowed_methods and Vary's from variances, both app Strings.
+    if (WM_RES_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb),
+                "a list field this resource produced carries CR, LF or NUL (RFC 9110 5.5)");
     }
-    for (const std::string& s : tail) {
-      // Same gate, one member at a time: Allow's members come from
-      // allowed_methods and Vary's from variances, both app Strings.
-      if (WM_RES_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
-                  "a list field this resource produced carries CR, LF or NUL (RFC 9110 5.5)");
-      }
-      if (!first) r.hdrs.append(", ", 2);
-      r.hdrs.append(s);
-      first = false;
-    }
-    r.hdrs.append("\r\n", 2);
+    if (!first) r.hdrs.append(", ", 2);
+    r.hdrs.append(s);
+    first = false;
+  }
+  r.hdrs.append("\r\n", 2);
 }
 
 void allow_line(Run& r) {
@@ -769,51 +769,51 @@ void allow_line(Run& r) {
 
 void marshal_ct(Run& r) {
   mrb_state* mrb = r.mrb;
-    if (!r.ct_dyn || r.res.run_content_types_marshalled) return;
-    r.res.run_content_types_marshalled = true;
-    const mrb_value v = cbv(r, r.res.cb_content_types_provided);
-    if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
-      mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
-                "content_types_provided must answer [[type, handler]] pairs");
+  if (!r.ct_dyn || r.res.run_content_types_marshalled) return;
+  r.res.run_content_types_marshalled = true;
+  const mrb_value v = cbv(r, r.res.cb_content_types_provided);
+  if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "content_types_provided must answer [[type, handler]] pairs");
+  }
+  const mrb_int count = RARRAY_LEN(v);
+  // The app answered what it answered last time: the vector already holds
+  // it, resolutions included, and nothing has to be rebuilt or searched
+  // for. A pair that is not [String, Symbol] simply fails to match and
+  // falls into the rebuild below, which names the refusal.
+  std::vector<Resource::TypedHandler>& cur = r.res.run_content_types_provided;
+  bool same = cur.size() == static_cast<size_t>(count);
+  for (mrb_int j = 0; same && j < count; j++) {
+    const mrb_value pair = RARRAY_PTR(v)[j];
+    same = mrb_array_p(pair) && RARRAY_LEN(pair) >= 2 && mrb_string_p(RARRAY_PTR(pair)[0]) &&
+           mrb_symbol_p(RARRAY_PTR(pair)[1]) &&
+           mrb_symbol(RARRAY_PTR(pair)[1]) == cur[static_cast<size_t>(j)].handler &&
+           cur[static_cast<size_t>(j)].type.size() ==
+               static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])) &&
+           std::memcmp(cur[static_cast<size_t>(j)].type.data(),
+                       RSTRING_PTR(RARRAY_PTR(pair)[0]),
+                       cur[static_cast<size_t>(j)].type.size()) == 0;
+  }
+  if (same) return;
+  cur.clear();
+  for (mrb_int j = 0; j < count; j++) {
+    const mrb_value pair = RARRAY_PTR(v)[j];
+    if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
+                        !mrb_string_p(RARRAY_PTR(pair)[0]) ||
+                        !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided pairs are [String, Symbol]");
     }
-    const mrb_int count = RARRAY_LEN(v);
-    // The app answered what it answered last time: the vector already holds
-    // it, resolutions included, and nothing has to be rebuilt or searched
-    // for. A pair that is not [String, Symbol] simply fails to match and
-    // falls into the rebuild below, which names the refusal.
-    std::vector<Resource::TypedHandler>& cur = r.res.run_content_types_provided;
-    bool same = cur.size() == static_cast<size_t>(count);
-    for (mrb_int j = 0; same && j < count; j++) {
-      const mrb_value pair = RARRAY_PTR(v)[j];
-      same = mrb_array_p(pair) && RARRAY_LEN(pair) >= 2 && mrb_string_p(RARRAY_PTR(pair)[0]) &&
-             mrb_symbol_p(RARRAY_PTR(pair)[1]) &&
-             mrb_symbol(RARRAY_PTR(pair)[1]) == cur[static_cast<size_t>(j)].handler &&
-             cur[static_cast<size_t>(j)].type.size() ==
-                 static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])) &&
-             std::memcmp(cur[static_cast<size_t>(j)].type.data(),
-                         RSTRING_PTR(RARRAY_PTR(pair)[0]),
-                         cur[static_cast<size_t>(j)].type.size()) == 0;
-    }
-    if (same) return;
-    cur.clear();
-    for (mrb_int j = 0; j < count; j++) {
-      const mrb_value pair = RARRAY_PTR(v)[j];
-      if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
-                          !mrb_string_p(RARRAY_PTR(pair)[0]) ||
-                          !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "content_types_provided pairs are [String, Symbol]");
-      }
-      Resource::TypedHandler th;
-      th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
-                     static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
-      th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
-      // Resolved HERE, once, not searched for at every render.
-      const Resolved hr = resolve(r.mrb, r.res.klass, th.handler);
-      th.m = hr.m;
-      th.irep = hr.irep;
-      th.native = hr.native;
-      cur.push_back(std::move(th));
-    }
+    Resource::TypedHandler th;
+    th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
+                   static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
+    th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
+    // Resolved HERE, once, not searched for at every render.
+    const Resolved hr = resolve(mrb, r.res.klass, th.handler);
+    th.m = hr.m;
+    th.irep = hr.irep;
+    th.native = hr.native;
+    cur.push_back(std::move(th));
+  }
 }
 
 int ensure_etag(Run& r) {
@@ -839,26 +839,26 @@ int ensure_etag(Run& r) {
 
 void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue& konst, bool* asked, bool* present, int64_t* epoch) {
   mrb_state* mrb = r.mrb;
-    if (*asked) return;
-    *asked = true;
-    // #202: same as ensure_etag - a class form is a setup answer.
-    if (konst.asked) {
-      if (konst.present) {
-        *epoch = konst.epoch;
-        *present = true;
-      }
-      return;
+  if (*asked) return;
+  *asked = true;
+  // #202: same as ensure_etag - a class form is a setup answer.
+  if (konst.asked) {
+    if (konst.present) {
+      *epoch = konst.epoch;
+      *present = true;
     }
-    if (!cb.has) return;
-    mrb_value v = cbv(r, cb);
-    if (mrb_nil_p(v) || mrb_false_p(v)) return;
-    if (!mrb_integer_p(v)) v = mrb_funcall_argv(r.mrb, v, MRB_SYM(to_i), 0, nullptr);
-    if (WM_RES_UNLIKELY(!mrb_integer_p(v))) {
-      mrb_raisef(r.mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
-                 mrb_sym_name(r.mrb, cb.sym));
-    }
-    *epoch = static_cast<int64_t>(mrb_integer(v));
-    *present = true;
+    return;
+  }
+  if (!cb.has) return;
+  mrb_value v = cbv(r, cb);
+  if (mrb_nil_p(v) || mrb_false_p(v)) return;
+  if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
+  if (WM_RES_UNLIKELY(!mrb_integer_p(v))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
+               mrb_sym_name(mrb, cb.sym));
+  }
+  *epoch = static_cast<int64_t>(mrb_integer(v));
+  *present = true;
 }
 
 int add_caching(Run& r) {
@@ -908,145 +908,145 @@ bool param_find(const char* s, size_t n, const char* key, size_t kn, const char*
 
 int accept_helper(Run& r) {
   mrb_state* mrb = r.mrb;
-    const char* ct = "application/octet-stream";
-    size_t ct_full = 24;
-    if (r.vals != nullptr && r.vals->content_type != nullptr) {
-      ct = r.vals->content_type;
-      ct_full = r.vals->content_type_len;
+  const char* ct = "application/octet-stream";
+  size_t ct_full = 24;
+  if (r.vals != nullptr && r.vals->content_type != nullptr) {
+    ct = r.vals->content_type;
+    ct_full = r.vals->content_type_len;
+  }
+  size_t ctn = 0;
+  while (ctn < ct_full && ct[ctn] != ';') ctn++;
+  while (ctn > 0 && (ct[ctn - 1] == ' ' || ct[ctn - 1] == '\t')) ctn--;
+  if (!r.res.cb_content_types_accepted.has) return 415;
+  const mrb_value v = cbv(r, r.res.cb_content_types_accepted);
+  if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "content_types_accepted must answer [[type, Symbol]] pairs");
+  }
+  for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
+    const mrb_value pair = RARRAY_PTR(v)[j];
+    if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
+                        !mrb_string_p(RARRAY_PTR(pair)[0]) ||
+                        !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_accepted pairs are [String, Symbol]");
     }
-    size_t ctn = 0;
-    while (ctn < ct_full && ct[ctn] != ';') ctn++;
-    while (ctn > 0 && (ct[ctn - 1] == ' ' || ct[ctn - 1] == '\t')) ctn--;
-    if (!r.res.cb_content_types_accepted.has) return 415;
-    const mrb_value v = cbv(r, r.res.cb_content_types_accepted);
-    if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
-      mrb_raise(r.mrb, E_WM_ERROR(r.mrb),
-                "content_types_accepted must answer [[type, Symbol]] pairs");
+    const char* pt = RSTRING_PTR(RARRAY_PTR(pair)[0]);
+    const size_t pt_full = static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]));
+    size_t pn = 0;
+    while (pn < pt_full && pt[pn] != ';') pn++;
+    while (pn > 0 && (pt[pn - 1] == ' ' || pt[pn - 1] == '\t')) pn--;
+    bool hit;
+    if (pn == 3 && pt[0] == '*' && pt[1] == '/' && pt[2] == '*') {
+      hit = true;
+    } else if (pn >= 2 && pt[pn - 1] == '*' && pt[pn - 2] == '/') {
+      size_t slash = 0;
+      while (slash < ctn && ct[slash] != '/') slash++;
+      hit = slash == pn - 2 && ci_eq(pt, pn - 2, ct, slash);
+    } else {
+      hit = ci_eq(pt, pn, ct, ctn);
     }
-    for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
-      const mrb_value pair = RARRAY_PTR(v)[j];
-      if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
-                          !mrb_string_p(RARRAY_PTR(pair)[0]) ||
-                          !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "content_types_accepted pairs are [String, Symbol]");
-      }
-      const char* pt = RSTRING_PTR(RARRAY_PTR(pair)[0]);
-      const size_t pt_full = static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]));
-      size_t pn = 0;
-      while (pn < pt_full && pt[pn] != ';') pn++;
-      while (pn > 0 && (pt[pn - 1] == ' ' || pt[pn - 1] == '\t')) pn--;
-      bool hit;
-      if (pn == 3 && pt[0] == '*' && pt[1] == '/' && pt[2] == '*') {
-        hit = true;
-      } else if (pn >= 2 && pt[pn - 1] == '*' && pt[pn - 2] == '/') {
-        size_t slash = 0;
-        while (slash < ctn && ct[slash] != '/') slash++;
-        hit = slash == pn - 2 && ci_eq(pt, pn - 2, ct, slash);
-      } else {
-        hit = ci_eq(pt, pn, ct, ctn);
-      }
-      if (hit && pn < pt_full) {
-        size_t i = pn;
-        while (i < pt_full && pt[i] != ';') i++;
-        while (hit && i < pt_full) {
+    if (hit && pn < pt_full) {
+      size_t i = pn;
+      while (i < pt_full && pt[i] != ';') i++;
+      while (hit && i < pt_full) {
+        i++;
+        while (i < pt_full && (pt[i] == ' ' || pt[i] == '\t')) i++;
+        size_t ks = i;
+        while (i < pt_full && pt[i] != '=' && pt[i] != ';') i++;
+        size_t ke = i;
+        while (ke > ks && (pt[ke - 1] == ' ' || pt[ke - 1] == '\t')) ke--;
+        const char* pv = nullptr;
+        size_t pvn = 0;
+        if (i < pt_full && pt[i] == '=') {
           i++;
-          while (i < pt_full && (pt[i] == ' ' || pt[i] == '\t')) i++;
-          size_t ks = i;
-          while (i < pt_full && pt[i] != '=' && pt[i] != ';') i++;
-          size_t ke = i;
-          while (ke > ks && (pt[ke - 1] == ' ' || pt[ke - 1] == '\t')) ke--;
-          const char* pv = nullptr;
-          size_t pvn = 0;
-          if (i < pt_full && pt[i] == '=') {
-            i++;
-            size_t vs = i;
-            while (i < pt_full && pt[i] != ';') i++;
-            size_t vend = i;
-            while (vend > vs && (pt[vend - 1] == ' ' || pt[vend - 1] == '\t')) vend--;
-            pv = pt + vs;
-            pvn = vend - vs;
-          }
-          if (ke == ks) continue;
-          const char* rv = nullptr;
-          size_t rvn = 0;
-          hit = param_find(ct, ct_full, pt + ks, ke - ks, &rv, &rvn) &&
-                rvn == pvn && (pvn == 0 || std::memcmp(rv, pv, pvn) == 0);
+          size_t vs = i;
+          while (i < pt_full && pt[i] != ';') i++;
+          size_t vend = i;
+          while (vend > vs && (pt[vend - 1] == ' ' || pt[vend - 1] == '\t')) vend--;
+          pv = pt + vs;
+          pvn = vend - vs;
         }
+        if (ke == ks) continue;
+        const char* rv = nullptr;
+        size_t rvn = 0;
+        hit = param_find(ct, ct_full, pt + ks, ke - ks, &rv, &rvn) &&
+              rvn == pvn && (pvn == 0 || std::memcmp(rv, pv, pvn) == 0);
       }
-      if (!hit) continue;
-      const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
-      const mrb_value answer = mrb_funcall_argv(r.mrb, r.res.live, hs, 0, nullptr);
-      if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
-      return -1;
     }
-    return 415;
+    if (!hit) continue;
+    const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
+    const mrb_value answer = mrb_funcall_argv(mrb, r.res.live, hs, 0, nullptr);
+    if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
+    return -1;
+  }
+  return 415;
 }
 
 int run_n11(Run& r) {
   mrb_state* mrb = r.mrb;
-    mrb_value pic = mrb_false_value();
-    if (r.res.cb_post_is_create.has) pic = cbv(r, r.res.cb_post_is_create);
-    if (mrb_test(pic)) {
-      if (WM_RES_UNLIKELY(!r.res.cb_create_path.has)) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "post_is_create? is true but create_path answered nil");
-      }
-      const mrb_value cp = cbv(r, r.res.cb_create_path);
-      if (mrb_integer_p(cp)) return halt_of(r, cp, r.res.cb_create_path.sym);
-      if (WM_RES_UNLIKELY(mrb_nil_p(cp))) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "post_is_create? is true but create_path answered nil");
-      }
-      if (WM_RES_UNLIKELY(!mrb_string_p(cp))) {
-        mrb_raise(r.mrb, E_TYPE_ERROR, "create_path must answer a String path");
-      }
-      mrb_value base = mrb_nil_value();
-      if (r.res.cb_base_uri.has) base = cbv(r, r.res.cb_base_uri);
-      {
-        std::string b;
-        if (mrb_string_p(base)) {
-          b.assign(RSTRING_PTR(base), static_cast<size_t>(RSTRING_LEN(base)));
+  mrb_value pic = mrb_false_value();
+  if (r.res.cb_post_is_create.has) pic = cbv(r, r.res.cb_post_is_create);
+  if (mrb_test(pic)) {
+    if (WM_RES_UNLIKELY(!r.res.cb_create_path.has)) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
+    }
+    const mrb_value cp = cbv(r, r.res.cb_create_path);
+    if (mrb_integer_p(cp)) return halt_of(r, cp, r.res.cb_create_path.sym);
+    if (WM_RES_UNLIKELY(mrb_nil_p(cp))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
+    }
+    if (WM_RES_UNLIKELY(!mrb_string_p(cp))) {
+      mrb_raise(mrb, E_TYPE_ERROR, "create_path must answer a String path");
+    }
+    mrb_value base = mrb_nil_value();
+    if (r.res.cb_base_uri.has) base = cbv(r, r.res.cb_base_uri);
+    {
+      std::string b;
+      if (mrb_string_p(base)) {
+        b.assign(RSTRING_PTR(base), static_cast<size_t>(RSTRING_LEN(base)));
+      } else {
+        b.assign("http://");
+        if (r.vals != nullptr && r.vals->host != nullptr) {
+          b.append(r.vals->host, r.vals->host_len);
         } else {
-          b.assign("http://");
-          if (r.vals != nullptr && r.vals->host != nullptr) {
-            b.append(r.vals->host, r.vals->host_len);
-          } else {
-            b.append("localhost");
-          }
-          b.push_back('/');
+          b.append("localhost");
         }
-        std::string uri;
-        http::uri_join(b.data(), b.size(), RSTRING_PTR(cp),
-                       static_cast<size_t>(RSTRING_LEN(cp)), uri);
-        size_t at = 0;
-        if (uri.size() >= 8 && uri.compare(0, 4, "http") == 0) {
-          const size_t ss = uri.find("://");
-          if (ss != std::string::npos) {
-            const size_t sl = uri.find('/', ss + 3);
-            at = sl == std::string::npos ? uri.size() : sl;
-          }
+        b.push_back('/');
+      }
+      std::string uri;
+      http::uri_join(b.data(), b.size(), RSTRING_PTR(cp),
+                     static_cast<size_t>(RSTRING_LEN(cp)), uri);
+      size_t at = 0;
+      if (uri.size() >= 8 && uri.compare(0, 4, "http") == 0) {
+        const size_t ss = uri.find("://");
+        if (ss != std::string::npos) {
+          const size_t sl = uri.find('/', ss + 3);
+          at = sl == std::string::npos ? uri.size() : sl;
         }
-        const size_t plen = http::path_only(uri.data() + at, uri.size() - at);
-        r.res.run_disp_path.assign(uri.data() + at, plen);
-        r.res.run_disp_set = true;
-        request_disp_override(uri.data() + at, plen);
-        field(r, "Location", 8, uri.data(), uri.size());
       }
-      const int h = accept_helper(r);
-      if (h >= 0) return h;
-    } else {
-      if (WM_RES_UNLIKELY(!r.res.cb_process_post.has)) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "process_post answered false, which is invalid");
-      }
-      const mrb_value pp = cbv(r, r.res.cb_process_post);
-      if (mrb_integer_p(pp)) return halt_of(r, pp, r.res.cb_process_post.sym);
-      if (WM_RES_UNLIKELY(!mrb_true_p(pp))) {
-        mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "process_post must answer true or a response code");
-      }
+      const size_t plen = http::path_only(uri.data() + at, uri.size() - at);
+      r.res.run_disp_path.assign(uri.data() + at, plen);
+      r.res.run_disp_set = true;
+      request_disp_override(uri.data() + at, plen);
+      field(r, "Location", 8, uri.data(), uri.size());
     }
-    if (r.res.run_redirect) {
-      if (headers_has_location(r.hdrs)) return 303;
-      mrb_raise(r.mrb, E_WM_ERROR(r.mrb), "do_redirect requires a Location header");
+    const int h = accept_helper(r);
+    if (h >= 0) return h;
+  } else {
+    if (WM_RES_UNLIKELY(!r.res.cb_process_post.has)) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "process_post answered false, which is invalid");
     }
-    return -1;
+    const mrb_value pp = cbv(r, r.res.cb_process_post);
+    if (mrb_integer_p(pp)) return halt_of(r, pp, r.res.cb_process_post.sym);
+    if (WM_RES_UNLIKELY(!mrb_true_p(pp))) {
+      mrb_raise(mrb, E_WM_ERROR(mrb), "process_post must answer true or a response code");
+    }
+  }
+  if (r.res.run_redirect) {
+    if (headers_has_location(r.hdrs)) return 303;
+    mrb_raise(mrb, E_WM_ERROR(mrb), "do_redirect requires a Location header");
+  }
+  return -1;
 }
 
 mrb_value run_engine(mrb_state* mrb, const Resource& res);
