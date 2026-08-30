@@ -92,3 +92,32 @@ mruby compiles the entire tree with the C++ compiler as soon as a single
 `.cpp` exists in it. There is one in this gem, so every `.c` here is
 compiled as C++ too, and `MRB_USE_CXX_EXCEPTION` is not a choice
 somebody made per file - it follows from that.
+
+## How a long function is shaped
+
+Three rules, and they are one shape. LMDB's `mdb.c` is the reference -
+`mdb_page_alloc` and its neighbours are what this looks like carried
+all the way.
+
+**The happy path is the function.** A row of `WM_UNLIKELY` guards, then
+the straight line every request takes. The BODY of each guard lives in
+a function of its own. Not the reverse: extracting the tail and leaving
+the checks inline is the mistake, because the tail is the path and the
+checks are not.
+
+**Locals are declared once, at the top, one per type.** `int rc` for
+every return code in the function, not one per call. `size_t n` for
+every length. Reused down the body, never redeclared in a block.
+
+**State that crosses into those functions goes in a struct**, passed by
+reference. What only the happy path touches stays a local.
+
+And the last rule outranks the other three: measure it.
+
+    nm -S --demangle <obj> | sort -rn
+
+at the flags the bench builds with (`-O3 -march=native`), before and
+after. A change that grows the hot text has bought the opposite of what
+it was for, whatever it looks like on the page. .DESIGN.md's "The happy
+path is the function; everything else is a call" carries the numbers
+from the time this was got wrong.
