@@ -161,6 +161,23 @@ fi
 # tree at all - flow::answer returns the konst status on its first
 # branch. A bare generator request carries none of them, so a number
 # taken without BROWSER=1 measures the path a browser never takes.
+# PIN="0 2": the server on the first cpu, the client on the second, and
+# nice -10 on both. Not a default - #120 refused pinning the SERVER's ring
+# workers, and this is not that: it pins the two PROCESSES apart so they
+# stop trading one core, which is what a machine with few cores does to a
+# number. Whether it helps is a property of the machine, so the harness
+# line records it and bench/ratchet.sh decides from the spread.
+PIN="${PIN:-}"
+SRV_PIN=()
+CLI_PIN=()
+if [ -n "$PIN" ]; then
+  read -r SRV_CPU CLI_CPU <<<"$PIN"
+  [ -n "${CLI_CPU:-}" ] || { echo "PIN wants two cpus, like PIN='0 2'" >&2; exit 2; }
+  command -v taskset >/dev/null || { echo "PIN needs taskset (util-linux)" >&2; exit 2; }
+  SRV_PIN=(taskset -c "$SRV_CPU" nice -n -10)
+  CLI_PIN=(taskset -c "$CLI_CPU" nice -n -10)
+fi
+
 BROWSER="${BROWSER:-0}"
 CLI_HDRS=()
 if [ "$BROWSER" = 1 ]; then
@@ -172,9 +189,9 @@ fi
 SOCK=/tmp/wm-floor-bench.sock
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "${SRV_PIN[@]}" "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 else
-  "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "${SRV_PIN[@]}" "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -273,7 +290,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"} transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # The measuring condition, sampled NOW - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own
@@ -300,10 +317,10 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$STREAMS")
   [ "$PIPELINE" != 1 ] && HTGEN_SHAPE=(--pipeline "$PIPELINE")
   if [ "$TRANSPORT" = unix ]; then
-    "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
+    "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
       --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.out" 2>&1 &
   else
-    "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
+    "${CLI_PIN[@]}" "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
       --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
       >"$WORK/cli.out" 2>&1 &
   fi
