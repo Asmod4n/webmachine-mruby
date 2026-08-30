@@ -4763,6 +4763,7 @@ class Ring {
     Conn& c = conns_[idx];
     ktls_step step = KTLS_READING;
     if (WM_UNLIKELY(ktls_exchange_step(c.tls->x, &step) != 0)) {
+      tls_fault("handshake", 0);
       begin_close(idx);
       return;
     }
@@ -4802,6 +4803,7 @@ class Ring {
       size_t len = 0;
       const void* info = ktls_crypto_info(c.tls->x, static_cast<ktls_direction>(dir), &len);
       if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[dir])) {
+        tls_fault("crypto_info", 0);
         begin_close(idx);
         return;
       }
@@ -4832,10 +4834,13 @@ class Ring {
   void tls_handover(uint32_t idx) {
     Conn& c = conns_[idx];
     if (io_uring_sq_space_left(&ring_) < 3) io_uring_submit(&ring_);
+    // WITH the terminator, and IPPROTO_TCP rather than SOL_TCP: this is
+    // ktls_attach_ulp's own call, moved onto the ring, and it is the one
+    // that is known to work.
     static const char kUlp[] = "tls";
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), SOL_TCP, TCP_ULP,
-                           const_cast<char*>(kUlp), sizeof kUlp - 1);
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), IPPROTO_TCP,
+                           TCP_ULP, const_cast<char*>(kUlp), sizeof kUlp);
     s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
     io_uring_sqe_set_data64(s, detail::tag(detail::kTlsUlp, c.gen, idx));
 
@@ -4865,6 +4870,7 @@ class Ring {
   void tls_next_receive_key(uint32_t idx) {
     Conn& c = conns_[idx];
     if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
+      tls_fault("key update", 0);
       begin_close(idx);
       return;
     }
@@ -4893,6 +4899,9 @@ class Ring {
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen || c.tls == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
+      tls_fault(c.tls->offloaded ? "setsockopt(TLS_RX) for a key update"
+                                 : "setsockopt(TLS_RX)",
+                cqe->res);
       begin_close(idx);
       return;
     }
@@ -4942,6 +4951,22 @@ class Ring {
   // touched a cache line per slot however few were connected.
   void live_set(uint32_t idx) { live_bits_[idx >> 6] |= 1ULL << (idx & 63); }
   void live_clear(uint32_t idx) { live_bits_[idx >> 6] &= ~(1ULL << (idx & 63)); }
+
+  // A connection that cannot be given to the kernel is a server fault,
+  // not a request that went wrong, and the operator has to hear it. The
+  // FIRST one only: whatever is wrong is wrong for every connection
+  // after it, and a peer that can provoke this must not be able to
+  // provoke a line per attempt.
+  void tls_fault(const char* what, int err) {
+    if (tls_fault_said_) return;
+    tls_fault_said_ = true;
+    if (err < 0) {
+      std::fprintf(stderr, "webmachine: tls %s: %s\n", what, std::strerror(-err));
+    } else {
+      std::fprintf(stderr, "webmachine: tls %s: %s\n", what, ktls_last_error());
+    }
+    std::fprintf(stderr, "webmachine: (the first one only - the rest are the same)\n");
+  }
 
   // RFC 8446 6.1: without it a peer cannot tell a finished stream from a
   // truncated one. Nothing here builds a record - the kernel does, from
@@ -5177,6 +5202,7 @@ class Ring {
 
     if (c.tls->handshaking) {
       if (WM_UNLIKELY(total > kBufSize || ktls_exchange_feed(c.tls->x, pool_ + off, total) != 0)) {
+        tls_fault("feed", 0);
         begin_close(idx);
         return;
       }
@@ -5190,6 +5216,7 @@ class Ring {
     struct io_uring_recvmsg_out* o =
         io_uring_recvmsg_validate(pool_ + off, static_cast<int>(total), &c.tls->recv_msg);
     if (WM_UNLIKELY(o == nullptr)) {
+      tls_fault("a recvmsg whose header does not fit its own buffer", 0);
       begin_close(idx);
       return;
     }
@@ -5197,6 +5224,7 @@ class Ring {
     // not. Either would hand the parser a piece of something and call it
     // the whole thing, so neither is read.
     if (WM_UNLIKELY((o->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0)) {
+      tls_fault("a record too large for one buffer", 0);
       begin_close(idx);
       return;
     }
@@ -5214,6 +5242,7 @@ class Ring {
       // An alert ends the connection because that is what one is for -
       // close_notify included, which is the ordinary way a peer leaves.
       if (record != KTLS_RECORD_HANDSHAKE) {
+        if (record != KTLS_RECORD_ALERT) tls_fault("a record of no known type", 0);
         begin_close(idx);
         return;
       }
@@ -5615,8 +5644,16 @@ class Ring {
       // the chain, and the third is where the socket is finally the
       // kernel's, so that is the one that acts.
       case detail::kTlsUlp:
+        if (WM_UNLIKELY(cqe->res < 0)) {
+          tls_fault("setsockopt(TCP_ULP)", cqe->res);
+          begin_close(idx);
+        }
+        break;
       case detail::kTlsTx:
-        if (WM_UNLIKELY(cqe->res < 0)) begin_close(idx);
+        if (WM_UNLIKELY(cqe->res < 0)) {
+          tls_fault("setsockopt(TLS_TX)", cqe->res);
+          begin_close(idx);
+        }
         break;
       case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
       // The connection is already going; a peer that will not take the
@@ -5738,6 +5775,7 @@ class Ring {
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};
+  bool tls_fault_said_ = false;
   // Null on a listener that serves cleartext, which is also how a slot
   // knows which it is - there is no second flag to keep in step.
   ktls_keys* tls_keys_[kMaxListeners] = {};

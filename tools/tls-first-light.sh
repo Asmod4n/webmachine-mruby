@@ -25,22 +25,13 @@ ok()  { printf '   %-56s %s\n' "$2" "$1"; [ "$1" = ok ] || fails=$((fails + 1));
 [ -x "$bin" ]  || { echo "no debug binary at $bin - rake compile first"; exit 1; }
 [ -x "$mrbc" ] || { echo "no mrbc at $mrbc - rake compile first"; exit 1; }
 
-say "1. does this kernel have the record layer at all?"
-if [ -r /proc/modules ] && grep -q '^tls ' /proc/modules; then
-  ok ok "the tls module is loaded"
-else
-  printf '   the tls module is not loaded. Trying to load it.\n'
-  if modprobe tls 2>/dev/null && grep -q '^tls ' /proc/modules 2>/dev/null; then
-    ok ok "modprobe tls"
-  else
-    ok FAILED "modprobe tls - nothing below this line can work"
-    echo "   (run: sudo modprobe tls - the kernel unloads it again when idle,"
-    echo "    so echo tls | sudo tee /etc/modules-load.d/tls.conf makes it stick)"
-    exit 1
-  fi
-fi
+# The tls module is NOT checked here on purpose. setsockopt(TCP_ULP,
+# "tls") makes the kernel autoload it, and the server does exactly that
+# at startup - so a check here would refuse a machine the server can
+# serve on. The kernel drops the module again when nothing is using it,
+# which is why asking lsmod first was the wrong question.
 
-say "2. a certificate a browser can be told to trust"
+say "1. a certificate a browser can be told to trust"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
   -keyout "$work/key.pem" -out "$work/cert.pem" -days 30 -nodes \
   -subj "/CN=localhost" \
@@ -68,7 +59,7 @@ end
 APP
 "$mrbc" -o "$work/app.mrb" "$work/app.rb" >/dev/null
 
-say "3. does the server come up on a TLS listener?"
+say "2. does the server come up on a TLS listener?"
 "$bin" --app "$work/app.mrb" >"$work/out.log" 2>"$work/err.log" &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT INT TERM
@@ -87,7 +78,7 @@ done
 grep -q ', tls' "$work/err.log" && ok ok "it says the listener is tls" \
                                 || ok FAILED "the startup line does not mention tls"
 
-say "4. does the handshake finish, and on which suite?"
+say "3. does the handshake finish, and on which suite?"
 hs=$(printf 'Q\n' | openssl s_client -connect "127.0.0.1:$port" \
        -CAfile "$work/cert.pem" -alpn h2,http/1.1 -servername localhost 2>&1 || true)
 echo "$hs" | grep -q 'Verification: OK' \
@@ -97,7 +88,7 @@ suite=$(echo "$hs" | sed -n 's/^.*Cipher is \(TLS_[A-Z0-9_]*\).*$/\1/p' | head -
 echo "$hs" | grep -q 'ALPN protocol: h2' \
   && ok ok "ALPN settled on h2" || ok FAILED "ALPN did not settle on h2"
 
-say "5. does ONE plain request come back, in HTTP/1.1?"
+say "4. does ONE plain request come back, in HTTP/1.1?"
 # Before h2, because h2 failing tells you nothing about which half broke:
 # this is the smallest thing the kernel's record layer has to carry.
 raw=$(printf 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
@@ -109,13 +100,13 @@ echo "$raw" | grep -q '^HTTP/1.1 200' \
 echo "$raw" | grep -q 'h2 over tls' \
   && ok ok "and the body is the resource's" || ok FAILED "no body"
 
-say "6. and over h2, which is what a browser will ask for"
+say "5. and over h2, which is what a browser will ask for"
 body=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
          -w '\n%{http_version} %{http_code}' "https://localhost:$port/" 2>&1 || true)
 echo "$body" | grep -q '^2 200$' \
   && ok ok "HTTP/2, status 200" || ok FAILED "not h2/200: $(echo "$body" | tail -1)"
 
-say "7. and four of them on one connection, where a browser lives"
+say "6. and four of them on one connection, where a browser lives"
 # One -o per URL: curl applies a single one to the first URL only, and the
 # bodies would otherwise land in the answer being compared.
 many=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
