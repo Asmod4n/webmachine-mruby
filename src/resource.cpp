@@ -470,6 +470,27 @@ mrb_value run_rescue_body(mrb_state* mrb, void* ud) {
   return mrb_nil_value();
 }
 
+// fsm.rb: everything one run carries from one node to the next. It is a
+// struct and not a row of stack locals because the arms that are not the
+// straight line live in functions of their own, and this is what they
+// are handed (.DESIGN.md "The happy path is the straight line").
+//
+// `facts` and `k` are references into `res` rather than lookups repeated
+// at each use; `chosen` is written where the content type is negotiated
+// and read where the body is produced, which is why it outlives an arm.
+struct Run {
+  mrb_state* mrb;
+  const Resource& res;
+  const flow::ReqFacts& facts;
+  const flow::KonstAnswers& k;
+  const http::ReqValues* vals;
+  std::string& hdrs;
+  Node n;
+  uint16_t status;
+  bool halted;
+  int chosen;
+};
+
 mrb_value run_engine(mrb_state* mrb, const Resource& res);
 
 // mruby: the ONE guarded entry per request. Without a jmpbuf on the
@@ -488,10 +509,20 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // fold already stands. The call itself, when one is owed, is below,
   // where the direct-entry path exists.
   res.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
-  const flow::ReqFacts& facts = *res.run_facts;
-  const flow::KonstAnswers& k = res.konst.per_method[static_cast<size_t>(facts.method)];
-  const http::ReqValues* vals = res.run_vals;
-  std::string& hdrs = *res.run_headers;
+  Run r{mrb,
+        res,
+        *res.run_facts,
+        res.konst.per_method[static_cast<size_t>(res.run_facts->method)],
+        res.run_vals,
+        *res.run_headers,
+        Node::kB13,
+        0,
+        false,
+        0};
+  const flow::ReqFacts& facts = r.facts;
+  const flow::KonstAnswers& k = r.k;
+  const http::ReqValues* vals = r.vals;
+  std::string& hdrs = r.hdrs;
 
   const auto naked = [&](mrb_method_t m, bool irep, NativeCb native, mrb_sym sym,
                          mrb_int argc = 0, const mrb_value* argv = nullptr) -> mrb_value {
@@ -1032,10 +1063,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     return -1;
   };
 
-  Node n = Node::kB13;
-  uint16_t status = 0;
-  bool halted = false;
-  int chosen = 0;
+  Node& n = r.n;
+  uint16_t& status = r.status;
+  bool& halted = r.halted;
+  int& chosen = r.chosen;
 
   // fsm.rb run: one step's edge, out of the graph table. Split so the
   // one caller that already holds `f` (the generic node path below,
