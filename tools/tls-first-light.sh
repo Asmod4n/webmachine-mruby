@@ -79,8 +79,13 @@ grep -q ', tls' "$work/err.log" && ok ok "it says the listener is tls" \
                                 || ok FAILED "the startup line does not mention tls"
 
 say "3. does the handshake finish, and on which suite?"
-hs=$(printf 'Q\n' | openssl s_client -connect "127.0.0.1:$port" \
-       -CAfile "$work/cert.pem" -alpn h2,http/1.1 -servername localhost 2>&1 || true)
+# A request rather than Q, and -ign_eof, so this connection does NOT hang
+# up the moment the handshake finishes: a peer leaving right then is a
+# race the server can only lose, and it was this script provoking it and
+# then reporting it as the server's fault.
+hs=$(printf 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
+     | openssl s_client -connect "127.0.0.1:$port" -CAfile "$work/cert.pem" \
+         -alpn h2,http/1.1 -servername localhost -ign_eof 2>&1 || true)
 echo "$hs" | grep -q 'Verification: OK' \
   && ok ok "the certificate verifies" || ok FAILED "verification"
 suite=$(echo "$hs" | sed -n 's/^.*Cipher is \(TLS_[A-Z0-9_]*\).*$/\1/p' | head -1)

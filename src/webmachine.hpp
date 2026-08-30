@@ -4827,24 +4827,14 @@ class Ring {
     tls_handover(idx);
   }
 
-  // ULP first, then a key per direction, linked so the order is the
-  // kernel's to keep rather than three completions to sort out. The
-  // options go on the DIRECT descriptor through the ring, like every
+  // A key per direction, linked so the order is the kernel's to keep
+  // rather than two completions to sort out. The ULP went on at accept.
+  // The options go on the DIRECT descriptor through the ring, like every
   // other option this reactor sets.
   void tls_handover(uint32_t idx) {
     Conn& c = conns_[idx];
-    if (io_uring_sq_space_left(&ring_) < 3) io_uring_submit(&ring_);
-    // WITH the terminator, and IPPROTO_TCP rather than SOL_TCP: this is
-    // ktls_attach_ulp's own call, moved onto the ring, and it is the one
-    // that is known to work.
-    static const char kUlp[] = "tls";
+    if (io_uring_sq_space_left(&ring_) < 2) io_uring_submit(&ring_);
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), IPPROTO_TCP,
-                           TCP_ULP, const_cast<char*>(kUlp), sizeof kUlp);
-    s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
-    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsUlp, c.gen, idx));
-
-    s = sqe();
     io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
                            ktls_optname(KTLS_TX), c.tls->info[KTLS_TX],
                            static_cast<uint32_t>(c.tls->info_len[KTLS_TX]));
@@ -5077,6 +5067,22 @@ class Ring {
         begin_close(idx);
         return;
       }
+      // The ULP goes on HERE, not at the handover - the order the kernel
+      // documents and the one OpenSSL's own ktls_enable uses. Without
+      // keys it forwards bytes unchanged, so the handshake reads and
+      // writes exactly as it would have; TLS_TX and TLS_RX are what
+      // install the record layer later.
+      //
+      // At the handover it was too late: tls_init refuses a socket that
+      // is not ESTABLISHED, and by then a peer that finished its own
+      // handshake and hung up has already put this one in CLOSE_WAIT.
+      // Here the accept has just returned, so there is no such window.
+      static const char kUlp[] = "tls";
+      struct io_uring_sqe* u = sqe();
+      io_uring_prep_cmd_sock(u, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), IPPROTO_TCP,
+                             TCP_ULP, const_cast<char*>(kUlp), sizeof kUlp);
+      u->flags |= IOSQE_FIXED_FILE;
+      io_uring_sqe_set_data64(u, detail::tag(detail::kTlsUlp, c.gen, idx));
     }
     arm_meminfo(idx);
     if (log_fd_ >= 0 && !unix_listener_[li]) arm_peer(idx);
@@ -5645,10 +5651,9 @@ class Ring {
       // kernel's, so that is the one that acts.
       case detail::kTlsUlp:
         if (WM_UNLIKELY(cqe->res < 0)) {
-          // ENOTCONN is the peer having left before the keys went in -
-          // the ULP refuses a socket that is no longer ESTABLISHED, and
-          // a client that hangs up on its own handshake causes exactly
-          // that. An ordinary close, not something an operator can fix.
+          // ENOTCONN even here means the peer left between the accept
+          // and this option, which is a race no arrangement avoids and
+          // not something an operator can fix.
           if (cqe->res != -ENOTCONN) tls_fault(kFaultUlp, "setsockopt(TCP_ULP)", cqe->res);
           begin_close(idx);
         }
