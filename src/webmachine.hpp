@@ -5228,27 +5228,36 @@ class Ring {
 
   // Wire bytes to the App. Kernel-supplied ids and lengths are checked
   // before use; ENOBUFS re-arms rather than hanging the connection.
+  // Nothing arrived that can be parsed: a peer that left, a kernel that
+  // ran out of buffers, a completion whose own numbers do not hold. None
+  // of it is the path a request takes, so none of it is in one.
+  void on_recv_nothing_to_parse(uint32_t idx, Conn& c, struct io_uring_cqe* cqe) {
+    if (cqe->res == -ENOBUFS) {
+      rearm_.push_back(idx);
+      return;
+    }
+    if (cqe->res < 0 && c.tls != nullptr && c.tls->offloaded) {
+      conn_failed("tls: recvmsg on an offloaded socket", cqe->res);
+    }
+    begin_close(idx);
+  }
+
+  // Bytes for a connection that has already been told to go: the buffers
+  // still have to be handed back, and nothing else does.
+  void on_recv_after_close(uint32_t idx, size_t total) {
+    (void) idx;
+    replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
+  }
+
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    if (!c.live || c.gen != gen) return;
+    if (WM_UNLIKELY(!c.live || c.gen != gen)) return;
 
     if (WM_UNLIKELY(cqe->res <= 0)) {
-      if (cqe->res == -ENOBUFS) {
-        rearm_.push_back(idx);
-        return;
-      }
-      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded && cqe->res < 0) {
-        conn_failed("tls: recvmsg on an offloaded socket", cqe->res);
-      }
-      begin_close(idx);
+      on_recv_nothing_to_parse(idx, c, cqe);
       return;
     }
-    if (c.idle) {
-      c.idle = false;
-      c.deadline_s = now_s_ + header_timeout_;
-    }
-
     if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
       begin_close(idx);
       return;
@@ -5259,15 +5268,17 @@ class Ring {
       begin_close(idx);
       return;
     }
-
     if (WM_UNLIKELY(c.close_after_send)) {
-      replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
+      on_recv_after_close(idx, total);
       return;
     }
-
     if (WM_UNLIKELY(c.tls != nullptr)) {
       on_recv_tls(idx, bid0, total, cqe->flags);
       return;
+    }
+    if (WM_UNLIKELY(c.idle)) {
+      c.idle = false;
+      c.deadline_s = now_s_ + header_timeout_;
     }
 
     std::string& sink = c.sending ? c.next : c.out;
@@ -5292,9 +5303,35 @@ class Ring {
       replenish_++;
     }
 
-    finish_round(idx, req, closing);
-    if (!c.live) return;
-    if (!(cqe->flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
+    if (!c.sending) {
+      if (req.iovlen != 0) {
+        take_plan(c, req);
+        arm_send(idx);
+      } else if (!c.out.empty()) {
+        arm_send(idx);
+      }
+    }
+    // A run that named a file answered nothing yet: the open is the
+    // reactor's, and its result reaches the wire through continue_conn.
+    arm_file_open(idx);
+    // Unless the name never reached the kernel at all - a refusal this
+    // process spelled itself owes no completion, so nothing else would
+    // ever come back to collect it.
+    if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
+    if (WM_UNLIKELY(closing)) {
+      round_closed(idx, c);
+      if (!c.live) return;
+    }
+    if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_MORE))) rearm_.push_back(idx);
+  }
+
+  // The App will take nothing more on this connection.
+  void round_closed(uint32_t idx, Conn& c) {
+    if (c.tls != nullptr && c.tls->offloaded) {
+      conn_failed("tls: the parser refused what the kernel decrypted", -EPROTO);
+    }
+    if (c.sending) c.close_after_send = true;
+    else begin_close(idx);
   }
 
   // What a round owes once the App has seen its bytes: the answer on the
@@ -5318,13 +5355,7 @@ class Ring {
     // process spelled itself owes no completion, so nothing else would ever
     // come back to collect it.
     if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
-    if (WM_UNLIKELY(closing)) {
-      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
-        conn_failed("tls: the parser refused what the kernel decrypted", -EPROTO);
-      }
-      if (c.sending) c.close_after_send = true;
-      else begin_close(idx);
-    }
+    if (WM_UNLIKELY(closing)) round_closed(idx, c);
   }
 
   // ONE contiguous stretch of plaintext to the App, and the round it
@@ -5412,10 +5443,7 @@ class Ring {
     c.sending = false;
 
     if (WM_UNLIKELY(cqe->res < 0)) {
-      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
-        conn_failed("tls: send on an offloaded socket", cqe->res);
-      }
-      begin_close(idx);
+      send_refused(idx, c, cqe->res);
       return;
     }
     // MSG_WAITALL means the kernel already retried; fewer bytes than offered
@@ -5429,15 +5457,7 @@ class Ring {
       // stream carries on where it stopped. That is the one thing a
       // half-written response CAN do; what it cannot do is start again.
       if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
-        if (c.msg_iovlen != 0) {
-          plan_drop_front(c, took);
-          c.plan_byte_total -= took;
-        } else {
-          c.out_sent += took;
-        }
-        c.deadline_s = now_s_ + send_timeout_;
-        tls_charge_records(c, took);
-        arm_send(idx);
+        send_resume(idx, c, took);
         return;
       }
       begin_close(idx);
@@ -5450,13 +5470,41 @@ class Ring {
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
     // A send key at its record limit is turned HERE, where nothing is in
-    // flight; what the round owes next waits for that completion.
-    if (WM_UNLIKELY(tls_turn_send_key(idx))) return;
+    // flight; what the round owes next waits for that completion. The
+    // null test is at THIS side of the call so a cleartext send does not
+    // make one.
+    if (WM_UNLIKELY(c.tls != nullptr) && tls_turn_send_key(idx)) return;
     send_done(idx);
   }
 
+  // A send the kernel refused outright.
+  void send_refused(uint32_t idx, Conn& c, int err) {
+    if (c.tls != nullptr && c.tls->offloaded) {
+      conn_failed("tls: send on an offloaded socket", err);
+    }
+    begin_close(idx);
+  }
+
+  // Only an offloaded connection gets here: without MSG_WAITALL nobody
+  // retried, so what is left is still owed and the stream carries on
+  // where it stopped. That is the one thing a half-written response CAN
+  // do; what it cannot do is start again.
+  void send_resume(uint32_t idx, Conn& c, size_t took) {
+    if (c.msg_iovlen != 0) {
+      plan_drop_front(c, took);
+      c.plan_byte_total -= took;
+    } else {
+      c.out_sent += took;
+    }
+    c.deadline_s = now_s_ + send_timeout_;
+    tls_charge_records(c, took);
+    arm_send(idx);
+  }
+
   // What a finished send leaves owed: the rest of the round, the next
-  // one, or the connection going idle.
+  // one, or the connection going idle. Inline in on_send, which is the
+  // path every response takes; on_tls_tx_key calls it because a rekey
+  // happens once per 2^23 records and may pay for the call.
   void send_done(uint32_t idx) {
     Conn& c = conns_[idx];
     // The handshake's own bytes, now on the wire as themselves. Only once
@@ -5796,8 +5844,56 @@ class Ring {
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
     const uint16_t gen = static_cast<uint16_t>(ud >> 32);
     const uint32_t idx = static_cast<uint32_t>(ud);
+    // The try is HERE and not around a dispatch() of its own: a separate
+    // function took on_send and its tail back out of line, and this is
+    // the hottest path in the reactor - measured, 4678 bytes of fused
+    // handle became 3796 of dispatch plus 2145 of on_send plus 1598 of
+    // its tail, and a bench lost 5%.
     try {
-      dispatch(kind, idx, gen, cqe);
+      switch (kind) {
+        case detail::kAccept: on_accept(idx, cqe); break;
+        case detail::kRecv: on_recv(idx, gen, cqe); break;
+        case detail::kSend: on_send(idx, gen, cqe); break;
+        case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
+        case detail::kFileOpen: on_file_open(idx, gen, cqe); break;
+        case detail::kFileStat: on_file_stat(idx, gen, cqe); break;
+        case detail::kFileRead: on_file_read(idx, gen, cqe); break;
+        case detail::kFileClose: break;
+        case detail::kLog: on_log(gen, idx, cqe); break;
+        case detail::kPeer: on_peer(idx, gen, cqe); break;
+        case detail::kClose:
+          if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
+            struct io_uring_sqe* s = sqe();
+            io_uring_prep_close_direct(s, idx);
+            io_uring_sqe_set_data64(s, detail::tag(detail::kClose, gen, idx));
+          }
+          break;
+        case detail::kShutdown: break;
+        // The first two only report: a failure in either cancels the rest of
+        // the chain, and the third is where the socket is finally the
+        // kernel's, so that is the one that acts.
+        case detail::kTlsUlp:
+          // ENOTCONN is the peer having left between the accept and this
+          // option: a race no arrangement avoids and nobody's fault.
+          if (WM_UNLIKELY(cqe->res < 0)) {
+            if (cqe->res == -ENOTCONN) {
+              begin_close(idx);
+              break;
+            }
+            conn_failed("tls: setsockopt(TCP_ULP)", cqe->res);
+          }
+          break;
+        case detail::kTlsTx:
+          if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
+          break;
+        // The connection is already going; a peer that will not take the
+        // alert is not a thing this end can do anything about.
+        case detail::kTlsBye: break;
+        case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
+        case detail::kTlsTxKey: on_tls_tx_key(idx, gen, cqe); break;
+        case detail::kStop: stop_ = true; break;
+        default: break;
+      }
     } catch (const ConnFailed& f) {
       connection_failed(idx, f);
     }
@@ -5808,53 +5904,6 @@ class Ring {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     say_connection_failed(f, conns_[idx]);
     begin_close(idx);
-  }
-
-  void dispatch(uint8_t kind, uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    switch (kind) {
-      case detail::kAccept: on_accept(idx, cqe); break;
-      case detail::kRecv: on_recv(idx, gen, cqe); break;
-      case detail::kSend: on_send(idx, gen, cqe); break;
-      case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
-      case detail::kFileOpen: on_file_open(idx, gen, cqe); break;
-      case detail::kFileStat: on_file_stat(idx, gen, cqe); break;
-      case detail::kFileRead: on_file_read(idx, gen, cqe); break;
-      case detail::kFileClose: break;
-      case detail::kLog: on_log(gen, idx, cqe); break;
-      case detail::kPeer: on_peer(idx, gen, cqe); break;
-      case detail::kClose:
-        if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
-          struct io_uring_sqe* s = sqe();
-          io_uring_prep_close_direct(s, idx);
-          io_uring_sqe_set_data64(s, detail::tag(detail::kClose, gen, idx));
-        }
-        break;
-      case detail::kShutdown: break;
-      // The first two only report: a failure in either cancels the rest of
-      // the chain, and the third is where the socket is finally the
-      // kernel's, so that is the one that acts.
-      case detail::kTlsUlp:
-        // ENOTCONN is the peer having left between the accept and this
-        // option: a race no arrangement avoids and nobody's fault.
-        if (WM_UNLIKELY(cqe->res < 0)) {
-          if (cqe->res == -ENOTCONN) {
-            begin_close(idx);
-            break;
-          }
-          conn_failed("tls: setsockopt(TCP_ULP)", cqe->res);
-        }
-        break;
-      case detail::kTlsTx:
-        if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
-        break;
-      // The connection is already going; a peer that will not take the
-      // alert is not a thing this end can do anything about.
-      case detail::kTlsBye: break;
-      case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
-      case detail::kTlsTxKey: on_tls_tx_key(idx, gen, cqe); break;
-      case detail::kStop: stop_ = true; break;
-      default: break;
-    }
   }
 
   // One wait and one batch; bounded to a second even without a budget, so
