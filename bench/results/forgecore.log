@@ -1224,3 +1224,63 @@ harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, o
 env: runnable=1/997 busy=0% (200ms sample)
 responses=95879812 bad=0 seconds=10.000 rps=9587965 bytes=8053904896 MB/s=768.08 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1246452455 tx_MB/s=118.87
 server: 99% of one core (85u/14s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-08-30T07:45Z repo=c32970d mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1373 busy=0% (200ms sample)
+responses=93919456 bad=0 seconds=10.000 rps=9391927 bytes=7955099856 MB/s=758.66 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1220968672 tx_MB/s=116.44
+server: 98% of one core (84u/13s)   client: 90% of one core (80u/10s)   other: 53% of one core
+==== 2026-08-30T07:46Z repo=c32970d mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/995 busy=0% (200ms sample)
+responses=98568421 bad=0 seconds=10.000 rps=9856788 bytes=8279748052 MB/s=789.61 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1281404372 tx_MB/s=122.20
+server: 99% of one core (86u/12s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-08-30T09:18Z repo=e37cb51 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/980 busy=0% (200ms sample)
+responses=81033569 bad=0 seconds=10.000 rps=8103268 bytes=6806820484 MB/s=649.14 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1053450893 tx_MB/s=100.46
+server: 92% of one core (78u/13s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-08-30T09:18Z repo=e37cb51 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/979 busy=0% (200ms sample)
+responses=91783106 bad=0 seconds=10.000 rps=9178261 bytes=7709781592 MB/s=735.26 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1193196941 tx_MB/s=113.79
+server: 100% of one core (87u/12s)   client: 80% of one core (70u/10s)   other: 14% of one core
+==== 2026-08-30T09:19Z repo=e37cb51 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/977 busy=0% (200ms sample)
+responses=93891297 bad=0 seconds=10.000 rps=9389097 bytes=7886869636 MB/s=752.15 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1220601760 tx_MB/s=116.41
+server: 99% of one core (85u/14s)   client: 80% of one core (70u/10s)   other: 15% of one core
+==== 2026-08-30T09:19Z repo=e37cb51 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/975 busy=0% (200ms sample)
+responses=6765424 bad=0 seconds=10.000 rps=676541 bytes=1048640720 MB/s=100.01 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=236795160 tx_MB/s=22.58
+server: 100% of one core (6u/93s)   client: 90% of one core (0u/90s)   other: 10% of one core
+==== 2026-08-30T09:20Z repo=e37cb51 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1350 busy=1% (200ms sample)
+responses=9661747 bad=0 seconds=10.000 rps=966174 bytes=1497570785 MB/s=142.82 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=338166465 tx_MB/s=32.25
+server: 100% of one core (10u/89s)   client: 90% of one core (0u/90s)   other: 43% of one core
+==== 2026-08-30T09:54Z repo=a1475d0 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1395 busy=1% (200ms sample)
+responses=9473877 bad=0 seconds=10.000 rps=947386 bytes=1468450935 MB/s=140.04 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=331591015 tx_MB/s=31.62
+server: 99% of one core (10u/89s)   client: 90% of one core (0u/90s)   other: 42% of one core
+==== 2026-08-30T09:55Z repo=a1475d0 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1001 busy=0% (200ms sample)
+responses=9844104 bad=0 seconds=10.000 rps=984407 bytes=1525836120 MB/s=145.51 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=344548960 tx_MB/s=32.86
+server: 100% of one core (9u/90s)   client: 90% of one core (0u/90s)   other: 11% of one core
+==== 2026-08-30T09:55Z repo=a1475d0 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1001 busy=0% (200ms sample)
+responses=9572625 bad=0 seconds=10.000 rps=957261 bytes=1483756875 MB/s=141.50 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=335047195 tx_MB/s=31.95
+server: 100% of one core (9u/90s)   client: 90% of one core (0u/90s)   other: 12% of one core
+==== 2026-08-30T10:29Z repo=1989010 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/counter.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/1281 busy=1% (200ms sample)
+responses=6728709 bad=0 seconds=10.000 rps=672870 bytes=1028381373 MB/s=98.07 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=235510170 tx_MB/s=22.46
+server: 99% of one core (36u/63s)   client: 70% of one core (0u/70s)   other: 53% of one core
+==== 2026-08-30T10:29Z repo=1989010 mruby=87cac94 ====
+harness: /usr/local/bin/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/counter.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.0-1-default x86_64
+env: runnable=1/975 busy=0% (200ms sample)
+responses=6834874 bad=0 seconds=10.000 rps=683486 bytes=1044624618 MB/s=99.62 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=239225945 tx_MB/s=22.81
+server: 100% of one core (35u/64s)   client: 70% of one core (0u/70s)   other: 5% of one core
