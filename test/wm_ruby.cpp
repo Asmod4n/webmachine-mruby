@@ -118,8 +118,7 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
     h.value = store.data() + at + klen[i];
     h.value_len = vlen[i];
     hdrs.push_back(h);
-    webmachine::http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals,
-                                    [](const char*, size_t, const char*, size_t) {});
+    webmachine::http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals);
     at += klen[i] + vlen[i];
   }
 }

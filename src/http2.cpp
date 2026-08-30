@@ -167,7 +167,55 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
 }
 
 // RFC 9113 5.1: an id above everything ever accepted is IDLE.
+// RFC 9113 8.2.2: the connection-specific fields h2 forbids outright, and
+// 8.1.1's content-length, which may be named once. False = malformed, and
+// the stream is reset.
+bool h2_wire_header_ok(const char* n, size_t nl, const char* v, size_t vl,
+                       bool& have_claimed_len, size_t& claimed_len) {
+  switch (nl) {
+    case 2:
+      if (http::tok_eq(n, nl, "te", 2) && !(vl == 8 && http::tok_eq(v, vl, "trailers", 8))) {
+        return false;
+      }
+      break;
+    case 14:
+      if (http::tok_eq(n, nl, "content-length", 14)) {
+        if (have_claimed_len) return false;
+        have_claimed_len = true;
+        if (http::parse_content_length(v, vl, &claimed_len) != http::ClStatus::kOk) return false;
+      }
+      break;
+    case 10:
+      if (http::tok_eq(n, nl, "connection", 10) || http::tok_eq(n, nl, "keep-alive", 10)) {
+        return false;
+      }
+      break;
+    case 17:
+      if (http::tok_eq(n, nl, "transfer-encoding", 17)) return false;
+      break;
+    case 7:
+      if (http::tok_eq(n, nl, "upgrade", 7)) return false;
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
 static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_opened; }
+
+// RFC 9113 6.2: one whole HEADERS frame - the route's prebuilt block, the
+// per-answer fields, and the date - laid down for the cache to replay.
+void Http1::cache_headers(std::string& out, const H2Block& blk, const unsigned char* cbuf,
+                          size_t clen, const unsigned char* dbuf, size_t dlen) {
+  unsigned char fh[kH2FrameHeaderLen];
+  h2_put_frame_header(fh, static_cast<uint32_t>(blk.bytes.size() + clen + dlen), kH2Headers,
+                      kH2FlagEndHeaders, 0);
+  out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
+  out.append(blk.bytes);
+  if (clen != 0) out.append(reinterpret_cast<const char*>(cbuf), clen);
+  out.append(reinterpret_cast<const char*>(dbuf), dlen);
+}
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
 void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink) {
@@ -175,6 +223,30 @@ void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sin
   put_u32(payload, code);
   emit_control(sink, kH2RstStream, 0, stream_id, payload, sizeof(payload));
   st.h2->close_stream(stream_id);
+}
+
+// #210 / #146: the page h1 spells for this status, framed for h2. False =
+// there is nothing to say and the prebuilt bodyless block stands.
+bool Http1::h2_error_page(uint16_t status, const ErrorPages::Fields& f,
+                          const http::ReqValues* vals, const Bundle* b, H2ErrorPage& page,
+                          const char*& body, size_t& blen, const H2Block*& blk) {
+  const int m = err_pages_.media_for(status, vals != nullptr ? vals->accept : nullptr,
+                                     vals != nullptr ? vals->accept_len : 0);
+  size_t plen = 0;
+  const char* pbody = err_pages_.pack_body(status, m, &plen);
+  if (pbody == nullptr && !err_pages_.render(status, m, f, page.rendered)) return false;
+  const std::string ctype(err_pages_.media_type(m));
+  // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
+  // it now carries must not cost it that field.
+  const std::string* allow =
+      (status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
+  h2_build_block(page.block, status, &ctype, allow);
+  // The picture is lent where it lies; a rendered page comes out of
+  // page.rendered, which outlives the framing at the call site.
+  body = pbody != nullptr ? pbody : page.rendered.data();
+  blen = pbody != nullptr ? plen : page.rendered.size();
+  blk = &page.block;
+  return true;
 }
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
@@ -322,41 +394,10 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       hv[nh].value_len = vlen;
       nh++;
     }
-    http::header_switch(name, nlen, val, vlen, facts, vals,
-                        [&](const char* n, size_t nl, const char* v, size_t vl) {
-                          switch (nl) {
-                            case 2:
-                              if (http::tok_eq(n, nl, "te", 2) &&
-                                  !(vl == 8 && http::tok_eq(v, vl, "trailers", 8))) {
-                                ok = false;
-                              }
-                              break;
-                            case 14:
-                              if (http::tok_eq(n, nl, "content-length", 14)) {
-                                if (have_claimed_len) { ok = false; break; }
-                                have_claimed_len = true;
-                                if (http::parse_content_length(v, vl, &claimed_len) !=
-                                    http::ClStatus::kOk) {
-                                  ok = false;
-                                }
-                              }
-                              break;
-                            case 10:
-                              if (http::tok_eq(n, nl, "connection", 10) ||
-                                  http::tok_eq(n, nl, "keep-alive", 10)) {
-                                ok = false;
-                              }
-                              break;
-                            case 17:
-                              if (http::tok_eq(n, nl, "transfer-encoding", 17)) ok = false;
-                              break;
-                            case 7:
-                              if (http::tok_eq(n, nl, "upgrade", 7)) ok = false;
-                              break;
-                            default:
-                              break;
-                          }
-                        });
+    if (http::header_switch(name, nlen, val, vlen, facts, vals) &&
+        !h2_wire_header_ok(name, nlen, val, vlen, have_claimed_len, claimed_len)) {
+      ok = false;
+    }
   }
   if (!ok || !have_method || !have_path || !have_scheme) {
     h2_rst(st0, stream_id, kH2ProtocolError, sink);
@@ -685,27 +726,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
   // #210 / #146: an error carries the same page here that h1 spells. It
   // outlives the framing below, because a body the window cannot finish
   // is copied onto the stream from THIS buffer.
-  H2Block errblk;
-  std::string err_body;
-  const auto error_page = [&](uint16_t s, const ErrorPages::Fields& f) {
-    const int m = err_pages_.media_for(s, vals != nullptr ? vals->accept : nullptr,
-                                       vals != nullptr ? vals->accept_len : 0);
-    size_t plen = 0;
-    const char* pbody = err_pages_.pack_body(s, m, &plen);
-    if (pbody == nullptr && !err_pages_.render(s, m, f, err_body)) return false;
-    const std::string ctype(err_pages_.media_type(m));
-    // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the
-    // page it now carries must not cost it that field.
-    const std::string* allow =
-        (s == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
-    h2_build_block(errblk, s, &ctype, allow);
-    // The picture is lent where it lies; a rendered page comes out of
-    // err_body, which outlives the framing below.
-    body = pbody != nullptr ? pbody : err_body.data();
-    blen = pbody != nullptr ? plen : err_body.size();
-    blk = &errblk;
-    return true;
-  };
+  H2ErrorPage err_page;
   // #210 response.error_asset: the run named an entry of the error
   // assets, and this stream carries it the way the asset tier's own
   // streams carry one - Content::Src::kAsset, parked and framed by
@@ -761,7 +782,9 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     f.method_len = req != nullptr ? req->method_token_len : 0;
     f.message = message.data();
     f.message_len = message.size();
-    if (!error_page(500, f)) blk = &h2_store_[(*idx)[500]];
+    if (!h2_error_page(500, f, vals, b, err_page, body, blen, blk)) {
+      blk = &h2_store_[(*idx)[500]];
+    }
   } else if (status == 200) {
     body = b->konst.body.data();
     blen = b->konst.body.size();
@@ -779,7 +802,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         f.allow = b->konst.allow.data();
         f.allow_len = b->konst.allow.size();
       }
-      spelled = error_page(status, f);
+      spelled = h2_error_page(status, f, vals, b, err_page, body, blen, blk);
     }
     if (!spelled) blk = &h2_store_[(*idx)[status]];
   }
@@ -914,19 +937,10 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);
-      unsigned char fh[kH2FrameHeaderLen];
-      const auto build = [&](std::string& out, const unsigned char* cbuf, size_t clen) {
-        h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + clen + dlen),
-                            kH2Headers, kH2FlagEndHeaders, 0);
-        out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-        out.append(blk->bytes);
-        if (clen != 0) out.append(reinterpret_cast<const char*>(cbuf), clen);
-        out.append(reinterpret_cast<const char*>(dbuf), dlen);
-      };
-      build(h2.head_cache.bytes, rbuf, rlen);
+      cache_headers(h2.head_cache.bytes, *blk, rbuf, rlen, dbuf, dlen);
       h2.head_cache.head_len = h2.head_cache.bytes.size();
       h2.head_cache.primed = ct == nullptr;
-      if (ct != nullptr) build(h2.head_cache.prime, pbuf, plen);
+      if (ct != nullptr) cache_headers(h2.head_cache.prime, *blk, pbuf, plen, dbuf, dlen);
       h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
                                !b->konst.body.empty() &&
                                b->konst.body.size() <= kH2MergeBody;
@@ -1372,8 +1386,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           flow::ReqFacts scratch;
           for (size_t i = 0; i < nh; i++) {
             http::header_switch(hv[i].name, hv[i].name_len, hv[i].value, hv[i].value_len,
-                                scratch, pvals,
-                                [](const char*, size_t, const char*, size_t) {});
+                                scratch, pvals);
           }
           ReqView rv;
           // h2_parked_view only knows the target - the method and the DATA

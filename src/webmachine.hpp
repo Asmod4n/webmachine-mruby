@@ -473,26 +473,25 @@ constexpr uint16_t walk_compiled(const ReqFacts& req) {
 // RFC 9110: webmachine-ruby's Resource defaults, folded per method.
 constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m) {
   KonstAnswers k{};
-  const auto set = [&](Node n, bool v) { k.ans[static_cast<size_t>(n)] = v; };
-  set(Node::kB13, true);
-  set(Node::kB12, m != Method::kOther);
-  set(Node::kB11, false);
-  set(Node::kB10, m == Method::kGet || m == Method::kHead);
-  set(Node::kB9b, false);
-  set(Node::kB8, true);
-  set(Node::kB7, false);
-  set(Node::kB6, true);
-  set(Node::kB5, true);
-  set(Node::kB4, true);
-  set(Node::kG7, true);
-  set(Node::kC4, true);
-  set(Node::kD5, true);
-  set(Node::kE6, true);
-  set(Node::kF7, true);
-  set(Node::kL17, true);
-  set(Node::kM20b, true);
-  set(Node::kO18, true);
-  set(Node::kO18b, false);
+  k.ans[static_cast<size_t>(Node::kB13)] = true;
+  k.ans[static_cast<size_t>(Node::kB12)] = m != Method::kOther;
+  k.ans[static_cast<size_t>(Node::kB11)] = false;
+  k.ans[static_cast<size_t>(Node::kB10)] = m == Method::kGet || m == Method::kHead;
+  k.ans[static_cast<size_t>(Node::kB9b)] = false;
+  k.ans[static_cast<size_t>(Node::kB8)] = true;
+  k.ans[static_cast<size_t>(Node::kB7)] = false;
+  k.ans[static_cast<size_t>(Node::kB6)] = true;
+  k.ans[static_cast<size_t>(Node::kB5)] = true;
+  k.ans[static_cast<size_t>(Node::kB4)] = true;
+  k.ans[static_cast<size_t>(Node::kG7)] = true;
+  k.ans[static_cast<size_t>(Node::kC4)] = true;
+  k.ans[static_cast<size_t>(Node::kD5)] = true;
+  k.ans[static_cast<size_t>(Node::kE6)] = true;
+  k.ans[static_cast<size_t>(Node::kF7)] = true;
+  k.ans[static_cast<size_t>(Node::kL17)] = true;
+  k.ans[static_cast<size_t>(Node::kM20b)] = true;
+  k.ans[static_cast<size_t>(Node::kO18)] = true;
+  k.ans[static_cast<size_t>(Node::kO18b)] = false;
   return k;
 }
 
@@ -1014,31 +1013,33 @@ constexpr const char* reason(uint16_t status) {
 inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
+// Two digits, zero-padded, at out[0..1].
+inline void write_two_digits(char* out, int v) {
+  out[0] = static_cast<char>('0' + v / 10);
+  out[1] = static_cast<char>('0' + v % 10);
+}
+
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
 inline void date_core(char out[kDateLen], const struct tm& tm) {
   static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  const auto two = [&](size_t at, int v) {
-    out[at] = static_cast<char>('0' + v / 10);
-    out[at + 1] = static_cast<char>('0' + v % 10);
-  };
   std::memcpy(out, kDay[tm.tm_wday], 3);
   out[3] = ',';
   out[4] = ' ';
-  two(5, tm.tm_mday);
+  write_two_digits(out + 5, tm.tm_mday);
   out[7] = ' ';
   std::memcpy(out + 8, kMon[tm.tm_mon], 3);
   out[11] = ' ';
   const int year = tm.tm_year + 1900;
-  two(12, year / 100);
-  two(14, year % 100);
+  write_two_digits(out + 12, year / 100);
+  write_two_digits(out + 14, year % 100);
   out[16] = ' ';
-  two(17, tm.tm_hour);
+  write_two_digits(out + 17, tm.tm_hour);
   out[19] = ':';
-  two(20, tm.tm_min);
+  write_two_digits(out + 20, tm.tm_min);
   out[22] = ':';
-  two(23, tm.tm_sec);
+  write_two_digits(out + 23, tm.tm_sec);
   out[25] = ' ';
   std::memcpy(out + 26, "GMT", 3);
 }
@@ -1118,6 +1119,24 @@ struct ReqValues {
   int64_t if_modified_since_epoch = 0;
 };
 
+// A run of digits at v[i], cursor left on the first that is not one.
+// False = none there, or the value does not fit a size_t.
+inline bool read_size(const char* v, size_t n, size_t& i, size_t* out) {
+  bool any = false;
+  size_t val = 0;
+  while (i < n && v[i] >= '0' && v[i] <= '9') {
+    size_t t = 0;
+    if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
+        __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
+      return false;
+    }
+    any = true;
+    i++;
+  }
+  *out = val;
+  return any;
+}
+
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // RFC 9110 14.1.2: ONE range over the SELECTED representation's octets.
 // kNone means act as if the field were absent (14.2 permits it).
@@ -1126,26 +1145,11 @@ inline RangeParse parse_range(const char* v, size_t n, size_t complete, size_t* 
   if (n < 7 || !tok_eq(v, 6, "bytes=", 6)) return RangeParse::kNone;
   size_t i = 6;
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
-  const auto digits = [&](size_t* out) -> bool {
-    bool any = false;
-    size_t val = 0;
-    while (i < n && v[i] >= '0' && v[i] <= '9') {
-      size_t t = 0;
-      if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
-          __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
-        return false;
-      }
-      any = true;
-      i++;
-    }
-    *out = val;
-    return any;
-  };
   size_t a = 0, b = 0;
-  const bool have_a = digits(&a);
+  const bool have_a = read_size(v, n, i, &a);
   if (i >= n || v[i] != '-') return RangeParse::kNone;
   i++;
-  const bool have_b = digits(&b);
+  const bool have_b = read_size(v, n, i, &b);
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
   if (i != n) return RangeParse::kNone;
   if (!have_a && !have_b) return RangeParse::kNone;
@@ -1249,67 +1253,71 @@ inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t tag
   return false;
 }
 
+// Exactly k digits at p[at], as one number. -1 = one of them is not a digit.
+inline int read_fixed_digits(const char* p, size_t at, size_t k) {
+  int v = 0;
+  for (size_t i = 0; i < k; i++) {
+    if (p[at + i] < '0' || p[at + i] > '9') return -1;
+    v = v * 10 + (p[at + i] - '0');
+  }
+  return v;
+}
+
+// The three-letter month name at p[at], 1..12. -1 = none of them.
+inline int read_month_name(const char* p, size_t at) {
+  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  for (int m = 0; m < 12; m++) {
+    if (std::memcmp(p + at, kMon[m], 3) == 0) return m + 1;
+  }
+  return -1;
+}
+
+// days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
+inline int64_t epoch_from_civil(int y, int m, int d, int hh, int mm, int ss) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const int yoe = y - era * 400;
+  const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const int64_t days = int64_t{era} * 146097 + doe - 719468;
+  return days * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
 // RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
 // ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
 // ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
 // ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
 inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
-  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
-  const auto num = [&](size_t at, size_t k) -> int {
-    int v = 0;
-    for (size_t i = 0; i < k; i++) {
-      if (!digit(p[at + i])) return -1;
-      v = v * 10 + (p[at + i] - '0');
-    }
-    return v;
-  };
-  const auto month = [&](size_t at) -> int {
-    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    for (int m = 0; m < 12; m++) {
-      if (std::memcmp(p + at, kMon[m], 3) == 0) return m + 1;
-    }
-    return -1;
-  };
-  // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
-  const auto epoch_of = [](int y, int m, int d, int hh, int mm, int ss) -> int64_t {
-    y -= m <= 2;
-    const int era = (y >= 0 ? y : y - 399) / 400;
-    const int yoe = y - era * 400;
-    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const int64_t days = int64_t{era} * 146097 + doe - 719468;
-    return days * 86400 + hh * 3600 + mm * 60 + ss;
-  };
   int y, mo, d, hh, mm, ss;
   if (n == 29 && p[3] == ',' && p[4] == ' ') {  // IMF-fixdate
-    d = num(5, 2);
-    mo = month(8);
-    y = num(12, 4);
-    hh = num(17, 2);
-    mm = num(20, 2);
-    ss = num(23, 2);
+    d = read_fixed_digits(p, 5, 2);
+    mo = read_month_name(p, 8);
+    y = read_fixed_digits(p, 12, 4);
+    hh = read_fixed_digits(p, 17, 2);
+    mm = read_fixed_digits(p, 20, 2);
+    ss = read_fixed_digits(p, 23, 2);
     if (std::memcmp(p + 25, " GMT", 4) != 0) return false;
   } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
              static_cast<const char*>(std::memchr(p, ',', n)) != nullptr) {  // RFC 850
     const char* c = static_cast<const char*>(std::memchr(p, ',', n));
     const size_t at = static_cast<size_t>(c - p) + 2;
     if (at + 18 + 4 != n || at + 18 > n) return false;
-    d = num(at, 2);
+    d = read_fixed_digits(p, at, 2);
     if (p[at + 2] != '-' || p[at + 6] != '-') return false;
-    mo = month(at + 3);
-    y = num(at + 7, 2);
+    mo = read_month_name(p, at + 3);
+    y = read_fixed_digits(p, at + 7, 2);
     if (y >= 0) y += y < 70 ? 2000 : 1900;  // 5.6.7's two-digit rule
-    hh = num(at + 10, 2);
-    mm = num(at + 13, 2);
-    ss = num(at + 16, 2);
+    hh = read_fixed_digits(p, at + 10, 2);
+    mm = read_fixed_digits(p, at + 13, 2);
+    ss = read_fixed_digits(p, at + 16, 2);
   } else if (n == 24 && p[3] == ' ' && p[7] == ' ') {  // asctime
-    mo = month(4);
-    d = p[8] == ' ' ? num(9, 1) : num(8, 2);
-    hh = num(11, 2);
-    mm = num(14, 2);
-    ss = num(17, 2);
-    y = num(20, 4);
+    mo = read_month_name(p, 4);
+    d = p[8] == ' ' ? read_fixed_digits(p, 9, 1) : read_fixed_digits(p, 8, 2);
+    hh = read_fixed_digits(p, 11, 2);
+    mm = read_fixed_digits(p, 14, 2);
+    ss = read_fixed_digits(p, 17, 2);
+    y = read_fixed_digits(p, 20, 4);
   } else {
     return false;
   }
@@ -1317,7 +1325,7 @@ inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
       ss < 0 || ss > 60) {
     return false;
   }
-  *out = epoch_of(y, mo, d, hh, mm, ss);
+  *out = epoch_from_civil(y, mo, d, hh, mm, ss);
   return true;
 }
 
@@ -1512,15 +1520,14 @@ inline bool field_value_ok(const char* p, size_t n) {
 }
 
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
-// every name this layer does not own falls through to the framer's functor.
-template <class OnWire>
-inline void header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
-                          flow::ReqFacts& facts, ReqValues& vals, OnWire&& wire) {
+// true means the name is not one of them and the framer must read it.
+inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
+                          flow::ReqFacts& facts, ReqValues& vals) {
   switch (nlen) {
     case 3:
       if (tok_eq(name, nlen, "dnt", 3)) {
         if (vlen == 1 && value[0] == '1') facts.no_track = true;
-        return;
+        return false;
       }
       break;
     case 4:
@@ -1538,7 +1545,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
       if (tok_eq(name, nlen, "range", 5)) {
         vals.range = value;
         vals.range_len = vlen;
-        return;
+        return false;
       }
       break;
     case 6:
@@ -1547,25 +1554,25 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.plain = false;
         vals.accept = value;
         vals.accept_len = vlen;
-        return;
+        return false;
       }
       if (tok_eq(name, nlen, "cookie", 6)) {
         vals.cookie = value;
         vals.cookie_len = vlen;
-        return;
+        return false;
       }
       break;
     case 7:
       if (tok_eq(name, nlen, "sec-gpc", 7)) {
         if (vlen == 1 && value[0] == '1') facts.no_track = true;
-        return;
+        return false;
       }
       break;
     case 8:
       if (tok_eq(name, nlen, "if-range", 8)) {
         vals.if_range = value;
         vals.if_range_len = vlen;
-        return;
+        return false;
       }
       if (tok_eq(name, nlen, "if-match", 8)) {
         facts.has_if_match = true;
@@ -1573,7 +1580,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.if_match_star = star_value(value, vlen);
         vals.if_match = value;
         vals.if_match_len = vlen;
-        return;
+        return false;
       }
       break;
     case 12:
@@ -1581,7 +1588,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         // RFC 9110 8.3: b5's argument and accept_helper's key.
         vals.content_type = value;
         vals.content_type_len = vlen;
-        return;
+        return false;
       }
       break;
     case 13:
@@ -1589,7 +1596,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         // RFC 9110 11.6.2: b8's argument.
         vals.authorization = value;
         vals.authorization_len = vlen;
-        return;
+        return false;
       }
       if (tok_eq(name, nlen, "if-none-match", 13)) {
         facts.has_if_none_match = true;
@@ -1597,28 +1604,28 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         facts.if_none_match_star = star_value(value, vlen);
         vals.if_none_match = value;
         vals.if_none_match_len = vlen;
-        return;
+        return false;
       }
       break;
     case 14:
       if (tok_eq(name, nlen, "accept-charset", 14)) {
         facts.has_accept_charset = true;
         facts.plain = false;
-        return;
+        return false;
       }
       break;
     case 15:
       if (tok_eq(name, nlen, "accept-language", 15)) {
         facts.has_accept_language = true;
         facts.plain = false;
-        return;
+        return false;
       }
       if (tok_eq(name, nlen, "accept-encoding", 15)) {
         facts.has_accept_encoding = true;
         facts.plain = false;
         vals.accept_encoding = value;
         vals.accept_encoding_len = vlen;
-        return;
+        return false;
       }
       break;
     case 17:
@@ -1632,7 +1639,7 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
           facts.if_modified_since_future =
               vals.if_modified_since_epoch > ::time(nullptr);
         }
-        return;
+        return false;
       }
       break;
     case 19:
@@ -1642,13 +1649,13 @@ inline void header_switch(const char* name, size_t nlen, const char* value, size
         // 13.1.4: same rule as IMS (h11).
         facts.if_unmodified_since_valid =
             parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
-        return;
+        return false;
       }
       break;
     default:
       break;
   }
-  wire(name, nlen, value, vlen);
+  return true;
 }
 }
 
@@ -3562,6 +3569,14 @@ class Http1 {
     std::string bytes;
   };
 
+  // #210: where an error answer's own HPACK block and its rendered page
+  // are built. Both outlive the framing, because a body the window cannot
+  // finish is copied onto the stream from here.
+  struct H2ErrorPage {
+    H2Block block;
+    std::string rendered;
+  };
+
   struct Bundle {
     flow::KonstSet konst;
     // RFC 9110 12.5.1: what c4 weighs an Accept against - the media type
@@ -3585,7 +3600,18 @@ class Http1 {
   void build(const AppInput* apps, size_t napps);
   static void build_variants(Variants& v, uint16_t status, const char* extra,
                              const char* body, const char* date);
+  static void build_one_variant(Resp& r, uint16_t status, const char* extra, const char* body,
+                                const char* date, const char* conn);
+  static void assign_without_tail(const Resp& src, Resp& dst, size_t cut);
+  static void build_open_prefix(Resp& r, const char* status_line, const char* conn,
+                                const std::string& extra, const char* enc);
+  static void cache_headers(std::string& out, const H2Block& blk, const unsigned char* cbuf,
+                            size_t clen, const unsigned char* dbuf, size_t dlen);
+  static void log_sse(Logger& lg, const Conn& st, const char* method, size_t method_len,
+                      const char* path, size_t path_len, const http::ReqValues& vals,
+                      uint8_t lflags, uint16_t status);
   void build_status(uint16_t status, const char* extra, const char* body);
+  void stock_status(bool have[600], uint16_t s);
   void build_bundle(Bundle& b, const Resource* res);
   static void patch_date(Variants& v, const char* core);
   static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
@@ -3670,6 +3696,9 @@ class Http1 {
 
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
+  bool h2_error_page(uint16_t status, const ErrorPages::Fields& f, const http::ReqValues* vals,
+                     const Bundle* b, H2ErrorPage& page, const char*& body, size_t& blen,
+                     const H2Block*& blk);
 
   bool h2_begin(Conn& st, std::string& sink);
   bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);

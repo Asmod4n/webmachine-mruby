@@ -11,6 +11,20 @@
 
 namespace webmachine {
 namespace {
+using ExtType = std::pair<std::string, std::string>;
+
+// The extension order type_of then searches in. Types, not function
+// pointers: the sort inlines the comparison the way it did the lambdas.
+struct ExtBefore {
+  bool operator()(const ExtType& a, const ExtType& b) const { return a.first < b.first; }
+};
+struct SameExt {
+  bool operator()(const ExtType& a, const ExtType& b) const { return a.first == b.first; }
+};
+struct ExtBeforeKey {
+  bool operator()(const ExtType& a, const std::string& b) const { return a.first < b; }
+};
+
 // POSIX read(2): a whole file into memory. Setup only.
 bool slurp(const char* path, std::string& out) {
   const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
@@ -135,15 +149,8 @@ bool MimeDb::load(const char* configured, char* err, size_t errlen) {
     parse_types(p, end);
   }
 
-  std::stable_sort(by_ext_.begin(), by_ext_.end(),
-                   [](const std::pair<std::string, std::string>& a,
-                      const std::pair<std::string, std::string>& b) { return a.first < b.first; });
-  by_ext_.erase(std::unique(by_ext_.begin(), by_ext_.end(),
-                            [](const std::pair<std::string, std::string>& a,
-                               const std::pair<std::string, std::string>& b) {
-                              return a.first == b.first;
-                            }),
-                by_ext_.end());
+  std::stable_sort(by_ext_.begin(), by_ext_.end(), ExtBefore());
+  by_ext_.erase(std::unique(by_ext_.begin(), by_ext_.end(), SameExt()), by_ext_.end());
 
   if (by_ext_.empty()) {
     std::snprintf(err, errlen, "media types: %s holds no extension at all", source_.c_str());
@@ -159,9 +166,7 @@ const char* MimeDb::type_of(const std::string& name) const {
   if (dot == std::string::npos || dot + 1 == name.size()) return kOctets;
   std::string ext(name.size() - dot - 1, '\0');
   for (size_t i = 0; i < ext.size(); i++) ext[i] = lower(name[dot + 1 + i]);
-  const auto it = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext,
-                                   [](const std::pair<std::string, std::string>& a,
-                                      const std::string& b) { return a.first < b; });
+  const auto it = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext, ExtBeforeKey());
   return it != by_ext_.end() && it->first == ext ? it->second.c_str() : kOctets;
 }
 }

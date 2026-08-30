@@ -117,6 +117,12 @@ struct HandlerCall {
   mrb_sym sym;
   mrb_value arg;
 };
+// The same call with no arguments at all - a class body, a declaration.
+mrb_value handler_no_args(mrb_state* mrb, void* ud) {
+  const HandlerCall* c = static_cast<const HandlerCall*>(ud);
+  return mrb_funcall_argv(mrb, c->self, c->sym, 0, nullptr);
+}
+
 mrb_value handler_body(mrb_state* mrb, void* ud) {
   const HandlerCall* c = static_cast<const HandlerCall*>(ud);
   return mrb_funcall_argv(mrb, c->self, c->sym, 1, &c->arg);
@@ -127,16 +133,18 @@ mrb_value handler_body(mrb_state* mrb, void* ud) {
 // XDG Base Directory Specification, and the FHS underneath it: shipped
 // read-only data lives in <datadir>/<package>, and XDG's own defaults
 // for XDG_DATA_DIRS are "/usr/local/share:/usr/share" - the FHS pair.
+// True only for a path that names a plain file that is there.
+bool is_regular_file(const std::string& p) {
+  struct stat st {};
+  return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
 // So one search order covers a distro package, a local build and a
 // container image, without any of them being special-cased and without
 // walking from argv[0], which is a trick rather than a convention.
 //
 // An explicit path always wins; it is the only one that may fail loudly.
 std::string error_assets_path(const char* configured) {
-  const auto exists = [](const std::string& p) {
-    struct stat st {};
-    return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
-  };
   if (configured != nullptr && configured[0] != '\0') return std::string(configured);
   if (const char* env = ::getenv("WM_ERROR_ASSETS"); env != nullptr && env[0] != '\0') {
     return std::string(env);
@@ -144,10 +152,10 @@ std::string error_assets_path(const char* configured) {
   static constexpr const char* kLeaf = "/webmachine-mruby/error-assets.zip";
   if (const char* home = ::getenv("XDG_DATA_HOME"); home != nullptr && home[0] == '/') {
     const std::string p = std::string(home) + kLeaf;
-    if (exists(p)) return p;
+    if (is_regular_file(p)) return p;
   } else if (const char* h = ::getenv("HOME"); h != nullptr && h[0] == '/') {
     const std::string p = std::string(h) + "/.local/share" + kLeaf;
-    if (exists(p)) return p;
+    if (is_regular_file(p)) return p;
   }
   const char* dirs = ::getenv("XDG_DATA_DIRS");
   const std::string list =
@@ -159,7 +167,7 @@ std::string error_assets_path(const char* configured) {
                                                                     : end - at);
     if (!dir.empty() && dir[0] == '/') {
       const std::string p = dir + kLeaf;
-      if (exists(p)) return p;
+      if (is_regular_file(p)) return p;
     }
     if (end == std::string::npos) break;
     at = end + 1;
@@ -184,9 +192,9 @@ std::string error_assets_path(const char* configured) {
     // The installed spelling first: it is the one an operator can also
     // reach through XDG, so a tree that has both stays consistent.
     const std::string shared = dir + "/share" + kLeaf;
-    if (exists(shared)) return shared;
+    if (is_regular_file(shared)) return shared;
     const std::string flat = dir + "/share/error-assets.zip";
-    if (exists(flat)) return flat;
+    if (is_regular_file(flat)) return flat;
   }
   return std::string();
 }
@@ -235,10 +243,7 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
     HandlerCall c{mrb_obj_value(klass), MRB_SYM(new), mrb_nil_value()};
     const mrb_value obj = mrb_protect_error(
         mrb,
-        [](mrb_state* m, void* ud) -> mrb_value {
-          const HandlerCall* cc = static_cast<const HandlerCall*>(ud);
-          return mrb_funcall_argv(m, cc->self, cc->sym, 0, nullptr);
-        },
+        handler_no_args,
         &c, &raised);
     if (raised) {
       std::snprintf(err, errlen, "error pages: Webmachine::ErrorResource.new raised");
@@ -259,10 +264,7 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
     HandlerCall c{mrb_obj_value(klass), MRB_SYM(content_types_provided), mrb_nil_value()};
     const mrb_value v = mrb_protect_error(
         mrb,
-        [](mrb_state* m, void* ud) -> mrb_value {
-          const HandlerCall* cc = static_cast<const HandlerCall*>(ud);
-          return mrb_funcall_argv(m, cc->self, cc->sym, 0, nullptr);
-        },
+        handler_no_args,
         &c, &raised);
     if (raised || !mrb_array_p(v)) {
       std::snprintf(err, errlen,
@@ -395,20 +397,28 @@ const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const 
   return c.entry->file_data;
 }
 
+// The bytes `t` anywhere in the first `len` of `accept`.
+bool contains(const char* accept, size_t len, const char* t, size_t tlen) {
+  for (size_t i = 0; i + tlen <= len; i++) {
+    if (std::memcmp(accept + i, t, tlen) == 0) return true;
+  }
+  return false;
+}
+
+// One key of the mustache context, both halves as Strings.
+void hash_put_str(mrb_state* mrb, mrb_value ctx, const char* key, const char* val, size_t len) {
+  mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, key),
+               mrb_str_new(mrb, val, static_cast<mrb_int>(len)));
+}
+
 // RFC 9110 12.5.1: does this Accept name one of the forms we offer, as a
 // type and subtype rather than through a range?
 bool ErrorPages::named_ours(const char* accept, size_t len) const {
-  const auto has = [&](const char* t, size_t tlen) {
-    for (size_t i = 0; i + tlen <= len; i++) {
-      if (std::memcmp(accept + i, t, tlen) == 0) return true;
-    }
-    return false;
-  };
   for (const Handler& h : have_) {
     const char* t = h.type.c_str();
     const char* semi = std::strchr(t, ';');
     const size_t tlen = semi != nullptr ? static_cast<size_t>(semi - t) : h.type.size();
-    if (has(t, tlen)) return true;
+    if (contains(accept, len, t, tlen)) return true;
     // RFC 9110 12.5.1: "image/*" is a preference for every image type,
     // and it carries its own q - a browser fetching a picture writes
     // image/*;q=0.8 above */*;q=0.5 precisely to say which it would
@@ -418,7 +428,7 @@ bool ErrorPages::named_ours(const char* accept, size_t len) const {
     if (slash == nullptr) continue;
     std::string range(t, static_cast<size_t>(slash - t) + 1);
     range += '*';
-    if (has(range.data(), range.size())) return true;
+    if (contains(accept, len, range.data(), range.size())) return true;
   }
   return false;
 }
@@ -514,19 +524,15 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   mrb_state* mrb = mrb_;
   const int ai = mrb_gc_arena_save(mrb);
   mrb_value ctx = mrb_hash_new(mrb);
-  const auto put = [&](const char* key, const char* val, size_t len) {
-    mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, key),
-                 mrb_str_new(mrb, val, static_cast<mrb_int>(len)));
-  };
   mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
-  put("title", status_title(status), std::strlen(status_title(status)));
-  put("source", status_source(status), std::strlen(status_source(status)));
-  if (f.target != nullptr && f.target_len != 0) put("target", f.target, f.target_len);
-  if (f.method != nullptr && f.method_len != 0) put("method", f.method, f.method_len);
-  if (f.allow != nullptr && f.allow_len != 0) put("allow", f.allow, f.allow_len);
-  if (f.message != nullptr && f.message_len != 0) put("message", f.message, f.message_len);
+  hash_put_str(mrb, ctx, "title", status_title(status), std::strlen(status_title(status)));
+  hash_put_str(mrb, ctx, "source", status_source(status), std::strlen(status_source(status)));
+  if (f.target != nullptr && f.target_len != 0) hash_put_str(mrb, ctx, "target", f.target, f.target_len);
+  if (f.method != nullptr && f.method_len != 0) hash_put_str(mrb, ctx, "method", f.method, f.method_len);
+  if (f.allow != nullptr && f.allow_len != 0) hash_put_str(mrb, ctx, "allow", f.allow, f.allow_len);
+  if (f.message != nullptr && f.message_len != 0) hash_put_str(mrb, ctx, "message", f.message, f.message_len);
   if (f.backtrace != nullptr && f.backtrace_len != 0) {
-    put("backtrace", f.backtrace, f.backtrace_len);
+    hash_put_str(mrb, ctx, "backtrace", f.backtrace, f.backtrace_len);
   }
   const int16_t cslot = status < 600 ? cat_index_[status] : 0;
   if (cslot > 0) {

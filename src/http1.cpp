@@ -27,6 +27,91 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
 using http::kDateLen;
 using http::kDatePlaceholder;
 
+// RFC 9112: what the FRAMER reads out of the head - the fields 9110's
+// header_switch hands back because their meaning is the connection's,
+// not the resource's.
+struct WireFacts {
+  size_t content_length = 0;
+  const char* ws_key = nullptr;
+  size_t ws_key_len = 0;
+  int ws_version = 0;
+  uint16_t err = 0;
+  bool have_cl = false;
+  bool have_te = false;
+  bool have_host = false;
+  bool conn_close = false;
+  bool conn_keep = false;
+  bool up_ws = false;
+  bool conn_upgrade = false;
+};
+
+// RFC 9112 6.1/6.3, 7.6.1, RFC 6455 4.1: one such field.
+void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t nl,
+                      const char* v, size_t vl) {
+  if (w.err != 0) return;
+  switch (nl) {
+    case 14:
+      if (http::tok_eq(n, nl, "content-length", 14)) {
+        if (WM_H1_UNLIKELY(w.have_cl)) {
+          w.err = 400;
+          return;
+        }
+        w.have_cl = true;
+        switch (http::parse_content_length(v, vl, &w.content_length)) {
+          case http::ClStatus::kOk: break;
+          case http::ClStatus::kBad: w.err = 400; break;
+          case http::ClStatus::kOverflow: w.err = 413; break;
+        }
+      }
+      break;
+    case 17:
+      if (http::tok_eq(n, nl, "transfer-encoding", 17)) w.have_te = true;
+      else if (http::tok_eq(n, nl, "sec-websocket-key", 17)) {
+        w.ws_key = v;
+        w.ws_key_len = vl;
+      }
+      break;
+    case 4:
+      if (http::tok_eq(n, nl, "host", 4)) {
+        if (WM_H1_UNLIKELY(w.have_host)) w.err = 400;
+        w.have_host = true;
+      }
+      break;
+    case 10:
+      if (http::tok_eq(n, nl, "user-agent", 10)) {
+        vals.log_ua = v;
+        vals.log_ua_len = vl;
+      } else if (http::tok_eq(n, nl, "connection", 10)) {
+        if (conn_has(v, vl, "close", 5)) w.conn_close = true;
+        else if (conn_has(v, vl, "keep-alive", 10)) w.conn_keep = true;
+        if (conn_has(v, vl, "upgrade", 7)) w.conn_upgrade = true;
+      }
+      break;
+    case 7:
+      if (http::tok_eq(n, nl, "referer", 7)) {
+        vals.log_ref = v;
+        vals.log_ref_len = vl;
+        break;
+      }
+      if (http::tok_eq(n, nl, "upgrade", 7)) {
+        w.up_ws = http::tok_eq(v, vl, "websocket", 9);
+      }
+      break;
+    case 21:
+      if (http::tok_eq(n, nl, "sec-websocket-version", 21)) {
+        w.ws_version = 0;
+        for (size_t j = 0; j < vl; j++) {
+          if (v[j] < '0' || v[j] > '9') { w.ws_version = -1; break; }
+          w.ws_version = w.ws_version * 10 + (v[j] - '0');
+          if (w.ws_version > 999) { w.ws_version = -1; break; }
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 // RFC 9112 3/9.3: the head ONE bound run spelled for itself - status line,
 // Date, its own field lines, the framing this connection asked for. No
 // prebuilt head can take this shape, so it is spelled byte by byte.
@@ -52,24 +137,43 @@ void spell_head(std::string& sink, uint16_t status, const char* date, const std:
 }
 }
 
+// One of build_variants' three spellings, its date offset noted.
+void Http1::build_one_variant(Resp& r, uint16_t status, const char* extra,
+                              const char* body, const char* date, const char* conn) {
+  r.bytes.clear();
+  char line[16];
+  line[0] = static_cast<char>('0' + status / 100);
+  line[1] = static_cast<char>('0' + (status / 10) % 10);
+  line[2] = static_cast<char>('0' + status % 10);
+  line[3] = '\0';
+  r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
+  r.bytes.append("\r\nDate: ");
+  r.date_off = r.bytes.size();
+  r.bytes.append(date).append("\r\n").append(conn).append(extra).append(body);
+}
+
+// One prebuilt head with its trailing `cut` bytes left off.
+void Http1::assign_without_tail(const Resp& src, Resp& dst, size_t cut) {
+  dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
+  dst.date_off = src.date_off;
+}
+
+// A 200 or 500 head that stops before Content-Length, for a body the run
+// has yet to produce. `enc` carries whatever Vary/Content-Encoding applies.
+void Http1::build_open_prefix(Resp& r, const char* status_line, const char* conn,
+                              const std::string& extra, const char* enc) {
+  r.bytes.clear();
+  r.bytes.append(status_line).append("\r\nDate: ");
+  r.date_off = r.bytes.size();
+  r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(extra).append(enc);
+}
+
 // RFC 9112 9.3: one status prebuilt in all three connection spellings.
 void Http1::build_variants(Variants& v, uint16_t status, const char* extra, const char* body,
                            const char* date) {
-  const auto build = [&](Resp& r, const char* conn) {
-    r.bytes.clear();
-    char line[16];
-    line[0] = static_cast<char>('0' + status / 100);
-    line[1] = static_cast<char>('0' + (status / 10) % 10);
-    line[2] = static_cast<char>('0' + status % 10);
-    line[3] = '\0';
-    r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
-    r.bytes.append("\r\nDate: ");
-    r.date_off = r.bytes.size();
-    r.bytes.append(date).append("\r\n").append(conn).append(extra).append(body);
-  };
-  build(v.plain, "");
-  build(v.keep, "Connection: keep-alive\r\n");
-  build(v.close, "Connection: close\r\n");
+  build_one_variant(v.plain, status, extra, body, date, "");
+  build_one_variant(v.keep, status, extra, body, date, "Connection: keep-alive\r\n");
+  build_one_variant(v.close, status, extra, body, date, "Connection: close\r\n");
 }
 
 // RFC 9110 15: one status into the shared store, date offset kept - and
@@ -122,25 +226,15 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     b.h2_data200.append(b.konst.body);
   }
 
-  {
-    const size_t blen = b.konst.body.size();
-    const auto strip = [&](const Resp& src, Resp& dst) {
-      dst.bytes.assign(src.bytes, 0, src.bytes.size() - blen);
-      dst.date_off = src.date_off;
-    };
-    strip(ok.plain, b.ok_head.plain);
-    strip(ok.keep, b.ok_head.keep);
-    strip(ok.close, b.ok_head.close);
-  }
+  const size_t blen = b.konst.body.size();
+  assign_without_tail(ok.plain, b.ok_head.plain, blen);
+  assign_without_tail(ok.keep, b.ok_head.keep, blen);
+  assign_without_tail(ok.close, b.ok_head.close, blen);
   if (b.dynamic_body) {
     const size_t cut = ok_tail.size();
-    const auto prefix = [&](const Resp& src, Resp& dst) {
-      dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
-      dst.date_off = src.date_off;
-    };
-    prefix(ok.plain, b.ok_prefix.plain);
-    prefix(ok.keep, b.ok_prefix.keep);
-    prefix(ok.close, b.ok_prefix.close);
+    assign_without_tail(ok.plain, b.ok_prefix.plain, cut);
+    assign_without_tail(ok.keep, b.ok_prefix.keep, cut);
+    assign_without_tail(ok.close, b.ok_prefix.close, cut);
   }
   b.index[200] = static_cast<uint16_t>(store_.size());
   {
@@ -173,31 +267,21 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   b.gzip_ok = b.dynamic_body && res->gzip_offered &&
               http::compressible_media_type(b.konst.content_type);
   if (b.gzip_ok) {
-    const auto buildv = [&](Resp& r, const char* conn, const char* enc) {
-      r.bytes.clear();
-      r.bytes.append("HTTP/1.1 200 OK\r\nDate: ");
-      r.date_off = r.bytes.size();
-      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra).append(enc);
-    };
-    buildv(b.ok_prefix_vary.plain, "", "Vary: Accept-Encoding\r\n");
-    buildv(b.ok_prefix_vary.keep, "Connection: keep-alive\r\n", "Vary: Accept-Encoding\r\n");
-    buildv(b.ok_prefix_vary.close, "Connection: close\r\n", "Vary: Accept-Encoding\r\n");
-    buildv(b.ok_prefix_gzip.plain, "", "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
-    buildv(b.ok_prefix_gzip.keep, "Connection: keep-alive\r\n",
-           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
-    buildv(b.ok_prefix_gzip.close, "Connection: close\r\n",
-           "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
+    static const char kOk[] = "HTTP/1.1 200 OK";
+    static const char kVary[] = "Vary: Accept-Encoding\r\n";
+    static const char kGzip[] = "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n";
+    build_open_prefix(b.ok_prefix_vary.plain, kOk, "", ok_extra, kVary);
+    build_open_prefix(b.ok_prefix_vary.keep, kOk, "Connection: keep-alive\r\n", ok_extra, kVary);
+    build_open_prefix(b.ok_prefix_vary.close, kOk, "Connection: close\r\n", ok_extra, kVary);
+    build_open_prefix(b.ok_prefix_gzip.plain, kOk, "", ok_extra, kGzip);
+    build_open_prefix(b.ok_prefix_gzip.keep, kOk, "Connection: keep-alive\r\n", ok_extra, kGzip);
+    build_open_prefix(b.ok_prefix_gzip.close, kOk, "Connection: close\r\n", ok_extra, kGzip);
   }
   if (b.bound) {
-    const auto build = [&](Resp& r, const char* conn) {
-      r.bytes.clear();
-      r.bytes.append("HTTP/1.1 500 Internal Server Error\r\nDate: ");
-      r.date_off = r.bytes.size();
-      r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(ok_extra);
-    };
-    build(b.err_prefix.plain, "");
-    build(b.err_prefix.keep, "Connection: keep-alive\r\n");
-    build(b.err_prefix.close, "Connection: close\r\n");
+    static const char kErr[] = "HTTP/1.1 500 Internal Server Error";
+    build_open_prefix(b.err_prefix.plain, kErr, "", ok_extra, "");
+    build_open_prefix(b.err_prefix.keep, kErr, "Connection: keep-alive\r\n", ok_extra, "");
+    build_open_prefix(b.err_prefix.close, kErr, "Connection: close\r\n", ok_extra, "");
     h2_build_block(b.h2_err, 500, &b.konst.content_type, nullptr);
   }
 }
@@ -215,32 +299,35 @@ Http1::Http1(const AppInput* apps, size_t napps, Assets* assets) : assets_(asset
   build(apps, napps);
 }
 
+// RFC 9110 15: one status' h1 spellings and its h2 block, the first time
+// the flow graph or a framer names it.
+void Http1::stock_status(bool have[600], uint16_t s) {
+  if (have[s]) return;
+  have[s] = true;
+  if (s == 204 || s == 304) build_status(s, "", "\r\n");
+  else build_status(s, "", "Content-Length: 0\r\n\r\n");
+  H2Block b;
+  h2_build_block(b, s, nullptr, nullptr);
+  h2_store_.push_back(std::move(b));
+}
+
 // RFC 9110 15: the status supply, the bundles and the asset blocks, at setup.
 void Http1::build(const AppInput* apps, size_t napps) {
   store_.reserve(32);
   bool have[600] = {};
-  const auto add = [&](uint16_t s) {
-    if (have[s]) return;
-    have[s] = true;
-    if (s == 204 || s == 304) build_status(s, "", "\r\n");
-    else build_status(s, "", "Content-Length: 0\r\n\r\n");
-    H2Block b;
-    h2_build_block(b, s, nullptr, nullptr);
-    h2_store_.push_back(std::move(b));
-  };
   for (const auto& f : flow::kFlow) {
-    if (f.on_true.status != 0) add(f.on_true.status);
-    if (f.on_false.status != 0) add(f.on_false.status);
+    if (f.on_true.status != 0) stock_status(have, f.on_true.status);
+    if (f.on_false.status != 0) stock_status(have, f.on_false.status);
   }
-  add(400);
-  add(411);
-  add(413);
-  add(431);
-  add(404);
+  stock_status(have, 400);
+  stock_status(have, 411);
+  stock_status(have, 413);
+  stock_status(have, 431);
+  stock_status(have, 404);
   // response.file answers out of this store too, and index_ defaults to slot
   // 0 - an absent status would quietly spell whatever lives there.
-  add(500);
-  add(304);
+  stock_status(have, 500);
+  stock_status(have, 304);
 
   size_t total = 0;
   for (size_t a = 0; a < napps; a++) total += apps[a].nroutes;
@@ -837,104 +924,32 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     if (WM_H1_UNLIKELY(ret <= 0)) return fail(st, 400, sink);
     if (WM_H1_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, 431, sink);
 
-    size_t content_length = 0;
-    bool have_cl = false, have_te = false, have_host = false;
-    bool conn_close = false, conn_keep = false;
-    bool up_ws = false, conn_upgrade = false;
-    const char* ws_key = nullptr;
-    size_t ws_key_len = 0;
-    int ws_version = 0;
-    uint16_t wire_err = 0;
+    WireFacts w;
     flow::ReqFacts facts;
     http::ReqValues vals;
     facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      http::header_switch(
-          h.name, h.name_len, h.value, h.value_len, facts, vals,
-          [&](const char* n, size_t nl, const char* v, size_t vl) {
-            if (wire_err != 0) return;
-            switch (nl) {
-              case 14:
-                if (http::tok_eq(n, nl, "content-length", 14)) {
-                  if (WM_H1_UNLIKELY(have_cl)) {
-                    wire_err = 400;
-                    return;
-                  }
-                  have_cl = true;
-                  switch (http::parse_content_length(v, vl, &content_length)) {
-                    case http::ClStatus::kOk: break;
-                    case http::ClStatus::kBad: wire_err = 400; break;
-                    case http::ClStatus::kOverflow: wire_err = 413; break;
-                  }
-                }
-                break;
-              case 17:
-                if (http::tok_eq(n, nl, "transfer-encoding", 17)) have_te = true;
-                else if (http::tok_eq(n, nl, "sec-websocket-key", 17)) {
-                  ws_key = v;
-                  ws_key_len = vl;
-                }
-                break;
-
-              case 4:
-                if (http::tok_eq(n, nl, "host", 4)) {
-                  if (WM_H1_UNLIKELY(have_host)) wire_err = 400;
-                  have_host = true;
-                }
-                break;
-              case 10:
-                if (http::tok_eq(n, nl, "user-agent", 10)) {
-                  vals.log_ua = v;
-                  vals.log_ua_len = vl;
-                } else if (http::tok_eq(n, nl, "connection", 10)) {
-                  if (conn_has(v, vl, "close", 5)) conn_close = true;
-                  else if (conn_has(v, vl, "keep-alive", 10)) conn_keep = true;
-                  if (conn_has(v, vl, "upgrade", 7)) conn_upgrade = true;
-                }
-                break;
-              case 7:
-                if (http::tok_eq(n, nl, "referer", 7)) {
-                  vals.log_ref = v;
-                  vals.log_ref_len = vl;
-                  break;
-                }
-                if (http::tok_eq(n, nl, "upgrade", 7)) {
-                  up_ws = http::tok_eq(v, vl, "websocket", 9);
-                }
-                break;
-
-              case 21:
-                if (http::tok_eq(n, nl, "sec-websocket-version", 21)) {
-                  ws_version = 0;
-                  for (size_t j = 0; j < vl; j++) {
-                    if (v[j] < '0' || v[j] > '9') { ws_version = -1; break; }
-                    ws_version = ws_version * 10 + (v[j] - '0');
-                    if (ws_version > 999) { ws_version = -1; break; }
-                  }
-                }
-                break;
-              default:
-                break;
-            }
-          });
+      if (http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals)) {
+        read_wire_header(w, vals, h.name, h.name_len, h.value, h.value_len);
+      }
     }
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
-    if (WM_H1_UNLIKELY(wire_err != 0)) return fail(st, wire_err, sink, lflags);
-    if (WM_H1_UNLIKELY(have_te)) return fail(st, have_cl ? 400 : 411, sink, lflags);
-    if (WM_H1_UNLIKELY(minor >= 1 && !have_host)) return fail(st, 400, sink, lflags);
-    if (WM_H1_UNLIKELY(content_length > kMaxBody)) return fail(st, 413, sink, lflags);
+    if (WM_H1_UNLIKELY(w.err != 0)) return fail(st, w.err, sink, lflags);
+    if (WM_H1_UNLIKELY(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
+    if (WM_H1_UNLIKELY(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
+    if (WM_H1_UNLIKELY(w.content_length > kMaxBody)) return fail(st, 413, sink, lflags);
 
-    const bool persist = minor >= 1 ? !conn_close : conn_keep;
+    const bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
 
-    if (WM_H1_UNLIKELY(up_ws && conn_upgrade)) {
+    if (WM_H1_UNLIKELY(w.up_ws && w.conn_upgrade)) {
       const AppSlot& wslot = apps_[st.listener];
       RouteSpans wspans;
       const int wr =
           wslot.ws_table != nullptr ? wslot.ws_table->match(path, path_len, wspans) : -1;
       if (wr >= 0) {
-        if (ws_version != 13) {
+        if (w.ws_version != 13) {
           sink.append("HTTP/1.1 426 Upgrade Required\r\nDate: ");
           sink.append(date_, http::kDateLen);
           sink.append(
@@ -942,12 +957,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
               "Content-Length: 0\r\n\r\n");
           return false;
         }
-        if (facts.method != flow::Method::kGet || ws_key == nullptr) {
+        if (facts.method != flow::Method::kGet || w.ws_key == nullptr) {
           return fail(st, 400, sink, lflags);
         }
         const char* rest = view + off + static_cast<size_t>(ret);
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
-        return ws_upgrade(st, wslot, wr, path, path_len, wspans, ws_key, ws_key_len, headers,
+        return ws_upgrade(st, wslot, wr, path, path_len, wspans, w.ws_key, w.ws_key_len, headers,
                           num_headers, rest, rest_len, sink);
       }
     }
@@ -969,7 +984,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     {
       Round r{st,   nullptr, view, viewlen, off, static_cast<size_t>(ret),
               in_place, method, method_len, path, path_len, minor, persist, head_only,
-              content_length, lflags, facts, vals};
+              w.content_length, lflags, facts, vals};
       const Took took = answer_from_assets(r, sink, plan);
       if (WM_H1_UNLIKELY(took != Took::kNo)) {
         off = r.off;
@@ -1000,8 +1015,8 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       idx = &b->index;
       if (WM_H1_LIKELY(b->bound)) {
         const size_t head_len = static_cast<size_t>(ret);
-        if (content_length != 0 && viewlen - off - head_len < content_length) {
-          st.content_need = content_length - (viewlen - off - head_len);
+        if (w.content_length != 0 && viewlen - off - head_len < w.content_length) {
+          st.content_need = w.content_length - (viewlen - off - head_len);
           const size_t rest = viewlen - off;
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
@@ -1019,9 +1034,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         rv.spans = spans;
         rv.fields = headers;
         rv.field_count = num_headers;
-        if (content_length != 0) {
+        if (w.content_length != 0) {
           rv.content = view + off + head_len;
-          rv.content_len = content_length;
+          rv.content_len = w.content_length;
         }
         accept_gzip = !facts.has_accept_encoding ||
                       http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
@@ -1073,7 +1088,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           Round r{st,   b,        view,      viewlen,  off + static_cast<size_t>(ret),
                   static_cast<size_t>(ret), in_place, method,   method_len,
                   path, path_len, minor,     persist,  head_only,
-                  content_length, lflags,   facts,    vals};
+                  w.content_length, lflags,   facts,    vals};
           if (WM_H1_UNLIKELY(answer_from_file(r, status))) {
             body_.clear();
             have_body = false;
@@ -1222,11 +1237,11 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     }
 
     off += static_cast<size_t>(ret);
-    if (content_length != 0) {
+    if (w.content_length != 0) {
       const size_t avail = viewlen - off;
-      const size_t skip = content_length < avail ? content_length : avail;
+      const size_t skip = w.content_length < avail ? w.content_length : avail;
       off += skip;
-      st.content_skip = content_length - skip;
+      st.content_skip = w.content_length - skip;
     }
     if (WM_H1_UNLIKELY(!persist)) {
       st.carry.clear();
@@ -1294,6 +1309,15 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   return true;
 }
 
+// One line of the access log for an event stream that got an answer.
+void Http1::log_sse(Logger& lg, const Conn& st, const char* method, size_t method_len,
+                    const char* path, size_t path_len, const http::ReqValues& vals,
+                    uint8_t lflags, uint16_t status) {
+  if (!lg.enabled) return;
+  log_access(lg, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
+             vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
+}
+
 // WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111
 // 5.2.2.5 no-store, and this connection never reads another head.
 bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
@@ -1301,21 +1325,15 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
                       const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
                       flow::Method m, const http::ReqValues& vals, uint8_t lflags,
                       std::string& sink) {
-  const auto log = [&](uint16_t status) {
-    if (alog_.enabled) {
-      log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
-                 vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
-    }
-  };
   if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
-    log(405);
+    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 405);
     sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return false;
   }
   if (WM_H1_UNLIKELY(minor < 1)) {
-    log(505);
+    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 505);
     sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -1338,11 +1356,11 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
                         elog_.enabled ? &elog_ : nullptr, refused);
   request_bind(nullptr);
   if (s == nullptr) {
-    log(refused == 0 ? 403 : refused);
+    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, refused == 0 ? 403 : refused);
     return fail(st, refused == 0 ? 403 : refused, sink, lflags);
   }
 
-  log(200);
+  log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 200);
   sink.append("HTTP/1.1 200 OK\r\nDate: ");
   sink.append(date_, http::kDateLen);
   sink.append(

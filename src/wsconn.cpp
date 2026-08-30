@@ -22,6 +22,10 @@ extern "C" {
 
 namespace webmachine {
 namespace wsdeflate {
+// RFC 7692 7.2.2: where inflated bytes go. False stops the pump, which is
+// how the message cap is enforced against a decompression bomb.
+using InflateSink = bool (*)(void* ud, const char* q, size_t qn);
+
 class Codec {
  public:
   Codec() = default;
@@ -38,23 +42,21 @@ class Codec {
   // RFC 7692: what this connection agreed to.
   const Params& params() const { return p_; }
 
-  template <class Sink>
   // RFC 7692 7.2.2: payload bytes as they arrive; the SINK is the only
   // bound, which is the whole decompression-bomb answer.
-  int inflate_some(const char* in, size_t n, Sink&& sink) {
+  int inflate_some(const char* in, size_t n, InflateSink sink, void* ud) {
     if (!inflate_ready()) return -1;
     inf_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in));
     inf_.avail_in = static_cast<uInt>(n);
-    return pump(sink);
+    return pump(sink, ud);
   }
 
-  template <class Sink>
   // RFC 7692 7.2.2 step 1: the four bytes the sender stripped go back on.
-  int inflate_finish(Sink&& sink) {
+  int inflate_finish(InflateSink sink, void* ud) {
     if (!inflate_ready()) return -1;
     inf_.next_in = const_cast<Bytef*>(kSyncTail);
     inf_.avail_in = sizeof(kSyncTail);
-    const int rc = pump(sink);
+    const int rc = pump(sink, ud);
     if (rc != 0) return rc;
     if (p_.client_no_context_takeover || inf_ended_) {
       inflateReset(&inf_);
@@ -120,9 +122,8 @@ class Codec {
     return true;
   }
 
-  template <class Sink>
   // RFC 7692 7.2.2: inflate until zlib stops producing.
-  int pump(Sink& sink) {
+  int pump(InflateSink sink, void* ud) {
     unsigned char buf[8192];
     for (;;) {
       inf_.next_out = buf;
@@ -131,7 +132,7 @@ class Codec {
       if (rc == Z_STREAM_END) inf_ended_ = true;
       else if (rc != Z_OK && rc != Z_BUF_ERROR) return -1;
       const size_t got = sizeof(buf) - inf_.avail_out;
-      if (got != 0 && !sink(reinterpret_cast<const char*>(buf), got)) return -2;
+      if (got != 0 && !sink(ud, reinterpret_cast<const char*>(buf), got)) return -2;
       if (inf_.avail_out != 0) return 0;
     }
   }
@@ -214,6 +215,33 @@ void emit(std::string& sink, uint8_t opcode, const char* p, size_t n, bool rsv1 
 }
 
 // RFC 6455 5.6 / RFC 7692 6: a DATA message, compressed where negotiated.
+// How many of `most` arguments the method takes, or false if it is not
+// defined. A cfunc is handed all of them; a Ruby method only its arity.
+bool method_argc(mrb_state* mrb, struct RClass* klass, mrb_sym sym, int most, int* out_argc) {
+  struct RClass* owner = klass;
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, sym);
+  if (MRB_METHOD_UNDEF_P(m)) return false;
+  int a = most;
+  if (!MRB_METHOD_FUNC_P(m)) {
+    const struct RProc* pr = MRB_METHOD_PROC(m);
+    if (pr != nullptr) {
+      const mrb_int ar = mrb_proc_arity(pr);
+      if (ar >= 0) a = static_cast<int>(ar) < most ? static_cast<int>(ar) : most;
+    }
+  }
+  *out_argc = a;
+  return true;
+}
+
+// RFC 7692 7.2.2: inflated bytes onto the message being assembled, up to
+// the resource's cap. False is what stops a decompression bomb.
+bool msg_cat(void* ud, const char* q, size_t qn) {
+  WsConn* c = static_cast<WsConn*>(ud);
+  if (static_cast<uint64_t>(RSTRING_LEN(c->msg)) + qn > c->res->max_message) return false;
+  mrb_str_cat(c->res->mrb, c->msg, q, qn);
+  return true;
+}
+
 void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size_t n) {
   if (c->codec != nullptr) {
     static std::string scratch;
@@ -394,13 +422,7 @@ bool finish_frame(WsConn* c, std::string& sink) {
   }
   if (!c->fin) return true;
   if (c->msg_deflated) {
-    mrb_state* mrb = c->res->mrb;
-    const size_t max = c->res->max_message;
-    const int rc = c->codec->inflate_finish([&](const char* q, size_t qn) {
-      if (static_cast<uint64_t>(RSTRING_LEN(c->msg)) + qn > max) return false;
-      mrb_str_cat(mrb, c->msg, q, qn);
-      return true;
-    });
+    const int rc = c->codec->inflate_finish(msg_cat, c);
     if (rc != 0) {
       return fail(c, sink, rc == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
     }
@@ -506,12 +528,7 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
         const size_t chunk = take - done < sizeof(tmp) ? take - done : sizeof(tmp);
         ws::unmask_copy(tmp, p + done, chunk, c->mask, c->mask_off + done);
         if (c->msg_deflated) {
-          const size_t max = c->res->max_message;
-          const int rc = c->codec->inflate_some(tmp, chunk, [&](const char* q, size_t qn) {
-            if (static_cast<uint64_t>(RSTRING_LEN(c->msg)) + qn > max) return false;
-            mrb_str_cat(mrb, c->msg, q, qn);
-            return true;
-          });
+          const int rc = c->codec->inflate_some(tmp, chunk, msg_cat, c);
           if (rc != 0) {
             alive = fail(c, sink, rc == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
             broke = true;
@@ -587,29 +604,13 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
 
-  const auto argc_of = [&](mrb_sym sym, int most, int* out_argc) -> bool {
-    struct RClass* owner = out.klass;
-    mrb_method_t m = mrb_method_search_vm(mrb, &owner, sym);
-    if (MRB_METHOD_UNDEF_P(m)) return false;
-    int a = most;
-    if (!MRB_METHOD_FUNC_P(m)) {
-      const struct RProc* pr = MRB_METHOD_PROC(m);
-      if (pr != nullptr) {
-        const mrb_int ar = mrb_proc_arity(pr);
-        if (ar >= 0) a = static_cast<int>(ar) < most ? static_cast<int>(ar) : most;
-      }
-    }
-    *out_argc = a;
-    return true;
-  };
-
-  if (!argc_of(MRB_SYM(on_data), 2, &out.data_argc)) {
+  if (!method_argc(mrb, out.klass, MRB_SYM(on_data), 2, &out.data_argc)) {
     std::snprintf(err, errlen,
                   "route.websocket: the resource defines no on_data - that is the one "
                   "method a websocket resource IS (on_data(data) or on_data(data, binary))");
     return false;
   }
-  out.have_close = argc_of(MRB_SYM(on_close), 2, &out.close_argc);
+  out.have_close = method_argc(mrb, out.klass, MRB_SYM(on_close), 2, &out.close_argc);
 
   {
     struct RClass* meta = mrb_class(mrb, klass);

@@ -305,6 +305,32 @@ bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, co
   return true;
 }
 
+// One run of space- or comma-separated method tokens, marked off in present[].
+bool mark_method_tokens(const char* p, const char* end, bool present[7], const char* name,
+                        char* err, size_t errlen) {
+  while (p < end) {
+    while (p < end && (*p == ' ' || *p == ',')) p++;
+    const char* tok = p;
+    while (p < end && *p != ' ' && *p != ',') p++;
+    if (tok == p) break;
+    bool known = false;
+    for (uint8_t m = 0; m < 6; m++) {
+      const size_t n = std::strlen(kMethodName[m]);
+      if (static_cast<size_t>(p - tok) == n && std::memcmp(tok, kMethodName[m], n) == 0) {
+        present[m] = true;
+        known = true;
+        break;
+      }
+    }
+    if (WM_RES_UNLIKELY(!known)) {
+      std::snprintf(err, errlen, "%s names '%.*s' - outside the compiled method set", name,
+                    static_cast<int>(p - tok), tok);
+      return false;
+    }
+  }
+  return true;
+}
+
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens or
 // webmachine-ruby's Array-of-Strings form.
 bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
@@ -316,31 +342,10 @@ bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name,
     exc_into(mrb, name, err, errlen);
     return false;
   }
-  const auto scan = [&](const char* p, const char* end) -> bool {
-    while (p < end) {
-      while (p < end && (*p == ' ' || *p == ',')) p++;
-      const char* tok = p;
-      while (p < end && *p != ' ' && *p != ',') p++;
-      if (tok == p) break;
-      bool known = false;
-      for (uint8_t m = 0; m < 6; m++) {
-        const size_t n = std::strlen(kMethodName[m]);
-        if (static_cast<size_t>(p - tok) == n && std::memcmp(tok, kMethodName[m], n) == 0) {
-          present[m] = true;
-          known = true;
-          break;
-        }
-      }
-      if (WM_RES_UNLIKELY(!known)) {
-        std::snprintf(err, errlen, "%s names '%.*s' - outside the compiled method set", name,
-                      static_cast<int>(p - tok), tok);
-        return false;
-      }
-    }
-    return true;
-  };
   for (uint8_t m = 0; m < 7; m++) present[m] = false;
-  if (mrb_string_p(v)) return scan(RSTRING_PTR(v), RSTRING_PTR(v) + RSTRING_LEN(v));
+  if (mrb_string_p(v))
+    return mark_method_tokens(RSTRING_PTR(v), RSTRING_PTR(v) + RSTRING_LEN(v), present, name,
+                             err, errlen);
   if (mrb_array_p(v)) {
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
       const mrb_value s = RARRAY_PTR(v)[j];
@@ -348,7 +353,9 @@ bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name,
         std::snprintf(err, errlen, "%s must return method Strings", name);
         return false;
       }
-      if (!scan(RSTRING_PTR(s), RSTRING_PTR(s) + RSTRING_LEN(s))) return false;
+      if (!mark_method_tokens(RSTRING_PTR(s), RSTRING_PTR(s) + RSTRING_LEN(s), present, name, err,
+                              errlen))
+        return false;
     }
     return true;
   }
@@ -566,9 +573,7 @@ void date_line(Run& r, const char* name, size_t nlen, int64_t epoch) {
   field(r, name, nlen, buf, http::kDateLen);
 }
 
-// fsm.rb run: one step's edge, out of the graph table. Split from take so
-// the caller that already holds `f` - the generic node path, which reads
-// it to check f.kind first - does not pay for a second lookup.
+// fsm.rb run: one step's edge, out of the graph table.
 void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f, bool a) {
   const flow::Target& t = a ? f.on_true : f.on_false;
   if (t.status != 0) {
@@ -577,6 +582,13 @@ void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f,
   } else {
     n = t.node;
   }
+}
+
+// The same step for the callers that do not already hold the node's row.
+// The generic node path does - it reads f.kind first - and calls the form
+// above rather than pay for a second flow::kFlow[n] lookup of the same node.
+void take_edge(Node& n, uint16_t& status, bool& halted, bool a) {
+  take_edge(n, status, halted, flow::kFlow[static_cast<size_t>(n)], a);
 }
 
 mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
@@ -1131,21 +1143,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   uint16_t status = 0;
   bool halted = false;
   int& chosen = r.chosen;
-  const auto take = [&](bool a) {
-    take_edge(n, status, halted, flow::kFlow[static_cast<size_t>(n)], a);
-  };
-
-  // fsm.rb run: one step's edge, out of the graph table. Split so the
-  // one caller that already holds `f` (the generic node path below,
-  // which reads it to check f.kind first) does not pay for a second
-  // flow::kFlow[n] lookup of the same node take(r) would otherwise redo.
-
   while (!halted) {
     switch (n) {
       case Node::kB12: {
         if (!res.cb_known_methods.has) break;
         marshal_methods(r, res.cb_known_methods);
-        take(methods_contain(r));
+        take_edge(n, status, halted, methods_contain(r));
         continue;
       }
       case Node::kB10: {
@@ -1153,7 +1156,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         marshal_methods(r, res.cb_allowed_methods);
         const bool ok = methods_contain(r);
         if (!ok) allow_line(r);
-        take(ok);
+        take_edge(n, status, halted, ok);
         continue;
       }
       case Node::kB8: {
@@ -1163,7 +1166,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (res.node_argc[i] != 0) a = arg_for(r, n);
         const mrb_value v = nodecall(r, n, res.node_argc[i], &a);
         if (mrb_true_p(v)) {
-          take(true);
+          take_edge(n, status, halted, true);
           continue;
         }
         if (mrb_integer_p(v)) {
@@ -1271,7 +1274,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take(res.etag_present && vals != nullptr && vals->if_match != nullptr &&
+        take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_match != nullptr &&
              http::etag_list_match(vals->if_match, vals->if_match_len, res.etag_value.data(),
                                    res.etag_value.size(), false));
         continue;
@@ -1283,7 +1286,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take(res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
+        take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
              http::etag_list_match(vals->if_none_match, vals->if_none_match_len,
                                    res.etag_value.data(), res.etag_value.size(), true));
         continue;
@@ -1291,14 +1294,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       case Node::kH12: {
         epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                    &res.last_modified_present, &res.last_modified_epoch);
-        take(res.last_modified_present && vals != nullptr &&
+        take_edge(n, status, halted, res.last_modified_present && vals != nullptr &&
              res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
         epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                    &res.last_modified_present, &res.last_modified_epoch);
-        take(!res.last_modified_present || vals == nullptr ||
+        take_edge(n, status, halted, !res.last_modified_present || vals == nullptr ||
              res.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
       }
@@ -1320,7 +1323,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take(false);
+        take_edge(n, status, halted, false);
         continue;
       }
       case Node::kN11: {
@@ -1436,11 +1439,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kO20: {
-        take(res.run_have_body);
+        take_edge(n, status, halted, res.run_have_body);
         continue;
       }
       case Node::kP11: {
-        take(headers_has_location(hdrs));
+        take_edge(n, status, halted, headers_has_location(hdrs));
         continue;
       }
       default:

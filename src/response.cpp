@@ -367,6 +367,17 @@ mrb_value resp_error_set(mrb_state* mrb, mrb_value self) {
 // plus the optional attributes webmachine-ruby's Cookie#to_s emits.
 // Several cookies mean several lines - this always APPENDS, never
 // replaces, unlike every other header write in this file.
+// RFC 6265 4.1.1: one cookie-av, if the app named it at all.
+void append_cookie_attr(mrb_state* mrb, std::string& line, mrb_value attrs, mrb_sym sym,
+                        const char* label) {
+  const mrb_value v = mrb_hash_get(mrb, attrs, mrb_symbol_value(sym));
+  if (mrb_nil_p(v)) return;
+  const mrb_value s = mrb_obj_as_string(mrb, v);
+  line.append("; ", 2);
+  line.append(label);
+  line.append(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+}
+
 mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   if (r->run_headers == nullptr) {
@@ -387,18 +398,10 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   line.append(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
 
   if (mrb_hash_p(attrs)) {
-    const auto add = [&](mrb_sym sym, const char* label) {
-      const mrb_value v = mrb_hash_get(mrb, attrs, mrb_symbol_value(sym));
-      if (mrb_nil_p(v)) return;
-      const mrb_value s = mrb_obj_as_string(mrb, v);
-      line.append("; ", 2);
-      line.append(label);
-      line.append(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
-    };
-    add(MRB_SYM(path), "Path=");
-    add(MRB_SYM(domain), "Domain=");
-    add(MRB_SYM(max_age), "Max-Age=");
-    add(MRB_SYM(expires), "Expires=");
+    append_cookie_attr(mrb, line, attrs, MRB_SYM(path), "Path=");
+    append_cookie_attr(mrb, line, attrs, MRB_SYM(domain), "Domain=");
+    append_cookie_attr(mrb, line, attrs, MRB_SYM(max_age), "Max-Age=");
+    append_cookie_attr(mrb, line, attrs, MRB_SYM(expires), "Expires=");
     if (mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(secure))))) {
       line.append("; Secure", 8);
     }

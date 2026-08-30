@@ -14,6 +14,24 @@
 
 namespace webmachine {
 namespace {
+// The order find_exact then searches in. A type, not a function pointer:
+// the sort inlines the comparison the way it did the lambda this replaced.
+struct ByFileName {
+  bool operator()(const AssetEntry& a, const AssetEntry& b) const {
+    return a.file_name < b.file_name;
+  }
+};
+
+// The same order against a name that is not an entry yet.
+struct NameBeforeKey {
+  bool operator()(const AssetEntry& a, const std::pair<const char*, size_t>& key) const {
+    const size_t n = a.file_name.size() < key.second ? a.file_name.size() : key.second;
+    const int c = std::memcmp(a.file_name.data(), key.first, n);
+    if (c != 0) return c < 0;
+    return a.file_name.size() < key.second;
+  }
+};
+
 // RFC 9110 5.6.7: the archive's mtime as Last-Modified; 0 serves none.
 bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
   if (t <= 0) return false;
@@ -157,9 +175,7 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     entries_.push_back(std::move(e));
   }
 
-  std::stable_sort(
-      entries_.begin(), entries_.end(),
-      [](const AssetEntry& a, const AssetEntry& b) { return a.file_name < b.file_name; });
+  std::stable_sort(entries_.begin(), entries_.end(), ByFileName());
   for (size_t i = 0; i + 1 < entries_.size();) {
     if (entries_[i].file_name == entries_[i + 1].file_name) entries_.erase(entries_.begin() + i);
     else i++;
@@ -210,14 +226,8 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
 
 // One entry, by name, exact bytes.
 const AssetEntry* Assets::find_exact(const char* name, size_t len) const {
-  const auto it = std::lower_bound(
-      entries_.begin(), entries_.end(), std::pair<const char*, size_t>(name, len),
-      [](const AssetEntry& a, const std::pair<const char*, size_t>& key) {
-        const size_t n = a.file_name.size() < key.second ? a.file_name.size() : key.second;
-        const int c = std::memcmp(a.file_name.data(), key.first, n);
-        if (c != 0) return c < 0;
-        return a.file_name.size() < key.second;
-      });
+  const auto it = std::lower_bound(entries_.begin(), entries_.end(),
+                                   std::pair<const char*, size_t>(name, len), NameBeforeKey());
   if (it == entries_.end() || it->file_name.size() != len ||
       std::memcmp(it->file_name.data(), name, len) != 0) {
     return nullptr;
