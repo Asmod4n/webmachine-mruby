@@ -35,89 +35,41 @@ must be 0.
 No methods with `!`. Public capability questions are `?` predicates
 (pattern: `KTLS::Socket#ktls_available?`).
 
-## mruby here has C++ exceptions and nothing else
+## The rules are in .DESIGN.md, not here
 
-Every build in this tree defines `MRB_USE_CXX_EXCEPTION`. There is no
-`setjmp`/`longjmp` path, and there is no reason to weigh one against the
-other or to explain the difference again: an mruby raise IS a C++ throw
-here, and it unwinds through C++ frames.
+The commandments are at the top of `.DESIGN.md`, from the founding
+commit, and the sections under them carry the reasoning:
 
-Two consequences that follow from it, so neither has to be re-derived:
+- `#cold-paths` - the happy path is the straight line, nothing is
+  annotated, and `nm -S` decides whether a hint helped. It already
+  names the problem: feed_parse, run_engine and h2_answer are ~14 KB
+  of machine code each and one h1 request walks two of them, against a
+  32 KiB L1i.
+- `#mruby-raises` - mruby here is built with `MRB_USE_CXX_EXCEPTION`,
+  always. A raise IS a C++ throw, destructors run, and a failure is
+  raised rather than reported through `char* err` and `return false`.
+- `#decide-then-do` - compute the round as a value, perform it in one
+  place.
 
-- `mrb_raise` from inside the reactor unwinds out of `Webmachine.run`
-  and ends the server. That is what `Ring::fatal` is for, and it is
-  right only when the reactor cannot go on at all.
-- A failure that belongs to ONE connection must therefore not raise
-  into the VM. It throws a C++ exception the reactor itself catches.
+Read them before adding a rule. Two sources for one fact is one too
+many, which is itself one of them.
 
-`mrb_noreturn` resolves to nothing under `-std=c++20` (`common.h` asks
+## What is only true of the build
+
+One `.cpp` anywhere makes mruby compile the WHOLE tree with the C++
+compiler. There is one in this gem, so every `.c` here is C++ too, and
+`MRB_USE_CXX_EXCEPTION` follows from that rather than from a choice
+made per file.
+
+`mrb_noreturn` resolves to nothing under `-std=c++20` - `common.h` asks
 for `__GNUC__ && !__STRICT_ANSI__`, and a strict `-std=` defines
-`__STRICT_ANSI__`), so a function that ends in `mrb_raise` still needs
-`__builtin_unreachable()` to keep the compiler quiet.
+`__STRICT_ANSI__` - so a function ending in `mrb_raise` still needs
+`__builtin_unreachable()`.
 
-## Nothing fails quietly
-
-A connection that is dropped because something went wrong says what
-went wrong. Not a bare `begin_close`: those are for the ordinary ends -
-a peer that left, a timeout, a close the App asked for.
-
-The rule exists because it was broken: twenty silent `begin_close`
-calls turned a TLS handover that never happened into "the server sent
-nothing", and six rounds of guessing went into finding out which of
-them it was.
-
-## Prove it, then say it
-
-Nothing is claimed here without something that shows it. A measurement,
-a probe under `tools/`, a test that fails before and passes after. "It
-should work" is not a result, and neither is a green build.
-
-## Only debug is built while developing
+Only the debug config is built while developing:
 
     MRUBY_CONFIG=build_config_debug.rb rake compile
     MRUBY_CONFIG=build_config_debug.rb rake test
 
 `portable_smoke` failing at the end of a debug `rake test` is expected -
 there is no portable binary. Nothing else may fail.
-
-## Comments say what a thing is, and where it comes from
-
-Never why, never a restatement of the code below them. An RFC clause, a
-kernel ABI, a `.DESIGN.md` section by name. Function names say what they
-return or do.
-
-## One C++ file makes the whole build C++
-
-mruby compiles the entire tree with the C++ compiler as soon as a single
-`.cpp` exists in it. There is one in this gem, so every `.c` here is
-compiled as C++ too, and `MRB_USE_CXX_EXCEPTION` is not a choice
-somebody made per file - it follows from that.
-
-## How a long function is shaped
-
-Three rules, and they are one shape. LMDB's `mdb.c` is the reference -
-`mdb_page_alloc` and its neighbours are what this looks like carried
-all the way.
-
-**The happy path is the function.** A row of `WM_UNLIKELY` guards, then
-the straight line every request takes. The BODY of each guard lives in
-a function of its own. Not the reverse: extracting the tail and leaving
-the checks inline is the mistake, because the tail is the path and the
-checks are not.
-
-**Locals are declared once, at the top, one per type.** `int rc` for
-every return code in the function, not one per call. `size_t n` for
-every length. Reused down the body, never redeclared in a block.
-
-**State that crosses into those functions goes in a struct**, passed by
-reference. What only the happy path touches stays a local.
-
-And the last rule outranks the other three: measure it.
-
-    nm -S --demangle <obj> | sort -rn
-
-at the flags the bench builds with (`-O3 -march=native`), before and
-after. A change that grows the hot text has bought the opposite of what
-it was for, whatever it looks like on the page. .DESIGN.md's "The happy
-path is the function; everything else is a call" carries the numbers
-from the time this was got wrong.
