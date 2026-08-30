@@ -351,6 +351,17 @@ struct ReqFacts {
   bool response_has_body = true;
   bool plain = true;
   bool no_track = false;
+
+  // RFC 9110 12.5: did the request name any of the four negotiation fields?
+  // Derived, never stored - a second copy is a second thing to keep true.
+  constexpr bool names_a_conneg_field() const {
+    return has_accept || has_accept_language || has_accept_charset || has_accept_encoding;
+  }
+  // RFC 9110 13: the same question for the four conditional fields.
+  constexpr bool names_a_conditional_field() const {
+    return has_if_match || has_if_unmodified_since || has_if_none_match ||
+           has_if_modified_since;
+  }
 };
 
 // NO RFC: the fold's own result. What a resource answered at SETUP, once,
@@ -394,9 +405,20 @@ constexpr bool eval_request(Node id, const ReqFacts& r) {
 
 // RFC 9110: the graph, run with this request's facts and a resource's
 // konst answers. Zero VM entries.
+// RFC 9110 12.5: c4/d5/e6/f7 are reachable only through the has_* node above
+// each of them, so a request naming none of the four fields walks c3 -> d4 ->
+// e5 -> f6 -> g7 and can say nothing on the way. The absence IS the answer.
+inline constexpr Node kAfterConneg = Node::kG7;
+// RFC 9110 13: the same shape - g9/g11, h11/h12, i13/k13/j18 and l14/l15/l17
+// all hang off their own has_*, so a request naming none of the four walks
+// g8 -> h10 -> i12 -> l13 -> m16.
+inline constexpr Node kAfterConditional = Node::kM16;
+
 constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
   Node n = Node::kB13;
   for (;;) {
+    if (n == Node::kC3 && !req.names_a_conneg_field()) n = kAfterConneg;
+    else if (n == Node::kG8 && !req.names_a_conditional_field()) n = kAfterConditional;
     const FlowNode& f = kFlow[static_cast<size_t>(n)];
     // c4 reads the request as surely as any kRequest node does - it is the
     // client's Accept against this resource's types, and no fold can bake
@@ -426,6 +448,47 @@ constexpr bool reaches_a_node_that_reads_the_request(Node n, const KonstAnswers&
   if (t.status != 0) return false;
   return reaches_a_node_that_reads_the_request(t.node, k, seen);
 }
+
+// The two skips above are claims about the graph, so the graph is asked.
+// From `from`, with the block's fields absent, follow the edges the way walk
+// does and report where it comes out. kNodeCount is the give-up bound: a
+// halt or a wrong exit both fail the assert below.
+constexpr Node lands_on(Node from, const ReqFacts& req, const KonstAnswers& k) {
+  Node n = from;
+  for (size_t step = 0; step < kNodeCount; step++) {
+    const FlowNode& f = kFlow[static_cast<size_t>(n)];
+    const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
+                         ? eval_request(n, req)
+                         : k.ans[static_cast<size_t>(n)];
+    const Target& t = ans ? f.on_true : f.on_false;
+    if (t.status != 0) return Node::kB13;  // halted: not an exit
+    n = t.node;
+    if (n == kAfterConneg || n == kAfterConditional) return n;
+  }
+  return Node::kB13;
+}
+
+// Neither block's chain reads konst - c4/d5/e6/f7 and g9/g11/h11/h12/i13/
+// k13/l14/l15/l17 all hang off a has_* that is false here - so both konst
+// extremes have to give the same exit, for every method.
+constexpr bool block_skips_are_the_graphs(Method m) {
+  ReqFacts absent;
+  absent.method = m;
+  KonstAnswers all_false{};
+  KonstAnswers all_true{};
+  for (size_t i = 0; i < kNodeCount; i++) all_true.ans[i] = true;
+  return lands_on(Node::kC3, absent, all_false) == kAfterConneg &&
+         lands_on(Node::kC3, absent, all_true) == kAfterConneg &&
+         lands_on(Node::kG8, absent, all_false) == kAfterConditional &&
+         lands_on(Node::kG8, absent, all_true) == kAfterConditional;
+}
+static_assert(block_skips_are_the_graphs(Method::kGet));
+static_assert(block_skips_are_the_graphs(Method::kHead));
+static_assert(block_skips_are_the_graphs(Method::kPost));
+static_assert(block_skips_are_the_graphs(Method::kPut));
+static_assert(block_skips_are_the_graphs(Method::kDelete));
+static_assert(block_skips_are_the_graphs(Method::kOptions));
+static_assert(block_skips_are_the_graphs(Method::kOther));
 
 // RFC 9110: what the graph would say when it has nothing to decide -
 // from the SAME walk, run once with every header fact false.
@@ -1522,10 +1585,32 @@ inline bool field_value_ok(const char* p, size_t n) {
   return true;
 }
 
+// RFC 9110 5.1: a field name is known by its length first. The switches
+// below have a case for these and no other, so a name of any other length is
+// none of them - one shift and one test, before a byte is compared. The mask
+// is derived from the list, so a new case cannot forget to widen it.
+constexpr uint32_t lengths_mask(const size_t* v, size_t n) {
+  uint32_t m = 0;
+  for (size_t i = 0; i < n; i++) m |= 1u << v[i];
+  return m;
+}
+constexpr bool length_is_one_of(size_t nlen, uint32_t mask) {
+  return nlen < 32 && ((mask >> nlen) & 1u) != 0;
+}
+
+// RFC 9110: dnt(3) host(4) range(5) accept/cookie(6) sec-gpc(7)
+// if-match/if-range(8) content-type(12) authorization/if-none-match(13)
+// accept-charset(14) accept-encoding/accept-language(15)
+// if-modified-since(17) if-unmodified-since(19).
+inline constexpr size_t kFieldLengths[] = {3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 17, 19};
+inline constexpr uint32_t kFieldLengthMask =
+    lengths_mask(kFieldLengths, sizeof(kFieldLengths) / sizeof(kFieldLengths[0]));
+
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
 static inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
-                          flow::ReqFacts& facts, ReqValues& vals) {
+                                 flow::ReqFacts& facts, ReqValues& vals) {
+  if (!length_is_one_of(nlen, kFieldLengthMask)) return true;
   switch (nlen) {
     case 3:
       if (tok_eq(name, nlen, "dnt", 3)) {

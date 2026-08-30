@@ -172,6 +172,12 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
 // the stream is reset.
 bool h2_wire_header_ok(const char* n, size_t nl, const char* v, size_t vl,
                        bool& have_claimed_len, size_t& claimed_len) {
+  // te(2) upgrade(7) connection/keep-alive(10) content-length(14)
+  // transfer-encoding(17).
+  static constexpr size_t kLengths[] = {2, 7, 10, 14, 17};
+  static constexpr uint32_t kMask =
+      http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
+  if (!http::length_is_one_of(nl, kMask)) return true;
   switch (nl) {
     case 2:
       if (http::tok_eq(n, nl, "te", 2) && !(vl == 8 && http::tok_eq(v, vl, "trailers", 8))) {

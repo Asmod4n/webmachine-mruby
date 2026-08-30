@@ -45,10 +45,17 @@ struct WireFacts {
   bool conn_upgrade = false;
 };
 
+// RFC 9112 / RFC 6455: host(4) referer/upgrade(7) connection/user-agent(10)
+// content-length(14) sec-websocket-key/transfer-encoding(17)
+// sec-websocket-version(21).
+constexpr size_t kWireLengths[] = {4, 7, 10, 14, 17, 21};
+constexpr uint32_t kWireLengthMask =
+    http::lengths_mask(kWireLengths, sizeof(kWireLengths) / sizeof(kWireLengths[0]));
+
 // RFC 9112 6.1/6.3, 7.6.1, RFC 6455 4.1: one such field.
 void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t nl,
                       const char* v, size_t vl) {
-  if (w.err != 0) return;
+  if (w.err != 0 || !http::length_is_one_of(nl, kWireLengthMask)) return;
   switch (nl) {
     case 14:
       if (http::tok_eq(n, nl, "content-length", 14)) {
