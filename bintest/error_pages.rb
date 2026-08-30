@@ -183,9 +183,11 @@ assert('error pages: conf.disable_http_cats leaves the pages and drops the pictu
   true
 end
 
-# The pack knows what each picture measures (assets.rb checks it is
-# written), and the page passes it on: a browser that has the numbers
-# lays the space out before the image arrives and does not reflow.
+# The pack carries the <img> attributes (assets.rb checks they are
+# written), and the page hands them on unchanged: a browser that has
+# them lays the space out before the picture arrives and does not
+# reflow. Unescaped is the point - {{cat_size}} would arrive as
+# width=&quot;750&quot; and mean nothing.
 assert('error pages: the page names the size of the picture it shows') do
   epg_server do |sock, _log|
     body = epg_ask(sock, '/no-such-route').split("\r\n\r\n", 2)[1].to_s
@@ -193,6 +195,7 @@ assert('error pages: the page names the size of the picture it shows') do
     m = body.match(/<img src="[^"]+" width="(\d+)" height="(\d+)"/)
     assert_true !m.nil?, 'the img names no size'
     assert_true m[1].to_i > 0 && m[2].to_i > 0, "the img is #{m[1]}x#{m[2]}"
+    assert_false body.include?('&quot;'), 'the attributes came through escaped'
   end
   true
 end

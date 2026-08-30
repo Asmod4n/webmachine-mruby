@@ -237,8 +237,9 @@ TEXT
 # and they are used: the entry's own timestamp, and an extra field.
 # APPNOTE 4.5.2: extra field header ids are PKWARE's to hand out. This one
 # is NOT registered - "WM" as two bytes, picked to sit clear of the ids
-# the format's own extensions use. It carries the picture's size, so a
-# page can name width and height and not reflow when the image lands.
+# the format's own extensions use. It carries the picture's size AS THE
+# PAGE SPELLS IT - `width="750" height="600"`, the attributes and not two
+# numbers - so the server appends what it read and spells nothing.
 WM_EXTRA_ID = 0x574d
 
 def read_pack_entries(path)
@@ -258,10 +259,8 @@ def read_pack_entries(path)
     fields = extra_fields(extra)
     mtime = fields[0x5455] && fields[0x5455].bytesize >= 5 ?
             fields[0x5455][1, 4].unpack1('l<') : nil
-    w, h = fields[WM_EXTRA_ID] && fields[WM_EXTRA_ID].bytesize >= 4 ?
-           fields[WM_EXTRA_ID].unpack('vv') : [nil, nil]
     out[name] = { bytes: raw[lho + 30 + lnlen + lelen, csize], etag: comment,
-                  mtime: mtime, width: w, height: h }
+                  mtime: mtime, size_attrs: fields[WM_EXTRA_ID] }
     off += 46 + nlen + elen + clen
   end
   out
@@ -282,11 +281,11 @@ def extra_fields(blob)
   out
 end
 
-# The picture's size, from file(1): its JPEG line names the geometry as
-# "750x600" in a field of its own, after the comma the density is not
-# written with. file(1) reads a path, the bytes are in hand, so they go
-# through a temp file.
-def jpeg_size(bytes)
+# The <img> attributes for a picture, from file(1): its JPEG line names
+# the geometry as "750x600" in a field of its own, after the comma the
+# density is not written with. file(1) reads a path, the bytes are in
+# hand, so they go through a temp file.
+def size_attributes(bytes)
   Tempfile.create(['wm-cat', '.jpg']) do |f|
     f.binmode
     f.write(bytes)
@@ -298,7 +297,7 @@ def jpeg_size(bytes)
     w = m[1].to_i
     h = m[2].to_i
     raise "file(1) gave #{w}x#{h}" unless w.positive? && h.positive?
-    [w, h]
+    %Q{width="#{w}" height="#{h}"}
   end
 end
 
@@ -323,11 +322,11 @@ end
 
 # Two fields: Info-ZIP's extended timestamp (0x5455, flag 1 = the
 # modification time follows, as a signed 32-bit Unix time), and this
-# tree's own with the picture's size.
-def entry_extra(mtime, width, height)
+# tree's own with the attributes the page puts on the <img>.
+def entry_extra(mtime, size_attrs)
   ext = +''.b
   ext << [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
-  ext << [WM_EXTRA_ID, 4, width.to_i, height.to_i].pack('vvvv')
+  ext << [WM_EXTRA_ID, size_attrs.bytesize].pack('vv') << size_attrs.b
   ext
 end
 
@@ -348,11 +347,11 @@ def error_zip(entries, archive_comment = '')
   out = +''.b
   cd = +''.b
   archive_comment = archive_comment.b
-  entries.each do |name, data, etag, mtime, width, height|
+  entries.each do |name, data, etag, mtime, size_attrs|
     data = data.b
     etag = (etag || '').b
     ddate, dtime = dos_stamp(mtime)
-    extra = entry_extra(mtime, width, height)
+    extra = entry_extra(mtime, size_attrs)
     crc = Zlib.crc32(data)
     lho = out.bytesize
     out << [0x04034b50, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
@@ -402,8 +401,7 @@ task :error_assets do
     body = nil
     etag = nil
     lastmod = nil
-    w = nil
-    h = nil
+    size_attrs = nil
     begin
       URI.parse("https://http.cat/#{code}.jpg").open(headers) do |f|
         body = f.read
@@ -411,8 +409,8 @@ task :error_assets do
         lastmod = f.meta['last-modified'].to_s
       end
       # The one moment a picture is measured: it just arrived. From here
-      # the size lives in the zip, and no later run asks again.
-      w, h = jpeg_size(body.b)
+      # the attributes live in the zip, and no later run asks again.
+      size_attrs = size_attributes(body.b)
       fetched += 1
     rescue OpenURI::HTTPError => e
       # 304 means upstream still holds exactly what the last build did,
@@ -421,15 +419,14 @@ task :error_assets do
       body = known[:bytes]
       etag = known[:etag]
       lastmod = known[:mtime] ? Time.at(known[:mtime]).utc.httpdate : nil
-      w = known[:width]
-      h = known[:height]
+      size_attrs = known[:size_attrs]
       raise "#{code}.jpg is unchanged upstream but the pack carries no size " \
-            "for it - delete #{ERROR_ASSETS} and rebuild" unless w && h
+            "for it - delete #{ERROR_ASSETS} and rebuild" unless size_attrs
     rescue StandardError
       next
     end
     cats[code] = body.b
-    meta[code] = [etag, http_seconds(lastmod), w, h]
+    meta[code] = [etag, http_seconds(lastmod), size_attrs]
     print "#{code} "
   end
   puts
@@ -442,8 +439,8 @@ task :error_assets do
   # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
   # in share/README.md.
   entries = cats.keys.sort.map do |code|
-    etag, mtime, w, h = meta[code]
-    ["#{code}.jpg", cats[code], etag, mtime, w, h]
+    etag, mtime, size_attrs = meta[code]
+    ["#{code}.jpg", cats[code], etag, mtime, size_attrs]
   end
   File.binwrite(ERROR_ASSETS, error_zip(entries, ERROR_NOTICE))
   puts "share/error-assets.zip: #{cats.size} cats, " \

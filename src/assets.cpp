@@ -52,29 +52,30 @@ void spell_hex8(char* out, uint32_t v) {
 
 // APPNOTE 4.5.2: an extra field block is a run of (id, size, payload),
 // and a reader skips the ids it does not know. 0x574D is this tree's,
-// written by the error_assets task: two 16-bit pixel counts.
-constexpr uint16_t kExtraPictureSize = 0x574d;
+// written by the error_assets task: `width="750" height="600"`, the text
+// a page puts on the <img>, so nothing here has a number to spell.
+constexpr uint16_t kExtraSizeAttributes = 0x574d;
 
-struct PictureSize {
-  uint16_t width = 0;
-  uint16_t height = 0;
+struct Borrowed {
+  const char* text = nullptr;
+  size_t len = 0;
 };
 
-PictureSize picture_size_of(const unsigned char* extra, size_t len) {
-  PictureSize s;
+Borrowed size_attributes_of(const unsigned char* extra, size_t len) {
+  Borrowed b;
   size_t off = 0;
   while (off + 4 <= len) {
     const uint16_t id = MZ_READ_LE16(extra + off);
     const size_t size = MZ_READ_LE16(extra + off + 2);
     if (off + 4 + size > len) break;
-    if (id == kExtraPictureSize && size >= 4) {
-      s.width = MZ_READ_LE16(extra + off + 4);
-      s.height = MZ_READ_LE16(extra + off + 6);
+    if (id == kExtraSizeAttributes && size != 0) {
+      b.text = reinterpret_cast<const char*>(extra + off + 4);
+      b.len = size;
       break;
     }
     off += 4 + size;
   }
-  return s;
+  return b;
 }
 
 // RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
@@ -209,9 +210,9 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
-    const PictureSize ps = picture_size_of(base + extra_off, extra_len);
-    e.pixel_width = ps.width;
-    e.pixel_height = ps.height;
+    const Borrowed sa = size_attributes_of(base + extra_off, extra_len);
+    e.size_attributes = sa.text;
+    e.size_attributes_len = sa.len;
     entries_.push_back(std::move(e));
   }
 

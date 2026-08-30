@@ -41,10 +41,10 @@ writes. What a rebuild and a page need rides where ZIP puts each of
 them: the upstream ETag in the entry's comment, the upstream second in
 the entry's own timestamp and in Info-ZIP's extended timestamp field
 (0x5455, which keeps the second the DOS stamp rounds away), and the
-picture's size in an extra field of this tree's own (0x574D, two 16-bit
-pixel counts). The archive's own comment carries the licence, so the
-terms travel with the file wherever it is copied rather than only with
-this repository.
+picture's size in an extra field of this tree's own (0x574D) - not as
+numbers but as the page spells them, `width="750" height="600"`. The
+archive's own comment carries the licence, so the terms travel with the
+file wherever it is copied rather than only with this repository.
 
 `rake error_assets` fetches and rebuilds it.
 
@@ -77,10 +77,16 @@ bytes at all and says how many it skipped.
 
 The size is not something a response carries, so `file(1)` measures a
 picture in the one moment it arrives and the entry keeps the answer. A
-304 brings no bytes and needs no measuring - the size travels from the
+304 brings no bytes and needs no measuring - the field travels from the
 old pack into the new one - so a rebuild against an unchanged upstream
-runs `file(1)` not once. That is what lets a page name `width` and
-`height` on the `<img>` and reserve the space before the picture lands.
+runs `file(1)` not once.
+
+What the entry keeps is the finished `width="750" height="600"`, because
+that is what has to appear in the page. The server hands the field
+through: nothing at boot turns a number back into digits, and nothing at
+request time does either - the rendered page is bytes long before the
+first request. It is what lets a browser reserve the space before the
+picture lands.
 
 ### The page is not a route; the picture is
 
@@ -108,7 +114,7 @@ in the error assets directly - no router involved.
 | `{{status}}` | 404 |
 | `{{title}}` | Not Found |
 | `{{source}}` | `RFC 9110`, or `nginx, not registered` |
-| `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{cat_url}}`, `{{cat_width}}`, `{{cat_height}}` |
+| `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{cat_url}}` and `{{{cat_size}}}`, the `<img>` attributes straight out of the pack - raw, because escaped quotes are not attributes |
 | `{{#id}}` | the 16 hex digits the failure is named by - the same ones the error log leads its record with, and the only thing tying the two together |
 | `{{#message}}` | the 500 only: what `Webmachine::ErrorResource#handle_exception` made of the exception. It lives there and nowhere else: a `handle_exception` on an ordinary resource is ignored, because how an exception becomes text is one decision for the server rather than a per-route one |
 | `{{#backtrace}}` | the debug build only (#210): where it was raised |

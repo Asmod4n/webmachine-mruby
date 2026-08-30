@@ -884,8 +884,10 @@ assert('assets: the shipped error assets are pictures, named by their status') d
     f = a_extra_fields(extra)
     assert_true f.key?(0x5455) && f[0x5455].bytesize >= 5, "#{k} carries no upstream second"
     assert_true f[0x5455][1, 4].unpack1('l<') > 0, "#{k} has no upstream second"
-    assert_true f.key?(0x574d) && f[0x574d].bytesize >= 4, "#{k} carries no picture size"
-    w, h = f[0x574d].unpack('vv')
-    assert_true w > 0 && h > 0, "#{k} measures #{w}x#{h}"
+    # Not two numbers: the attributes as the page spells them, so the
+    # boot render appends the field and counts no digits.
+    assert_true f.key?(0x574d), "#{k} carries no size attributes"
+    assert_true f[0x574d].match?(/\Awidth="[1-9]\d*" height="[1-9]\d*"\z/),
+                "#{k} size attributes are #{f[0x574d].inspect}"
   end
 end
