@@ -1383,11 +1383,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           // Re-derived from the copied fields, which is the only place
           // they still exist.
           http::ReqValues pvals;
-          flow::ReqFacts scratch;
-          for (size_t i = 0; i < nh; i++) {
-            http::header_switch(hv[i].name, hv[i].name_len, hv[i].value, hv[i].value_len,
-                                scratch, pvals);
-          }
+          values_of_copied_fields(hv, nh, pvals);
           ReqView rv;
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.

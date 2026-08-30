@@ -429,4 +429,15 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* sseres = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
   mrb_define_method_id(mrb, sseres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
 }
+
+// RFC 9110 12.5: see the declaration - the values negotiation reads, out of
+// the fields a parked stream copied, which is the only place they still are.
+void values_of_copied_fields(const ::phr_header* fields, size_t n, http::ReqValues& out) {
+  flow::ReqFacts scratch;
+  for (size_t i = 0; i < n; i++) {
+    http::header_switch(fields[i].name, fields[i].name_len, fields[i].value,
+                        fields[i].value_len, scratch, out);
+  }
+}
+
 }

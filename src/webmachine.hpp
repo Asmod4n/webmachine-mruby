@@ -62,6 +62,9 @@ struct open_how {
 #define RESOLVE_BENEATH 0x08
 #endif
 
+// picohttpparser's field pair; the framers include the header itself.
+struct phr_header;
+
 namespace webmachine::flow {
 // Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
 // its node names. Each edge's clause is in kFlow's `clause` column.
@@ -1521,7 +1524,7 @@ inline bool field_value_ok(const char* p, size_t n) {
 
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
-inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
+static inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
                           flow::ReqFacts& facts, ReqValues& vals) {
   switch (nlen) {
     case 3:
@@ -1691,6 +1694,12 @@ struct ReqView {
 void request_init(mrb_state* mrb, struct RClass* wm);
 
 void request_bind(const ReqView* view);
+
+// RFC 9110 12.5: the ReqValues a parked h2 stream no longer has, re-derived
+// from the fields it copied. Cold, and it lives in request.cpp so that
+// h2_dispatch stays header_switch's only caller in http2.cpp - two callers
+// there and the switch stops being inlined into the hot path.
+void values_of_copied_fields(const ::phr_header* fields, size_t n, http::ReqValues& out);
 
 // RFC 9110: n11's create_path names a new disp_path for THIS run;
 // request_bind clears the override. request.cpp owns the storage.
