@@ -4724,8 +4724,14 @@ class Ring {
       return false;
     }
     // AES first where the machine has the instructions, ChaCha first
-    // otherwise (.DESIGN.md "Two suites, and why not three").
-    const char* suites = ktls_aes_is_fast()
+    // otherwise (.DESIGN.md "Two suites, and why not three"). Said out
+    // loud because it decides whether a NIC can ever take the record
+    // layer over, and because it is not otherwise visible from outside.
+    const bool aes_is_fast = ktls_aes_is_fast();
+    std::fprintf(stderr, "webmachine: listener %u offers %s first (aes instructions: %s)\n", li,
+                 aes_is_fast ? "TLS_AES_128_GCM_SHA256" : "TLS_CHACHA20_POLY1305_SHA256",
+                 aes_is_fast ? "yes" : "no");
+    const char* suites = aes_is_fast
                              ? "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256"
                              : "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
     if (ktls_keys_set_ciphers(k, suites) != 0) {

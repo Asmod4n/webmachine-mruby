@@ -77,6 +77,7 @@ while [ $i -lt 100 ]; do
 done
 grep -q ', tls' "$work/err.log" && ok ok "it says the listener is tls" \
                                 || ok FAILED "the startup line does not mention tls"
+sed -n 's/^webmachine: \(listener 0 offers.*\)$/   \1/p' "$work/err.log"
 
 say "3. does the handshake finish, and on which suite?"
 # A request rather than Q, and -ign_eof, so this connection does NOT hang
