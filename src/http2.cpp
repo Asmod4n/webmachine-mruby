@@ -324,14 +324,20 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       hv[i].value = existing->field_blob.data() + existing->field_spans[i * 4 + 2];
       hv[i].value_len = existing->field_spans[i * 4 + 3];
     }
+    // RFC 9110 12.5: same as the resume in h2_feed - the values point into
+    // the decode buffer this stream no longer owns, and the copied fields
+    // are where they still are.
+    http::ReqValues pvals;
+    values_of_copied_fields(hv, nh, pvals);
     ReqView rv;
     rv.method = facts.method;
     rv.content = body.empty() ? nullptr : body.data();
     rv.content_len = body.size();
     rv.fields = nh != 0 ? hv : nullptr;
     rv.field_count = nh;
+    rv.values = &pvals;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
-    if (!h2_answer(st0, stream_id, facts, nullptr, head_only, route, rvp, target.data(),
+    if (!h2_answer(st0, stream_id, facts, &pvals, head_only, route, rvp, target.data(),
                    target.size(), sink)) {
       return false;
     }
@@ -393,14 +399,18 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       ok = false;
       break;
     }
+    // Where this field lands, for vals.named to point at. A block past
+    // kH2MaxFields keeps no slot, and SIZE_MAX says so.
+    size_t at = SIZE_MAX;
     if (nh < kH2MaxFields) {
       hv[nh].name = name;
       hv[nh].name_len = nlen;
       hv[nh].value = val;
       hv[nh].value_len = vlen;
+      at = nh;
       nh++;
     }
-    if (http::header_switch(name, nlen, val, vlen, facts, vals) &&
+    if (http::header_switch(name, nlen, val, vlen, facts, vals, at) &&
         !h2_wire_header_ok(name, nlen, val, vlen, have_claimed_len, claimed_len)) {
       ok = false;
     }
@@ -475,6 +485,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     // be lent for the length of the answer.
     rv.fields = hv;
     rv.field_count = nh;
+    rv.values = &vals;
     if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv,
                    path_val, path_vlen, sink)) {
       return false;

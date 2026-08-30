@@ -118,7 +118,7 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
     h.value = store.data() + at + klen[i];
     h.value_len = vlen[i];
     hdrs.push_back(h);
-    webmachine::http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals);
+    webmachine::http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals, i);
     at += klen[i] + vlen[i];
   }
 }
@@ -197,6 +197,7 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   rv.method_token_len = static_cast<size_t>(RSTRING_LEN(m));
   rv.fields = hdrs.data();
   rv.field_count = hdrs.size();
+  rv.values = &vals;
   if (mrb_string_p(rbody)) {
     rv.content = RSTRING_PTR(rbody);
     rv.content_len = static_cast<size_t>(RSTRING_LEN(rbody));

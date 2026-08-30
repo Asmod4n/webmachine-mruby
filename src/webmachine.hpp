@@ -1147,6 +1147,45 @@ inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
   return ClStatus::kOk;
 }
 
+// RFC 9110: the ten fields Resource#request hands back by name. The one
+// pass over the field array notes WHERE each one sits; a later ask is a bit
+// test and an index, never a second walk over the fields.
+enum class NamedField : uint8_t {
+  kContentType,
+  kContentLength,
+  kAuthorization,
+  kAccept,
+  kAcceptEncoding,
+  kIfMatch,
+  kIfNoneMatch,
+  kIfModifiedSince,
+  kIfUnmodifiedSince,
+  kHost,
+  kCount
+};
+
+struct NamedFieldIndex {
+  // One bit per NamedField. A field the request did not carry has no
+  // position, and the bit is how that is said.
+  uint16_t present = 0;
+  // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
+  uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
+
+  constexpr void note(NamedField f, size_t i) {
+    // The framer kept no slot for this one (its field array was full), so
+    // there is no place to point at and the bit stays clear.
+    if (i > 255) return;
+    const auto b = static_cast<uint8_t>(f);
+    // RFC 9110 5.2: a repeated field is one list, and the FIRST occurrence
+    // is where it starts. A second Host is the framer's 400, not ours.
+    if (((present >> b) & 1u) != 0) return;
+    present = static_cast<uint16_t>(present | (1u << b));
+    at[b] = static_cast<uint8_t>(i);
+  }
+  constexpr bool carries(NamedField f) const {
+    return ((present >> static_cast<uint8_t>(f)) & 1u) != 0;
+  }
+};
 struct ReqValues {
   const char* log_ref = nullptr;
   size_t log_ref_len = 0;
@@ -1183,6 +1222,7 @@ struct ReqValues {
   // (5.6.7); valid only when the facts' if_unmodified_since_valid/if_modified_since_valid bit says.
   int64_t if_unmodified_since_epoch = 0;
   int64_t if_modified_since_epoch = 0;
+  NamedFieldIndex named;
 };
 
 // A run of digits at v[i], cursor left on the first that is not one.
@@ -1609,7 +1649,7 @@ inline constexpr uint32_t kFieldLengthMask =
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
 static inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
-                                 flow::ReqFacts& facts, ReqValues& vals) {
+                                 flow::ReqFacts& facts, ReqValues& vals, size_t at) {
   if (!length_is_one_of(nlen, kFieldLengthMask)) return true;
   switch (nlen) {
     case 3:
@@ -1626,6 +1666,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         // functor.
         vals.host = value;
         vals.host_len = vlen;
+        vals.named.note(NamedField::kHost, at);
         break;
       }
       break;
@@ -1642,6 +1683,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.plain = false;
         vals.accept = value;
         vals.accept_len = vlen;
+        vals.named.note(NamedField::kAccept, at);
         return false;
       }
       if (tok_eq(name, nlen, "cookie", 6)) {
@@ -1668,6 +1710,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.if_match_star = star_value(value, vlen);
         vals.if_match = value;
         vals.if_match_len = vlen;
+        vals.named.note(NamedField::kIfMatch, at);
         return false;
       }
       break;
@@ -1676,6 +1719,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         // RFC 9110 8.3: b5's argument and accept_helper's key.
         vals.content_type = value;
         vals.content_type_len = vlen;
+        vals.named.note(NamedField::kContentType, at);
         return false;
       }
       break;
@@ -1684,6 +1728,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         // RFC 9110 11.6.2: b8's argument.
         vals.authorization = value;
         vals.authorization_len = vlen;
+        vals.named.note(NamedField::kAuthorization, at);
         return false;
       }
       if (tok_eq(name, nlen, "if-none-match", 13)) {
@@ -1692,6 +1737,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.if_none_match_star = star_value(value, vlen);
         vals.if_none_match = value;
         vals.if_none_match_len = vlen;
+        vals.named.note(NamedField::kIfNoneMatch, at);
         return false;
       }
       break;
@@ -1713,6 +1759,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.plain = false;
         vals.accept_encoding = value;
         vals.accept_encoding_len = vlen;
+        vals.named.note(NamedField::kAcceptEncoding, at);
         return false;
       }
       break;
@@ -1721,6 +1768,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.has_if_modified_since = true;
         facts.plain = false;
         // 13.1.3: an unparseable date reads as "field absent" (l14).
+        vals.named.note(NamedField::kIfModifiedSince, at);
         facts.if_modified_since_valid = parse_http_date(value, vlen, &vals.if_modified_since_epoch);
         // 13.1.3: a date in the future is ignored (l15).
         if (facts.if_modified_since_valid) {
@@ -1735,6 +1783,7 @@ static inline bool header_switch(const char* name, size_t nlen, const char* valu
         facts.has_if_unmodified_since = true;
         facts.plain = false;
         // 13.1.4: same rule as IMS (h11).
+        vals.named.note(NamedField::kIfUnmodifiedSince, at);
         facts.if_unmodified_since_valid =
             parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
         return false;
@@ -1767,8 +1816,14 @@ struct ReqView {
   int route = -1;
   RouteSpans spans {};
   // RFC 9110 6.3: the header field section, in the parser's own layout.
+  // Only request.headers reads it - it is the one caller that asked for
+  // ALL of them. Every named accessor reads `values` instead.
   const void* fields = nullptr;
   size_t field_count = 0;
+  // Where the one pass found the ten fields Resource#request names. The
+  // field array is walked once; answering request.accept by walking it
+  // again would be that same work a second time.
+  const http::ReqValues* values = nullptr;
   // RFC 9110 6.4: the request's content, LENT for the frame like
   // everything else here - the framer collected it (bounded by its own
   // 413) and it dies with the dispatch. Null = no content arrived.
@@ -2985,6 +3040,7 @@ inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
 inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
+static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
 inline constexpr size_t kCompressFloor = 1280;
 inline constexpr size_t kDeliverChunk = 64u * 1024;
 
@@ -3780,7 +3836,8 @@ class Http1 {
   void file_prebuilt(Conn& st, uint16_t status_code);
   bool ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path, size_t path_len,
                   const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
-                  size_t nhdr, const char* rest, size_t rest_len, std::string& sink);
+                  size_t nhdr, const http::ReqValues& vals, const char* rest, size_t rest_len,
+                  std::string& sink);
 
   bool sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
                  size_t method_len, const char* path, size_t path_len,

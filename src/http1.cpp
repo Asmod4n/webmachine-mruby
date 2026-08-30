@@ -54,7 +54,7 @@ constexpr uint32_t kWireLengthMask =
 
 // RFC 9112 6.1/6.3, 7.6.1, RFC 6455 4.1: one such field.
 void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t nl,
-                      const char* v, size_t vl) {
+                      const char* v, size_t vl, size_t at) {
   if (w.err != 0 || !http::length_is_one_of(nl, kWireLengthMask)) return;
   switch (nl) {
     case 14:
@@ -64,6 +64,7 @@ void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t
           return;
         }
         w.have_cl = true;
+        vals.named.note(http::NamedField::kContentLength, at);
         switch (http::parse_content_length(v, vl, &w.content_length)) {
           case http::ClStatus::kOk: break;
           case http::ClStatus::kBad: w.err = 400; break;
@@ -937,8 +938,8 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      if (http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals)) {
-        read_wire_header(w, vals, h.name, h.name_len, h.value, h.value_len);
+      if (http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals, i)) {
+        read_wire_header(w, vals, h.name, h.name_len, h.value, h.value_len, i);
       }
     }
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
@@ -970,7 +971,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         const char* rest = view + off + static_cast<size_t>(ret);
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
         return ws_upgrade(st, wslot, wr, path, path_len, wspans, w.ws_key, w.ws_key_len, headers,
-                          num_headers, rest, rest_len, sink);
+                          num_headers, vals, rest, rest_len, sink);
       }
     }
 
@@ -1041,6 +1042,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         rv.spans = spans;
         rv.fields = headers;
         rv.field_count = num_headers;
+        rv.values = &vals;
         if (w.content_length != 0) {
           rv.content = view + off + head_len;
           rv.content_len = w.content_length;
@@ -1263,8 +1265,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
 // RFC 6455 4.2.2: the handshake's answer, 101 or the refusal the route earned.
 bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path,
                        size_t path_len, const RouteSpans& spans, const char* key,
-                       size_t key_len, const void* hdrs, size_t nhdr, const char* rest,
-                       size_t rest_len, std::string& sink) {
+                       size_t key_len, const void* hdrs, size_t nhdr,
+                       const http::ReqValues& vals, const char* rest, size_t rest_len,
+                       std::string& sink) {
   char accept[28];
   if (!ws::accept_key(key, key_len, accept)) return fail(st, 400, sink);
 
@@ -1280,6 +1283,7 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   rv.spans = spans;
   rv.fields = hdrs;
   rv.field_count = nhdr;
+  rv.values = &vals;
   request_bind(&rv);
   std::string proto;
   uint16_t refuse_status = 0;
@@ -1357,6 +1361,7 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
   rv.spans = spans;
   rv.fields = hdrs;
   rv.field_count = nhdr;
+  rv.values = &vals;
   request_bind(&rv);
   uint16_t refused = 0;
   SseStream* s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(route)],
