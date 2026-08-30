@@ -523,6 +523,12 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
     mrb_value cat = mrb_hash_new(mrb);
     mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_url"),
                  mrb_str_new(mrb, c.url.data(), static_cast<mrb_int>(c.url.size())));
+    // The pack knows what the picture measures, so the page can name it
+    // and reserve the space before the image lands.
+    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_width"),
+                 mrb_fixnum_value(c.entry->pixel_width));
+    mrb_hash_set(mrb, cat, mrb_str_new_lit(mrb, "cat_height"),
+                 mrb_fixnum_value(c.entry->pixel_height));
     mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
   }
 

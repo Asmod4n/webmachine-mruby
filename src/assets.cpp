@@ -50,6 +50,33 @@ void spell_hex8(char* out, uint32_t v) {
   }
 }
 
+// APPNOTE 4.5.2: an extra field block is a run of (id, size, payload),
+// and a reader skips the ids it does not know. 0x574D is this tree's,
+// written by the error_assets task: two 16-bit pixel counts.
+constexpr uint16_t kExtraPictureSize = 0x574d;
+
+struct PictureSize {
+  uint16_t width = 0;
+  uint16_t height = 0;
+};
+
+PictureSize picture_size_of(const unsigned char* extra, size_t len) {
+  PictureSize s;
+  size_t off = 0;
+  while (off + 4 <= len) {
+    const uint16_t id = MZ_READ_LE16(extra + off);
+    const size_t size = MZ_READ_LE16(extra + off + 2);
+    if (off + 4 + size > len) break;
+    if (id == kExtraPictureSize && size >= 4) {
+      s.width = MZ_READ_LE16(extra + off + 4);
+      s.height = MZ_READ_LE16(extra + off + 6);
+      break;
+    }
+    off += 4 + size;
+  }
+  return s;
+}
+
 // RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
 void build_head(AssetEntry::Head& h, const char* status_line, const char* connection_line,
                 const std::string& fields) {
@@ -162,7 +189,9 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
                     st.m_filename);
       return false;
     }
-    const size_t data_off = lho + 30 + MZ_READ_LE16(base + lho + 26) + MZ_READ_LE16(base + lho + 28);
+    const size_t extra_off = lho + 30 + MZ_READ_LE16(base + lho + 26);
+    const size_t extra_len = MZ_READ_LE16(base + lho + 28);
+    const size_t data_off = extra_off + extra_len;
     const size_t comp = static_cast<size_t>(st.m_comp_size);
     if (data_off + comp > map_length_) {
       std::snprintf(err, errlen, "%s: %s data overruns the file", zip_path, st.m_filename);
@@ -180,6 +209,9 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
+    const PictureSize ps = picture_size_of(base + extra_off, extra_len);
+    e.pixel_width = ps.width;
+    e.pixel_height = ps.height;
     entries_.push_back(std::move(e));
   }
 

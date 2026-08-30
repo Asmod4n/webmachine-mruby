@@ -2448,6 +2448,10 @@ struct AssetEntry {
   char etag[10] = {};
   char last_modified[http::kDateLen] = {};
   std::string content_type;
+  // APPNOTE 4.5: what the pack's own extra field 0x574D says a picture
+  // measures. 0 on an entry that carries none.
+  uint16_t pixel_width = 0;
+  uint16_t pixel_height = 0;
 
   // RFC 9112 2.1: a status-line and a header section, complete, ending in
   // the empty line - everything of a response except its content.

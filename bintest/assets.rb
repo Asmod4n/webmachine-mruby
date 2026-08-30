@@ -815,6 +815,19 @@ end
 # The archive's central directory, because that is where an entry's
 # comment lives - the upstream validators ride there rather than in a
 # file of their own (PKWARE APPNOTE 4.4.18).
+# APPNOTE 4.5.2: an extra field block is a run of (id, size, payload).
+def a_extra_fields(blob)
+  out = {}
+  off = 0
+  while off + 4 <= blob.bytesize
+    id, size = blob[off, 4].unpack('vv')
+    break if off + 4 + size > blob.bytesize
+    out[id] = blob[off + 4, size]
+    off += 4 + size
+  end
+  out
+end
+
 def a_pack_central(path)
   raw = File.binread(path)
   eocd = raw.rindex("PK\x05\x06".b) or return {}
@@ -828,7 +841,8 @@ def a_pack_central(path)
     name = raw[off + 46, nlen]
     comment = clen.zero? ? '' : raw[off + 46 + nlen + elen, clen]
     lnlen, lelen = raw[lho + 26, 4].unpack('vv')
-    out[name] = [raw[lho + 30 + lnlen + lelen, csize], comment]
+    extra = elen.zero? ? '' : raw[off + 46 + nlen, elen]
+    out[name] = [raw[lho + 30 + lnlen + lelen, csize], comment, extra]
     off += 46 + nlen + elen + clen
   end
   out
@@ -856,13 +870,22 @@ assert('assets: the shipped error assets are pictures, named by their status') d
     assert_true k.to_i >= 400, "#{k} is not an error"
   end
 
-  # The validators a rebuild needs, in each entry's own comment: with
-  # them `rake error_assets` asks http.cat what changed instead of
-  # fetching 1.5 MB again.
+  # What a rebuild needs, each where ZIP puts it: the upstream ETag in
+  # the entry comment, the exact upstream second in Info-ZIP's extended
+  # timestamp (0x5455), and the picture's size in this tree's own field
+  # (0x574D). With them `rake error_assets` asks http.cat what changed
+  # instead of fetching 1.5 MB again, and a page names width and height.
   central = a_pack_central(pack)
   assert_equal e.size, central.size
   etagged = central.count { |_k, (_b, c)| c.to_s.start_with?('"') }
   assert_true etagged >= 50, "only #{etagged} entries carry an upstream etag"
-  _bytes, comment = central['404.jpg']
-  assert_true comment.include?("\t"), '404.jpg comment is not etag TAB last-modified'
+  central.each do |k, (_b, comment, extra)|
+    assert_false comment.include?("\t"), "#{k} comment holds more than the etag"
+    f = a_extra_fields(extra)
+    assert_true f.key?(0x5455) && f[0x5455].bytesize >= 5, "#{k} carries no upstream second"
+    assert_true f[0x5455][1, 4].unpack1('l<') > 0, "#{k} has no upstream second"
+    assert_true f.key?(0x574d) && f[0x574d].bytesize >= 4, "#{k} carries no picture size"
+    w, h = f[0x574d].unpack('vv')
+    assert_true w > 0 && h > 0, "#{k} measures #{w}x#{h}"
+  end
 end

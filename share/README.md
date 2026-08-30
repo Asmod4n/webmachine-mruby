@@ -37,10 +37,14 @@ else:
 
 There is no index and no directory: the archive's own entry list is the
 index, and `404.jpg` is both the name inside it and the name a caller
-writes. Each entry's ZIP comment carries the two fields a rebuild needs -
-the upstream ETag and Last-Modified, tab separated - and the archive's
-own comment carries the licence, so the terms travel with the file
-wherever it is copied rather than only with this repository.
+writes. What a rebuild and a page need rides where ZIP puts each of
+them: the upstream ETag in the entry's comment, the upstream second in
+the entry's own timestamp and in Info-ZIP's extended timestamp field
+(0x5455, which keeps the second the DOS stamp rounds away), and the
+picture's size in an extra field of this tree's own (0x574D, two 16-bit
+pixel counts). The archive's own comment carries the licence, so the
+terms travel with the file wherever it is copied rather than only with
+this repository.
 
 `rake error_assets` fetches and rebuilds it.
 
@@ -64,16 +68,17 @@ The pack only decides whether a page HAS a picture: a status with no
 
 ### Asking instead of downloading
 
-The ETag and Last-Modified in each entry's comment are the upstream
-service's own. A rebuild sends `If-None-Match` with them, and a picture
-that has not changed answers 304 and costs nothing - so `rake
-error_assets` on an unchanged upstream fetches no bytes at all and says
-how many it skipped.
+The ETag and the timestamp on each entry are the upstream service's
+own. A rebuild sends both questions RFC 9110 13.1 has -
+`If-None-Match` from the comment and `If-Modified-Since` from the
+timestamp - and a picture that has not changed answers 304 and costs
+nothing, so `rake error_assets` on an unchanged upstream fetches no
+bytes at all and says how many it skipped.
 
-The image responses carry nothing else worth keeping: `content-type`,
-`content-length`, `etag`, `last-modified`. In particular they carry no
-geometry, and neither does this pack - the page names no width or height
-on the picture, so nothing here has one to give.
+The size is not something a response carries, so it is measured once at
+rebuild time by `file(1)` and written to the entry. That is what lets a
+page name `width` and `height` on the `<img>` and reserve the space
+before the picture lands.
 
 ### The page is not a route; the picture is
 
@@ -102,19 +107,21 @@ in the error assets directly - no router involved.
 | `{{title}}` | Not Found |
 | `{{source}}` | `RFC 9110`, or `nginx, not registered` |
 | `{{#cat}}` | present only when the error assets holds a picture for that status; inside it `{{cat_url}}`, `{{cat_width}}`, `{{cat_height}}` |
-| `{{#target}}` | the request target - a 404 that does not say what was not found is a 404 about nothing |
+| `{{#id}}` | the 16 hex digits the failure is named by - the same ones the error log leads its record with, and the only thing tying the two together |
 | `{{#message}}` | the 500 only: what `Webmachine::ErrorResource#handle_exception` made of the exception. It lives there and nowhere else: a `handle_exception` on an ordinary resource is ignored, because how an exception becomes text is one decision for the server rather than a per-route one |
+| `{{#backtrace}}` | the debug build only (#210): where it was raised |
 
 Every handler is handed this same Hash. The status, its name and where
 the name comes from are the server's table, not the template's: fifteen
 of the statuses it knows are vendor inventions rather than registered,
 and `{{source}}` says which.
 
-`{{target}}` and `{{message}}` are **escaped**, and that is the whole
-reason they go through a template. A target is whatever the client typed,
-and what a callback raised routinely carries request data (`raise "bad
-id: #{params[:id]}"`) - it used to be the response body verbatim under
-`Content-Type: text/html`.
+`{{message}}` is **escaped**, and that is the whole reason it goes
+through a template: what a callback raised routinely carries request
+data (`raise "bad id: #{params[:id]}"`), and it used to be the response
+body verbatim under `Content-Type: text/html`. Nothing else on the page
+came from the client - #210 took the request out of it, and the log is
+where a request belongs.
 
 ### The pictures
 
@@ -130,7 +137,7 @@ this server may redistribute the error assets.
 |---|---|
 | name the creator | Tomomi Imura, in `NOTICE`, in the zip's own archive comment, on every rendered page that shows a picture, and here |
 | link the licence | the deed URL, in all four places |
-| say whether it was changed | **not changed** - every image is the byte-for-byte JPEG `http.cat` served (which is itself 750x600, already smaller than the originals; "unchanged" is measured against what the service served) |
+| say whether it was changed | **not changed** - every image is the byte-for-byte JPEG `http.cat` served (46 of the 55 are 750x600 and the other nine 600x750, already smaller than the originals; "unchanged" is measured against what the service served) |
 | no further restrictions | a plain zip carrying its notice, nothing wrapped, nothing locked |
 
 ### Everything is stored, nothing is deflated

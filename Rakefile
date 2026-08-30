@@ -198,7 +198,7 @@ ERROR_NOTICE = <<~TEXT
       end
 
       def to_xml_error(e)
-        "<error status=\"\#{e['status']}\">\#{e['title']}</error>"
+        "<error status=\\"\#{e['status']}\\">\#{e['title']}</error>"
       end
     end
 
@@ -230,22 +230,18 @@ TEXT
 
 # Reading back what a previous run wrote. Everything in these error assets is
 # stored, so a local header is the whole format.
-def read_pack(path)
-  raw = File.binread(path)
-  out = {}
-  off = 0
-  while off + 30 <= raw.bytesize && raw[off, 4] == "PK\x03\x04".b
-    csize, _usize, nlen, elen = raw[off + 18, 12].unpack('VVvv')
-    name = raw[off + 30, nlen]
-    out[name] = raw[off + 30 + nlen + elen, csize]
-    off += 30 + nlen + elen + csize
-  end
-  out
-end
+# What a previous run wrote, per entry: the bytes, and the three things
+# beside them. The ETag is the comment, because ZIP has no field for an
+# opaque validator that has to go back exactly as it came. The time and
+# the picture's size are NOT in the comment - ZIP has places for both,
+# and they are used: the entry's own timestamp, and an extra field.
+# APPNOTE 4.5.2: extra field header ids are PKWARE's to hand out. This one
+# is NOT registered - "WM" as two bytes, picked to sit clear of the ids
+# the format's own extensions use. It carries the picture's size, so a
+# page can name width and height and not reflow when the image lands.
+WM_EXTRA_ID = 0x574d
 
-# The comments live in the CENTRAL directory, not beside the data, so
-# reading them back means walking that instead of the local headers.
-def read_pack_with_comments(path)
+def read_pack_entries(path)
   raw = File.binread(path)
   eocd = raw.rindex("PK\x05\x06".b) or return {}
   n, _cdsize, cdoff = raw[eocd + 10, 10].unpack('vVV')
@@ -256,23 +252,93 @@ def read_pack_with_comments(path)
     csize, _usize, nlen, elen, clen = raw[off + 20, 14].unpack('VVvvv')
     lho = raw[off + 42, 4].unpack1('V')
     name = raw[off + 46, nlen]
+    extra = elen.zero? ? '' : raw[off + 46 + nlen, elen]
     comment = clen.zero? ? '' : raw[off + 46 + nlen + elen, clen]
     lnlen, lelen = raw[lho + 26, 4].unpack('vv')
-    out[name] = [raw[lho + 30 + lnlen + lelen, csize], comment]
+    fields = extra_fields(extra)
+    mtime = fields[0x5455] && fields[0x5455].bytesize >= 5 ?
+            fields[0x5455][1, 4].unpack1('l<') : nil
+    w, h = fields[WM_EXTRA_ID] && fields[WM_EXTRA_ID].bytesize >= 4 ?
+           fields[WM_EXTRA_ID].unpack('vv') : [nil, nil]
+    out[name] = { bytes: raw[lho + 30 + lnlen + lelen, csize], etag: comment,
+                  mtime: mtime, width: w, height: h }
     off += 46 + nlen + elen + clen
   end
   out
+end
+
+# An extra field block is a run of (id, size, payload). Unknown ids are
+# skipped by every reader, which is what makes it the place to put
+# something only this tree knows about.
+def extra_fields(blob)
+  out = {}
+  off = 0
+  while off + 4 <= blob.bytesize
+    id, size = blob[off, 4].unpack('vv')
+    break if off + 4 + size > blob.bytesize
+    out[id] = blob[off + 4, size]
+    off += 4 + size
+  end
+  out
+end
+
+# The picture's size, from file(1): its JPEG line names the geometry as
+# "750x600" in a field of its own, after the comma the density is not
+# written with. file(1) reads a path, the bytes are in hand, so they go
+# through a temp file.
+def jpeg_size(bytes)
+  Tempfile.create(['wm-cat', '.jpg']) do |f|
+    f.binmode
+    f.write(bytes)
+    f.flush
+    said = `file -b #{f.path.shellescape}`
+    raise 'file(1) failed' unless $?.success?
+    m = said.match(/,\s*(\d+)x(\d+)\b/)
+    raise "file(1) found no geometry: #{said.strip}" unless m
+    w = m[1].to_i
+    h = m[2].to_i
+    raise "file(1) gave #{w}x#{h}" unless w.positive? && h.positive?
+    [w, h]
+  end
+end
+
+# An HTTP-date to the second it names, or nil when a server sent none.
+def http_seconds(text)
+  return nil if text.to_s.empty?
+  Time.httpdate(text).to_i
+rescue ArgumentError
+  nil
+end
+
+# MS-DOS date and time, which is what a ZIP header holds: two-second
+# resolution and no zone. The upstream Last-Modified is GMT, and that is
+# what goes in - a reader that treats it as local time is off by its own
+# offset, which is the format's limitation and the reason the exact
+# second rides in the extended timestamp beside it.
+def dos_stamp(unix)
+  t = Time.at(unix || 0).utc
+  [((t.year - 1980) << 9) | (t.month << 5) | t.day,
+   (t.hour << 11) | (t.min << 5) | (t.sec / 2)]
+end
+
+# Two fields: Info-ZIP's extended timestamp (0x5455, flag 1 = the
+# modification time follows, as a signed 32-bit Unix time), and this
+# tree's own with the picture's size.
+def entry_extra(mtime, width, height)
+  ext = +''.b
+  ext << [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
+  ext << [WM_EXTRA_ID, 4, width.to_i, height.to_i].pack('vvvv')
+  ext
 end
 
 # The error assets format the asset tier reads: stored or deflate, nothing else
 # (#170/#177). Everything here is STORED - measured on the cats, a deflate
 # entry always leaves as gzip, even to a client that sent no
 # Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
-# One fixed timestamp keeps the zip reproducible.
 # PKWARE APPNOTE 4.4.18: the central directory carries a comment per
-# entry. That is where an image's upstream validators go - the archive
-# ships pictures and nothing else, and a rebuild still gets to ask
-# http.cat whether anything changed.
+# entry, and that is where the upstream ETag goes - ZIP has no field for
+# an opaque validator, and one that goes back changed is not the one the
+# service handed out.
 # The notice rides in the archive's own comment field, not as an entry:
 # the pack is pictures and nothing else, and read_cats reads every entry
 # as one. A comment travels with the file wherever it is copied, which is
@@ -282,18 +348,18 @@ def error_zip(entries, archive_comment = '')
   out = +''.b
   cd = +''.b
   archive_comment = archive_comment.b
-  dtime = 0
-  ddate = ((2026 - 1980) << 9) | (8 << 5) | 28
-  entries.each do |name, data, comment|
+  entries.each do |name, data, etag, mtime, width, height|
     data = data.b
-    comment = (comment || '').b
+    etag = (etag || '').b
+    ddate, dtime = dos_stamp(mtime)
+    extra = entry_extra(mtime, width, height)
     crc = Zlib.crc32(data)
     lho = out.bytesize
     out << [0x04034b50, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
-            name.bytesize, 0].pack('VvvvvvVVVvv') << name.b << data
+            name.bytesize, extra.bytesize].pack('VvvvvvVVVvv') << name.b << extra << data
     cd << [0x02014b50, 20, 20, 0, 0, dtime, ddate, crc, data.bytesize, data.bytesize,
-           name.bytesize, 0, comment.bytesize, 0, 0, 0, lho].pack('VvvvvvvVVVvvvvvVV') <<
-          name.b << comment
+           name.bytesize, extra.bytesize, etag.bytesize, 0, 0, 0, lho]
+          .pack('VvvvvvvVVVvvvvvVV') << name.b << extra << etag
   end
   cd_off = out.bytesize
   out << cd
@@ -302,21 +368,21 @@ def error_zip(entries, archive_comment = '')
   out
 end
 
-desc 'rebuild share/error-assets.zip: the two error templates and the cats'
+desc 'rebuild share/error-assets.zip: the cats, one per status'
 task :error_assets do
   require 'zlib'
   require 'open-uri'
+  require 'time'
+  require 'tempfile'
   require 'shellwords'
   # What the last build recorded, so a rebuild can ASK instead of fetch:
   # http.cat serves an etag, and an image that has not changed upstream
   # answers 304 and costs nothing.
   have = {}
   if File.exist?(ERROR_ASSETS)
-    read_pack_with_comments(ERROR_ASSETS).each do |name, (bytes, comment)|
+    read_pack_entries(ERROR_ASSETS).each do |name, e|
       code = name[/\A(\d+)\.jpg\z/, 1]
-      next unless code
-      etag, lastmod = comment.to_s.split("\t")
-      have[code.to_i] = { etag: etag, lastmod: lastmod, bytes: bytes }
+      have[code.to_i] = e if code
     end
   end
 
@@ -326,8 +392,12 @@ task :error_assets do
   ERROR_STATUS.each_key do |code|
     known = have[code]
     headers = { 'User-Agent' => 'webmachine-mruby error-assets packer', read_timeout: 20 }
-    if known && known[:etag].to_s != '' && known[:bytes]
-      headers['If-None-Match'] = known[:etag]
+    if known && known[:bytes]
+      # RFC 9110 13.1.1/13.1.3: the ETag is the strong question and goes
+      # back exactly as it came; the date is the weaker one, and now that
+      # it is kept it is asked with too.
+      headers['If-None-Match'] = known[:etag] if known[:etag].to_s != ''
+      headers['If-Modified-Since'] = Time.at(known[:mtime]).utc.httpdate if known[:mtime]
     end
     body = nil
     etag = nil
@@ -344,13 +414,13 @@ task :error_assets do
       raise unless e.io.status.first.to_s == '304' && known && known[:bytes]
       body = known[:bytes]
       etag = known[:etag]
-      lastmod = known[:lastmod]
+      lastmod = known[:mtime] ? Time.at(known[:mtime]).utc.httpdate : nil
     rescue StandardError
       next
     end
-    next unless body.b.start_with?("\xFF\xD8".b)
+    w, h = jpeg_size(body.b)
     cats[code] = body.b
-    meta[code] = [etag, lastmod]
+    meta[code] = [etag, http_seconds(lastmod), w, h]
     print "#{code} "
   end
   puts
@@ -363,8 +433,8 @@ task :error_assets do
   # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
   # in share/README.md.
   entries = cats.keys.sort.map do |code|
-    etag, lastmod = meta[code]
-    ["#{code}.jpg", cats[code], "#{etag}\t#{lastmod}"]
+    etag, mtime, w, h = meta[code]
+    ["#{code}.jpg", cats[code], etag, mtime, w, h]
   end
   File.binwrite(ERROR_ASSETS, error_zip(entries, ERROR_NOTICE))
   puts "share/error-assets.zip: #{cats.size} cats, " \
