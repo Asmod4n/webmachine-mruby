@@ -402,23 +402,32 @@ task :error_assets do
     body = nil
     etag = nil
     lastmod = nil
+    w = nil
+    h = nil
     begin
       URI.parse("https://http.cat/#{code}.jpg").open(headers) do |f|
         body = f.read
         etag = f.meta['etag'].to_s
         lastmod = f.meta['last-modified'].to_s
       end
+      # The one moment a picture is measured: it just arrived. From here
+      # the size lives in the zip, and no later run asks again.
+      w, h = jpeg_size(body.b)
       fetched += 1
     rescue OpenURI::HTTPError => e
-      # 304 means upstream still holds exactly what the last build did.
+      # 304 means upstream still holds exactly what the last build did,
+      # so what the last build wrote down still describes it.
       raise unless e.io.status.first.to_s == '304' && known && known[:bytes]
       body = known[:bytes]
       etag = known[:etag]
       lastmod = known[:mtime] ? Time.at(known[:mtime]).utc.httpdate : nil
+      w = known[:width]
+      h = known[:height]
+      raise "#{code}.jpg is unchanged upstream but the pack carries no size " \
+            "for it - delete #{ERROR_ASSETS} and rebuild" unless w && h
     rescue StandardError
       next
     end
-    w, h = jpeg_size(body.b)
     cats[code] = body.b
     meta[code] = [etag, http_seconds(lastmod), w, h]
     print "#{code} "

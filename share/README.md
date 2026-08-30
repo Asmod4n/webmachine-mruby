@@ -75,10 +75,12 @@ timestamp - and a picture that has not changed answers 304 and costs
 nothing, so `rake error_assets` on an unchanged upstream fetches no
 bytes at all and says how many it skipped.
 
-The size is not something a response carries, so it is measured once at
-rebuild time by `file(1)` and written to the entry. That is what lets a
-page name `width` and `height` on the `<img>` and reserve the space
-before the picture lands.
+The size is not something a response carries, so `file(1)` measures a
+picture in the one moment it arrives and the entry keeps the answer. A
+304 brings no bytes and needs no measuring - the size travels from the
+old pack into the new one - so a rebuild against an unchanged upstream
+runs `file(1)` not once. That is what lets a page name `width` and
+`height` on the `<img>` and reserve the space before the picture lands.
 
 ### The page is not a route; the picture is
 
