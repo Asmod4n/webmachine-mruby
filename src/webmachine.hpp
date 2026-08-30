@@ -4539,6 +4539,43 @@ class Ring {
   // process belongs to somebody else. So it raises, and the embedder's
   // Ruby sees Webmachine::Error and chooses. There is no second branch:
   // init() refuses a RingConfig without a VM, so this always has one.
+  // A failure that belongs to ONE connection. It throws, and the
+  // completion handler below catches it, says what happened and closes
+  // that connection - the process belongs to somebody else, so one
+  // peer's bad day is not its end (fatal, below, is for when it is).
+  //
+  // `what` is always a string literal: the once-only reporting keys on
+  // the pointer, so two calls with the same literal are the same fault.
+  struct ConnFailed {
+    const char* what;
+    int err;  // a negative errno where the kernel gave one, 0 where it did not
+  };
+  [[noreturn]] static void conn_failed(const char* what, int err = 0) {
+    throw ConnFailed{what, err};
+  }
+
+  // Once per distinct reason, so a peer that can provoke one cannot
+  // provoke a line per attempt. The error log is where these belong and
+  // gets every one; stderr gets the first of each, because a server run
+  // without --log still has an operator who needs to know.
+  void say_connection_failed(const ConnFailed& f, const Conn& c) {
+    Logger* el = app_.error_log();
+    if (el != nullptr && el->enabled) {
+      char why[192];
+      const int n = std::snprintf(why, sizeof why, "%s%s%s", f.what, f.err < 0 ? ": " : "",
+                                  f.err < 0 ? std::strerror(-f.err) : "");
+      log_internal_error(*el, c.peer != nullptr ? &c.peer->addr : nullptr,
+                         c.peer != nullptr ? static_cast<size_t>(c.peer->addrlen) : 0, nullptr, 0,
+                         0, why, static_cast<size_t>(n < 0 ? 0 : n));
+    }
+    for (unsigned i = 0; i < said_count_; i++) {
+      if (said_[i] == f.what) return;
+    }
+    if (said_count_ < kSaidMax) said_[said_count_++] = f.what;
+    std::fprintf(stderr, "webmachine: %s%s%s (said once)\n", f.what, f.err < 0 ? ": " : "",
+                 f.err < 0 ? std::strerror(-f.err) : "");
+  }
+
   [[noreturn]] void fatal(const char* what) {
     mrb_raise(mrb_, E_WM_ERROR(mrb_), what);
     // mruby declares mrb_raise mrb_noreturn, but that macro (common.h)
@@ -4779,9 +4816,7 @@ class Ring {
     Conn& c = conns_[idx];
     ktls_step step = KTLS_READING;
     if (WM_UNLIKELY(ktls_exchange_step(c.tls->x, &step) != 0)) {
-      tls_fault(kFaultHandshake, "handshake", 0);
-      begin_close(idx);
-      return;
+      conn_failed("tls: the key exchange failed");
     }
     // Unconditional and after the step, because ktls.h says a step that
     // answers KTLS_READING may still owe bytes.
@@ -4819,9 +4854,7 @@ class Ring {
       size_t len = 0;
       const void* info = ktls_crypto_info(c.tls->x, static_cast<ktls_direction>(dir), &len);
       if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[dir])) {
-        tls_fault(kFaultCryptoInfo, "crypto_info", 0);
-        begin_close(idx);
-        return;
+        conn_failed("tls: the agreed keys are not a shape the kernel takes");
       }
       std::memcpy(c.tls->info[dir], info, len);
       c.tls->info_len[dir] = len;
@@ -4876,9 +4909,7 @@ class Ring {
   void tls_next_receive_key(uint32_t idx) {
     Conn& c = conns_[idx];
     if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
-      tls_fault(kFaultKeyUpdate, "key update", 0);
-      begin_close(idx);
-      return;
+      conn_failed("tls: the key update could not be answered");
     }
     size_t len = 0;
     const void* info = ktls_crypto_info(c.tls->x, KTLS_RX, &len);
@@ -4905,11 +4936,9 @@ class Ring {
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen || c.tls == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
-      tls_fault(kFaultRx,
-                c.tls->offloaded ? "setsockopt(TLS_RX) for a key update" : "setsockopt(TLS_RX)",
-                cqe->res);
-      begin_close(idx);
-      return;
+      conn_failed(c.tls->offloaded ? "tls: setsockopt(TLS_RX) for a key update"
+                                   : "tls: setsockopt(TLS_RX)",
+                  cqe->res);
     }
     // A KeyUpdate lands here too - same option, same completion - and
     // there is no backlog and no deadline to reset for that one.
@@ -4919,6 +4948,14 @@ class Ring {
     }
     c.tls->offloaded = true;
     c.deadline_s = now_s_ + header_timeout_;
+    // Once per process, and it is the line that says the whole design
+    // works: from here this socket's record layer is the kernel's.
+    if (!tls_handed_over_said_) {
+      tls_handed_over_said_ = true;
+      std::fprintf(stderr, "webmachine: tls: a socket is the kernel's now (%s, said once)\n",
+                   ktls_exchange_cipher(c.tls->x) != nullptr ? ktls_exchange_cipher(c.tls->x)
+                                                             : "?");
+    }
     if (!c.tls->early.empty()) {
       std::string early;
       early.swap(c.tls->early);
@@ -4957,22 +4994,6 @@ class Ring {
   // touched a cache line per slot however few were connected.
   void live_set(uint32_t idx) { live_bits_[idx >> 6] |= 1ULL << (idx & 63); }
   void live_clear(uint32_t idx) { live_bits_[idx >> 6] &= ~(1ULL << (idx & 63)); }
-
-  // A connection that cannot be given to the kernel is a server fault,
-  // not a request that went wrong, and the operator has to hear it.
-  // Once per KIND, not once per process: the first fault silencing every
-  // other kind is how a lost race hid the fault that mattered.
-  enum TlsFault : uint32_t {
-    kFaultHandshake, kFaultFeed, kFaultCryptoInfo, kFaultRecvmsg, kFaultOversize,
-    kFaultRecordType, kFaultUlp, kFaultTx, kFaultRx, kFaultKeyUpdate, kFaultKinds
-  };
-  void tls_fault(TlsFault kind, const char* what, int err) {
-    const uint32_t bit = 1u << static_cast<uint32_t>(kind);
-    if ((tls_faults_said_ & bit) != 0) return;
-    tls_faults_said_ |= bit;
-    std::fprintf(stderr, "webmachine: tls %s: %s (said once)\n", what,
-                 err < 0 ? std::strerror(-err) : ktls_last_error());
-  }
 
   // RFC 8446 6.1: without it a peer cannot tell a finished stream from a
   // truncated one. Nothing here builds a record - the kernel does, from
@@ -5117,6 +5138,9 @@ class Ring {
         rearm_.push_back(idx);
         return;
       }
+      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded && cqe->res < 0) {
+        conn_failed("tls: recvmsg on an offloaded socket", cqe->res);
+      }
       begin_close(idx);
       return;
     }
@@ -5195,6 +5219,9 @@ class Ring {
     // come back to collect it.
     if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
     if (WM_UNLIKELY(closing)) {
+      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
+        conn_failed("tls: the parser refused what the kernel decrypted", -EPROTO);
+      }
       if (c.sending) c.close_after_send = true;
       else begin_close(idx);
     }
@@ -5224,9 +5251,7 @@ class Ring {
 
     if (c.tls->handshaking) {
       if (WM_UNLIKELY(total > kBufSize || ktls_exchange_feed(c.tls->x, pool_ + off, total) != 0)) {
-        tls_fault(kFaultFeed, "feed", 0);
-        begin_close(idx);
-        return;
+        conn_failed("tls: the peer's handshake bytes were refused");
       }
       tls_advance(idx);
       return;
@@ -5238,17 +5263,13 @@ class Ring {
     struct io_uring_recvmsg_out* o =
         io_uring_recvmsg_validate(pool_ + off, static_cast<int>(total), &c.tls->recv_msg);
     if (WM_UNLIKELY(o == nullptr)) {
-      tls_fault(kFaultRecvmsg, "a recvmsg whose header does not fit its own buffer", 0);
-      begin_close(idx);
-      return;
+      conn_failed("tls: a recvmsg header that does not fit its own buffer");
     }
     // A record whose plaintext did not fit, or a control message that did
     // not. Either would hand the parser a piece of something and call it
     // the whole thing, so neither is read.
     if (WM_UNLIKELY((o->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0)) {
-      tls_fault(kFaultOversize, "a record too large for one buffer", 0);
-      begin_close(idx);
-      return;
+      conn_failed("tls: a record too large for one buffer");
     }
     // An alert or a post-handshake record reaches a plain recv as EIO and
     // nothing else; here it says which it is (.DESIGN.md "Never a plain
@@ -5264,9 +5285,11 @@ class Ring {
       // An alert ends the connection because that is what one is for -
       // close_notify included, which is the ordinary way a peer leaves.
       if (record != KTLS_RECORD_HANDSHAKE) {
-        if (record != KTLS_RECORD_ALERT) tls_fault(kFaultRecordType, "a record of no known type", 0);
-        begin_close(idx);
-        return;
+        if (record == KTLS_RECORD_ALERT) {
+          begin_close(idx);
+          return;
+        }
+        conn_failed("tls: a record of no known type");
       }
       tls_next_receive_key(idx);
       return;
@@ -5289,6 +5312,9 @@ class Ring {
     c.sending = false;
 
     if (WM_UNLIKELY(cqe->res < 0)) {
+      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
+        conn_failed("tls: send on an offloaded socket", cqe->res);
+      }
       begin_close(idx);
       return;
     }
@@ -5299,6 +5325,9 @@ class Ring {
     const size_t took = static_cast<size_t>(cqe->res);
     const size_t offered = c.msg_iovlen != 0 ? c.plan_byte_total : c.out.size();
     if (WM_UNLIKELY(took != offered)) {
+      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
+        conn_failed("tls: a short send on an offloaded socket", -EIO);
+      }
       begin_close(idx);
       return;
     }
@@ -5643,6 +5672,21 @@ class Ring {
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
     const uint16_t gen = static_cast<uint16_t>(ud >> 32);
     const uint32_t idx = static_cast<uint32_t>(ud);
+    try {
+      dispatch(kind, idx, gen, cqe);
+    } catch (const ConnFailed& f) {
+      connection_failed(idx, f);
+    }
+  }
+
+  // The one place a ConnFailed lands, whoever threw it.
+  void connection_failed(uint32_t idx, const ConnFailed& f) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    say_connection_failed(f, conns_[idx]);
+    begin_close(idx);
+  }
+
+  void dispatch(uint8_t kind, uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     switch (kind) {
       case detail::kAccept: on_accept(idx, cqe); break;
       case detail::kRecv: on_recv(idx, gen, cqe); break;
@@ -5666,19 +5710,18 @@ class Ring {
       // the chain, and the third is where the socket is finally the
       // kernel's, so that is the one that acts.
       case detail::kTlsUlp:
+        // ENOTCONN is the peer having left between the accept and this
+        // option: a race no arrangement avoids and nobody's fault.
         if (WM_UNLIKELY(cqe->res < 0)) {
-          // ENOTCONN even here means the peer left between the accept
-          // and this option, which is a race no arrangement avoids and
-          // not something an operator can fix.
-          if (cqe->res != -ENOTCONN) tls_fault(kFaultUlp, "setsockopt(TCP_ULP)", cqe->res);
-          begin_close(idx);
+          if (cqe->res == -ENOTCONN) {
+            begin_close(idx);
+            break;
+          }
+          conn_failed("tls: setsockopt(TCP_ULP)", cqe->res);
         }
         break;
       case detail::kTlsTx:
-        if (WM_UNLIKELY(cqe->res < 0)) {
-          tls_fault(kFaultTx, "setsockopt(TLS_TX)", cqe->res);
-          begin_close(idx);
-        }
+        if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
         break;
       case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
       // The connection is already going; a peer that will not take the
@@ -5766,6 +5809,10 @@ class Ring {
               s->flags |= IOSQE_FIXED_FILE;
               io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, i));
             }
+          } else if (WM_UNLIKELY(c.tls != nullptr) && !c.tls->offloaded) {
+            // A TLS connection that ran out of time before the kernel
+            // ever got its keys did not just go idle.
+            connection_failed(i, ConnFailed{"tls: a handshake that never finished", -ETIMEDOUT});
           } else {
             begin_close(i);
           }
@@ -5800,7 +5847,10 @@ class Ring {
   uint32_t max_conns_ = 0;
   uint32_t listener_base_ = 0;
   bool unix_listener_[kMaxListeners] = {};
-  uint32_t tls_faults_said_ = 0;
+  bool tls_handed_over_said_ = false;
+  static constexpr unsigned kSaidMax = 24;
+  const char* said_[kSaidMax] = {};
+  unsigned said_count_ = 0;
   // Null on a listener that serves cleartext, which is also how a slot
   // knows which it is - there is no second flag to keep in step.
   ktls_keys* tls_keys_[kMaxListeners] = {};
