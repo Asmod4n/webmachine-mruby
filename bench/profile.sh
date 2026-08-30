@@ -41,6 +41,34 @@
 # CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
 # ASSETS + ASSET_CODING + TARGET (see below).
 #
+# EVENT= is the perf event the recording samples. Unset, perf takes its
+# own default (cycles, or the software clock it falls back to where no
+# PMU is exposed - any VM); set, `perf record -e $EVENT` runs with the
+# same -F, call graph, -m and -o. branch-misses, L1-dcache-load-misses,
+# LLC-load-misses are MISS maps: the same load re-recorded, attributing
+# that event per symbol instead of time - the layer under "why is this
+# function hot" that cycles alone does not carry. The report headers and
+# the flamegraph file name the event, so an event map is neither read as
+# a cycle map nor written over one. In DIFF mode both legs record the
+# same event and the diff still subtracts like for like, but what it
+# then reads off is share of that EVENT, not share of time: a symbol can
+# take more of the branch misses and less of the cycles, and both are
+# true at once. An event this host cannot open is refused by perf record
+# before the server is up, and the refusal is printed as perf's own.
+#
+# ANNOTATE="sym1 sym2 ..." disassembles those symbols out of the same
+# recording the reports above read - `perf annotate --stdio --symbol=`
+# per name, cut to 60 lines around the symbol's hottest instruction and
+# saying how many it dropped either side (a whole symbol runs to
+# hundreds: lshpack_dec_decode is 617). The list is space-separated,
+# which is the set of names perf prints without spaces - a C++ symbol
+# carries its whole signature and cannot be spelled here. A name this
+# recording holds no samples for is reported as absent, not skipped in
+# silence. The instructions are the profiled binary's: on the default
+# BUILD_DIR=build/debug they are -Og's, and the ship build's are what
+# BUILD_DIR=build/host plus WM_PROFILE=1 gives (see the BUILD_DIR knob
+# below).
+#
 # STAT=1 answers a DIFFERENT question than everything above: not WHERE
 # time goes on one binary, but HOW MUCH work one binary does per request
 # against another - the number that tells "real extra work" apart from
@@ -48,11 +76,16 @@
 # per-symbol percentages (which are exactly the quantity layout shifts
 # corrupt). Runs `perf stat -p <server-pid>` for the same DURATION htgen
 # hits it, alongside the existing recording, and prints
-# instructions/request. To compare two commits: check one out, `rake
-# compile`, run this with STAT=1; check out the other, rebuild, run
-# again; diff the instructions/request lines by hand - this script
-# measures one binary per invocation, on purpose, so a build never
-# straddles the numbers it produces.
+# instructions/request, branch-misses/request and L1d-misses/request.
+# A counter the host does not carry comes back `<not supported>` where
+# the count would be and prints as ?, with no per-request line derived
+# from it. Six counters can outnumber a PMU's slots, and perf then
+# multiplexes and scales what it prints - counts that stay comparable
+# between runs of the same shape, not exact ones. To compare two
+# commits: check one out, `rake compile`, run this with STAT=1; check
+# out the other, rebuild, run again; diff the per-request lines by
+# hand - this script measures one binary per invocation, on purpose,
+# so a build never straddles the numbers it produces.
 #
 # ASSETS profiles the ASSET TIER instead of an app. Give it a byte
 # count and a one-entry pack of that size is built here and hammered;
@@ -166,6 +199,24 @@ if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
 MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
 STAT="${STAT:-0}"
+EVENT="${EVENT:-}"
+ANNOTATE="${ANNOTATE:-}"
+# EVENT_ARGS is perf record's -e, empty when EVENT is unset (perf's own
+# default event). EVENT_LABEL is the name the report headers print,
+# EVENT_TAG the one the flamegraph file carries - perf event syntax
+# holds : / , = (cycles:u, cpu/event=0x3c,umask=0x0/), none of which
+# belong in a file name.
+EVENT_ARGS=()
+EVENT_LABEL=cycles
+EVENT_TAG=""
+if [ -n "$EVENT" ]; then
+  EVENT_ARGS=(-e "$EVENT")
+  EVENT_LABEL="$EVENT"
+  EVENT_TAG=".$(printf '%s' "$EVENT" | tr -c 'A-Za-z0-9_.-' '_')"
+fi
+# perf annotate prints a whole symbol - hundreds of lines - so what
+# lands in the report is this many around its hottest instruction.
+ANNOTATE_WINDOW=60
 # PROTO=h1 profiles the h1 path under load. Until it existed the h1 leg
 # ran only in diff mode (-c1, against h2 -m1), so the question "where
 # does h1 spend its time at CONNS connections" had no way to be asked -
@@ -269,6 +320,7 @@ if [ "$PROTO" = h1 ]; then
 else
   echo "harness: htgen --sock $([ "$MULTI" = 1 ] && echo "-c1 (diff mode)" || echo "-c$CONNS") --streams $MULTI -d${DURATION}s"
 fi
+[ -z "$EVENT" ] || echo "event: $EVENT (every share below is a share of it, not of time)"
 
 # An io_uring ring is locked memory, so a LEAKED server costs more than
 # a pid: enough orphans and the next ring init fails with ENOMEM
@@ -303,7 +355,7 @@ leg() {
   # there is no reason left to put the TCP stack in the profile.
   rm -f "$WM_SOCK"
   local bindargs=(--unix "$WM_SOCK")
-  "$PERF" record -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
+  "$PERF" record "${EVENT_ARGS[@]}" -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
     "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &
   local perfpid=$!
@@ -311,13 +363,32 @@ leg() {
   # $! is perf's own pid (it execs the server as ITS child, so
   # pinned execs again in place, same pid throughout) - pgrep -P finds
   # that direct child unambiguously, no full-line matching to race.
-  local srvpid=""
+  local srvpid="" perfstate=""
   for _ in $(seq 20); do
     srvpid=$(pgrep -P "$perfpid" | head -1)
     if [ -n "$srvpid" ] && [ -S "$WM_SOCK" ]; then break; fi
     srvpid=""
+    # perf record parses -e and opens the event BEFORE it execs the
+    # server, so an event it cannot spell or cannot open leaves no
+    # child to wait for. An exited perf is a zombie until it is waited
+    # for and kill -0 answers yes to one; the state field of
+    # /proc/PID/stat - the character after the comm parens - is what
+    # tells Z from a live recording.
+    perfstate=$(sed -n 's/.*) \(.\) .*/\1/p' "/proc/$perfpid/stat" 2>/dev/null)
+    [ "${perfstate:-Z}" != Z ] || break
     sleep 0.1
   done
+  # An exited perf that recorded nothing at all never got as far as the
+  # server: -o is written when the recording ends, and a refused event
+  # leaves it zero bytes, where a server that ran and then died leaves
+  # its samples in it (measured: 5 samples, 63 KB, from a server that
+  # died on a bad app). So the log here is perf's own words, not the
+  # server's, and the ENOMEM reading below would be the wrong one.
+  if [ -z "$srvpid" ] && [ "${perfstate:-Z}" = Z ] && [ ! -s "$data" ]; then
+    echo "perf record exited before the server was up${EVENT:+ - EVENT=$EVENT}. perf's own words:" >&2
+    cat /tmp/wm-profile-srv.log >&2
+    exit 1
+  fi
   if [ -z "$srvpid" ]; then
     echo "server did not start (or never became reachable on $WM_SOCK):" >&2
     cat /tmp/wm-profile-srv.log >&2
@@ -363,7 +434,7 @@ leg() {
   # here measuring cycles/instructions/cache instead of syscall count.
   local statpid=""
   if [ "$STAT" = 1 ]; then
-    "$PERF" stat -e cycles,instructions,L1-icache-load-misses,iTLB-load-misses \
+    "$PERF" stat -e cycles,instructions,L1-icache-load-misses,iTLB-load-misses,branch-misses,L1-dcache-load-misses \
       -p "$srvpid" -x, -o "$WORK/stat.out" -- sleep "$DURATION" >/dev/null 2>&1 &
     statpid=$!
   fi
@@ -373,16 +444,31 @@ leg() {
   echo "$cliout" | grep '^responses='
   [ -n "$statpid" ] && wait "$statpid" 2>/dev/null
   if [ "$STAT" = 1 ] && [ -s "$WORK/stat.out" ]; then
-    local ndone cyc instr icm itlb
+    local ndone cyc instr icm itlb bmiss dcm
     ndone=$(echo "$cliout" | grep -o 'responses=[0-9]*' | cut -d= -f2)
-    cyc=$(awk -F, '$3=="cycles"{print $1}' "$WORK/stat.out")
-    instr=$(awk -F, '$3=="instructions"{print $1}' "$WORK/stat.out")
-    icm=$(awk -F, '$3=="L1-icache-load-misses"{print $1}' "$WORK/stat.out")
-    itlb=$(awk -F, '$3=="iTLB-load-misses"{print $1}' "$WORK/stat.out")
-    echo "  perf stat ($name): cycles=${cyc:-?} instructions=${instr:-?} L1-icache-misses=${icm:-?} iTLB-misses=${itlb:-?}"
+    # A counter this host does not carry is `<not supported>` sitting
+    # in the field a count would be in - a string awk's arithmetic
+    # reads as 0. Only a count is taken here; anything else leaves the
+    # value empty, which prints as ? and derives no per-request line.
+    cyc=$(awk -F, '$3=="cycles" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    instr=$(awk -F, '$3=="instructions" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    icm=$(awk -F, '$3=="L1-icache-load-misses" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    itlb=$(awk -F, '$3=="iTLB-load-misses" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    bmiss=$(awk -F, '$3=="branch-misses" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    dcm=$(awk -F, '$3=="L1-dcache-load-misses" && $1 ~ /^[0-9]+$/ {print $1}' "$WORK/stat.out")
+    echo "  perf stat ($name): cycles=${cyc:-?} instructions=${instr:-?}" \
+         "L1-icache-misses=${icm:-?} iTLB-misses=${itlb:-?}" \
+         "branch-misses=${bmiss:-?} L1d-misses=${dcm:-?}"
+    # The companion counter can be missing on its own - a partial PMU
+    # counts instructions but not cache events - and prints as ?, never
+    # as a 0.0 that reads like a measurement.
     if [ -n "$instr" ] && [ -n "$ndone" ] && [ "$ndone" -gt 0 ]; then
-      awk -v i="$instr" -v c="${cyc:-0}" -v d="$ndone" \
-        'BEGIN { printf "  instructions/request: %.1f   cycles/request: %.1f\n", i / d, c / d }'
+      awk -v i="$instr" -v c="$cyc" -v d="$ndone" \
+        'BEGIN { printf "  instructions/request: %.1f   cycles/request: %s\n", i / d, c == "" ? "?" : sprintf("%.1f", c / d) }'
+    fi
+    if [ -n "$bmiss" ] && [ -n "$ndone" ] && [ "$ndone" -gt 0 ]; then
+      awk -v b="$bmiss" -v l="$dcm" -v d="$ndone" \
+        'BEGIN { printf "  branch-misses/request: %.1f   L1d-misses/request: %s\n", b / d, l == "" ? "?" : sprintf("%.1f", l / d) }'
     fi
     mv "$WORK/stat.out" "$OUT/stat.$(echo "$name" | tr ' /' '__').out"
   fi
@@ -392,16 +478,17 @@ leg() {
   PERFPID=""
 }
 
-# WHOSE cycles: one line per object, nothing hidden. A top-30 symbol
-# list with a 0.5% floor showed 63% of the samples and made this tree
-# look like 3% of its own profile - our code is spread thin over many
-# small symbols, exactly the shape a floor erases. This is the number
-# that says how much of the run is webmachine at all; the symbol list
-# after it says where inside that.
+# WHOSE cycles - or whose EVENT, when one is set: one line per object,
+# nothing hidden, under a header that names which of the two it is. A
+# top-30 symbol list with a 0.5% floor showed 63% of the samples and
+# made this tree look like 3% of its own profile - our code is spread
+# thin over many small symbols, exactly the shape a floor erases. This
+# is the number that says how much of the run is webmachine at all;
+# the symbol list after it says where inside that.
 report_full() {
   local data=$1 what=$2
   echo
-  echo "== whose cycles ($what): per object, all samples =="
+  echo "== whose $EVENT_LABEL ($what): per object, all samples =="
   "$PERF" report -i "$data" --stdio --no-children -g none --sort dso \
     --percent-limit=0 2>/dev/null | grep -vE '^#|^$'
   echo
@@ -423,7 +510,7 @@ elif [ "$MULTI" = 1 ]; then
   leg "h1 anchor" "$OUT/perf.data.h1"
   leg "h2 --streams 1" "$OUT/perf.data.h2" --h2 --streams 1
   echo
-  echo "== perf diff: relative sample share, h1 -> h2 (positive = h2 spends more here) =="
+  echo "== perf diff: relative sample share${EVENT:+ of $EVENT}, h1 -> h2 (positive = h2 spends more here) =="
   "$PERF" diff "$OUT/perf.data.h1" "$OUT/perf.data.h2" 2>/dev/null | grep -vE '^#|^$'
   report_full "$OUT/perf.data.h2" "h2 --streams 1"
 else
@@ -438,10 +525,46 @@ else
   report_full "$OUT/perf.data.h2" "h2 --streams $MULTI c$CONNS"
 fi
 
+# The instructions behind a symbol from the list above, read out of
+# $GRAPH - the same recording report_full just described. perf annotate
+# writes a symbol it has no samples for as nothing at all on stdout,
+# with "data has no samples" on stderr, which is why the percent lines
+# are counted rather than the exit status.
+for sym in $ANNOTATE; do
+  echo
+  echo "== annotate ($sym): $EVENT_LABEL per instruction =="
+  "$PERF" annotate -i "$GRAPH" --stdio --symbol="$sym" \
+    >"$WORK/annotate.out" 2>"$WORK/annotate.err"
+  if ! grep -qE '^ *[0-9]+\.[0-9]+ :' "$WORK/annotate.out"; then
+    echo "  $sym: no annotated instruction in $GRAPH - this recording holds no samples for that symbol"
+    sed 's/^/  perf: /' "$WORK/annotate.err" | head -4
+    continue
+  fi
+  awk -v win="$ANNOTATE_WINDOW" -v perf="$PERF" -v data="$GRAPH" -v sym="$sym" '
+    { line[NR] = $0 }
+    $1 ~ /^[0-9]+\.[0-9]+$/ && $1 + 0 > hot { hot = $1 + 0; at = NR }
+    END {
+      head = (NR > 2 ? 2 : NR)
+      for (i = 1; i <= head; i++) print line[i]
+      lo = head + 1; hi = NR
+      if (NR - head > win) {
+        lo = at - int(win / 2)
+        if (lo < head + 1) lo = head + 1
+        hi = lo + win - 1
+        if (hi > NR) { hi = NR; lo = hi - win + 1 }
+      }
+      if (lo > head + 1) printf "  ... %d lines before this window ...\n", lo - head - 1
+      for (i = lo; i <= hi; i++) print line[i]
+      if (hi < NR) printf "  ... %d lines after it - all of it: %s annotate -i %s --stdio --symbol=%s\n", \
+                          NR - hi, perf, data, sym
+    }
+  ' "$WORK/annotate.out"
+done
+
 if command -v stackcollapse-perf.pl >/dev/null && command -v flamegraph.pl >/dev/null; then
   "$PERF" script -i "$GRAPH" 2>/dev/null | stackcollapse-perf.pl | flamegraph.pl \
-    > "$OUT/flamegraph.$PROTO.svg"
-  echo "flamegraph: $OUT/flamegraph.$PROTO.svg"
+    > "$OUT/flamegraph.$PROTO$EVENT_TAG.svg"
+  echo "flamegraph: $OUT/flamegraph.$PROTO$EVENT_TAG.svg"
 else
   echo "FlameGraph scripts (stackcollapse-perf.pl/flamegraph.pl) not on PATH - " \
        "skipped, perf diff above is the finding" >&2
