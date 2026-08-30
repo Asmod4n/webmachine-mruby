@@ -5193,6 +5193,13 @@ class Ring {
       begin_close(idx);
       return;
     }
+    // A record whose plaintext did not fit, or a control message that did
+    // not. Either would hand the parser a piece of something and call it
+    // the whole thing, so neither is read.
+    if (WM_UNLIKELY((o->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0)) {
+      begin_close(idx);
+      return;
+    }
     // An alert or a post-handshake record reaches a plain recv as EIO and
     // nothing else; here it says which it is (.DESIGN.md "Never a plain
     // recv on an offloaded socket").

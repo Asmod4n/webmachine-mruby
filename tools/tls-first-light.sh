@@ -34,7 +34,8 @@ else
     ok ok "modprobe tls"
   else
     ok FAILED "modprobe tls - nothing below this line can work"
-    echo "   (run: sudo modprobe tls)"
+    echo "   (run: sudo modprobe tls - the kernel unloads it again when idle,"
+    echo "    so echo tls | sudo tee /etc/modules-load.d/tls.conf makes it stick)"
     exit 1
   fi
 fi
@@ -96,15 +97,25 @@ suite=$(echo "$hs" | sed -n 's/^.*Cipher is \(TLS_[A-Z0-9_]*\).*$/\1/p' | head -
 echo "$hs" | grep -q 'ALPN protocol: h2' \
   && ok ok "ALPN settled on h2" || ok FAILED "ALPN did not settle on h2"
 
-say "5. does a request come back - the kernel encrypting both ways?"
+say "5. does ONE plain request come back, in HTTP/1.1?"
+# Before h2, because h2 failing tells you nothing about which half broke:
+# this is the smallest thing the kernel's record layer has to carry.
+raw=$(printf 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
+      | openssl s_client -connect "127.0.0.1:$port" -CAfile "$work/cert.pem" \
+          -alpn http/1.1 -servername localhost -quiet -ign_eof 2>/dev/null || true)
+echo "$raw" | grep -q '^HTTP/1.1 200' \
+  && ok ok "HTTP/1.1 over TLS answers 200" \
+  || ok FAILED "no HTTP/1.1 answer"
+echo "$raw" | grep -q 'h2 over tls' \
+  && ok ok "and the body is the resource's" || ok FAILED "no body"
+
+say "6. and over h2, which is what a browser will ask for"
 body=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
          -w '\n%{http_version} %{http_code}' "https://localhost:$port/" 2>&1 || true)
-echo "$body" | grep -q 'h2 over tls' \
-  && ok ok "the body arrived" || ok FAILED "no body: $body"
 echo "$body" | grep -q '^2 200$' \
-  && ok ok "over HTTP/2, status 200" || ok FAILED "not h2/200: $(echo "$body" | tail -1)"
+  && ok ok "HTTP/2, status 200" || ok FAILED "not h2/200: $(echo "$body" | tail -1)"
 
-say "6. and again on the same connection, which is where a browser lives"
+say "7. and four of them on one connection, where a browser lives"
 # One -o per URL: curl applies a single one to the first URL only, and the
 # bodies would otherwise land in the answer being compared.
 many=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127.0.0.1" \
@@ -113,6 +124,19 @@ many=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127
        -o /dev/null "https://localhost:$port/b" -o /dev/null "https://localhost:$port/c" 2>&1 || true)
 [ "$many" = "200 200 200 200 " ] \
   && ok ok "four requests, one connection" || ok FAILED "got: $many"
+
+# The one question a failure above cannot answer by itself: were those
+# bytes wrong, or were they the wrong PROTOCOL? An h2 client that is
+# answered in HTTP/1.1 reports a framing error and shows nothing.
+if [ $fails -ne 0 ]; then
+  say "what the server actually sent, after ALPN chose h2"
+  printf 'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' \
+    | openssl s_client -connect "127.0.0.1:$port" -CAfile "$work/cert.pem" \
+        -alpn h2 -servername localhost -quiet -ign_eof 2>/dev/null \
+    | head -c 96 | od -c | head -8 | sed 's/^/   | /'
+  echo "   (bytes starting 'H T T P / 1 . 1' mean the preface never reached"
+  echo "    the parser; noise means the record layer or the buffer layout)"
+fi
 
 printf '\n'
 if [ $fails -eq 0 ]; then
