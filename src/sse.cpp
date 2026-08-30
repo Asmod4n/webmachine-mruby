@@ -99,7 +99,7 @@ void report_close(SseStream* s) {
   const int ai = mrb_gc_arena_save(mrb);
   mrb_funcall_argv(mrb, s->self, MRB_SYM(on_close), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (s->elog != nullptr) log_exception(*s->elog, mrb, nullptr, 0, nullptr, 0, 0);
+    if (s->elog != nullptr) log_raise(*s->elog, mrb, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
   }
@@ -192,7 +192,7 @@ SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status) {
   mrb_gc_register(mrb, obj);
   const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (elog != nullptr) log_exception(*elog, mrb, nullptr, 0, nullptr, 0, 500);
+    if (elog != nullptr) log_raise(*elog, mrb, 500);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_unregister(mrb, obj);
@@ -227,7 +227,7 @@ bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value out = mrb_funcall_argv(mrb, s->self, MRB_SYM(on_tick), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (s->elog != nullptr) log_exception(*s->elog, mrb, nullptr, 0, nullptr, 0, 0);
+    if (s->elog != nullptr) log_raise(*s->elog, mrb, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);

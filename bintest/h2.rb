@@ -416,14 +416,16 @@ assert('h2: the router is the SAME table - each route keeps its own body, a miss
       assert_equal 1, type
       assert_equal 5, stream
       assert_equal 0x8d, block.getbyte(0)
-      # #210: the 404 says WHAT was not found, so it has a body and the
-      # stream ends on the DATA frame.
+      # #210: the 404 carries a page, so the stream ends on the DATA frame.
       assert_equal 0, flags & 1, '404 carries a page - HEADERS must not end it'
       type, flags, stream, data = h2_next(s)
       assert_equal 0, type
       assert_equal 5, stream
       assert_equal 1, flags & 1, 'the page ends the stream'
-      assert_include data, '/nowhere'
+      assert_include data, 'Not Found'
+      # And it says nothing the client sent: the target it asked for is in
+      # the error log, not reflected into a document.
+      assert_false data.include?('/nowhere')
       # RFC 9110 15.5.6: the 405 keeps its Allow now that it also carries
       # a page - the DATA frame behind the HEADERS is that page.
       s.write(h2_frame(1, 0x05, 7, "\x02\x03PUT\x86\x04\x06/alpha\x41\x0bexample.com".b))

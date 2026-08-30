@@ -22,7 +22,7 @@ module Webmachine
   #   end
   #
   # Every handler is handed the same Hash, which is also the template
-  # context: status, title, source, target, and - for a 500 - message and
+  # context: status, title, source, and - for a 500 - id, message and
   # backtrace. cat is present only when the asset pack holds a picture for
   # the status.
   #
@@ -80,8 +80,6 @@ module Webmachine
       h1{font-size:clamp(1.1rem,4vw,1.5rem);font-weight:600;margin:.4rem 0 1.6rem}
       img{max-width:100%;height:auto;border-radius:.6rem;display:block;margin:0 auto}
       .s{margin:1.6rem 0 0;color:var(--dim);font-size:.85rem}
-      .t{margin:0 0 1.6rem;color:var(--dim);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,
-        Consolas,monospace;overflow-wrap:anywhere}
       .m{margin:1.2rem 0 0;padding:.8rem 1rem;border-radius:.4rem;background:rgba(127,127,127,.12);
         text-align:left;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
         white-space:pre-wrap;overflow-wrap:anywhere}
@@ -92,12 +90,12 @@ module Webmachine
       <main>
         <p class=n>{{status}}</p>
         <h1>{{title}}</h1>
-      {{#target}}  <p class=t>{{target}}</p>
-      {{/target}}{{#cat}}  <img src="{{cat_url}}"
+      {{#cat}}  <img src="{{cat_url}}"
              alt="A cat, illustrating HTTP {{status}} {{title}}">
       {{/cat}}  <p class=s>{{source}}</p>
       {{#message}}  <p class=m>{{message}}</p>
-      {{/message}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
+      {{/message}}{{#id}}  <p class=s>Reference {{id}}</p>
+      {{/id}}{{#cat}}  <p class=c>Cat by <a href="https://girliemac.com/blog/2011/12/18/the-day-i-seized-the-interweb-http-status-cats/">Tomomi Imura</a>, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>, unchanged
       {{/cat}}</main>
 
     WM_HTML
@@ -108,7 +106,7 @@ module Webmachine
     # inside a JSON string would be wrong. json_escape below does the job
     # this format actually needs.
     JSON = Mustache::Template.compile(<<~'WM_JSON')
-      {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#instance}},"instance":"{{{instance}}}"{{/instance}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
+      {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#id}},"id":"{{{id}}}"{{/id}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
 
     WM_JSON
 
@@ -118,12 +116,12 @@ module Webmachine
     # a human.
     TEXT = Mustache::Template.compile(<<~'WM_TEXT')
       {{status}} {{{title}}}
-      {{#target}}{{{target}}}
-      {{/target}}{{#message}}
+      {{#message}}
       {{{message}}}
       {{/message}}
       {{{source}}}
-
+      {{#id}}Reference {{{id}}}
+      {{/id}}
     WM_TEXT
 
     # fsm.rb's own name for the hook, and the ONE place it exists. A
@@ -179,11 +177,12 @@ module Webmachine
       out
     end
 
-    # The target becomes RFC 9457's "instance": the member that names the
-    # specific occurrence.
+    # RFC 9457 names an "instance" member for the specific occurrence. It
+    # would be the request target, and an error page carries nothing the
+    # client sent - the access log is where a request is named.
     def json_escaped(e)
       out = { 'status' => e['status'], 'title' => json_escape(e['title'].to_s) }
-      out['instance'] = json_escape(e['target'].to_s) if e['target']
+      out['id'] = e['id'] if e['id']
       out['message'] = json_escape(e['message'].to_s) if e['message']
       out['backtrace'] = json_escape(e['backtrace'].to_s) if e['backtrace']
       out

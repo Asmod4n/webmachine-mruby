@@ -18,6 +18,7 @@
 using webmachine::ErrRec;
 using webmachine::LogRec;
 using webmachine::kErrRecVersion;
+using webmachine::kFingerprintLen;
 using webmachine::kLogH2;
 using webmachine::kLogNoTrack;
 using webmachine::kLogRecVersion;
@@ -275,7 +276,8 @@ static void run_error() {
         std::exit(1);
       }
       const size_t parts = size_t(r.peer_len) + r.exception_class_len + r.request_target_len +
-                           r.message_len + r.backtrace_len;
+                           r.message_len + r.backtrace_len + r.method_len + r.steering_len +
+                           r.body_len;
       if (parts != r.dynamic_len) {
         std::fprintf(stderr, "webmachine-logd: error record says %u dynamic bytes, its fields add "
                              "up to %zu - stream desynced, refusing\n", r.dynamic_len, parts);
@@ -289,7 +291,10 @@ static void run_error() {
       const char* exception_class = p;      p += r.exception_class_len;
       const char* request_target = p;       p += r.request_target_len;
       const char* message = p;              p += r.message_len;
-      const char* backtrace = p;
+      const char* backtrace = p;            p += r.backtrace_len;
+      const char* method = p;               p += r.method_len;
+      const char* steering = p;             p += r.steering_len;
+      const char* body = p;
 
       spell_ts(r.unix_seconds);
       out.append(ts, 28);
@@ -303,6 +308,10 @@ static void run_error() {
       } else {
         out.push_back('-');
       }
+      out.push_back(' ');
+      out.append(r.fingerprint, kFingerprintLen);
+      out.push_back(' ');
+      if (r.method_len != 0) esc(method, r.method_len); else out.push_back('-');
       out.push_back(' ');
       if (r.request_target_len != 0) esc(request_target, r.request_target_len);
       else out.push_back('-');
@@ -320,6 +329,25 @@ static void run_error() {
         out.push_back('\n');
         i = j + 1;
       }
+      for (size_t i = 0; i < r.steering_len;) {
+        size_t j = i;
+        while (j < r.steering_len && steering[j] != '\n') j++;
+        out.append("\twith ", 6);
+        esc(steering + i, j - i);
+        out.push_back('\n');
+        i = j + 1;
+      }
+      if (r.body_full_len != 0) {
+        char n[32];
+        out.append("\tbody ", 6);
+        out.append(n, static_cast<size_t>(std::snprintf(n, sizeof n, "%u of %u bytes: ",
+                                                        r.body_len, r.body_full_len)));
+        esc(body, r.body_len);
+        out.push_back('\n');
+      }
+      out.append("\tbuild ", 7);
+      out.append(r.app_build, kFingerprintLen);
+      out.push_back('\n');
 
       off += need;
       flush_out();

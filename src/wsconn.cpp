@@ -331,7 +331,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
   argv[1] = mrb_str_new(mrb, reason == nullptr ? "" : reason, reason_len);
   mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), c->res->close_argc, argv);
   if (mrb->exc != nullptr) {
-    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
+    if (c->elog != nullptr) log_raise(*c->elog, mrb, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
   }
@@ -358,7 +358,7 @@ bool deliver(WsConn* c, std::string& sink) {
   const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), r->data_argc, argv);
   drop_msg(c);
   if (mrb->exc != nullptr) {
-    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
+    if (c->elog != nullptr) log_raise(*c->elog, mrb, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
@@ -684,7 +684,7 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t
   mrb_gc_register(mrb, obj);
   const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (elog != nullptr) log_exception(*elog, mrb, nullptr, 0, nullptr, 0, 500);
+    if (elog != nullptr) log_raise(*elog, mrb, 500);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_unregister(mrb, obj);
@@ -755,7 +755,7 @@ bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink) {
     else mrb->exc = mrb_obj_ptr(mrb_exc_new_lit(mrb, E_WM_ERROR(mrb),
                                                 "the websocket handler ended without an "
                                                 "exception object"));
-    if (c->elog != nullptr) log_exception(*c->elog, mrb, nullptr, 0, nullptr, 0, 0);
+    if (c->elog != nullptr) log_raise(*c->elog, mrb, 0);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
     return fail(c, sink, ws::kCloseInternalError);

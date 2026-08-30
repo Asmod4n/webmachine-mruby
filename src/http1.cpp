@@ -449,6 +449,11 @@ void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t statu
   std::string body;
   size_t plen = 0;
   const char* pbody = err_pages_.pack_body(status, media, &plen);
+  // An answer with nothing of its own to say is the page this status
+  // always sends: lent, not rendered.
+  if (pbody == nullptr && f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
+    pbody = err_pages_.prepared_body(status, media, &plen);
+  }
   if (pbody == nullptr && !err_pages_.render(status, media, f, body)) {
     sink.append(bodyless.bytes);
     return;
@@ -1154,10 +1159,31 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                                    lent != nullptr, b != nullptr && b->gzip_ok,
                                    b != nullptr && b->bound);
     mrb_value exc_value = mrb_nil_value();
+    // #210: what led here, gathered once - the record and the page carry
+    // the same hash because they are taken over the same facts.
+    ErrFacts ef;
+    std::string ef_backtrace;
+    std::string ef_steering;
+    char ef_hash[kFingerprintLen] = {};
     if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
-      if (elog_.enabled) {
-        log_exception(elog_, b->res->mrb, st.peer, st.peer_len, path, path_len, 500);
-      }
+      ef.peer = st.peer;
+      ef.peer_len = st.peer_len;
+      ef.request_target = path;
+      ef.request_target_len = path_len;
+      ef.method = method;
+      ef.method_len = method_len;
+      spell_steering(&vals, ef_steering);
+      ef.steering = ef_steering.data();
+      ef.steering_len = ef_steering.size();
+      // The request as the resource saw it: lent for this frame, which is
+      // the frame still being answered.
+      ef.body = b->res->run_req != nullptr ? b->res->run_req->content : nullptr;
+      ef.body_len = b->res->run_req != nullptr ? b->res->run_req->content_len : 0;
+      ef.body_full = ef.body_len;
+      ef.status_code = 500;
+      exception_facts(b->res->mrb, ef, ef_backtrace);
+      spell_fingerprint(ef_hash, fingerprint_of(ef));
+      if (elog_.enabled) log_error(elog_, ef);
       // #210: handle_exception lives on the error resource and nowhere
       // else, so the exception object itself is what crosses over - not
       // a message some resource already made of it.
@@ -1197,12 +1223,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         const Variants& pv = store_prefix_[(*idx)[500]];
         const Variants& bv = store_[(*idx)[500]];
         ErrorPages::Fields f;
-        f.target = path;
-        f.target_len = path_len;
-        f.method = method;
-        f.method_len = method_len;
         f.message = message.data();
         f.message_len = message.size();
+        f.fingerprint = ef_hash;
         spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                : (persist ? pv.keep : pv.close),
                     minor >= 1 ? (persist ? bv.plain : bv.close)
@@ -1221,14 +1244,6 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         if (status >= 400) {
           const Variants& pv = store_prefix_[(*idx)[status]];
           ErrorPages::Fields f;
-          f.target = path;
-          f.target_len = path_len;
-          f.method = method;
-          f.method_len = method_len;
-          if (status == 405 && b != nullptr && !b->konst.allow.empty()) {
-            f.allow = b->konst.allow.data();
-            f.allow_len = b->konst.allow.size();
-          }
           spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
                                  : (persist ? pv.keep : pv.close),
                       bodyless, status, head_only,

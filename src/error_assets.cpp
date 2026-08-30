@@ -316,6 +316,9 @@ bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) 
   exc_sym_ = MRB_SYM(handle_exception);
   if (assets != nullptr) read_cats(*assets);
   ready_ = true;
+  // After the cats: their URL is part of the page, so a page prepared
+  // before them would be a page without one.
+  read_prepared();
   return true;
 }
 
@@ -509,9 +512,7 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
   hash_put_str(mrb, ctx, "title", status_title(status), std::strlen(status_title(status)));
   hash_put_str(mrb, ctx, "source", status_source(status), std::strlen(status_source(status)));
-  if (f.target != nullptr && f.target_len != 0) hash_put_str(mrb, ctx, "target", f.target, f.target_len);
-  if (f.method != nullptr && f.method_len != 0) hash_put_str(mrb, ctx, "method", f.method, f.method_len);
-  if (f.allow != nullptr && f.allow_len != 0) hash_put_str(mrb, ctx, "allow", f.allow, f.allow_len);
+  if (f.fingerprint != nullptr) hash_put_str(mrb, ctx, "id", f.fingerprint, kFingerprintLen);
   if (f.message != nullptr && f.message_len != 0) hash_put_str(mrb, ctx, "message", f.message, f.message_len);
   if (f.backtrace != nullptr && f.backtrace_len != 0) {
     hash_put_str(mrb, ctx, "backtrace", f.backtrace, f.backtrace_len);
@@ -538,6 +539,43 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   out.assign(RSTRING_PTR(body), RSTRING_LEN(body));
   mrb_gc_arena_restore(mrb, ai);
   return true;
+}
+
+// #210: every status this build can spell, rendered once. An answer that
+// names no failure carries nothing a request could have changed, so the
+// bytes it sends are decided here and lent from here - the template runs
+// at boot, and a 404 costs a memcpy.
+void ErrorPages::read_prepared() {
+  const size_t width = have_.size();
+  const Fields nothing;
+  std::string page;
+  size_t slot = 0;
+  size_t row = 0;
+
+  // Row 0 is the one prep_index_ names when a status has none.
+  prepared_.assign(width, std::string());
+  for (const Face& face : kFaces) {
+    row = prepared_.size() / width;
+    prepared_.resize(prepared_.size() + width);
+    prep_index_[face.status] = static_cast<int16_t>(row);
+    for (slot = 0; slot < width; slot++) {
+      if (have_[slot].from_pack) continue;
+      if (render(face.status, static_cast<int>(slot), nothing, page)) {
+        prepared_[row * width + slot] = page;
+      }
+    }
+  }
+}
+
+const char* ErrorPages::prepared_body(uint16_t status, int slot, size_t* len) const {
+  if (!ready_ || status >= 600 || slot < 0) return nullptr;
+  if (prep_index_[status] <= 0) return nullptr;
+  const std::string& page =
+      prepared_[static_cast<size_t>(prep_index_[status]) * have_.size() +
+                static_cast<size_t>(slot)];
+  if (page.empty()) return nullptr;
+  *len = page.size();
+  return page.data();
 }
 
 }  // namespace webmachine

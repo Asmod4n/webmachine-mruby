@@ -1972,20 +1972,17 @@ bool resource_exception_take(const Resource& res, mrb_value* out) {
 }
 
 // mruby: one raise as one error-log record - class, message, backtrace.
-void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len,
-                   const char* request_target, size_t request_target_len, uint16_t status_code) {
+void exception_facts(mrb_state* mrb, ErrFacts& f, std::string& backtrace) {
   if (mrb->exc == nullptr) return;
   const mrb_value exc = mrb_obj_value(mrb->exc);
-  const char* exception_class = mrb_obj_classname(mrb, exc);
-  const char* message = nullptr;
-  size_t message_len = 0;
+  f.exception_class = mrb_obj_classname(mrb, exc);
+  f.exception_class_len = std::strlen(f.exception_class);
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
   if (e->mesg != nullptr && e->mesg->tt == MRB_TT_STRING) {
     const mrb_value mesg = mrb_obj_value(e->mesg);
-    message = RSTRING_PTR(mesg);
-    message_len = static_cast<size_t>(RSTRING_LEN(mesg));
+    f.message = RSTRING_PTR(mesg);
+    f.message_len = static_cast<size_t>(RSTRING_LEN(mesg));
   }
-  std::string backtrace;
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value bt = mrb_exc_backtrace(mrb, exc);
   if (mrb_array_p(bt)) {
@@ -1998,9 +1995,8 @@ void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len
     }
   }
   mrb_gc_arena_restore(mrb, ai);
-  log_error(lg, peer, peer_len, exception_class, std::strlen(exception_class), request_target,
-            request_target_len, status_code, message, message_len, backtrace.data(),
-            backtrace.size());
+  f.backtrace = backtrace.data();
+  f.backtrace_len = backtrace.size();
 }
 
 // The public door for a C++ resource callback (#207). The wrapper keeps

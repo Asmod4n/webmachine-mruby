@@ -6,6 +6,7 @@
 #include <mruby/data.h>
 #include <mruby/dump.h>
 #include <mruby/error.h>
+#include <mruby/irep.h>
 #include <mruby/presym.h>
 #include <mruby/proc.h>
 #include <mruby/string.h>
@@ -478,9 +479,22 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
     std::snprintf(err, errlen, "cannot open %s", path);
     return false;
   }
-  const int ai = mrb_gc_arena_save(mrb);
-  mrb_load_irep_file(mrb, f);
+  // Read before loading, so the bytes can be hashed: app_build_hash is
+  // what every error fingerprint is taken over first, and it is these
+  // bytes - a rake that changed anything changes it, and with it every
+  // hash this build can produce.
+  std::string image;
+  char chunk[65536];
+  size_t got = 0;
+  while ((got = std::fread(chunk, 1, sizeof chunk, f)) != 0) image.append(chunk, got);
   std::fclose(f);
+  if (image.empty()) {
+    std::snprintf(err, errlen, "%s is empty - that is no bytecode", path);
+    return false;
+  }
+  app_build_hash() = fnv1a(kFnvBasis, image.data(), image.size());
+  const int ai = mrb_gc_arena_save(mrb);
+  mrb_load_irep_buf(mrb, image.data(), image.size());
   if (mrb->exc != nullptr) {
     std::snprintf(err, errlen, "app raised while loading (exception below)");
     mrb_print_error(mrb);

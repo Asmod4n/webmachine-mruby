@@ -890,39 +890,163 @@ struct ErrRec {
   uint16_t request_target_len;
   uint16_t message_len;
   uint16_t backtrace_len;
+  uint8_t method_len;
+  uint8_t steering_len;
+  // What the request carried, capped at kBodyKept - body_full_len is what
+  // it really was, so a record says "50 MB, here are the first 4 KB"
+  // rather than passing a truncation off as the whole of it.
+  uint16_t body_len;
+  uint32_t body_full_len;
+  // #210: the fingerprint of what led here, as the page spells it. The
+  // same 16 bytes in both, so the hash a user reads off a page is the
+  // string that finds this record - no lookup table in between. app_build
+  // is the build it happened in, so a hash from before a deploy is told
+  // apart from one from the running code instead of being chased.
+  char fingerprint[16];
+  char app_build[16];
   uint32_t dynamic_len;
 };
-inline constexpr uint8_t kErrRecVersion = 1;
+inline constexpr uint8_t kErrRecVersion = 2;
+inline constexpr size_t kFingerprintLen = 16;
+// How much of a request body one record keeps. The body is what an app
+// was asked to do, so it is what says why a raise happened - and it is
+// also whatever the app put there, which for a form login is a password.
+// An error log is a file with secrets in it; give it the permissions and
+// the retention that says so.
+inline constexpr size_t kBodyKept = 4096;
+
+// What THIS build of the app is: FNV-1a over the bytecode the server
+// loaded, taken once at startup. Every fingerprint carries it, so a rake
+// that changed anything gives every failure a new hash - a hash reported
+// yesterday can never point at a line that has moved or a method that is
+// gone. A build property, not a request's: it is the same for every
+// answer this process gives.
+inline uint64_t& app_build_hash() {
+  static uint64_t h = 0;
+  return h;
+}
+
+// FNV-1a, 64 bit (Fowler/Noll/Vo, offset basis and prime by the reference
+// implementation). One raise's fingerprint is this over everything that
+// led to it, fed piece by piece.
+inline constexpr uint64_t kFnvBasis = 0xcbf29ce484222325ULL;
+inline uint64_t fnv1a(uint64_t h, const void* p, size_t n) {
+  const unsigned char* b = static_cast<const unsigned char*>(p);
+  size_t i = 0;
+  for (; i < n; i++) {
+    h ^= b[i];
+    h *= 0x100000001b3ULL;
+  }
+  return h;
+}
+// A length in front of every piece, so two pieces that meet cannot spell
+// what a different pair would: "/a" + "bc" and "/ab" + "c" are two
+// fingerprints, not one.
+inline uint64_t fnv1a_piece(uint64_t h, const void* p, size_t n) {
+  const uint32_t len = static_cast<uint32_t>(n);
+  h = fnv1a(h, &len, sizeof len);
+  return n != 0 ? fnv1a(h, p, n) : h;
+}
+// The 16 lowercase hex digits a page shows and a log carries.
+inline void spell_fingerprint(char* out, uint64_t h) {
+  static const char kHex[] = "0123456789abcdef";
+  size_t i = 0;
+  for (; i < kFingerprintLen; i++) out[i] = kHex[(h >> ((15 - i) * 4)) & 0xf];
+}
+
+// What ONE failure was: the request that led there, and the raise that
+// ended it. Read, never written, by everything below - the fingerprint is
+// this and nothing else, so a record and a page cannot disagree about
+// what the hash was taken over.
+struct ErrFacts {
+  const void* peer = nullptr;
+  size_t peer_len = 0;
+  // The request, as far as it steered: the target the client asked for,
+  // the method it asked with, and the fields the server reads because
+  // they change the answer (spell_steering below). Referer and
+  // User-Agent are not among them - they steer nothing.
+  const char* request_target = nullptr;
+  size_t request_target_len = 0;
+  const char* method = nullptr;
+  size_t method_len = 0;
+  const char* steering = nullptr;
+  size_t steering_len = 0;
+  // The raise: what was thrown, what it said, and where from.
+  const char* exception_class = nullptr;
+  size_t exception_class_len = 0;
+  const char* message = nullptr;
+  size_t message_len = 0;
+  const char* backtrace = nullptr;
+  size_t backtrace_len = 0;
+  // What the request carried. Without it a raise inside a handler says
+  // where it happened and not what it was asked to do. body_full is what
+  // arrived; log_error keeps kBodyKept of it and records the rest as a
+  // number.
+  const char* body = nullptr;
+  size_t body_len = 0;
+  size_t body_full = 0;
+  uint16_t status_code = 0;
+};
+
+// The hash a user reads off the page and an operator greps the log for.
+// Everything that led here goes in, each piece behind its own length; the
+// message does not - the same fault at the same place under the same
+// request is one failure, whatever the exception chose to say about it.
+inline uint64_t fingerprint_of(const ErrFacts& f) {
+  uint64_t h = app_build_hash();
+  h = fnv1a_piece(h, f.method, f.method_len);
+  h = fnv1a_piece(h, f.request_target, f.request_target_len);
+  h = fnv1a_piece(h, f.steering, f.steering_len);
+  h = fnv1a_piece(h, f.exception_class, f.exception_class_len);
+  h = fnv1a_piece(h, f.backtrace, f.backtrace_len);
+  h = fnv1a_piece(h, &f.status_code, sizeof f.status_code);
+  return h;
+}
 
 // One raise as one record: a FIXED header whose last field is the size of
-// the second send, then that many bytes.
-inline void log_error(Logger& lg, const void* peer, size_t peer_len, const char* exception_class,
-                      size_t exception_class_len, const char* request_target,
-                      size_t request_target_len, uint16_t status_code, const char* message,
-                      size_t message_len, const char* backtrace, size_t backtrace_len) {
-  if (peer_len > 255) peer_len = 255;
-  if (exception_class_len > 255) exception_class_len = 255;
-  if (request_target_len > 65535) request_target_len = 65535;
-  if (message_len > 65535) message_len = 65535;
-  if (backtrace_len > 65535) backtrace_len = 65535;
+// the second send, then that many bytes - peer, class, target, message,
+// backtrace, method, steering, in that order.
+inline void log_error(Logger& lg, const ErrFacts& f) {
+  // A 4xx is an answer, not a failure: the client asked for something it
+  // may not have, and the server said so. Nothing raised, so there is
+  // nothing to explain and no hash to hand out. Refused here, once, so no
+  // call site has to remember it.
+  if (f.status_code >= 400 && f.status_code < 500) return;
+  const size_t peer_len = f.peer_len > 255 ? 255 : f.peer_len;
+  const size_t class_len = f.exception_class_len > 255 ? 255 : f.exception_class_len;
+  const size_t target_len = f.request_target_len > 65535 ? 65535 : f.request_target_len;
+  const size_t message_len = f.message_len > 65535 ? 65535 : f.message_len;
+  const size_t backtrace_len = f.backtrace_len > 65535 ? 65535 : f.backtrace_len;
+  const size_t method_len = f.method_len > 255 ? 255 : f.method_len;
+  const size_t steering_len = f.steering_len > 255 ? 255 : f.steering_len;
+  const size_t body_len = f.body_len > kBodyKept ? kBodyKept : f.body_len;
   ErrRec r;
   r.version = kErrRecVersion;
   r.flags = 0;  // no RFC, and nothing sets it yet: reserved on the wire
-  r.status_code = status_code;
+  r.status_code = f.status_code;
   r.unix_seconds = lg.unix_seconds;
   r.peer_len = static_cast<uint8_t>(peer_len);
-  r.exception_class_len = static_cast<uint8_t>(exception_class_len);
-  r.request_target_len = static_cast<uint16_t>(request_target_len);
+  r.exception_class_len = static_cast<uint8_t>(class_len);
+  r.request_target_len = static_cast<uint16_t>(target_len);
   r.message_len = static_cast<uint16_t>(message_len);
   r.backtrace_len = static_cast<uint16_t>(backtrace_len);
-  r.dynamic_len = static_cast<uint32_t>(peer_len + exception_class_len + request_target_len +
-                                        message_len + backtrace_len);
+  r.method_len = static_cast<uint8_t>(method_len);
+  r.steering_len = static_cast<uint8_t>(steering_len);
+  r.body_len = static_cast<uint16_t>(body_len);
+  r.body_full_len = static_cast<uint32_t>(f.body_full);
+  spell_fingerprint(r.fingerprint, fingerprint_of(f));
+  spell_fingerprint(r.app_build, app_build_hash());
+  r.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
+                                        backtrace_len + method_len + steering_len + body_len);
   lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
-  if (peer_len != 0) lg.pending.append(static_cast<const char*>(peer), peer_len);
-  if (exception_class_len != 0) lg.pending.append(exception_class, exception_class_len);
-  if (request_target_len != 0) lg.pending.append(request_target, request_target_len);
-  if (message_len != 0) lg.pending.append(message, message_len);
-  if (backtrace_len != 0) lg.pending.append(backtrace, backtrace_len);
+  if (peer_len != 0) lg.pending.append(static_cast<const char*>(f.peer), peer_len);
+  if (class_len != 0) lg.pending.append(f.exception_class, class_len);
+  if (target_len != 0) lg.pending.append(f.request_target, target_len);
+  if (message_len != 0) lg.pending.append(f.message, message_len);
+  if (backtrace_len != 0) lg.pending.append(f.backtrace, backtrace_len);
+  if (method_len != 0) lg.pending.append(f.method, method_len);
+  if (steering_len != 0) lg.pending.append(f.steering, steering_len);
+  if (body_len != 0) lg.pending.append(f.body, body_len);
 }
 
 // The server's own fault, spelled the same way at every call site: one
@@ -931,13 +1055,39 @@ inline void log_internal_error(Logger& lg, const void* peer, size_t peer_len,
                                const char* request_target, size_t request_target_len,
                                uint16_t status_code, const char* why, size_t why_len) {
   if (!lg.enabled) return;
-  log_error(lg, peer, peer_len, "Webmachine::Error", 17, request_target, request_target_len,
-            status_code, why, why_len, nullptr, 0);
+  ErrFacts f;
+  f.peer = peer;
+  f.peer_len = peer_len;
+  f.request_target = request_target;
+  f.request_target_len = request_target_len;
+  f.exception_class = "Webmachine::Error";
+  f.exception_class_len = 17;
+  f.message = why;
+  f.message_len = why_len;
+  f.status_code = status_code;
+  log_error(lg, f);
 }
 
-// One raise as one error record. Defined in resource.cpp - it needs a VM.
-void log_exception(Logger& lg, mrb_state* mrb, const void* peer, size_t peer_len,
-                   const char* request_target, size_t request_target_len, uint16_t status_code);
+// The raise half of the facts, read off the VM. Defined in resource.cpp,
+// which is where a VM is. The caller has already filled what it knows of
+// the request and owns `backtrace`, which the facts point into - so the
+// caller can hash the whole and hand the same hash to the page and to
+// log_error, instead of the two computing it apart from each other.
+void exception_facts(mrb_state* mrb, ErrFacts& f, std::string& backtrace);
+
+// A raise with no request around it: a stream that was answered long ago
+// and is now running app code of its own (SSE, a WebSocket). There is no
+// target and no method to name, so the fingerprint is the build, the
+// class and the place - which is exactly what such a failure is.
+inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status_code) {
+  if (!lg.enabled) return;
+  ErrFacts f;
+  std::string backtrace;
+  f.status_code = status_code;
+  exception_facts(mrb, f, backtrace);
+  if (f.exception_class == nullptr) return;
+  log_error(lg, f);
+}
 }
 
 namespace webmachine::http {
@@ -1224,6 +1374,49 @@ struct ReqValues {
   int64_t if_modified_since_epoch = 0;
   NamedFieldIndex named;
 };
+
+// #210: the fields this request steered by, one per line, for the error
+// record and the fingerprint over it. These are the ones the server reads
+// BECAUSE they change the answer - which is why ReqValues holds them at
+// all. Referer and User-Agent sit beside them in that struct and are not
+// here: they are the access log's, and they steer nothing.
+//
+// Authorization is named by its SCHEME and never by what follows it
+// (RFC 9110 11.6.2; the schemes are Basic 7617, Bearer 6750, Digest
+// 7616, and whatever else the IANA registry grows). Which scheme ran
+// decides which code ran; the credential decides nothing and belongs in
+// no file. Cookie is named without its value for the same reason.
+inline void spell_steering(const ReqValues* v, std::string& out) {
+  out.clear();
+  if (v == nullptr) return;
+  const char* p = nullptr;
+  size_t n = 0;
+  const auto put = [&out](const char* name, const char* val, size_t len) {
+    if (val == nullptr || len == 0) return;
+    out.append(name);
+    out.append(": ", 2);
+    out.append(val, len);
+    out.push_back('\n');
+  };
+  put("accept", v->accept, v->accept_len);
+  put("accept-encoding", v->accept_encoding, v->accept_encoding_len);
+  put("content-type", v->content_type, v->content_type_len);
+  put("host", v->host, v->host_len);
+  put("range", v->range, v->range_len);
+  put("if-range", v->if_range, v->if_range_len);
+  put("if-match", v->if_match, v->if_match_len);
+  put("if-none-match", v->if_none_match, v->if_none_match_len);
+  // The scheme is the first token; a line with no space is a scheme on
+  // its own, which is all that goes down either way.
+  if (v->authorization != nullptr && v->authorization_len != 0) {
+    p = v->authorization;
+    n = 0;
+    while (n < v->authorization_len && p[n] != ' ' && p[n] != '\t') n++;
+    put("authorization", p, n);
+  }
+  if (v->cookie != nullptr && v->cookie_len != 0) put("cookie", "sent", 4);
+}
+
 
 // A run of digits at v[i], cursor left on the first that is not one.
 // False = none there, or the value does not fit a size_t.
@@ -2360,6 +2553,12 @@ class ErrorPages {
   // of the error assets's mapping. nullptr when this slot is not one, or when
   // this status has no cat.
   const char* pack_body(uint16_t status, int slot, size_t* len) const;
+  // #210: the page for a status in a form, rendered once at boot and
+  // lent from there. Every 4xx is one of these - it names no failure and
+  // repeats nothing the client sent, so two answers with the same status
+  // are the same bytes. Null for a status no page was prepared for, and
+  // for any answer that has something of its own to say.
+  const char* prepared_body(uint16_t status, int slot, size_t* len) const;
   const char* media_type(int slot) const;
   bool named_ours(const char* accept, size_t len) const;
   static bool names_anything(const char* accept, size_t len);
@@ -2367,22 +2566,20 @@ class ErrorPages {
   // fsm.rb handle_exception, on the error resource and nowhere else.
   bool exception_text(mrb_value exc, std::string& out);
 
-  // What ONE answer adds to the status: the target it was about, and -
-  // for a 500 - what handle_exception made of the exception.
+  // What ONE answer adds to the status. Nothing the client sent is in
+  // here: a page that repeated the target back would be reflecting a
+  // request into a document, and the target is in the error log, which
+  // is where a request belongs. What is left is ours - what
+  // handle_exception made of the exception, and the fingerprint of the
+  // failure, which is what a user can read out and an operator can grep.
   struct Fields {
-    const char* target = nullptr;
-    size_t target_len = 0;
-    // RFC 9110 9: the method, because for a 405 THAT is what went wrong -
-    // the target was fine. And the Allow the same answer carries, so the
-    // page can name what it would have taken.
-    const char* method = nullptr;
-    size_t method_len = 0;
-    const char* allow = nullptr;
-    size_t allow_len = 0;
     const char* message = nullptr;
     size_t message_len = 0;
     const char* backtrace = nullptr;
     size_t backtrace_len = 0;
+    // kFingerprintLen hex digits, not terminated. Null on a page that
+    // stands for no failure - every 4xx.
+    const char* fingerprint = nullptr;
   };
   // false when there is no page to offer - the caller still owes an
   // answer and falls back to the bodyless status.
@@ -2401,6 +2598,7 @@ class ErrorPages {
     const AssetEntry* entry = nullptr;
   };
   void read_cats(Assets& assets);
+  void read_prepared();
 
   mrb_state* mrb_ = nullptr;
   mrb_value res_ = mrb_nil_value();
@@ -2417,6 +2615,10 @@ class ErrorPages {
   // list, 0 for the statuses these error assets has no picture for.
   std::vector<Cat> cats_;
   std::array<int16_t, 600> cat_index_ {};
+  // One page per status and rendered form, status-major with a row of
+  // have_.size(). 0 in the index is "this status has none prepared".
+  std::vector<std::string> prepared_;
+  std::array<int16_t, 600> prep_index_ {};
   bool ready_ = false;
 };
 }

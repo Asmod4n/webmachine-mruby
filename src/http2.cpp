@@ -241,6 +241,11 @@ bool Http1::h2_error_page(uint16_t status, const ErrorPages::Fields& f,
                                      vals != nullptr ? vals->accept_len : 0);
   size_t plen = 0;
   const char* pbody = err_pages_.pack_body(status, m, &plen);
+  // An answer with nothing of its own to say is the page this status
+  // always sends: lent, not rendered.
+  if (pbody == nullptr && f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
+    pbody = err_pages_.prepared_body(status, m, &plen);
+  }
   if (pbody == nullptr && !err_pages_.render(status, m, f, page.rendered)) return false;
   const std::string ctype(err_pages_.media_type(m));
   // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
@@ -783,23 +788,37 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     blen = run_asset != nullptr ? asset_len : (lent_have ? lent_len : body_.size());
     blk = &h2_store_[(*idx)[200]];
   } else if (status == 500 && b != nullptr && b->bound) {
-    if (elog_.enabled) {
-      log_exception(elog_, b->res->mrb, st0.peer, st0.peer_len,
-                    req != nullptr ? req->request_target : nullptr,
-                    req != nullptr ? req->request_target_len : 0, 500);
-    }
+    // #210: what led here, gathered once - the record and the page carry
+    // the same hash because they are taken over the same facts.
+    ErrFacts ef;
+    std::string ef_backtrace;
+    std::string ef_steering;
+    char ef_hash[kFingerprintLen] = {};
+    ef.peer = st0.peer;
+    ef.peer_len = st0.peer_len;
+    ef.request_target = req != nullptr ? req->request_target : nullptr;
+    ef.request_target_len = req != nullptr ? req->request_target_len : 0;
+    ef.method = req != nullptr ? req->method_token : nullptr;
+    ef.method_len = req != nullptr ? req->method_token_len : 0;
+    spell_steering(vals, ef_steering);
+    ef.steering = ef_steering.data();
+    ef.steering_len = ef_steering.size();
+    ef.body = req != nullptr ? req->content : nullptr;
+    ef.body_len = req != nullptr ? req->content_len : 0;
+    ef.body_full = ef.body_len;
+    ef.status_code = 500;
+    exception_facts(b->res->mrb, ef, ef_backtrace);
+    spell_fingerprint(ef_hash, fingerprint_of(ef));
+    if (elog_.enabled) log_error(elog_, ef);
     // #210: handle_exception lives on the error resource and nowhere
     // else, so the exception object itself is what crosses over.
     std::string message;
     mrb_value exc = mrb_nil_value();
     if (resource_exception_take(*b->res, &exc)) err_pages_.exception_text(exc, message);
     ErrorPages::Fields f;
-    f.target = target;
-    f.target_len = target_len;
-    f.method = req != nullptr ? req->method_token : nullptr;
-    f.method_len = req != nullptr ? req->method_token_len : 0;
     f.message = message.data();
     f.message_len = message.size();
+    f.fingerprint = ef_hash;
     if (!h2_error_page(500, f, vals, b, err_page, body, blen, blk)) {
       blk = &h2_store_[(*idx)[500]];
     }
@@ -812,14 +831,6 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
     bool spelled = false;
     if (status >= 400) {
       ErrorPages::Fields f;
-      f.target = target;
-      f.target_len = target_len;
-      f.method = req != nullptr ? req->method_token : nullptr;
-      f.method_len = req != nullptr ? req->method_token_len : 0;
-      if (status == 405 && b != nullptr && !b->konst.allow.empty()) {
-        f.allow = b->konst.allow.data();
-        f.allow_len = b->konst.allow.size();
-      }
       spelled = h2_error_page(status, f, vals, b, err_page, body, blen, blk);
     }
     if (!spelled) blk = &h2_store_[(*idx)[status]];
