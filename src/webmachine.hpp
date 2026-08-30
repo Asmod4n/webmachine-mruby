@@ -4014,7 +4014,10 @@ enum : uint8_t {
   kTlsUlp = 16, kTlsTx = 17, kTlsRx = 18,
   // close_notify on the way out; nothing waits for it, the tag only
   // keeps its completion from being read as some other slot's.
-  kTlsBye = 19
+  kTlsBye = 19,
+  // A send key turned before its record limit. The completion matters:
+  // nothing more may go out under the old key.
+  kTlsTxKey = 20
 };
 
 
@@ -4532,6 +4535,14 @@ class Ring {
       // be handed a backlog, so this waits here until the socket has both
       // keys and then goes to the App ahead of anything the wire brings.
       std::string early;
+      // RFC 8446 5.5, counted here because after the handover the kernel
+      // writes the records and does not count for us. What we know is
+      // what we fed it: every send is at least one record and at most
+      // ceil(len / 16384), and the larger of those is what is charged,
+      // so the rekey comes early rather than late. Zero limit - ChaCha -
+      // never charges anything.
+      uint64_t tx_records = 0;
+      uint64_t tx_limit = 0;
       bool handshaking = true;
       bool offloaded = false;
       ~Tls() { ktls_exchange_free(x); }
@@ -4952,6 +4963,8 @@ class Ring {
       return;
     }
     c.tls->offloaded = true;
+    c.tls->tx_limit = ktls_record_limit(c.tls->x);
+    c.tls->tx_records = 0;
     c.deadline_s = now_s_ + header_timeout_;
     // Once per process, and it is the line that says the whole design
     // works: from here this socket's record layer is the kernel's.
@@ -4968,6 +4981,53 @@ class Ring {
       if (!c.live) return;
     }
     arm_recv(idx);
+  }
+
+  // RFC 8446 5.5: a send is at least one record and at most one per
+  // 16384 bytes of it, and the larger is what is charged - the count has
+  // to be an over-estimate or it is not a bound.
+  static void tls_charge_records(Conn& c, size_t bytes) {
+    if (c.tls->tx_limit == 0) return;
+    static constexpr size_t kRecordPlaintextMax = 16384;
+    const uint64_t records = bytes == 0 ? 1 : (bytes + kRecordPlaintextMax - 1) / kRecordPlaintextMax;
+    c.tls->tx_records += records;
+  }
+
+  // The send key, turned before the limit rather than after it, and only
+  // where no send is in flight - the kernel must not be writing under a
+  // key that is being replaced. ktls_record_limit already answers HALF of
+  // what the RFC allows, so there is room to get here.
+  bool tls_turn_send_key(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (c.tls == nullptr || !c.tls->offloaded) return false;
+    if (c.tls->tx_limit == 0 || c.tls->tx_records < c.tls->tx_limit) return false;
+    if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_TX) != 0)) {
+      conn_failed("tls: the send key could not be turned before its record limit");
+    }
+    size_t len = 0;
+    const void* info = ktls_crypto_info(c.tls->x, KTLS_TX, &len);
+    if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[KTLS_TX])) {
+      conn_failed("tls: the turned send key is not a shape the kernel takes");
+    }
+    std::memcpy(c.tls->info[KTLS_TX], info, len);
+    c.tls->info_len[KTLS_TX] = len;
+    c.tls->tx_records = 0;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
+                           ktls_optname(KTLS_TX), c.tls->info[KTLS_TX],
+                           static_cast<uint32_t>(len));
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, detail::tag(detail::kTlsTxKey, c.gen, idx));
+    return true;
+  }
+
+  // The new key is on the socket; the round goes on from where it waited.
+  void on_tls_tx_key(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen) return;
+    if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX) for a record limit", cqe->res);
+    send_done(idx);
   }
 
   // What the kernel took, dropped off the front of a plan: whole segments
@@ -5370,6 +5430,7 @@ class Ring {
           c.out_sent += took;
         }
         c.deadline_s = now_s_ + send_timeout_;
+        tls_charge_records(c, took);
         arm_send(idx);
         return;
       }
@@ -5377,10 +5438,21 @@ class Ring {
       return;
     }
     c.deadline_s = now_s_ + send_timeout_;
+    if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) tls_charge_records(c, took);
     c.out.clear();
     c.out_sent = 0;
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
+    // A send key at its record limit is turned HERE, where nothing is in
+    // flight; what the round owes next waits for that completion.
+    if (WM_UNLIKELY(tls_turn_send_key(idx))) return;
+    send_done(idx);
+  }
+
+  // What a finished send leaves owed: the rest of the round, the next
+  // one, or the connection going idle.
+  void send_done(uint32_t idx) {
+    Conn& c = conns_[idx];
     // The handshake's own bytes, now on the wire as themselves. Only once
     // nothing is left may the kernel be given the write key.
     if (WM_UNLIKELY(c.tls != nullptr) && !c.tls->offloaded) {
@@ -5769,10 +5841,11 @@ class Ring {
       case detail::kTlsTx:
         if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
         break;
-      case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
       // The connection is already going; a peer that will not take the
       // alert is not a thing this end can do anything about.
       case detail::kTlsBye: break;
+      case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
+      case detail::kTlsTxKey: on_tls_tx_key(idx, gen, cqe); break;
       case detail::kStop: stop_ = true; break;
       default: break;
     }
