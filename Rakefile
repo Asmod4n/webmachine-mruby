@@ -1,5 +1,11 @@
 MRUBY_DIR = File.expand_path('mruby', __dir__)
 CONFIG = File.expand_path(ENV['MRUBY_CONFIG'] || 'build_config_host.rb', __dir__)
+# WHERE each thing lives, named here rather than left to whatever
+# MRUBY_CONFIG happened to say: every test in this tree is in the debug
+# build - the host build carries none - and the shipped binary is the
+# host build's, which is why its smoke is a host task.
+TEST_CONFIG = File.expand_path('build_config_debug.rb', __dir__)
+HOST_CONFIG = File.expand_path('build_config_host.rb', __dir__)
 
 file MRUBY_DIR do
   sh "git clone --depth 1 https://github.com/mruby/mruby.git #{MRUBY_DIR}"
@@ -13,8 +19,7 @@ end
 
 desc 'build and run every test'
 task test: MRUBY_DIR do
-  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake all test"
-  Rake::Task[:ship_smoke].invoke
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{TEST_CONFIG} rake all test"
 end
 
 SMOKE_APP = <<~RUBY
@@ -81,7 +86,11 @@ def wm_smoke(build_name, label)
 end
 
 desc 'the SHIP binary starts and answers - what the suite (debug) never checks'
-task :ship_smoke do
+task ship_smoke: MRUBY_DIR do
+  # The shipped binary is the host build's, so this builds THAT one and
+  # smokes it. It is not part of `rake test`: the suite is the debug
+  # build's, and a debug run cannot answer for a binary it never made.
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{HOST_CONFIG} rake"
   wm_smoke('host', 'shipped')
 end
 
