@@ -24,27 +24,26 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.bins += ['webmachine-example'] if build.cc.defines.include?('WM_EXAMPLES')
 
 
-  # SLIPSTREAM_IO_ONLY is the `portable` target's whole declaration
-  # (build_config.rb): no liburing in this binary, on any host. mruby
-  # resolves the gem list per BUILD TARGET, never per spec.bins entry,
-  # so a target is the only place that decision can live - all three
-  # binaries of one build link the same libmruby.a.
-  portable = build.cc.defines.include?('SLIPSTREAM_IO_ONLY')
-
-  spec.add_dependency 'mruby-io-uring' unless portable
-  spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'main'
+  # ONE binary, every host: liburing is built WITH the slipstream seam
+  # (mruby-io-uring copies it in before liburing's own build), so whether
+  # the kernel or slipstream's engine answers is decided at RUNTIME, per
+  # process, by asking the kernel. The `portable` target died with that -
+  # a build-time fallback to reach for is exactly what the seam removes.
+  spec.add_dependency 'mruby-io-uring'
+  spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'backend-split'
 
   uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-io-uring/build/lib/liburing.a")
-  if !portable && spec.cc.search_header('sys/epoll.h') &&
+  if spec.cc.search_header('sys/epoll.h') &&
      !spec.cc.search_header('liburing.h') && !uring_built
     abort <<~MSG
-      webmachine-mruby: this is a Linux build with no liburing.
+      webmachine-mruby: liburing could not be built here (see
+      mruby-io-uring's output above; it needs a working C compiler).
 
-      liburing could not be built here (see mruby-io-uring's output above;
-      it needs kernel headers and a working C compiler).
-
-      A target that WANTS to go without it says so - see the `portable`
-      build in build_config.rb.
+      There is no separate fallback build to point at any more: the one
+      binary IS the fallback - liburing built with the slipstream seam
+      answers from slipstream's engine wherever the kernel refuses
+      io_uring. A failing liburing BUILD is a broken build host, and it
+      is reported instead of served around.
     MSG
   end
 

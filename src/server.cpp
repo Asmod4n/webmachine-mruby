@@ -197,42 +197,14 @@ bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
 }
 }
 
-// Is io_uring usable on THIS machine? Names the reason when the machine
-// will tell us (kernel.io_uring_disabled).
+#include "slipstream_syscall.h"
+
+// Which side answers this process's rings, said at startup: liburing
+// works either way now - the slipstream seam underneath it hands every
+// call to the engine when the kernel refuses io_uring - and the banner
+// is the receipt. Silence is the kernel side.
 bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
-#ifdef SLIPSTREAM_IO
-  (void)have_uring;
-  (void)err;
-  (void)errlen;
-  std::fprintf(stderr,
-               "webmachine: ================================================================\n"
-               "webmachine: == IO: slipstreamIO - the ring API over select(2)\n"
-#ifdef SLIPSTREAM_IO_ONLY
-               "webmachine: == why: the `portable` target - built without liburing on\n"
-               "webmachine: ==   purpose, so a host that forbids io_uring to this process\n"
-               "webmachine: ==   (kernel.io_uring_disabled, seccomp, an LSM) still serves\n"
-#else
-               "webmachine: == why: this build found no liburing to compile against\n"
-#endif
-               "webmachine: == cost: CORRECT, NOT FAST. Every operation is readiness plus\n"
-               "webmachine: ==   a classic syscall; recv bundles do not exist (one buffer\n"
-               "webmachine: ==   per completion)\n");
-#ifdef IO_URING_FD_CEILING
-  std::fprintf(stderr,
-               "webmachine: == cap: descriptors must stay below %llu - the API says so, and\n"
-               "webmachine: ==   a connection is a process fd here\n",
-               static_cast<unsigned long long>(IO_URING_FD_CEILING));
-#endif
-  std::fprintf(stderr,
-#ifdef SLIPSTREAM_IO_ONLY
-               "webmachine: == fast: the unnamed build, on a host that allows io_uring\n"
-#else
-               "webmachine: == fix: build on Linux >= 6.11 against liburing\n"
-#endif
-               "webmachine: ================================================================\n");
-  return true;
-#else
-  if (!have_uring) {
+  if (slipstream_syscall_uses_engine()) {
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
     char buf[32] = "";
     const int fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
@@ -260,15 +232,25 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
         }
       }
     }
+    std::fprintf(stderr,
+                 "webmachine: ================================================================\n"
+                 "webmachine: == IO: slipstream's engine answers this process's rings\n"
+                 "webmachine: == why: %s\n"
+                 "webmachine: == cost: CORRECT, NOT FAST - every socket op is readiness plus\n"
+                 "webmachine: ==   a classic syscall, files ride a worker thread\n"
+                 "webmachine: == fast: the same binary, on a host that allows io_uring\n"
+                 "webmachine: ================================================================\n",
+                 why);
+  }
+  if (!have_uring) {
     std::snprintf(err, errlen,
-                  "io_uring is not usable here: %s. This binary was built against liburing "
-                  "and carries no other implementation - the `portable` target "
-                  "(build_config.rb) is the one that runs anyway, on select(2)",
-                  why);
+                  "this binary carries no liburing at all - mruby-io-uring could not build "
+                  "it on the machine that built this. With the seam there is no separate "
+                  "fallback build: the one binary is the fallback, and a liburing-less "
+                  "build is a broken build, reported instead of served around");
     return false;
   }
   return true;
-#endif
 }
 
 namespace {

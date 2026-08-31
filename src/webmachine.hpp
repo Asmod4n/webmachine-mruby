@@ -5959,18 +5959,10 @@ class Ring {
     if (c.file_io != nullptr && c.file_io->reading) return;  // its buffer is still under a live read
     const char* path = app_.file_take(c.app);
     if (path == nullptr) return;
-#ifdef SLIPSTREAM_IO
-    // docroot_open refuses this build at startup precisely because a plain
-    // openat here would answer without the confinement; arriving anyway is
-    // a bug, and it says so instead of serving.
-    app_.file_error(c.app, "this build has no openat2 and will not open without it");
-    if (!c.sending) continue_conn(idx);
-#else
     if (c.file_io == nullptr) c.file_io.reset(new Conn::FileIo());
     struct io_uring_sqe* s = sqe();
     io_uring_prep_openat2(s, docroot_fd(), path, const_cast<struct open_how*>(docroot_how()));
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileOpen, c.gen, idx));
-#endif
   }
 
   // The fd leaves through the ring like every other descriptor here.

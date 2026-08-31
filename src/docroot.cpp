@@ -23,19 +23,6 @@ struct open_how how_ {};
 // whatever the cwd or the link says today, and the confinement is only worth
 // as much as the thing it is anchored to.
 bool docroot_open(const char* path, char* err, size_t errlen) {
-#ifdef SLIPSTREAM_IO
-  // The `portable` target has no openat2, and a plain openat would answer
-  // WITHOUT the RESOLVE_* confinement - which is the entire feature, not an
-  // optimisation. A named refusal, not a quiet downgrade.
-  std::snprintf(err, errlen,
-                "--docroot %s needs openat2(2), and this is the `portable` target - it "
-                "carries no liburing, so the kernel-side confinement response.file depends "
-                "on (RESOLVE_BENEATH) cannot be asked for. Serving without it would be a "
-                "path-traversal hole, so this build refuses the option instead. The unnamed "
-                "`host` build is the one that serves it",
-                path);
-  return false;
-#else
   char real[PATH_MAX];
   if (::realpath(path, real) == nullptr) {
     std::snprintf(err, errlen, "--docroot %s: %s", path, std::strerror(errno));
@@ -65,7 +52,6 @@ bool docroot_open(const char* path, char* err, size_t errlen) {
   how_.mode = 0;
   how_.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
   return true;
-#endif
 }
 
 bool docroot_ready() { return fd_ >= 0; }

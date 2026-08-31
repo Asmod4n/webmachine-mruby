@@ -15,7 +15,6 @@ desc 'build and run every test'
 task test: MRUBY_DIR do
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake all test"
   Rake::Task[:ship_smoke].invoke
-  Rake::Task[:portable_smoke].invoke
 end
 
 SMOKE_APP = <<~RUBY
@@ -63,12 +62,6 @@ def wm_smoke(build_name, label)
     end
     unless File.socket?(sock)
       text = begin File.read(log) rescue '' end
-      if text.include?('io_uring is not usable here')
-        warn "#{build_name} smoke: skipped - this machine cannot run io_uring " \
-             "(the #{label} binary needs it, no fallback); use " \
-             "build_config_portable.rb or build_config_portable_debug.rb here instead"
-        return
-      end
       raise "the #{label} binary never came up:\n#{text}"
     end
     answer = UNIXSocket.open(sock) do |s|
@@ -92,10 +85,6 @@ task :ship_smoke do
   wm_smoke('host', 'shipped')
 end
 
-desc 'the PORTABLE binary (no liburing, select(2)) starts and answers'
-task :portable_smoke do
-  wm_smoke('portable', 'portable')
-end
 
 ERROR_ASSETS = File.expand_path('share/error-assets.zip', __dir__)
 
