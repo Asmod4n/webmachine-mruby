@@ -1,7 +1,16 @@
 MRuby::Build.new('debug') do |conf|
   conf.toolchain
 
-  conf.mrbcfile = File.expand_path('mruby/bin/mrbc', __dir__)
+  # mrbc is a TOOL of this build, not an artifact of another one.
+  # `conf.mrbcfile = mruby/bin/mrbc` named a path only a HOST build
+  # installs, and this build is named 'debug' - mruby runs its mrbc
+  # bootstrap only for a build called 'host' (lib/mruby/build.rb,
+  # host? and create_mrbc_build) - so a tree without a prior host
+  # build had no rule for that path and died before the first compile.
+  # The gem builds mrbc here instead; mruby-bin-mruby comes with it so
+  # the debug build carries an interpreter to probe itself with.
+  conf.gem core: 'mruby-bin-mrbc'
+  conf.gem core: 'mruby-bin-mruby'
 
   conf.enable_debug
 

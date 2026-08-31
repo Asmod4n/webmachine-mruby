@@ -47,7 +47,13 @@ def a_server(zip_bytes, extra = [])
   sock = "/tmp/wm-assets-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path, *extra,
+  # TZ=UTC, because a ZIP's DOS timestamp carries no zone: miniz reads it
+  # with mktime (LOCAL time, miniz_zip.c) and assets.cpp renders it with
+  # gmtime_r, so the Last-Modified this suite pins moves with the
+  # machine's timezone. Pinned here so the assertion tests the header,
+  # not the test host - the server's own zone dependency is its own
+  # question, and a separate one.
+  pid = spawn({ 'WM_BUNDLE' => '0', 'TZ' => 'UTC' }, A_BIN, '--unix', sock, '--assets', zf.path, *extra,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -726,8 +732,13 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   # already handed out, which is how this suite once died on 44468.
   port = 20000 + rand(11000)
   errf = "/tmp/wm-peer-err-#{$$}.log"
+  # --log-privacy none: the access log ANONYMISES by default (the server
+  # hands logd 'anon', which masks the last octet), so the default run
+  # can only ever show 127.0.0.0 and could not tell an address that
+  # arrived from one that did not. This test is about arrival, so it
+  # asks for the full address; the masking has its own ground.
   pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
-              '--log', logf, out: File::NULL, err: errf)
+              '--log', logf, '--log-privacy', 'none', out: File::NULL, err: errf)
   begin
     up = false
     100.times do

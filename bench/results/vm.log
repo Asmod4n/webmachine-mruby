@@ -1,0 +1,6 @@
+==== 2026-08-31T18:38Z repo=e6bcc8a mruby=d31507a ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:webmachine-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: mruby/build/debug/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=GLIBC 2.39-0ubuntu8.7 kernel=6.18.44-fc-v22 host=vm
+env: runnable=2/113 busy=8% (200ms sample)
+responses=1565451 bad=0 seconds=5.000 rps=313087 bytes=242644905 MB/s=46.28 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=54804750 tx_MB/s=10.45
+server: 97% of one core (13u/84s)   client: 96% of one core (8u/88s)   other: 11% of one core

@@ -1044,6 +1044,11 @@ assert('application: app.conf is ONE object, not a fresh one per read') do
     end
   RUBY
   ap_server(src) do |_sock, out|
+    # The socket exists once bind/listen answered; app.ready runs and
+    # flushes AFTER that, so reading stdout right away is a race the
+    # helper cannot close for every caller. Wait for the line this test
+    # is about.
+    20.times { break if (File.read(out) rescue '').include?('same=true'); sleep 0.1 }
     assert_true File.read(out).include?('same=true'), File.read(out)
   end
 end

@@ -8,9 +8,14 @@
 MRuby::Build.new('example') do |conf|
   conf.toolchain
 
+  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # gem builds it here. Naming an external mrbc under mruby/bin
+  # instead made a cold tree unbuildable - nothing in this config
+  # produces that path, so rake had no rule for it.
+  conf.gem core: 'mruby-bin-mrbc'
+
   # A NAMED build has no mrbc of its own; the host build's is the one
   # every target here uses (build_config_debug.rb does the same).
-  conf.mrbcfile = File.expand_path('mruby/bin/mrbc', __dir__)
 
   conf.cc.flags << '-O3' << '-march=native'
   conf.cxx.flags << '-O3' << '-march=native' << '-std=c++20'

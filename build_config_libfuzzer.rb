@@ -9,7 +9,12 @@
 MRuby::Build.new('libfuzzer') do |conf|
   conf.toolchain :clang
 
-  conf.mrbcfile = File.expand_path('mruby/bin/mrbc', __dir__)
+  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # gem builds it here. Naming an external mrbc under mruby/bin
+  # instead made a cold tree unbuildable - nothing in this config
+  # produces that path, so rake had no rule for it.
+  conf.gem core: 'mruby-bin-mrbc'
+
   conf.enable_debug
 
   # ONE FLAG PER ENTRY, as Strings: mruby-io_uring's mrbgem.rake looks
