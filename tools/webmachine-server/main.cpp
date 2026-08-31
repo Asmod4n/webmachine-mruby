@@ -15,8 +15,9 @@
 #include "../../src/webmachine.hpp"
 
 namespace {
-// Does io_uring exist on THIS machine? Read from URING_AVAILABLE, which
-// mruby-io-uring already answered during mrb_open().
+// Is the ring there? URING_AVAILABLE is :native or :shim - which side
+// of the slipstream seam answers - and always truthy; absent only in a
+// build without mruby-io-uring at all.
 bool uring_present(mrb_state* mrb) {
   const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
   const mrb_value obj = mrb_obj_value(mrb->object_class);
