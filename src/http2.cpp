@@ -57,7 +57,7 @@ struct H2Control {
 void emit_control(std::string& sink, const H2Control& c) {
   const uint32_t len = static_cast<uint32_t>(c.payload.size());
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, len, c.type, c.flags, c.stream);
+  h2_put_frame_header(fh, {len, c.type, c.flags, c.stream});
   sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
   if (len != 0) sink.append(reinterpret_cast<const char*>(c.payload.data()), len);
 }
@@ -238,8 +238,8 @@ void Http1::cache_headers(std::string& out, const CachedHead& head) {
   const size_t clen = head.fields.size();
   const size_t dlen = head.date.size();
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, static_cast<uint32_t>(head.block.bytes.size() + clen + dlen),
-                      kH2Headers, kH2FlagEndHeaders, 0);
+  h2_put_frame_header(fh, {static_cast<uint32_t>(head.block.bytes.size() + clen + dlen),
+                           kH2Headers, kH2FlagEndHeaders, 0});
   out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
   out.append(head.block.bytes);
   if (clen != 0) out.append(reinterpret_cast<const char*>(head.fields.data()), clen);
@@ -668,8 +668,9 @@ bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
   const size_t dlen = static_cast<size_t>(dp - dbuf);
 
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, static_cast<uint32_t>(blk->size() + dlen), kH2Headers,
-                      kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
+  const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+  h2_put_frame_header(
+      fh, {static_cast<uint32_t>(blk->size() + dlen), kH2Headers, head_flags, stream_id});
   sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
   sink.append(*blk);
   sink.append(reinterpret_cast<const char*>(dbuf), dlen);
@@ -970,8 +971,9 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     }
     const size_t elen = static_cast<size_t>(ep - ebuf);
     unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(wire.blk->bytes.size() + elen), kH2Headers,
-                        kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
+    const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+    h2_put_frame_header(fh, {static_cast<uint32_t>(wire.blk->bytes.size() + elen), kH2Headers,
+                             head_flags, stream_id});
     sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
     sink.append(wire.blk->bytes);
     sink.append(reinterpret_cast<const char*>(ebuf), elen);
@@ -1079,8 +1081,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         size_t n = give - off;
         if (n > h2.peer_max_frame) n = h2.peer_max_frame;
         const bool last = off + n == wire.blen;
-        h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
-                            last ? kH2FlagEndStream : 0, stream_id);
+        const uint8_t end_flag = last ? kH2FlagEndStream : 0;
+        h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, stream_id});
         sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
         sink.append(wire.body + off, n);
         off += n;
@@ -1231,8 +1233,8 @@ static size_t h2_emit(RoundOut& out, const H2Stream& s, const Http1::H2SendStep&
     if (n > max_frame) n = max_frame;
     const bool last = step.start + off + n == step.total;
     unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data, last ? kH2FlagEndStream : 0,
-                        s.id);
+    const uint8_t end_flag = last ? kH2FlagEndStream : 0;
+    h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, s.id});
     out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
     switch (s.response_content.src) {
       case H2Stream::Content::Src::kAsset:

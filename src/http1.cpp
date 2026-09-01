@@ -266,8 +266,8 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
 
   if (!b.bound) {
     unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(b.konst.body.size()), kH2Data,
-                        kH2FlagEndStream, 0);
+    h2_put_frame_header(
+        fh, {static_cast<uint32_t>(b.konst.body.size()), kH2Data, kH2FlagEndStream, 0});
     b.h2_data200.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
     b.h2_data200.append(b.konst.body);
   }
@@ -439,12 +439,11 @@ void Http1::on_tick() {
 }
 
 // RFC 9110 8.6: prefix + hand-spelled Content-Length + (unless HEAD) the body.
-void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
-                     bool head_only) {
-  sink.append(prefix.bytes);
+void Http1::assemble(std::string& sink, const Assembled& a) {
+  sink.append(a.prefix.bytes);
   char cl[40];
-  sink.append(cl, http::spell_content_length(cl, len));
-  if (!head_only) sink.append(body, len);
+  sink.append(cl, http::spell_content_length(cl, a.body.size()));
+  if (!a.head_only) sink.append(a.body);
 }
 
 // RFC 9110 12.5.3/12.5.5: identity or gzip for a dynamic 200, and the Vary
@@ -458,8 +457,8 @@ void Http1::assemble_dynamic(const DynamicBody& d, std::string& sink) {
       use_gzip = gzip::compress(body_, gz_body_);
     }
   }
-  if (use_gzip) assemble(sink, d.prefix_gz, gz_body_.data(), gz_body_.size(), d.head_only);
-  else assemble(sink, d.prefix_id, body_.data(), body_.size(), d.head_only);
+  if (use_gzip) assemble(sink, {d.prefix_gz, gz_body_, d.head_only});
+  else assemble(sink, {d.prefix_id, body_, d.head_only});
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
@@ -1307,11 +1306,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         assemble_dynamic({prefix_id, prefix_gz, accept_gzip && st.packetized, head_only}, sink);
         break;
       }
-      case AnswerStep::Shape::kPlain:
-        assemble(sink, minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
-                                  : (persist ? b->ok_prefix.keep : b->ok_prefix.close),
-                 body_.data(), body_.size(), head_only);
+      case AnswerStep::Shape::kPlain: {
+        const Resp& prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
+                                        : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
+        assemble(sink, {prefix, body_, head_only});
         break;
+      }
       case AnswerStep::Shape::kException: {
         std::string message;
         err_pages_.exception_text(exc_value, message);

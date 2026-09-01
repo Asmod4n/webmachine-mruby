@@ -447,7 +447,7 @@ bool begin_frame(WsConn* c, std::string& sink) {
   const uint64_t msg_len =
       c->msg_op != 0 ? static_cast<uint64_t>(RSTRING_LEN(c->msg)) : 0;
   const ws::Head::Err a =
-      ws::admit(h, c->msg_op, c->msg_deflated, msg_len, c->res->max_message);
+      ws::admit(h, {c->msg_op, c->msg_deflated, msg_len, c->res->max_message});
   if (a != ws::Head::Err::kNone) {
     return fail(c, sink,
                 a == ws::Head::Err::kTooBig ? ws::kCloseTooBig : ws::kCloseProtocolError);
@@ -518,7 +518,7 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
 
     size_t take = len < c->remaining ? len : static_cast<size_t>(c->remaining);
     if (c->control) {
-      ws::unmask_copy(c->ctl + c->ctl_len, p, take, c->mask, c->mask_off);
+      ws::unmask_copy(c->ctl + c->ctl_len, {p, take}, {c->mask, c->mask_off});
       c->ctl_len += take;
     } else {
       char tmp[512];
@@ -526,7 +526,7 @@ mrb_value feed_body(mrb_state* mrb, void* ud) {
       bool broke = false;
       while (done < take) {
         const size_t chunk = take - done < sizeof(tmp) ? take - done : sizeof(tmp);
-        ws::unmask_copy(tmp, p + done, chunk, c->mask, c->mask_off + done);
+        ws::unmask_copy(tmp, {p + done, chunk}, {c->mask, c->mask_off + done});
         if (c->msg_deflated) {
           const int rc = c->codec->inflate_some(tmp, chunk, msg_cat, c);
           if (rc != 0) {

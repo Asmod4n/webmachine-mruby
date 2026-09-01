@@ -84,14 +84,23 @@ inline constexpr uint32_t kH2EncTableMax = 65536;
 inline constexpr uint32_t kH2DecTableSize = 4096;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
 
-// RFC 9113 4.1: the 9-byte frame header; stream id at offset 5.
-inline void h2_put_frame_header(unsigned char* p, uint32_t len, uint8_t type,
-                                uint8_t flags, uint32_t stream) {
+// RFC 9113 4.1: the four fields of a frame header.
+struct H2FrameHead {
+  uint32_t len;
+  uint8_t type;
+  uint8_t flags;
+  uint32_t stream;
+};
+
+// The 9 bytes they make; stream id at offset 5.
+inline void h2_put_frame_header(unsigned char* p, H2FrameHead f) {
+  const uint32_t len = f.len;
+  const uint32_t stream = f.stream;
   p[0] = static_cast<unsigned char>(len >> 16);
   p[1] = static_cast<unsigned char>(len >> 8);
   p[2] = static_cast<unsigned char>(len);
-  p[3] = type;
-  p[4] = flags;
+  p[3] = f.type;
+  p[4] = f.flags;
   p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
   p[6] = static_cast<unsigned char>(stream >> 16);
   p[7] = static_cast<unsigned char>(stream >> 8);

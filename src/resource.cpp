@@ -1087,8 +1087,7 @@ int run_n11(Run& r) {
         b.push_back('/');
       }
       std::string uri;
-      http::uri_join(b.data(), b.size(), RSTRING_PTR(cp),
-                     static_cast<size_t>(RSTRING_LEN(cp)), uri);
+      http::uri_join({b, {RSTRING_PTR(cp), static_cast<size_t>(RSTRING_LEN(cp))}}, uri);
       size_t at = 0;
       if (uri.size() >= 8 && uri.compare(0, 4, "http") == 0) {
         const size_t ss = uri.find("://");

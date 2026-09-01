@@ -1818,11 +1818,20 @@ inline void etag_spell(const char* raw, size_t n, std::string& out) {
   out.push_back('"');
 }
 
-// RFC 3986 5.3, the n11 subset: join create_path onto a base. A full
-// URI passes verbatim; an absolute-path ref replaces the base's path;
-// a relative segment appends after the base's last '/'.
-inline void uri_join(const char* base, size_t blen, const char* path, size_t payload_length,
-                     std::string& out) {
+// RFC 3986 5.3: a reference and the base it is resolved against.
+struct UriRef {
+  std::string_view base;
+  std::string_view ref;
+};
+
+// The n11 subset: join create_path onto a base. A full URI passes
+// verbatim; an absolute-path ref replaces the base's path; a relative
+// segment appends after the base's last '/'.
+inline void uri_join(UriRef r, std::string& out) {
+  const char* const base = r.base.data();
+  const size_t blen = r.base.size();
+  const char* const path = r.ref.data();
+  const size_t payload_length = r.ref.size();
   out.clear();
   if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
     const char* colon = static_cast<const char*>(std::memchr(path, ':', payload_length));
@@ -3272,10 +3281,14 @@ inline uint8_t header_need(const unsigned char* h, uint8_t have) {
 // pass is what the reader did before this was a function.
 // `key_at` is i's offset within the frame, so a payload delivered in
 // pieces keeps the key aligned across recvs.
-inline void unmask_copy(char* dst, const char* src, size_t n, const unsigned char key[4],
-                        size_t key_at) {
-  for (size_t i = 0; i < n; i++) {
-    dst[i] = static_cast<char>(src[i] ^ key[(key_at + i) & 3]);
+struct Mask {
+  const unsigned char* key;  // the frame's four masking octets
+  size_t at;                 // how far into the frame the next octet sits
+};
+
+inline void unmask_copy(char* dst, std::string_view src, Mask m) {
+  for (size_t i = 0; i < src.size(); i++) {
+    dst[i] = static_cast<char>(src[i] ^ m.key[(m.at + i) & 3]);
   }
 }
 
@@ -3330,11 +3343,23 @@ inline Head read_head(const unsigned char* h, bool have_codec) {
   return o;
 }
 
-// RFC 6455 5.4 and 7.4.1: may this frame join the message in flight? Four
-// scalars are all the connection state that decides it - which is why it
-// can be a table too.
-inline Head::Err admit(const Head& h, uint8_t msg_op, bool msg_deflated, uint64_t msg_len,
-                       uint64_t max_message) {
+// RFC 6455 5.4: the message a frame would join - the opcode it started
+// with (0 = nothing in flight), whether it was negotiated deflated, how
+// many octets of it have arrived, and the ceiling this connection allows.
+struct Message {
+  uint8_t op;
+  bool deflated;
+  uint64_t len;
+  uint64_t max;
+};
+
+// RFC 6455 5.4 and 7.4.1: may this frame join it? Four scalars are all the
+// connection state that decides it - which is why it can be a table too.
+inline Head::Err admit(const Head& h, const Message& msg) {
+  const uint8_t msg_op = msg.op;
+  const bool msg_deflated = msg.deflated;
+  const uint64_t msg_len = msg.len;
+  const uint64_t max_message = msg.max;
   if (h.control) return Head::Err::kNone;
   if (h.opcode == kContinuation) {
     if (msg_op == 0) return Head::Err::kProtocol;  // continues nothing
@@ -4218,8 +4243,14 @@ class Http1 {
   void stock_status(bool have[600], uint16_t s);
   void build_bundle(Bundle& b, const Resource* res);
   static void patch_date(Variants& v, const char* core);
-  static void assemble(std::string& sink, const Resp& prefix, const char* body, size_t len,
-                       bool head_only);
+  // RFC 9112: one prebuilt head and the body behind it - a HEAD request
+  // takes the same head and none of the bytes.
+  struct Assembled {
+    const Resp& prefix;
+    std::string_view body;
+    bool head_only;
+  };
+  static void assemble(std::string& sink, const Assembled& a);
   bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
   static void lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan);
