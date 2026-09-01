@@ -594,7 +594,10 @@ void ws_resource_free(WsResource* r) {
 
 // RFC 6455: fold a resource class for a websocket route, once, at
 // route.websocket - arities read, konst answers asked, the class frozen.
-bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen) {
+bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   if (!mrb_class_p(klass)) {
     std::snprintf(err, errlen,
                   "route.websocket wants a class inheriting Webmachine::WebsocketResource");

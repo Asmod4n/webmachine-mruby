@@ -204,7 +204,10 @@ ErrorPages::~ErrorPages() {
 // #210: one instance of Webmachine::ErrorResource, and the handlers it
 // answers to. Rooted with mrb_gc_register, not the arena: it outlives
 // every arena mark the setup path takes and every one a request takes.
-bool ErrorPages::open(mrb_state* mrb, Assets* assets, char* err, size_t errlen) {
+bool ErrorPages::open(Setup s, Assets* assets) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   mrb_ = mrb;
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   if (wm == nullptr) {

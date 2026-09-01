@@ -162,7 +162,7 @@ mrb_value fsm_init(mrb_state* mrb, mrb_value self) {
   Fsm* f = new Fsm();
   mrb_data_init(self, f, &fsm_type);
   char err[512] = {0};
-  if (!webmachine::resource_fold(mrb, klass, f->res, err, sizeof err)) {
+  if (!webmachine::resource_fold({mrb, {err, sizeof err}}, klass, f->res)) {
     mrb_raisef(mrb, E_RUNTIME_ERROR, "%s", err);
   }
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@request"), req);

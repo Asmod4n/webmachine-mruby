@@ -643,6 +643,23 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 }
 
 namespace webmachine {
+
+// Where a setup refusal is spelled. A pointer and a length are one thing,
+// and every one of these buffers is the same thing: the sentence the
+// operator reads when the process will not come up. #33 retires the pair
+// for a raise; until then it travels as one argument, not two.
+struct Refusal {
+  char* buf;
+  size_t len;
+};
+
+// One setup, before the first request has been read: the VM the process
+// carries, and where a refusal about it goes.
+struct Setup {
+  mrb_state* mrb;
+  Refusal why;
+};
+
 inline constexpr size_t kMaxRouteBindings = 16;
 
 struct RouteSpans {
@@ -2459,7 +2476,7 @@ struct Resource {
   mutable std::vector<std::string> run_variances;
 };
 
-bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen);
+bool resource_fold(Setup s, mrb_value klass, Resource& out);
 
 // One request as a bound run receives it: what the parse settled, the
 // header values the calling frame still holds (none where that frame is
@@ -2572,7 +2589,7 @@ namespace webmachine {
 // lookup and says which file answered, because the answer differs per host.
 class MimeDb {
  public:
-  bool load(const char* configured, char* err, size_t errlen);
+  bool load(const char* configured, Refusal why);
   // RFC 9110 8.3: which media-type database answered.
   const std::string& source() const { return source_; }
   // RFC 9110 8.3: how many extensions it holds.
@@ -2652,7 +2669,7 @@ class Assets {
   Assets(const Assets&) = delete;
   Assets& operator=(const Assets&) = delete;
 
-  bool open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen);
+  bool open(const char* zip_path, const MimeDb& mime, Refusal why);
 
   AssetEntry* find(const char* path, size_t len);
 
@@ -2746,7 +2763,7 @@ class ErrorPages {
   // One instance of the class, and the handlers it answers to. A class
   // that answers to none, or that raises being built, is a startup
   // refusal with a name.
-  bool open(mrb_state* mrb, Assets* assets, char* err, size_t errlen);
+  bool open(Setup s, Assets* assets);
   bool ready() const { return ready_; }
 
   // RFC 9110 12.5.1: which form this client can read, as an index into
@@ -3247,7 +3264,7 @@ struct WsResource;
 
 struct WsConn;
 
-bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t errlen);
+bool ws_fold(Setup s, mrb_value klass, WsResource& out);
 
 bool ws_wants_deflate(const WsResource* r);
 WsResource* ws_resource_new();
@@ -3269,7 +3286,7 @@ struct SseResource;
 
 struct SseStream;
 
-bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size_t errlen);
+bool sse_fold(Setup s, mrb_value klass, SseResource& out);
 SseResource* sse_resource_new();
 void sse_resource_free(SseResource* r);
 
@@ -3865,7 +3882,7 @@ class Http1 {
   // rather than owning it - the h1 model (#173) is bytes in, bytes out,
   // and a caller that never calls this gets the bodyless statuses it
   // always got.
-  bool open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, size_t errlen);
+  bool open_error_assets(Setup s, Assets* error_assets);
 
   void on_tick();
 
@@ -4582,7 +4599,7 @@ struct AppSpec {
 
 void application_init(mrb_state* mrb, struct RClass* wm);
 
-bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen);
+bool app_load(Setup s, const char* path);
 
 // Where every registered application goes, and how many listeners this
 // build can carry - one more than that is a refusal, not a truncation.
@@ -4590,13 +4607,13 @@ struct Registered {
   std::vector<AppSpec*>& specs;
   size_t max_listeners;
 };
-bool app_registered_all(Registered out, char* err, size_t errlen);
+bool app_registered_all(Registered out, Refusal why);
 
 AppSpec* app_assets_only();
 
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port);
 
-bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen);
+bool app_ready_run(Setup s, AppSpec& spec);
 }
 
 namespace webmachine {
@@ -4604,7 +4621,7 @@ namespace webmachine {
 // canonical absolute path and opened O_DIRECTORY|O_PATH once at startup. That
 // fd is what RESOLVE_BENEATH anchors against - the kernel does the
 // confinement, this code never does path math of its own.
-bool docroot_open(const char* path, char* err, size_t errlen);
+bool docroot_open(const char* path, Refusal why);
 
 // Did an operator configure one? response.file= refuses by name when not.
 bool docroot_ready();
@@ -4649,11 +4666,11 @@ struct ServerOptions {
 };
 void server_options(const ServerOptions& opts);
 
-bool server_backend_ok(char* err, size_t errlen);
+bool server_backend_ok();
 
 void server_init(mrb_state* mrb, struct RClass* wm);
 
-int server_run(mrb_state* mrb, char* err, size_t errlen);
+int server_run(Setup s);
 
 bool server_entered();
 }
@@ -4689,7 +4706,7 @@ struct Config {
   long long file_map_threshold = -1;
 };
 
-bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen);
+bool config_load(Setup s, const char* path, Config& out);
 }
 
 #define E_WM_ERROR(mrb) \
@@ -4890,7 +4907,9 @@ class Ring {
 
   // Everything through the ring: unlink, socket_direct, setsockopt, bind,
   // listen as ONE linked chain, every CQE checked, a failure naming its stage.
-  bool init(const RingConfig& cfg, char* err, size_t errlen) {
+  bool init(const RingConfig& cfg, Refusal why) {
+    char* const err = why.buf;
+    const size_t errlen = why.len;
     mrb_ = cfg.mrb;
     if (mrb_ == nullptr) {
       std::snprintf(err, errlen, "RingConfig::mrb is required - the reactor raises rather "
@@ -4986,8 +5005,8 @@ class Ring {
       return false;
     }
     for (uint32_t li = 0; li < cfg.nlisteners; li++) {
-      if (!setup_listener(li, cfg.listeners[li], err, errlen)) return false;
-      if (!setup_listener_keys(li, cfg.listeners[li], err, errlen)) return false;
+      if (!setup_listener(li, cfg.listeners[li], why)) return false;
+      if (!setup_listener_keys(li, cfg.listeners[li], why)) return false;
     }
     nlisteners_ = cfg.nlisteners;
 
@@ -5052,7 +5071,9 @@ class Ring {
  private:
   // One listener as one linked chain; a stale unix path is unlinked OUTSIDE
   // the chain, because ENOENT there is normal.
-  bool setup_listener(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
+  bool setup_listener(uint32_t li, const ListenerSpec& spec, Refusal why) {
+    char* const err = why.buf;
+    const size_t errlen = why.len;
     const uint32_t slot = listener_base_ + li;
     const bool is_unix = spec.unix_path != nullptr;
     struct sockaddr_un sun {};
@@ -5524,7 +5545,9 @@ class Ring {
   // The certificate a TLS listener answers with, and the two suites this
   // build speaks. Once per listener, at boot: every exchange this
   // listener ever opens is opened from it.
-  bool setup_listener_keys(uint32_t li, const ListenerSpec& spec, char* err, size_t errlen) {
+  bool setup_listener_keys(uint32_t li, const ListenerSpec& spec, Refusal why) {
+    char* const err = why.buf;
+    const size_t errlen = why.len;
     if (spec.cert_pem == nullptr) return true;
     // The certificate BEFORE the kernel, deliberately: both can be wrong
     // at once, and the one the operator can fix is the one worth saying.

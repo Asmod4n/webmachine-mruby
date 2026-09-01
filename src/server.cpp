@@ -53,7 +53,9 @@ struct LogdSpawn {
   unsigned long long max_bytes;
 };
 
-int spawn_logd(const LogdSpawn& log, char* err, size_t errlen) {
+int spawn_logd(const LogdSpawn& log, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   const char* const mode = log.mode;
   const char* const path = log.path;
   const char* const privacy = log.privacy;
@@ -111,7 +113,9 @@ struct PemFile {
   const char* what;
 };
 
-bool read_pem(PemFile f, std::string& out, char* err, size_t errlen) {
+bool read_pem(PemFile f, std::string& out, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   const std::string& path = f.path;
   const char* const what = f.what;
   std::FILE* fp = std::fopen(path.c_str(), "rb");
@@ -138,7 +142,9 @@ bool read_pem(PemFile f, std::string& out, char* err, size_t errlen) {
 
 // https, a certificate and a key are one decision spelled three ways, so
 // naming any of them means naming all of them.
-bool build_listener_tls(RingConfig& cfg, char* err, size_t errlen) {
+bool build_listener_tls(RingConfig& cfg, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   pem_.assign(specs_.size() * 2, std::string());
   for (size_t i = 0; i < specs_.size(); i++) {
     const AppSpec& spec = *specs_[i];
@@ -169,8 +175,8 @@ bool build_listener_tls(RingConfig& cfg, char* err, size_t errlen) {
     }
     std::string& cert = pem_[i * 2];
     std::string& key = pem_[i * 2 + 1];
-    if (!read_pem({spec.cert_path, "certificate"}, cert, err, errlen)) return false;
-    if (!read_pem({spec.key_path, "private_key"}, key, err, errlen)) return false;
+    if (!read_pem({spec.cert_path, "certificate"}, cert, why)) return false;
+    if (!read_pem({spec.key_path, "private_key"}, key, why)) return false;
     cfg.listeners[i].cert_pem = cert.data();
     cfg.listeners[i].cert_len = cert.size();
     cfg.listeners[i].key_pem = key.data();
@@ -179,7 +185,9 @@ bool build_listener_tls(RingConfig& cfg, char* err, size_t errlen) {
   return true;
 }
 
-bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
+bool build_listeners(RingConfig& cfg, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
   const bool cli = opts_.cli_unix != nullptr || opts_.cli_port != 0;
@@ -224,7 +232,7 @@ bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
 // works either way now - the slipstream seam underneath it hands every
 // call to the engine when the kernel refuses io_uring - and the banner
 // is the receipt. Silence is the kernel side.
-bool server_backend_ok(char* err, size_t errlen) {
+bool server_backend_ok() {
   if (slipstream_syscall_uses_engine()) {
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
     char buf[32] = "";
@@ -275,11 +283,12 @@ bool server_backend_ok(char* err, size_t errlen) {
 
 namespace {
 // Everything between "main returned" and "the first accept", once.
-bool build(mrb_state* mrb, char* err, size_t errlen) {
+bool build(Setup s) {
+  mrb_state* const mrb = s.mrb;
   if (built_) return true;
-  if (!server_backend_ok(err, errlen)) return false;
+  if (!server_backend_ok()) return false;
 
-  if (!app_registered_all({specs_, kMaxListeners}, err, errlen)) return false;
+  if (!app_registered_all({specs_, kMaxListeners}, s.why)) return false;
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;
   // The gem is embedded: a reactor that has to give up raises into this
@@ -289,8 +298,8 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   cfg.header_timeout = opts_.header_timeout;
   cfg.send_timeout = opts_.send_timeout;
   cfg.idle_timeout = opts_.idle_timeout;
-  if (!build_listeners(cfg, err, errlen)) return false;
-  if (!build_listener_tls(cfg, err, errlen)) return false;
+  if (!build_listeners(cfg, s.why)) return false;
+  if (!build_listener_tls(cfg, s.why)) return false;
 
   // server.docroot: a typed flag beats [server], and both beat the app's
   // conf - the same order --unix and --port already follow. The canonical
@@ -305,7 +314,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
       if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
     }
     if (dr != nullptr) {
-      if (!docroot_open(dr, err, errlen)) return false;
+      if (!docroot_open(dr, s.why)) return false;
       std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
     }
   }
@@ -320,18 +329,18 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
-    if (!mime_.load(opts_.mime_types_path, err, errlen)) return false;
+    if (!mime_.load(opts_.mime_types_path, s.why)) return false;
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
   }
   if (opts_.assets_path != nullptr) {
-    if (!assets_.open(opts_.assets_path, mime_, err, errlen)) return false;
+    if (!assets_.open(opts_.assets_path, mime_, s.why)) return false;
   }
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
     char eerr[512] = "";
-    if (error_assets_.open(error_assets_file.c_str(), mime_, eerr, sizeof eerr)) {
+    if (error_assets_.open(error_assets_file.c_str(), mime_, {eerr, sizeof eerr})) {
       error_assets_up_ = true;
       std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
     } else {
@@ -369,7 +378,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     const LogdSpawn access = {
         "access", opts_.log_path,
         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", opts_.log_max_bytes};
-    log_fd_ = spawn_logd(access, err, errlen);
+    log_fd_ = spawn_logd(access, s.why);
     if (log_fd_ < 0) return false;
     cfg.log_fd = log_fd_;
   }
@@ -381,7 +390,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     // FIRST entry is the one that names the cause and everything after it
     // is consequence. A ceiling that keeps the newest half would throw
     // away exactly the line worth having.
-    err_fd_ = spawn_logd({"error", opts_.error_log_path, nullptr, 0}, err, errlen);
+    err_fd_ = spawn_logd({"error", opts_.error_log_path, nullptr, 0}, s.why);
     if (err_fd_ < 0) return false;
     cfg.err_fd = err_fd_;
   }
@@ -412,8 +421,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.
-  if (!http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr, err,
-                                errlen)) {
+  if (!http_->open_error_assets(s, error_assets_up_ ? &error_assets_ : nullptr)) {
     return false;
   }
   // #210: and the same assets under response.error_asset("404.jpg"),
@@ -436,7 +444,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (fmt >= 0) http_->set_file_map_threshold(static_cast<size_t>(fmt));
 
   ring_.reset(new Ring<Http1>(*http_));
-  if (!ring_->init(cfg, err, errlen)) {
+  if (!ring_->init(cfg, s.why)) {
     ring_.reset();
     return false;
   }
@@ -444,7 +452,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   for (size_t i = 0; i < specs_.size(); i++) {
     app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,
                    ring_->bound_port(static_cast<uint32_t>(i)));
-    if (!app_ready_run(mrb, *specs_[i], err, errlen)) {
+    if (!app_ready_run(s, *specs_[i])) {
       ring_.reset();
       return false;
     }
@@ -467,7 +475,9 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
 // The Ruby doors all need the server standing; a failure to build raises.
 void ensure(mrb_state* mrb) {
   char err[512] = "";
-  if (!build(mrb, err, sizeof(err))) mrb_raisef(mrb, E_RUNTIME_ERROR, "webmachine: %s", err);
+  if (!build({mrb, {err, sizeof(err)}})) {
+    mrb_raisef(mrb, E_RUNTIME_ERROR, "webmachine: %s", err);
+  }
   entered_ = true;
 }
 
@@ -545,8 +555,8 @@ void server_init(mrb_state* mrb, struct RClass* wm) {
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.
-int server_run(mrb_state* mrb, char* err, size_t errlen) {
-  if (!build(mrb, err, errlen)) return 1;
+int server_run(Setup s) {
+  if (!build(s)) return 1;
   entered_ = true;
   ring_->run();
   ring_.reset();

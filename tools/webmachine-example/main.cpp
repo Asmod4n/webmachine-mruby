@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
   webmachine::server_options(opts);
 
   char err[512] = "";
-  if (!webmachine::app_load(mrb, opts.app_path, err, sizeof(err))) {
+  if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts.app_path)) {
     std::fprintf(stderr, "webmachine-example: %s: %s\n", opts.app_path, err);
     mrb_close(mrb);
     return 1;
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
 
   int rc = 0;
   if (!webmachine::server_entered()) {
-    rc = webmachine::server_run(mrb, err, sizeof(err));
+    rc = webmachine::server_run({mrb, {err, sizeof(err)}});
     if (rc != 0) std::fprintf(stderr, "webmachine-example: %s\n", err);
   }
   mrb_close(mrb);

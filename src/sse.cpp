@@ -119,7 +119,10 @@ SseResource* sse_resource_new() { return new SseResource(); }
 void sse_resource_free(SseResource* r) { delete r; }
 
 // WHATWG HTML: fold a resource class for an SSE route, once, at route.sse.
-bool sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out, char* err, size_t errlen) {
+bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   if (!mrb_class_p(klass)) {
     std::snprintf(err, errlen, "route.sse wants a class inheriting Webmachine::SseResource");
     return false;

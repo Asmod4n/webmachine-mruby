@@ -298,7 +298,7 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
 
   auto res = std::unique_ptr<Resource>(new Resource());
   char err[512] = "";
-  if (!resource_fold(mrb, klass, *res, err, sizeof(err))) {
+  if (!resource_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
     s->table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: %s", err);
   }
@@ -317,7 +317,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
 
   std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
   char err[512] = "";
-  if (!ws_fold(mrb, klass, *res, err, sizeof(err))) {
+  if (!ws_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
     s->ws_table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
   }
@@ -337,7 +337,7 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   std::unique_ptr<SseResource, void (*)(SseResource*)> res(sse_resource_new(),
                                                            sse_resource_free);
   char err[512] = "";
-  if (!sse_fold(mrb, klass, *res, err, sizeof(err))) {
+  if (!sse_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
     s->sse_table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
   }
@@ -478,7 +478,10 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
 }
 
 // Load the app's bytecode and call its `main`. A .rb is refused by name.
-bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
+bool app_load(Setup s, const char* path) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   const size_t path_len = std::strlen(path);
   if (path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0) {
     const std::string mrb_path(path, path_len - 3);
@@ -537,7 +540,9 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
 }
 
 // Every application `main` registered - registration order IS listener order.
-bool app_registered_all(Registered out_, char* err, size_t errlen) {
+bool app_registered_all(Registered out_, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   std::vector<AppSpec*>& out = out_.specs;
   const size_t max_listeners = out_.max_listeners;
   if (registered_.empty()) {
@@ -586,7 +591,10 @@ void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
 }
 
 // Run the ready hook from the TOOL, outside any VM frame - so, funcall.
-bool app_ready_run(mrb_state* mrb, AppSpec& spec, char* err, size_t errlen) {
+bool app_ready_run(Setup s, AppSpec& spec) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   if (!spec.have_ready) return true;
   const int ai = mrb_gc_arena_save(mrb);
   mrb_funcall_argv(mrb, spec.ready, MRB_SYM(call), 0, nullptr);

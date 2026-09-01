@@ -47,7 +47,9 @@ using flow::Node;
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
 // mruby: a setup raise becomes a named refusal, printed by the VM itself.
-void exc_into(mrb_state* mrb, const char* what, char* err, size_t errlen) {
+void exc_into(mrb_state* mrb, const char* what, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   std::snprintf(err, errlen, "%s (exception below)", what);
   mrb_print_error(mrb);
   mrb->exc = nullptr;
@@ -293,7 +295,7 @@ bool ask(const Folding& f, Asked a, bool defv, bool* out) {
   }
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, a.name, f.err, f.errlen);
+    exc_into(mrb, a.name, {f.err, f.errlen});
     return false;
   }
   *out = mrb_test(v);
@@ -329,7 +331,7 @@ bool bake_value(const Folding& f, const BakedValue& bake) {
   r.defined = true;
   mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, bake.name, f.err, f.errlen);
+    exc_into(mrb, bake.name, {f.err, f.errlen});
     return false;
   }
   if (mrb_nil_p(v) || mrb_false_p(v)) return true;
@@ -385,7 +387,7 @@ bool ask_methods(const Folding& f, Asked a, bool seen[7]) {
   if (!r.defined) return true;
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, a.name, f.err, f.errlen);
+    exc_into(mrb, a.name, {f.err, f.errlen});
     return false;
   }
   for (uint8_t m = 0; m < 7; m++) seen[m] = false;
@@ -1609,7 +1611,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
 
 // RFC 9110: fold one resource class - every konst callback asked once,
 // every dynamic callback resolved, the class frozen.
-bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen) {
+bool resource_fold(Setup s, mrb_value klass, Resource& out) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   const Folding fold = {mrb, klass, err, errlen};
   const int ai = mrb_gc_arena_save(mrb);
   out = Resource{};
@@ -1757,7 +1762,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
         mrb->exc == nullptr
             ? static_cast<void>(std::snprintf(err, errlen, "content_type must return a String"))
-            : exc_into(mrb, "content_type", err, errlen);
+            : exc_into(mrb, "content_type", {err, errlen});
         mrb_gc_arena_restore(mrb, ai);
         return false;
       }
@@ -1780,7 +1785,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     if (ctp.defined) {
       const mrb_value v = call_resolved(mrb, ctp, {klass, mrb_class(mrb, klass)});
       if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-        exc_into(mrb, "content_types_provided", err, errlen);
+        exc_into(mrb, "content_types_provided", {err, errlen});
         mrb_gc_arena_restore(mrb, ai);
         return false;
       }
@@ -1819,7 +1824,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
             mrb->exc == nullptr
                 ? static_cast<void>(std::snprintf(err, errlen,
                                                   "the body handler must return a String"))
-                : exc_into(mrb, "body handler raised", err, errlen);
+                : exc_into(mrb, "body handler raised", {err, errlen});
             mrb_gc_arena_restore(mrb, ai);
             return false;
           }
@@ -1850,7 +1855,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
         mrb->exc == nullptr
             ? static_cast<void>(
                   std::snprintf(err, errlen, "encodings_provided must return a Hash"))
-            : exc_into(mrb, "encodings_provided", err, errlen);
+            : exc_into(mrb, "encodings_provided", {err, errlen});
         mrb_gc_arena_restore(mrb, ai);
         return false;
       }
@@ -1870,7 +1875,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
         mrb->exc == nullptr
             ? static_cast<void>(std::snprintf(err, errlen, "the body handler must return a String"))
-            : exc_into(mrb, "body handler raised", err, errlen);
+            : exc_into(mrb, "body handler raised", {err, errlen});
         mrb_gc_arena_restore(mrb, ai);
         return false;
       }

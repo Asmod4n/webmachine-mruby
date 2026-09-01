@@ -15,7 +15,9 @@
 namespace webmachine {
 namespace {
 // TOML: the parser's own words become the refusal's text.
-bool exc_into(mrb_state* mrb, const char* path, char* err, size_t errlen) {
+bool exc_into(mrb_state* mrb, const char* path, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   if (mrb->exc == nullptr) return false;
   struct RException* e = reinterpret_cast<struct RException*>(mrb->exc);
   mrb->exc = nullptr;
@@ -72,7 +74,7 @@ bool section(Setting s, FoundTable& out, const ConfigFile& f) {
       mrb->exc = nullptr;
       return true;
     }
-    return !exc_into(mrb, f.path, f.err, f.errlen);
+    return !exc_into(mrb, f.path, {f.err, f.errlen});
   }
   if (!mrb_hash_p(v)) {
     std::snprintf(f.err, f.errlen, "%s: [%s] must be a table", f.path, s.key);
@@ -129,7 +131,10 @@ bool take_seconds(Setting s, int* out, const ConfigFile& f) {
 }
 
 // TOML: parse and validate webmachine.toml through the VM the process carries.
-bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_t errlen) {
+bool config_load(Setup s, const char* path, Config& out) {
+  mrb_state* const mrb = s.mrb;
+  char* const err = s.why.buf;
+  const size_t errlen = s.why.len;
   const int ai = mrb_gc_arena_save(mrb);
   bool ok = false;
   out.path = path;
@@ -137,7 +142,7 @@ bool config_load(mrb_state* mrb, const char* path, Config& out, char* err, size_
   mrb_value p = mrb_str_new_cstr(mrb, path);
   const mrb_value doc = mrb_funcall_argv(mrb, mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(TOML))),
                                          MRB_SYM(load), 1, &p);
-  if (exc_into(mrb, path, err, errlen)) goto done;
+  if (exc_into(mrb, path, {err, errlen})) goto done;
 
   {
     const ConfigFile file = {mrb, path, err, errlen};

@@ -465,9 +465,9 @@ void Http1::assemble_dynamic(const DynamicBody& d, std::string& sink) {
 // #210: the error pages render in a VM this layer does not own. Called
 // once, after the bundles exist; a caller that never calls it keeps the
 // bodyless statuses (#173: bytes in, bytes out, no VM required).
-bool Http1::open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, size_t errlen) {
+bool Http1::open_error_assets(Setup s, Assets* error_assets) {
   error_assets_ = error_assets;
-  return err_pages_.open(mrb, error_assets, err, errlen);
+  return err_pages_.open(s, error_assets);
 }
 
 // RFC 9110 15: the error answer - the prebuilt status line and Date, then

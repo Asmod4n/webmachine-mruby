@@ -121,7 +121,9 @@ Assets::~Assets() {
 
 // ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
 // parses; this reads only the 30-byte Local Header, to skip it.
-bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t errlen) {
+bool Assets::open(const char* zip_path, const MimeDb& mime, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   const int fd = ::open(zip_path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
     std::snprintf(err, errlen, "%s: %s", zip_path, std::strerror(errno));

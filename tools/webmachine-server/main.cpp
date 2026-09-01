@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   }
   if (config_path != nullptr) {
     char cerr[512];
-    if (!webmachine::config_load(mrb, config_path, fc, cerr, sizeof(cerr))) {
+    if (!webmachine::config_load({mrb, {cerr, sizeof(cerr)}}, config_path, fc)) {
       std::fprintf(stderr, "webmachine: %s\n", cerr);
       mrb_close(mrb);
       return 2;
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
 
   if (opts.app_path != nullptr) {
     char err[512];
-    if (!webmachine::app_load(mrb, opts.app_path, err, sizeof(err))) {
+    if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts.app_path)) {
       std::fprintf(stderr, "webmachine: %s: %s\n", opts.app_path, err);
       mrb_close(mrb);
       return 1;
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
   int rc = 0;
   if (!webmachine::server_entered()) {
     char err[512] = "";
-    rc = webmachine::server_run(mrb, err, sizeof(err));
+    rc = webmachine::server_run({mrb, {err, sizeof(err)}});
     if (rc != 0) std::fprintf(stderr, "webmachine: %s\n", err);
   }
   mrb_close(mrb);

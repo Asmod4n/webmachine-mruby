@@ -22,7 +22,9 @@ struct open_how how_ {};
 // matters: a relative or symlink-carrying docroot would make "beneath" mean
 // whatever the cwd or the link says today, and the confinement is only worth
 // as much as the thing it is anchored to.
-bool docroot_open(const char* path, char* err, size_t errlen) {
+bool docroot_open(const char* path, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   char real[PATH_MAX];
   if (::realpath(path, real) == nullptr) {
     std::snprintf(err, errlen, "--docroot %s: %s", path, std::strerror(errno));

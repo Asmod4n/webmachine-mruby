@@ -109,7 +109,9 @@ void MimeDb::parse_globs2(const char* p, const char* end) {
 }
 
 // RFC 9110 8.3: the machine's own media-type database, first that exists.
-bool MimeDb::load(const char* configured, char* err, size_t errlen) {
+bool MimeDb::load(const char* configured, Refusal why) {
+  char* const err = why.buf;
+  const size_t errlen = why.len;
   static const char* const kTypesPaths[] = {
       "/etc/mime.types", "/etc/apache2/mime.types", "/etc/httpd/conf/mime.types",
       "/usr/local/etc/mime.types"};
