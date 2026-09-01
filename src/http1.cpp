@@ -504,6 +504,15 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
     if (ebody != nullptr) ectype = err_pages_.media_type(em);
     else eblen = 0;
   }
+  Assets::HeadAsk head{*ae};
+  head.status_code = step.status_code;
+  head.conn = conn;
+  head.date = date_;
+  head.unix_seconds = sec_;
+  head.first_byte_pos = step.first_byte_pos;
+  head.last_byte_pos = step.first_byte_pos + step.content_length - 1;
+  head.body_type = ectype;
+  head.body_len = eblen;
   switch (step.head) {
     case AssetStep::HeadKind::kRefusal: {
       // 412 and 501 carry no field of this tier's own, so they are spelled
@@ -519,16 +528,9 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
                   sink);
       break;
     }
-    case AssetStep::HeadKind::kUnsatisfiable:
-      tier->answer_416_head(*ae, conn, date_, sink, ectype, eblen);
-      break;
-    case AssetStep::HeadKind::kRange:
-      tier->answer_206_head(*ae, conn, step.first_byte_pos,
-                            step.first_byte_pos + step.content_length - 1, date_, sink);
-      break;
-    case AssetStep::HeadKind::kNormal:
-      tier->answer_head(*ae, step.status_code, conn, date_, sec_, sink, ectype, eblen);
-      break;
+    case AssetStep::HeadKind::kUnsatisfiable: tier->answer_416_head(head, sink); break;
+    case AssetStep::HeadKind::kRange: tier->answer_206_head(head, sink); break;
+    case AssetStep::HeadKind::kNormal: tier->answer_head(head, sink); break;
   }
   const bool sent_page = ebody != nullptr && !r.head_only;
   if (sent_page) sink.append(ebody, eblen);

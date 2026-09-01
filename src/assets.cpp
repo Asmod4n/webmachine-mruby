@@ -341,38 +341,40 @@ void Assets::patch_date(AssetEntry::Head& h, const char* date, time_t unix_secon
 }
 
 // RFC 9112: the header section for a verdict this tier owns. Never body bytes.
-void Assets::answer_head(AssetEntry& e, uint16_t status_code, ConnectionOption conn,
-                         const char* date, time_t unix_seconds, std::string& sink,
-                         const char* body_type, size_t body_len) {
+void Assets::answer_head(const HeadAsk& ask, std::string& sink) {
+  const uint16_t status_code = ask.status_code;
+  const ConnectionOption conn = ask.conn;
   // A refusal the caller has a page for cannot take the prebuilt head:
   // that one declares no body, and a page's length is not known until
   // there is a page. The fields are the same either way.
-  if (body_type != nullptr && (status_code == 405 || status_code == 406)) {
+  if (ask.body_type != nullptr && (status_code == 405 || status_code == 406)) {
     sink.append(status_code == 405 ? kStatus405 : kStatus406).append("\r\nDate: ");
-    sink.append(date, http::kDateLen);
+    sink.append(ask.date, http::kDateLen);
     sink.append("\r\n").append(kConnectionLine[conn]);
     sink.append(status_code == 405 ? kAllowField : kVaryField);
-    sink.append("Content-Type: ").append(body_type).append("\r\n");
-    sink.append("Content-Length: ").append(std::to_string(body_len)).append("\r\n\r\n");
+    sink.append("Content-Type: ").append(ask.body_type).append("\r\n");
+    sink.append("Content-Length: ").append(std::to_string(ask.body_len)).append("\r\n\r\n");
     return;
   }
   AssetEntry::Head* h;
   switch (status_code) {
-    case 200: h = &e.head_200[conn]; break;
-    case 304: h = &e.head_304[conn]; break;
+    case 200: h = &ask.entry.head_200[conn]; break;
+    case 304: h = &ask.entry.head_304[conn]; break;
     case 405: h = &s405_[conn]; break;
     default: h = &s406_[conn]; break;
   }
-  patch_date(*h, date, unix_seconds);
+  patch_date(*h, ask.date, ask.unix_seconds);
   sink.append(h->bytes);
 }
 
 // RFC 9110 14.4/15.3.7: the satisfied range and the complete length.
-void Assets::answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t first_byte_pos,
-                             size_t last_byte_pos, const char* date, std::string& sink) {
+void Assets::answer_206_head(const HeadAsk& ask, std::string& sink) {
+  const AssetEntry& e = ask.entry;
+  const size_t first_byte_pos = ask.first_byte_pos;
+  const size_t last_byte_pos = ask.last_byte_pos;
   sink.append("HTTP/1.1 206 Partial Content\r\nDate: ");
-  sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(kConnectionLine[conn]);
+  sink.append(ask.date, http::kDateLen);
+  sink.append("\r\n").append(kConnectionLine[ask.conn]);
   sink.append("Content-Type: ").append(e.content_type).append("\r\n");
   if (e.deflated) {
     sink.append("Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n");
@@ -387,15 +389,17 @@ void Assets::answer_206_head(const AssetEntry& e, ConnectionOption conn, size_t 
 }
 
 // RFC 9110 15.5.17: the unsatisfied form names the complete length.
-void Assets::answer_416_head(const AssetEntry& e, ConnectionOption conn, const char* date,
-                             std::string& sink, const char* body_type, size_t body_len) {
+void Assets::answer_416_head(const HeadAsk& ask, std::string& sink) {
+  const AssetEntry& e = ask.entry;
   sink.append("HTTP/1.1 416 Range Not Satisfiable\r\nDate: ");
-  sink.append(date, http::kDateLen);
-  sink.append("\r\n").append(kConnectionLine[conn]);
+  sink.append(ask.date, http::kDateLen);
+  sink.append("\r\n").append(kConnectionLine[ask.conn]);
   if (e.deflated) sink.append(kVaryField);
   sink.append("Content-Range: bytes */").append(std::to_string(wire_len(e))).append("\r\n");
-  if (body_type != nullptr) sink.append("Content-Type: ").append(body_type).append("\r\n");
-  sink.append("Content-Length: ").append(std::to_string(body_len)).append("\r\n\r\n");
+  if (ask.body_type != nullptr) {
+    sink.append("Content-Type: ").append(ask.body_type).append("\r\n");
+  }
+  sink.append("Content-Length: ").append(std::to_string(ask.body_len)).append("\r\n\r\n");
 }
 
 // RFC 1952 2.2: [off, off+n) of the wire body as POINTERS - the gzip
