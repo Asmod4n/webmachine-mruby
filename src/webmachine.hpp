@@ -464,7 +464,15 @@ constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w) {
 // From `from`, with the block's fields absent, follow the edges the way walk
 // does and report where it comes out. kNodeCount is the give-up bound: a
 // halt or a wrong exit both fail the assert below.
-constexpr Node lands_on(Node from, const ReqFacts& req, const KonstAnswers& k) {
+// The request as parsed, and what the fold decided for this resource.
+struct Given {
+  const ReqFacts& req;
+  const KonstAnswers& konst;
+};
+
+constexpr Node lands_on(Node from, Given g) {
+  const ReqFacts& req = g.req;
+  const KonstAnswers& k = g.konst;
   Node n = from;
   for (size_t step = 0; step < kNodeCount; step++) {
     const FlowNode& f = kFlow[static_cast<size_t>(n)];
@@ -488,10 +496,10 @@ constexpr bool block_skips_are_the_graphs(Method m) {
   KonstAnswers all_false{};
   KonstAnswers all_true{};
   for (size_t i = 0; i < kNodeCount; i++) all_true.ans[i] = true;
-  return lands_on(Node::kC3, absent, all_false) == kAfterConneg &&
-         lands_on(Node::kC3, absent, all_true) == kAfterConneg &&
-         lands_on(Node::kG8, absent, all_false) == kAfterConditional &&
-         lands_on(Node::kG8, absent, all_true) == kAfterConditional;
+  return lands_on(Node::kC3, {absent, all_false}) == kAfterConneg &&
+         lands_on(Node::kC3, {absent, all_true}) == kAfterConneg &&
+         lands_on(Node::kG8, {absent, all_false}) == kAfterConditional &&
+         lands_on(Node::kG8, {absent, all_true}) == kAfterConditional;
 }
 static_assert(block_skips_are_the_graphs(Method::kGet));
 static_assert(block_skips_are_the_graphs(Method::kHead));
@@ -1154,18 +1162,24 @@ inline constexpr bool kDebugBuild = false;
 // the request and owns `backtrace`, which the facts point into - so the
 // caller can hash the whole and hand the same hash to the page and to
 // log_error, instead of the two computing it apart from each other.
-void exception_facts(mrb_state* mrb, ErrFacts& f, std::string& backtrace);
+// What one raise leaves behind: the record's fields, and the backtrace
+// text they point into.
+struct Raised {
+  ErrFacts& facts;
+  std::string& backtrace;
+};
+void exception_facts(mrb_state* mrb, Raised out);
 
 // A raise with no request around it: a stream that was answered long ago
 // and is now running app code of its own (SSE, a WebSocket). There is no
 // target and no method to name, so the fingerprint is the build, the
 // class and the place - which is exactly what such a failure is.
-inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status_code) {
+inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status) {
   if (!lg.enabled) return;
   ErrFacts f;
   std::string backtrace;
-  f.status_code = status_code;
-  exception_facts(mrb, f, backtrace);
+  f.status_code = status;
+  exception_facts(mrb, {f, backtrace});
   if (f.exception_class == nullptr) return;
   log_error(lg, f);
 }
@@ -1362,7 +1376,9 @@ inline size_t spell_content_length(char (&buf)[40], size_t len) {
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
-inline ClStatus parse_content_length(const char* s, size_t n, size_t* out) {
+inline ClStatus parse_content_length(std::string_view text, size_t* out) {
+  const char* const s = text.data();
+  const size_t n = text.size();
   if (n == 0) return ClStatus::kBad;
   size_t v = 0;
   for (size_t j = 0; j < n; j++) {
@@ -1590,12 +1606,15 @@ inline RangeParse parse_range(RangeField field, ByteRange& out) {
 }
 
 // RFC 9110 14.2: ONE validator, compared strongly; a date reads as no match.
-inline bool if_range_matches(const char* v, size_t n, const char* tag, size_t taglen) {
+inline bool if_range_matches(std::string_view value, std::string_view tag) {
+  const char* const v = value.data();
+  const size_t n = value.size();
+  const size_t taglen = tag.size();
   size_t i = 0;
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
   size_t e = n;
   while (e > i && (v[e - 1] == ' ' || v[e - 1] == '\t')) e--;
-  return e - i == taglen && std::memcmp(v + i, tag, taglen) == 0;
+  return e - i == taglen && std::memcmp(v + i, tag.data(), taglen) == 0;
 }
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
@@ -1708,7 +1727,19 @@ inline int read_month_name(const char* p, size_t at) {
 }
 
 // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
-inline int64_t epoch_from_civil(int y, int m, int d, int hh, int mm, int ss) {
+// One civil date and time, as the fields a Date line spells.
+struct Civil {
+  int y;
+  int m;
+  int d;
+  int hh;
+  int mm;
+  int ss;
+};
+
+inline int64_t epoch_from_civil(Civil c) {
+  int y = c.y;
+  const int m = c.m, d = c.d, hh = c.hh, mm = c.mm, ss = c.ss;
   y -= m <= 2;
   const int era = (y >= 0 ? y : y - 399) / 400;
   const int yoe = y - era * 400;
@@ -1759,7 +1790,7 @@ inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
       ss < 0 || ss > 60) {
     return false;
   }
-  *out = epoch_from_civil(y, mo, d, hh, mm, ss);
+  *out = epoch_from_civil({y, mo, d, hh, mm, ss});
   return true;
 }
 
@@ -2821,15 +2852,6 @@ class ErrorPages {
     // stands for no failure - every 4xx.
     const char* fingerprint = nullptr;
   };
-  // false when there is no page to offer - the caller still owes an
-  // answer and falls back to the bodyless status.
-  bool render(uint16_t status, int slot, const Fields& f, std::string& out);
-  // The bytes this status answers with, whichever way this build has
-  // them: the picture where the error assets hold one, the page prepared
-  // at boot where the answer names no failure of its own, a render where
-  // it does. `held` is the caller's storage and is used for that last
-  // case only - the other two are lent where they lie. Null when this
-  // build can spell no page at all.
   // One error page being asked for: the status it explains, the media slot
   // it renders in, and the words #210 filled in.
   struct Page {
@@ -2837,6 +2859,16 @@ class ErrorPages {
     int slot;
     const Fields& fields;
   };
+
+  // false when there is no page to offer - the caller still owes an
+  // answer and falls back to the bodyless status.
+  bool render(const Page& p, std::string& out);
+  // The bytes this status answers with, whichever way this build has
+  // them: the picture where the error assets hold one, the page prepared
+  // at boot where the answer names no failure of its own, a render where
+  // it does. `held` is the caller's storage and is used for that last
+  // case only - the other two are lent where they lie. Null when this
+  // build can spell no page at all.
   const char* body_for(const Page& p, std::string& held, size_t* len);
 
  private:
@@ -3327,7 +3359,7 @@ void sse_resource_free(SseResource* r);
 
 void sse_init(mrb_state* mrb, struct RClass* wm);
 
-SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status);
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& code);
 
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
 
@@ -3523,7 +3555,7 @@ void ws_free(WsConn* c);
 
 struct SseResource;
 struct SseStream;
-SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status);
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& code);
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
 void sse_free(SseStream* s);
 
@@ -4112,7 +4144,7 @@ class Http1 {
     if (verdict == 200 && !head_only && ask.method == flow::Method::kGet &&
         vals.range != nullptr &&
         (vals.if_range == nullptr ||
-         http::if_range_matches(vals.if_range, vals.if_range_len, e.etag, sizeof(e.etag)))) {
+         http::if_range_matches({vals.if_range, vals.if_range_len}, {e.etag, sizeof(e.etag)}))) {
       http::ByteRange r = {0, 0};
       switch (http::parse_range({{vals.range, vals.range_len}, complete_length}, r)) {
         case http::RangeParse::kOne:
@@ -5041,7 +5073,7 @@ class Ring {
     }
     for (uint32_t li = 0; li < cfg.nlisteners; li++) {
       if (!setup_listener(li, cfg.listeners[li], why)) return false;
-      if (!setup_listener_keys(li, cfg.listeners[li], why)) return false;
+      if (!setup_keys(li, cfg.listeners[li], why)) return false;
     }
     nlisteners_ = cfg.nlisteners;
 
@@ -5106,23 +5138,23 @@ class Ring {
  private:
   // One listener as one linked chain; a stale unix path is unlinked OUTSIDE
   // the chain, because ENOENT there is normal.
-  bool setup_listener(uint32_t li, const ListenerSpec& spec, Refusal why) {
-    char* const err = why.buf;
-    const size_t errlen = why.len;
+  bool setup_listener(uint32_t li, const ListenerSpec& want, Refusal r) {
+    char* const err = r.buf;
+    const size_t errlen = r.len;
     const uint32_t slot = listener_base_ + li;
-    const bool is_unix = spec.unix_path != nullptr;
+    const bool is_unix = want.unix_path != nullptr;
     struct sockaddr_un sun {};
     struct sockaddr_in sin {};
     struct sockaddr* sa = nullptr;
     socklen_t salen = 0;
     if (is_unix) {
       sun.sun_family = AF_UNIX;
-      const size_t payload_length = std::strlen(spec.unix_path);
+      const size_t payload_length = std::strlen(want.unix_path);
       if (payload_length >= sizeof(sun.sun_path)) {
         std::snprintf(err, errlen, "listener %u: unix path too long (%zu)", li, payload_length);
         return false;
       }
-      std::memcpy(sun.sun_path, spec.unix_path, payload_length + 1);
+      std::memcpy(sun.sun_path, want.unix_path, payload_length + 1);
       sa = reinterpret_cast<struct sockaddr*>(&sun);
       salen = sizeof(sun);
 
@@ -5131,25 +5163,25 @@ class Ring {
         std::snprintf(err, errlen, "SQ empty at setup");
         return false;
       }
-      io_uring_prep_unlink(s, spec.unix_path, 0);
+      io_uring_prep_unlink(s, want.unix_path, 0);
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
       io_uring_submit_and_wait(&ring_, 1);
       struct io_uring_cqe* cqe = nullptr;
       if (io_uring_peek_cqe(&ring_, &cqe) == 0) {
         if (cqe->res < 0 && cqe->res != -ENOENT) {
-          std::snprintf(err, errlen, "unlink %s: %s", spec.unix_path, std::strerror(-cqe->res));
+          std::snprintf(err, errlen, "unlink %s: %s", want.unix_path, std::strerror(-cqe->res));
           return false;
         }
         io_uring_cqe_seen(&ring_, cqe);
       }
     } else {
-      if (spec.port < 0 || spec.port > 65535) {
-        std::snprintf(err, errlen, "listener %u: port %d out of range", li, spec.port);
+      if (want.port < 0 || want.port > 65535) {
+        std::snprintf(err, errlen, "listener %u: port %d out of range", li, want.port);
         return false;
       }
       sin.sin_family = AF_INET;
       sin.sin_addr.s_addr = htonl(INADDR_ANY);
-      sin.sin_port = htons(static_cast<uint16_t>(spec.port));
+      sin.sin_port = htons(static_cast<uint16_t>(want.port));
       sa = reinterpret_cast<struct sockaddr*>(&sin);
       salen = sizeof(sin);
     }
@@ -5208,12 +5240,12 @@ class Ring {
       }
       if (failed) return false;
     }
-    if (is_unix) unix_paths_.emplace_back(spec.unix_path);
+    if (is_unix) unix_paths_.emplace_back(want.unix_path);
     unix_listener_[li] = is_unix;
 
     if (!is_unix) {
-      bound_port_[li] = spec.port;
-      if (spec.port == 0) {
+      bound_port_[li] = want.port;
+      if (want.port == 0) {
         struct sockaddr_storage ss {};
         socklen_t slen = sizeof(ss);
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
@@ -5580,14 +5612,14 @@ class Ring {
   // The certificate a TLS listener answers with, and the two suites this
   // build speaks. Once per listener, at boot: every exchange this
   // listener ever opens is opened from it.
-  bool setup_listener_keys(uint32_t li, const ListenerSpec& spec, Refusal why) {
-    char* const err = why.buf;
-    const size_t errlen = why.len;
-    if (spec.cert_pem == nullptr) return true;
+  bool setup_keys(uint32_t li, const ListenerSpec& want, Refusal r) {
+    char* const err = r.buf;
+    const size_t errlen = r.len;
+    if (want.cert_pem == nullptr) return true;
     // The certificate BEFORE the kernel, deliberately: both can be wrong
     // at once, and the one the operator can fix is the one worth saying.
     // It also means a machine without the module still checks the config.
-    ktls_keys* k = ktls_keys_server(spec.cert_pem, spec.cert_len, spec.key_pem, spec.key_len);
+    ktls_keys* k = ktls_keys_server(want.cert_pem, want.cert_len, want.key_pem, want.key_len);
     if (k == nullptr) {
       std::snprintf(err, errlen, "listener %u certificate: %s", li, ktls_last_error());
       return false;
@@ -5822,7 +5854,27 @@ class Ring {
   // layer and this connection is an ordinary one again - except that its
   // recv is a recvmsg, and that anything the peer pipelined behind its
   // Finished has been waiting and goes first.
-  void on_tls_ready(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  // One connection, and the slot it lives in - the reactor knows a
+  // connection by both and needs both.
+  struct Slot {
+    uint32_t idx;
+    Conn& conn;
+  };
+
+  // One completion as the reactor hands it on: the connection slot it
+  // names, the generation that slot was in when the op was armed (a slot
+  // that has since been reused answers a stale generation, and the
+  // completion is dropped), and the CQE itself.
+  struct Completed {
+    uint32_t idx;
+    uint16_t gen;
+    struct io_uring_cqe* cqe;
+  };
+
+  void on_tls_ready(Completed done) {
+    const uint32_t idx = done.idx;
+    const uint16_t gen = done.gen;
+    struct io_uring_cqe* const cqe = done.cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen || c.tls == nullptr) return;
@@ -5897,7 +5949,10 @@ class Ring {
   }
 
   // The new key is on the socket; the round goes on from where it waited.
-  void on_tls_tx_key(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_tls_tx_key(Completed done) {
+    const uint32_t idx = done.idx;
+    const uint16_t gen = done.gen;
+    struct io_uring_cqe* const cqe = done.cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;
@@ -6100,7 +6155,9 @@ class Ring {
   // Nothing arrived that can be parsed: a peer that left, a kernel that
   // ran out of buffers, a completion whose own numbers do not hold. None
   // of it is the path a request takes, so none of it is in one.
-  void on_recv_nothing_to_parse(uint32_t idx, Conn& c, struct io_uring_cqe* cqe) {
+  void on_recv_nothing_to_parse(Slot s, struct io_uring_cqe* cqe) {
+    const uint32_t idx = s.idx;
+    Conn& c = s.conn;
     if (cqe->res == -ENOBUFS) {
       rearm_.push_back(idx);
       return;
@@ -6124,7 +6181,7 @@ class Ring {
     if (WM_UNLIKELY(!c.live || c.gen != gen)) return;
 
     if (WM_UNLIKELY(cqe->res <= 0)) {
-      on_recv_nothing_to_parse(idx, c, cqe);
+      on_recv_nothing_to_parse({idx, c}, cqe);
       return;
     }
     if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
@@ -6142,7 +6199,7 @@ class Ring {
       return;
     }
     if (WM_UNLIKELY(c.tls != nullptr)) {
-      on_recv_tls(idx, bid0, total, cqe->flags);
+      on_recv_tls(idx, {bid0, total, cqe->flags});
       return;
     }
     if (WM_UNLIKELY(c.idle)) {
@@ -6244,7 +6301,18 @@ class Ring {
   // bytes are records only the exchange can read; after it they are
   // plaintext the kernel already decrypted, and what they arrive in is a
   // recvmsg's own layout rather than the payload alone.
-  void on_recv_tls(uint32_t idx, uint32_t bid0, size_t total, uint32_t flags) {
+  // What one recv delivered: the first buffer of the run, how many octets
+  // it holds, and the CQE flags that described it.
+  struct RecvBytes {
+    uint32_t bid0;
+    size_t total;
+    uint32_t flags;
+  };
+
+  void on_recv_tls(uint32_t idx, RecvBytes got) {
+    const uint32_t bid0 = got.bid0;
+    const size_t total = got.total;
+    const uint32_t flags = got.flags;
     Conn& c = conns_[idx];
     const size_t off = static_cast<size_t>(bid0) * kBufSize;
     replenish_++;
@@ -6431,7 +6499,10 @@ class Ring {
   // ENOENT, EXDEV (RESOLVE_BENEATH), ELOOP (RESOLVE_NO_SYMLINKS), EACCES -
   // ONE answer for all of them, so probing for a symlink or a traversal
   // cannot be told apart from asking for a name that was never there.
-  void on_file_open(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_file_open(Completed done) {
+    const uint32_t idx = done.idx;
+    const uint16_t gen = done.gen;
+    struct io_uring_cqe* const cqe = done.cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) {
@@ -6453,7 +6524,10 @@ class Ring {
 
   // statx on the OPENED fd, never by path: size and mtime have to describe
   // the bytes openat2 confined, and a second resolve would not be confined.
-  void on_file_stat(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_file_stat(Completed done) {
+    const uint32_t idx = done.idx;
+    const uint16_t gen = done.gen;
+    struct io_uring_cqe* const cqe = done.cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     const int fd = c.file_io->fd;
@@ -6512,7 +6586,10 @@ class Ring {
   // A short read is ordinary and resumes; res == 0 before the end is the
   // file shrinking under the Content-Length statx already named, which is a
   // framing lie - refused, not sent.
-  void on_file_read(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_file_read(Completed done) {
+    const uint32_t idx = done.idx;
+    const uint16_t gen = done.gen;
+    struct io_uring_cqe* const cqe = done.cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     c.file_io->reading = false;
@@ -6715,9 +6792,9 @@ class Ring {
         case detail::kRecv: on_recv(idx, gen, cqe); break;
         case detail::kSend: on_send(idx, gen, cqe); break;
         case detail::kMeminfo: on_meminfo(idx, gen, cqe); break;
-        case detail::kFileOpen: on_file_open(idx, gen, cqe); break;
-        case detail::kFileStat: on_file_stat(idx, gen, cqe); break;
-        case detail::kFileRead: on_file_read(idx, gen, cqe); break;
+        case detail::kFileOpen: on_file_open({idx, gen, cqe}); break;
+        case detail::kFileStat: on_file_stat({idx, gen, cqe}); break;
+        case detail::kFileRead: on_file_read({idx, gen, cqe}); break;
         case detail::kFileClose: break;
         case detail::kLog: on_log(gen, idx, cqe); break;
         case detail::kPeer: on_peer(idx, gen, cqe); break;
@@ -6749,8 +6826,8 @@ class Ring {
         // The connection is already going; a peer that will not take the
         // alert is not a thing this end can do anything about.
         case detail::kTlsBye: break;
-        case detail::kTlsRx: on_tls_ready(idx, gen, cqe); break;
-        case detail::kTlsTxKey: on_tls_tx_key(idx, gen, cqe); break;
+        case detail::kTlsRx: on_tls_ready({idx, gen, cqe}); break;
+        case detail::kTlsTxKey: on_tls_tx_key({idx, gen, cqe}); break;
         case detail::kStop: stop_ = true; break;
         default: break;
       }

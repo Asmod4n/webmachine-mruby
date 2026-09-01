@@ -190,7 +190,8 @@ bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
 }
 
 // WHATWG HTML: build THIS stream's resource; its initialize is the open hook.
-SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& status) {
+SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& code) {
+  uint16_t& status = code;
   status = 0;
   mrb_state* mrb = r->mrb;
   const int ai = mrb_gc_arena_save(mrb);

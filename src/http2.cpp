@@ -210,7 +210,7 @@ bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
       if (http::tok_eq(n, nl, "content-length", 14)) {
         if (claimed.have) return false;
         claimed.have = true;
-        if (http::parse_content_length(v, vl, &claimed.value) != http::ClStatus::kOk) {
+        if (http::parse_content_length({v, vl}, &claimed.value) != http::ClStatus::kOk) {
           return false;
         }
       }
@@ -467,8 +467,8 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
           vals.range != nullptr &&
           (vals.if_range == nullptr ||
-           http::if_range_matches(vals.if_range, vals.if_range_len, ae->etag,
-                                  sizeof(ae->etag)))) {
+           http::if_range_matches({vals.if_range, vals.if_range_len},
+                                  {ae->etag, sizeof(ae->etag)}))) {
         http::ByteRange r = {0, 0};
         switch (http::parse_range({{vals.range, vals.range_len}, asset_end}, r)) {
           case http::RangeParse::kOne:
@@ -861,7 +861,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     ef.body_len = req != nullptr ? req->content_len : 0;
     ef.body_full = ef.body_len;
     ef.status_code = 500;
-    exception_facts(b->res->mrb, ef, ef_backtrace);
+    exception_facts(b->res->mrb, {ef, ef_backtrace});
     spell_fingerprint(ef_hash, fingerprint_of(ef));
     if (elog_.enabled) log_error(elog_, ef);
     // #210: handle_exception lives on the error resource and nowhere

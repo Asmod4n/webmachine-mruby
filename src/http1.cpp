@@ -80,7 +80,7 @@ void read_wire_header(WireSink into, http::Field f) {
         }
         w.have_cl = true;
         vals.named.note(http::NamedField::kContentLength, at);
-        switch (http::parse_content_length(v, vl, &w.content_length)) {
+        switch (http::parse_content_length({v, vl}, &w.content_length)) {
           case http::ClStatus::kOk: break;
           case http::ClStatus::kBad: w.err = 400; break;
           case http::ClStatus::kOverflow: w.err = 413; break;
@@ -1277,7 +1277,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       ef.body_len = b->res->run_req != nullptr ? b->res->run_req->content_len : 0;
       ef.body_full = ef.body_len;
       ef.status_code = 500;
-      exception_facts(b->res->mrb, ef, ef_backtrace);
+      exception_facts(b->res->mrb, {ef, ef_backtrace});
       spell_fingerprint(ef_hash, fingerprint_of(ef));
       if (elog_.enabled) log_error(elog_, ef);
       // #210: handle_exception lives on the error resource and nowhere

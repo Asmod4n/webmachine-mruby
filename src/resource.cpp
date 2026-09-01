@@ -2091,7 +2091,9 @@ bool resource_exception_take(const Resource& res, mrb_value* out) {
 }
 
 // mruby: one raise as one error-log record - class, message, backtrace.
-void exception_facts(mrb_state* mrb, ErrFacts& f, std::string& backtrace) {
+void exception_facts(mrb_state* mrb, Raised out) {
+  ErrFacts& f = out.facts;
+  std::string& backtrace = out.backtrace;
   if (mrb->exc == nullptr) return;
   const mrb_value exc = mrb_obj_value(mrb->exc);
   f.exception_class = mrb_obj_classname(mrb, exc);

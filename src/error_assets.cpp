@@ -387,9 +387,11 @@ const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const 
 }
 
 // The bytes `t` anywhere in the first `len` of `accept`.
-bool contains(const char* accept, size_t len, const char* t, size_t tlen) {
+bool contains(std::string_view accept, std::string_view t) {
+  const size_t len = accept.size();
+  const size_t tlen = t.size();
   for (size_t i = 0; i + tlen <= len; i++) {
-    if (std::memcmp(accept + i, t, tlen) == 0) return true;
+    if (std::memcmp(accept.data() + i, t.data(), tlen) == 0) return true;
   }
   return false;
 }
@@ -413,7 +415,7 @@ bool ErrorPages::named_ours(const char* accept, size_t len) const {
     const char* t = h.type.c_str();
     const char* semi = std::strchr(t, ';');
     const size_t tlen = semi != nullptr ? static_cast<size_t>(semi - t) : h.type.size();
-    if (contains(accept, len, t, tlen)) return true;
+    if (contains({accept, len}, {t, tlen})) return true;
     // RFC 9110 12.5.1: "image/*" is a preference for every image type,
     // and it carries its own q - a browser fetching a picture writes
     // image/*;q=0.8 above */*;q=0.5 precisely to say which it would
@@ -423,7 +425,7 @@ bool ErrorPages::named_ours(const char* accept, size_t len) const {
     if (slash == nullptr) continue;
     std::string range(t, static_cast<size_t>(slash - t) + 1);
     range += '*';
-    if (contains(accept, len, range.data(), range.size())) return true;
+    if (contains({accept, len}, range)) return true;
   }
   return false;
 }
@@ -517,7 +519,10 @@ void ErrorPages::read_cats(Assets& assets) {
 // handed, and it is also the template context - status, title, source,
 // target, and for a 500 the message. Rendered per response: a 404 names
 // what was not found, so there is nothing a boot could have prepared.
-bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string& out) {
+bool ErrorPages::render(const Page& p, std::string& out) {
+  const uint16_t status = p.status;
+  const int slot = p.slot;
+  const Fields& f = p.fields;
   if (!ready_ || slot < 0 || static_cast<size_t>(slot) >= have_.size()) return false;
   mrb_state* mrb = mrb_;
   const int ai = mrb_gc_arena_save(mrb);
@@ -580,7 +585,7 @@ void ErrorPages::read_prepared() {
     prep_index_[face.status - kFirstError] = static_cast<int16_t>(row);
     for (slot = 0; slot < width; slot++) {
       if (have_[slot].from_pack) continue;
-      if (render(face.status, static_cast<int>(slot), nothing, page)) {
+      if (render({face.status, static_cast<int>(slot), nothing}, page)) {
         prepared_[row * width + slot] = page;
       }
     }
@@ -599,7 +604,7 @@ const char* ErrorPages::body_for(const Page& p, std::string& held, size_t* len) 
     lent = prepared_body(status, slot, len);
     if (lent != nullptr) return lent;
   }
-  if (!render(status, slot, f, held)) return nullptr;
+  if (!render({status, slot, f}, held)) return nullptr;
   *len = held.size();
   return held.data();
 }
