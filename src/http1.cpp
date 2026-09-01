@@ -159,18 +159,17 @@ void spell_head(std::string& sink, const SpelledHead& head) {
 }
 
 // One of build_variants' three spellings, its date offset noted.
-void Http1::build_one_variant(Resp& r, uint16_t status, const char* extra,
-                              const char* body, const char* date, const char* conn) {
+void Http1::build_one_variant(Resp& r, Prebuilt p) {
   r.bytes.clear();
   char line[16];
-  line[0] = static_cast<char>('0' + status / 100);
-  line[1] = static_cast<char>('0' + (status / 10) % 10);
-  line[2] = static_cast<char>('0' + status % 10);
+  line[0] = static_cast<char>('0' + p.status / 100);
+  line[1] = static_cast<char>('0' + (p.status / 10) % 10);
+  line[2] = static_cast<char>('0' + p.status % 10);
   line[3] = '\0';
-  r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
+  r.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(p.status));
   r.bytes.append("\r\nDate: ");
   r.date_off = r.bytes.size();
-  r.bytes.append(date).append("\r\n").append(conn).append(extra).append(body);
+  r.bytes.append(p.date).append("\r\n").append(p.conn).append(p.extra).append(p.body);
 }
 
 // One prebuilt head with its trailing `cut` bytes left off.
@@ -181,20 +180,31 @@ void Http1::assign_without_tail(const Resp& src, Resp& dst, size_t cut) {
 
 // A 200 or 500 head that stops before Content-Length, for a body the run
 // has yet to produce. `enc` carries whatever Vary/Content-Encoding applies.
-void Http1::build_open_prefix(Resp& r, const char* status_line, const char* conn,
-                              const std::string& extra, const char* enc) {
+void Http1::build_open_prefix(Resp& r, OpenPrefix p) {
   r.bytes.clear();
-  r.bytes.append(status_line).append("\r\nDate: ");
+  r.bytes.append(p.status_line).append("\r\nDate: ");
   r.date_off = r.bytes.size();
-  r.bytes.append(kDatePlaceholder).append("\r\n").append(conn).append(extra).append(enc);
+  r.bytes.append(kDatePlaceholder).append("\r\n").append(p.conn).append(p.extra).append(p.enc);
 }
 
 // RFC 9112 9.3: one status prebuilt in all three connection spellings.
-void Http1::build_variants(Variants& v, uint16_t status, const char* extra, const char* body,
-                           const char* date) {
-  build_one_variant(v.plain, status, extra, body, date, "");
-  build_one_variant(v.keep, status, extra, body, date, "Connection: keep-alive\r\n");
-  build_one_variant(v.close, status, extra, body, date, "Connection: close\r\n");
+void Http1::build_variants(Variants& v, Prebuilt p) {
+  p.conn = "";
+  build_one_variant(v.plain, p);
+  p.conn = "Connection: keep-alive\r\n";
+  build_one_variant(v.keep, p);
+  p.conn = "Connection: close\r\n";
+  build_one_variant(v.close, p);
+}
+
+// And the same head, open, in the same three.
+void Http1::build_open_prefixes(Variants& v, OpenPrefix p) {
+  p.conn = "";
+  build_open_prefix(v.plain, p);
+  p.conn = "Connection: keep-alive\r\n";
+  build_open_prefix(v.keep, p);
+  p.conn = "Connection: close\r\n";
+  build_open_prefix(v.close, p);
 }
 
 // RFC 9110 15: one status into the shared store, date offset kept - and
@@ -202,9 +212,9 @@ void Http1::build_variants(Variants& v, uint16_t status, const char* extra, cons
 // has a page to show puts its own Content-Type and Content-Length (#210).
 void Http1::build_status(uint16_t status, const char* extra, const char* body) {
   Variants v;
-  build_variants(v, status, extra, body, kDatePlaceholder);
+  build_variants(v, {status, extra, body, kDatePlaceholder});
   Variants p;
-  build_variants(p, status, extra, "", kDatePlaceholder);
+  build_variants(p, {status, extra, "", kDatePlaceholder});
   index_[status] = static_cast<uint16_t>(store_.size());
   store_.push_back(std::move(v));
   store_prefix_.push_back(std::move(p));
@@ -234,10 +244,10 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   const std::string ok_tail =
       "Content-Length: " + std::to_string(b.konst.body.size()) + "\r\n\r\n" + b.konst.body;
   Variants ok;
-  build_variants(ok, 200, ok_extra.c_str(), ok_tail.c_str(), kDatePlaceholder);
+  build_variants(ok, {200, ok_extra.c_str(), ok_tail.c_str(), kDatePlaceholder});
   const std::string allow = "Allow: " + b.konst.allow + "\r\n";
   Variants m405;
-  build_variants(m405, 405, allow.c_str(), "Content-Length: 0\r\n\r\n", kDatePlaceholder);
+  build_variants(m405, {405, allow.c_str(), "Content-Length: 0\r\n\r\n", kDatePlaceholder});
 
   if (!b.bound) {
     unsigned char fh[kH2FrameHeaderLen];
@@ -262,7 +272,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     // The twin of every store_ push: store_prefix_ is addressed by the
     // same index, so the two vectors have to grow together (#210).
     Variants p200;
-    build_variants(p200, 200, ok_extra.c_str(), "", kDatePlaceholder);
+    build_variants(p200, {200, ok_extra.c_str(), "", kDatePlaceholder});
     store_prefix_.push_back(std::move(p200));
   }
   store_.push_back(std::move(ok));
@@ -276,7 +286,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     // RFC 9110 15.5.6: the 405 page keeps its Allow, and adds the page's
     // own Content-Type behind it.
     Variants p405;
-    build_variants(p405, 405, allow.c_str(), "", kDatePlaceholder);
+    build_variants(p405, {405, allow.c_str(), "", kDatePlaceholder});
     store_prefix_.push_back(std::move(p405));
   }
   store_.push_back(std::move(m405));
@@ -291,18 +301,12 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
     static const char kOk[] = "HTTP/1.1 200 OK";
     static const char kVary[] = "Vary: Accept-Encoding\r\n";
     static const char kGzip[] = "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n";
-    build_open_prefix(b.ok_prefix_vary.plain, kOk, "", ok_extra, kVary);
-    build_open_prefix(b.ok_prefix_vary.keep, kOk, "Connection: keep-alive\r\n", ok_extra, kVary);
-    build_open_prefix(b.ok_prefix_vary.close, kOk, "Connection: close\r\n", ok_extra, kVary);
-    build_open_prefix(b.ok_prefix_gzip.plain, kOk, "", ok_extra, kGzip);
-    build_open_prefix(b.ok_prefix_gzip.keep, kOk, "Connection: keep-alive\r\n", ok_extra, kGzip);
-    build_open_prefix(b.ok_prefix_gzip.close, kOk, "Connection: close\r\n", ok_extra, kGzip);
+    build_open_prefixes(b.ok_prefix_vary, {kOk, ok_extra, kVary});
+    build_open_prefixes(b.ok_prefix_gzip, {kOk, ok_extra, kGzip});
   }
   if (b.bound) {
     static const char kErr[] = "HTTP/1.1 500 Internal Server Error";
-    build_open_prefix(b.err_prefix.plain, kErr, "", ok_extra, "");
-    build_open_prefix(b.err_prefix.keep, kErr, "Connection: keep-alive\r\n", ok_extra, "");
-    build_open_prefix(b.err_prefix.close, kErr, "Connection: close\r\n", ok_extra, "");
+    build_open_prefixes(b.err_prefix, {kErr, ok_extra, ""});
     h2_build_block(b.h2_err, 500, &b.konst.content_type, nullptr);
   }
 }

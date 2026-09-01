@@ -4144,13 +4144,32 @@ class Http1 {
   };
 
   void build(const AppInput* apps, size_t napps);
-  static void build_variants(Variants& v, uint16_t status, const char* extra,
-                             const char* body, const char* date);
-  static void build_one_variant(Resp& r, uint16_t status, const char* extra, const char* body,
-                                const char* date, const char* conn);
+  // RFC 9112 9.3: one status prebuilt - the code, the fields that always go
+  // with it, the body it carries where it carries one, the Date bytes laid
+  // down (a placeholder at boot; the second's own from then on), and the
+  // Connection field of the spelling being built.
+  struct Prebuilt {
+    uint16_t status;
+    const char* extra;
+    const char* body;
+    const char* date;
+    const char* conn = "";
+  };
+  static void build_variants(Variants& v, Prebuilt p);
+  static void build_one_variant(Resp& r, Prebuilt p);
   static void assign_without_tail(const Resp& src, Resp& dst, size_t cut);
-  static void build_open_prefix(Resp& r, const char* status_line, const char* conn,
-                                const std::string& extra, const char* enc);
+  // RFC 9112: a head that stops before Content-Length, for a body the run
+  // has yet to produce - the status line, the route's own fields, whatever
+  // Vary / Content-Encoding applies, and the Connection field of the
+  // spelling being built.
+  struct OpenPrefix {
+    const char* status_line;
+    const std::string& extra;
+    const char* enc;
+    const char* conn = "";
+  };
+  static void build_open_prefixes(Variants& v, OpenPrefix p);
+  static void build_open_prefix(Resp& r, OpenPrefix p);
   // RFC 9113 6.2: one whole HEADERS frame for the cache to replay - the
   // route's prebuilt block, the per-answer fields, and the date.
   struct CachedHead {
