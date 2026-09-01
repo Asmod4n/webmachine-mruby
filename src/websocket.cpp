@@ -67,23 +67,22 @@ size_t build_close_payload(uint16_t code, const char* reason, size_t reason_len,
   return n + 2;
 }
 
-bool read_close(const char* payload, size_t len, uint16_t& code, const char** reason,
-                size_t* reason_len) {
-  *reason = nullptr;
-  *reason_len = 0;
+bool read_close(std::string_view payload, Close& out) {
+  const size_t len = payload.size();
+  out.reason = {};
   if (len == 0) {
-    code = 1005;
+    out.code = 1005;
     return true;
   }
   if (len == 1) return false;
-  code = static_cast<uint16_t>((static_cast<unsigned char>(payload[0]) << 8) |
-                               static_cast<unsigned char>(payload[1]));
+  const uint16_t code = static_cast<uint16_t>((static_cast<unsigned char>(payload[0]) << 8) |
+                                              static_cast<unsigned char>(payload[1]));
   if (code < 1000 || code == 1004 || code == 1005 || code == 1006 ||
       (code >= 1016 && code <= 2999) || code == 1015) {
     return false;
   }
-  *reason = payload + 2;
-  *reason_len = len - 2;
+  out.code = code;
+  out.reason = payload.substr(2);
   return true;
 }
 }

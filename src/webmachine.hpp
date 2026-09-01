@@ -1504,8 +1504,25 @@ inline bool read_size(const char* v, size_t n, size_t& i, size_t* out) {
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // RFC 9110 14.1.2: ONE range over the SELECTED representation's octets.
 // kNone means act as if the field were absent (14.2 permits it).
-inline RangeParse parse_range(const char* v, size_t n, size_t complete, size_t* first,
-                              size_t* last) {
+// The Range field's value, and the length of the representation it is
+// measured against.
+struct RangeField {
+  std::string_view value;
+  size_t complete;
+};
+
+// The one range it named, inclusive at both ends.
+struct ByteRange {
+  size_t first;
+  size_t last;
+};
+
+inline RangeParse parse_range(RangeField field, ByteRange& out) {
+  const char* const v = field.value.data();
+  const size_t n = field.value.size();
+  const size_t complete = field.complete;
+  size_t* const first = &out.first;
+  size_t* const last = &out.last;
   if (n < 7 || !tok_eq(v, 6, "bytes=", 6)) return RangeParse::kNone;
   size_t i = 6;
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
@@ -2739,7 +2756,14 @@ class ErrorPages {
   // it does. `held` is the caller's storage and is used for that last
   // case only - the other two are lent where they lie. Null when this
   // build can spell no page at all.
-  const char* body_for(uint16_t status, int slot, const Fields& f, std::string& held, size_t* len);
+  // One error page being asked for: the status it explains, the media slot
+  // it renders in, and the words #210 filled in.
+  struct Page {
+    uint16_t status;
+    int slot;
+    const Fields& fields;
+  };
+  const char* body_for(const Page& p, std::string& held, size_t* len);
 
  private:
   struct Handler {
@@ -3383,8 +3407,13 @@ size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, cha
 size_t build_close_payload(uint16_t code, const char* reason, size_t reason_len,
                            char out[125]);
 
-bool read_close(const char* payload, size_t len, uint16_t& code, const char** reason,
-                size_t* reason_len);
+// RFC 6455 5.5.1: what a Close frame said - the code, and the reason where
+// it carried one. 1005 is "the peer named none".
+struct Close {
+  uint16_t code = 1005;
+  std::string_view reason;
+};
+bool read_close(std::string_view payload, Close& out);
 }
 }
 
@@ -3990,14 +4019,13 @@ class Http1 {
         vals.range != nullptr &&
         (vals.if_range == nullptr ||
          http::if_range_matches(vals.if_range, vals.if_range_len, e.etag, sizeof(e.etag)))) {
-      size_t first_byte_pos = 0, last_byte_pos = 0;
-      switch (http::parse_range(vals.range, vals.range_len, complete_length, &first_byte_pos,
-                                &last_byte_pos)) {
+      http::ByteRange r = {0, 0};
+      switch (http::parse_range({{vals.range, vals.range_len}, complete_length}, r)) {
         case http::RangeParse::kOne:
           s.head = AssetStep::HeadKind::kRange;
           s.status_code = 206;
-          s.first_byte_pos = first_byte_pos;
-          s.content_length = last_byte_pos - first_byte_pos + 1;
+          s.first_byte_pos = r.first;
+          s.content_length = r.last - r.first + 1;
           s.sends_content = true;
           break;
         case http::RangeParse::kUnsat:
@@ -4349,8 +4377,14 @@ class Http1 {
 
   bool sse_begin(Conn& st, const SseBegin& req, std::string& sink);
 
-  void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
-                      const std::string* allow);
+  // RFC 7541 6.1/6.2.2: what a prebuilt block says - the status, the
+  // Content-Type where the route has one, the Allow a 405 keeps.
+  struct H2BlockFields {
+    uint16_t status;
+    const std::string* ctype = nullptr;
+    const std::string* allow = nullptr;
+  };
+  void h2_build_block(H2Block& b, const H2BlockFields& f);
   bool h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& out);
 
   bool h2_begin(Conn& st, std::string& sink);

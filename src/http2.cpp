@@ -112,8 +112,10 @@ const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqVi
 }
 
 // RFC 7541 6.1/6.2.2: lane 1 - a precomputed block of what never changes.
-void Http1::h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
-                           const std::string* allow) {
+void Http1::h2_build_block(H2Block& b, const H2BlockFields& f) {
+  const uint16_t status = f.status;
+  const std::string* const ctype = f.ctype;
+  const std::string* const allow = f.allow;
   b.bytes.clear();
   switch (status) {
     case 200: b.bytes.push_back(static_cast<char>(0x88)); break;
@@ -261,7 +263,8 @@ bool Http1::h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& ou
   const int m = err_pages_.media_for(ask.status, vals != nullptr ? vals->accept : nullptr,
                                      vals != nullptr ? vals->accept_len : 0);
   size_t plen = 0;
-  const char* pbody = err_pages_.body_for(ask.status, m, ask.fields, page.rendered, &plen);
+  const char* pbody =
+      err_pages_.body_for({ask.status, m, ask.fields}, page.rendered, &plen);
   if (pbody == nullptr) return false;
   const std::string ctype(err_pages_.media_type(m));
   // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
@@ -269,7 +272,7 @@ bool Http1::h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& ou
   const Bundle* b = ask.bundle;
   const std::string* allow =
       (ask.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
-  h2_build_block(page.block, ask.status, &ctype, allow);
+  h2_build_block(page.block, {ask.status, &ctype, allow});
   // Lent where it lies, whether that is the picture in the mapping or the
   // page prepared at boot; a render lands in page.rendered, which
   // outlives the framing at the call site either way.
@@ -466,12 +469,12 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
           (vals.if_range == nullptr ||
            http::if_range_matches(vals.if_range, vals.if_range_len, ae->etag,
                                   sizeof(ae->etag)))) {
-        size_t rf = 0, rl = 0;
-        switch (http::parse_range(vals.range, vals.range_len, asset_end, &rf, &rl)) {
+        http::ByteRange r = {0, 0};
+        switch (http::parse_range({{vals.range, vals.range_len}, asset_end}, r)) {
           case http::RangeParse::kOne:
             asset_status = 206;
-            asset_off = rf;
-            asset_end = rl + 1;
+            asset_off = r.first;
+            asset_end = r.last + 1;
             break;
           case http::RangeParse::kUnsat: asset_status = 416; break;
           case http::RangeParse::kNone: break;
@@ -586,8 +589,8 @@ void Http1::h2_build_asset_blocks(AssetEntry& e) {
 // RFC 7541: the asset tier's shared 405 and 406 blocks.
 void Http1::h2_build_asset_shared() {
   static const std::string kAllow = "GET, HEAD";
-  h2_build_block(h2_asset405_, 405, nullptr, &kAllow);
-  h2_build_block(h2_asset406_, 406, nullptr, nullptr);
+  h2_build_block(h2_asset405_, {405, nullptr, &kAllow});
+  h2_build_block(h2_asset406_, {406});
   hp_name_idx(h2_asset406_.bytes, 59);
   hp_len(h2_asset406_.bytes, 15);
   h2_asset406_.bytes.append("Accept-Encoding", 15);
@@ -809,7 +812,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
                                           vals != nullptr ? vals->accept_len : 0);
       size_t elen = 0;
       const ErrorPages::Fields none;
-      const char* ep = err_pages_.body_for(status, em, none, epage, &elen);
+      const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
       if (ep != nullptr) {
         body_.assign(ep, elen);
         have_body = true;
@@ -820,7 +823,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       if (!b->res->run_content_type.empty()) ctype = http::with_charset(b->res->run_content_type);
       else if (have_body || baked) ctype = b->konst.content_type;
     }
-    h2_build_block(dynblk, status, ctype.empty() ? nullptr : &ctype, nullptr);
+    h2_build_block(dynblk, {status, ctype.empty() ? nullptr : &ctype});
     // A status that sends no body cleared body_ above, and a lend it does
     // not carry is handed back below - the same order h1 spells it in.
     const bool use_lent = lent_have && !bodyless && have_body;
@@ -1224,8 +1227,17 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
 // body's total and not just what this round gives. Returns what ACTUALLY
 // went out: the round can run out of plan room mid-body, and then nothing
 // ends.
-static size_t h2_emit(RoundOut& out, const H2Stream& s, const Http1::H2SendStep& step,
-                      size_t max_frame) {
+// One stream, and what it may put on the wire this round.
+struct H2Sending {
+  const H2Stream& stream;
+  const Http1::H2SendStep& step;
+  size_t max_frame;
+};
+
+static size_t h2_emit(RoundOut& out, const H2Sending& sending) {
+  const H2Stream& s = sending.stream;
+  const Http1::H2SendStep& step = sending.step;
+  const size_t max_frame = sending.max_frame;
   size_t off = 0;
   while (off < step.give) {
     if (!out.room_for_frame()) break;
@@ -1273,7 +1285,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
     H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
     const H2SendStep step = h2_send_step(stp, h2.flow_window, kDeliverChunk);
     if (step.give == 0) continue;
-    const size_t sent = h2_emit(out, stp, step, h2.peer_max_frame);
+    const size_t sent = h2_emit(out, {stp, step, h2.peer_max_frame});
     h2_advance(h2, stp, step, sent);
   }
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;

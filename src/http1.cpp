@@ -293,7 +293,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   store_.push_back(std::move(ok));
   {
     H2Block hb;
-    h2_build_block(hb, 200, &b.konst.content_type, nullptr);
+    h2_build_block(hb, {200, &b.konst.content_type});
     h2_store_.push_back(std::move(hb));
   }
   b.index[405] = static_cast<uint16_t>(store_.size());
@@ -307,7 +307,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   store_.push_back(std::move(m405));
   {
     H2Block hb;
-    h2_build_block(hb, 405, nullptr, &b.konst.allow);
+    h2_build_block(hb, {405, nullptr, &b.konst.allow});
     h2_store_.push_back(std::move(hb));
   }
   b.gzip_ok = b.dynamic_body && res->gzip_offered &&
@@ -322,7 +322,7 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   if (b.bound) {
     static const char kErr[] = "HTTP/1.1 500 Internal Server Error";
     build_open_prefixes(b.err_prefix, {kErr, ok_extra, ""});
-    h2_build_block(b.h2_err, 500, &b.konst.content_type, nullptr);
+    h2_build_block(b.h2_err, {500, &b.konst.content_type});
   }
 }
 
@@ -347,7 +347,7 @@ void Http1::stock_status(bool have[600], uint16_t s) {
   if (s == 204 || s == 304) build_status(s, "", "\r\n");
   else build_status(s, "", "Content-Length: 0\r\n\r\n");
   H2Block b;
-  h2_build_block(b, s, nullptr, nullptr);
+  h2_build_block(b, {s});
   h2_store_.push_back(std::move(b));
 }
 
@@ -476,7 +476,7 @@ bool Http1::open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, s
 void Http1::spell_error(const ErrorAnswer& e, std::string& sink) {
   std::string body;
   size_t dlen = 0;
-  const char* data = err_pages_.body_for(e.status, e.media, e.fields, body, &dlen);
+  const char* data = err_pages_.body_for({e.status, e.media, e.fields}, body, &dlen);
   if (data == nullptr) {
     sink.append(e.bodyless.bytes);
     return;
@@ -529,7 +529,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   if (step.status_code >= 400 && step.head != AssetStep::HeadKind::kRefusal) {
     const int em = err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len);
     const ErrorPages::Fields none;
-    ebody = err_pages_.body_for(step.status_code, em, none, epage, &eblen);
+    ebody = err_pages_.body_for({step.status_code, em, none}, epage, &eblen);
     if (ebody != nullptr) ectype = err_pages_.media_type(em);
     else eblen = 0;
   }
@@ -1211,7 +1211,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             const int em = err_pages_.media_for(status, vals.accept, vals.accept_len);
             size_t elen = 0;
             const ErrorPages::Fields none;
-            const char* ep = err_pages_.body_for(status, em, none, epage, &elen);
+            const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
             if (ep != nullptr) {
               body_.assign(ep, elen);
               have_body = true;

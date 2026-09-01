@@ -574,8 +574,10 @@ void ErrorPages::read_prepared() {
   }
 }
 
-const char* ErrorPages::body_for(uint16_t status, int slot, const Fields& f, std::string& held,
-                                 size_t* len) {
+const char* ErrorPages::body_for(const Page& p, std::string& held, size_t* len) {
+  const uint16_t status = p.status;
+  const int slot = p.slot;
+  const Fields& f = p.fields;
   const char* lent = pack_body(status, slot, len);
   if (lent != nullptr) return lent;
   // An answer with nothing of its own to say is the page this status

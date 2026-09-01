@@ -403,12 +403,13 @@ bool finish_frame(WsConn* c, std::string& sink) {
     case ws::kPong:
       return true;
     case ws::kClose: {
-      uint16_t code = 0;
-      const char* reason = nullptr;
-      size_t rlen = 0;
-      if (!ws::read_close(c->ctl, c->ctl_len, code, &reason, &rlen)) {
+      ws::Close close;
+      if (!ws::read_close({c->ctl, c->ctl_len}, close)) {
         return fail(c, sink, ws::kCloseProtocolError);
       }
+      const char* const reason = close.reason.data();
+      const size_t rlen = close.reason.size();
+      const uint16_t code = close.code;
       if (rlen != 0 && !simdutf::validate_utf8(reason, rlen)) {
         return fail(c, sink, ws::kCloseInvalidPayload);
       }

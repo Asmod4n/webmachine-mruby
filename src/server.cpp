@@ -104,19 +104,27 @@ std::vector<std::string> pem_;
 
 // A whole file, or false with the reason spelled. Small by nature: a
 // certificate chain and a key, not a body.
-bool read_pem(const std::string& path, std::string& out, const char* what, char* err,
-              size_t errlen) {
-  std::FILE* f = std::fopen(path.c_str(), "rb");
-  if (f == nullptr) {
+// One PEM file: its path, and the conf key that named it - which is what a
+// refusal has to say back to the operator.
+struct PemFile {
+  const std::string& path;
+  const char* what;
+};
+
+bool read_pem(PemFile f, std::string& out, char* err, size_t errlen) {
+  const std::string& path = f.path;
+  const char* const what = f.what;
+  std::FILE* fp = std::fopen(path.c_str(), "rb");
+  if (fp == nullptr) {
     std::snprintf(err, errlen, "conf.%s %s: %s", what, path.c_str(), std::strerror(errno));
     return false;
   }
   out.clear();
   char buf[4096];
   size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, f)) != 0) out.append(buf, n);
-  const bool bad = std::ferror(f) != 0;
-  std::fclose(f);
+  while ((n = std::fread(buf, 1, sizeof buf, fp)) != 0) out.append(buf, n);
+  const bool bad = std::ferror(fp) != 0;
+  std::fclose(fp);
   if (bad) {
     std::snprintf(err, errlen, "conf.%s %s: read failed", what, path.c_str());
     return false;
@@ -161,8 +169,8 @@ bool build_listener_tls(RingConfig& cfg, char* err, size_t errlen) {
     }
     std::string& cert = pem_[i * 2];
     std::string& key = pem_[i * 2 + 1];
-    if (!read_pem(spec.cert_path, cert, "certificate", err, errlen)) return false;
-    if (!read_pem(spec.key_path, key, "private_key", err, errlen)) return false;
+    if (!read_pem({spec.cert_path, "certificate"}, cert, err, errlen)) return false;
+    if (!read_pem({spec.key_path, "private_key"}, key, err, errlen)) return false;
     cfg.listeners[i].cert_pem = cert.data();
     cfg.listeners[i].cert_len = cert.size();
     cfg.listeners[i].key_pem = key.data();
