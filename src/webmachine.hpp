@@ -32,6 +32,7 @@
 #include <ctime>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -4127,8 +4128,14 @@ class Http1 {
   static void assign_without_tail(const Resp& src, Resp& dst, size_t cut);
   static void build_open_prefix(Resp& r, const char* status_line, const char* conn,
                                 const std::string& extra, const char* enc);
-  static void cache_headers(std::string& out, const H2Block& blk, const unsigned char* cbuf,
-                            size_t clen, const unsigned char* dbuf, size_t dlen);
+  // RFC 9113 6.2: one whole HEADERS frame for the cache to replay - the
+  // route's prebuilt block, the per-answer fields, and the date.
+  struct CachedHead {
+    const H2Block& block;
+    std::span<const unsigned char> fields;
+    std::span<const unsigned char> date;
+  };
+  static void cache_headers(std::string& out, const CachedHead& head);
   // WHATWG HTML: an event stream's one access record. SseLine is what the
   // seven arguments were - see #std-first.
   struct SseLine {
@@ -4272,8 +4279,19 @@ class Http1 {
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();
-  bool h2_asset_answer(Conn& st, uint32_t stream_id, const AssetEntry& e, uint16_t status,
-                       bool head_only, size_t win_off, size_t win_end, std::string& sink);
+  // RFC 9113 6.1/6.9: one asset answer on one stream - the stream it goes
+  // out on, the entry it comes from, the status it carries, whether the
+  // request wants the body behind the head, and the half-open window of
+  // the wire body this answer covers.
+  struct H2Asset {
+    uint32_t stream_id;
+    const AssetEntry& entry;
+    uint16_t status;
+    bool head_only;
+    size_t win_off;
+    size_t win_end;
+  };
+  bool h2_asset_answer(Conn& st, const H2Asset& a, std::string& sink);
 
   struct AppSlot {
     const RouteTable* table = nullptr;

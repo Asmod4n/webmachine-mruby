@@ -213,15 +213,16 @@ static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_
 
 // RFC 9113 6.2: one whole HEADERS frame - the route's prebuilt block, the
 // per-answer fields, and the date - laid down for the cache to replay.
-void Http1::cache_headers(std::string& out, const H2Block& blk, const unsigned char* cbuf,
-                          size_t clen, const unsigned char* dbuf, size_t dlen) {
+void Http1::cache_headers(std::string& out, const CachedHead& head) {
+  const size_t clen = head.fields.size();
+  const size_t dlen = head.date.size();
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, static_cast<uint32_t>(blk.bytes.size() + clen + dlen), kH2Headers,
-                      kH2FlagEndHeaders, 0);
+  h2_put_frame_header(fh, static_cast<uint32_t>(head.block.bytes.size() + clen + dlen),
+                      kH2Headers, kH2FlagEndHeaders, 0);
   out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-  out.append(blk.bytes);
-  if (clen != 0) out.append(reinterpret_cast<const char*>(cbuf), clen);
-  out.append(reinterpret_cast<const char*>(dbuf), dlen);
+  out.append(head.block.bytes);
+  if (clen != 0) out.append(reinterpret_cast<const char*>(head.fields.data()), clen);
+  out.append(reinterpret_cast<const char*>(head.date.data()), dlen);
 }
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
@@ -306,10 +307,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     const uint16_t route = existing->route;
     const std::string target = existing->request_target;
     if (asset != nullptr) {
-      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
-                           asset_end, sink)) {
-        return false;
-      }
+      const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
+      if (!h2_asset_answer(st0, ask, sink)) return false;
       h2_log(st0, facts, target.data(), target.size());
       return true;
     }
@@ -468,10 +467,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       return true;
     }
     if (asset != nullptr) {
-      if (!h2_asset_answer(st0, stream_id, *asset, asset_status, head_only, asset_off,
-                           asset_end, sink)) {
-        return false;
-      }
+      const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
+      if (!h2_asset_answer(st0, ask, sink)) return false;
       h2_log(st0, facts, path_val, path_vlen);
       return true;
     }
@@ -575,9 +572,13 @@ void Http1::h2_build_asset_shared() {
 
 // RFC 9113 6.1/6.9: the asset answer - body as segments over the mapping,
 // window-refused remainder parked.
-bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
-                            uint16_t status, bool head_only, size_t win_off, size_t win_end,
-                            std::string& sink) {
+bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
+  const uint32_t stream_id = a.stream_id;
+  const AssetEntry& e = a.entry;
+  const uint16_t status = a.status;
+  const bool head_only = a.head_only;
+  const size_t win_off = a.win_off;
+  const size_t win_end = a.win_end;
   H2State& h2 = *st0.h2;
   std::string rblk;
   const std::string* blk;
@@ -996,10 +997,12 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);
-      cache_headers(h2.head_cache.bytes, *wire.blk, rbuf, rlen, dbuf, dlen);
+      cache_headers(h2.head_cache.bytes, {*wire.blk, {rbuf, rlen}, {dbuf, dlen}});
       h2.head_cache.head_len = h2.head_cache.bytes.size();
       h2.head_cache.primed = ct == nullptr;
-      if (ct != nullptr) cache_headers(h2.head_cache.prime, *wire.blk, pbuf, plen, dbuf, dlen);
+      if (ct != nullptr) {
+        cache_headers(h2.head_cache.prime, {*wire.blk, {pbuf, plen}, {dbuf, dlen}});
+      }
       h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
                                !b->konst.body.empty() &&
                                b->konst.body.size() <= kH2MergeBody;
