@@ -98,7 +98,9 @@ void h2_free(H2State* h2) { delete h2; }
 
 // RFC 9110 4.2.1: a PARKED request's view - its bytes are the stream's own
 // copy, so the spans have to be captured again.
-const ReqView* Http1::h2_parked_view(Conn& st0, const std::string& target, ReqView& out) {
+const ReqView* Http1::h2_parked_view(Conn& st0, Parked p) {
+  const std::string_view target = p.target;
+  ReqView& out = p.view;
   if (target.empty()) return nullptr;
   const AppSlot& slot = apps_[st0.listener];
   const int r = slot.table->match(target.data(), target.size(), out.spans);
@@ -202,12 +204,12 @@ bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
   if (!http::length_is_one_of(nl, kMask)) return true;
   switch (nl) {
     case 2:
-      if (http::tok_eq(n, nl, "te", 2) && !(vl == 8 && http::tok_eq(v, vl, "trailers", 8))) {
+      if (http::tok_eq({n, nl}, "te") && !(vl == 8 && http::tok_eq({v, vl}, "trailers"))) {
         return false;
       }
       break;
     case 14:
-      if (http::tok_eq(n, nl, "content-length", 14)) {
+      if (http::tok_eq({n, nl}, "content-length")) {
         if (claimed.have) return false;
         claimed.have = true;
         if (http::parse_content_length({v, vl}, &claimed.value) != http::ClStatus::kOk) {
@@ -216,15 +218,15 @@ bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
       }
       break;
     case 10:
-      if (http::tok_eq(n, nl, "connection", 10) || http::tok_eq(n, nl, "keep-alive", 10)) {
+      if (http::tok_eq({n, nl}, "connection") || http::tok_eq({n, nl}, "keep-alive")) {
         return false;
       }
       break;
     case 17:
-      if (http::tok_eq(n, nl, "transfer-encoding", 17)) return false;
+      if (http::tok_eq({n, nl}, "transfer-encoding")) return false;
       break;
     case 7:
-      if (http::tok_eq(n, nl, "upgrade", 7)) return false;
+      if (http::tok_eq({n, nl}, "upgrade")) return false;
       break;
     default:
       break;
@@ -249,36 +251,36 @@ void Http1::cache_headers(std::string& out, const CachedHead& head) {
 }
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
-void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink) {
+void Http1::h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink) {
   unsigned char payload[4];
   put_u32(payload, code);
-  emit_control(sink, {kH2RstStream, 0, stream_id, payload});
-  st.h2->close_stream(stream_id);
+  emit_control(sink, {kH2RstStream, 0, id, payload});
+  st.h2->close_stream(id);
 }
 
 // #210 / #146: the page h1 spells for this status, framed for h2. False =
 // there is nothing to say and the prebuilt bodyless block stands.
-bool Http1::h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& out) {
-  const http::ReqValues* vals = ask.vals;
-  const int m = err_pages_.media_for(ask.status, vals != nullptr ? vals->accept : nullptr,
+bool Http1::h2_error_page(const H2ErrorAsk& a, H2ErrorPage& p, H2Answer& out) {
+  const http::ReqValues* vals = a.vals;
+  const int m = err_pages_.media_for(a.status, vals != nullptr ? vals->accept : nullptr,
                                      vals != nullptr ? vals->accept_len : 0);
   size_t plen = 0;
   const char* pbody =
-      err_pages_.body_for({ask.status, m, ask.fields}, page.rendered, &plen);
+      err_pages_.body_for({a.status, m, a.fields}, p.rendered, &plen);
   if (pbody == nullptr) return false;
   const std::string ctype(err_pages_.media_type(m));
   // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
   // it now carries must not cost it that field.
-  const Bundle* b = ask.bundle;
+  const Bundle* b = a.bundle;
   const std::string* allow =
-      (ask.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
-  h2_build_block(page.block, {ask.status, &ctype, allow});
+      (a.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
+  h2_build_block(p.block, {a.status, &ctype, allow});
   // Lent where it lies, whether that is the picture in the mapping or the
-  // page prepared at boot; a render lands in page.rendered, which
+  // page prepared at boot; a render lands in p.rendered, which
   // outlives the framing at the call site either way.
   out.body = pbody;
   out.blen = plen;
-  out.blk = &page.block;
+  out.blk = &p.block;
   return true;
 }
 
@@ -364,7 +366,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.fields = nh != 0 ? hv : nullptr;
     rv.field_count = nh;
     rv.values = &pvals;
-    const ReqView* rvp = h2_parked_view(st0, target, rv);
+    const ReqView* rvp = h2_parked_view(st0, {target, rv});
     const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
     if (!h2_answer(st0, q, sink)) {
       return false;
@@ -1160,13 +1162,13 @@ struct RoundOut {
   // copied instead (one page is the measured line).
   void span(const AssetEntry& e, size_t off, size_t n) {
     if (plan == nullptr) {
-      Assets::copy_wire(e, off, n, sink);
+      Assets::copy_wire(e, {off, n}, sink);
       emitted += n;
       return;
     }
     prime();
     struct iovec iv[3];
-    const unsigned k = Assets::wire_iov(e, off, n, iv);
+    const unsigned k = Assets::wire_iov(e, {off, n}, iv);
     for (unsigned i = 0; i < k; i++) {
       if (iv[i].iov_len < kCopyFloor) {
         bytes(static_cast<const char*>(iv[i].iov_base), iv[i].iov_len);
@@ -1287,7 +1289,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   for (; walked < n_streams; walked++) {
     if (!out.room_for_frame()) break;
     H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
-    const H2SendStep step = h2_send_step(stp, h2.flow_window, kDeliverChunk);
+    const H2SendStep step = h2_send_step(stp, {h2.flow_window, kDeliverChunk});
     if (step.give == 0) continue;
     const size_t sent = h2_emit(out, {stp, step, h2.peer_max_frame});
     h2_advance(h2, stp, sent);
@@ -1371,7 +1373,7 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     size_t take = lim - st.asset_off;
     if (plan.byte_cap != 0 && take > plan.byte_cap) take = plan.byte_cap;
     struct iovec iv[3];
-    const unsigned k = Assets::wire_iov(e, st.asset_off, take, iv);
+    const unsigned k = Assets::wire_iov(e, {st.asset_off, take}, iv);
     for (unsigned i = 0; i < k; i++) {
       plan.iov[plan.iovlen++] =
           Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
@@ -1388,12 +1390,16 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   if (st.carry.empty()) return true;
   std::string held;
   held.swap(st.carry);
-  return feed(st, held.data(), held.size(), sink, &plan);
+  return feed(st, held, {sink, &plan});
 }
 
 // RFC 9113 4/6: the frame loop. A header block owns the connection until
 // END_HEADERS (6.10).
-bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, Plan* plan) {
+bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
+  const char* const data = in.data();
+  const size_t len = in.size();
+  std::string& sink = out.bytes;
+  Plan* const plan = out.plan;
   H2State& h2 = *st0.h2;
   const bool in_place = st0.carry.empty();
   const char* view = data;
@@ -1499,7 +1505,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           rv.content_len = body.size();
           rv.fields = nh != 0 ? hv : nullptr;
           rv.field_count = nh;
-          const ReqView* rvp = h2_parked_view(st0, target, rv);
+          const ReqView* rvp = h2_parked_view(st0, {target, rv});
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
           if (!h2_answer(st0, q, sink)) {            return false;
           }

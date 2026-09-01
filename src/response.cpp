@@ -68,11 +68,13 @@ struct Line {
 
 // RFC 9110 6.3: the next field line at or after `pos`; false at the end
 // of the buffer (or on a buffer this code did not itself write).
-bool next_line(const std::string& buf, size_t pos, Line& out) {
+bool next_line(std::string_view buf, size_t pos, Line& out) {
   if (pos >= buf.size()) return false;
   const size_t colon = buf.find(':', pos);
   const size_t eol = buf.find("\r\n", pos);
-  if (colon == std::string::npos || eol == std::string::npos || colon > eol) return false;
+  if (colon == std::string_view::npos || eol == std::string_view::npos || colon > eol) {
+    return false;
+  }
   out.start = pos;
   out.name_len = colon - pos;
   size_t val_off = colon + 1;
@@ -84,13 +86,13 @@ bool next_line(const std::string& buf, size_t pos, Line& out) {
 }
 
 // RFC 9110 6.3: the first line named `name`, case-insensitively.
-bool find_line(const std::string& buf, const char* name, size_t nlen, Line& out) {
+bool find_line(std::string_view buf, std::string_view name, Line& out) {
   std::string lowered;
-  lower(lowered, name, nlen);
+  lower(lowered, name.data(), name.size());
   Line h;
   size_t pos = 0;
   while (next_line(buf, pos, h)) {
-    if (http::tok_eq(buf.data() + h.start, h.name_len, lowered.data(), lowered.size())) {
+    if (http::tok_eq({buf.data() + h.start, h.name_len}, lowered)) {
       out = h;
       return true;
     }
@@ -115,7 +117,7 @@ mrb_value hdrs_get(mrb_state* mrb, mrb_value) {
   mrb_int klen;
   mrb_get_args(mrb, "s", &k, &klen);
   Line h;
-  if (!find_line(*r->run_headers, k, static_cast<size_t>(klen), h)) return mrb_nil_value();
+  if (!find_line(*r->run_headers, {k, static_cast<size_t>(klen)}, h)) return mrb_nil_value();
   return mrb_str_new(mrb, r->run_headers->data() + h.val_off, h.val_len);
 }
 
@@ -130,7 +132,7 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
   mrb_get_args(mrb, "so", &k, &klen, &v);
   std::string& buf = *r->run_headers;
   Line h;
-  const bool found = find_line(buf, k, static_cast<size_t>(klen), h);
+  const bool found = find_line(buf, {k, static_cast<size_t>(klen)}, h);
   if (mrb_nil_p(v)) {
     if (found) buf.erase(h.start, h.end - h.start);
     return v;
@@ -159,7 +161,7 @@ mrb_value hdrs_key(mrb_state* mrb, mrb_value) {
   mrb_int klen;
   mrb_get_args(mrb, "s", &k, &klen);
   Line h;
-  return mrb_bool_value(find_line(*r->run_headers, k, static_cast<size_t>(klen), h));
+  return mrb_bool_value(find_line(*r->run_headers, {k, static_cast<size_t>(klen)}, h));
 }
 
 // RFC 9110 6.3: Headers#delete - cut the line, hand back the value it held.
@@ -170,7 +172,7 @@ mrb_value hdrs_delete(mrb_state* mrb, mrb_value) {
   mrb_get_args(mrb, "s", &k, &klen);
   std::string& buf = *r->run_headers;
   Line h;
-  if (!find_line(buf, k, static_cast<size_t>(klen), h)) return mrb_nil_value();
+  if (!find_line(buf, {k, static_cast<size_t>(klen)}, h)) return mrb_nil_value();
   const mrb_value old = mrb_str_new(mrb, buf.data() + h.val_off, h.val_len);
   buf.erase(h.start, h.end - h.start);
   return old;
@@ -333,7 +335,7 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
     const mrb_value s = mrb_obj_as_string(mrb, loc);
     std::string& buf = *r->run_headers;
     Line h;
-    if (find_line(buf, "Location", 8, h)) buf.erase(h.start, h.end - h.start);
+    if (find_line(buf, "Location", h)) buf.erase(h.start, h.end - h.start);
     append_field(buf,
                  {"Location", {RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s))}});
   }

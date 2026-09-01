@@ -1187,8 +1187,10 @@ inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status) {
 
 namespace webmachine::http {
 // RFC 9110 5.1: case-insensitive equality against a lowercase literal.
-constexpr bool tok_eq(const char* s, size_t n, const char* lit, size_t litn) {
-  if (n != litn) return false;
+constexpr bool tok_eq(std::string_view text, std::string_view lit) {
+  const char* const s = text.data();
+  const size_t n = text.size();
+  if (n != lit.size()) return false;
   for (size_t i = 0; i < n; i++) {
     char c = s[i];
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
@@ -1237,7 +1239,7 @@ inline flow::Method parse_method(const char* m, size_t n) {
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and EVERY writer goes through here.
 inline std::string with_charset(const std::string& type) {
-  if (type.size() < 5 || !tok_eq(type.data(), 5, "text/", 5)) return type;
+  if (type.size() < 5 || !tok_eq({type.data(), 5}, "text/")) return type;
   if (type.find(';') != std::string::npos) return type;
   return type + "; charset=utf-8";
 }
@@ -1253,15 +1255,15 @@ constexpr size_t clen(const char* s) {
 constexpr bool compressible_media_type(const char* v, size_t n) {
   size_t tn = 0;
   while (tn < n && v[tn] != ';') tn++;
-  if (tn >= 5 && tok_eq(v, 5, "text/", 5)) return true;
-  if (tn >= 5 && tok_eq(v + tn - 5, 5, "+json", 5)) return true;
-  if (tn >= 4 && tok_eq(v + tn - 4, 4, "+xml", 4)) return true;
+  if (tn >= 5 && tok_eq({v, 5}, "text/")) return true;
+  if (tn >= 5 && tok_eq({v + tn - 5, 5}, "+json")) return true;
+  if (tn >= 4 && tok_eq({v + tn - 4, 4}, "+xml")) return true;
   constexpr const char* kExact[] = {
       "application/json", "application/javascript", "application/xml",
       "application/wasm", "image/svg+xml",
   };
   for (const char* lit : kExact) {
-    if (tok_eq(v, tn, lit, clen(lit))) return true;
+    if (tok_eq({v, tn}, lit)) return true;
   }
   return false;
 }
@@ -1376,21 +1378,21 @@ inline size_t spell_content_length(char (&buf)[40], size_t len) {
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
-inline ClStatus parse_content_length(std::string_view text, size_t* out) {
-  const char* const s = text.data();
-  const size_t n = text.size();
+inline ClStatus parse_content_length(std::string_view v, size_t* out) {
+  const char* const s = v.data();
+  const size_t n = v.size();
   if (n == 0) return ClStatus::kBad;
-  size_t v = 0;
+  size_t acc = 0;
   for (size_t j = 0; j < n; j++) {
     const char ch = s[j];
     if (ch < '0' || ch > '9') return ClStatus::kBad;
     size_t t = 0;
-    if (__builtin_mul_overflow(v, static_cast<size_t>(10), &t) ||
-        __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &v)) {
+    if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &t) ||
+        __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &acc)) {
       return ClStatus::kOverflow;
     }
   }
-  *out = v;
+  *out = acc;
   return ClStatus::kOk;
 }
 
@@ -1580,7 +1582,7 @@ inline RangeParse parse_range(RangeField field, ByteRange& out) {
   const size_t complete = field.complete;
   size_t* const first = &out.first;
   size_t* const last = &out.last;
-  if (n < 7 || !tok_eq(v, 6, "bytes=", 6)) return RangeParse::kNone;
+  if (n < 7 || !tok_eq({v, 6}, "bytes=")) return RangeParse::kNone;
   size_t i = 6;
   while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
   size_t a = 0, b = 0;
@@ -1606,15 +1608,15 @@ inline RangeParse parse_range(RangeField field, ByteRange& out) {
 }
 
 // RFC 9110 14.2: ONE validator, compared strongly; a date reads as no match.
-inline bool if_range_matches(std::string_view value, std::string_view tag) {
-  const char* const v = value.data();
-  const size_t n = value.size();
+inline bool if_range_matches(std::string_view v, std::string_view tag) {
+  const char* const p = v.data();
+  const size_t n = v.size();
   const size_t taglen = tag.size();
   size_t i = 0;
-  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
+  while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
   size_t e = n;
-  while (e > i && (v[e - 1] == ' ' || v[e - 1] == '\t')) e--;
-  return e - i == taglen && std::memcmp(v + i, tag.data(), taglen) == 0;
+  while (e > i && (p[e - 1] == ' ' || p[e - 1] == '\t')) e--;
+  return e - i == taglen && std::memcmp(p + i, tag.data(), taglen) == 0;
 }
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
@@ -1650,7 +1652,7 @@ inline bool gzip_acceptable(const char* v, size_t n) {
       }
     }
     if (tl != 0) {
-      if (tok_eq(v + ts, tl, "gzip", 4) || tok_eq(v + ts, tl, "x-gzip", 6)) {
+      if (tok_eq({v + ts, tl}, "gzip") || tok_eq({v + ts, tl}, "x-gzip")) {
         gz_seen = true;
         gz_ok = q_nonzero;
       } else if (tl == 1 && v[ts] == '*') {
@@ -1891,11 +1893,11 @@ inline int choose_media_type(Conneg c) {
       int this_spec;
       if (rg.tn == 1 && rg.t[0] == '*') {
         this_spec = 0;
-      } else if (!tok_eq(rg.t, rg.tn, tp, main_n)) {
+      } else if (!tok_eq({rg.t, rg.tn}, {tp, main_n})) {
         continue;
       } else if (rg.sn == 1 && rg.sub[0] == '*') {
         this_spec = 1;
-      } else if (tok_eq(rg.sub, rg.sn, sub_p, sub_n)) {
+      } else if (tok_eq({rg.sub, rg.sn}, {sub_p, sub_n})) {
         this_spec = 2;
       } else {
         continue;
@@ -2052,13 +2054,13 @@ static inline bool header_switch(Field f, FactSink into) {
   if (!length_is_one_of(nlen, kFieldLengthMask)) return true;
   switch (nlen) {
     case 3:
-      if (tok_eq(name, nlen, "dnt", 3)) {
+      if (tok_eq({name, nlen}, "dnt")) {
         if (vlen == 1 && value[0] == '1') facts.no_track = true;
         return false;
       }
       break;
     case 4:
-      if (tok_eq(name, nlen, "host", 4)) {
+      if (tok_eq({name, nlen}, "host")) {
         // The VALUE is 9110's (request.base_uri reads it); the
         // presence check stays the framer's (9112 requires Host), so
         // this arm both keeps the bytes AND falls through to the wire
@@ -2070,14 +2072,14 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 5:
-      if (tok_eq(name, nlen, "range", 5)) {
+      if (tok_eq({name, nlen}, "range")) {
         vals.range = value;
         vals.range_len = vlen;
         return false;
       }
       break;
     case 6:
-      if (tok_eq(name, nlen, "accept", 6)) {
+      if (tok_eq({name, nlen}, "accept")) {
         facts.has_accept = true;
         facts.plain = false;
         vals.accept = value;
@@ -2085,25 +2087,25 @@ static inline bool header_switch(Field f, FactSink into) {
         vals.named.note(NamedField::kAccept, at);
         return false;
       }
-      if (tok_eq(name, nlen, "cookie", 6)) {
+      if (tok_eq({name, nlen}, "cookie")) {
         vals.cookie = value;
         vals.cookie_len = vlen;
         return false;
       }
       break;
     case 7:
-      if (tok_eq(name, nlen, "sec-gpc", 7)) {
+      if (tok_eq({name, nlen}, "sec-gpc")) {
         if (vlen == 1 && value[0] == '1') facts.no_track = true;
         return false;
       }
       break;
     case 8:
-      if (tok_eq(name, nlen, "if-range", 8)) {
+      if (tok_eq({name, nlen}, "if-range")) {
         vals.if_range = value;
         vals.if_range_len = vlen;
         return false;
       }
-      if (tok_eq(name, nlen, "if-match", 8)) {
+      if (tok_eq({name, nlen}, "if-match")) {
         facts.has_if_match = true;
         facts.plain = false;
         facts.if_match_star = star_value(value, vlen);
@@ -2114,7 +2116,7 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 12:
-      if (tok_eq(name, nlen, "content-type", 12)) {
+      if (tok_eq({name, nlen}, "content-type")) {
         // RFC 9110 8.3: b5's argument and accept_helper's key.
         vals.content_type = value;
         vals.content_type_len = vlen;
@@ -2123,14 +2125,14 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 13:
-      if (tok_eq(name, nlen, "authorization", 13)) {
+      if (tok_eq({name, nlen}, "authorization")) {
         // RFC 9110 11.6.2: b8's argument.
         vals.authorization = value;
         vals.authorization_len = vlen;
         vals.named.note(NamedField::kAuthorization, at);
         return false;
       }
-      if (tok_eq(name, nlen, "if-none-match", 13)) {
+      if (tok_eq({name, nlen}, "if-none-match")) {
         facts.has_if_none_match = true;
         facts.plain = false;
         facts.if_none_match_star = star_value(value, vlen);
@@ -2141,19 +2143,19 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 14:
-      if (tok_eq(name, nlen, "accept-charset", 14)) {
+      if (tok_eq({name, nlen}, "accept-charset")) {
         facts.has_accept_charset = true;
         facts.plain = false;
         return false;
       }
       break;
     case 15:
-      if (tok_eq(name, nlen, "accept-language", 15)) {
+      if (tok_eq({name, nlen}, "accept-language")) {
         facts.has_accept_language = true;
         facts.plain = false;
         return false;
       }
-      if (tok_eq(name, nlen, "accept-encoding", 15)) {
+      if (tok_eq({name, nlen}, "accept-encoding")) {
         facts.has_accept_encoding = true;
         facts.plain = false;
         vals.accept_encoding = value;
@@ -2163,7 +2165,7 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 17:
-      if (tok_eq(name, nlen, "if-modified-since", 17)) {
+      if (tok_eq({name, nlen}, "if-modified-since")) {
         facts.has_if_modified_since = true;
         facts.plain = false;
         // 13.1.3: an unparseable date reads as "field absent" (l14).
@@ -2178,7 +2180,7 @@ static inline bool header_switch(Field f, FactSink into) {
       }
       break;
     case 19:
-      if (tok_eq(name, nlen, "if-unmodified-since", 19)) {
+      if (tok_eq({name, nlen}, "if-unmodified-since")) {
         facts.has_if_unmodified_since = true;
         facts.plain = false;
         // 13.1.4: same rule as IMS (h11).
@@ -2536,7 +2538,7 @@ struct RunAnswer {
   std::string* headers;
 };
 
-uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer);
+uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
 
@@ -2765,15 +2767,27 @@ class Assets {
   // why it returns a COUNT: a gzip member is three separate spans - our
   // header, the mapping, our trailer - so one logical window is up to
   // THREE iovecs, and only the middle one is the file.
-  static unsigned wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov);
-  static void copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink);
+  // A half-open window of the wire body: where it starts and how long
+  // it is.
+  struct Window {
+    size_t off;
+    size_t n;
+  };
+  static unsigned wire_iov(const AssetEntry& e, Window w, iovec* iov);
+  static void copy_wire(const AssetEntry& e, Window w, std::string& out);
 
   // ZIP (APPNOTE): the entry table, for the h2 setup half.
   std::vector<AssetEntry>& entries() { return entries_; }
 
  private:
   const AssetEntry* find_exact(const char* name, size_t len) const;
-  static void patch_date(AssetEntry::Head& h, const char* date, time_t unix_seconds);
+  // The Date line for one second, and the second it stands for - what
+  // patch_date compares before it rewrites a prebuilt head.
+  struct DateStamp {
+    const char* line;
+    time_t unix_seconds;
+  };
+  static void patch_date(AssetEntry::Head& h, DateStamp when);
 
   // munmap(addr, length) - the names of the arguments they become.
   const char* map_addr_ = nullptr;
@@ -3178,7 +3192,10 @@ constexpr bool is_tchar(char c) {
 }
 
 // RFC 9110 5.1: case-insensitive equality for an extension parameter name.
-inline bool ci_eq(const char* s, size_t n, const char* lit, size_t litn) {
+inline bool ci_eq(std::string_view text, std::string_view lit) {
+  const char* const s = text.data();
+  const size_t n = text.size();
+  const size_t litn = lit.size();
   if (n != litn) return false;
   for (size_t i = 0; i < n; i++) {
     char c = s[i];
@@ -3221,7 +3238,7 @@ inline bool negotiate(std::string_view value, Negotiated out) {
     const size_t name_at = i;
     while (i < len && detail::is_tchar(v[i])) i++;
     const size_t name_len = i - name_at;
-    bool ok = detail::ci_eq(v + name_at, name_len, "permessage-deflate", 18);
+    bool ok = detail::ci_eq({v + name_at, name_len}, "permessage-deflate");
 
     Params p;
     p.on = true;
@@ -3261,15 +3278,15 @@ inline bool negotiate(std::string_view value, Negotiated out) {
       }
       if (!ok) continue;
 
-      if (detail::ci_eq(v + pn_at, pn_len, "server_no_context_takeover", 26)) {
+      if (detail::ci_eq({v + pn_at, pn_len}, "server_no_context_takeover")) {
         if (seen_snct || have_value) { ok = false; continue; }
         seen_snct = true;
         p.server_no_context_takeover = true;
-      } else if (detail::ci_eq(v + pn_at, pn_len, "client_no_context_takeover", 26)) {
+      } else if (detail::ci_eq({v + pn_at, pn_len}, "client_no_context_takeover")) {
         if (seen_cnct || have_value) { ok = false; continue; }
         seen_cnct = true;
         p.client_no_context_takeover = true;
-      } else if (detail::ci_eq(v + pn_at, pn_len, "server_max_window_bits", 22)) {
+      } else if (detail::ci_eq({v + pn_at, pn_len}, "server_max_window_bits")) {
         uint8_t b = 0;
         if (seen_smwb || !have_value || !detail::window_bits(pv, pv_len, b) ||
             b < kMinRawWindowBits) {
@@ -3278,7 +3295,7 @@ inline bool negotiate(std::string_view value, Negotiated out) {
         }
         seen_smwb = true;
         p.server_max_window_bits = b;
-      } else if (detail::ci_eq(v + pn_at, pn_len, "client_max_window_bits", 22)) {
+      } else if (detail::ci_eq({v + pn_at, pn_len}, "client_max_window_bits")) {
         if (seen_cmwb) { ok = false; continue; }
         seen_cmwb = true;
         if (have_value) {
@@ -3343,7 +3360,7 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit out);
 
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 
-bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
+bool ws_feed(WsConn* c, std::string_view data, std::string& sink);
 
 void ws_free(WsConn* c);
 }
@@ -3359,7 +3376,7 @@ void sse_resource_free(SseResource* r);
 
 void sse_init(mrb_state* mrb, struct RClass* wm);
 
-SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& code);
+SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code);
 
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
 
@@ -3550,12 +3567,12 @@ namespace wsdeflate { struct Params; }
 WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit out);
 bool ws_wants_deflate(const WsResource* r);
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
-bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);
+bool ws_feed(WsConn* c, std::string_view data, std::string& sink);
 void ws_free(WsConn* c);
 
 struct SseResource;
 struct SseStream;
-SseStream* sse_open(const SseResource* r, Logger* elog, uint16_t& code);
+SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code);
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
 void sse_free(SseStream* s);
 
@@ -3983,7 +4000,13 @@ class Http1 {
     size_t byte_cap = 0;
   };
 
-  bool feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+  // Where an answer goes: the bytes the round appends to, and the plan
+  // that will carry them (null where this caller is not planning a send).
+  struct Sink {
+    std::string& bytes;
+    Plan* plan;
+  };
+  bool feed(Conn& st, std::string_view data, Sink out);
 
   bool more(Conn& st, std::string& sink, Plan& plan);
 
@@ -4078,7 +4101,15 @@ class Http1 {
     size_t total = 0;   // the body's length, so END_STREAM is a comparison
     bool ends = false;  // give reaches the last byte
   };
-  static H2SendStep h2_send_step(const H2Stream& s, int64_t conn_window, size_t chunk) {
+  // What the connection allows this round: what is left of its own flow
+  // window, and the largest copy this round is willing to make.
+  struct RoundRoom {
+    int64_t conn_window;
+    size_t chunk;
+  };
+  static H2SendStep h2_send_step(const H2Stream& s, RoundRoom room) {
+    const int64_t conn_window = room.conn_window;
+    const size_t chunk = room.chunk;
     H2SendStep o;
     if (!s.response_content.owes()) return o;
     o.start = s.response_content.sent;
@@ -4368,7 +4399,7 @@ class Http1 {
   };
   static void build_variants(Variants& v, Prebuilt p);
   static void build_one_variant(Resp& r, Prebuilt p);
-  static void assign_without_tail(const Resp& src, Resp& dst, size_t cut);
+  static void copy_without_tail(const Resp& src, Resp& dst, size_t cut);
   // RFC 9112: a head that stops before Content-Length, for a body the run
   // has yet to produce - the status line, the route's own fields, whatever
   // Vary / Content-Encoding applies, and the Connection field of the
@@ -4399,7 +4430,13 @@ class Http1 {
     uint8_t lflags;
   };
   static void log_sse(Logger& lg, const Conn& st, const SseLine& line);
-  void build_status(uint16_t status, const char* extra, const char* body);
+  // What one prebuilt status says beyond its status line: the fields that
+  // always go with it, and the body it carries where it carries one.
+  struct StatusText {
+    const char* extra;
+    const char* body;
+  };
+  void build_status(uint16_t status, StatusText t);
   void stock_status(bool have[600], uint16_t s);
   void build_bundle(Bundle& b, const Resource* res);
   static void patch_date(Variants& v, const char* core);
@@ -4411,7 +4448,7 @@ class Http1 {
     bool head_only;
   };
   static void assemble(std::string& sink, const Assembled& a);
-  bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+  bool feed_parse(Conn& st, std::string_view data, Sink out);
   static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
   // The bytes one answer LENDS rather than copies, and the plan they are
   // lent into.
@@ -4500,10 +4537,17 @@ class Http1 {
   // the error archive, everything else against --assets.
   Took answer_from_assets(Round& r, std::string& sink, Plan* plan);
 
-  bool fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags = 0);
+  bool fail(Conn& st, uint16_t code, std::string& out, uint8_t log = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
   // segment. `prebuilt` takes the status straight out of the shared store.
-  void file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless);
+  // The head a served file wears: the status it carries, how many octets
+  // it declares, and whether it sends any of them.
+  struct FileHead {
+    uint16_t status;
+    size_t content_length;
+    bool bodyless;
+  };
+  void file_spell(Conn& st, FileHead head);
   void file_prebuilt(Conn& st, uint16_t status_code);
   bool ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink);
 
@@ -4517,12 +4561,12 @@ class Http1 {
     const std::string* allow = nullptr;
   };
   void h2_build_block(H2Block& b, const H2BlockFields& f);
-  bool h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& out);
+  bool h2_error_page(const H2ErrorAsk& a, H2ErrorPage& p, H2Answer& out);
 
   bool h2_begin(Conn& st, std::string& sink);
-  bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
+  bool h2_feed(Conn& st, std::string_view data, Sink out);
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
-  void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
+  void h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink);
   // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
   // named one is refused rather than served the empty body it never meant
   // to send. Its own function because those fifteen lines are not part of
@@ -4537,7 +4581,13 @@ class Http1 {
     std::span<const unsigned char> block;
   };
   bool h2_dispatch(Conn& st, const H2Headers& h, std::string& sink);
-  const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
+  // A parked stream's request as a view: the target it named, and the
+  // ReqView the caller owns for it to point into.
+  struct Parked {
+    std::string_view target;
+    ReqView& view;
+  };
+  const ReqView* h2_parked_view(Conn& st, Parked p);
   // What one h2 access line is written from: the facts the stream carried,
   // and the :path they were read beside - which is still live only here.
   struct H2Logged {
@@ -4808,7 +4858,16 @@ inline void raise_memlock() {
 
 // The one arithmetic with two consumers: the server sizes itself with it,
 // webmachine-tune.sh only prints it.
-inline uint32_t derive_max_conns(uint64_t nofile_limit, uint32_t extra_slots = 0) {
+// The file-descriptor budget one process has: what RLIMIT_NOFILE allows,
+// and how many descriptors something other than a connection will take.
+struct FdBudget {
+  uint64_t nofile_limit;
+  uint32_t extra_slots = 0;
+};
+
+inline uint32_t derive_max_conns(FdBudget b) {
+  const uint64_t nofile_limit = b.nofile_limit;
+  const uint32_t extra_slots = b.extra_slots;
   const uint64_t taken = static_cast<uint64_t>(kFdReserve) + kMaxListeners + extra_slots;
   if (nofile_limit <= taken) return 0;
   uint64_t n = nofile_limit - taken;
@@ -5017,7 +5076,7 @@ class Ring {
     send_timeout_ = cfg.send_timeout != 0 ? cfg.send_timeout : 60;
     idle_timeout_ = cfg.idle_timeout != 0 ? cfg.idle_timeout : 75;
     app_.set_send_timeout(send_timeout_);
-    max_conns_ = derive_max_conns(nofile);
+    max_conns_ = derive_max_conns({nofile});
     if (max_conns_ == 0) {
       std::snprintf(err, errlen,
                     "RLIMIT_NOFILE %llu leaves no room for connections "
@@ -6223,7 +6282,7 @@ class Ring {
       }
       const bool last = left <= kBufSize;
       typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
-      if (!closing) closing = !app_.feed(c.app, pool_ + off, n, sink, plan);
+      if (!closing) closing = !app_.feed(c.app, {pool_ + off, n}, {sink, plan});
       left -= n;
       bid = (bid + 1) & (kBufCount - 1);
       replenish_++;
@@ -6293,7 +6352,7 @@ class Ring {
     req.byte_cap = c.round_cap;
     typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
     std::string& sink = c.sending ? c.next : c.out;
-    const bool closing = !app_.feed(c.app, data, len, sink, plan);
+    const bool closing = !app_.feed(c.app, {data, len}, {sink, plan});
     finish_round(idx, req, closing);
   }
 

@@ -27,7 +27,15 @@ struct RClass* conf_class_ = nullptr;
 struct RClass* route_class_ = nullptr;
 
 // Exactly one listener spelling per app; a second refuses by name.
-void claim_form(mrb_state* mrb, AppSpec* s, AppSpec::Form f, const char* name) {
+// One form an application may be declared in, and the word that names it.
+struct Form {
+  AppSpec::Form kind;
+  const char* name;
+};
+
+void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
+  const AppSpec::Form f = want.kind;
+  const char* const name = want.name;
   if (s->form != AppSpec::Form::kNone && s->form != f) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                "conf.%s: this application already named its listener another way - "
@@ -42,7 +50,7 @@ mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
   mrb_int p;
   mrb_get_args(mrb, "i", &p);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, AppSpec::Form::kPort, "port");
+  claim_form(mrb, s, {AppSpec::Form::kPort, "port"});
   if (p < 0 || p > 65535) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.port = %d is outside 0..65535", (int)p);
   }
@@ -68,7 +76,7 @@ mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
   mrb_int n;
   mrb_get_args(mrb, "s", &p, &n);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, AppSpec::Form::kUnix, "unix_path");
+  claim_form(mrb, s, {AppSpec::Form::kUnix, "unix_path"});
   if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.unix_path is empty");
   s->unix_path.assign(p, static_cast<size_t>(n));
   return mrb_nil_value();
@@ -150,7 +158,7 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   mrb_int n;
   mrb_get_args(mrb, "s", &p, &n);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, AppSpec::Form::kUrl, "url");
+  claim_form(mrb, s, {AppSpec::Form::kUrl, "url"});
   const std::string u(p, static_cast<size_t>(n));
   const size_t sep = u.find("://");
   if (sep == std::string::npos) {
@@ -209,7 +217,16 @@ mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
 }
 
 // The token array crosses the boundary ONCE, here, for all three route kinds.
-void walk_tokens(mrb_state* mrb, RouteTable& table, mrb_value toks, const char* who) {
+// The route tokens an app handed over, and the call that handed them -
+// which is the word a refusal names.
+struct Tokens {
+  mrb_value list;
+  const char* who;
+};
+
+void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
+  const mrb_value toks = t.list;
+  const char* const who = t.who;
   const mrb_int n = RARRAY_LEN(toks);
   table.open();
   for (mrb_int i = 0; i < n; i++) {
@@ -294,7 +311,7 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
                klass);
   }
 
-  walk_tokens(mrb, s->table, toks, "route.add");
+  walk_tokens(mrb, s->table, {toks, "route.add"});
 
   auto res = std::unique_ptr<Resource>(new Resource());
   char err[512] = "";
@@ -313,7 +330,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "Ao", &toks, &klass);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
-  walk_tokens(mrb, s->ws_table, toks, "route.websocket");
+  walk_tokens(mrb, s->ws_table, {toks, "route.websocket"});
 
   std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
   char err[512] = "";
@@ -332,7 +349,7 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "Ao", &toks, &klass);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
-  walk_tokens(mrb, s->sse_table, toks, "route.sse");
+  walk_tokens(mrb, s->sse_table, {toks, "route.sse"});
 
   std::unique_ptr<SseResource, void (*)(SseResource*)> res(sse_resource_new(),
                                                            sse_resource_free);

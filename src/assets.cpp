@@ -345,10 +345,10 @@ uint16_t Assets::verdict(const AssetEntry& e, const AssetRequest& r) const {
 
 // RFC 9110 5.6.7: the date, patched lazily - an entry nobody asks for
 // is never patched.
-void Assets::patch_date(AssetEntry::Head& h, const char* date, time_t unix_seconds) {
-  if (h.unix_seconds == unix_seconds) return;
-  std::memcpy(h.bytes.data() + h.date_offset, date, http::kDateLen);
-  h.unix_seconds = unix_seconds;
+void Assets::patch_date(AssetEntry::Head& h, DateStamp when) {
+  if (h.unix_seconds == when.unix_seconds) return;
+  std::memcpy(h.bytes.data() + h.date_offset, when.line, http::kDateLen);
+  h.unix_seconds = when.unix_seconds;
 }
 
 // RFC 9112: the header section for a verdict this tier owns. Never body bytes.
@@ -374,7 +374,7 @@ void Assets::answer_head(const HeadAsk& ask, std::string& sink) {
     case 405: h = &s405_[conn]; break;
     default: h = &s406_[conn]; break;
   }
-  patch_date(*h, ask.date, ask.unix_seconds);
+  patch_date(*h, {ask.date, ask.unix_seconds});
   sink.append(h->bytes);
 }
 
@@ -417,7 +417,9 @@ void Assets::answer_416_head(const HeadAsk& ask, std::string& sink) {
 // header, the deflate stream where it lies in the mapping, the trailer.
 // Up to THREE iovecs for ONE logical window, and only the middle one is
 // the file: that is why this returns a count and not a pointer.
-unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iovec* iov) {
+unsigned Assets::wire_iov(const AssetEntry& e, Window w, struct iovec* iov) {
+  size_t off = w.off;
+  size_t n = w.n;
   struct Seg {
     const char* p;
     size_t len;
@@ -449,7 +451,9 @@ unsigned Assets::wire_iov(const AssetEntry& e, size_t off, size_t n, struct iove
 }
 
 // RFC 1952: the same window, copied, for the paths that must own their bytes.
-void Assets::copy_wire(const AssetEntry& e, size_t off, size_t n, std::string& sink) {
+void Assets::copy_wire(const AssetEntry& e, Window w, std::string& sink) {
+  size_t off = w.off;
+  size_t n = w.n;
   struct Seg {
     const char* p;
     size_t len;

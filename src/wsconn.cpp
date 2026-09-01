@@ -770,7 +770,9 @@ void ws_free(WsConn* c) {
 }
 
 // RFC 6455 5.3: wire bytes for an upgraded connection, under protection.
-bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink) {
+bool ws_feed(WsConn* c, std::string_view in, std::string& sink) {
+  const char* const data = in.data();
+  const size_t len = in.size();
   if (len == 0) return true;
   mrb_state* mrb = c->res->mrb;
   FeedCall call{c, data, len, &sink};

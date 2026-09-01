@@ -19,7 +19,7 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
     while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
     const size_t start = i;
     while (i < n && v[i] != ',' && v[i] != ' ' && v[i] != '\t') i++;
-    if (http::tok_eq(v + start, i - start, lit, litn)) return true;
+    if (http::tok_eq({v + start, i - start}, {lit, litn})) return true;
   }
   return false;
 }
@@ -73,7 +73,7 @@ void read_wire_header(WireSink into, http::Field f) {
   if (w.err != 0 || !http::length_is_one_of(nl, kWireLengthMask)) return;
   switch (nl) {
     case 14:
-      if (http::tok_eq(n, nl, "content-length", 14)) {
+      if (http::tok_eq({n, nl}, "content-length")) {
         if (WM_H1_UNLIKELY(w.have_cl)) {
           w.err = 400;
           return;
@@ -88,40 +88,40 @@ void read_wire_header(WireSink into, http::Field f) {
       }
       break;
     case 17:
-      if (http::tok_eq(n, nl, "transfer-encoding", 17)) w.have_te = true;
-      else if (http::tok_eq(n, nl, "sec-websocket-key", 17)) {
+      if (http::tok_eq({n, nl}, "transfer-encoding")) w.have_te = true;
+      else if (http::tok_eq({n, nl}, "sec-websocket-key")) {
         w.ws_key = v;
         w.ws_key_len = vl;
       }
       break;
     case 4:
-      if (http::tok_eq(n, nl, "host", 4)) {
+      if (http::tok_eq({n, nl}, "host")) {
         if (WM_H1_UNLIKELY(w.have_host)) w.err = 400;
         w.have_host = true;
       }
       break;
     case 10:
-      if (http::tok_eq(n, nl, "user-agent", 10)) {
+      if (http::tok_eq({n, nl}, "user-agent")) {
         vals.log_ua = v;
         vals.log_ua_len = vl;
-      } else if (http::tok_eq(n, nl, "connection", 10)) {
+      } else if (http::tok_eq({n, nl}, "connection")) {
         if (conn_has(v, vl, "close", 5)) w.conn_close = true;
         else if (conn_has(v, vl, "keep-alive", 10)) w.conn_keep = true;
         if (conn_has(v, vl, "upgrade", 7)) w.conn_upgrade = true;
       }
       break;
     case 7:
-      if (http::tok_eq(n, nl, "referer", 7)) {
+      if (http::tok_eq({n, nl}, "referer")) {
         vals.log_ref = v;
         vals.log_ref_len = vl;
         break;
       }
-      if (http::tok_eq(n, nl, "upgrade", 7)) {
-        w.up_ws = http::tok_eq(v, vl, "websocket", 9);
+      if (http::tok_eq({n, nl}, "upgrade")) {
+        w.up_ws = http::tok_eq({v, vl}, "websocket");
       }
       break;
     case 21:
-      if (http::tok_eq(n, nl, "sec-websocket-version", 21)) {
+      if (http::tok_eq({n, nl}, "sec-websocket-version")) {
         w.ws_version = 0;
         for (size_t j = 0; j < vl; j++) {
           if (v[j] < '0' || v[j] > '9') { w.ws_version = -1; break; }
@@ -188,7 +188,7 @@ void Http1::build_one_variant(Resp& r, Prebuilt p) {
 }
 
 // One prebuilt head with its trailing `cut` bytes left off.
-void Http1::assign_without_tail(const Resp& src, Resp& dst, size_t cut) {
+void Http1::copy_without_tail(const Resp& src, Resp& dst, size_t cut) {
   dst.bytes.assign(src.bytes, 0, src.bytes.size() - cut);
   dst.date_off = src.date_off;
 }
@@ -225,11 +225,11 @@ void Http1::build_open_prefixes(Variants& v, OpenPrefix p) {
 // RFC 9110 15: one status into the shared store, date offset kept - and
 // beside it the same answer WITHOUT `body`, which is where an error that
 // has a page to show puts its own Content-Type and Content-Length (#210).
-void Http1::build_status(uint16_t status, const char* extra, const char* body) {
+void Http1::build_status(uint16_t status, StatusText t) {
   Variants v;
-  build_variants(v, {status, extra, body, kDatePlaceholder});
+  build_variants(v, {status, t.extra, t.body, kDatePlaceholder});
   Variants p;
-  build_variants(p, {status, extra, "", kDatePlaceholder});
+  build_variants(p, {status, t.extra, "", kDatePlaceholder});
   index_[status] = static_cast<uint16_t>(store_.size());
   store_.push_back(std::move(v));
   store_prefix_.push_back(std::move(p));
@@ -273,14 +273,14 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   }
 
   const size_t blen = b.konst.body.size();
-  assign_without_tail(ok.plain, b.ok_head.plain, blen);
-  assign_without_tail(ok.keep, b.ok_head.keep, blen);
-  assign_without_tail(ok.close, b.ok_head.close, blen);
+  copy_without_tail(ok.plain, b.ok_head.plain, blen);
+  copy_without_tail(ok.keep, b.ok_head.keep, blen);
+  copy_without_tail(ok.close, b.ok_head.close, blen);
   if (b.dynamic_body) {
     const size_t cut = ok_tail.size();
-    assign_without_tail(ok.plain, b.ok_prefix.plain, cut);
-    assign_without_tail(ok.keep, b.ok_prefix.keep, cut);
-    assign_without_tail(ok.close, b.ok_prefix.close, cut);
+    copy_without_tail(ok.plain, b.ok_prefix.plain, cut);
+    copy_without_tail(ok.keep, b.ok_prefix.keep, cut);
+    copy_without_tail(ok.close, b.ok_prefix.close, cut);
   }
   b.index[200] = static_cast<uint16_t>(store_.size());
   {
@@ -344,8 +344,8 @@ Http1::Http1(const AppInput* apps, size_t napps, Assets* assets) : assets_(asset
 void Http1::stock_status(bool have[600], uint16_t s) {
   if (have[s]) return;
   have[s] = true;
-  if (s == 204 || s == 304) build_status(s, "", "\r\n");
-  else build_status(s, "", "Content-Length: 0\r\n\r\n");
+  if (s == 204 || s == 304) build_status(s, {"", "\r\n"});
+  else build_status(s, {"", "Content-Length: 0\r\n\r\n"});
   H2Block b;
   h2_build_block(b, {s});
   h2_store_.push_back(std::move(b));
@@ -569,7 +569,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   bool started_xfer = false;
   if (step.sends_content) {
     if (step.copy_content) {
-      Assets::copy_wire(*ae, step.first_byte_pos, step.content_length, sink);
+      Assets::copy_wire(*ae, {step.first_byte_pos, step.content_length}, sink);
     } else {
       r.st.asset = ae;
       r.st.asset_off = step.first_byte_pos;
@@ -614,7 +614,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
       if (take > 0) {
         claim_sink(r.st, sink, *plan);
         struct iovec iv[3];
-        const unsigned k = Assets::wire_iov(*r.st.asset, r.st.asset_off, take, iv);
+        const unsigned k = Assets::wire_iov(*r.st.asset, {r.st.asset_off, take}, iv);
         for (unsigned i = 0; i < k; i++) {
           plan->iov[plan->iovlen++] =
               Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
@@ -686,17 +686,17 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
   return true;
 }
 
-bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
+bool Http1::fail(Conn& st, uint16_t code, std::string& out, uint8_t log) {
   if (alog_.enabled) {
     log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
-                       {}, "-", {}, {}, 0, status, log_flags});
+                       {}, "-", {}, {}, 0, code, log});
   }
   // Nothing is parsed on this path, so there is no Accept to weigh and no
   // target to name: the page for the status, and that is all it can say.
   const ErrorPages::Fields f;
-  spell_error({prefixes(status).close, variants(status).close, status,
-               err_pages_.media_for(status, nullptr, 0), f, false},
-              sink);
+  spell_error({prefixes(code).close, variants(code).close, code,
+               err_pages_.media_for(code, nullptr, 0), f, false},
+              out);
   st.carry.clear();
   st.content_skip = 0;
   st.content_need = 0;
@@ -718,8 +718,10 @@ void Http1::claim_sink(Conn& st, const std::string& sink, Plan& plan) {
 // A lent body splits the sink, so whatever the parse appended after it
 // still has to be claimed - and it returns down a dozen paths, so the plan
 // is closed HERE, once, on all of them.
-bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
-  const bool ok = feed_parse(st, data, len, sink, plan);
+bool Http1::feed(Conn& st, std::string_view data, Sink out) {
+  std::string& sink = out.bytes;
+  Plan* const plan = out.plan;
+  const bool ok = feed_parse(st, data, out);
   if (WM_H1_UNLIKELY(st.zc_split) && plan != nullptr) claim_sink(st, sink, *plan);
   return ok;
 }
@@ -749,7 +751,10 @@ void Http1::file_prebuilt(Conn& st, uint16_t status_code) {
 // RFC 9112 3: the head a served file wears. No prebuilt head can hold a
 // per-file Content-Length and Last-Modified, so it is spelled byte by byte -
 // spell_head's own job, with the run's field lines still in front.
-void Http1::file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless) {
+void Http1::file_spell(Conn& st, FileHead head_of) {
+  const uint16_t status_code = head_of.status;
+  const size_t content_length = head_of.content_length;
+  const bool bodyless = head_of.bodyless;
   st.file->head.clear();
   const SpelledHead head = {status_code,
                            date_,
@@ -827,15 +832,15 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
 
   // RFC 9110 13.1.3 / 15.4.5: no newer than what the client already holds.
   if (st.file->if_modified_since_valid && mtime <= st.file->if_modified_since) {
-    file_spell(st, 304, 0, true);
+    file_spell(st, {304, 0, true});
     return false;
   }
   if (st.file->head_only || len == 0) {
     // The head still states the real length; HEAD just sends no bytes.
-    file_spell(st, 200, len, false);
+    file_spell(st, {200, len, false});
     return false;
   }
-  file_spell(st, 200, len, false);
+  file_spell(st, {200, len, false});
   st.file->stage = FileStage::kRing;  // the head stands, the bytes are owed
   st.file->content_length = len;
   st.file->content_sent = 0;
@@ -908,8 +913,12 @@ void Http1::file_ready_now(Conn& st, size_t n) {
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
-bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan) {
-  if (st.h2 != nullptr) return h2_feed(st, data, len, sink, plan);
+bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
+  const char* data = in.data();
+  size_t len = in.size();
+  std::string& sink = out.bytes;
+  Plan* const plan = out.plan;
+  if (st.h2 != nullptr) return h2_feed(st, in, out);
   if (st.fresh) {
     st.content_need = 0;
     const size_t seen = st.carry.size();
@@ -919,7 +928,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       st.fresh = false;
       st.carry.clear();
       if (!h2_begin(st, sink)) return false;
-      return h2_feed(st, data + i, len - i, sink, plan);
+      return h2_feed(st, {data + i, len - i}, out);
     }
     if (i == len) {
       st.carry.append(data, len);
@@ -966,7 +975,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     return true;
   }
 
-  if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, data, len, sink);
+  if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, in, sink);
   if (WM_H1_UNLIKELY(st.sse != nullptr)) return true;
 
   const bool in_place = st.carry.empty();
@@ -1156,7 +1165,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           const size_t n = Assets::wire_len(ae);
           if (plan != nullptr) {
             struct iovec iv[3];
-            const unsigned k = Assets::wire_iov(ae, 0, n, iv);
+            const unsigned k = Assets::wire_iov(ae, {0, n}, iv);
             // One segment for a stored entry; a deflated one would be
             // three, and response.error_asset refuses those - the head
             // spelled here carries no Content-Encoding to declare them.
@@ -1165,7 +1174,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           }
           if (lent == nullptr) {
             body_.clear();
-            Assets::copy_wire(ae, 0, n, body_);
+            Assets::copy_wire(ae, {0, n}, body_);
           }
         }
         // response.file: the run named a file instead of spelling a body,
@@ -1428,7 +1437,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   if (ws_wants_deflate(res)) {
     const struct phr_header* hs = static_cast<const struct phr_header*>(hdrs);
     for (size_t i = 0; i < nhdr && !dparams.on; i++) {
-      if (!http::tok_eq(hs[i].name, hs[i].name_len, "sec-websocket-extensions", 24)) continue;
+      if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions")) continue;
       wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
     }
   }
@@ -1446,7 +1455,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   st.ws = wsc;
   st.carry.clear();
   st.content_skip = 0;
-  if (!up.rest.empty()) return ws_feed(st.ws, up.rest.data(), up.rest.size(), sink);
+  if (!up.rest.empty()) return ws_feed(st.ws, up.rest, sink);
   return true;
 }
 

@@ -490,7 +490,7 @@ bool headers_has_location(const std::string& h) {
   while (at < h.size()) {
     size_t eol = h.find("\r\n", at);
     if (eol == std::string::npos) eol = h.size();
-    if (eol - at > 9 && http::tok_eq(h.data() + at, 9, "location:", 9)) return true;
+    if (eol - at > 9 && http::tok_eq({h.data() + at, 9}, "location:")) return true;
     at = eol + 2;
   }
   return false;
@@ -796,7 +796,7 @@ mrb_value arg_for(Run& r, Node nd) {
           for (mrb_int j = 0; j < RARRAY_LEN(keys); j++) {
             const mrb_value key = RARRAY_PTR(keys)[j];
             if (!mrb_string_p(key) || RSTRING_LEN(key) < 8) continue;
-            if (!http::tok_eq(RSTRING_PTR(key), 8, "content-", 8)) continue;
+            if (!http::tok_eq({RSTRING_PTR(key), 8}, "content-")) continue;
             mrb_hash_set(r.mrb, out, key, mrb_hash_get(r.mrb, hs, key));
           }
         }
@@ -1970,19 +1970,19 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
 // it, and a raise leaves the exception pending for the error resource.
-uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer) {
+uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   mrb_state* mrb = res.mrb;
-  request_bind(asked.req);
+  request_bind(ask.req);
   response_bind(&res);
-  res.run_facts = &asked.facts;
-  res.run_vals = asked.vals;
-  res.run_req = asked.req;
-  res.run_headers = answer.headers;
-  answer.headers->clear();
-  res.run_body = answer.body;
+  res.run_facts = &ask.facts;
+  res.run_vals = ask.vals;
+  res.run_req = ask.req;
+  res.run_headers = out.headers;
+  out.headers->clear();
+  res.run_body = out.body;
   res.run_have_body = false;
   res.run_asset = nullptr;
-  res.run_zc_min = asked.zc_min;
+  res.run_zc_min = ask.zc_min;
   res.run_zc_have = false;
   res.run_status = 0;
   res.run_resp_code = 0;
@@ -2042,10 +2042,10 @@ uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer) {
       resource_body_unlend(mrb, res.run_zc);
       res.run_zc_have = false;
     }
-    *answer.have_body = false;
+    *out.have_body = false;
     return 500;
   }
-  *answer.have_body = res.run_have_body;
+  *out.have_body = res.run_have_body;
   res.run_status = status;
   return status;
 }
