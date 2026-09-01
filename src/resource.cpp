@@ -250,17 +250,32 @@ mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_valu
   return v;
 }
 
+// The class being folded, and where a refusal about it is spelled.
+struct Folding {
+  mrb_state* mrb;
+  mrb_value klass;
+  char* err;
+  size_t errlen;
+};
+
+// One callback fold time asks: the symbol it is found by, and the name a
+// refusal spells it with.
+struct Asked {
+  mrb_sym sym;
+  const char* name;
+};
+
 // RFC 9110: one konst flow callback, asked once on the class.
-bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool defv, bool* out,
-         char* err, size_t errlen) {
-  const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
+bool ask(const Folding& f, Asked a, bool defv, bool* out) {
+  mrb_state* const mrb = f.mrb;
+  const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) {
     *out = defv;
     return true;
   }
-  const mrb_value v = call_resolved(mrb, r, sym, klass, mrb_class(mrb, klass));
+  const mrb_value v = call_resolved(mrb, r, a.sym, f.klass, mrb_class(mrb, f.klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, name, err, errlen);
+    exc_into(mrb, a.name, f.err, f.errlen);
     return false;
   }
   *out = mrb_test(v);
@@ -273,14 +288,6 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
 // `spell` turns a String answer into an ETag (RFC 9110 8.8.3); without it
 // the answer is read as a moment (RFC 9110 5.6.7), the way the date fields
 // need it.
-// The class being folded, and where a refusal about it is spelled.
-struct Folding {
-  mrb_state* mrb;
-  mrb_value klass;
-  char* err;
-  size_t errlen;
-};
-
 // One class-form answer: where it comes from, what it is called in a
 // refusal, whether it is spelled as an ETag, and the slot it is kept in
 // for the life of the process.
@@ -325,9 +332,10 @@ bool bake_value(const Folding& f, const BakedValue& bake) {
   return true;
 }
 
-// One run of space- or comma-separated method tokens, marked off in present[].
-bool mark_method_tokens(const char* p, const char* end, bool present[7], const char* name,
-                        char* err, size_t errlen) {
+// One run of space- or comma-separated method tokens, marked off in seen[].
+bool mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
+  const char* p = RSTRING_PTR(v);
+  const char* const end = p + RSTRING_LEN(v);
   while (p < end) {
     while (p < end && (*p == ' ' || *p == ',')) p++;
     const char* tok = p;
@@ -337,14 +345,14 @@ bool mark_method_tokens(const char* p, const char* end, bool present[7], const c
     for (uint8_t m = 0; m < 6; m++) {
       const size_t n = std::strlen(kMethodName[m]);
       if (static_cast<size_t>(p - tok) == n && std::memcmp(tok, kMethodName[m], n) == 0) {
-        present[m] = true;
+        seen[m] = true;
         known = true;
         break;
       }
     }
     if (WM_RES_UNLIKELY(!known)) {
-      std::snprintf(err, errlen, "%s names '%.*s' - outside the compiled method set", name,
-                    static_cast<int>(p - tok), tok);
+      std::snprintf(f.err, f.errlen, "%s names '%.*s' - outside the compiled method set",
+                    a.name, static_cast<int>(p - tok), tok);
       return false;
     }
   }
@@ -353,34 +361,30 @@ bool mark_method_tokens(const char* p, const char* end, bool present[7], const c
 
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens or
 // webmachine-ruby's Array-of-Strings form.
-bool ask_methods(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool present[7],
-                 char* err, size_t errlen) {
-  const Resolved r = resolve(mrb, mrb_class(mrb, klass), sym);
+bool ask_methods(const Folding& f, Asked a, bool seen[7]) {
+  mrb_state* const mrb = f.mrb;
+  const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) return true;
-  const mrb_value v = call_resolved(mrb, r, sym, klass, mrb_class(mrb, klass));
+  const mrb_value v = call_resolved(mrb, r, a.sym, f.klass, mrb_class(mrb, f.klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, name, err, errlen);
+    exc_into(mrb, a.name, f.err, f.errlen);
     return false;
   }
-  for (uint8_t m = 0; m < 7; m++) present[m] = false;
-  if (mrb_string_p(v))
-    return mark_method_tokens(RSTRING_PTR(v), RSTRING_PTR(v) + RSTRING_LEN(v), present, name,
-                             err, errlen);
+  for (uint8_t m = 0; m < 7; m++) seen[m] = false;
+  if (mrb_string_p(v)) return mark_tokens(f, a, v, seen);
   if (mrb_array_p(v)) {
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
       const mrb_value s = RARRAY_PTR(v)[j];
       if (WM_RES_UNLIKELY(!mrb_string_p(s))) {
-        std::snprintf(err, errlen, "%s must return method Strings", name);
+        std::snprintf(f.err, f.errlen, "%s must return method Strings", a.name);
         return false;
       }
-      if (!mark_method_tokens(RSTRING_PTR(s), RSTRING_PTR(s) + RSTRING_LEN(s), present, name, err,
-                              errlen))
-        return false;
+      if (!mark_tokens(f, a, s, seen)) return false;
     }
     return true;
   }
-  std::snprintf(err, errlen, "%s must return an Array of Strings or a String like 'GET HEAD'",
-                name);
+  std::snprintf(f.err, f.errlen,
+                "%s must return an Array of Strings or a String like 'GET HEAD'", a.name);
   return false;
 }
 
@@ -1580,6 +1584,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
 // RFC 9110: fold one resource class - every konst callback asked once,
 // every dynamic callback resolved, the class frozen.
 bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen) {
+  const Folding fold = {mrb, klass, err, errlen};
   const int ai = mrb_gc_arena_save(mrb);
   out = Resource{};
   out.mrb = mrb;
@@ -1628,7 +1633,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.node_argc[at] = argc_of(inst.m, cb.maxargs);
       continue;
     }
-    if (WM_RES_UNLIKELY(!ask(mrb, klass, cb.sym, cb.name, cb.defv, &ans[i], err, errlen))) {
+    if (WM_RES_UNLIKELY(!ask(fold, {cb.sym, cb.name}, cb.defv, &ans[i]))) {
       mrb_gc_arena_restore(mrb, ai);
       return false;
     }
@@ -1671,7 +1676,6 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_last_modified = value_cb(mrb, klass, MRB_SYM(last_modified), 0, true);
   out.cb_expires = value_cb(mrb, klass, MRB_SYM(expires), 0, true);
   // #202: the class forms of the three caching answers are asked once, now.
-  const Folding fold = {mrb, klass, err, errlen};
   if (WM_RES_UNLIKELY(
           !bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag}) ||
           !bake_value(fold, {out.cb_last_modified, "last_modified", false,
@@ -1863,15 +1867,14 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 
   bool known[7] = {true, true, true, true, true, true, false};
   if (!out.cb_known_methods.has &&
-      WM_RES_UNLIKELY(!ask_methods(mrb, klass, MRB_SYM(known_methods), "known_methods", known,
-                                   err, errlen))) {
+      WM_RES_UNLIKELY(!ask_methods(fold, {MRB_SYM(known_methods), "known_methods"}, known))) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
   bool allowed[7] = {true, true, false, false, false, false, false};
   if (!out.cb_allowed_methods.has &&
-      WM_RES_UNLIKELY(!ask_methods(mrb, klass, MRB_SYM(allowed_methods), "allowed_methods",
-                                   allowed, err, errlen))) {
+      WM_RES_UNLIKELY(
+          !ask_methods(fold, {MRB_SYM(allowed_methods), "allowed_methods"}, allowed))) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
