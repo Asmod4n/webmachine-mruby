@@ -2156,8 +2156,14 @@ using NativeCb = mrb_value (*)(mrb_state* mrb, mrb_value self, mrb_int argc,
 // Define one on a resource class. Ruby can still call it - a wrapper is
 // registered as an ordinary method - but the fold records the raw
 // pointer, and the engine calls THAT.
-void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
-                   mrb_aspec aspec = MRB_ARGS_ANY());
+// One native callback to register: the name Ruby calls it by, the C++ body
+// the engine calls instead, and the argument spec the wrapper declares.
+struct Native {
+  mrb_sym sym;
+  NativeCb fn;
+  mrb_aspec aspec = MRB_ARGS_ANY();
+};
+void define_native(mrb_state* mrb, struct RClass* c, Native n);
 
 // #210: a run may hand over one of these (response.error_asset). The
 // definition is further down, with the tier that owns it - a run only

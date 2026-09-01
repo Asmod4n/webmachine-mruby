@@ -64,11 +64,23 @@ mrb_method_t resolve_alias(mrb_method_t m) {
   return out;
 }
 
+// One name looked up on one class: what mruby found, whether anything
+// answers, whether it is an irep (so the proc may be entered directly),
+// our own C++ body where there is one, and the name it was found by - the
+// funcall fallback needs it, and passing it separately let it disagree.
 struct Resolved {
   mrb_method_t m = {};
+  mrb_sym sym = 0;
   bool defined = false;
   bool irep = false;
   NativeCb native = nullptr;
+};
+
+// The receiver a call enters on, and the class its method was found on -
+// mruby needs both to enter an irep without a second method search.
+struct On {
+  mrb_value self;
+  struct RClass* c;
 };
 
 // Which (class, name) pairs were registered as C++ callbacks. Consulted
@@ -116,6 +128,7 @@ NativeCb native_of(struct RClass* c, mrb_sym sym) {
 // mruby: where does this symbol answer, and may we enter its proc directly?
 Resolved resolve(mrb_state* mrb, struct RClass* c, mrb_sym sym) {
   Resolved r;
+  r.sym = sym;
   struct RClass* owner = c;
   r.m = resolve_alias(mrb_method_search_vm(mrb, &owner, sym));
   r.defined = !MRB_METHOD_UNDEF_P(r.m);
@@ -144,10 +157,18 @@ uint8_t argc_of(mrb_method_t m, uint8_t most) {
   return static_cast<uint8_t>(a);
 }
 
+// cb.rb: what to look for - the name, and whether a `def self.` with no
+// instance method beside it counts as an answer.
+struct Wanted {
+  mrb_sym sym;
+  bool class_fallback;
+};
+
 // cb.rb: a value callback - the instance method wins; a class-only version is
 // kept with an undef method slot and funcalled on the class at runtime.
-Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t maxargs,
-                           bool class_fallback) {
+Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, Wanted w) {
+  const mrb_sym sym = w.sym;
+  const bool class_fallback = w.class_fallback;
   Resource::ValueCb cb;
   cb.sym = sym;
   const Resolved inst = resolve(mrb, mrb_class_ptr(klass), sym);
@@ -156,7 +177,7 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t
     cb.m = inst.m;
     cb.irep = inst.irep;
     cb.native = inst.native;
-    cb.argc = argc_of(inst.m, maxargs);
+    cb.argc = argc_of(inst.m, 0);
     return cb;
   }
   if (!class_fallback) return cb;
@@ -167,7 +188,7 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, mrb_sym sym, uint8_t
     cb.irep = meta.irep;
     cb.native = meta.native;
     cb.on_class = true;
-    cb.argc = argc_of(meta.m, maxargs);
+    cb.argc = argc_of(meta.m, 0);
   }
   return cb;
 }
@@ -222,11 +243,9 @@ void take_pending(mrb_state* mrb, mrb_value v) {
       mrb_exc_new_lit(mrb, E_WM_ERROR(mrb), "a callback ended without an exception object"));
 }
 
-mrb_value call_native(mrb_state* mrb, NativeCb fn, mrb_value self, mrb_int argc,
-                      const mrb_value* argv) {
-  NativeCall ctx{fn, self, argc, argv};
+mrb_value call_native(mrb_state* mrb, NativeCall call) {
   mrb_bool raised = FALSE;
-  mrb_value v = mrb_protect_error(mrb, native_call_body, &ctx, &raised);
+  mrb_value v = mrb_protect_error(mrb, native_call_body, &call, &raised);
   if (WM_RES_UNLIKELY(raised)) {
     take_pending(mrb, v);
     return mrb_nil_value();
@@ -235,11 +254,10 @@ mrb_value call_native(mrb_state* mrb, NativeCb fn, mrb_value self, mrb_int argc,
   return v;
 }
 
-mrb_value call_resolved(mrb_state* mrb, const Resolved& r, mrb_sym sym, mrb_value self,
-                        struct RClass* c) {
-  if (r.native != nullptr) return call_native(mrb, r.native, self, 0, nullptr);
-  if (!r.irep) return mrb_funcall_argv(mrb, self, sym, 0, nullptr);
-  SetupCall ctx{MRB_METHOD_PROC(r.m), sym, self, c};
+mrb_value call_resolved(mrb_state* mrb, const Resolved& r, On on) {
+  if (r.native != nullptr) return call_native(mrb, {r.native, on.self, 0, nullptr});
+  if (!r.irep) return mrb_funcall_argv(mrb, on.self, r.sym, 0, nullptr);
+  SetupCall ctx{MRB_METHOD_PROC(r.m), r.sym, on.self, on.c};
   mrb_bool raised = FALSE;
   mrb_value v = mrb_protect_error(mrb, setup_call_body, &ctx, &raised);
   if (WM_RES_UNLIKELY(raised)) {
@@ -273,7 +291,7 @@ bool ask(const Folding& f, Asked a, bool defv, bool* out) {
     *out = defv;
     return true;
   }
-  const mrb_value v = call_resolved(mrb, r, a.sym, f.klass, mrb_class(mrb, f.klass));
+  const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, a.name, f.err, f.errlen);
     return false;
@@ -309,7 +327,7 @@ bool bake_value(const Folding& f, const BakedValue& bake) {
   r.irep = cb.irep;
   r.native = cb.native;
   r.defined = true;
-  mrb_value v = call_resolved(mrb, r, cb.sym, f.klass, mrb_class(mrb, f.klass));
+  mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, bake.name, f.err, f.errlen);
     return false;
@@ -365,7 +383,7 @@ bool ask_methods(const Folding& f, Asked a, bool seen[7]) {
   mrb_state* const mrb = f.mrb;
   const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) return true;
-  const mrb_value v = call_resolved(mrb, r, a.sym, f.klass, mrb_class(mrb, f.klass));
+  const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
     exc_into(mrb, a.name, f.err, f.errlen);
     return false;
@@ -683,7 +701,7 @@ mrb_value naked(Run& r, Bound b, Args args) {
     // The cheapest of the three tiers: our own C++ body, entered with the
     // arguments in hand. It never reads the callinfo, so there is nothing
     // to build for it.
-    if (native != nullptr) return call_native(r.mrb, native, r.res.live, argc, argv);
+    if (native != nullptr) return call_native(r.mrb, {native, r.res.live, argc, argv});
     if (WM_RES_UNLIKELY(!b.irep || mrb_obj_ptr(r.res.live)->c != r.res.klass)) {
       return mrb_funcall_argv(r.mrb, r.res.live, sym, argc, argv);
     }
@@ -704,7 +722,7 @@ mrb_value naked_class(Run& r, Bound b, Args args) {
     const NativeCb native = b.native;
     const mrb_sym sym = b.sym;
     const mrb_value self = mrb_obj_value(r.res.klass);
-    if (native != nullptr) return call_native(r.mrb, native, self, argc, argv);
+    if (native != nullptr) return call_native(r.mrb, {native, self, argc, argv});
     // mrb_obj_ptr(self)->c, not mrb_class(r.mrb, self): the latter is an
     // out-of-line call into another translation unit, and this build has no
     // LTO - a call to read one pointer, on the path whose whole point is
@@ -1665,15 +1683,15 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 
   // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
-  out.cb_known_methods = value_cb(mrb, klass, MRB_SYM(known_methods), 0, false);
-  out.cb_allowed_methods = value_cb(mrb, klass, MRB_SYM(allowed_methods), 0, false);
-  out.cb_content_types_provided = value_cb(mrb, klass, MRB_SYM(content_types_provided), 0, false);
-  out.cb_content_types_accepted = value_cb(mrb, klass, MRB_SYM(content_types_accepted), 0, true);
-  out.cb_options = value_cb(mrb, klass, MRB_SYM(options), 0, true);
-  out.cb_variances = value_cb(mrb, klass, MRB_SYM(variances), 0, true);
-  out.cb_generate_etag = value_cb(mrb, klass, MRB_SYM(generate_etag), 0, true);
-  out.cb_last_modified = value_cb(mrb, klass, MRB_SYM(last_modified), 0, true);
-  out.cb_expires = value_cb(mrb, klass, MRB_SYM(expires), 0, true);
+  out.cb_known_methods = value_cb(mrb, klass, {MRB_SYM(known_methods), false});
+  out.cb_allowed_methods = value_cb(mrb, klass, {MRB_SYM(allowed_methods), false});
+  out.cb_content_types_provided = value_cb(mrb, klass, {MRB_SYM(content_types_provided), false});
+  out.cb_content_types_accepted = value_cb(mrb, klass, {MRB_SYM(content_types_accepted), true});
+  out.cb_options = value_cb(mrb, klass, {MRB_SYM(options), true});
+  out.cb_variances = value_cb(mrb, klass, {MRB_SYM(variances), true});
+  out.cb_generate_etag = value_cb(mrb, klass, {MRB_SYM(generate_etag), true});
+  out.cb_last_modified = value_cb(mrb, klass, {MRB_SYM(last_modified), true});
+  out.cb_expires = value_cb(mrb, klass, {MRB_SYM(expires), true});
   // #202: the class forms of the three caching answers are asked once, now.
   if (WM_RES_UNLIKELY(
           !bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag}) ||
@@ -1692,13 +1710,13 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
       out.konst_last_modified.present ||
       (!out.konst_last_modified.asked && out.cb_last_modified.has) ||
       out.konst_expires.present || (!out.konst_expires.asked && out.cb_expires.has);
-  out.cb_moved_permanently = value_cb(mrb, klass, MRB_SYM_Q(moved_permanently), 0, true);
-  out.cb_moved_temporarily = value_cb(mrb, klass, MRB_SYM_Q(moved_temporarily), 0, true);
-  out.cb_post_is_create = value_cb(mrb, klass, MRB_SYM_Q(post_is_create), 0, true);
-  out.cb_create_path = value_cb(mrb, klass, MRB_SYM(create_path), 0, false);
-  out.cb_base_uri = value_cb(mrb, klass, MRB_SYM(base_uri), 0, true);
-  out.cb_process_post = value_cb(mrb, klass, MRB_SYM(process_post), 0, false);
-  out.cb_finish_request = value_cb(mrb, klass, MRB_SYM(finish_request), 0, false);
+  out.cb_moved_permanently = value_cb(mrb, klass, {MRB_SYM_Q(moved_permanently), true});
+  out.cb_moved_temporarily = value_cb(mrb, klass, {MRB_SYM_Q(moved_temporarily), true});
+  out.cb_post_is_create = value_cb(mrb, klass, {MRB_SYM_Q(post_is_create), true});
+  out.cb_create_path = value_cb(mrb, klass, {MRB_SYM(create_path), false});
+  out.cb_base_uri = value_cb(mrb, klass, {MRB_SYM(base_uri), true});
+  out.cb_process_post = value_cb(mrb, klass, {MRB_SYM(process_post), false});
+  out.cb_finish_request = value_cb(mrb, klass, {MRB_SYM(finish_request), false});
   // The fast part: one bit per ValueCb above, set once here so every run
   // asks "does X exist" with one load instead of touching X's own struct.
   out.cb_mask = 0;
@@ -1726,8 +1744,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   {
     const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
     if (ct.defined) {
-      const mrb_value v = call_resolved(mrb, ct, MRB_SYM(content_type), klass,
-                                        mrb_class(mrb, klass));
+      const mrb_value v = call_resolved(mrb, ct, {klass, mrb_class(mrb, klass)});
       if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
         mrb->exc == nullptr
             ? static_cast<void>(std::snprintf(err, errlen, "content_type must return a String"))
@@ -1752,8 +1769,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   {
     const Resolved ctp = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_types_provided));
     if (ctp.defined) {
-      const mrb_value v = call_resolved(mrb, ctp, MRB_SYM(content_types_provided), klass,
-                                        mrb_class(mrb, klass));
+      const mrb_value v = call_resolved(mrb, ctp, {klass, mrb_class(mrb, klass)});
       if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
         exc_into(mrb, "content_types_provided", err, errlen);
         mrb_gc_arena_restore(mrb, ai);
@@ -1789,8 +1805,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
         // instance, where the name may belong to somebody else entirely.
         const Resolved hk = resolve(mrb, mrb_class(mrb, klass), th.handler);
         if (hk.defined) {
-          const mrb_value rendered = call_resolved(mrb, hk, th.handler, klass,
-                                                   mrb_class(mrb, klass));
+          const mrb_value rendered = call_resolved(mrb, hk, {klass, mrb_class(mrb, klass)});
           if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
             mrb->exc == nullptr
                 ? static_cast<void>(std::snprintf(err, errlen,
@@ -1821,8 +1836,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   {
     const Resolved enc = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(encodings_provided));
     if (enc.defined) {
-      const mrb_value v = call_resolved(mrb, enc, MRB_SYM(encodings_provided), klass,
-                                        mrb_class(mrb, klass));
+      const mrb_value v = call_resolved(mrb, enc, {klass, mrb_class(mrb, klass)});
       if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_hash_p(v))) {
         mrb->exc == nullptr
             ? static_cast<void>(
@@ -1843,7 +1857,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
     const Resolved body_k = resolve(mrb, mrb_class(mrb, klass), first.handler);
     if (body_k.defined) {
       const mrb_value rendered =
-          call_resolved(mrb, body_k, first.handler, klass, mrb_class(mrb, klass));
+          call_resolved(mrb, body_k, {klass, mrb_class(mrb, klass)});
       if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
         mrb->exc == nullptr
             ? static_cast<void>(std::snprintf(err, errlen, "the body handler must return a String"))
@@ -2082,10 +2096,9 @@ void exception_facts(mrb_state* mrb, ErrFacts& f, std::string& backtrace) {
 // the method callable from Ruby - an app may still subclass and call
 // super, and a bintest may poke it - while the fold records the raw
 // pointer so the engine never goes through the wrapper at all.
-void define_native(mrb_state* mrb, struct RClass* c, mrb_sym sym, NativeCb fn,
-                   mrb_aspec aspec) {
-  native_table().push_back(NativeEntry{c, sym, fn});
-  mrb_define_method_id(mrb, c, sym, native_shim, aspec);
+void define_native(mrb_state* mrb, struct RClass* c, Native n) {
+  native_table().push_back(NativeEntry{c, n.sym, n.fn});
+  mrb_define_method_id(mrb, c, n.sym, native_shim, n.aspec);
 }
 }
 

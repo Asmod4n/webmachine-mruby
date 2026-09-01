@@ -73,14 +73,15 @@ void define_resources(mrb_state* mrb) {
   // point here is that the wire answer is identical to Ruby's.
   struct RClass* konst = mrb_define_class_id(mrb, MRB_SYM(CppKonst), base);
   webmachine::define_native(mrb, mrb_singleton_class_ptr(mrb, mrb_obj_value(konst)),
-                            MRB_SYM(to_html), body_html, MRB_ARGS_NONE());
+                            {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
 
   // Dynamic: instance methods, run per request.
   struct RClass* run = mrb_define_class_id(mrb, MRB_SYM(CppRun), base);
-  webmachine::define_native(mrb, run, MRB_SYM(to_html), body_html, MRB_ARGS_NONE());
-  webmachine::define_native(mrb, run, MRB_SYM(allowed_methods), allowed_methods,
-                            MRB_ARGS_NONE());
-  webmachine::define_native(mrb, run, MRB_SYM(generate_etag), generate_etag, MRB_ARGS_NONE());
+  webmachine::define_native(mrb, run, {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
+  webmachine::define_native(mrb, run,
+                            {MRB_SYM(allowed_methods), allowed_methods, MRB_ARGS_NONE()});
+  webmachine::define_native(mrb, run,
+                            {MRB_SYM(generate_etag), generate_etag, MRB_ARGS_NONE()});
 }
 
 }
