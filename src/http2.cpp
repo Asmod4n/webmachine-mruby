@@ -671,9 +671,12 @@ uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
   static const char kWhy[] =
       "response.file is not wired for HTTP/2 yet - this stream would have been "
       "answered with an empty body, so it is refused instead";
-  log_internal_error(elog_, st.peer, st.peer_len,
-                     req != nullptr ? req->request_target : nullptr,
-                     req != nullptr ? req->request_target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
+  log_internal_error(elog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                             req != nullptr
+                                 ? std::string_view{req->request_target, req->request_target_len}
+                                 : std::string_view{},
+                             {kWhy, sizeof(kWhy) - 1},
+                             500});
   body_.clear();
   rhdrs_.clear();
   return 500;

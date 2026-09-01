@@ -741,8 +741,10 @@ void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 
 // The server's own fault: named in the error log, never in the answer.
 void Http1::file_error(Conn& st, const char* why) {
-  log_internal_error(elog_, st.peer, st.peer_len, st.file->request_target.data(),
-                     st.file->request_target.size(), 500, why, std::strlen(why));
+  log_internal_error(elog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                             st.file->request_target,
+                             why,
+                             500});
   // Once a window has gone out the answer is committed: the head named a
   // Content-Length this body can no longer reach, so a 500 spelled here
   // would land BEHIND those bytes and the client would wait forever for the
@@ -1395,13 +1397,16 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
 }
 
 // One line of the access log for an event stream that got an answer.
-void Http1::log_sse(Logger& lg, const Conn& st, const char* method, size_t method_len,
-                    const char* path, size_t path_len, const http::ReqValues& vals,
-                    uint8_t lflags, uint16_t status) {
+void Http1::log_sse(Logger& lg, const Conn& st, const SseLine& line) {
   if (!lg.enabled) return;
+  const std::string_view method = line.method;
+  const std::string_view path = line.path;
+  const http::ReqValues& vals = line.vals;
+  const uint8_t lflags = line.lflags;
+  const uint16_t status = line.status;
   log_access(lg, {{static_cast<const char*>(st.peer), st.peer_len},
-                  {method, method_len},
-                  {path, path_len},
+                  method,
+                  path,
                   {vals.log_ref, vals.log_ref_len},
                   {vals.log_ua, vals.log_ua_len},
                   0, status, lflags});
@@ -1422,14 +1427,14 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
   const http::ReqValues& vals = req.vals;
   const uint8_t lflags = req.lflags;
   if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
-    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 405);
+    log_sse(alog_, st, {method, path, vals, 405, lflags});
     sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return false;
   }
   if (WM_H1_UNLIKELY(minor < 1)) {
-    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 505);
+    log_sse(alog_, st, {method, path, vals, 505, lflags});
     sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -1453,11 +1458,11 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
                         elog_.enabled ? &elog_ : nullptr, refused);
   request_bind(nullptr);
   if (s == nullptr) {
-    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, refused == 0 ? 403 : refused);
+    log_sse(alog_, st, {method, path, vals, refused == 0 ? 403 : refused, lflags});
     return fail(st, refused == 0 ? 403 : refused, sink, lflags);
   }
 
-  log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 200);
+  log_sse(alog_, st, {method, path, vals, 200, lflags});
   sink.append("HTTP/1.1 200 OK\r\nDate: ");
   sink.append(date_, http::kDateLen);
   sink.append(

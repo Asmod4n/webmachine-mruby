@@ -1074,10 +1074,24 @@ inline void log_error(Logger& lg, const ErrFacts& f) {
 
 // The server's own fault, spelled the same way at every call site: one
 // error-log record, class Webmachine::Error/17, never reaching the answer.
-inline void log_internal_error(Logger& lg, const void* peer, size_t peer_len,
-                               const char* request_target, size_t request_target_len,
-                               uint16_t status_code, const char* why, size_t why_len) {
+// One internal failure as one record. The three views and the status
+// travelled together through eight arguments - see #std-first.
+struct ErrorLine {
+  std::string_view peer;           // the socket's address, already spelled
+  std::string_view request_target; // RFC 9112 3.2
+  std::string_view why;            // no RFC: ours, and it never repeats the request
+  uint16_t status_code = 0;        // RFC 9110 15
+};
+
+inline void log_internal_error(Logger& lg, const ErrorLine& line) {
   if (!lg.enabled) return;
+  const void* peer = line.peer.data();
+  const size_t peer_len = line.peer.size();
+  const char* request_target = line.request_target.data();
+  const size_t request_target_len = line.request_target.size();
+  const uint16_t status_code = line.status_code;
+  const char* why = line.why.data();
+  const size_t why_len = line.why.size();
   ErrFacts f;
   f.peer = peer;
   f.peer_len = peer_len;
@@ -4067,9 +4081,16 @@ class Http1 {
                                 const std::string& extra, const char* enc);
   static void cache_headers(std::string& out, const H2Block& blk, const unsigned char* cbuf,
                             size_t clen, const unsigned char* dbuf, size_t dlen);
-  static void log_sse(Logger& lg, const Conn& st, const char* method, size_t method_len,
-                      const char* path, size_t path_len, const http::ReqValues& vals,
-                      uint8_t lflags, uint16_t status);
+  // WHATWG HTML: an event stream's one access record. SseLine is what the
+  // seven arguments were - see #std-first.
+  struct SseLine {
+    std::string_view method;
+    std::string_view path;
+    const http::ReqValues& vals;
+    uint16_t status;
+    uint8_t lflags;
+  };
+  static void log_sse(Logger& lg, const Conn& st, const SseLine& line);
   void build_status(uint16_t status, const char* extra, const char* body);
   void stock_status(bool have[600], uint16_t s);
   void build_bundle(Bundle& b, const Resource* res);
@@ -5076,9 +5097,14 @@ class Ring {
       char why[192];
       const int n = std::snprintf(why, sizeof why, "%s%s%s", f.what, f.err < 0 ? ": " : "",
                                   f.err < 0 ? std::strerror(-f.err) : "");
-      log_internal_error(*el, c.peer != nullptr ? &c.peer->addr : nullptr,
-                         c.peer != nullptr ? static_cast<size_t>(c.peer->addrlen) : 0, nullptr, 0,
-                         0, why, static_cast<size_t>(n < 0 ? 0 : n));
+      log_internal_error(
+          *el, {c.peer != nullptr
+                    ? std::string_view{reinterpret_cast<const char*>(&c.peer->addr),
+                                       static_cast<size_t>(c.peer->addrlen)}
+                    : std::string_view{},
+                {},
+                {why, static_cast<size_t>(n < 0 ? 0 : n)},
+                0});
     }
     for (unsigned i = 0; i < said_count_; i++) {
       if (said_[i] == f.what) return;
