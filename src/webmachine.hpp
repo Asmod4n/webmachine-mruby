@@ -4148,8 +4148,17 @@ class Http1 {
   bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
   static void lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan);
-  void assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefix_id,
-                        const Resp& prefix_gz, bool head_only, std::string& sink);
+  // RFC 9110 12.5.3/12.5.5: what a dynamic 200 chooses between - the two
+  // prebuilt prefixes, whether gzip is on the table at all (the peer
+  // accepts it AND this connection is packetized), and whether the request
+  // wants the body behind the head.
+  struct DynamicBody {
+    const Resp& prefix_id;
+    const Resp& prefix_gz;
+    bool may_gzip;
+    bool head_only;
+  };
+  void assemble_dynamic(const DynamicBody& d, std::string& sink);
   // RFC 9112 9.3: one prebuilt status in its three connection spellings.
   const Variants& variants(uint16_t status) const {
     return store_[index_[status]];
@@ -4164,8 +4173,19 @@ class Http1 {
   // there is no page (no VM handed over, or a template that raised) the
   // bodyless status goes out instead, which is what this server sent
   // before there were pages at all.
-  void spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status, bool head_only,
-                   int media, const ErrorPages::Fields& f, std::string& sink);
+  // The parts of one: the prefix its status line and Date come from, the
+  // bodyless spelling that stands when there is no page, the status, the
+  // media the page renders in, the words #210 filled in, and whether the
+  // request wants the body behind the head.
+  struct ErrorAnswer {
+    const Resp& prefix;
+    const Resp& bodyless;
+    uint16_t status;
+    int media;
+    const ErrorPages::Fields& fields;
+    bool head_only;
+  };
+  void spell_error(const ErrorAnswer& e, std::string& sink);
   // What one request round already knows by the time the head is parsed.
   // A step that leaves the straight line takes this instead of twenty
   // arguments - which is what made those steps stay inline before.

@@ -430,18 +430,17 @@ void Http1::assemble(std::string& sink, const Resp& prefix, const char* body, si
 
 // RFC 9110 12.5.3/12.5.5: identity or gzip for a dynamic 200, and the Vary
 // that says the resource varies either way.
-void Http1::assemble_dynamic(const Conn& st, bool accept_gzip, const Resp& prefix_id,
-                             const Resp& prefix_gz, bool head_only, std::string& sink) {
+void Http1::assemble_dynamic(const DynamicBody& d, std::string& sink) {
   bool use_gzip = false;
-  if (accept_gzip && st.packetized) {
+  if (d.may_gzip) {
     char cl[40];
     const size_t cl_len = http::spell_content_length(cl, body_.size());
-    if (prefix_id.bytes.size() + cl_len + body_.size() >= kCompressFloor) {
+    if (d.prefix_id.bytes.size() + cl_len + body_.size() >= kCompressFloor) {
       use_gzip = gzip::compress(body_, gz_body_);
     }
   }
-  if (use_gzip) assemble(sink, prefix_gz, gz_body_.data(), gz_body_.size(), head_only);
-  else assemble(sink, prefix_id, body_.data(), body_.size(), head_only);
+  if (use_gzip) assemble(sink, d.prefix_gz, gz_body_.data(), gz_body_.size(), d.head_only);
+  else assemble(sink, d.prefix_id, body_.data(), body_.size(), d.head_only);
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
@@ -456,21 +455,19 @@ bool Http1::open_error_assets(mrb_state* mrb, Assets* error_assets, char* err, s
 // RFC 9110 15: the error answer - the prebuilt status line and Date, then
 // the page rendered for THIS request. RFC 9110 9.3.2: a HEAD carries the
 // Content-Length a GET would have sent, and no body.
-void Http1::spell_error(const Resp& prefix, const Resp& bodyless, uint16_t status,
-                        bool head_only, int media, const ErrorPages::Fields& f,
-                        std::string& sink) {
+void Http1::spell_error(const ErrorAnswer& e, std::string& sink) {
   std::string body;
   size_t dlen = 0;
-  const char* data = err_pages_.body_for(status, media, f, body, &dlen);
+  const char* data = err_pages_.body_for(e.status, e.media, e.fields, body, &dlen);
   if (data == nullptr) {
-    sink.append(bodyless.bytes);
+    sink.append(e.bodyless.bytes);
     return;
   }
-  sink.append(prefix.bytes);
-  sink.append("Content-Type: ").append(err_pages_.media_type(media)).append("\r\n");
+  sink.append(e.prefix.bytes);
+  sink.append("Content-Type: ").append(err_pages_.media_type(e.media)).append("\r\n");
   char cl[40];
   sink.append(cl, http::spell_content_length(cl, dlen));
-  if (!head_only) sink.append(data, dlen);
+  if (!e.head_only) sink.append(data, dlen);
 }
 
 // RFC 9110 6.3 / RFC 9111: a mounted archive answers this target on its
@@ -534,10 +531,13 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
       const Variants& sv = variants(step.status_code);
       const bool plain = r.minor >= 1;
       const ErrorPages::Fields none;
-      spell_error(plain ? (r.persist ? pv.plain : pv.close) : (r.persist ? pv.keep : pv.close),
-                  plain ? (r.persist ? sv.plain : sv.close) : (r.persist ? sv.keep : sv.close),
-                  step.status_code, r.head_only,
-                  err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len), none,
+      const Resp& prefix =
+          plain ? (r.persist ? pv.plain : pv.close) : (r.persist ? pv.keep : pv.close);
+      const Resp& bodyless =
+          plain ? (r.persist ? sv.plain : sv.close) : (r.persist ? sv.keep : sv.close);
+      spell_error({prefix, bodyless, step.status_code,
+                   err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len),
+                   none, r.head_only},
                   sink);
       break;
     }
@@ -677,8 +677,9 @@ bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags
   // Nothing is parsed on this path, so there is no Accept to weigh and no
   // target to name: the page for the status, and that is all it can say.
   const ErrorPages::Fields f;
-  spell_error(prefixes(status).close, variants(status).close, status, false,
-              err_pages_.media_for(status, nullptr, 0), f, sink);
+  spell_error({prefixes(status).close, variants(status).close, status,
+               err_pages_.media_for(status, nullptr, 0), f, false},
+              sink);
   st.carry.clear();
   st.content_skip = 0;
   st.content_need = 0;
@@ -1275,15 +1276,16 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         lend_body(st, sink, lent, lent_len, *plan);
         break;
       }
-      case AnswerStep::Shape::kGzip:
-        assemble_dynamic(
-            st, accept_gzip,
+      case AnswerStep::Shape::kGzip: {
+        const Resp& prefix_id =
             minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
-                       : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close),
+                       : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close);
+        const Resp& prefix_gz =
             minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
-                       : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close),
-            head_only, sink);
+                       : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
+        assemble_dynamic({prefix_id, prefix_gz, accept_gzip && st.packetized, head_only}, sink);
         break;
+      }
       case AnswerStep::Shape::kPlain:
         assemble(sink, minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                   : (persist ? b->ok_prefix.keep : b->ok_prefix.close),
@@ -1305,11 +1307,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           f.backtrace = ef.backtrace;
           f.backtrace_len = ef.backtrace_len;
         }
-        spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
-                               : (persist ? pv.keep : pv.close),
-                    minor >= 1 ? (persist ? bv.plain : bv.close)
-                               : (persist ? bv.keep : bv.close),
-                    500, head_only, err_pages_.media_for(500, vals.accept, vals.accept_len), f,
+        const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                        : (persist ? pv.keep : pv.close);
+        const Resp& bodyless = minor >= 1 ? (persist ? bv.plain : bv.close)
+                                          : (persist ? bv.keep : bv.close);
+        spell_error({prefix, bodyless, 500,
+                     err_pages_.media_for(500, vals.accept, vals.accept_len), f, head_only},
                     sink);
         break;
       }
@@ -1322,11 +1325,12 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         // a 304 or a redirect is an answer, and answers carry no page.
         if (status >= 400) {
           const Variants& pv = store_prefix_[(*idx)[status]];
-          ErrorPages::Fields f;
-          spell_error(minor >= 1 ? (persist ? pv.plain : pv.close)
-                                 : (persist ? pv.keep : pv.close),
-                      bodyless, status, head_only,
-                      err_pages_.media_for(status, vals.accept, vals.accept_len), f, sink);
+          const ErrorPages::Fields f;
+          const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                          : (persist ? pv.keep : pv.close);
+          spell_error({prefix, bodyless, status,
+                       err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
+                      sink);
         } else {
           sink.append(bodyless.bytes);
         }
