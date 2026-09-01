@@ -336,7 +336,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (asset != nullptr) {
       const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
       if (!h2_asset_answer(st0, ask, sink)) return false;
-      h2_log(st0, facts, target.data(), target.size());
+      h2_log(st0, {facts, target});
       return true;
     }
     std::string body;
@@ -369,7 +369,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (!h2_answer(st0, q, sink)) {
       return false;
     }
-    h2_log(st0, facts, target.data(), target.size());
+    h2_log(st0, {facts, target});
     return true;
   }
 
@@ -495,7 +495,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (asset != nullptr) {
       const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
       if (!h2_asset_answer(st0, ask, sink)) return false;
-      h2_log(st0, facts, path_val, path_vlen);
+      h2_log(st0, {facts, {path_val, path_vlen}});
       return true;
     }
     ReqView rv;
@@ -516,7 +516,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (!h2_answer(st0, q, sink)) {
       return false;
     }
-    h2_log(st0, facts, path_val, path_vlen);
+    h2_log(st0, {facts, {path_val, path_vlen}});
     return true;
   }
   H2Stream& stx = h2.open(stream_id);
@@ -741,7 +741,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       // from here - parked or not - gets none.
       // The SAME [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
       // to lend, and h2 has no gzip path for a dynamic body to collide with.
-      const BoundRequest asked = {facts, vals, req, head_only ? 0 : zc_min_};
+      const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_};
       const RunAnswer answer = {&body_, &have_body, &rhdrs_};
       status = resource_run(*b->res, asked, answer);
       lent_have = resource_body_lent(*b->res, &lent_v, &lent, &lent_len);
@@ -1207,8 +1207,11 @@ static const char* alog_method(flow::Method m, size_t* n) {
 }
 
 // RFC 9113: one answer, one access line, written where :path still lives.
-void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen) {
+void Http1::h2_log(Conn& st, const H2Logged& l) {
   if (!alog_.enabled) return;
+  const flow::ReqFacts& facts = l.facts;
+  const char* const target = l.target.data();
+  const size_t tlen = l.target.size();
   size_t mn = 0;
   const char* m = alog_method(facts.method, &mn);
   log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
@@ -1266,8 +1269,7 @@ static size_t h2_emit(RoundOut& out, const H2Sending& sending) {
 // Both windows and the body's one cursor, from what really went out. The
 // owned buffer used to erase from its front - a memmove per round to say
 // what an offset says for free.
-static void h2_advance(H2State& h2, H2Stream& s, const Http1::H2SendStep& step, size_t sent) {
-  (void)step;
+static void h2_advance(H2State& h2, H2Stream& s, size_t sent) {
   if (sent == 0) return;
   h2.flow_window -= static_cast<int64_t>(sent);
   s.flow_window -= static_cast<int64_t>(sent);
@@ -1286,7 +1288,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
     const H2SendStep step = h2_send_step(stp, h2.flow_window, kDeliverChunk);
     if (step.give == 0) continue;
     const size_t sent = h2_emit(out, {stp, step, h2.peer_max_frame});
-    h2_advance(h2, stp, step, sent);
+    h2_advance(h2, stp, sent);
   }
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   for (size_t i = 0; i < h2.streams.size();) {
@@ -1340,7 +1342,7 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
     if (step.src != FileStep::Src::kNone) {
       const char* base = step.src == FileStep::Src::kMapping ? st.file->map_addr
                                                              : st.file->buf.data();
-      lend_body(st, sink, base + step.start, step.give, plan);
+      lend_body(st, sink, {{base + step.start, step.give}, plan});
     }
     file_apply(st, step);
     // Still owed: this round is spent.
@@ -1499,7 +1501,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
           if (!h2_answer(st0, q, sink)) {            return false;
           }
-          h2_log(st0, facts, target.data(), target.size());
+          h2_log(st0, {facts, target});
         }
         break;
       }

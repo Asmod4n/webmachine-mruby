@@ -729,10 +729,11 @@ bool Http1::feed(Conn& st, const char* data, size_t len, std::string& sink, Plan
 // RFC 9110 8.6: the body the run LENT, delivered as an external segment
 // over its own frozen String - the door http1's mmap'd assets already use.
 // The sink bytes it splits are claimed on either side of it by offset.
-void Http1::lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan) {
+void Http1::lend_body(Conn& st, std::string& sink, Lending lend) {
+  Plan& plan = lend.plan;
   claim_sink(st, sink, plan);
-  plan.iov[plan.iovlen++] = Plan::Seg{body, 0, len};
-  plan.byte_total += len;
+  plan.iov[plan.iovlen++] = Plan::Seg{lend.body.data(), 0, lend.body.size()};
+  plan.byte_total += lend.body.size();
   st.zc_split = true;
 }
 
@@ -1134,7 +1135,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                                !gz_now)
                                   ? zc_min_
                                   : 0;
-        const BoundRequest asked = {facts, &vals, &rv, zc_min};
+        const RunAsk asked = {facts, &vals, &rv, zc_min};
         const RunAnswer answer = {&body_, &have_body, &rhdrs_};
         status = resource_run(*b->res, asked, answer);
         if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc_value, &lent, &lent_len))) {
@@ -1229,7 +1230,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
               lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size())};
           spell_head(sink, head);
           if (!bodyless && !head_only) {
-            if (lent != nullptr) lend_body(st, sink, lent, lent_len, *plan);
+            if (lent != nullptr) lend_body(st, sink, {{lent, lent_len}, *plan});
             else sink.append(baked ? b->konst.body : body_);
           }
           have_body = false;
@@ -1293,7 +1294,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         sink.append(pfx.bytes);
         char cl[40];
         sink.append(cl, http::spell_content_length(cl, lent_len));
-        lend_body(st, sink, lent, lent_len, *plan);
+        lend_body(st, sink, {{lent, lent_len}, *plan});
         break;
       }
       case AnswerStep::Shape::kGzip: {

@@ -391,10 +391,16 @@ bool contains(const char* accept, size_t len, const char* t, size_t tlen) {
   return false;
 }
 
-// One key of the mustache context, both halves as Strings.
-void hash_put_str(mrb_state* mrb, mrb_value ctx, const char* key, const char* val, size_t len) {
-  mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, key),
-               mrb_str_new(mrb, val, static_cast<mrb_int>(len)));
+// One key of the mustache context and the bytes behind it.
+struct CtxEntry {
+  const char* key;
+  std::string_view value;
+};
+
+// Both halves as Strings.
+void hash_put_str(mrb_state* mrb, mrb_value ctx, CtxEntry e) {
+  mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, e.key),
+               mrb_str_new(mrb, e.value.data(), static_cast<mrb_int>(e.value.size())));
 }
 
 // RFC 9110 12.5.1: does this Accept name one of the forms we offer, as a
@@ -514,12 +520,16 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
   const int ai = mrb_gc_arena_save(mrb);
   mrb_value ctx = mrb_hash_new(mrb);
   mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
-  hash_put_str(mrb, ctx, "title", status_title(status), std::strlen(status_title(status)));
-  hash_put_str(mrb, ctx, "source", status_source(status), std::strlen(status_source(status)));
-  if (f.fingerprint != nullptr) hash_put_str(mrb, ctx, "id", f.fingerprint, kFingerprintLen);
-  if (f.message != nullptr && f.message_len != 0) hash_put_str(mrb, ctx, "message", f.message, f.message_len);
+  hash_put_str(mrb, ctx, {"title", status_title(status)});
+  hash_put_str(mrb, ctx, {"source", status_source(status)});
+  if (f.fingerprint != nullptr) {
+    hash_put_str(mrb, ctx, {"id", {f.fingerprint, kFingerprintLen}});
+  }
+  if (f.message != nullptr && f.message_len != 0) {
+    hash_put_str(mrb, ctx, {"message", {f.message, f.message_len}});
+  }
   if (f.backtrace != nullptr && f.backtrace_len != 0) {
-    hash_put_str(mrb, ctx, "backtrace", f.backtrace, f.backtrace_len);
+    hash_put_str(mrb, ctx, {"backtrace", {f.backtrace, f.backtrace_len}});
   }
   const int16_t cslot = status >= kFirstError && status < kPastLastError
                             ? cat_index_[status - kFirstError]
@@ -529,7 +539,7 @@ bool ErrorPages::render(uint16_t status, int slot, const Fields& f, std::string&
     mrb_value cat = mrb_hash_new(mrb);
     // The pack carries the <img> finished - src, size and alt - so the
     // page lends it out and joins nothing.
-    hash_put_str(mrb, cat, "cat_tag", c.entry->img_tag, c.entry->img_tag_len);
+    hash_put_str(mrb, cat, {"cat_tag", {c.entry->img_tag, c.entry->img_tag_len}});
     mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
   }
 

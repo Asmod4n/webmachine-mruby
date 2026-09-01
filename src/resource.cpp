@@ -1384,8 +1384,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           continue;
         }
         take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_match != nullptr &&
-             http::etag_list_match(vals->if_match, vals->if_match_len, res.etag_value.data(),
-                                   res.etag_value.size(), false));
+             http::etag_list_match({{vals->if_match, vals->if_match_len},
+                                    res.etag_value, false}));
         continue;
       }
       case Node::kK13: {
@@ -1396,8 +1396,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           continue;
         }
         take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
-             http::etag_list_match(vals->if_none_match, vals->if_none_match_len,
-                                   res.etag_value.data(), res.etag_value.size(), true));
+             http::etag_list_match({{vals->if_none_match, vals->if_none_match_len},
+                                    res.etag_value, true}));
         continue;
       }
       case Node::kH12: {
@@ -1950,8 +1950,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
 // it, and a raise leaves the exception pending for the error resource.
-uint16_t resource_run(const Resource& res, const BoundRequest& asked,
-                      const RunAnswer& answer) {
+uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer) {
   mrb_state* mrb = res.mrb;
   request_bind(asked.req);
   response_bind(&res);

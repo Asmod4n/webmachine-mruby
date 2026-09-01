@@ -328,14 +328,14 @@ uint16_t Assets::verdict(const AssetEntry& e, const AssetRequest& r) const {
     return 406;
   }
   if (f.has_if_match && !f.if_match_star &&
-      !http::etag_list_match(vals.if_match, vals.if_match_len, e.etag, sizeof(e.etag),
-                             false)) {
+      !http::etag_list_match(
+          {{vals.if_match, vals.if_match_len}, {e.etag, sizeof(e.etag)}, false})) {
     return 412;
   }
   if (f.has_if_none_match &&
       (f.if_none_match_star ||
-       http::etag_list_match(vals.if_none_match, vals.if_none_match_len, e.etag,
-                             sizeof(e.etag), true))) {
+       http::etag_list_match(
+           {{vals.if_none_match, vals.if_none_match_len}, {e.etag, sizeof(e.etag)}, true}))) {
     return 304;
   }
   return 200;

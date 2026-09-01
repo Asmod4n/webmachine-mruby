@@ -207,19 +207,34 @@ bool symbol_code(mrb_sym s, uint16_t& code) {
 }
 
 // RFC 6455 5.1: one frame into the sink - header here, payload where it lies.
-void emit(std::string& sink, uint8_t opcode, const char* p, size_t n, bool rsv1 = false) {
+// One frame to send: what it is, the octets it carries, and whether those
+// octets are deflated (RFC 7692 6).
+struct Outgoing {
+  uint8_t opcode;
+  std::string_view payload;
+  bool deflated = false;
+};
+
+void emit(std::string& sink, Outgoing frame) {
+  const size_t n = frame.payload.size();
   char head[10];
-  const size_t hn = ws::build_header({opcode, true, rsv1, n}, head);
+  const size_t hn = ws::build_header({frame.opcode, true, frame.deflated, n}, head);
   sink.append(head, hn);
-  if (n != 0) sink.append(p, n);
+  if (n != 0) sink.append(frame.payload);
 }
 
 // RFC 6455 5.6 / RFC 7692 6: a DATA message, compressed where negotiated.
 // How many of `most` arguments the method takes, or false if it is not
 // defined. A cfunc is handed all of them; a Ruby method only its arity.
-bool method_argc(mrb_state* mrb, struct RClass* klass, mrb_sym sym, int most, int* out_argc) {
-  struct RClass* owner = klass;
-  mrb_method_t m = mrb_method_search_vm(mrb, &owner, sym);
+// One method to look for: the class it would be on, and its name.
+struct Method {
+  struct RClass* klass;
+  mrb_sym sym;
+};
+
+bool method_argc(mrb_state* mrb, Method want, int most, int* out_argc) {
+  struct RClass* owner = want.klass;
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, want.sym);
   if (MRB_METHOD_UNDEF_P(m)) return false;
   int a = most;
   if (!MRB_METHOD_FUNC_P(m)) {
@@ -246,11 +261,11 @@ void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size
   if (c->codec != nullptr) {
     static std::string scratch;
     if (c->codec->compress(p, n, scratch)) {
-      emit(sink, opcode, scratch.data(), scratch.size(), true);
+      emit(sink, {opcode, scratch, true});
       return;
     }
   }
-  emit(sink, opcode, p, n);
+  emit(sink, {opcode, {p, n}});
 }
 
 // RFC 6455 5.5.1: the close handshake's own half, sent at most once.
@@ -259,7 +274,7 @@ void emit_close(WsConn* c, std::string& sink, ws::Close close) {
   c->sent_close = true;
   char payload[125];
   const size_t n = ws::build_close_payload(close, payload);
-  emit(sink, ws::kClose, payload, n);
+  emit(sink, {ws::kClose, {payload, n}});
 }
 
 // RFC 3629: can these 1-3 bytes still BECOME a valid sequence?
@@ -397,7 +412,7 @@ bool deliver(WsConn* c, std::string& sink) {
 bool finish_frame(WsConn* c, std::string& sink) {
   switch (c->opcode) {
     case ws::kPing:
-      if (!c->sent_close) emit(sink, ws::kPong, c->ctl, c->ctl_len);
+      if (!c->sent_close) emit(sink, {ws::kPong, {c->ctl, c->ctl_len}});
       return true;
     case ws::kPong:
       return true;
@@ -605,13 +620,14 @@ bool ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out, char* err, size_t
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
 
-  if (!method_argc(mrb, out.klass, MRB_SYM(on_data), 2, &out.data_argc)) {
+  if (!method_argc(mrb, {out.klass, MRB_SYM(on_data)}, 2, &out.data_argc)) {
     std::snprintf(err, errlen,
                   "route.websocket: the resource defines no on_data - that is the one "
                   "method a websocket resource IS (on_data(data) or on_data(data, binary))");
     return false;
   }
-  out.have_close = method_argc(mrb, out.klass, MRB_SYM(on_close), 2, &out.close_argc);
+  out.have_close =
+      method_argc(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.close_argc);
 
   {
     struct RClass* meta = mrb_class(mrb, klass);

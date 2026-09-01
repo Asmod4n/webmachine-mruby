@@ -440,15 +440,24 @@ struct Shortcut {
   bool always = false;
 };
 
+// One walk of the graph in progress: the konst answers it follows, and
+// which nodes it has already stood on.
+struct Walk {
+  const KonstAnswers& answers;
+  bool* seen;
+};
+
 // c4 counts as one, for the reason walk() gives above.
-constexpr bool reaches_a_node_that_reads_the_request(Node n, const KonstAnswers& k, bool* seen) {
+constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w) {
+  const KonstAnswers& k = w.answers;
+  bool* const seen = w.seen;
   if (seen[static_cast<size_t>(n)]) return false;
   seen[static_cast<size_t>(n)] = true;
   const FlowNode& f = kFlow[static_cast<size_t>(n)];
   if (f.kind == Kind::kRequest || n == Node::kC4) return true;
   const Target& t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
   if (t.status != 0) return false;
-  return reaches_a_node_that_reads_the_request(t.node, k, seen);
+  return reaches_a_node_that_reads_the_request(t.node, w);
 }
 
 // The two skips above are claims about the graph, so the graph is asked.
@@ -500,7 +509,7 @@ constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
   plain_facts.method = m;
   s.status = walk(plain_facts, k);
   bool seen[kNodeCount] = {};
-  s.always = !reaches_a_node_that_reads_the_request(Node::kB13, k, seen);
+  s.always = !reaches_a_node_that_reads_the_request(Node::kB13, {k, seen});
   return s;
 }
 
@@ -1611,9 +1620,21 @@ inline bool gzip_acceptable(const char* v, size_t n) {
   return false;
 }
 
-// RFC 9110 13.1.1/13.1.2: strong for If-Match, weak for If-None-Match.
-inline bool etag_list_match(const char* v, size_t n, const char* tag, size_t taglen,
-                            bool weak) {
+// RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
+// representation's own tag, and which comparison applies - strong for
+// If-Match, weak for If-None-Match.
+struct EtagMatch {
+  std::string_view list;
+  std::string_view tag;
+  bool weak;
+};
+
+inline bool etag_list_match(EtagMatch m) {
+  const char* const v = m.list.data();
+  const size_t n = m.list.size();
+  const char* const tag = m.tag.data();
+  const size_t taglen = m.tag.size();
+  const bool weak = m.weak;
   size_t i = 0;
   while (i < n) {
     while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
@@ -2444,7 +2465,7 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 // header values the calling frame still holds (none where that frame is
 // already gone), the bytes themselves, and the smallest body worth LENDING
 // rather than copying - 0 where nothing downstream could hold a lend.
-struct BoundRequest {
+struct RunAsk {
   const flow::ReqFacts& facts;
   const http::ReqValues* vals;
   const ReqView* req;
@@ -2459,8 +2480,7 @@ struct RunAnswer {
   std::string* headers;
 };
 
-uint16_t resource_run(const Resource& res, const BoundRequest& asked,
-                      const RunAnswer& answer);
+uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
 
@@ -4309,7 +4329,13 @@ class Http1 {
   static void assemble(std::string& sink, const Assembled& a);
   bool feed_parse(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
-  static void lend_body(Conn& st, std::string& sink, const char* body, size_t len, Plan& plan);
+  // The bytes one answer LENDS rather than copies, and the plan they are
+  // lent into.
+  struct Lending {
+    std::string_view body;
+    Plan& plan;
+  };
+  static void lend_body(Conn& st, std::string& sink, Lending lend);
   // RFC 9110 12.5.3/12.5.5: what a dynamic 200 chooses between - the two
   // prebuilt prefixes, whether gzip is on the table at all (the peer
   // accepts it AND this connection is packetized), and whether the request
@@ -4428,7 +4454,13 @@ class Http1 {
   };
   bool h2_dispatch(Conn& st, const H2Headers& h, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
-  void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
+  // What one h2 access line is written from: the facts the stream carried,
+  // and the :path they were read beside - which is still live only here.
+  struct H2Logged {
+    const flow::ReqFacts& facts;
+    std::string_view target;
+  };
+  void h2_log(Conn& st, const H2Logged& l);
   // `target` rides beside `req` because an error answer needs it even
   // when no route matched - a 404 names what was not found, and that is
   // exactly the case where there is no ReqView (#210).
