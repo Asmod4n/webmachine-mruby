@@ -834,13 +834,35 @@ inline constexpr uint8_t kLogRecVersion = 3;
 inline constexpr uint8_t kLogH2 = 1;       // RFC 9113: the version token
 inline constexpr uint8_t kLogNoTrack = 2;  // no RFC: operator's choice
 
-// Combined Log Format: one response as one record. Truncation caps are the
-// wire fields' widths.
-inline void log_access(Logger& lg, const void* peer, size_t peer_len,
-                       const char* method_token, size_t method_token_len,
-                       const char* request_target, size_t request_target_len, uint8_t flags,
-                       uint16_t status_code, size_t content_length, const char* referer,
-                       size_t referer_len, const char* user_agent, size_t user_agent_len) {
+// Combined Log Format: one response as one record. The five views and the
+// four numbers travelled together through fourteen arguments before -
+// see #std-first; this is what they are.
+struct AccessLine {
+  std::string_view peer;           // the socket's address, already spelled
+  std::string_view method_token;   // RFC 9110 9.1
+  std::string_view request_target; // RFC 9112 3.2
+  std::string_view referer;        // RFC 9110 10.1.3 - the RFC misspells it
+  std::string_view user_agent;     // RFC 9110 10.1.5
+  size_t content_length = 0;       // RFC 9110 8.6 - content octets, no headers
+  uint16_t status_code = 0;        // RFC 9110 15
+  uint8_t flags = 0;
+};
+
+// Truncation caps are the wire fields' widths.
+inline void log_access(Logger& lg, const AccessLine& line) {
+  size_t peer_len = line.peer.size();
+  size_t method_token_len = line.method_token.size();
+  size_t request_target_len = line.request_target.size();
+  size_t referer_len = line.referer.size();
+  size_t user_agent_len = line.user_agent.size();
+  const uint8_t flags = line.flags;
+  const uint16_t status_code = line.status_code;
+  const size_t content_length = line.content_length;
+  const char* peer = line.peer.data();
+  const char* method_token = line.method_token.data();
+  const char* request_target = line.request_target.data();
+  const char* referer = line.referer.data();
+  const char* user_agent = line.user_agent.data();
   if (method_token_len > 255) method_token_len = 255;
   if (peer_len > 255) peer_len = 255;
   if (request_target_len > 65535) request_target_len = 65535;
@@ -860,7 +882,7 @@ inline void log_access(Logger& lg, const void* peer, size_t peer_len,
   r.user_agent_len = static_cast<uint16_t>(user_agent_len);
   lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
   if (method_token_len != 0) lg.pending.append(method_token, method_token_len);
-  if (peer_len != 0) lg.pending.append(static_cast<const char*>(peer), peer_len);
+  if (peer_len != 0) lg.pending.append(peer, peer_len);
   if (request_target_len != 0) lg.pending.append(request_target, request_target_len);
   if (referer_len != 0) lg.pending.append(referer, referer_len);
   if (user_agent_len != 0) lg.pending.append(user_agent, user_agent_len);

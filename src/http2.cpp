@@ -1174,9 +1174,13 @@ void Http1::h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, si
   if (!alog_.enabled) return;
   size_t mn = 0;
   const char* m = alog_method(facts.method, &mn);
-  log_access(alog_, st.peer, st.peer_len, m, mn, target, tlen,
-             static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0)), alog_status_,
-             alog_bytes_, nullptr, 0, nullptr, 0);
+  log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                     {m, mn},
+                     {target, tlen},
+                     {}, {},
+                     alog_bytes_,
+                     alog_status_,
+                     static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0))});
 }
 
 // RFC 9113 6.9: one round of parked streams, as segments; the cursor keeps

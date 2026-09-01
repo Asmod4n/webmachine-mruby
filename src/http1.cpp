@@ -544,10 +544,14 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
     }
   }
   if (alog_.enabled) {
-    log_access(alog_, r.st.peer, r.st.peer_len, r.method, r.method_len, r.path, r.path_len, r.lflags,
-               step.status_code, step.sends_content ? step.content_length : (sent_page ? eblen : 0),
-               r.vals.log_ref,
-               r.vals.log_ref_len, r.vals.log_ua, r.vals.log_ua_len);
+    log_access(alog_, {{static_cast<const char*>(r.st.peer), r.st.peer_len},
+                       {r.method, r.method_len},
+                       {r.path, r.path_len},
+                       {r.vals.log_ref, r.vals.log_ref_len},
+                       {r.vals.log_ua, r.vals.log_ua_len},
+                       step.sends_content ? step.content_length : (sent_page ? eblen : 0),
+                       step.status_code,
+                       r.lflags});
   }
   // The head this answered is consumed here, not by the caller -
   // the caller only learns r.off once the round is taken.
@@ -652,8 +656,8 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
 
 bool Http1::fail(Conn& st, uint16_t status, std::string& sink, uint8_t log_flags) {
   if (alog_.enabled) {
-    log_access(alog_, st.peer, st.peer_len, nullptr, 0, "-", 1, log_flags, status, 0, nullptr, 0,
-               nullptr, 0);
+    log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                       {}, "-", {}, {}, 0, status, log_flags});
   }
   // Nothing is parsed on this path, so there is no Accept to weigh and no
   // target to name: the page for the status, and that is all it can say.
@@ -838,10 +842,9 @@ void Http1::file_apply(Conn& st, const FileStep& step) {
 void Http1::file_log(Conn& st) {
   if (!alog_.enabled || st.file == nullptr) return;
   const Conn::FileXfer& x = *st.file;
-  log_access(alog_, st.peer, st.peer_len, x.method_token.data(), x.method_token.size(),
-             x.request_target.data(), x.request_target.size(), x.log_flags, x.status_code,
-             x.content_sent, x.referer.data(), x.referer.size(), x.user_agent.data(),
-             x.user_agent.size());
+  log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                     x.method_token, x.request_target, x.referer, x.user_agent,
+                     x.content_sent, x.status_code, x.log_flags});
 }
 
 // A connection dying under a transfer still owes its line - that event is
@@ -1303,9 +1306,14 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       }
     }
     if (alog_.enabled) {
-      log_access(alog_, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status,
-                 (astep.answered && !head_only) ? astep.body_len : 0, vals.log_ref,
-                 vals.log_ref_len, vals.log_ua, vals.log_ua_len);
+      log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                         {method, method_len},
+                         {path, path_len},
+                         {vals.log_ref, vals.log_ref_len},
+                         {vals.log_ua, vals.log_ua_len},
+                         (astep.answered && !head_only) ? astep.body_len : 0,
+                         status,
+                         lflags});
     }
 
     off += static_cast<size_t>(ret);
@@ -1391,8 +1399,12 @@ void Http1::log_sse(Logger& lg, const Conn& st, const char* method, size_t metho
                     const char* path, size_t path_len, const http::ReqValues& vals,
                     uint8_t lflags, uint16_t status) {
   if (!lg.enabled) return;
-  log_access(lg, st.peer, st.peer_len, method, method_len, path, path_len, lflags, status, 0,
-             vals.log_ref, vals.log_ref_len, vals.log_ua, vals.log_ua_len);
+  log_access(lg, {{static_cast<const char*>(st.peer), st.peer_len},
+                  {method, method_len},
+                  {path, path_len},
+                  {vals.log_ref, vals.log_ref_len},
+                  {vals.log_ua, vals.log_ua_len},
+                  0, status, lflags});
 }
 
 // WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111
