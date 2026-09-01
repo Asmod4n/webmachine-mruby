@@ -33,7 +33,11 @@ struct SseStream {
 namespace {
 // WHATWG HTML: one "field: value" line; a value with newlines is
 // several lines of the same field.
-void field(std::string& out, const char* name, size_t nlen, const char* v, size_t vlen) {
+void field(std::string& out, http::Field f) {
+  const char* const name = f.name.data();
+  const size_t nlen = f.name.size();
+  const char* const v = f.value.data();
+  const size_t vlen = f.value.size();
   size_t i = 0;
   do {
     const char* nl = static_cast<const char*>(std::memchr(v + i, '\n', vlen - i));
@@ -49,13 +53,13 @@ void field(std::string& out, const char* name, size_t nlen, const char* v, size_
 // WHATWG HTML: the same line, from a Ruby value.
 void field(std::string& out, const char* name, const mrb_value& v) {
   if (!mrb_string_p(v)) return;
-  field(out, name, std::strlen(name), RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  field(out, {name, {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
 }
 
 // WHATWG HTML: one event out of what on_tick returned.
 bool spell_event(mrb_state* mrb, const mrb_value& v, std::string& out) {
   if (mrb_string_p(v)) {
-    field(out, "data", 4, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+    field(out, {"data", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
     out.append("\n", 1);
     return true;
   }
@@ -70,7 +74,7 @@ bool spell_event(mrb_state* mrb, const mrb_value& v, std::string& out) {
     char buf[24];
     const int n = std::snprintf(buf, sizeof buf, "%lld",
                                 static_cast<long long>(mrb_fixnum(rt)));
-    if (n > 0) field(out, "retry", 5, buf, static_cast<size_t>(n));
+    if (n > 0) field(out, {"retry", {buf, static_cast<size_t>(n)}});
   }
   if (mrb_array_p(da)) {
     const mrb_int n = RARRAY_LEN(da);

@@ -513,11 +513,19 @@ constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
   return s;
 }
 
+// What the fold settled about one resource, for one method: the konst
+// answers the walk follows, and the shortcut that says when it need not
+// walk at all.
+struct Decided {
+  const KonstAnswers& konst;
+  const Shortcut& shortcut;
+};
+
 // RFC 9110: the one entry point the request path calls. Two integer tests
 // where the graph could not have said anything else.
-constexpr uint16_t answer(const ReqFacts& req, const KonstAnswers& k, const Shortcut& s) {
-  if (s.always || req.plain) return s.status;
-  return walk(req, k);
+constexpr uint16_t answer(const ReqFacts& req, Decided d) {
+  if (d.shortcut.always || req.plain) return d.shortcut.status;
+  return walk(req, d.konst);
 }
 
 namespace detail {
@@ -2199,7 +2207,7 @@ void request_bind(const ReqView* view);
 // from the fields it copied. Cold, and it lives in request.cpp so that
 // h2_dispatch stays header_switch's only caller in http2.cpp - two callers
 // there and the switch stops being inlined into the hot path.
-void values_of_copied_fields(const ::phr_header* fields, size_t n, http::ReqValues& out);
+void values_of_copied_fields(http::HeaderList h, http::ReqValues& out);
 
 // RFC 9110: n11's create_path names a new disp_path for THIS run;
 // request_bind clears the override. request.cpp owns the storage.
@@ -2503,14 +2511,26 @@ bool resource_exception_take(const Resource& res, mrb_value* out);
 
 // The body a bound run LENT rather than copied: the value the connection
 // has to hold until its send drains, and the bytes it may point at.
-bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len);
+// What a run LENT: the value the connection has to hold until its send
+// drains, and the bytes it may point at.
+struct LentBody {
+  mrb_value value;
+  std::string_view bytes;
+};
+bool resource_body_lent(const Resource& res, LentBody& out);
 
 // Hand a lent body back - the only legal end of the window opened above.
 void resource_body_unlend(mrb_state* mrb, mrb_value v);
 
 // Did this run name a file instead of spelling a body? Same hand-off shape
 // as resource_body_lent: the run is over, so the slot leaves the Resource.
-bool resource_file_wanted(const Resource& res, const char** ptr, size_t* len, bool* bad);
+// The file a run named, and whether the name was one this server refuses
+// to open at all.
+struct WantedFile {
+  std::string_view name;
+  bool bad;
+};
+bool resource_file_wanted(const Resource& res, WantedFile& out);
 
 // RFC 9110: Webmachine::Response - the object a runtime callback
 // writes to. Handles over the run slots above, nothing owns storage;
@@ -3153,7 +3173,16 @@ inline bool window_bits(const char* v, size_t n, uint8_t& out) {
 
 // RFC 7692 4.2/5.1: one Sec-WebSocket-Extensions value, answered with the
 // FIRST offer this endpoint can accept. Declining is never an error.
-inline bool negotiate(const char* v, size_t len, Params& out, std::string& answer) {
+// What one negotiation answers: the parameters this endpoint accepted, and
+// the Sec-WebSocket-Extensions value to echo back.
+struct Negotiated {
+  Params& params;
+  std::string& echo;
+};
+
+inline bool negotiate(std::string_view value, Negotiated out) {
+  const char* const v = value.data();
+  const size_t len = value.size();
   size_t i = 0;
   while (i < len) {
     while (i < len && (detail::is_ows(v[i]) || v[i] == ',')) i++;
@@ -3232,16 +3261,16 @@ inline bool negotiate(const char* v, size_t len, Params& out, std::string& answe
     }
 
     if (ok) {
-      out = p;
-      answer.assign("permessage-deflate");
-      if (p.server_no_context_takeover) answer.append("; server_no_context_takeover");
-      if (p.client_no_context_takeover) answer.append("; client_no_context_takeover");
+      out.params = p;
+      out.echo.assign("permessage-deflate");
+      if (p.server_no_context_takeover) out.echo.append("; server_no_context_takeover");
+      if (p.client_no_context_takeover) out.echo.append("; client_no_context_takeover");
       if (seen_smwb) {
-        answer.append("; server_max_window_bits=")
+        out.echo.append("; server_max_window_bits=")
             .append(std::to_string(static_cast<unsigned>(p.server_max_window_bits)));
       }
       if (echo_cmwb) {
-        answer.append("; client_max_window_bits=")
+        out.echo.append("; client_max_window_bits=")
             .append(std::to_string(static_cast<unsigned>(p.client_max_window_bits)));
       }
       return true;
@@ -3272,7 +3301,13 @@ void ws_resource_free(WsResource* r);
 
 void ws_init(mrb_state* mrb, struct RClass* wm);
 
-WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status);
+// RFC 6455 4.2.2: what admitting one connection answered - the subprotocol
+// to echo back, and the status a refusal carries (0 = admitted).
+struct WsAdmit {
+  std::string& proto;
+  uint16_t& status;
+};
+WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit out);
 
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 
@@ -3480,7 +3515,7 @@ namespace webmachine {
 struct WsResource;
 struct WsConn;
 namespace wsdeflate { struct Params; }
-WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status);
+WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit out);
 bool ws_wants_deflate(const WsResource* r);
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, const char* data, size_t len, std::string& sink);

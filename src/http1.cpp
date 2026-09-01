@@ -640,10 +640,8 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
 // A name this process already refused takes the same 404 the kernel's
 // own refusal would, spelled here since no ring trip is owed.
 bool Http1::answer_from_file(Round& r, uint16_t status) {
-  const char* fp = nullptr;
-  size_t fpn = 0;
-  bool fbad = false;
-  if (!resource_file_wanted(*r.b->res, &fp, &fpn, &fbad) || status != 200) return false;
+  WantedFile wanted;
+  if (!resource_file_wanted(*r.b->res, wanted) || status != 200) return false;
 
   Conn& st = r.st;
   // resource_run never lends a body a run also named a file for (see the
@@ -651,7 +649,7 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
   // for its h2-backlog drain.
   st.zc_release();
   if (st.file == nullptr) st.file = new Conn::FileXfer();
-  st.file->pathname.assign(fp, fpn);
+  st.file->pathname.assign(wanted.name);
   st.file->field_lines = rhdrs_;
   st.file->content_type = !r.b->res->run_content_type.empty()
                               ? http::with_charset(r.b->res->run_content_type)
@@ -668,7 +666,7 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
   st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
   st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
   st.file->stage = FileStage::kNamed;
-  if (fbad) file_reject(st);
+  if (wanted.bad) file_reject(st);
 
   size_t off = r.off;
   if (r.content_length != 0) {
@@ -1138,7 +1136,11 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         const RunAsk asked = {facts, &vals, &rv, zc_min};
         const RunAnswer answer = {&body_, &have_body, &rhdrs_};
         status = resource_run(*b->res, asked, answer);
-        if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc_value, &lent, &lent_len))) {
+        LentBody lent_body;
+        if (WM_H1_UNLIKELY(resource_body_lent(*b->res, lent_body))) {
+          st.zc_value = lent_body.value;
+          lent = lent_body.bytes.data();
+          lent_len = lent_body.bytes.size();
           st.zc_mrb = b->res->mrb;
           st.zc_lent = true;
         }
@@ -1244,8 +1246,8 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
           facts.accept_ok =
               http::choose_media_type({{&b->accept_type, 1}, {vals.accept, vals.accept_len}}) >= 0;
         }
-        status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
-                             b->konst.shortcut[static_cast<size_t>(facts.method)]);
+        const size_t mi = static_cast<size_t>(facts.method);
+        status = flow::answer(facts, {b->konst.per_method[mi], b->konst.shortcut[mi]});
       }
     }
 
@@ -1415,7 +1417,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   request_bind(&rv);
   std::string proto;
   uint16_t refuse_status = 0;
-  WsConn* wsc = ws_admit(res, elog_.enabled ? &elog_ : nullptr, proto, refuse_status);
+  WsConn* wsc = ws_admit(res, elog_.enabled ? &elog_ : nullptr, {proto, refuse_status});
   request_bind(nullptr);
   if (wsc == nullptr) {
     return fail(st, refuse_status == 0 ? 403 : refuse_status, sink);
@@ -1427,7 +1429,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
     const struct phr_header* hs = static_cast<const struct phr_header*>(hdrs);
     for (size_t i = 0; i < nhdr && !dparams.on; i++) {
       if (!http::tok_eq(hs[i].name, hs[i].name_len, "sec-websocket-extensions", 24)) continue;
-      wsdeflate::negotiate(hs[i].value, hs[i].value_len, dparams, ext_answer);
+      wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
     }
   }
 

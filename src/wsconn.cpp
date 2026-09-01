@@ -257,7 +257,10 @@ bool msg_cat(void* ud, const char* q, size_t qn) {
   return true;
 }
 
-void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size_t n) {
+void emit_data(WsConn* c, std::string& sink, Outgoing frame) {
+  const uint8_t opcode = frame.opcode;
+  const char* const p = frame.payload.data();
+  const size_t n = frame.payload.size();
   if (c->codec != nullptr) {
     static std::string scratch;
     if (c->codec->compress(p, n, scratch)) {
@@ -335,7 +338,10 @@ void drop_msg(WsConn* c) {
 }
 
 // RFC 6455 7.1.5: on_close, once, however the connection ended.
-void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_len) {
+void report_close(WsConn* c, ws::Close close) {
+  const uint16_t code = close.code;
+  const char* const reason = close.reason.data();
+  const size_t reason_len = close.reason.size();
   if (c->closed_reported || !c->res->have_close) return;
   c->closed_reported = true;
   mrb_state* mrb = c->res->mrb;
@@ -355,7 +361,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
 // RFC 6455 5.5.1: this side found something wrong - close with the code.
 bool fail(WsConn* c, std::string& sink, uint16_t code) {
   emit_close(c, sink, {code, {}});
-  report_close(c, code, nullptr, 0);
+  report_close(c, {code, {}});
   drop_msg(c);
   return false;
 }
@@ -379,13 +385,14 @@ bool deliver(WsConn* c, std::string& sink) {
     return fail(c, sink, ws::kCloseInternalError);
   }
   if (mrb_string_p(out)) {
-    emit_data(c, sink, binary ? ws::kBinary : ws::kText, RSTRING_PTR(out),
-              static_cast<size_t>(RSTRING_LEN(out)));
+    emit_data(c, sink,
+              {binary ? ws::kBinary : ws::kText,
+               {RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out))}});
   } else if (mrb_symbol_p(out)) {
     uint16_t code = 0;
     if (symbol_code(mrb_symbol(out), code)) {
       emit_close(c, sink, {code, {}});
-      report_close(c, code, nullptr, 0);
+      report_close(c, {code, {}});
     } else {
       std::fprintf(stderr,
                    "webmachine: on_data returned :%s, which is not a close this endpoint "
@@ -430,7 +437,7 @@ bool finish_frame(WsConn* c, std::string& sink) {
       c->got_close = true;
       const uint16_t say = code == 1005 ? ws::kCloseNormal : code;
       emit_close(c, sink, {say, close.reason});
-      report_close(c, code, reason, rlen);
+      report_close(c, {code, close.reason});
       drop_msg(c);
       return false;
     }
@@ -694,7 +701,9 @@ bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
 
 // RFC 6455 4.2.2: build THIS peer's resource; its initialize is the
 // connect hook and its return value is the answer.
-WsConn* ws_admit(const WsResource* r, Logger* elog, std::string& proto, uint16_t& status) {
+WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit answered) {
+  std::string& proto = answered.proto;
+  uint16_t& status = answered.status;
   proto.clear();
   status = 0;
   mrb_state* mrb = r->mrb;
@@ -750,7 +759,7 @@ void ws_open(WsConn* c, const wsdeflate::Params& deflate) {
 // RFC 6455 7.4.1: 1006 where no close frame was ever seen.
 void ws_free(WsConn* c) {
   if (c == nullptr) return;
-  report_close(c, 1006, nullptr, 0);
+  report_close(c, {1006, {}});
   drop_msg(c);
   if (c->res != nullptr && c->res->mrb != nullptr && !mrb_nil_p(c->self)) {
     mrb_gc_unregister(c->res->mrb, c->self);

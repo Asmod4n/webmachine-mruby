@@ -356,7 +356,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     // the decode buffer this stream no longer owns, and the copied fields
     // are where they still are.
     http::ReqValues pvals;
-    values_of_copied_fields(hv, nh, pvals);
+    values_of_copied_fields({hv, nh}, pvals);
     ReqView rv;
     rv.method = facts.method;
     rv.content = body.empty() ? nullptr : body.data();
@@ -744,7 +744,11 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_};
       const RunAnswer answer = {&body_, &have_body, &rhdrs_};
       status = resource_run(*b->res, asked, answer);
-      lent_have = resource_body_lent(*b->res, &lent_v, &lent, &lent_len);
+      LentBody lent_body;
+      lent_have = resource_body_lent(*b->res, lent_body);
+      lent_v = lent_body.value;
+      lent = lent_body.bytes.data();
+      lent_len = lent_body.bytes.size();
       if (lent_have) lent_mrb = b->res->mrb;
       // response.file is h1-only for now: the deferred open lives on the
       // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
@@ -753,10 +757,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       // run that named a file is REFUSED here rather than quietly served the
       // empty body it never meant to send.
       {
-        const char* fp = nullptr;
-        size_t fpn = 0;
-        bool fbad = false;
-        if (resource_file_wanted(*b->res, &fp, &fpn, &fbad)) {
+        WantedFile wanted;
+        if (resource_file_wanted(*b->res, wanted)) {
           have_body = false;
           status = h2_refuse_file(st0, req);
         }
@@ -774,8 +776,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         cf.accept_ok =
             http::choose_media_type({{&b->accept_type, 1}, {vals->accept, vals->accept_len}}) >= 0;
       }
-      status = flow::answer(cf, b->konst.per_method[static_cast<size_t>(cf.method)],
-                           b->konst.shortcut[static_cast<size_t>(cf.method)]);
+      const size_t mi = static_cast<size_t>(cf.method);
+      status = flow::answer(cf, {b->konst.per_method[mi], b->konst.shortcut[mi]});
     }
   }
 
@@ -1488,7 +1490,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           // Re-derived from the copied fields, which is the only place
           // they still exist.
           http::ReqValues pvals;
-          values_of_copied_fields(hv, nh, pvals);
+          values_of_copied_fields({hv, nh}, pvals);
           ReqView rv;
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.

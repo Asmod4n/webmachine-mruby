@@ -593,8 +593,12 @@ const std::vector<Resource::TypedHandler>& active_ct(Run& r) {
 // options() the field NAME too. Here because here is the only place that
 // spells a field; a raise inside the run frame is a 500, which is the
 // honest answer to a resource that made an unspellable one.
-void field(Run& r, const char* name, size_t nlen, const char* value, size_t vlen) {
+void field(Run& r, http::Field f) {
   mrb_state* mrb = r.mrb;
+  const char* const name = f.name.data();
+  const size_t nlen = f.name.size();
+  const char* const value = f.value.data();
+  const size_t vlen = f.value.size();
   if (WM_RES_LIKELY(http::field_name_ok(name, nlen) && http::field_value_ok(value, vlen))) {
     r.hdrs.append(name, nlen);
     r.hdrs.append(": ", 2);
@@ -608,13 +612,13 @@ void field(Run& r, const char* name, size_t nlen, const char* value, size_t vlen
 }
 
 // RFC 9110 5.6.7: one HTTP-date field, IMF-fixdate.
-void date_line(Run& r, const char* name, size_t nlen, int64_t epoch) {
+void date_line(Run& r, std::string_view name, int64_t epoch) {
   struct tm tmv {};
   const time_t t = static_cast<time_t>(epoch);
   gmtime_r(&t, &tmv);
   char buf[http::kDateLen];
   http::date_core(buf, tmv);
-  field(r, name, nlen, buf, http::kDateLen);
+  field(r, {name, {buf, http::kDateLen}});
 }
 
 // RFC 9110 12.5.2/12.5.3/12.5.4: what follows the Accept nodes. d4, e5 and
@@ -627,8 +631,19 @@ Node after_accept(const flow::ReqFacts& facts) {
              : Node::kG7;
 }
 
+// Where the flow walk stands: the node it is on, the status it has
+// reached, and whether an edge has halted it.
+struct At {
+  Node& node;
+  uint16_t& status;
+  bool& halted;
+};
+
 // fsm.rb run: one step's edge, out of the graph table.
-void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f, bool a) {
+void take_edge(At at, const flow::FlowNode& f, bool a) {
+  Node& n = at.node;
+  uint16_t& status = at.status;
+  bool& halted = at.halted;
   const flow::Target& t = a ? f.on_true : f.on_false;
   if (t.status != 0) {
     status = t.status;
@@ -641,8 +656,8 @@ void take_edge(Node& n, uint16_t& status, bool& halted, const flow::FlowNode& f,
 // The same step for the callers that do not already hold the node's row.
 // The generic node path does - it reads f.kind first - and calls the form
 // above rather than pay for a second flow::kFlow[n] lookup of the same node.
-void take_edge(Node& n, uint16_t& status, bool& halted, bool a) {
-  take_edge(n, status, halted, flow::kFlow[static_cast<size_t>(n)], a);
+void take_edge(At at, bool a) {
+  take_edge(at, flow::kFlow[static_cast<size_t>(at.node)], a);
 }
 
 // One list-valued field line: its name, the value that always leads where
@@ -855,7 +870,7 @@ void allow_line(Run& r) {
     if (r.res.cb_allowed_methods.has) {
       field_list(r, {"Allow", {}, r.res.run_methods});
     } else {
-      field(r, "Allow", 5, r.res.konst.allow.data(), r.res.konst.allow.size());
+      field(r, {"Allow", r.res.konst.allow});
     }
 }
 
@@ -963,15 +978,15 @@ int add_caching(Run& r) {
     const int h = ensure_etag(r);
     if (h >= 0) return h;
     if (r.res.etag_present) {
-      field(r, "ETag", 4, r.res.etag_value.data(), r.res.etag_value.size());
+      field(r, {"ETag", r.res.etag_value});
     }
     epoch_memo(r, {r.res.cb_expires, r.res.konst_expires, &r.res.expires_asked,
                    &r.res.expires_present, &r.res.expires_epoch});
-    if (r.res.expires_present) date_line(r, "Expires", 7, r.res.expires_epoch);
+    if (r.res.expires_present) date_line(r, "Expires", r.res.expires_epoch);
     epoch_memo(r, {r.res.cb_last_modified, r.res.konst_last_modified,
                    &r.res.last_modified_asked, &r.res.last_modified_present,
                    &r.res.last_modified_epoch});
-    if (r.res.last_modified_present) date_line(r, "Last-Modified", 13, r.res.last_modified_epoch);
+    if (r.res.last_modified_present) date_line(r, "Last-Modified", r.res.last_modified_epoch);
     return -1;
 }
 
@@ -1128,7 +1143,7 @@ int run_n11(Run& r) {
       r.res.run_disp_path.assign(uri.data() + at, plen);
       r.res.run_disp_set = true;
       request_disp_override(uri.data() + at, plen);
-      field(r, "Location", 8, uri.data(), uri.size());
+      field(r, {"Location", uri});
     }
     const int h = accept_helper(r);
     if (h >= 0) return h;
@@ -1258,7 +1273,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       case Node::kB12: {
         if (!res.cb_known_methods.has) break;
         marshal_methods(r, res.cb_known_methods);
-        take_edge(n, status, halted, methods_contain(r));
+        take_edge({n, status, halted}, methods_contain(r));
         continue;
       }
       case Node::kB10: {
@@ -1266,7 +1281,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         marshal_methods(r, res.cb_allowed_methods);
         const bool ok = methods_contain(r);
         if (!ok) allow_line(r);
-        take_edge(n, status, halted, ok);
+        take_edge({n, status, halted}, ok);
         continue;
       }
       case Node::kB8: {
@@ -1276,7 +1291,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (res.node_argc[i] != 0) a = arg_for(r, n);
         const mrb_value v = nodecall(r, n, {&a, static_cast<size_t>(res.node_argc[i])});
         if (mrb_true_p(v)) {
-          take_edge(n, status, halted, true);
+          take_edge({n, status, halted}, true);
           continue;
         }
         if (mrb_integer_p(v)) {
@@ -1285,7 +1300,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           continue;
         }
         if (mrb_string_p(v)) {
-          field(r, "WWW-Authenticate", 16, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+          field(r, {"WWW-Authenticate", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
         }
         status = 401;
         halted = true;
@@ -1306,8 +1321,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             const mrb_value key = RARRAY_PTR(keys)[j];
             const mrb_value val = mrb_hash_get(mrb, v, key);
             if (!mrb_string_p(key) || !mrb_string_p(val)) continue;
-            field(r, RSTRING_PTR(key), static_cast<size_t>(RSTRING_LEN(key)), RSTRING_PTR(val),
-                  static_cast<size_t>(RSTRING_LEN(val)));
+            field(r, {{RSTRING_PTR(key), static_cast<size_t>(RSTRING_LEN(key))},
+                      {RSTRING_PTR(val), static_cast<size_t>(RSTRING_LEN(val))}});
           }
         } else {
           allow_line(r);
@@ -1385,7 +1400,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_match != nullptr &&
+        take_edge({n, status, halted}, res.etag_present && vals != nullptr && vals->if_match != nullptr &&
              http::etag_list_match({{vals->if_match, vals->if_match_len},
                                     res.etag_value, false}));
         continue;
@@ -1397,7 +1412,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take_edge(n, status, halted, res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
+        take_edge({n, status, halted}, res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
              http::etag_list_match({{vals->if_none_match, vals->if_none_match_len},
                                     res.etag_value, true}));
         continue;
@@ -1405,14 +1420,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       case Node::kH12: {
         epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                        &res.last_modified_present, &res.last_modified_epoch});
-        take_edge(n, status, halted, res.last_modified_present && vals != nullptr &&
+        take_edge({n, status, halted}, res.last_modified_present && vals != nullptr &&
              res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
         epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
                        &res.last_modified_present, &res.last_modified_epoch});
-        take_edge(n, status, halted, !res.last_modified_present || vals == nullptr ||
+        take_edge({n, status, halted}, !res.last_modified_present || vals == nullptr ||
              res.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
       }
@@ -1424,7 +1439,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (!cb.has) break;
         const mrb_value v = cbv(r, cb);
         if (mrb_string_p(v)) {
-          field(r, "Location", 8, RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+          field(r, {"Location", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
           status = n == Node::kL5 ? 307 : 301;
           halted = true;
           continue;
@@ -1434,7 +1449,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take_edge(n, status, halted, false);
+        take_edge({n, status, halted}, false);
         continue;
       }
       case Node::kN11: {
@@ -1560,11 +1575,11 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         break;
       }
       case Node::kO20: {
-        take_edge(n, status, halted, res.run_have_body);
+        take_edge({n, status, halted}, res.run_have_body);
         continue;
       }
       case Node::kP11: {
-        take_edge(n, status, halted, headers_has_location(hdrs));
+        take_edge({n, status, halted}, headers_has_location(hdrs));
         continue;
       }
       default:
@@ -1591,7 +1606,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     } else {
       ans = k.ans[static_cast<size_t>(n)];
     }
-    take_edge(n, status, halted, f, ans);
+    take_edge({n, status, halted}, f, ans);
   }
 
   // fsm.rb respond: a 304 sheds Content-Type at the writer and carries the
@@ -2037,23 +2052,21 @@ uint16_t resource_run(const Resource& res, RunAsk asked, RunAnswer answer) {
 
 // The lend window OPENS here for the caller: the run is over, so the value
 // has to leave the Resource - the next request through it resets the slot.
-bool resource_body_lent(const Resource& res, mrb_value* v, const char** ptr, size_t* len) {
+bool resource_body_lent(const Resource& res, LentBody& out) {
   if (!res.run_zc_have) return false;
   res.run_zc_have = false;
-  *v = res.run_zc;
-  *ptr = RSTRING_PTR(res.run_zc);
-  *len = static_cast<size_t>(RSTRING_LEN(res.run_zc));
+  out.value = res.run_zc;
+  out.bytes = {RSTRING_PTR(res.run_zc), static_cast<size_t>(RSTRING_LEN(res.run_zc))};
   return true;
 }
 
 // response.file, handed over the same way: the run is over, so the name
 // leaves the Resource before the next request through it resets the slot.
-bool resource_file_wanted(const Resource& res, const char** ptr, size_t* len, bool* bad) {
+bool resource_file_wanted(const Resource& res, WantedFile& out) {
   if (!res.run_have_file) return false;
   res.run_have_file = false;
-  *ptr = res.run_file.data();
-  *len = res.run_file.size();
-  *bad = res.run_file_bad;
+  out.name = res.run_file;
+  out.bad = res.run_file_bad;
   return true;
 }
 

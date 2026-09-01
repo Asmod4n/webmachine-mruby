@@ -463,11 +463,11 @@ const struct phr_header* NamedFieldIndex::find(NamedField f, HeaderList hs) cons
 
 // RFC 9110 12.5: see the declaration - the values negotiation reads, out of
 // the fields a parked stream copied, which is the only place they still are.
-void values_of_copied_fields(const ::phr_header* fields, size_t n, http::ReqValues& out) {
+void values_of_copied_fields(http::HeaderList h, http::ReqValues& out) {
   flow::ReqFacts scratch;
-  for (size_t i = 0; i < n; i++) {
-    http::header_switch({{fields[i].name, fields[i].name_len},
-                         {fields[i].value, fields[i].value_len}},
+  for (size_t i = 0; i < h.count; i++) {
+    http::header_switch({{h.items[i].name, h.items[i].name_len},
+                         {h.items[i].value, h.items[i].value_len}},
                         {scratch, out, i});
   }
 }
