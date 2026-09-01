@@ -339,8 +339,8 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     rv.field_count = nh;
     rv.values = &pvals;
     const ReqView* rvp = h2_parked_view(st0, target, rv);
-    if (!h2_answer(st0, stream_id, facts, &pvals, head_only, route, rvp, target.data(),
-                   target.size(), sink)) {
+    const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
+    if (!h2_answer(st0, q, sink)) {
       return false;
     }
     h2_log(st0, facts, target.data(), target.size());
@@ -488,8 +488,9 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
     rv.fields = hv;
     rv.field_count = nh;
     rv.values = &vals;
-    if (!h2_answer(st0, stream_id, facts, &vals, head_only, route, r < 0 ? nullptr : &rv,
-                   path_val, path_vlen, sink)) {
+    const H2Request q{stream_id, facts, &vals, r < 0 ? nullptr : &rv,
+                      {path_val, path_vlen}, route, head_only};
+    if (!h2_answer(st0, q, sink)) {
       return false;
     }
     h2_log(st0, facts, path_val, path_vlen);
@@ -678,10 +679,15 @@ uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
   return 500;
 }
 
-bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
-                      const http::ReqValues* vals, bool head_only, uint16_t route,
-                      const ReqView* req, const char* target, size_t target_len,
-                      std::string& sink) {
+bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
+  const uint32_t stream_id = q.stream_id;
+  const flow::ReqFacts& facts = q.facts;
+  const http::ReqValues* vals = q.vals;
+  const ReqView* req = q.req;
+  const char* target = q.target.data();
+  const size_t target_len = q.target.size();
+  const uint16_t route = q.route;
+  const bool head_only = q.head_only;
   H2State& h2 = *st0.h2;
 
   const Bundle* b = nullptr;
@@ -1450,9 +1456,8 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           rv.fields = nh != 0 ? hv : nullptr;
           rv.field_count = nh;
           const ReqView* rvp = h2_parked_view(st0, target, rv);
-          if (!h2_answer(st0, stream, facts, &pvals, head_only, route, rvp, target.data(),
-                         target.size(), sink)) {
-            return false;
+          const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
+          if (!h2_answer(st0, q, sink)) {            return false;
           }
           h2_log(st0, facts, target.data(), target.size());
         }

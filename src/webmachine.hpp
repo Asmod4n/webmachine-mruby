@@ -4170,10 +4170,18 @@ class Http1 {
   // `target` rides beside `req` because an error answer needs it even
   // when no route matched - a 404 names what was not found, and that is
   // exactly the case where there is no ReqView (#210).
-  bool h2_answer(Conn& st, uint32_t stream_id, const flow::ReqFacts& facts,
-                 const http::ReqValues* vals, bool head_only, uint16_t route,
-                 const ReqView* req, const char* target, size_t target_len,
-                 std::string& sink);
+  // RFC 9113 8.1: one stream's request, as much of it as answering needs.
+  // Eight arguments travelled together - see #std-first.
+  struct H2Request {
+    uint32_t stream_id;
+    const flow::ReqFacts& facts;
+    const http::ReqValues* vals;
+    const ReqView* req;
+    std::string_view target;
+    uint16_t route;
+    bool head_only;
+  };
+  bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();
