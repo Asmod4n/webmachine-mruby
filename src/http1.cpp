@@ -1007,8 +1007,10 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       RouteSpans sspans;
       const int sr = sslot.sse_table->match(path, path_len, sspans);
       if (sr >= 0) {
-        return sse_begin(st, sslot, sr, method, method_len, path, path_len, sspans, headers,
-                         num_headers, minor, facts.method, vals, lflags, sink);
+        const SseBegin req{sslot,   sr,          {method, method_len},
+                           {path, path_len},    sspans,  headers,
+                           num_headers, minor,  facts.method, vals, lflags};
+        return sse_begin(st, req, sink);
       }
     }
 
@@ -1395,20 +1397,27 @@ void Http1::log_sse(Logger& lg, const Conn& st, const char* method, size_t metho
 
 // WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111
 // 5.2.2.5 no-store, and this connection never reads another head.
-bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
-                      size_t method_len, const char* path, size_t path_len,
-                      const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
-                      flow::Method m, const http::ReqValues& vals, uint8_t lflags,
-                      std::string& sink) {
+bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
+  const AppSlot& slot = req.slot;
+  const int route = req.route;
+  const std::string_view method = req.method;
+  const std::string_view path = req.path;
+  const RouteSpans& spans = req.spans;
+  const void* hdrs = req.hdrs;
+  const size_t nhdr = req.nhdr;
+  const int minor = req.minor;
+  const flow::Method m = req.m;
+  const http::ReqValues& vals = req.vals;
+  const uint8_t lflags = req.lflags;
   if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
-    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 405);
+    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 405);
     sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return false;
   }
   if (WM_H1_UNLIKELY(minor < 1)) {
-    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 505);
+    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 505);
     sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -1416,9 +1425,9 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
   }
 
   ReqView rv;
-  rv.request_target = path;
-  rv.request_target_len = path_len;
-  rv.path_len = http::path_only(path, path_len);
+  rv.request_target = path.data();
+  rv.request_target_len = path.size();
+  rv.path_len = http::path_only(path.data(), path.size());
   rv.method = flow::Method::kGet;
   rv.table = slot.sse_table;
   rv.route = route;
@@ -1432,11 +1441,11 @@ bool Http1::sse_begin(Conn& st, const AppSlot& slot, int route, const char* meth
                         elog_.enabled ? &elog_ : nullptr, refused);
   request_bind(nullptr);
   if (s == nullptr) {
-    log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, refused == 0 ? 403 : refused);
+    log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, refused == 0 ? 403 : refused);
     return fail(st, refused == 0 ? 403 : refused, sink, lflags);
   }
 
-  log_sse(alog_, st, method, method_len, path, path_len, vals, lflags, 200);
+  log_sse(alog_, st, method.data(), method.size(), path.data(), path.size(), vals, lflags, 200);
   sink.append("HTTP/1.1 200 OK\r\nDate: ");
   sink.append(date_, http::kDateLen);
   sink.append(

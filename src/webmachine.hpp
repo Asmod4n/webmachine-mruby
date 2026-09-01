@@ -3968,6 +3968,22 @@ class Http1 {
   // arguments that always travel together are a thing without a name, and
   // this is that thing. Every member is a view or a reference into bytes
   // the caller owns for the length of the call.
+  // WHATWG HTML: what an event-stream route needs to know about the request
+  // that asked. Same reason as WsUpgrade below - see #std-first.
+  struct SseBegin {
+    const AppSlot& slot;
+    int route;
+    std::string_view method;
+    std::string_view path;
+    const RouteSpans& spans;
+    const void* hdrs;   // struct phr_header[]; the framer's header is not here
+    size_t nhdr;
+    int minor;
+    flow::Method m;
+    const http::ReqValues& vals;
+    uint8_t lflags;
+  };
+
   struct WsUpgrade {
     const AppSlot& slot;
     int route;
@@ -4108,11 +4124,7 @@ class Http1 {
   void file_prebuilt(Conn& st, uint16_t status_code);
   bool ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink);
 
-  bool sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
-                 size_t method_len, const char* path, size_t path_len,
-                 const RouteSpans& spans, const void* hdrs, size_t nhdr, int minor,
-                 flow::Method m, const http::ReqValues& vals, uint8_t lflags,
-                 std::string& sink);
+  bool sse_begin(Conn& st, const SseBegin& req, std::string& sink);
 
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
