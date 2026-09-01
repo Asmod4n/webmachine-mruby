@@ -180,8 +180,18 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
 // RFC 9113 8.2.2: the connection-specific fields h2 forbids outright, and
 // 8.1.1's content-length, which may be named once. False = malformed, and
 // the stream is reset.
-bool h2_wire_header_ok(const char* n, size_t nl, const char* v, size_t vl,
-                       bool& have_claimed_len, size_t& claimed_len) {
+// RFC 9113 8.1.2: what a content-length field claimed, if one did - a
+// second one is the protocol error this returns false for.
+struct ClaimedLength {
+  bool have = false;
+  size_t value = 0;
+};
+
+bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
+  const char* const n = f.name.data();
+  const size_t nl = f.name.size();
+  const char* const v = f.value.data();
+  const size_t vl = f.value.size();
   // te(2) upgrade(7) connection/keep-alive(10) content-length(14)
   // transfer-encoding(17).
   static constexpr size_t kLengths[] = {2, 7, 10, 14, 17};
@@ -196,9 +206,11 @@ bool h2_wire_header_ok(const char* n, size_t nl, const char* v, size_t vl,
       break;
     case 14:
       if (http::tok_eq(n, nl, "content-length", 14)) {
-        if (have_claimed_len) return false;
-        have_claimed_len = true;
-        if (http::parse_content_length(v, vl, &claimed_len) != http::ClStatus::kOk) return false;
+        if (claimed.have) return false;
+        claimed.have = true;
+        if (http::parse_content_length(v, vl, &claimed.value) != http::ClStatus::kOk) {
+          return false;
+        }
       }
       break;
     case 10:
@@ -364,8 +376,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   size_t path_vlen = 0;
   bool ok = true, saw_regular = false;
   bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
-  size_t claimed_len = 0;
-  bool have_claimed_len = false;
+  ClaimedLength claimed;
   // RFC 9113 8.3: the request's own fields, in the shape h1 hands down,
   // so request.headers and every by-name accessor answer the same way on
   // both protocols. Filled in the loop that already holds the pointers -
@@ -424,7 +435,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       nh++;
     }
     if (http::header_switch({{name, nlen}, {val, vlen}}, {facts, vals, at}) &&
-        !h2_wire_header_ok(name, nlen, val, vlen, have_claimed_len, claimed_len)) {
+        !h2_wire_header_ok({{name, nlen}, {val, vlen}}, claimed)) {
       ok = false;
     }
   }
@@ -448,7 +459,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   if (assets_ != nullptr) {
     if (AssetEntry* ae = assets_->find(path_val, path_vlen)) {
       asset = ae;
-      asset_status = assets_->verdict(*ae, facts.method, facts, vals);
+      asset_status = assets_->verdict(*ae, {facts, vals});
       asset_end = Assets::wire_len(*ae);
       if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
           vals.range != nullptr &&
@@ -474,7 +485,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
 
   if (end_stream) {
-    if (have_claimed_len && claimed_len != 0) {
+    if (claimed.have && claimed.value != 0) {
       h2_rst(st0, stream_id, kH2ProtocolError, sink);
       return true;
     }
@@ -526,8 +537,8 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     stx.field_spans.push_back(static_cast<uint32_t>(hv[i].value_len));
     stx.field_blob.append(hv[i].value, hv[i].value_len);
   }
-  stx.content_length = claimed_len;
-  stx.content_length_given = have_claimed_len;
+  stx.content_length = claimed.value;
+  stx.content_length_given = claimed.have;
   return true;
 }
 

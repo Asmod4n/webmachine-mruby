@@ -43,8 +43,21 @@ bool entered_ = false;
 // streams take this road, and they do NOT share a ceiling - see the
 // two call sites for why an access log is a window and an error log
 // is not.
-int spawn_logd(const char* mode, const char* path, const char* privacy,
-               unsigned long long max_bytes, char* err, size_t errlen) {
+// One log process: which log it is (the word a refusal names), the file it
+// writes, the privacy the operator chose - none for an error log - and the
+// size at which it rolls.
+struct LogdSpawn {
+  const char* mode;
+  const char* path;
+  const char* privacy;
+  unsigned long long max_bytes;
+};
+
+int spawn_logd(const LogdSpawn& log, char* err, size_t errlen) {
+  const char* const mode = log.mode;
+  const char* const path = log.path;
+  const char* const privacy = log.privacy;
+  const unsigned long long max_bytes = log.max_bytes;
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
     std::snprintf(err, errlen, "--%s log socketpair: %s", mode, std::strerror(errno));
@@ -345,9 +358,10 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     }
     // The access log is a WINDOW - it answers what happened in the last
     // so-many bytes. Dropping the oldest is its semantics, not a loss.
-    log_fd_ = spawn_logd("access", opts_.log_path,
-                         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon",
-                         opts_.log_max_bytes, err, errlen);
+    const LogdSpawn access = {
+        "access", opts_.log_path,
+        opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", opts_.log_max_bytes};
+    log_fd_ = spawn_logd(access, err, errlen);
     if (log_fd_ < 0) return false;
     cfg.log_fd = log_fd_;
   }
@@ -359,7 +373,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
     // FIRST entry is the one that names the cause and everything after it
     // is consequence. A ceiling that keeps the newest half would throw
     // away exactly the line worth having.
-    err_fd_ = spawn_logd("error", opts_.error_log_path, nullptr, 0, err, errlen);
+    err_fd_ = spawn_logd({"error", opts_.error_log_path, nullptr, 0}, err, errlen);
     if (err_fd_ < 0) return false;
     cfg.err_fd = err_fd_;
   }

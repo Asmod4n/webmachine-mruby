@@ -78,15 +78,22 @@ Borrowed img_tag_of(const unsigned char* extra, size_t len) {
   return b;
 }
 
+// The parts of one prebuilt header section: the status line, the
+// Connection field of the spelling being built, and the entry's own fields.
+struct HeadParts {
+  const char* status_line;
+  const char* connection_line;
+  const std::string& fields;
+};
+
 // RFC 9112: one prebuilt header section, Date placeholder at a kept offset.
-void build_head(AssetEntry::Head& h, const char* status_line, const char* connection_line,
-                const std::string& fields) {
+void build_head(AssetEntry::Head& h, const HeadParts& p) {
   h.bytes.clear();
-  h.bytes.append(status_line);
+  h.bytes.append(p.status_line);
   h.bytes.append("\r\nDate: ");
   h.date_offset = h.bytes.size();
   h.bytes.append(http::kDatePlaceholder, http::kDateLen);
-  h.bytes.append("\r\n").append(connection_line).append(fields).append("\r\n");
+  h.bytes.append("\r\n").append(p.connection_line).append(p.fields).append("\r\n");
   h.unix_seconds = 0;
 }
 
@@ -101,7 +108,7 @@ constexpr char kVaryField[] = "Vary: Accept-Encoding\r\n";
 
 void build_triple(AssetEntry::Head (&h)[3], const char* status_line, const std::string& fields) {
   for (uint8_t c = Assets::kNoConnectionField; c <= Assets::kConnClose; c++) {
-    build_head(h[c], status_line, Assets::kConnectionLine[c], fields);
+    build_head(h[c], {status_line, Assets::kConnectionLine[c], fields});
   }
 }
 }
@@ -303,9 +310,10 @@ AssetEntry* Assets::find(const char* path, size_t len) {
 
 // RFC 9110: the asset tier's whole decision, in the graph's own order -
 // 405/501, 406 (12.5.3+15.5.7), 412 (13.1.1), 304 (13.1.2), else 200.
-uint16_t Assets::verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
-                         const http::ReqValues& vals) const {
-  switch (m) {
+uint16_t Assets::verdict(const AssetEntry& e, const AssetRequest& r) const {
+  const flow::ReqFacts& f = r.facts;
+  const http::ReqValues& vals = r.vals;
+  switch (f.method) {
     case flow::Method::kGet:
     case flow::Method::kHead:
       break;

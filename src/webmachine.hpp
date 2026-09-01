@@ -2587,8 +2587,13 @@ class Assets {
 
   AssetEntry* find(const char* path, size_t len);
 
-  uint16_t verdict(const AssetEntry& e, flow::Method m, const flow::ReqFacts& f,
-                   const http::ReqValues& vals) const;
+  // What the asset tier weighs one request by: the facts the parse settled
+  // - the method among them - and the header values behind them.
+  struct AssetRequest {
+    const flow::ReqFacts& facts;
+    const http::ReqValues& vals;
+  };
+  uint16_t verdict(const AssetEntry& e, const AssetRequest& r) const;
 
   // Everything this tier needs to spell one head: the entry it describes,
   // the status it carries, whether the connection stays open, the Date

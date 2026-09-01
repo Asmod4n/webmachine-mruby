@@ -52,9 +52,24 @@ constexpr size_t kWireLengths[] = {4, 7, 10, 14, 17, 21};
 constexpr uint32_t kWireLengthMask =
     http::lengths_mask(kWireLengths, sizeof(kWireLengths) / sizeof(kWireLengths[0]));
 
+// Where one request's FRAMING facts are being filled: the facts, the
+// values that point back into the head, and the index of the field being
+// read - the same shape http::FactSink has for the 9110 facts.
+struct WireSink {
+  WireFacts& w;
+  http::ReqValues& vals;
+  size_t at;
+};
+
 // RFC 9112 6.1/6.3, 7.6.1, RFC 6455 4.1: one such field.
-void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t nl,
-                      const char* v, size_t vl, size_t at) {
+void read_wire_header(WireSink into, http::Field f) {
+  WireFacts& w = into.w;
+  http::ReqValues& vals = into.vals;
+  const size_t at = into.at;
+  const char* const n = f.name.data();
+  const size_t nl = f.name.size();
+  const char* const v = f.value.data();
+  const size_t vl = f.value.size();
   if (w.err != 0 || !http::length_is_one_of(nl, kWireLengthMask)) return;
   switch (nl) {
     case 14:
@@ -497,7 +512,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   if (tier == nullptr) return Took::kNo;
   AssetEntry* ae = tier->find(apath, alen);
   if (ae == nullptr) return Took::kNo;
-  const uint16_t as = tier->verdict(*ae, r.facts.method, r.facts, r.vals);
+  const uint16_t as = tier->verdict(*ae, {r.facts, r.vals});
   const AssetStep step =
       asset_step(*ae, {as, r.head_only, r.facts.method, r.vals, warm_budget_});
   const Assets::ConnectionOption conn =
@@ -998,7 +1013,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       const struct phr_header& h = headers[i];
       if (http::header_switch({{h.name, h.name_len}, {h.value, h.value_len}},
                               {facts, vals, i})) {
-        read_wire_header(w, vals, h.name, h.name_len, h.value, h.value_len, i);
+        read_wire_header({w, vals, i}, {{h.name, h.name_len}, {h.value, h.value_len}});
       }
     }
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
