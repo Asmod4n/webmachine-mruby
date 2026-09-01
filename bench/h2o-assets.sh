@@ -1,31 +1,34 @@
 #!/bin/bash
-# The SAME asset sweep as bench/assets.sh, served by nginx with
-# gzip_static - the closest production equivalent of this tree's asset
-# tier (pre-compressed siblings served as-is, no runtime deflate). One
-# log, same columns, same refusals, so the rows sit next to ours and
-# mean the same thing.
+# The SAME asset sweep as bench/assets.sh, served by h2o with
+# file.send-gzip - the second production equivalent of this tree's
+# asset tier, beside bench/nginx-assets.sh. One log, same columns, same
+# refusals, so all three sets of rows sit next to each other and mean
+# the same thing.
 #
-# WHAT NGINX GETS, deliberately its best foot:
-#   worker_processes WORKERS (default 1 - apples to our one thread;
-#     raise it to measure nginx's scaling, the harness line records it),
-#   sendfile + tcp_nopush + tcp_nodelay, access_log off, gzip off +
-#   gzip_static on (serve t*.txt.gz as-is), open_file_cache (our tier
-#   maps once at boot; without the cache nginx would pay open/close
-#   per request), keepalive/h2 request limits raised to 1e6 (defaults
-#   recycle the connection every 1000 requests - our server never does,
-#   and the reconnect would be the harness measuring itself).
+# WHAT H2O GETS, deliberately its best foot:
+#   num-threads WORKERS (default 1 - apples to our one thread; h2o's
+#     workers are THREADS in one process, so the cpu column is that
+#     one pid and needs no summing),
+#   no access-log at all (h2o has no "off" - the directive is simply
+#     absent), file.send-gzip ON (serve t*.txt.gz as-is, no runtime
+#     deflate), max-connections raised past CONNS, and h2o's own
+#     per-thread open-file cache, which is on by default and is the
+#     thing nginx needs open_file_cache for.
 #
 # ARM MAPPING: stored = the plain file, identity. gzip = t*.txt with
 # Accept-Encoding and a .gz sibling (gzip -9, same corpus as
 # bench/assets.sh: this tree's sources repeated). 304 = If-None-Match
-# with nginx's own ETag. 206 = first-half Range on the stored file.
+# with h2o's own ETag. 206 = first-half Range on the stored file.
 #
-# ONE nginx instance serves the whole sweep (its own architecture; a
-# restart per size would penalize a server that is built to stay up).
+# ONE h2o instance serves the whole sweep, as with nginx.
+#
+# RUNS AS nobody: h2o started as root drops to nobody unless `user`
+# says otherwise, so the docroot is made world-traversable. Same shape
+# as the nginx arm dropping to www-data.
 #
 # Knobs as in assets.sh: CONNS mandatory, SIZES, ARMS, PROTO
 # (h1 default, h2 = prior knowledge with --streams MULTI), MULTI,
-# DURATION, REPS, PORT, WORKERS, NGINX (binary override).
+# DURATION, REPS, PORT, WORKERS, H2O (binary override).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -41,12 +44,8 @@ PROTO="${PROTO:-h1}"
 MULTI="${MULTI:-32}"
 PORT="${PORT:-8123}"
 WORKERS="${WORKERS:-1}"
-# NGINX_BIN, not NGINX: nginx itself uses the NGINX environment
-# variable for binary-upgrade socket inheritance, and a path in it
-# produces "[emerg] invalid socket number". The old name still works -
-# it is scrubbed from the environment before exec either way.
-NGINX="${NGINX_BIN:-${NGINX:-nginx}}"
-command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exit 1; }
+H2O="${H2O:-h2o}"
+command -v "$H2O" >/dev/null || { echo "h2o not found (set H2O=)" >&2; exit 1; }
 [ -z "${THREADS:-}" ] || {
   echo "THREADS= is gone: the client is one thread (#196), and the knob only ever" >&2
   echo "described h2load, which this tree no longer uses." >&2
@@ -60,20 +59,17 @@ HTGEN="${HTGEN:-$HOME/htgen/htgen}"
   exit 1
 }
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
-"$NGINX" -V 2>&1 | grep -q http_v2_module || { echo "this nginx lacks http_v2" >&2; exit 1; }
-"$NGINX" -V 2>&1 | grep -q http_gzip_static_module || { echo "this nginx lacks gzip_static" >&2; exit 1; }
 case "$PROTO" in h1|h2) ;; *) echo "PROTO must be h1 or h2" >&2; exit 2 ;; esac
 for a in $ARMS; do case "$a" in stored|gzip|304|206) ;; *) echo "unknown arm '$a'" >&2; exit 2 ;; esac; done
 
-NGV=$("$NGINX" -v 2>&1 | grep -o '[0-9]*\.[0-9]*' | head -1)
-NGMAJ=${NGV%%.*}; NGMIN=${NGV##*.}
+H2OV=$("$H2O" --version 2>&1 | awk '/^h2o version/ { print $3; exit }')
 
 WORK=$(mktemp -d)
-# mktemp gives 700; the nginx WORKER drops privileges (user www-data)
-# and must traverse into the docroot - 403 on every file otherwise.
+# mktemp gives 700; h2o started as root runs as nobody and must
+# traverse into the docroot - 403 on every file otherwise.
 chmod 755 "$WORK"
-NGPID=""
-trap '[ -n "$NGPID" ] && kill "$NGPID" 2>/dev/null; rm -rf "$WORK"' EXIT
+H2PID=""
+trap '[ -n "$H2PID" ] && kill "$H2PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/root" "$WORK/tmp"
 cat src/*.cpp src/*.hpp > "$WORK/corpus" 2>/dev/null
@@ -85,6 +81,7 @@ for sz in $SIZES; do
   for _ in $(seq "$n"); do cat "$WORK/corpus"; done | head -c "$sz" > "$WORK/root/t$sz.txt"
   gzip -9 -k "$WORK/root/t$sz.txt"
 done
+chmod -R a+rX "$WORK/root"
 
 # ---- priority: the measurement owns the machine ----------------------
 # Everything that is NOT part of the run steps back to nice 10, and the
@@ -113,63 +110,32 @@ bench_priority() {
 }
 bench_priority
 
-# The listener must MATCH the proto: a plain listener with the http2
-# flag is h2c-only on 1.24 (an h1 request gets silence, measured), and
-# 1.25 renamed the switch. The curl proofs speak the same proto as the
-# measurement, for the same reason.
+# h2c is prior knowledge on a plain listener; h2o answers both on the
+# same port, so there is no listener flag to switch. The curl proofs
+# speak the same proto as the measurement either way.
 CURLP=()
-LISTEN="listen 127.0.0.1:$PORT;"
-H2ON=""
-REQCAP="keepalive_requests 1000000;"
-if [ "$PROTO" = h2 ]; then
-  CURLP=(--http2-prior-knowledge)
-  if [ "$NGMAJ" -gt 1 ] || [ "$NGMIN" -ge 25 ]; then
-    H2ON="http2 on;"
-  else
-    LISTEN="listen 127.0.0.1:$PORT http2;"
-    REQCAP="keepalive_requests 1000000; http2_max_requests 1000000;"
-  fi
-fi
-cat > "$WORK/nginx.conf" <<CONF
-worker_processes $WORKERS;
-daemon off;
-pid $WORK/nginx.pid;
-error_log $WORK/error.log warn;
-worker_rlimit_nofile 16384;
-events { worker_connections 8192; }
-http {
-  access_log off;
-  default_type application/octet-stream;
-  sendfile on;
-  tcp_nopush on;
-  tcp_nodelay on;
-  $REQCAP
-  gzip off;
-  gzip_static on;
-  open_file_cache max=1024 inactive=300s;
-  open_file_cache_valid 300s;
-  client_body_temp_path $WORK/tmp;
-  proxy_temp_path $WORK/tmp;
-  fastcgi_temp_path $WORK/tmp;
-  uwsgi_temp_path $WORK/tmp;
-  scgi_temp_path $WORK/tmp;
-  server {
-    $LISTEN
-    $H2ON
-    root $WORK/root;
-  }
-}
+[ "$PROTO" = h2 ] && CURLP=(--http2-prior-knowledge)
+cat > "$WORK/h2o.conf" <<CONF
+listen:
+  host: 127.0.0.1
+  port: $PORT
+num-threads: $WORKERS
+max-connections: $((CONNS > 1024 ? CONNS * 2 : 8192))
+file.send-gzip: ON
+http2-max-concurrent-requests-per-connection: $((MULTI > 100 ? MULTI : 100))
+hosts:
+  "127.0.0.1:$PORT":
+    paths:
+      "/":
+        file.dir: $WORK/root
 CONF
-# -e: without it nginx opens its COMPILED-IN error log path before
-# reading the config - a permission alert on any system nginx. env -u:
-# see the NGINX_BIN note above.
-env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >/dev/null 2>&1 || {
-  echo "nginx refused the config:" >&2
-  env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >&2
+"$H2O" -m test -c "$WORK/h2o.conf" >/dev/null 2>&1 || {
+  echo "h2o refused the config:" >&2
+  "$H2O" -m test -c "$WORK/h2o.conf" >&2
   exit 1
 }
-env -u NGINX "$NGINX" -e "$WORK/error.log" -c "$WORK/nginx.conf" &
-NGPID=$!
+"$H2O" -c "$WORK/h2o.conf" > "$WORK/h2o.log" 2>&1 &
+H2PID=$!
   # WAIT for it to answer, never a fixed sleep: on this container the
 # first curl raced the listener, the stored arm compared an EMPTY
 # body against the asset, and the run died claiming the bytes
@@ -177,10 +143,10 @@ NGPID=$!
 # a 404 is already an answer.
 waited=0
 until curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/" 2>/dev/null; do
-  kill -0 "$NGPID" 2>/dev/null || { echo "nginx died:" >&2; cat "$WORK/error.log" >&2; exit 1; }
+  kill -0 "$H2PID" 2>/dev/null || { echo "h2o died:" >&2; cat "$WORK/h2o.log" >&2; exit 1; }
   sleep 0.05
   waited=$((waited + 1))
-  [ "$waited" -lt 200 ] || { echo "nginx did not answer within 10s" >&2; cat "$WORK/error.log" >&2; exit 1; }
+  [ "$waited" -lt 200 ] || { echo "h2o did not answer within 10s" >&2; cat "$WORK/h2o.log" >&2; exit 1; }
 done
 
 RESULTS="bench/results/$(hostname).log"
@@ -190,15 +156,10 @@ cpu_ticks() {
   awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
     "/proc/$1/stat" 2>/dev/null || echo 0
 }
-# nginx is master + workers; the server's cost is the sum.
-srv_ticks() {
-  local sum
-  sum=$(cpu_ticks "$NGPID")
-  for w in $(pgrep -P "$NGPID" 2>/dev/null); do
-    sum=$((sum + $(cpu_ticks "$w")))
-  done
-  echo "$sum"
-}
+# h2o's workers are THREADS of one process, and /proc/PID/stat already
+# sums the whole thread group - so unlike nginx there is nothing to
+# add up.
+srv_ticks() { cpu_ticks "$H2PID"; }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
 # --- requests per syscall -------------------------------------------
@@ -261,11 +222,7 @@ sysc_wait() {
 sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
-nginx_pids() {
-  local pids=$NGPID
-  for w in $(pgrep -P "$NGPID" 2>/dev/null); do pids="$pids,$w"; done
-  echo "$pids"
-}
+h2o_pids() { echo "$H2PID"; }
 # The client's cpu comes from the shell's CHILD times, credited at
 # reap - reading the client's /proc after `wait` read a reaped pid as
 # 0 ticks, and the client-bound refusal never fired (found when a
@@ -299,7 +256,7 @@ arm_setup() {
       ARM_URL="$base/t$sz.txt"
       curl -s --max-time 30 "${CURLP[@]}" -D "$WORK/h" -o /dev/null -H 'accept-encoding: gzip' "$ARM_URL"
       grep -qi '^content-encoding: *gzip' "$WORK/h" || {
-        echo "size $sz gzip: gzip_static did not serve the sibling" >&2; exit 1; }
+        echo "size $sz gzip: send-gzip did not serve the sibling" >&2; exit 1; }
       curl -s --max-time 30 "${CURLP[@]}" --compressed "$ARM_URL" | cmp -s - "$WORK/root/t$sz.txt" || {
         echo "size $sz gzip: decoded bytes differ" >&2; exit 1; }
       ARM_HDRS=(-H 'accept-encoding: gzip')
@@ -310,7 +267,7 @@ arm_setup() {
       local etag code
       etag=$(curl -s --max-time 30 "${CURLP[@]}" -o /dev/null -D - "$ARM_URL" |
              awk 'tolower($1) == "etag:" { print $2 }' | tr -d '\r')
-      [ -n "$etag" ] || { echo "size $sz 304: no ETag from nginx" >&2; exit 1; }
+      [ -n "$etag" ] || { echo "size $sz 304: no ETag from h2o" >&2; exit 1; }
       code=$(curl -s --max-time 30 "${CURLP[@]}" -o /dev/null -w '%{http_code}' \
              -H "if-none-match: $etag" "$ARM_URL")
       [ "$code" = 304 ] || { echo "size $sz 304: got $code" >&2; exit 1; }
@@ -352,7 +309,7 @@ measure() {
     cli=$!
     snap_times
     c0=$(parse_child_cpu)
-    sysc_begin "$(nginx_pids)" "$DURATION"
+    sysc_begin "$(h2o_pids)" "$DURATION"
     # One mid-run sample: a client on a single running thread is
     # measuring itself, whatever -t claimed.
     sleep 1
@@ -382,8 +339,8 @@ measure() {
     # (WORKERS cores) while the client was pegged - see bench/assets.sh
     # for why comparing totals was wrong.
     if [ "$su" -gt 0 ] && [ "$scpu" -lt $((WORKERS * 90)) ] && [ "$ccpu" -ge 90 ]; then
-      echo "REFUSED on arm $arm, size $sz: nginx had headroom (${scpu}% of ${WORKERS}00%) while the client was pegged (${ccpu}% of its core)." >&2
-      echo "  This measures htgen, not nginx. Use a second machine." >&2
+      echo "REFUSED on arm $arm, size $sz: h2o had headroom (${scpu}% of ${WORKERS}00%) while the client was pegged (${ccpu}% of its core)." >&2
+      echo "  This measures htgen, not h2o. Use a second machine." >&2
       printf 'REFUSED client-bound'
       return
     fi
@@ -402,8 +359,8 @@ else
 fi
 
 {
-  echo "==== $(date -u +%FT%RZ) nginx/$("$NGINX" -v 2>&1 | grep -o '[0-9][0-9.]*' | head -1) gzip_static ===="
-  echo "harness: nginx-assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS workers=$WORKERS sendfile=on $(uname -mr)"
+  echo "==== $(date -u +%FT%RZ) h2o/$H2OV file.send-gzip ===="
+  echo "harness: h2o-assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS threads=$WORKERS $(uname -mr)"
   s0=$(steal_ticks)
   # cpu% = server CPU over the run, in percent of ONE core - the
   # column that lets a workers=16 row sit honestly next to a

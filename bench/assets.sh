@@ -137,6 +137,33 @@ for sz in $SIZES; do
 done
 (cd "$WORK" && zip -q -0 -X assets.zip a*.bin && zip -q -9 -X assets.zip t*.txt)
 
+# ---- priority: the measurement owns the machine ----------------------
+# Everything that is NOT part of the run steps back to nice 10, and the
+# measured processes run at -10. A stray build, an agent thread or a
+# leftover daemon landing inside a 5s window moves the median - and it
+# moves it for ONE of the servers, which is worse than moving it for
+# all three.
+#
+# The harness shell renices ITSELF to -10 and everything else to 10, so
+# the server and the client simply INHERIT -10 as its children: there
+# is no window between fork and renice in which a measured process runs
+# at the wrong priority. Inherited niceness survives the privilege drop
+# too, which is how nginx's www-data workers and h2o's nobody threads
+# get it without being able to ask for it themselves.
+bench_priority() {
+  local self=$$ p
+  for p in $(ps -eo pid= 2>/dev/null); do
+    [ "$p" = "$self" ] && continue
+    renice -n 10 -p "$p" >/dev/null 2>&1
+  done
+  renice -n -10 -p "$self" >/dev/null 2>&1 || {
+    echo "REFUSED: cannot renice (need root). A number taken beside whatever else" >&2
+    echo "  this machine was doing is not a number - see bench_priority." >&2
+    exit 1
+  }
+}
+bench_priority
+
 RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
@@ -232,8 +259,18 @@ start_srv() {  # start_srv <port> [zip]
   [ -n "$WARM" ] && env_pfx=(env "WM_WARM_BUDGET=$WARM")
   "${env_pfx[@]}" "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
   SRV=$!
-  sleep 0.5
-  kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat "$WORK/srv.log" >&2; exit 1; }
+  # WAIT for it to answer, never a fixed sleep: on this container the
+  # first curl raced the listener, the stored arm compared an EMPTY
+  # body against the asset, and the run died claiming the bytes
+  # differed. A connection refused is the only thing this loop retries -
+  # a 404 is already an answer.
+  local waited=0
+  until curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" 2>/dev/null; do
+    kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat "$WORK/srv.log" >&2; exit 1; }
+    sleep 0.05
+    waited=$((waited + 1))
+    [ "$waited" -lt 200 ] || { echo "server did not answer within 10s" >&2; cat "$WORK/srv.log" >&2; exit 1; }
+  done
   grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
     echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
     exit 1
@@ -317,6 +354,13 @@ arm_setup() {
              "${ARM_HDRS[@]}" "$ARM_URL")
 }
 
+# One whitespace-separated field out of htgen's summary line, by EXACT
+# name. Not a substring match: htgen prints both MB/s and tx_MB/s, and
+# `grep -o 'MB/s=...'` matches inside the second one too - two lines in
+# one variable, a newline riding into vals[], and the median then picks
+# the wrong row. Measured: a 65444 rps run was reported as 2.
+field() { tr ' ' '\n' < "$WORK/cli.out" | awk -F= -v k="$1" '$1 == k { print $2; exit }'; }
+
 measure() {  # measure <arm> <size> -> "rps MB/s"
   local arm=$1 sz=$2
   local vals=()
@@ -340,15 +384,15 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     sysc_wait
     local nsysc ndone rsc="-"
     nsysc=$(sysc_read)
-    ndone=$(grep -o 'responses=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
+    ndone=$(field "responses")
     if [ -n "$nsysc" ] && [ "$nsysc" -gt 0 ] && [ -n "$ndone" ]; then
       rsc=$(awk -v d="$ndone" -v n="$nsysc" 'BEGIN { printf "%.1f", d / n }')
     fi
-    rps=$(grep -o 'rps=[0-9]*' "$WORK/cli.out" | cut -d= -f2)
+    rps=$(field "rps")
     # One unit, always MB/s - h2load switched between KB/MB/GB on its
     # own and the column went silently blank at exactly the sizes it
     # mattered for.
-    mbs=$(grep -o 'MB/s=[0-9.]*' "$WORK/cli.out" | cut -d= -f2)
+    mbs=$(field "MB/s")
     [ -n "$rps" ] || { echo "htgen produced no number:" >&2; cat "$WORK/cli.out" >&2; exit 1; }
     grep -q 'bad=0 ' "$WORK/cli.out" || {
       echo "the client counted bad answers:" >&2; cat "$WORK/cli.out" >&2; exit 1

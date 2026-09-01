@@ -67,3 +67,198 @@ env: runnable=2/123 busy=0% (200ms sample)
 responses=992818 bad=0 seconds=5.000 rps=198563 bytes=153886790 MB/s=29.35 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=34762595 tx_MB/s=6.63
 req/syscall: 0.4 (992818 requests / 2779329 server syscalls)
 server: 100% of one core (42u/57s)   client: 65% of one core (7u/59s)   other: 9% of one core
+==== 2026-09-01T07:19Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/123 busy=1% (200ms sample)
+responses=1020429 bad=0 seconds=5.000 rps=204086 bytes=158166495 MB/s=30.17 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=35728210 tx_MB/s=6.81
+req/syscall: 0.3 (1020429 requests / 3068628 server syscalls)
+server: 100% of one core (38u/61s)   client: 63% of one core (8u/55s)   other: 8% of one core
+==== 2026-09-01T07:19Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/123 busy=1% (200ms sample)
+responses=988414 bad=0 seconds=5.000 rps=197682 bytes=153204170 MB/s=29.22 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=34607685 tx_MB/s=6.60
+req/syscall: 0.3 (988414 requests / 2977859 server syscalls)
+server: 99% of one core (38u/61s)   client: 66% of one core (7u/59s)   other: 8% of one core
+==== 2026-09-01T07:25Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/124 busy=1% (200ms sample)
+responses=1034201 bad=0 seconds=5.000 rps=206837 bytes=160301155 MB/s=30.57 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=36209635 tx_MB/s=6.91
+server: 100% of one core (37u/62s)   client: 64% of one core (8u/57s)   other: 8% of one core
+==== 2026-09-01T07:25Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/125 busy=2% (200ms sample)
+responses=1018169 bad=0 seconds=5.000 rps=203633 bytes=157816195 MB/s=30.10 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=35649110 tx_MB/s=6.80
+server: 99% of one core (36u/63s)   client: 74% of one core (9u/65s)   other: 6% of one core
+==== 2026-09-01T07:29Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/127 busy=1% (200ms sample)
+responses=1157741 bad=0 seconds=5.000 rps=231546 bytes=179449855 MB/s=34.23 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=40534130 tx_MB/s=7.73
+server: 100% of one core (31u/69s)   client: 76% of one core (9u/67s)   other: 7% of one core
+==== 2026-09-01T07:30Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/127 busy=3% (200ms sample)
+responses=1153741 bad=0 seconds=5.000 rps=230748 bytes=178829855 MB/s=34.11 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=40393675 tx_MB/s=7.70
+server: 98% of one core (34u/64s)   client: 76% of one core (10u/66s)   other: 10% of one core
+==== 2026-09-01T07:30Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/127 busy=1% (200ms sample)
+responses=1165843 bad=0 seconds=5.000 rps=233167 bytes=180705665 MB/s=34.47 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=40818470 tx_MB/s=7.79
+server: 99% of one core (34u/65s)   client: 72% of one core (7u/65s)   other: 9% of one core
+==== 2026-09-01T08:37Z repo=11d7fae mruby=3d13b7e ====
+harness: /home/user/htgen/htgen(2026-08-29T07:58) -c400 -d5s h1 (one ring, one thread) impl=bin:wm-shim-server transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v22 x86_64
+build: /tmp/claude-0/-home-user-totally-normal-keyboard/52b624ec-81ea-5eca-865d-b7920c450976/scratchpad/wm-shim-server cc=? libstdc++=static libc=static kernel=6.18.44-fc-v22 host=vm
+env: runnable=1/114 busy=1% (200ms sample)
+responses=1285970 bad=0 seconds=5.000 rps=257188 bytes=199325350 MB/s=38.02 conns=400 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=45021550 tx_MB/s=8.59
+server: 100% of one core (36u/63s)   client: 68% of one core (7u/61s)   other: 6% of one core
+==== 2026-09-01T16:08Z h2o/2.2.5 file.send-gzip ====
+harness: h2o-assets htgen h1 -c64 -d3s reps=1 threads=1 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored              2           99         4096        -            -
+steal +1 ticks over the whole sweep
+==== 2026-09-01T16:09Z h2o/2.2.5 file.send-gzip ====
+harness: h2o-assets htgen h1 -c64 -d3s reps=1 threads=1 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          70547       294.07         4096       99            -
+steal +0 ticks over the whole sweep
+==== 2026-09-01T16:09Z nginx/1.24.0 gzip_static ====
+harness: nginx-assets htgen h1 -c64 -d3s reps=1 workers=1 sendfile=on 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          36506       151.79         4096       99            -
+steal +0 ticks over the whole sweep
+==== 2026-09-01T16:09Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+==== 2026-09-01T16:11Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         142035       582.46         4096       96            -
+steal +0 ticks over the whole sweep
+==== 2026-09-01T16:11Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         132033       541.44         4096       98            -
+steal +1 ticks over the whole sweep
+==== 2026-09-01T16:11Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         104979       430.50         4096       97            -
+steal +0 ticks over the whole sweep
+==== 2026-09-01T16:11Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         115469       473.52         4096       97            -
+steal +0 ticks over the whole sweep
+==== 2026-09-01T16:11Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d5s reps=5 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         106373       436.21         4096       96            -
+      4096     gzip         158867       239.68         1330       98            -
+      4096      304         163685        13.11            0       90            -
+      4096      206         132915       285.59         2048       98            -
+     32768   stored          48928      1538.57        32768       90            -
+     32768     gzip          95731       836.73         8913       95            -
+==== 2026-09-01T16:15Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          99674       408.74         4096       87            -
+steal +2 ticks over the whole sweep
+==== 2026-09-01T16:15Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d6s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         102037       418.43         4096       95            -
+steal +1 ticks over the whole sweep
+==== 2026-09-01T16:16Z repo=11d7fae mruby=3d13b7e ====
+harness: assets htgen h1 -c64 -d5s reps=5 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         103294       423.59         4096       96            -
+      4096     gzip         160750       242.53         1330       97            -
+      4096      304         161938        12.97            0       97            -
+      4096      206         126428       271.65         2048       97            -
+     32768   stored          49645      1561.12        32768       91            -
+     32768     gzip          86317       754.45         8913       95            -
+     32768      304         179679        14.39            0       96            -
+     32768      206          74308      1175.82        16384       93            -
+    262144   stored          12719      3182.14       262144       95            -
+    262144     gzip        REFUSED client-bound        69085        -            -
+    262144      304         180761        14.48            0       96            -
+    262144      206        REFUSED client-bound       131072        -            -
+   1048576   stored           2035      2035.49      1048576       92            -
+   1048576     gzip           9516      2543.38       280001       85            -
+   1048576      304         173013        13.86            0       96            -
+   1048576      206           4598      2299.73       524288       92            -
+steal +93 ticks over the whole sweep
+==== 2026-09-01T16:22Z h2o/2.2.5 file.send-gzip ====
+harness: h2o-assets htgen h1 -c64 -d5s reps=5 threads=1 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          75070       312.93         4096       99            -
+      4096     gzip          67773       104.97         1340      100            -
+      4096      304          64219         9.49            0       99            -
+      4096      206          65285       146.19         2048       99            -
+     32768   stored          46219      1456.52        32768       99            -
+     32768     gzip          72752       638.94         8924       99            -
+     32768      304          73694        10.89            0      100            -
+     32768      206          44579       709.42        16384      100            -
+    262144   stored           8202      2052.65       262144      100            -
+    262144     gzip          24200      1601.29        69097       99            -
+    262144      304          68557        10.20            0      100            -
+    262144      206          15480      1939.53       131072       99            -
+   1048576   stored           1135      1135.35      1048576      100            -
+   1048576     gzip           7765      2075.71       280014       96            -
+   1048576      304          76040        11.39            0      100            -
+   1048576      206           3555      1778.49       524288      100            -
+steal +107 ticks over the whole sweep
+==== 2026-09-01T16:29Z nginx/1.24.0 gzip_static ====
+harness: nginx-assets htgen h1 -c64 -d5s reps=5 workers=1 sendfile=on 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          38642       160.67         4096       98            -
+      4096     gzip          36506        56.64         1340       99            -
+      4096      304          59187        10.72            0       99            -
+      4096      206          35761        79.70         2048      100            -
+     32768   stored        REFUSED client-bound        32768        -            -
+     32768     gzip          41334       363.13         8924       99            -
+     32768      304          60275        10.92            0       99            -
+     32768      206          55181       877.57        16384       99            -
+    262144   stored           7167      1793.49       262144       99            -
+    262144     gzip        REFUSED client-bound        69097        -            -
+    262144      304          62069        11.31            0       99            -
+    262144      206          12961      1623.80       131072       99            -
+   1048576   stored           1841      1841.83      1048576       96            -
+   1048576     gzip           8349      2231.74       280014       99            -
+   1048576      304          56504        10.35            0       99            -
+   1048576      206           3980      1991.30       524288       98            -
+steal +105 ticks over the whole sweep
+==== 2026-09-01T16:40Z lighttpd/1.4.74 mod_deflate cache-dir ====
+harness: lighttpd-assets htgen h1 -c64 -d3s reps=1 workers=1 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          65307       269.49         4096       99            -
+      4096     gzip          54710        83.01         1331      100            -
+      4096      304          82128        15.43            0       99            -
+      4096      206          64514       143.11         2048       99            -
+steal +3 ticks over the whole sweep
+==== 2026-09-01T16:40Z lighttpd/1.4.74 mod_deflate cache-dir ====
+harness: lighttpd-assets htgen h1 -c64 -d5s reps=5 workers=1 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored          65686       270.99         4096       99            -
+      4096     gzip          55925        84.91         1331       98            -
+      4096      304          82039        15.33            0      100            -
+      4096      206          59073       130.98         2048       99            -
+     32768   stored        REFUSED client-bound        32768        -            -
+     32768     gzip          56277       491.89         8904       99            -
+     32768      304          82611        15.52            0       99            -
+     32768      206          74097      1177.62        16384       98            -
+    262144   stored           8797      2201.98       262144       95            -
+    262144     gzip        REFUSED client-bound        69522        -            -
+    262144      304          82162        15.44            0      100            -
+    262144      206          14386      1802.21       131072       95            -
+   1048576   stored        REFUSED client-bound      1048576        -            -
+   1048576     gzip           8583      2313.60       282180       99            -
+   1048576      304          83389        15.67            0       99            -
+   1048576      206        REFUSED client-bound       524288        -            -
+steal +76 ticks over the whole sweep
