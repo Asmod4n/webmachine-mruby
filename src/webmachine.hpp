@@ -4770,14 +4770,11 @@ class Ring {
       bound_port_[li] = spec.port;
       if (spec.port == 0) {
         struct sockaddr_storage ss {};
-        int slen = static_cast<int>(sizeof(ss));
+        socklen_t slen = sizeof(ss);
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
-        io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(slot), nullptr, 0, 0);
-        s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
-        s->addr = reinterpret_cast<uint64_t>(&ss);
-        s->optval = reinterpret_cast<uint64_t>(&slen);
-        s->optlen = 0;
+        io_uring_prep_cmd_getsockname(s, static_cast<int>(slot),
+                                      reinterpret_cast<struct sockaddr*>(&ss), &slen, 0);
         s->flags |= IOSQE_FIXED_FILE;
         io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStName));
         io_uring_submit_and_wait(&ring_, 1);
@@ -4843,7 +4840,7 @@ class Ring {
     // Http1::Conn::peer points into it, and reset() clears peer_len
     // rather than the pointer.
     struct PeerAddr {
-      int addrlen = 0;
+      socklen_t addrlen = 0;
       struct sockaddr_storage addr {};
     };
     std::unique_ptr<PeerAddr> peer;
@@ -6117,18 +6114,17 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kMeminfo, c.gen, idx));
   }
 
-  // SOCKET_URING_OP_GETSOCKNAME, peer form, spelled by hand against
-  // cmd_net.c's contract. Only when someone is logging.
+  // The peer's address, through liburing's own prep - the last argument
+  // is what picks the peer over this socket's own name. Only when
+  // someone is logging.
   void arm_peer(uint32_t idx) {
     Conn& c = conns_[idx];
     if (c.peer == nullptr) c.peer.reset(new typename Conn::PeerAddr());
-    c.peer->addrlen = static_cast<int>(sizeof(c.peer->addr));
+    c.peer->addrlen = sizeof(c.peer->addr);
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_rw(IORING_OP_URING_CMD, s, static_cast<int>(idx), nullptr, 0, 0);
-    s->cmd_op = SOCKET_URING_OP_GETSOCKNAME;
-    s->addr = reinterpret_cast<uint64_t>(&c.peer->addr);
-    s->optval = reinterpret_cast<uint64_t>(&c.peer->addrlen);
-    s->optlen = 1;
+    io_uring_prep_cmd_getsockname(s, static_cast<int>(idx),
+                                  reinterpret_cast<struct sockaddr*>(&c.peer->addr),
+                                  &c.peer->addrlen, 1);
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kPeer, c.gen, idx));
   }
