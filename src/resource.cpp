@@ -273,8 +273,28 @@ bool ask(mrb_state* mrb, mrb_value klass, mrb_sym sym, const char* name, bool de
 // `spell` turns a String answer into an ETag (RFC 9110 8.8.3); without it
 // the answer is read as a moment (RFC 9110 5.6.7), the way the date fields
 // need it.
-bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, const char* name,
-                bool spell, Resource::KonstValue& out, char* err, size_t errlen) {
+// The class being folded, and where a refusal about it is spelled.
+struct Folding {
+  mrb_state* mrb;
+  mrb_value klass;
+  char* err;
+  size_t errlen;
+};
+
+// One class-form answer: where it comes from, what it is called in a
+// refusal, whether it is spelled as an ETag, and the slot it is kept in
+// for the life of the process.
+struct BakedValue {
+  const Resource::ValueCb& cb;
+  const char* name;
+  bool spell;
+  Resource::KonstValue& out;
+};
+
+bool bake_value(const Folding& f, const BakedValue& bake) {
+  mrb_state* const mrb = f.mrb;
+  const Resource::ValueCb& cb = bake.cb;
+  Resource::KonstValue& out = bake.out;
   if (!cb.has || !cb.on_class) return true;
   out.asked = true;
   Resolved r;
@@ -282,13 +302,13 @@ bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, co
   r.irep = cb.irep;
   r.native = cb.native;
   r.defined = true;
-  mrb_value v = call_resolved(mrb, r, cb.sym, klass, mrb_class(mrb, klass));
+  mrb_value v = call_resolved(mrb, r, cb.sym, f.klass, mrb_class(mrb, f.klass));
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, name, err, errlen);
+    exc_into(mrb, bake.name, f.err, f.errlen);
     return false;
   }
   if (mrb_nil_p(v) || mrb_false_p(v)) return true;
-  if (spell) {
+  if (bake.spell) {
     if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
     http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), out.text);
     out.present = true;
@@ -296,7 +316,7 @@ bool bake_value(mrb_state* mrb, mrb_value klass, const Resource::ValueCb& cb, co
   }
   if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
   if (WM_RES_UNLIKELY(!mrb_integer_p(v) || mrb->exc != nullptr)) {
-    std::snprintf(err, errlen, "%s must answer a Time or an epoch Integer", name);
+    std::snprintf(f.err, f.errlen, "%s must answer a Time or an epoch Integer", bake.name);
     mrb->exc = nullptr;
     return false;
   }
@@ -601,17 +621,37 @@ void take_edge(Node& n, uint16_t& status, bool& halted, bool a) {
   take_edge(n, status, halted, flow::kFlow[static_cast<size_t>(n)], a);
 }
 
+// One list-valued field line: its name, the value that always leads where
+// there is one, and the app Strings that follow it - Allow's methods,
+// Vary's variances.
+struct FieldList {
+  std::string_view name;
+  std::string_view head;
+  const std::vector<std::string>& tail;
+};
+
+// RFC 9110 5.6.7: one date field of a resource - where its answer comes
+// from (the per-request callback, or what #202 baked at setup) and the
+// three slots that remember what it said this round.
+struct DateField {
+  const Resource::ValueCb& cb;
+  const Resource::KonstValue& konst;
+  bool* asked;
+  bool* present;
+  int64_t* epoch;
+};
+
 mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
 mrb_value naked_class(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
 mrb_value cbv(Run& r, const Resource::ValueCb& cb, mrb_int argc = 0, const mrb_value* argv = nullptr);
 mrb_value nodecall(Run& r, Node nd, mrb_int argc, const mrb_value* argv);
 mrb_value arg_for(Run& r, Node nd);
 void marshal_methods(Run& r, const Resource::ValueCb& cb);
-void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t headn, const std::vector<std::string>& tail);
+void field_list(Run& r, const FieldList& f);
 void allow_line(Run& r);
 void marshal_ct(Run& r);
 int ensure_etag(Run& r);
-void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue& konst, bool* asked, bool* present, int64_t* epoch);
+void epoch_memo(Run& r, const DateField& d);
 int add_caching(Run& r);
 bool param_find(const char* s, size_t n, const char* key, size_t kn, const char** vout, size_t* vn);
 int accept_helper(Run& r);
@@ -736,16 +776,16 @@ void marshal_methods(Run& r, const Resource::ValueCb& cb) {
   }
 }
 
-void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t headn, const std::vector<std::string>& tail) {
+void field_list(Run& r, const FieldList& f) {
   mrb_state* mrb = r.mrb;
-  r.hdrs.append(name, nlen);
+  r.hdrs.append(f.name);
   r.hdrs.append(": ", 2);
   bool first = true;
-  if (headn != 0) {
-    r.hdrs.append(head, headn);
+  if (!f.head.empty()) {
+    r.hdrs.append(f.head);
     first = false;
   }
-  for (const std::string& s : tail) {
+  for (const std::string& s : f.tail) {
     // Same gate, one member at a time: Allow's members come from
     // allowed_methods and Vary's from variances, both app Strings.
     if (WM_RES_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
@@ -761,7 +801,7 @@ void field_list(Run& r, const char* name, size_t nlen, const char* head, size_t 
 
 void allow_line(Run& r) {
     if (r.res.cb_allowed_methods.has) {
-      field_list(r, "Allow", 5, nullptr, 0, r.res.run_methods);
+      field_list(r, {"Allow", {}, r.res.run_methods});
     } else {
       field(r, "Allow", 5, r.res.konst.allow.data(), r.res.konst.allow.size());
     }
@@ -837,15 +877,17 @@ int ensure_etag(Run& r) {
     return -1;
 }
 
-void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue& konst, bool* asked, bool* present, int64_t* epoch) {
+void epoch_memo(Run& r, const DateField& d) {
   mrb_state* mrb = r.mrb;
-  if (*asked) return;
-  *asked = true;
+  const Resource::ValueCb& cb = d.cb;
+  const Resource::KonstValue& konst = d.konst;
+  if (*d.asked) return;
+  *d.asked = true;
   // #202: same as ensure_etag - a class form is a setup answer.
   if (konst.asked) {
     if (konst.present) {
-      *epoch = konst.epoch;
-      *present = true;
+      *d.epoch = konst.epoch;
+      *d.present = true;
     }
     return;
   }
@@ -857,8 +899,8 @@ void epoch_memo(Run& r, const Resource::ValueCb& cb, const Resource::KonstValue&
     mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
                mrb_sym_name(mrb, cb.sym));
   }
-  *epoch = static_cast<int64_t>(mrb_integer(v));
-  *present = true;
+  *d.epoch = static_cast<int64_t>(mrb_integer(v));
+  *d.present = true;
 }
 
 int add_caching(Run& r) {
@@ -871,11 +913,12 @@ int add_caching(Run& r) {
     if (r.res.etag_present) {
       field(r, "ETag", 4, r.res.etag_value.data(), r.res.etag_value.size());
     }
-    epoch_memo(r, r.res.cb_expires, r.res.konst_expires, &r.res.expires_asked, &r.res.expires_present,
-               &r.res.expires_epoch);
+    epoch_memo(r, {r.res.cb_expires, r.res.konst_expires, &r.res.expires_asked,
+                   &r.res.expires_present, &r.res.expires_epoch});
     if (r.res.expires_present) date_line(r, "Expires", 7, r.res.expires_epoch);
-    epoch_memo(r, r.res.cb_last_modified, r.res.konst_last_modified, &r.res.last_modified_asked,
-               &r.res.last_modified_present, &r.res.last_modified_epoch);
+    epoch_memo(r, {r.res.cb_last_modified, r.res.konst_last_modified,
+                   &r.res.last_modified_asked, &r.res.last_modified_present,
+                   &r.res.last_modified_epoch});
     if (r.res.last_modified_present) date_line(r, "Last-Modified", 13, r.res.last_modified_epoch);
     return -1;
 }
@@ -1276,8 +1319,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         const bool accept_varies = active_ct(r).size() > 1;
         if (accept_varies || !res.run_variances.empty()) {
-          field_list(r, "Vary", 4, accept_varies ? "Accept" : nullptr, accept_varies ? 6 : 0,
-                     res.run_variances);
+          field_list(r, {"Vary", accept_varies ? "Accept" : std::string_view(),
+                         res.run_variances});
         }
         break;
       }
@@ -1306,15 +1349,15 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         continue;
       }
       case Node::kH12: {
-        epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
-                   &res.last_modified_present, &res.last_modified_epoch);
+        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+                       &res.last_modified_present, &res.last_modified_epoch});
         take_edge(n, status, halted, res.last_modified_present && vals != nullptr &&
              res.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
-        epoch_memo(r, res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
-                   &res.last_modified_present, &res.last_modified_epoch);
+        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
+                       &res.last_modified_present, &res.last_modified_epoch});
         take_edge(n, status, halted, !res.last_modified_present || vals == nullptr ||
              res.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
@@ -1606,12 +1649,12 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
   out.cb_last_modified = value_cb(mrb, klass, MRB_SYM(last_modified), 0, true);
   out.cb_expires = value_cb(mrb, klass, MRB_SYM(expires), 0, true);
   // #202: the class forms of the three caching answers are asked once, now.
-  if (WM_RES_UNLIKELY(!bake_value(mrb, klass, out.cb_generate_etag, "generate_etag", true,
-                                  out.konst_etag, err, errlen) ||
-                      !bake_value(mrb, klass, out.cb_last_modified, "last_modified", false,
-                                  out.konst_last_modified, err, errlen) ||
-                      !bake_value(mrb, klass, out.cb_expires, "expires", false, out.konst_expires,
-                                  err, errlen))) {
+  const Folding fold = {mrb, klass, err, errlen};
+  if (WM_RES_UNLIKELY(
+          !bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag}) ||
+          !bake_value(fold, {out.cb_last_modified, "last_modified", false,
+                             out.konst_last_modified}) ||
+          !bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires}))) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
