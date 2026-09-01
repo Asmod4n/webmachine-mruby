@@ -203,7 +203,7 @@ bool build_listeners(RingConfig& cfg, char* err, size_t errlen) {
 // works either way now - the slipstream seam underneath it hands every
 // call to the engine when the kernel refuses io_uring - and the banner
 // is the receipt. Silence is the kernel side.
-bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
+bool server_backend_ok(char* err, size_t errlen) {
   if (slipstream_syscall_uses_engine()) {
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
     char buf[32] = "";
@@ -242,14 +242,13 @@ bool server_backend_ok(bool have_uring, char* err, size_t errlen) {
                  "webmachine: ================================================================\n",
                  why);
   }
-  if (!have_uring) {
-    std::snprintf(err, errlen,
-                  "this binary carries no liburing at all - mruby-io-uring could not build "
-                  "it on the machine that built this. With the seam there is no separate "
-                  "fallback build: the one binary is the fallback, and a liburing-less "
-                  "build is a broken build, reported instead of served around");
-    return false;
-  }
+  // NO runtime "is liburing here" question any more. With the seam it
+  // is always here - mrbgem.rake aborts the BUILD when liburing cannot
+  // be built, which is the moment that can still be acted on - and the
+  // only open question is which side answers, which the banner above
+  // has just said. The check that used to stand here asked a Ruby
+  // constant that a since-removed gem defined, so it answered "no
+  // liburing" for a binary that carries it.
   return true;
 }
 
@@ -257,7 +256,7 @@ namespace {
 // Everything between "main returned" and "the first accept", once.
 bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (built_) return true;
-  if (!server_backend_ok(opts_.have_uring, err, errlen)) return false;
+  if (!server_backend_ok(err, errlen)) return false;
 
   if (!app_registered_all(specs_, kMaxListeners, err, errlen)) return false;
   RingConfig cfg;

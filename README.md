@@ -105,17 +105,31 @@ the disk. `0` turns the ceiling off.
 
 ## Building
 
-`rake` builds three targets:
+`rake` builds ONE binary, and `MRUBY_CONFIG` picks which:
 
-| target | what it is |
+| config | what it is |
 |---|---|
-| `host` | the ship binary — no test gems, no compiler in it |
-| `portable` | the same, without liburing: slipstreamIO's select(2). Correct, not fast — for hosts where io_uring is forbidden to the process |
-| `debug` | where `rake test` runs, with `MRB_DEBUG` |
+| `build_config_host.rb` | the default, and the ship binary — no test gems, no compiler in it |
+| `build_config_debug.rb` | where `rake test` runs, with `MRB_DEBUG` |
 
-Needs Linux ≥ 6.11 with liburing (the `portable` target does not),
-plus zlib and OpenSSL headers. `rake test` runs the unit tests, the
-bintests and a smoke of both shipped binaries.
+There is no io_uring-less second target, because there is nothing to
+choose at build time any more. mruby-slipstreamio carries liburing and
+builds it with the slipstream seam underneath: the one binary asks the
+kernel at startup, and either the kernel or slipstreamIO's engine
+answers its rings. Where the engine answers, the server says so on
+stderr and says why.
+
+Both sides are measured with the same binary — 65536 bytes served
+identically with io_uring allowed and under
+`kernel.io_uring_disabled=2`, and the engine's banner appearing only in
+the second case.
+
+Needs Linux, a C/C++ toolchain, and zlib and OpenSSL headers. No
+kernel version floor and no io_uring: where it is missing or forbidden
+the engine answers, correctly and more slowly. `rake test` runs the
+unit tests and the bintests, in the debug build. `rake ship_smoke` is
+separate on purpose: the shipped binary is the HOST build's, and a
+debug run cannot answer for a binary it never made.
 
 ## Why it is shaped this way
 

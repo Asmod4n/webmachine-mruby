@@ -249,9 +249,14 @@ mrb_value req_named(mrb_state* mrb, http::NamedField f) {
               "be lent. They are there on HTTP/1.1 and at a websocket handshake");
   }
   if (!v->values->named.carries(f)) return mrb_nil_value();
-  const struct phr_header* hs = live_hdrs(mrb, v);
-  const struct phr_header& h = hs[v->values->named.at[static_cast<uint8_t>(f)]];
-  return lend(mrb, h.value, h.value_len);
+  // The index is applied by the thing that stored it, against the array
+  // it is being applied TO - see http::NamedFieldIndex. A position this
+  // request's array cannot reach reads as "no such field" instead of
+  // reading past the end.
+  const struct phr_header* h =
+      v->values->named.find(f, live_hdrs(mrb, v), v->field_count);
+  if (h == nullptr) return mrb_nil_value();
+  return lend(mrb, h->value, h->value_len);
 }
 
 // RFC 9110 8.3: the entity's media type.
@@ -439,6 +444,23 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* sseres = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
   mrb_define_method_id(mrb, sseres, MRB_SYM(request), resource_request, MRB_ARGS_NONE());
 }
+
+// RFC 9110 5.1: the one way a stored position is read - see the
+// declaration in webmachine.hpp for why it is the only one. Lives here
+// because this is a file where phr_header is a complete type; the header
+// only forward-declares it.
+namespace http {
+const struct phr_header* NamedFieldIndex::find(NamedField f, const struct phr_header* hs,
+                                               size_t n) const {
+  if (hs == nullptr || !carries(f)) return nullptr;
+  const uint8_t i = at[static_cast<uint8_t>(f)];
+  // A position this array cannot reach is no field. The producers all
+  // build this beside the array they derived it from, so this branch
+  // should never be taken - and it is here precisely so that "should"
+  // is not what stands between a bad index and a read past the end.
+  return i < n ? &hs[i] : nullptr;
+}
+}  // namespace http
 
 // RFC 9110 12.5: see the declaration - the values negotiation reads, out of
 // the fields a parked stream copied, which is the only place they still are.

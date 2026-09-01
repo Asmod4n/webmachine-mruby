@@ -16,13 +16,19 @@ Docker: same `Containerfile`, and derive the profile from moby's
 `profiles/seccomp/default.json`. Kubernetes: `seccompProfile: {type:
 Localhost, localhostProfile: webmachine-seccomp.json}`.
 
-Without those three syscalls the server prints `URING_AVAILABLE is
-false` and exits.
+The profile is a PERFORMANCE choice, not a requirement. Without those
+three syscalls the server still serves: slipstreamIO's engine answers
+the rings instead of the kernel, and the server prints which reason
+applied - seccomp, `io_uring_disabled=1` with this process outside
+`io_uring_group`, or `=2`. Correct, and slower: every socket op becomes
+readiness plus a classic syscall.
 
 ## Host requirements
 
-- Linux 6.11+
-- `/proc/sys/kernel/io_uring_disabled` = 0
+- Linux. No io_uring needed and no kernel version floor - where it is
+  missing or forbidden, the engine answers.
+- For the fast path: io_uring reachable, which is what the seccomp
+  profile above arranges, and `/proc/sys/kernel/io_uring_disabled` = 0
 
 ## Packages
 

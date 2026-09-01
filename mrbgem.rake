@@ -27,10 +27,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # ONE binary, every host: mruby-slipstreamio carries liburing and
   # builds it WITH the seam, so whether the kernel or slipstream's
   # engine answers is decided at RUNTIME, per process, by asking the
-  # kernel. The `portable` target died with that - a build-time fallback
-  # to reach for is exactly what the seam removes.
-  spec.add_dependency 'mruby-io-uring', github: 'Asmod4n/mruby-io_uring', branch: 'claude/slipstream-seam'
-  spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'backend-split'
+  # kernel. There is no build-time fallback to reach for, because the one
+  # binary IS the fallback.
+  spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'main'
 
   uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-slipstreamio/build/lib/liburing.a")
   if spec.cc.search_header('sys/epoll.h') &&
@@ -62,8 +61,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     mruby-range-ext
     mruby-compar-ext
     mruby-enum-ext
-    mruby-fiber
-    mruby-enumerator
     mruby-toplevel-ext
     mruby-sprintf
     mruby-time

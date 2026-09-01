@@ -1324,11 +1324,22 @@ enum class NamedField : uint8_t {
 };
 
 struct NamedFieldIndex {
-  // One bit per NamedField. A field the request did not carry has no
-  // position, and the bit is how that is said.
-  uint16_t present = 0;
-  // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
-  uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
+  // THE INDEX NEVER LEAVES. A stored position is only meaningful for the
+  // field array it was taken from, so the only way to read one is to
+  // hand that array and its count back in - `find` applies the index
+  // itself and answers nullptr for anything it cannot reach. Nobody
+  // outside can subscribe `at`, so nobody can apply it to a different
+  // array, and the bound stops being an invariant that lives in three
+  // other files.
+  //
+  // The static_assert below fixes the byte WIDTH and nothing else - that
+  // kMaxHeaders fits a uint8_t says nothing about whether this
+  // request's array is that long, which is what `find` checks.
+  //
+  // Declared, not defined: phr_header is incomplete here (see the
+  // forward declaration at the top of this file), so the body sits in
+  // request.cpp where the framer's header has been included.
+  const struct phr_header* find(NamedField f, const struct phr_header* hs, size_t n) const;
 
   constexpr void note(NamedField f, size_t i) {
     // The framer kept no slot for this one (its field array was full), so
@@ -1344,6 +1355,13 @@ struct NamedFieldIndex {
   constexpr bool carries(NamedField f) const {
     return ((present >> static_cast<uint8_t>(f)) & 1u) != 0;
   }
+
+ private:
+  // One bit per NamedField. A field the request did not carry has no
+  // position, and the bit is how that is said.
+  uint16_t present = 0;
+  // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
+  uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
 };
 struct ReqValues {
   const char* log_ref = nullptr;
@@ -4247,7 +4265,6 @@ struct ServerOptions {
   const char* cli_unix = nullptr;
   int cli_port = 0;
   const char* app_path = nullptr;
-  bool have_uring = false;
   unsigned sq_entries = 0;
   int backlog = 0;
   int header_timeout = 0;
@@ -4260,7 +4277,7 @@ struct ServerOptions {
 };
 void server_options(const ServerOptions& opts);
 
-bool server_backend_ok(bool have_uring, char* err, size_t errlen);
+bool server_backend_ok(char* err, size_t errlen);
 
 void server_init(mrb_state* mrb, struct RClass* wm);
 

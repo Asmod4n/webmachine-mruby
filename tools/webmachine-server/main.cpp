@@ -14,17 +14,6 @@
 
 #include "../../src/webmachine.hpp"
 
-namespace {
-// Is the ring there? URING_AVAILABLE is :native or :shim - which side
-// of the slipstream seam answers - and always truthy; absent only in a
-// build without mruby-io-uring at all.
-bool uring_present(mrb_state* mrb) {
-  const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
-  const mrb_value obj = mrb_obj_value(mrb->object_class);
-  if (!mrb_const_defined(mrb, obj, k)) return false;
-  return mrb_bool(mrb_const_get(mrb, obj, k));
-}
-}
 
 // The CLI states what this INVOCATION decides; `main` states what is served.
 int main(int argc, char** argv) {
@@ -200,7 +189,6 @@ int main(int argc, char** argv) {
   opts.log_privacy = log_privacy;
   opts.error_log_path = error_log_path;
   if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
-  opts.have_uring = uring_present(mrb);
 
   webmachine::server_options(opts);
 

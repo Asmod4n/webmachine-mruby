@@ -83,15 +83,6 @@ void define_resources(mrb_state* mrb) {
   webmachine::define_native(mrb, run, MRB_SYM(generate_etag), generate_etag, MRB_ARGS_NONE());
 }
 
-// Is the ring there? URING_AVAILABLE is :native or :shim - which side
-// of the slipstream seam answers - and always truthy; absent only in a
-// build without mruby-io-uring at all.
-bool uring_present(mrb_state* mrb) {
-  const mrb_sym k = mrb_intern_lit(mrb, "URING_AVAILABLE");
-  const mrb_value obj = mrb_obj_value(mrb->object_class);
-  if (!mrb_const_defined(mrb, obj, k)) return false;
-  return mrb_bool(mrb_const_get(mrb, obj, k));
-}
 }
 
 // The CLI is the server's, minus every knob an example does not need.
@@ -137,7 +128,6 @@ int main(int argc, char** argv) {
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
   opts.cli_unix = cli_unix;
   opts.cli_port = cli_port;
-  opts.have_uring = uring_present(mrb);
   webmachine::server_options(opts);
 
   char err[512] = "";

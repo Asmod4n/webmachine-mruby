@@ -1,3 +1,13 @@
+# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
+# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# dependency names, so a gem pinned here to a branch quietly keeps
+# whatever commit the lock first saw. This tree names branches on
+# purpose - the seam lives in mruby-slipstreamio and moves - and a lock
+# turned that into a checkout that silently stayed months behind, with a
+# liburing.a to match. Measured: the shim path failed on a fix that had
+# been in the branch for hours.
+MRuby::Lockfile.disable
+
 # The binary under the fuzzer: the SHIPPED server, unchanged in what it
 # does, only compiled so that memory errors speak. Nothing here links a
 # fuzzer into the process and nothing calls a function directly - the

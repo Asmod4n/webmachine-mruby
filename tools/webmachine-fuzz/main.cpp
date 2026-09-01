@@ -67,16 +67,6 @@ void setup() {
 
   webmachine::ServerOptions opts;
   opts.cli_unix = kSock;
-  // URING_AVAILABLE is :native or :shim - which side of the slipstream
-  // seam answers - and always truthy; the server's own main reads it
-  // the same way. Without this the default is false and
-  // server_backend_ok refuses as if the build lacked liburing.
-  {
-    const mrb_sym k = mrb_intern_lit(g_mrb, "URING_AVAILABLE");
-    const mrb_value obj = mrb_obj_value(g_mrb->object_class);
-    opts.have_uring = mrb_const_defined(g_mrb, obj, k) &&
-                      mrb_bool(mrb_const_get(g_mrb, obj, k));
-  }
   // An app makes the flow engine reachable; without one the server is
   // the bare floor and only the framing gets fuzzed. Compiled bytecode
   // only (#100), so the runner hands the path in.
