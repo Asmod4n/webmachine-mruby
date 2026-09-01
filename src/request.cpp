@@ -467,8 +467,9 @@ const struct phr_header* NamedFieldIndex::find(NamedField f, const struct phr_he
 void values_of_copied_fields(const ::phr_header* fields, size_t n, http::ReqValues& out) {
   flow::ReqFacts scratch;
   for (size_t i = 0; i < n; i++) {
-    http::header_switch(fields[i].name, fields[i].name_len, fields[i].value,
-                        fields[i].value_len, scratch, out, i);
+    http::header_switch({{fields[i].name, fields[i].name_len},
+                         {fields[i].value, fields[i].value_len}},
+                        {scratch, out, i});
   }
 }
 

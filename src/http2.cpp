@@ -44,13 +44,22 @@ void put_u32(unsigned char* p, uint32_t v) {
   p[3] = static_cast<unsigned char>(v);
 }
 
-// RFC 9113 6: one control frame, header + fixed payload, into the sink.
-void emit_control(std::string& sink, uint8_t type, uint8_t flags, uint32_t stream,
-                  const unsigned char* payload, uint32_t len) {
+// RFC 9113 6: one control frame - its type, its flags, the stream it names
+// (0 = the connection itself), and its fixed payload.
+struct H2Control {
+  uint8_t type;
+  uint8_t flags;
+  uint32_t stream;
+  std::span<const unsigned char> payload;
+};
+
+// Header + payload, into the sink.
+void emit_control(std::string& sink, const H2Control& c) {
+  const uint32_t len = static_cast<uint32_t>(c.payload.size());
   unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, len, type, flags, stream);
+  h2_put_frame_header(fh, len, c.type, c.flags, c.stream);
   sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  if (len != 0) sink.append(reinterpret_cast<const char*>(payload), len);
+  if (len != 0) sink.append(reinterpret_cast<const char*>(c.payload.data()), len);
 }
 
 // RFC 7541 5.2: a string length, 7-bit prefix, H bit 0 - no Huffman out.
@@ -149,7 +158,7 @@ bool Http1::h2_begin(Conn& st, std::string& sink) {
   payload[0] = 0;
   payload[1] = kH2SettingsMaxConcurrentStreams;
   put_u32(payload + 2, kH2MaxConcurrentStreams);
-  emit_control(sink, kH2Settings, 0, 0, payload, sizeof(payload));
+  emit_control(sink, {kH2Settings, 0, 0, payload});
   return true;
 }
 
@@ -161,7 +170,7 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
     unsigned char payload[8];
     put_u32(payload, h2.last_stream);
     put_u32(payload + 4, code);
-    emit_control(sink, kH2Goaway, 0, 0, payload, sizeof(payload));
+    emit_control(sink, {kH2Goaway, 0, 0, payload});
     h2.goaway_sent = true;
   }
   return false;
@@ -229,7 +238,7 @@ void Http1::cache_headers(std::string& out, const CachedHead& head) {
 void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink) {
   unsigned char payload[4];
   put_u32(payload, code);
-  emit_control(sink, kH2RstStream, 0, stream_id, payload, sizeof(payload));
+  emit_control(sink, {kH2RstStream, 0, stream_id, payload});
   st.h2->close_stream(stream_id);
 }
 
@@ -260,8 +269,11 @@ bool Http1::h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& ou
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
 // either answer or park the facts on the stream.
-bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const unsigned char* blk,
-                        size_t blk_len, std::string& sink) {
+bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
+  const uint32_t stream_id = h.stream_id;
+  const bool end_stream = h.end_stream;
+  const unsigned char* const blk = h.block.data();
+  const size_t blk_len = h.block.size();
   H2State& h2 = *st0.h2;
 
   uint32_t quads[4 * kH2MaxFields];
@@ -411,7 +423,7 @@ bool Http1::h2_dispatch(Conn& st0, uint32_t stream_id, bool end_stream, const un
       at = nh;
       nh++;
     }
-    if (http::header_switch(name, nlen, val, vlen, facts, vals, at) &&
+    if (http::header_switch({{name, nlen}, {val, vlen}}, {facts, vals, at}) &&
         !h2_wire_header_ok(name, nlen, val, vlen, have_claimed_len, claimed_len)) {
       ok = false;
     }
@@ -1417,8 +1429,8 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
         if (flen != 0) {
           unsigned char inc[4];
           put_u32(inc, flen);
-          emit_control(sink, kH2WindowUpdate, 0, 0, inc, 4);
-          emit_control(sink, kH2WindowUpdate, 0, stream, inc, 4);
+          emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+          emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
         }
         if (flags & kH2FlagEndStream) {
           if (stp->content_length_given && stp->content_received != stp->content_length) {
@@ -1493,9 +1505,8 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
           // it is decoded where it lies; frag exists for the split that
           // CONTINUATION makes, and this is not one.
           h2.frag_active = false;
-          if (!h2_dispatch(st0, stream, (flags & kH2FlagEndStream) != 0, hp, hlen, sink)) {
-            return false;
-          }
+          const H2Headers head = {stream, (flags & kH2FlagEndStream) != 0, {hp, hlen}};
+          if (!h2_dispatch(st0, head, sink)) return false;
           break;
         }
         if (hlen > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
@@ -1516,11 +1527,10 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
         h2.frag.append(reinterpret_cast<const char*>(p), flen);
         if (flags & kH2FlagEndHeaders) {
           h2.frag_active = false;
-          if (!h2_dispatch(st0, h2.frag_stream, (h2.frag_flags & kH2FlagEndStream) != 0,
-                           reinterpret_cast<const unsigned char*>(h2.frag.data()),
-                           h2.frag.size(), sink)) {
-            return false;
-          }
+          const H2Headers head = {
+              h2.frag_stream, (h2.frag_flags & kH2FlagEndStream) != 0,
+              {reinterpret_cast<const unsigned char*>(h2.frag.data()), h2.frag.size()}};
+          if (!h2_dispatch(st0, head, sink)) return false;
         }
         break;
       }
@@ -1577,7 +1587,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
               break;
           }
         }
-        emit_control(sink, kH2Settings, kH2FlagAck, 0, nullptr, 0);
+        emit_control(sink, {kH2Settings, kH2FlagAck, 0, {}});
         break;
       }
 
@@ -1586,7 +1596,7 @@ bool Http1::h2_feed(Conn& st0, const char* data, size_t len, std::string& sink, 
 
       case kH2Ping:
         if (stream != 0 || flen != 8) return h2_error(st0, kH2FrameSizeError, sink);
-        if (!(flags & kH2FlagAck)) emit_control(sink, kH2Ping, kH2FlagAck, 0, p, 8);
+        if (!(flags & kH2FlagAck)) emit_control(sink, {kH2Ping, kH2FlagAck, 0, {p, 8}});
         break;
 
       case kH2Goaway:

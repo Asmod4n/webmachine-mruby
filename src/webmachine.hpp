@@ -1904,10 +1904,31 @@ inline constexpr size_t kFieldLengths[] = {3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 17,
 inline constexpr uint32_t kFieldLengthMask =
     lengths_mask(kFieldLengths, sizeof(kFieldLengths) / sizeof(kFieldLengths[0]));
 
+// One header field as it lies in the head: its name and its value.
+struct Field {
+  std::string_view name;
+  std::string_view value;
+};
+
+// Where one request's parsed facts are being filled: the facts themselves,
+// the values that point back into the head, and the index of the field
+// being read - a value's own position is how the framer finds it again.
+struct FactSink {
+  flow::ReqFacts& facts;
+  ReqValues& vals;
+  size_t at;
+};
+
 // RFC 9110: ONE length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
-static inline bool header_switch(const char* name, size_t nlen, const char* value, size_t vlen,
-                                 flow::ReqFacts& facts, ReqValues& vals, size_t at) {
+static inline bool header_switch(Field f, FactSink into) {
+  const char* const name = f.name.data();
+  const size_t nlen = f.name.size();
+  const char* const value = f.value.data();
+  const size_t vlen = f.value.size();
+  flow::ReqFacts& facts = into.facts;
+  ReqValues& vals = into.vals;
+  const size_t at = into.at;
   if (!length_is_one_of(nlen, kFieldLengthMask)) return true;
   switch (nlen) {
     case 3:
@@ -4299,8 +4320,15 @@ class Http1 {
   // to send. Its own function because those fifteen lines are not part of
   // answering a stream, and inline they cost h2_answer 952 bytes.
   uint16_t h2_refuse_file(Conn& st, const ReqView* req);
-  bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, const unsigned char* blk,
-                   size_t blk_len, std::string& sink);
+  // RFC 9113 6.2: one HEADERS block as it arrived - the stream it belongs
+  // to, whether the peer said that is the end of that stream, and the bytes
+  // of the block itself.
+  struct H2Headers {
+    uint32_t stream_id;
+    bool end_stream;
+    std::span<const unsigned char> block;
+  };
+  bool h2_dispatch(Conn& st, const H2Headers& h, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);
   void h2_log(Conn& st, const flow::ReqFacts& facts, const char* target, size_t tlen);
   // `target` rides beside `req` because an error answer needs it even

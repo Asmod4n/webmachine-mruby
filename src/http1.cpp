@@ -996,7 +996,8 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
     facts.method = http::parse_method(method, method_len);
     for (size_t i = 0; i < num_headers; i++) {
       const struct phr_header& h = headers[i];
-      if (http::header_switch(h.name, h.name_len, h.value, h.value_len, facts, vals, i)) {
+      if (http::header_switch({{h.name, h.name_len}, {h.value, h.value_len}},
+                              {facts, vals, i})) {
         read_wire_header(w, vals, h.name, h.name_len, h.value, h.value_len, i);
       }
     }
