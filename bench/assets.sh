@@ -50,10 +50,27 @@
 # default), PORT (default 8123), SETUP_ENTRIES (default 5000, 0 skips).
 # Appends to bench/results/$(hostname).log; failed runs write nothing.
 #
-# SPREAD, measured on this container: two runs of the IDENTICAL
-# configuration (reps=5, medians) disagreed by 20% on the same asset.
-# Use REPS>=5 and read the median; a difference under a quarter is
-# not answerable here.
+# SPREAD, measured with foreign benchmarks under bench_priority, so the
+# floor is the machine's and not this harness's. What it can resolve
+# depends on what is being measured, which is why one number would have
+# been misleading:
+#
+#   allocation      0.07%  wall vs cpu time over 12 sysbench runs, and
+#                          /proc/stat steal is 0 - nobody takes the cpu
+#   cpu throughput  0.57%  sigma, 1.8% range (sysbench cpu, 8 runs)
+#   syscalls        3.7%   range (perf bench sched pipe, 6 runs)
+#
+# So: about a percent for cpu-bound work, two to three for the syscall
+# -bound kind this harness measures. Take REPS>=5 and read the median.
+#
+# The AES figure that used to look like a fourth row is not one:
+# openssl speed -evp aes-128-gcm ranges 8.3% because the AES unit is
+# shared with whatever else the host is running, so it measures the
+# neighbour rather than this guest. Not a benchmark for this question.
+#
+# This replaces a note that said 20%, which was never true of this
+# machine as it is configured now and led to real differences being
+# dismissed as noise.
 #
 # NO PINNING - and here the reason is structural, not statistical: the
 # moment a server touches a FILE, io_uring spawns an io-wq pool, and
