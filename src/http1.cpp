@@ -1091,7 +1091,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
                                !gz_now)
                                   ? zc_min_
                                   : 0;
-        status = resource_run(*b->res, facts, &vals, &rv, &body_, &have_body, &rhdrs_, zc_min);
+        const BoundRequest asked = {facts, &vals, &rv, zc_min};
+        const RunAnswer answer = {&body_, &have_body, &rhdrs_};
+        status = resource_run(*b->res, asked, answer);
         if (WM_H1_UNLIKELY(resource_body_lent(*b->res, &st.zc_value, &lent, &lent_len))) {
           st.zc_mrb = b->res->mrb;
           st.zc_lent = true;

@@ -234,26 +234,26 @@ void Http1::h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sin
 
 // #210 / #146: the page h1 spells for this status, framed for h2. False =
 // there is nothing to say and the prebuilt bodyless block stands.
-bool Http1::h2_error_page(uint16_t status, const ErrorPages::Fields& f,
-                          const http::ReqValues* vals, const Bundle* b, H2ErrorPage& page,
-                          const char*& body, size_t& blen, const H2Block*& blk) {
-  const int m = err_pages_.media_for(status, vals != nullptr ? vals->accept : nullptr,
+bool Http1::h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& out) {
+  const http::ReqValues* vals = ask.vals;
+  const int m = err_pages_.media_for(ask.status, vals != nullptr ? vals->accept : nullptr,
                                      vals != nullptr ? vals->accept_len : 0);
   size_t plen = 0;
-  const char* pbody = err_pages_.body_for(status, m, f, page.rendered, &plen);
+  const char* pbody = err_pages_.body_for(ask.status, m, ask.fields, page.rendered, &plen);
   if (pbody == nullptr) return false;
   const std::string ctype(err_pages_.media_type(m));
   // RFC 9110 15.5.6: a 405 says which methods it WOULD take, and the page
   // it now carries must not cost it that field.
+  const Bundle* b = ask.bundle;
   const std::string* allow =
-      (status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
-  h2_build_block(page.block, status, &ctype, allow);
+      (ask.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
+  h2_build_block(page.block, ask.status, &ctype, allow);
   // Lent where it lies, whether that is the picture in the mapping or the
   // page prepared at boot; a render lands in page.rendered, which
   // outlives the framing at the call site either way.
-  body = pbody;
-  blen = plen;
-  blk = &page.block;
+  out.body = pbody;
+  out.blen = plen;
+  out.blk = &page.block;
   return true;
 }
 
@@ -715,8 +715,9 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       // from here - parked or not - gets none.
       // The SAME [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
       // to lend, and h2 has no gzip path for a dynamic body to collide with.
-      status = resource_run(*b->res, facts, vals, req, &body_, &have_body, &rhdrs_,
-                            head_only ? 0 : zc_min_);
+      const BoundRequest asked = {facts, vals, req, head_only ? 0 : zc_min_};
+      const RunAnswer answer = {&body_, &have_body, &rhdrs_};
+      status = resource_run(*b->res, asked, answer);
       lent_have = resource_body_lent(*b->res, &lent_v, &lent, &lent_len);
       if (lent_have) lent_mrb = b->res->mrb;
       // response.file is h1-only for now: the deferred open lives on the
@@ -752,9 +753,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     }
   }
 
-  const char* body = nullptr;
-  size_t blen = 0;
-  const H2Block* blk;
+  H2Answer wire;
   H2Block dynblk;
   // #210 / #146: an error carries the same page here that h1 spells. It
   // outlives the framing below, because a body the window cannot finish
@@ -805,14 +804,15 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     const bool use_asset = run_asset != nullptr && !bodyless && have_body;
     // An asset's octets are never framed from `body` - h2_flush_pending
     // reads them out of the mapping - so only its length is set here.
-    body = use_asset ? nullptr : (use_lent ? lent : (baked ? b->konst.body.data() : body_.data()));
-    blen = use_asset ? asset_len
-                     : (use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size()));
-    blk = &dynblk;
+    wire.body =
+        use_asset ? nullptr : (use_lent ? lent : (baked ? b->konst.body.data() : body_.data()));
+    wire.blen = use_asset ? asset_len
+                          : (use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size()));
+    wire.blk = &dynblk;
   } else if (have_body && status == 200) {
-    body = run_asset != nullptr ? nullptr : (lent_have ? lent : body_.data());
-    blen = run_asset != nullptr ? asset_len : (lent_have ? lent_len : body_.size());
-    blk = &h2_store_[(*idx)[200]];
+    wire.body = run_asset != nullptr ? nullptr : (lent_have ? lent : body_.data());
+    wire.blen = run_asset != nullptr ? asset_len : (lent_have ? lent_len : body_.size());
+    wire.blk = &h2_store_[(*idx)[200]];
   } else if (status == 500 && b != nullptr && b->bound) {
     // #210: what led here, gathered once - the record and the page carry
     // the same hash because they are taken over the same facts.
@@ -852,28 +852,30 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       f.backtrace = ef.backtrace;
       f.backtrace_len = ef.backtrace_len;
     }
-    if (!h2_error_page(500, f, vals, b, err_page, body, blen, blk)) {
-      blk = &h2_store_[(*idx)[500]];
+    const H2ErrorAsk ask = {500, f, vals, b};
+    if (!h2_error_page(ask, err_page, wire)) {
+      wire.blk = &h2_store_[(*idx)[500]];
     }
   } else if (status == 200) {
-    body = b->konst.body.data();
-    blen = b->konst.body.size();
-    blk = &h2_store_[(*idx)[200]];
+    wire.body = b->konst.body.data();
+    wire.blen = b->konst.body.size();
+    wire.blk = &h2_store_[(*idx)[200]];
   } else {
     // RFC 9110 15: only a 4xx or 5xx has something to explain.
     bool spelled = false;
     if (status >= 400) {
       ErrorPages::Fields f;
-      spelled = h2_error_page(status, f, vals, b, err_page, body, blen, blk);
+      const H2ErrorAsk ask = {status, f, vals, b};
+      spelled = h2_error_page(ask, err_page, wire);
     }
-    if (!spelled) blk = &h2_store_[(*idx)[status]];
+    if (!spelled) wire.blk = &h2_store_[(*idx)[status]];
   }
 
-  const bool no_data = head_only || blen == 0;
+  const bool no_data = head_only || wire.blen == 0;
 
   // A lend the chain above did not adopt (a bodyless status, a 500 that
   // spelled its own body) never reached a plan, so this IS its release.
-  if (lent_have && (no_data || body != lent)) {
+  if (lent_have && (no_data || wire.body != lent)) {
     resource_body_unlend(lent_mrb, lent_v);
     lent_have = false;
   }
@@ -894,13 +896,13 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   const bool asset_data = run_asset != nullptr && !no_data;
   if (asset_data) {
     H2Stream& keep = h2.open(stream_id);
-    keep.response_content.take_asset(run_asset, 0, blen);
+    keep.response_content.take_asset(run_asset, 0, wire.blen);
     keep.end_headers = true;
     keep.half_closed_remote = true;
   }
 
   alog_status_ = status;
-  alog_bytes_ = no_data ? 0 : blen;
+  alog_bytes_ = no_data ? 0 : wire.blen;
 
   H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
   int64_t budget = 0;
@@ -947,10 +949,10 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     }
     const size_t elen = static_cast<size_t>(ep - ebuf);
     unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, static_cast<uint32_t>(blk->bytes.size() + elen), kH2Headers,
+    h2_put_frame_header(fh, static_cast<uint32_t>(wire.blk->bytes.size() + elen), kH2Headers,
                         kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0), stream_id);
     sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    sink.append(blk->bytes);
+    sink.append(wire.blk->bytes);
     sink.append(reinterpret_cast<const char*>(ebuf), elen);
   } else {
     if (h2.head_cache.status != status || h2.head_cache.route != route ||
@@ -985,7 +987,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         h2.enc_ins++;
         // The block that carried the literal is the wrong one now: the
         // shared 200 spells :status and nothing else.
-        blk = &h2_store_[index_[200]];
+        wire.blk = &h2_store_[index_[200]];
       }
       unsigned char dbuf[64];
       unsigned char* dp = dbuf;
@@ -999,10 +1001,10 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);
-      cache_headers(h2.head_cache.bytes, *blk, rbuf, rlen, dbuf, dlen);
+      cache_headers(h2.head_cache.bytes, *wire.blk, rbuf, rlen, dbuf, dlen);
       h2.head_cache.head_len = h2.head_cache.bytes.size();
       h2.head_cache.primed = ct == nullptr;
-      if (ct != nullptr) cache_headers(h2.head_cache.prime, *blk, pbuf, plen, dbuf, dlen);
+      if (ct != nullptr) cache_headers(h2.head_cache.prime, *wire.blk, pbuf, plen, dbuf, dlen);
       h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
                                !b->konst.body.empty() &&
                                b->konst.body.size() <= kH2MergeBody;
@@ -1019,7 +1021,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     // merge exists for the other thousands.
     const bool prime = !h2.head_cache.primed;
     merged = !prime && !no_data && h2.head_cache.has_data &&
-             budget >= static_cast<int64_t>(blen) && blen <= h2.peer_max_frame;
+             budget >= static_cast<int64_t>(wire.blen) && wire.blen <= h2.peer_max_frame;
     const size_t hoff = sink.size();
     if (prime) {
       sink.append(h2.head_cache.prime);
@@ -1042,9 +1044,9 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   size_t give = 0;
   if (!lent_have && !asset_data && !no_data) {
     if (merged) {
-      give = blen;
+      give = wire.blen;
     } else {
-      give = blen;
+      give = wire.blen;
       if (budget <= 0) {
         give = 0;
       } else if (static_cast<int64_t>(give) > budget) {
@@ -1055,20 +1057,20 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       while (off < give) {
         size_t n = give - off;
         if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-        const bool last = off + n == blen;
+        const bool last = off + n == wire.blen;
         h2_put_frame_header(fh, static_cast<uint32_t>(n), kH2Data,
                             last ? kH2FlagEndStream : 0, stream_id);
         sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-        sink.append(body + off, n);
+        sink.append(wire.body + off, n);
         off += n;
       }
     }
     const bool had_stream = stp != nullptr;
     h2.flow_window -= static_cast<int64_t>(give);
     if (had_stream) stp->flow_window -= static_cast<int64_t>(give);
-    if (give < blen) {
+    if (give < wire.blen) {
       H2Stream& keep = h2.open(stream_id);
-      keep.response_content.take_owned(body + give, blen - give);
+      keep.response_content.take_owned(wire.body + give, wire.blen - give);
       keep.end_headers = true;
       keep.half_closed_remote = true;
       if (!had_stream) keep.flow_window -= static_cast<int64_t>(give);
@@ -1076,7 +1078,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   }
   // A lent stream is never closed here: its bytes have not been framed yet,
   // and the sweep at the end of h2_flush_pending closes it once they are.
-  if (!lent_have && !asset_data && (no_data || give == blen)) h2.close_stream(stream_id);
+  if (!lent_have && !asset_data && (no_data || give == wire.blen)) h2.close_stream(stream_id);
   return true;
 }
 

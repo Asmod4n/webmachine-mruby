@@ -1860,21 +1860,20 @@ bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, si
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
 // it, and a raise leaves the exception pending for the error resource.
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
-                      const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers, size_t zc_min) {
+uint16_t resource_run(const Resource& res, const BoundRequest& asked,
+                      const RunAnswer& answer) {
   mrb_state* mrb = res.mrb;
-  request_bind(req);
+  request_bind(asked.req);
   response_bind(&res);
-  res.run_facts = &facts;
-  res.run_vals = vals;
-  res.run_req = req;
-  res.run_headers = headers;
-  headers->clear();
-  res.run_body = body;
+  res.run_facts = &asked.facts;
+  res.run_vals = asked.vals;
+  res.run_req = asked.req;
+  res.run_headers = answer.headers;
+  answer.headers->clear();
+  res.run_body = answer.body;
   res.run_have_body = false;
   res.run_asset = nullptr;
-  res.run_zc_min = zc_min;
+  res.run_zc_min = asked.zc_min;
   res.run_zc_have = false;
   res.run_status = 0;
   res.run_resp_code = 0;
@@ -1934,10 +1933,10 @@ uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
       resource_body_unlend(mrb, res.run_zc);
       res.run_zc_have = false;
     }
-    *have_body = false;
+    *answer.have_body = false;
     return 500;
   }
-  *have_body = res.run_have_body;
+  *answer.have_body = res.run_have_body;
   res.run_status = status;
   return status;
 }

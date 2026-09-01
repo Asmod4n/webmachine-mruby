@@ -2369,9 +2369,27 @@ struct Resource {
 
 bool resource_fold(mrb_state* mrb, mrb_value klass, Resource& out, char* err, size_t errlen);
 
-uint16_t resource_run(const Resource& res, const flow::ReqFacts& facts,
-                      const http::ReqValues* vals, const ReqView* req, std::string* body,
-                      bool* have_body, std::string* headers, size_t zc_min = 0);
+// One request as a bound run receives it: what the parse settled, the
+// header values the calling frame still holds (none where that frame is
+// already gone), the bytes themselves, and the smallest body worth LENDING
+// rather than copying - 0 where nothing downstream could hold a lend.
+struct BoundRequest {
+  const flow::ReqFacts& facts;
+  const http::ReqValues* vals;
+  const ReqView* req;
+  size_t zc_min = 0;
+};
+
+// Where a bound run writes what it produced: the body it spelled, whether
+// it spelled one at all, and the field lines it named.
+struct RunAnswer {
+  std::string* body;
+  bool* have_body;
+  std::string* headers;
+};
+
+uint16_t resource_run(const Resource& res, const BoundRequest& asked,
+                      const RunAnswer& answer);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
 
@@ -4051,6 +4069,26 @@ class Http1 {
     std::string rendered;
   };
 
+  // What one h2 answer puts on the wire: the HPACK block that heads it and
+  // the body bytes that follow.
+  struct H2Answer {
+    const char* body = nullptr;
+    size_t blen = 0;
+    const H2Block* blk = nullptr;
+  };
+
+  struct Bundle;
+
+  // And what spelling an ERROR answer needs to know first: the status it
+  // carries, the words #210 filled in for it, the header values the request
+  // frame still holds (for Accept), and the route whose Allow a 405 keeps.
+  struct H2ErrorAsk {
+    uint16_t status;
+    const ErrorPages::Fields& fields;
+    const http::ReqValues* vals;
+    const Bundle* bundle;
+  };
+
   struct Bundle {
     flow::KonstSet konst;
     // RFC 9110 12.5.1: what c4 weighs an Accept against - the media type
@@ -4171,9 +4209,7 @@ class Http1 {
 
   void h2_build_block(H2Block& b, uint16_t status, const std::string* ctype,
                       const std::string* allow);
-  bool h2_error_page(uint16_t status, const ErrorPages::Fields& f, const http::ReqValues* vals,
-                     const Bundle* b, H2ErrorPage& page, const char*& body, size_t& blen,
-                     const H2Block*& blk);
+  bool h2_error_page(const H2ErrorAsk& ask, H2ErrorPage& page, H2Answer& out);
 
   bool h2_begin(Conn& st, std::string& sink);
   bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);

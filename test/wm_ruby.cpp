@@ -215,7 +215,8 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   struct mrb_jmpbuf* const saved_jmp = mrb->jmp;
   mrb->jmp = nullptr;
   const uint16_t status =
-      webmachine::resource_run(f->res, facts, &vals, &rv, &body, &have_body, &field_lines);
+      webmachine::resource_run(f->res, {facts, &vals, &rv, 0},
+                               {&body, &have_body, &field_lines});
   mrb->jmp = saved_jmp;
 
   // A raise leaves the exception pending for the wire writer
