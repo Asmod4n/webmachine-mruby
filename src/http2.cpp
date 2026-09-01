@@ -638,7 +638,7 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 
   unsigned char dbuf[64];
   unsigned char* dp = dbuf;
-  if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_))) {
+  if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)}, {"date", {date_, sizeof(date_)}})) {
     return h2_error(st0, kH2InternalError, sink);
   }
   const size_t dlen = static_cast<size_t>(dp - dbuf);
@@ -922,7 +922,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     // thrown away, so an insert here costs nothing to replay - but it
     // DOES move every index a cached head may be holding, which is what
     // enc_ins counts.
-    if (!h2_enc_field(&h2.enc, ep, eend, "date", 4, date_, sizeof(date_))) {
+    if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}})) {
       return h2_error(st0, kH2InternalError, sink);
     }
     h2.enc_ins++;
@@ -939,8 +939,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         for (char& c : name) {
           if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
         }
-        if (!h2_enc_field(&h2.enc, ep, eend, name.data(), name.size(), rhdrs_.data() + vs,
-                          eol - vs)) {
+        if (!h2_enc_field({&h2.enc, ep, eend}, {name, {rhdrs_.data() + vs, eol - vs}})) {
           return h2_error(st0, kH2InternalError, sink);
         }
         h2.enc_ins++;
@@ -976,10 +975,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       if (ct != nullptr) {
         unsigned char* pp = pbuf;
         unsigned char* rp = rbuf;
-        if (!h2_enc_field(&h2.enc, pp, pbuf + sizeof(pbuf), "content-type", 12, ct->data(),
-                          ct->size()) ||
-            !h2_enc_field(&h2.enc, rp, rbuf + sizeof(rbuf), "content-type", 12, ct->data(),
-                          ct->size())) {
+        if (!h2_enc_field({&h2.enc, pp, pbuf + sizeof(pbuf)}, {"content-type", *ct}) ||
+            !h2_enc_field({&h2.enc, rp, rbuf + sizeof(rbuf)}, {"content-type", *ct})) {
           return h2_error(st0, kH2InternalError, sink);
         }
         plen = static_cast<size_t>(pp - pbuf);
@@ -996,8 +993,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       // peer performs again each time. content-type above may be
       // indexed for the opposite reason - it is inserted once and the
       // cache then replays the REFERENCE, never the insert.
-      if (!h2_enc_field(&h2.enc, dp, dbuf + sizeof(dbuf), "date", 4, date_, sizeof(date_),
-                        false)) {
+      if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
+                        {"date", {date_, sizeof(date_)}, false})) {
         return h2_error(st0, kH2InternalError, sink);
       }
       const size_t dlen = static_cast<size_t>(dp - dbuf);
