@@ -687,8 +687,6 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   const flow::ReqFacts& facts = q.facts;
   const http::ReqValues* vals = q.vals;
   const ReqView* req = q.req;
-  const char* target = q.target.data();
-  const size_t target_len = q.target.size();
   const uint16_t route = q.route;
   const bool head_only = q.head_only;
   H2State& h2 = *st0.h2;

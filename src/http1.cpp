@@ -1484,8 +1484,11 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
                         elog_.enabled ? &elog_ : nullptr, refused);
   request_bind(nullptr);
   if (s == nullptr) {
-    log_sse(alog_, st, {method, path, vals, refused == 0 ? 403 : refused, lflags});
-    return fail(st, refused == 0 ? 403 : refused, sink, lflags);
+    // RFC 9110 15.5.4: a stream the app would not open is a 403 unless the
+    // app named a status of its own.
+    const uint16_t status = refused == 0 ? 403 : refused;
+    log_sse(alog_, st, {method, path, vals, status, lflags});
+    return fail(st, status, sink, lflags);
   }
 
   log_sse(alog_, st, {method, path, vals, 200, lflags});
