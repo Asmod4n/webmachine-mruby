@@ -120,28 +120,41 @@ void read_wire_header(WireFacts& w, http::ReqValues& vals, const char* n, size_t
   }
 }
 
-// RFC 9112 3/9.3: the head ONE bound run spelled for itself - status line,
-// Date, its own field lines, the framing this connection asked for. No
-// prebuilt head can take this shape, so it is spelled byte by byte.
-void spell_head(std::string& sink, uint16_t status, const char* date, const std::string& ctype,
-                const std::string& rhdrs, int minor, bool persist, bool bodyless, size_t len) {
+// RFC 9112 3/9.3: the head ONE bound run spelled for itself - the status
+// it carries, the Date line for this second, its own Content-Type and
+// field lines, the framing this connection asked for, and the length it
+// declares where it declares one. No prebuilt head can take this shape.
+struct SpelledHead {
+  uint16_t status;
+  const char* date;
+  std::string_view ctype;
+  std::string_view rhdrs;
+  int minor;
+  bool persist;
+  bool bodyless;
+  size_t len;
+};
+
+// And here it is spelled, byte by byte.
+void spell_head(std::string& sink, const SpelledHead& head) {
+  const uint16_t status = head.status;
   char line[4];
   line[0] = static_cast<char>('0' + status / 100);
   line[1] = static_cast<char>('0' + (status / 10) % 10);
   line[2] = static_cast<char>('0' + status % 10);
   line[3] = '\0';
   sink.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(status));
-  sink.append("\r\nDate: ").append(date, kDateLen).append("\r\n");
-  if (!ctype.empty()) sink.append("Content-Type: ").append(ctype).append("\r\n");
-  sink.append(rhdrs);
-  if (!persist) sink.append("Connection: close\r\n");
-  else if (minor < 1) sink.append("Connection: keep-alive\r\n");
-  if (bodyless) {
+  sink.append("\r\nDate: ").append(head.date, kDateLen).append("\r\n");
+  if (!head.ctype.empty()) sink.append("Content-Type: ").append(head.ctype).append("\r\n");
+  sink.append(head.rhdrs);
+  if (!head.persist) sink.append("Connection: close\r\n");
+  else if (head.minor < 1) sink.append("Connection: keep-alive\r\n");
+  if (head.bodyless) {
     sink.append("\r\n");
     return;
   }
   char cl[40];
-  sink.append(cl, http::spell_content_length(cl, len));
+  sink.append(cl, http::spell_content_length(cl, head.len));
 }
 }
 
@@ -719,8 +732,15 @@ void Http1::file_prebuilt(Conn& st, uint16_t status_code) {
 // spell_head's own job, with the run's field lines still in front.
 void Http1::file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless) {
   st.file->head.clear();
-  spell_head(st.file->head, status_code, date_, bodyless ? std::string() : st.file->content_type,
-             st.file->field_lines, st.file->minor, st.file->persist, bodyless, content_length);
+  const SpelledHead head = {status_code,
+                           date_,
+                           bodyless ? std::string_view() : st.file->content_type,
+                           st.file->field_lines,
+                           st.file->minor,
+                           st.file->persist,
+                           bodyless,
+                           content_length};
+  spell_head(st.file->head, head);
   st.file->status_code = status_code;
   st.file->buf_filled = bodyless || st.file->head_only ? 0 : content_length;
   st.file->stage = FileStage::kDeliver;
@@ -1183,8 +1203,10 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
             }
             else if (have_body || baked) ctype = b->konst.content_type;
           }
-          spell_head(sink, status, date_, ctype, rhdrs_, minor, persist, bodyless,
-                     lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size()));
+          const SpelledHead head = {
+              status, date_, ctype, rhdrs_, minor, persist, bodyless,
+              lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size())};
+          spell_head(sink, head);
           if (!bodyless && !head_only) {
             if (lent != nullptr) lend_body(st, sink, lent, lent_len, *plan);
             else sink.append(baked ? b->konst.body : body_);
