@@ -33,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -3962,6 +3963,23 @@ class Http1 {
  private:
   struct AppSlot;
 
+  // RFC 6455 4.1: what a websocket upgrade needs to know about the request
+  // that asked for it. One argument instead of eleven - see #std-first: the
+  // arguments that always travel together are a thing without a name, and
+  // this is that thing. Every member is a view or a reference into bytes
+  // the caller owns for the length of the call.
+  struct WsUpgrade {
+    const AppSlot& slot;
+    int route;
+    std::string_view path;
+    const RouteSpans& spans;
+    std::string_view key;
+    const void* hdrs;   // struct phr_header[]; the framer's header is not here
+    size_t nhdr;
+    const http::ReqValues& vals;
+    std::string_view rest;  // bytes after the head, already in hand
+  };
+
   struct Resp {
     std::string bytes;
     size_t date_off = 0;
@@ -4088,10 +4106,7 @@ class Http1 {
   // segment. `prebuilt` takes the status straight out of the shared store.
   void file_spell(Conn& st, uint16_t status_code, size_t content_length, bool bodyless);
   void file_prebuilt(Conn& st, uint16_t status_code);
-  bool ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path, size_t path_len,
-                  const RouteSpans& spans, const char* key, size_t key_len, const void* hdrs,
-                  size_t nhdr, const http::ReqValues& vals, const char* rest, size_t rest_len,
-                  std::string& sink);
+  bool ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink);
 
   bool sse_begin(Conn& st, const AppSlot& slot, int route, const char* method,
                  size_t method_len, const char* path, size_t path_len,
@@ -4109,6 +4124,11 @@ class Http1 {
   bool h2_feed(Conn& st, const char* data, size_t len, std::string& sink, Plan* plan);
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
   void h2_rst(Conn& st, uint32_t stream_id, uint32_t code, std::string& sink);
+  // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
+  // named one is refused rather than served the empty body it never meant
+  // to send. Its own function because those fifteen lines are not part of
+  // answering a stream, and inline they cost h2_answer 952 bytes.
+  uint16_t h2_refuse_file(Conn& st, const ReqView* req);
   bool h2_dispatch(Conn& st, uint32_t stream_id, bool end_stream, const unsigned char* blk,
                    size_t blk_len, std::string& sink);
   const ReqView* h2_parked_view(Conn& st, const std::string& target, ReqView& out);

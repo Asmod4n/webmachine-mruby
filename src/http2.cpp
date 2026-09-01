@@ -663,6 +663,21 @@ bool Http1::h2_asset_answer(Conn& st0, uint32_t stream_id, const AssetEntry& e,
 
 // RFC 9113 6.2/6.9.1: HEADERS and DATA for one stream; DATA beyond
 // min(connection, stream) is PARKED, never written.
+// RFC 9110 15.6.1: see the declaration. A run that named a file never
+// lends its body either (see the O18 body handler in resource.cpp), so
+// lent_have is already false here and there is nothing to unwind.
+uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
+  static const char kWhy[] =
+      "response.file is not wired for HTTP/2 yet - this stream would have been "
+      "answered with an empty body, so it is refused instead";
+  log_internal_error(elog_, st.peer, st.peer_len,
+                     req != nullptr ? req->request_target : nullptr,
+                     req != nullptr ? req->request_target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
+  body_.clear();
+  rhdrs_.clear();
+  return 500;
+}
+
 bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts,
                       const http::ReqValues* vals, bool head_only, uint16_t route,
                       const ReqView* req, const char* target, size_t target_len,
@@ -705,19 +720,9 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
         const char* fp = nullptr;
         size_t fpn = 0;
         bool fbad = false;
-        if (WM_UNLIKELY(resource_file_wanted(*b->res, &fp, &fpn, &fbad))) {
-          static const char kWhy[] =
-              "response.file is not wired for HTTP/2 yet - this stream would have been "
-              "answered with an empty body, so it is refused instead";
-          log_internal_error(elog_, st0.peer, st0.peer_len, req != nullptr ? req->request_target : nullptr,
-                             req != nullptr ? req->request_target_len : 0, 500, kWhy, sizeof(kWhy) - 1);
-          // A run that named a file never lends its body either (see the
-          // O18 body handler in resource.cpp) - lent_have is already false
-          // here, nothing to unwind.
-          body_.clear();
+        if (resource_file_wanted(*b->res, &fp, &fpn, &fbad)) {
           have_body = false;
-          rhdrs_.clear();
-          status = 500;
+          status = h2_refuse_file(st0, req);
         }
       }
       dynamic = (!b->res->run_content_type.empty() || !rhdrs_.empty()) && status != 500;
@@ -729,7 +734,7 @@ bool Http1::h2_answer(Conn& st0, uint32_t stream_id, const flow::ReqFacts& facts
       // the bytes died with the frame. No Accept bytes, nothing to weigh,
       // and c3 already sent this request the way it went before.
       flow::ReqFacts cf = facts;
-      if (WM_UNLIKELY(facts.has_accept && vals != nullptr && vals->accept != nullptr)) {
+      if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
         cf.accept_ok =
             http::choose_media_type(&b->accept_type, 1, vals->accept, vals->accept_len) >= 0;
       }
@@ -1274,8 +1279,8 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // response.file, spelled: the head, then the window buffer or a chunk of
   // the mapping LENT as an external segment - the same door the asset tier
   // and a lent body use, so the bytes reach the kernel without a copy.
-  if (WM_UNLIKELY(st.file != nullptr && (st.file->stage == FileStage::kDeliver ||
-                                         st.file->stage == FileStage::kDone))) {
+  if (st.file != nullptr && (st.file->stage == FileStage::kDeliver ||
+                                         st.file->stage == FileStage::kDone)) {
     // The round is COMPUTED first and performed second. Everything that
     // used to be decided in the middle of doing - which window, whether the
     // mapping may go back, whether the access line is owed - is one value
@@ -1300,7 +1305,7 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   }
   // The ring still owes the answer: nothing else may speak for this
   // connection until it lands, least of all the carry behind it.
-  if (WM_UNLIKELY(st.file != nullptr && st.file->stage != FileStage::kNone)) return true;
+  if (st.file != nullptr && st.file->stage != FileStage::kNone) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
     h2_flush_pending(st, sink, &plan);

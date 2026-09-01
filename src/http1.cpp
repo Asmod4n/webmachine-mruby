@@ -995,8 +995,10 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         }
         const char* rest = view + off + static_cast<size_t>(ret);
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
-        return ws_upgrade(st, wslot, wr, path, path_len, wspans, w.ws_key, w.ws_key_len, headers,
-                          num_headers, vals, rest, rest_len, sink);
+        const WsUpgrade up{wslot,  wr,   {path, path_len},
+                           wspans, {w.ws_key, w.ws_key_len},
+                           headers, num_headers, vals, {rest, rest_len}};
+        return ws_upgrade(st, up, sink);
       }
     }
 
@@ -1322,20 +1324,23 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
 }
 
 // RFC 6455 4.2.2: the handshake's answer, 101 or the refusal the route earned.
-bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* path,
-                       size_t path_len, const RouteSpans& spans, const char* key,
-                       size_t key_len, const void* hdrs, size_t nhdr,
-                       const http::ReqValues& vals, const char* rest, size_t rest_len,
-                       std::string& sink) {
+bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
+  const AppSlot& slot = up.slot;
+  const int route = up.route;
+  const std::string_view path = up.path;
+  const RouteSpans& spans = up.spans;
+  const void* hdrs = up.hdrs;
+  const size_t nhdr = up.nhdr;
+  const http::ReqValues& vals = up.vals;
   char accept[28];
-  if (!ws::accept_key(key, key_len, accept)) return fail(st, 400, sink);
+  if (!ws::accept_key(up.key.data(), up.key.size(), accept)) return fail(st, 400, sink);
 
   const WsResource* res = ws_res_[slot.ws_base + static_cast<size_t>(route)];
 
   ReqView rv;
-  rv.request_target = path;
-  rv.request_target_len = path_len;
-  rv.path_len = http::path_only(path, path_len);
+  rv.request_target = path.data();
+  rv.request_target_len = path.size();
+  rv.path_len = http::path_only(path.data(), path.size());
   rv.method = flow::Method::kGet;
   rv.table = slot.ws_table;
   rv.route = route;
@@ -1375,7 +1380,7 @@ bool Http1::ws_upgrade(Conn& st, const AppSlot& slot, int route, const char* pat
   st.ws = wsc;
   st.carry.clear();
   st.content_skip = 0;
-  if (rest_len != 0) return ws_feed(st.ws, rest, rest_len, sink);
+  if (!up.rest.empty()) return ws_feed(st.ws, up.rest.data(), up.rest.size(), sink);
   return true;
 }
 
