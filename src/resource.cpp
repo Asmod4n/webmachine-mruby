@@ -641,10 +641,24 @@ struct DateField {
   int64_t* epoch;
 };
 
-mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
-mrb_value naked_class(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc = 0, const mrb_value* argv = nullptr);
-mrb_value cbv(Run& r, const Resource::ValueCb& cb, mrb_int argc = 0, const mrb_value* argv = nullptr);
-mrb_value nodecall(Run& r, Node nd, mrb_int argc, const mrb_value* argv);
+// One method already found: what mruby resolved for the name, whether it
+// is an irep (so the fast entry applies), our own C++ body where there is
+// one, and the name itself for the funcall the slow path falls back to.
+struct Bound {
+  mrb_method_t m;
+  bool irep;
+  NativeCb native;
+  mrb_sym sym;
+};
+
+// What one call carries. mruby wants (argc, argv); this is that pair with
+// a name, and {} is the call that carries nothing.
+using Args = std::span<const mrb_value>;
+
+mrb_value naked(Run& r, Bound b, Args args = {});
+mrb_value naked_class(Run& r, Bound b, Args args = {});
+mrb_value cbv(Run& r, const Resource::ValueCb& cb, Args args = {});
+mrb_value nodecall(Run& r, Node nd, Args args);
 mrb_value arg_for(Run& r, Node nd);
 void marshal_methods(Run& r, const Resource::ValueCb& cb);
 void field_list(Run& r, const FieldList& f);
@@ -657,57 +671,65 @@ bool param_find(const char* s, size_t n, const char* key, size_t kn, const char*
 int accept_helper(Run& r);
 int run_n11(Run& r);
 
-mrb_value naked(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc, const mrb_value* argv) {
+mrb_value naked(Run& r, Bound b, Args args) {
+    const mrb_int argc = static_cast<mrb_int>(args.size());
+    const mrb_value* const argv = args.data();
+    const NativeCb native = b.native;
+    const mrb_sym sym = b.sym;
     // The cheapest of the three tiers: our own C++ body, entered with the
     // arguments in hand. It never reads the callinfo, so there is nothing
     // to build for it.
     if (native != nullptr) return call_native(r.mrb, native, r.res.live, argc, argv);
-    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(r.res.live)->c != r.res.klass)) {
+    if (WM_RES_UNLIKELY(!b.irep || mrb_obj_ptr(r.res.live)->c != r.res.klass)) {
       return mrb_funcall_argv(r.mrb, r.res.live, sym, argc, argv);
     }
     mrb_callinfo* ci = r.mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value answer = mrb_yield_with_class(
-        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, r.res.live,
+        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(b.m))), argc, argv,
+        r.res.live,
         r.res.klass);
     ci->mid = saved;
     return answer;
 }
 
-mrb_value naked_class(Run& r, mrb_method_t m, bool irep, NativeCb native, mrb_sym sym, mrb_int argc, const mrb_value* argv) {
+mrb_value naked_class(Run& r, Bound b, Args args) {
+    const mrb_int argc = static_cast<mrb_int>(args.size());
+    const mrb_value* const argv = args.data();
+    const NativeCb native = b.native;
+    const mrb_sym sym = b.sym;
     const mrb_value self = mrb_obj_value(r.res.klass);
     if (native != nullptr) return call_native(r.mrb, native, self, argc, argv);
     // mrb_obj_ptr(self)->c, not mrb_class(r.mrb, self): the latter is an
     // out-of-line call into another translation unit, and this build has no
     // LTO - a call to read one pointer, on the path whose whole point is
     // not calling anything.
-    if (WM_RES_UNLIKELY(!irep || mrb_obj_ptr(self)->c != r.res.meta_klass)) {
+    if (WM_RES_UNLIKELY(!b.irep || mrb_obj_ptr(self)->c != r.res.meta_klass)) {
       return mrb_funcall_argv(r.mrb, self, sym, argc, argv);
     }
     mrb_callinfo* ci = r.mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value answer = mrb_yield_with_class(
-        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(m))), argc, argv, self,
+        r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(b.m))), argc, argv, self,
         r.res.meta_klass);
     ci->mid = saved;
     return answer;
 }
 
-mrb_value cbv(Run& r, const Resource::ValueCb& cb, mrb_int argc, const mrb_value* argv) {
-    if (cb.on_class) return naked_class(r, cb.m, cb.irep, cb.native, cb.sym, argc, argv);
-    return naked(r, cb.m, cb.irep, cb.native, cb.sym, argc, argv);
+mrb_value cbv(Run& r, const Resource::ValueCb& cb, Args args) {
+    const Bound b = {cb.m, cb.irep, cb.native, cb.sym};
+    if (cb.on_class) return naked_class(r, b, args);
+    return naked(r, b, args);
 }
 
-mrb_value nodecall(Run& r, Node nd, mrb_int argc, const mrb_value* argv) {
+mrb_value nodecall(Run& r, Node nd, Args args) {
     const size_t i = static_cast<size_t>(nd);
-    if ((r.res.node_on_class >> i) & 1) {
-      return naked_class(r, r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i], r.res.node_sym[i],
-                         argc, argv);
-    }
-    return naked(r, r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i], r.res.node_sym[i], argc,
-                 argv);
+    const Bound b = {r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i],
+                     r.res.node_sym[i]};
+    if ((r.res.node_on_class >> i) & 1) return naked_class(r, b, args);
+    return naked(r, b, args);
 }
 
 mrb_value arg_for(Run& r, Node nd) {
@@ -1136,7 +1158,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // that did not override Object's - the implicit one is not a reason to
   // run anything.
   if (WM_RES_UNLIKELY(res.init_needed)) {
-    naked(r, res.init_m, res.init_irep, nullptr, MRB_SYM(initialize));
+    naked(r, {res.init_m, res.init_irep, nullptr, MRB_SYM(initialize)});
   }
 
   // cb.rb: the same direct entry as naked, for a `def self.x` - the
@@ -1221,7 +1243,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const size_t i = static_cast<size_t>(Node::kB8);
         mrb_value a = mrb_nil_value();
         if (res.node_argc[i] != 0) a = arg_for(r, n);
-        const mrb_value v = nodecall(r, n, res.node_argc[i], &a);
+        const mrb_value v = nodecall(r, n, {&a, static_cast<size_t>(res.node_argc[i])});
         if (mrb_true_p(v)) {
           take_edge(n, status, halted, true);
           continue;
@@ -1398,7 +1420,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const size_t i = static_cast<size_t>(n);
         bool conflict;
         if ((res.dynamic >> i) & 1) {
-          const mrb_value v = nodecall(r, n, 0, nullptr);
+          const mrb_value v = nodecall(r, n, {});
           if (mrb_integer_p(v)) {
             status = halt_of(r, v, res.node_sym[i]);
             halted = true;
@@ -1447,7 +1469,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           } else {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
-              v = naked(r, th.m, th.irep, th.native, th.handler);
+              v = naked(r, {th.m, th.irep, th.native, th.handler});
             } else if (r.ct_dyn) {
               v = mrb_funcall_argv(mrb, res.live, th.handler, 0, nullptr);
             } else {
@@ -1525,7 +1547,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       const size_t i = static_cast<size_t>(n);
       mrb_value a = mrb_nil_value();
       if (res.node_argc[i] != 0) a = arg_for(r, n);
-      const mrb_value v = nodecall(r, n, res.node_argc[i], &a);
+      const mrb_value v = nodecall(r, n, {&a, static_cast<size_t>(res.node_argc[i])});
       // ANY callback may answer with an Integer, and then that integer
       // IS the response status - webmachine-ruby's own convention.
       if (WM_RES_UNLIKELY(mrb_integer_p(v))) {
