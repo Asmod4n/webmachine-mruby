@@ -494,7 +494,8 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   AssetEntry* ae = tier->find(apath, alen);
   if (ae == nullptr) return Took::kNo;
   const uint16_t as = tier->verdict(*ae, r.facts.method, r.facts, r.vals);
-  const AssetStep step = asset_step(*ae, as, r.head_only, r.facts.method, r.vals, warm_budget_);
+  const AssetStep step =
+      asset_step(*ae, {as, r.head_only, r.facts.method, r.vals, warm_budget_});
   const Assets::ConnectionOption conn =
       r.minor >= 1 ? (r.persist ? Assets::kNoConnectionField : Assets::kConnClose)
                    : (r.persist ? Assets::kKeepAlive : Assets::kConnClose);
@@ -1228,9 +1229,9 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
       }
     }
 
-    AnswerStep astep = answer_step(status, answered, have_body, body_.size(), lent_len,
-                                   lent != nullptr, b != nullptr && b->gzip_ok,
-                                   b != nullptr && b->bound);
+    AnswerStep astep = answer_step({status, body_.size(), lent_len, answered, have_body,
+                                    lent != nullptr, b != nullptr && b->gzip_ok,
+                                    b != nullptr && b->bound});
     mrb_value exc_value = mrb_nil_value();
     // #210: what led here, gathered once - the record and the page carry
     // the same hash because they are taken over the same facts.

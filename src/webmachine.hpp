@@ -3819,19 +3819,30 @@ class Http1 {
     size_t body_len = 0;  // what the access line counts
     bool answered = false;
   };
-  static AnswerStep answer_step(uint16_t status, bool answered_already, bool have_body,
-                                size_t body_len, size_t lent_len, bool has_lent,
-                                bool gzip_ok, bool bound) {
+  // What one run left behind, which is all the shape depends on: the status
+  // it reached, the body it spelled or lent, whether the head branch above
+  // already answered, and what the route allows.
+  struct AnswerFacts {
+    uint16_t status;
+    size_t body_len;
+    size_t lent_len;
+    bool answered_already;
+    bool have_body;
+    bool has_lent;
+    bool gzip_ok;
+    bool bound;
+  };
+  static AnswerStep answer_step(const AnswerFacts& f) {
     AnswerStep s;
-    s.body_len = has_lent ? lent_len : body_len;
-    s.answered = answered_already;
-    if (have_body && status == 200) {
-      s.shape = has_lent ? AnswerStep::Shape::kLent
-                         : (gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
+    s.body_len = f.has_lent ? f.lent_len : f.body_len;
+    s.answered = f.answered_already;
+    if (f.have_body && f.status == 200) {
+      s.shape = f.has_lent ? AnswerStep::Shape::kLent
+                           : (f.gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
       s.answered = true;
-    } else if (answered_already) {
+    } else if (f.answered_already) {
       s.shape = AnswerStep::Shape::kAlready;
-    } else if (status == 500 && bound) {
+    } else if (f.status == 500 && f.bound) {
       // Whether a body exists is a question for the VM, so the caller
       // demotes this to kStatus when the answer is no.
       s.shape = AnswerStep::Shape::kException;
@@ -3897,9 +3908,20 @@ class Http1 {
   };
   // RFC 9110 14.1/14.2: a range is honoured only on a GET that would have
   // been a 200, and only when If-Range still matches the representation.
-  static AssetStep asset_step(const AssetEntry& e, uint16_t verdict, bool head_only,
-                              flow::Method m, const http::ReqValues& vals,
-                              size_t warm_budget) {
+  // What the range decision weighs besides the entry: the verdict c4 has
+  // already reached, what the request asked for, and how much of a cold
+  // mapping this connection may warm inside one answer.
+  struct RangeAsk {
+    uint16_t verdict;
+    bool head_only;
+    flow::Method method;
+    const http::ReqValues& vals;
+    size_t warm_budget;
+  };
+  static AssetStep asset_step(const AssetEntry& e, const RangeAsk& ask) {
+    const uint16_t verdict = ask.verdict;
+    const bool head_only = ask.head_only;
+    const http::ReqValues& vals = ask.vals;
     AssetStep s;
     s.status_code = verdict;
     if (verdict == 412 || verdict == 501) {
@@ -3907,7 +3929,8 @@ class Http1 {
       return s;
     }
     const size_t complete_length = Assets::wire_len(e);
-    if (verdict == 200 && !head_only && m == flow::Method::kGet && vals.range != nullptr &&
+    if (verdict == 200 && !head_only && ask.method == flow::Method::kGet &&
+        vals.range != nullptr &&
         (vals.if_range == nullptr ||
          http::if_range_matches(vals.if_range, vals.if_range_len, e.etag, sizeof(e.etag)))) {
       size_t first_byte_pos = 0, last_byte_pos = 0;
@@ -3932,7 +3955,7 @@ class Http1 {
       s.content_length = complete_length;
       s.sends_content = true;
     }
-    s.copy_content = s.sends_content && s.content_length <= warm_budget;
+    s.copy_content = s.sends_content && s.content_length <= ask.warm_budget;
     return s;
   }
 
