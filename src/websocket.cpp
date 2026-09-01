@@ -39,8 +39,9 @@ bool accept_key(const char* key, size_t key_len, char out[28]) {
 }
 
 // RFC 6455 5.1/5.2: a server frame header (never masked, RSV1 per 7692 6).
-size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]) {
-  head[0] = static_cast<char>((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | (opcode & 0x0f));
+size_t build_header(Frame f, char head[10]) {
+  const size_t payload_len = f.payload_len;
+  head[0] = static_cast<char>((f.fin ? 0x80 : 0x00) | (f.rsv1 ? 0x40 : 0x00) | (f.opcode & 0x0f));
   if (payload_len < 126) {
     head[1] = static_cast<char>(payload_len);
     return 2;
@@ -58,12 +59,11 @@ size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, cha
   return 10;
 }
 
-size_t build_close_payload(uint16_t code, const char* reason, size_t reason_len,
-                           char out[125]) {
-  out[0] = static_cast<char>((code >> 8) & 0xff);
-  out[1] = static_cast<char>(code & 0xff);
-  size_t n = reason_len > 123 ? 123 : reason_len;
-  if (n != 0) std::memcpy(out + 2, reason, n);
+size_t build_close_payload(Close close, char out[125]) {
+  out[0] = static_cast<char>((close.code >> 8) & 0xff);
+  out[1] = static_cast<char>(close.code & 0xff);
+  const size_t n = close.reason.size() > 123 ? 123 : close.reason.size();
+  if (n != 0) std::memcpy(out + 2, close.reason.data(), n);
   return n + 2;
 }
 

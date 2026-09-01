@@ -101,10 +101,10 @@ bool find_line(const std::string& buf, const char* name, size_t nlen, Line& out)
 
 // RFC 9110 6.3: append one field line - the ONLY place a line is spelled,
 // so every writer below goes through it.
-void append_field(std::string& buf, const char* name, size_t nlen, const char* val, size_t vlen) {
-  buf.append(name, nlen);
+void append_field(std::string& buf, http::Field f) {
+  buf.append(f.name);
   buf.append(": ", 2);
-  buf.append(val, vlen);
+  buf.append(f.value);
   buf.append("\r\n", 2);
 }
 
@@ -147,8 +147,8 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
               "response.headers[]= wants a field value without CR, LF or NUL (RFC 9110 5.5)");
   }
   if (found) buf.erase(h.start, h.end - h.start);
-  append_field(buf, k, static_cast<size_t>(klen), RSTRING_PTR(v),
-              static_cast<size_t>(RSTRING_LEN(v)));
+  append_field(buf, {{k, static_cast<size_t>(klen)},
+                     {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
   return v;
 }
 
@@ -334,7 +334,8 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
     std::string& buf = *r->run_headers;
     Line h;
     if (find_line(buf, "Location", 8, h)) buf.erase(h.start, h.end - h.start);
-    append_field(buf, "Location", 8, RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+    append_field(buf,
+                 {"Location", {RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s))}});
   }
   r->run_redirect = true;
   return mrb_true_value();
@@ -423,7 +424,7 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "response.set_cookie wants no CR, LF or NUL in name, value or attributes");
   }
-  append_field(*r->run_headers, "Set-Cookie", 10, line.data(), line.size());
+  append_field(*r->run_headers, {"Set-Cookie", line});
   return mrb_nil_value();
 }
 

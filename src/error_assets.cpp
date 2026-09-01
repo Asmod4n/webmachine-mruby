@@ -353,7 +353,7 @@ int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const
     slot.push_back(static_cast<int>(i));
   }
   if (offer.empty()) return plain_;
-  const int at = http::choose_media_type(offer.data(), offer.size(), accept, len);
+  const int at = http::choose_media_type({offer, {accept, len}});
   if (at < 0) return plain_;
   const int pick = slot[static_cast<size_t>(at)];
   // RFC 9110 12.5.1 leaves the tie to the server, and a tie is what a

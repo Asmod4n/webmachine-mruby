@@ -772,7 +772,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       flow::ReqFacts cf = facts;
       if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
         cf.accept_ok =
-            http::choose_media_type(&b->accept_type, 1, vals->accept, vals->accept_len) >= 0;
+            http::choose_media_type({{&b->accept_type, 1}, {vals->accept, vals->accept_len}}) >= 0;
       }
       status = flow::answer(cf, b->konst.per_method[static_cast<size_t>(cf.method)],
                            b->konst.shortcut[static_cast<size_t>(cf.method)]);

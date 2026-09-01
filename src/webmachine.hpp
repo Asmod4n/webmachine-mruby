@@ -1361,6 +1361,13 @@ enum class NamedField : uint8_t {
   kCount
 };
 
+// The parsed field array and how many fields it holds - the pair every
+// stored position is only meaningful against.
+struct HeaderList {
+  const struct phr_header* items;
+  size_t count;
+};
+
 struct NamedFieldIndex {
   // THE INDEX NEVER LEAVES. A stored position is only meaningful for the
   // field array it was taken from, so the only way to read one is to
@@ -1377,7 +1384,7 @@ struct NamedFieldIndex {
   // Declared, not defined: phr_header is incomplete here (see the
   // forward declaration at the top of this file), so the body sits in
   // request.cpp where the framer's header has been included.
-  const struct phr_header* find(NamedField f, const struct phr_header* hs, size_t n) const;
+  const struct phr_header* find(NamedField f, HeaderList hs) const;
 
   constexpr void note(NamedField f, size_t i) {
     // The framer kept no slot for this one (its field array was full), so
@@ -1715,8 +1722,18 @@ inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
 // type, highest q wins, the provided ORDER breaks ties (webmachine
 // conneg semantics). -1 = nothing acceptable (406). `types` may carry
 // parameters; matching reads only the type/subtype half.
-inline int choose_media_type(const std::string* types, size_t ntypes, const char* av,
-                             size_t alen) {
+// RFC 9110 12.5.1: the media types this resource provides, and the Accept
+// the request sent.
+struct Conneg {
+  std::span<const std::string> provided;
+  std::string_view accept;
+};
+
+inline int choose_media_type(Conneg c) {
+  const std::string* const types = c.provided.data();
+  const size_t ntypes = c.provided.size();
+  const char* const av = c.accept.data();
+  const size_t alen = c.accept.size();
   struct Range {
     const char* t;
     size_t tn;
@@ -3402,10 +3419,14 @@ inline Head::Err admit(const Head& h, const Message& msg) {
   return Head::Err::kNone;
 }
 
-size_t build_header(uint8_t opcode, bool fin, bool rsv1, size_t payload_len, char head[10]);
-
-size_t build_close_payload(uint16_t code, const char* reason, size_t reason_len,
-                           char out[125]);
+// RFC 6455 5.2: what a server frame header says.
+struct Frame {
+  uint8_t opcode;
+  bool fin;
+  bool rsv1;
+  size_t payload_len;
+};
+size_t build_header(Frame f, char head[10]);
 
 // RFC 6455 5.5.1: what a Close frame said - the code, and the reason where
 // it carried one. 1005 is "the peer named none".
@@ -3413,6 +3434,7 @@ struct Close {
   uint16_t code = 1005;
   std::string_view reason;
 };
+size_t build_close_payload(Close close, char out[125]);
 bool read_close(std::string_view payload, Close& out);
 }
 }
@@ -4530,8 +4552,13 @@ void application_init(mrb_state* mrb, struct RClass* wm);
 
 bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen);
 
-bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
-                        size_t errlen);
+// Where every registered application goes, and how many listeners this
+// build can carry - one more than that is a refusal, not a truncation.
+struct Registered {
+  std::vector<AppSpec*>& specs;
+  size_t max_listeners;
+};
+bool app_registered_all(Registered out, char* err, size_t errlen);
 
 AppSpec* app_assets_only();
 

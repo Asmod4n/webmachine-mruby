@@ -279,7 +279,7 @@ bool build(mrb_state* mrb, char* err, size_t errlen) {
   if (built_) return true;
   if (!server_backend_ok(err, errlen)) return false;
 
-  if (!app_registered_all(specs_, kMaxListeners, err, errlen)) return false;
+  if (!app_registered_all({specs_, kMaxListeners}, err, errlen)) return false;
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;
   // The gem is embedded: a reactor that has to give up raises into this

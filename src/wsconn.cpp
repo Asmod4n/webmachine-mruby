@@ -209,7 +209,7 @@ bool symbol_code(mrb_sym s, uint16_t& code) {
 // RFC 6455 5.1: one frame into the sink - header here, payload where it lies.
 void emit(std::string& sink, uint8_t opcode, const char* p, size_t n, bool rsv1 = false) {
   char head[10];
-  const size_t hn = ws::build_header(opcode, true, rsv1, n, head);
+  const size_t hn = ws::build_header({opcode, true, rsv1, n}, head);
   sink.append(head, hn);
   if (n != 0) sink.append(p, n);
 }
@@ -254,12 +254,11 @@ void emit_data(WsConn* c, std::string& sink, uint8_t opcode, const char* p, size
 }
 
 // RFC 6455 5.5.1: the close handshake's own half, sent at most once.
-void emit_close(WsConn* c, std::string& sink, uint16_t code, const char* reason,
-                size_t reason_len) {
+void emit_close(WsConn* c, std::string& sink, ws::Close close) {
   if (c->sent_close) return;
   c->sent_close = true;
   char payload[125];
-  const size_t n = ws::build_close_payload(code, reason, reason_len, payload);
+  const size_t n = ws::build_close_payload(close, payload);
   emit(sink, ws::kClose, payload, n);
 }
 
@@ -340,7 +339,7 @@ void report_close(WsConn* c, uint16_t code, const char* reason, size_t reason_le
 
 // RFC 6455 5.5.1: this side found something wrong - close with the code.
 bool fail(WsConn* c, std::string& sink, uint16_t code) {
-  emit_close(c, sink, code, nullptr, 0);
+  emit_close(c, sink, {code, {}});
   report_close(c, code, nullptr, 0);
   drop_msg(c);
   return false;
@@ -370,7 +369,7 @@ bool deliver(WsConn* c, std::string& sink) {
   } else if (mrb_symbol_p(out)) {
     uint16_t code = 0;
     if (symbol_code(mrb_symbol(out), code)) {
-      emit_close(c, sink, code, nullptr, 0);
+      emit_close(c, sink, {code, {}});
       report_close(c, code, nullptr, 0);
     } else {
       std::fprintf(stderr,
@@ -414,7 +413,8 @@ bool finish_frame(WsConn* c, std::string& sink) {
         return fail(c, sink, ws::kCloseInvalidPayload);
       }
       c->got_close = true;
-      emit_close(c, sink, code == 1005 ? ws::kCloseNormal : code, reason, rlen);
+      const uint16_t say = code == 1005 ? ws::kCloseNormal : code;
+      emit_close(c, sink, {say, close.reason});
       report_close(c, code, reason, rlen);
       drop_msg(c);
       return false;

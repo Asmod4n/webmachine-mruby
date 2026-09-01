@@ -689,7 +689,13 @@ void marshal_ct(Run& r);
 int ensure_etag(Run& r);
 void epoch_memo(Run& r, const DateField& d);
 int add_caching(Run& r);
-bool param_find(const char* s, size_t n, const char* key, size_t kn, const char** vout, size_t* vn);
+// RFC 9110 5.6.6: one parameter of a field value - the value to search,
+// and the parameter's name.
+struct Param {
+  std::string_view in;
+  std::string_view name;
+};
+bool param_find(Param p, std::string_view& value);
 int accept_helper(Run& r);
 int run_n11(Run& r);
 
@@ -967,7 +973,11 @@ int add_caching(Run& r) {
     return -1;
 }
 
-bool param_find(const char* s, size_t n, const char* key, size_t kn, const char** vout, size_t* vn) {
+bool param_find(Param p, std::string_view& value) {
+  const char* const s = p.in.data();
+  const size_t n = p.in.size();
+  const char* const key = p.name.data();
+  const size_t kn = p.name.size();
     size_t i = 0;
     while (i < n && s[i] != ';') i++;
     while (i < n) {
@@ -989,8 +999,7 @@ bool param_find(const char* s, size_t n, const char* key, size_t kn, const char*
         vlen = vend - vs;
       }
       if (ci_eq(s + ks, ke - ks, key, kn)) {
-        *vout = v;
-        *vn = vlen;
+        value = {v, vlen};
         return true;
       }
     }
@@ -1058,10 +1067,9 @@ int accept_helper(Run& r) {
           pvn = vend - vs;
         }
         if (ke == ks) continue;
-        const char* rv = nullptr;
-        size_t rvn = 0;
-        hit = param_find(ct, ct_full, pt + ks, ke - ks, &rv, &rvn) &&
-              rvn == pvn && (pvn == 0 || std::memcmp(rv, pv, pvn) == 0);
+        std::string_view found;
+        hit = param_find({{ct, ct_full}, {pt + ks, ke - ks}}, found) &&
+              found.size() == pvn && (pvn == 0 || std::memcmp(found.data(), pv, pvn) == 0);
       }
     }
     if (!hit) continue;
@@ -1329,9 +1337,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           std::vector<std::string> names;
           names.reserve(cts.size());
           for (const Resource::TypedHandler& th : cts) names.push_back(th.type);
-          idx = http::choose_media_type(names.data(), names.size(),
-                                        vals != nullptr ? vals->accept : nullptr,
-                                        vals != nullptr ? vals->accept_len : 0);
+          const std::string_view accept =
+              vals != nullptr ? std::string_view(vals->accept, vals->accept_len)
+                              : std::string_view();
+          idx = http::choose_media_type({names, accept});
         }
         if (idx < 0) {
           status = 406;

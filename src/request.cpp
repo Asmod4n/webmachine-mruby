@@ -254,7 +254,7 @@ mrb_value req_named(mrb_state* mrb, http::NamedField f) {
   // request's array cannot reach reads as "no such field" instead of
   // reading past the end.
   const struct phr_header* h =
-      v->values->named.find(f, live_hdrs(mrb, v), v->field_count);
+      v->values->named.find(f, {live_hdrs(mrb, v), v->field_count});
   if (h == nullptr) return mrb_nil_value();
   return lend(mrb, h->value, h->value_len);
 }
@@ -450,15 +450,14 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
 // because this is a file where phr_header is a complete type; the header
 // only forward-declares it.
 namespace http {
-const struct phr_header* NamedFieldIndex::find(NamedField f, const struct phr_header* hs,
-                                               size_t n) const {
-  if (hs == nullptr || !carries(f)) return nullptr;
+const struct phr_header* NamedFieldIndex::find(NamedField f, HeaderList hs) const {
+  if (hs.items == nullptr || !carries(f)) return nullptr;
   const uint8_t i = at[static_cast<uint8_t>(f)];
   // A position this array cannot reach is no field. The producers all
   // build this beside the array they derived it from, so this branch
   // should never be taken - and it is here precisely so that "should"
   // is not what stands between a bad index and a read past the end.
-  return i < n ? &hs[i] : nullptr;
+  return i < hs.count ? &hs.items[i] : nullptr;
 }
 }  // namespace http
 

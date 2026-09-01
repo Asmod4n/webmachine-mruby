@@ -106,9 +106,10 @@ constexpr char kStatus406[] = "HTTP/1.1 406 Not Acceptable";
 constexpr char kAllowField[] = "Allow: GET, HEAD\r\n";
 constexpr char kVaryField[] = "Vary: Accept-Encoding\r\n";
 
-void build_triple(AssetEntry::Head (&h)[3], const char* status_line, const std::string& fields) {
+void build_triple(AssetEntry::Head (&h)[3], HeadParts p) {
   for (uint8_t c = Assets::kNoConnectionField; c <= Assets::kConnClose; c++) {
-    build_head(h[c], {status_line, Assets::kConnectionLine[c], fields});
+    p.connection_line = Assets::kConnectionLine[c];
+    build_head(h[c], p);
   }
 }
 }
@@ -244,12 +245,12 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     f.append("Accept-Ranges: bytes\r\n");
     const size_t clen = e.deflated ? e.compressed_size + 18 : e.compressed_size;
     f.append("Content-Length: ").append(std::to_string(clen)).append("\r\n");
-    build_triple(e.head_200, "HTTP/1.1 200 OK", f);
+    build_triple(e.head_200, {"HTTP/1.1 200 OK", nullptr, f});
 
     std::string f304;
     f304.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
     if (e.deflated) f304.append("Vary: Accept-Encoding\r\n");
-    build_triple(e.head_304, "HTTP/1.1 304 Not Modified", f304);
+    build_triple(e.head_304, {"HTTP/1.1 304 Not Modified", nullptr, f304});
 
     if (e.deflated) {
       static const unsigned char kGzHdr[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff};
@@ -265,8 +266,8 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, char* err, size_t er
     }
   }
 
-  build_triple(s405_, kStatus405, std::string(kAllowField) + "Content-Length: 0\r\n");
-  build_triple(s406_, kStatus406, std::string(kVaryField) + "Content-Length: 0\r\n");
+  build_triple(s405_, {kStatus405, nullptr, std::string(kAllowField) + "Content-Length: 0\r\n"});
+  build_triple(s406_, {kStatus406, nullptr, std::string(kVaryField) + "Content-Length: 0\r\n"});
   return true;
 }
 

@@ -537,8 +537,9 @@ bool app_load(mrb_state* mrb, const char* path, char* err, size_t errlen) {
 }
 
 // Every application `main` registered - registration order IS listener order.
-bool app_registered_all(std::vector<AppSpec*>& out, size_t max_listeners, char* err,
-                        size_t errlen) {
+bool app_registered_all(Registered out_, char* err, size_t errlen) {
+  std::vector<AppSpec*>& out = out_.specs;
+  const size_t max_listeners = out_.max_listeners;
   if (registered_.empty()) {
     std::snprintf(err, errlen,
                   "main registered no application - Webmachine::Application.new takes a "

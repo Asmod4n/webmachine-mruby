@@ -1241,7 +1241,7 @@ bool Http1::feed_parse(Conn& st, const char* data, size_t len, std::string& sink
         // the question is one match, asked here in C++ and never in the VM.
         if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr)) {
           facts.accept_ok =
-              http::choose_media_type(&b->accept_type, 1, vals.accept, vals.accept_len) >= 0;
+              http::choose_media_type({{&b->accept_type, 1}, {vals.accept, vals.accept_len}}) >= 0;
         }
         status = flow::answer(facts, b->konst.per_method[static_cast<size_t>(facts.method)],
                              b->konst.shortcut[static_cast<size_t>(facts.method)]);
