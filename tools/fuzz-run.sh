@@ -40,9 +40,6 @@ if [ -z "$APP" ]; then
 fi
 export WM_FUZZ_APP="$APP"
 
-# Somebody else's UB, named one by one - see the file. Without this a
-# campaign stops at run one on ls-hpack's first dynamic-table insert.
-export UBSAN_OPTIONS="suppressions=$PWD/tools/webmachine-fuzz/ubsan.supp:print_stacktrace=1${UBSAN_OPTIONS:+:$UBSAN_OPTIONS}"
 
 # Crashes and slow units go to a findings directory, not into the tree
 # libFuzzer happens to be started from.

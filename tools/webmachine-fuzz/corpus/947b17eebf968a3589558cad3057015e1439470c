@@ -1,0 +1,7 @@
+GET /ws HTTP/1.1
+Host: x:
+Upgrade: websocket
+ConneTTP2-Settingx:
+Upgrade: websockeq.1
+Accep-Version: 13
+

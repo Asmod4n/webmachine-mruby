@@ -1,0 +1,10 @@
+GET /ws HTTP/1.1
+Host: x
+Key: dGhlIHNhbXBsZSBub25*jZQ==
+DNT: 1
+ocket-Version: TP/1.1
+Host: x
+
+ET http://x/ HTTP/2.1
+Host13
+

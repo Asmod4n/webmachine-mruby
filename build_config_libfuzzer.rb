@@ -40,24 +40,11 @@ MRuby::Build.new('libfuzzer') do |conf|
   conf.enable_sanitizer 'address', 'undefined'
 
   # After enable_sanitizer, because a -fno-sanitize= only subtracts from
-  # an -fsanitize= to its left.
-  #
-  # -fsanitize-recover=pointer-overflow is the ONE exception to "an UB
-  # report ends the run", and it is here so that a report can be
-  # SUPPRESSED at all: an unrecoverable check aborts inside its handler,
-  # before UBSAN_OPTIONS=suppressions is ever consulted. ls-hpack does
-  # NULL + 0 on the first dynamic-table insert of every h2 connection
-  # (tools/webmachine-fuzz/ubsan.supp names it), and a campaign that dies
-  # at run one on a submodule's defect is a campaign that never runs. It
-  # is two checks because that one line trips both: the NULL + 0 is
-  # pointer-overflow, and handing the result to memcpy is
-  # nonnull-attribute. The cost is real and worth writing down: those two
-  # checks in OUR code are now printed with a stack and walked past
-  # instead of ending the run. Every other UB check still ends it, and
-  # the way to get these back is a fixed ls-hpack.
-  tuning = %w[-fno-sanitize-recover=undefined
-              -fsanitize-recover=pointer-overflow,nonnull-attribute
-              -fno-omit-frame-pointer -fno-sanitize=alignment]
+  # an -fsanitize= to its left. ls-hpack and phr read unaligned on
+  # purpose; that is not what this campaign is about, and it fires on the
+  # first frame otherwise.
+  tuning = %w[-fno-sanitize-recover=undefined -fno-omit-frame-pointer
+              -fno-sanitize=alignment]
   tuning.each { |f| conf.cc.flags << f }
   conf.cc.flags << '-O1' << '-g'
   tuning.each { |f| conf.cxx.flags << f }

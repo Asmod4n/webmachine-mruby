@@ -1,0 +1,4 @@
+G /ws HTTP/1.1
+Host: x
+Upgraec-WebMocket-Key: dGhlIrsion: 13
+

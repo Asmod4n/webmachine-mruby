@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: x
+UpgUpgrade: h2c
+rade: websockEt
+Connection: Upgradclient_maxGhlIHNhbXZQÃÂòõ¬šœÍWebSocket-Version: 13
+

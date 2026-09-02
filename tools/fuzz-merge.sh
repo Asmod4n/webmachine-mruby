@@ -35,7 +35,7 @@ if [ ! -x "$BIN" ]; then
 fi
 [ -d "$CORPUS" ] || { echo "no corpus at $CORPUS" >&2; exit 2; }
 
-# The same app and the same suppressions the campaign runs with: a merge
+# The same app the campaign runs with: a merge
 # replays real payloads through the real reactor, so it needs both.
 MRBC=mruby/build/libfuzzer/bin/mrbc
 [ -x "$MRBC" ] || MRBC=mruby/bin/mrbc
@@ -45,7 +45,6 @@ if [ -z "${WM_FUZZ_APP:-}" ]; then
   [ "$WM_FUZZ_APP" -nt examples/hello.rb ] || "$MRBC" -o "$WM_FUZZ_APP" examples/hello.rb
 fi
 export WM_FUZZ_APP
-export UBSAN_OPTIONS="suppressions=$PWD/tools/webmachine-fuzz/ubsan.supp${UBSAN_OPTIONS:+:$UBSAN_OPTIONS}"
 
 before=$(ls "$CORPUS" | wc -l)
 bytes_before=$(du -sk "$CORPUS" | cut -f1)

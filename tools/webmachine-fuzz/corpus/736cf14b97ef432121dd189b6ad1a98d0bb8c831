@@ -1,0 +1,8 @@
+GET /‰ HTTP/1.1
+Host: x
+If-NoGne-Mast: THxTP/1.1
+Host: x
+If-NoGne-Mast: x
+If-NoGne-Mast: THx
+If-None-Mattch: "DETEabc"
+

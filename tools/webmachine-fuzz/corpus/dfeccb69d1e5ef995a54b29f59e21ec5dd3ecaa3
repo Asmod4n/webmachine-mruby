@@ -1,0 +1,9 @@
+GET http://x/ HTTP/1.1
+Host: x
+
+ET ://x/ HTTP/1.1
+Host: x
+
+ET hx/ HTTP/2.1
+Hosthttp://x/ HTTP/2.1
+Host: x

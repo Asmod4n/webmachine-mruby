@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Hostncoanguage: d
+Hostncoanguage: de
+Accept-Charset: utfe
+Accept-Charset: utf-8
+

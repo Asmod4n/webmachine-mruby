@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: x
+Accept: text/html;q e
+AcPOSTgept-CDNT: 1
+harset: utf-8
+

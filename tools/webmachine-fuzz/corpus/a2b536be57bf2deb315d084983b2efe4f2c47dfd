@@ -1,0 +1,6 @@
+GET /wsÂ HTTP/1.1
+Host: x
+Ue-Key: dGhlIHNhbXBsZSBuQZ25jb==
+Smc-XebSocket-DNT: 1
+ 13
+

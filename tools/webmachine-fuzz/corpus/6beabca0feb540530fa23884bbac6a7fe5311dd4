@@ -1,0 +1,7 @@
+GET /ws HTTP/1.1
+Host: x
+Upgrade: websockEt
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBs
+Upgrade: webõ¬šœÍWebSocket-Vªªn: 93
+

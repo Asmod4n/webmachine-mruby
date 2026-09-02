@@ -3171,6 +3171,31 @@ struct H2State {
     hpack_ready = lshpack_enc_init(&enc) == 0;
     lshpack_dec_init(&dec);
     lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
+    // ls-hpack: lshpack_dec_init leaves the dynamic table's array NULL -
+    // lshpack_arr_init is a memset and nothing else - and the first
+    // lshpack_arr_push then grows it with
+    // memcpy(new_els, arr->els + arr->off, ... * arr->nelem), which is
+    // memcpy(new, NULL + 0, 0). NULL + 0 is undefined and memcpy's source
+    // is declared non-null, so it trips two UBSan checks at once, on the
+    // FIRST dynamic-table insert of every h2 connection - which is to say
+    // on the first h2 request the server ever answers.
+    //
+    // It is not something a caller can pass its way out of, so this is
+    // the handover that stops it: the decoder is HANDED a table that
+    // already exists, and upstream's first-growth path never runs. 64 is
+    // the size upstream would have chosen; lshpack_dec_cleanup frees
+    // els, so the allocation belongs to the decoder from here. A failed
+    // malloc leaves it exactly as ls-hpack would have left it.
+    // The pin is v2.3.5 (cf0f70d, upstream HEAD); this goes when a
+    // release grows the array before its first push.
+    if (dec.hpd_dyn_table.els == nullptr) {
+      constexpr unsigned kFirstTableSlots = 64;
+      void* const mem = std::malloc(kFirstTableSlots * sizeof(uintptr_t));
+      if (mem != nullptr) {
+        dec.hpd_dyn_table.els = static_cast<uintptr_t*>(mem);
+        dec.hpd_dyn_table.nalloc = kFirstTableSlots;
+      }
+    }
   }
   // RFC 9113: the decoder dies with the connection - and so does every
   // lend the streams still hold. h1's ~Conn, one tier down: unconditional,

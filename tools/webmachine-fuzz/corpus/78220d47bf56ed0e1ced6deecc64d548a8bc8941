@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: x
+Uet-Key:à›¸‘lIHNhbXBsZS
+SAccept: ec-WebSocket-Version: jZQ==
+SAccept: ec-WebSocket-Version: 13
+
