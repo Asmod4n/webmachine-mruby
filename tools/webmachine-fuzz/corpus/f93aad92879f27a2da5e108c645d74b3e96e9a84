@@ -1,0 +1,5 @@
+GET /ws HTTP/1.1
+Host: x
+Upgrade: Upgrade
+Sec-sde: 4
+

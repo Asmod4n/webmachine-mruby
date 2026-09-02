@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Host: x
+If-Modified-Since: Sun, 06 Nov 19944 8Accept-Chast: x
+If-Modified-Since: Sun, 06 Nov 19944 8Accept-Charset: rset: ::974 3GMT
+
