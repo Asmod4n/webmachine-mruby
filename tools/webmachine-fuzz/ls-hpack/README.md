@@ -1,4 +1,4 @@
-# Three fixes for ls-hpack, ready to send
+# Two pull requests for ls-hpack, ready to send
 
 `deps/ls-hpack` is a submodule pinned at v2.3.5 (cf0f70d), which is
 upstream HEAD. Three pieces of undefined behaviour live in it, all of
@@ -50,16 +50,34 @@ h2spec's one failure is the refusal `tools/conformance.sh` documents:
 3.5/2, an invalid preface answered by HTTP/1.1's 400 because this
 listener speaks both protocols. It is the same before and after.
 
+## The second PR: turn the sanitizer on
+
+`PR2-ubsan.md` and `pr2-0001-*.patch`. The non-Release build already
+carries `-fsanitize=address` and both CI configurations build exactly
+that way, so the undefined-behaviour one goes beside it and runs on every
+push - with `-fno-sanitize-recover=undefined`, because a report that only
+prints leaves the suite green while it runs undefined behaviour. That is
+what happened here: test_int has had the shift-by-35 case since forever
+and passed on it.
+
+It DEPENDS on the first PR - on master it turns the suite red, since all
+three defects are reachable from those five tests. Send it second, or
+send it first and say so; either way it is the thing that stops the next
+three.
+
+Verified: 5/5 with it, and red again if any one fix is put back.
+
 ## What is left, and it needs a person
 
 This session cannot fork or open a pull request - its GitHub access is
 scoped to asmod4n repositories and cross-owner attachment is refused. So:
 
 1. Fork `litespeedtech/ls-hpack` (the button, or `gh repo fork`).
-2. `git am tools/webmachine-fuzz/ls-hpack/000*.patch` on a branch of the
+2. `git am tools/webmachine-fuzz/ls-hpack/pr1-*.patch` on a branch of the
    fork. They apply cleanly to cf0f70d.
-3. PR to `litespeedtech/ls-hpack`. The three commits stand on their own
-   and each names the test that reports it.
+3. PR to `litespeedtech/ls-hpack`, body from `PR1-fixes.md`. The three
+   commits stand on their own and each names the test that reports it.
+   Then a second branch with `pr2-*.patch` and `PR2-ubsan.md`.
 4. Repin `deps/ls-hpack` to the fork's branch until upstream merges. Then
    `H2State`'s pre-allocated dynamic table (webmachine.hpp, the one that
    works around 0001 from our side) can go, and
