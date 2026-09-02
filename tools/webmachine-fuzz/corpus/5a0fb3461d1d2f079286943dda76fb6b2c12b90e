@@ -1,4 +1,0 @@
-GET /events HTTP/1.1
-ection: Host; x
-Accept: text/even@t-streiam
-

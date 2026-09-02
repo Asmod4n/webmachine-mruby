@@ -1,6 +1,0 @@
-GE /T HTTP/1.1
-st: x!!!!!!!!!!!!!!!!!!!! HTTP/1.1
-!!!!!!!!!!!!!!onnection: close
-l:[ [[[[[-Match: »
- "abc"
-
