@@ -5,6 +5,14 @@ Webmachine's HTTP state model, executed: the decision graph from
 data, driven by an io_uring reactor, with mruby as the language a
 resource is written in.
 
+A port, and it says so. [Webmachine](https://github.com/webmachine/webmachine)
+is Justin Sheehy, Andy Gross and Bryan Fink's, written in Erlang at
+Basho Technologies; [webmachine-ruby](https://github.com/webmachine/webmachine-ruby)
+is Sean Cribbs'. The graph, the callback names and their defaults are
+theirs, and 74 cases of webmachine-ruby's own `flow_spec` are what this
+port is tested against. The name is used with their permission. `NOTICE`
+says which parts are whose.
+
 What a resource can answer at *setup* is answered once and never again;
 only what genuinely depends on a request enters the VM. A `self.`
 method is a constant, an instance method is per request.

@@ -6,6 +6,51 @@ https://github.com/Asmod4n/webmachine-mruby
 and is licensed under the Apache License, Version 2.0.
 
 --------------------------------------------------------------------
+Webmachine
+--------------------------------------------------------------------
+
+This is a port. The HTTP state model it executes is Webmachine's, and
+the name is used with the original authors' permission, on the one
+condition they asked for: that the original be credited here.
+
+Webmachine was written in Erlang at Basho Technologies:
+
+    https://github.com/webmachine/webmachine
+
+    %% @author Justin Sheehy <justin@basho.com>
+    %% @author Andy Gross <andy@basho.com>
+    %% @author Bryan Fink <bryan@basho.com>
+    %% @copyright 2007-2014 Basho Technologies
+
+    Licensed under the Apache License, Version 2.0.
+
+webmachine-ruby is the Ruby port, and it is the one this tree was read
+against:
+
+    https://github.com/webmachine/webmachine-ruby
+
+    Copyright 2011-2012 Sean Cribbs and contributors
+
+    Licensed under the Apache License, Version 2.0.
+
+What is theirs and not ours, named so the debt is legible rather than
+implied:
+
+  * The decision graph itself. Its specification here is
+    webmachine-ruby's lib/webmachine/decision/flow.rb, node names and
+    all - the B, C, D ... P and O nodes a reader of either project
+    recognises.
+  * The callback vocabulary and its defaults. resource_exists?,
+    content_types_provided, is_authorized, generate_etag and the rest
+    keep webmachine-ruby's names, arities and meanings, and a callback
+    a resource does not define answers with webmachine-ruby's default.
+  * The oracle this port is tested against. 74 cases of
+    webmachine-ruby's own flow_spec run here, so "the same graph" is a
+    claim under test rather than an intention.
+
+Neither project is responsible for what this one does with any of it.
+
+--------------------------------------------------------------------
 share/error-pages.zip
 --------------------------------------------------------------------
 
