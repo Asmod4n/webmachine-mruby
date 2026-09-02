@@ -17,10 +17,14 @@ if [ -f "$ROOT/HANDOFF.md" ]; then
   # handoff read twice is worse than one read late.
   handoff="$(cat "$ROOT/HANDOFF.md")"
   rm -f "$ROOT/HANDOFF.md"
-  printf '%s\n%s\n%s\n' \
+  printf '%s\n%s\n%s\n%s\n' \
     "=== HANDOFF.md (left by the previous session; deleted after this read) ===" \
     "$handoff" \
-    "=== end of handoff ===" || true
+    "=== end of handoff ===" \
+    "COMMIT THAT DELETION. A handoff has to be committed to reach the next \
+container at all - a remote session is a fresh clone - so deleting it only \
+here leaves it in HEAD, and every later clone reads a note that was answered \
+weeks ago. \`git rm HANDOFF.md\` belongs in this session's first commit." || true
 fi
 
 # Only the web/remote container needs any of the rest; a laptop has it.
