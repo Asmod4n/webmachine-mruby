@@ -33,7 +33,27 @@ PIDFILE="$OUT/server.pid"
 
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake" >&2; exit 1; }
 [ -x "$MRBC" ] || { echo "$MRBC missing - run: rake" >&2; exit 1; }
-command -v podman >/dev/null || { echo 'podman not found - both suites ship as containers' >&2; exit 1; }
+# Both suites ship as containers, and which runtime a machine has is not
+# something either suite cares about: podman where there is one, docker
+# where there is not. Named in ONE variable so the two call sites cannot
+# drift apart.
+#
+# H2SPEC=path is the way out where there is no runtime at all: h2spec is
+# a single static Go binary and its release tarball runs anywhere. The
+# Autobahn suite has no such form - it is Python with its own tree - so
+# `ws` still needs a container.
+if command -v podman >/dev/null; then
+  OCI=podman
+elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  OCI=docker
+else
+  OCI=""
+fi
+if [ -z "$OCI" ] && [ -z "${H2SPEC:-}" ]; then
+  echo 'no container runtime, and no H2SPEC=path to a h2spec binary' >&2
+  echo '  https://github.com/summerwind/h2spec/releases (h2spec_linux_amd64.tar.gz)' >&2
+  exit 1
+fi
 
 mkdir -p "$OUT"
 
@@ -62,10 +82,15 @@ case "$SUITE" in
 h2)
   start_server examples/hello.rb
   trap stop_server EXIT INT TERM
-  podman run --rm --network host summerwind/h2spec \
-    -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
+  if [ -n "${H2SPEC:-}" ]; then
+    "$H2SPEC" -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
+  else
+    "$OCI" run --rm --network host summerwind/h2spec \
+      -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
+  fi
   ;;
 ws)
+  [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
   start_server test/conformance/ws_echo.rb
   trap stop_server EXIT INT TERM
   # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
@@ -88,7 +113,7 @@ JSON
   # only appears at the END is indistinguishable from a suite that
   # hung. That mistake cost half an hour of waiting on a run that was
   # working the whole time. With this, the case it is on is on screen.
-  podman run --rm --network host -e PYTHONUNBUFFERED=1 \
+  "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
     -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
     -v "$PWD/$OUT/reports:/reports:z" \
     crossbario/autobahn-testsuite \
