@@ -3,6 +3,96 @@ module Webmachine
     attr_reader :conf
   end
 
+  # The configuration, and nothing but the values in it.
+  #
+  # A Struct is a Ruby Array with names on its slots - MRB_TT_STRUCT is
+  # struct RArray in mruby's value.h - which is exactly what is wanted for
+  # handing a set of values to someone else: Ruby collects them, C++ walks
+  # the array once at registration and decides what they mean. It is its
+  # own type tag though, so the C side checks MRB_TT_STRUCT; mrb_array_p
+  # says no to a Struct.
+  #
+  # There is no writer here, no validation and no parsing. Every ceiling
+  # (kZeroCopyMax, kFileMapMax), every refusal and the whole grammar of
+  # conf.url live in application.cpp, where they lived before - one rule
+  # per knob, in one place. What this file decides is the ORDER, because
+  # the array is read by index: ConfIdx in application.cpp mirrors this
+  # list and the two are checked against each other at registration.
+  #
+  # Struct also draws the line the config URL needs. `c[:add_route] = x`
+  # is a NameError - "no member 'add_route' in struct" - because []= can
+  # only reach a member, never a method. Routes name classes and stay in
+  # Ruby code; nothing a URL or a config file says can reach them.
+  class Config < Struct.new(:port, :unix_path, :url, :docroot, :certificate,
+                            :private_key, :file_map_threshold, :zero_copy_threshold,
+                            :disable_http_cats)
+    # A refusal belongs where it was caused. bintest calls this "catchable
+    # BY CLASS, not by luck": an app may write
+    #
+    #   begin
+    #     conf.port = 99999
+    #   rescue Webmachine::ConfigError => e
+    #
+    # and that only works if the refusal happens on THAT line, not when
+    # the block ends. So the writers refuse here, in the words they had
+    # when they were C setters, and read_config checks the same bounds
+    # again on the way out - Struct#[]= reaches a member without passing
+    # a writer, so this is not the last word on any of it.
+    #
+    # The numbers are NOT written down here: PORT_MAX, FILE_MAP_MAX and
+    # ZERO_COPY_MAX come from application.cpp, which is where the code
+    # that honours them lives.
+    def port=(v)
+      Config.whole(v, PORT_MAX, 'port', '')
+      self[:port] = v
+    end
+
+    def file_map_threshold=(v)
+      Config.whole(v, FILE_MAP_MAX, 'file_map_threshold', ' bytes')
+      self[:file_map_threshold] = v
+    end
+
+    def zero_copy_threshold=(v)
+      Config.whole(v, ZERO_COPY_MAX, 'zero_copy_threshold', ' bytes')
+      self[:zero_copy_threshold] = v
+    end
+
+    def unix_path=(v)
+      Config.text(v, 'unix_path')
+      self[:unix_path] = v
+    end
+
+    def docroot=(v)
+      Config.text(v, 'docroot')
+      self[:docroot] = v
+    end
+
+    def certificate=(v)
+      Config.text(v, 'certificate')
+      self[:certificate] = v
+    end
+
+    def private_key=(v)
+      Config.text(v, 'private_key')
+      self[:private_key] = v
+    end
+
+    # conf.url is not checked here: its grammar - the scheme, the IPv6
+    # literal, the settings its query may name - is ada's and
+    # application.cpp's, and there is no second copy of it in Ruby.
+    def self.whole(v, ceiling, name, unit)
+      raise ConfigError, "conf.#{name} wants an Integer" unless v.is_a?(Integer)
+      return if v >= 0 && v <= ceiling
+
+      raise ConfigError, "conf.#{name} = #{v} is outside 0..#{ceiling}#{unit}"
+    end
+
+    def self.text(v, name)
+      raise ConfigError, "conf.#{name} wants a String" unless v.is_a?(String)
+      raise ConfigError, "conf.#{name} is empty" if v.empty?
+    end
+  end
+
   # #210: the error resource. Always there, never routed - the route that
   # produced the error calls it, so an error is delivered by whoever made
   # it and not by a second trip through the router.

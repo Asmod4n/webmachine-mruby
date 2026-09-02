@@ -25,7 +25,10 @@ std::vector<AppSpec*> registered_;
 
 const struct mrb_data_type app_type = {"webmachine.app", nullptr};
 
-struct RClass* conf_class_ = nullptr;
+// Webmachine::Config, defined in mrblib. Looked up once, when the
+// mrblib that defines it has run - C makes what Ruby needs to run,
+// so this is the other direction and cannot be done at gem init.
+struct RClass* config_class_ = nullptr;
 struct RClass* route_class_ = nullptr;
 
 // Exactly one listener spelling per app; a second refuses by name.
@@ -45,119 +48,6 @@ void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
                name);
   }
   s->form = f;
-}
-
-// conf.port = N. 0 means the OS picks, read back after the bind.
-mrb_value conf_port_set(mrb_state* mrb, mrb_value self) {
-  mrb_int p;
-  mrb_get_args(mrb, "i", &p);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, {AppSpec::Form::kPort, "port"});
-  if (p < 0 || p > 65535) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.port = %d is outside 0..65535", (int)p);
-  }
-  s->port = static_cast<int>(p);
-  return mrb_nil_value();
-}
-
-// conf.disable_http_cats = true. The pictures are a default, not a
-// requirement: a server that wants its errors plain says so here and the
-// pack is never opened, so nothing renders a picture and /error_assets/
-// answers nothing.
-mrb_value conf_disable_http_cats_set(mrb_state* mrb, mrb_value self) {
-  mrb_bool v;
-  mrb_get_args(mrb, "b", &v);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  s->disable_http_cats = v ? 1 : 0;
-  return mrb_nil_value();
-}
-
-// conf.unix_path = PATH.
-mrb_value conf_unix_set(mrb_state* mrb, mrb_value self) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, {AppSpec::Form::kUnix, "unix_path"});
-  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.unix_path is empty");
-  s->unix_path.assign(p, static_cast<size_t>(n));
-  return mrb_nil_value();
-}
-
-// conf.zero_copy_threshold = N. The body size at which a dynamic response is
-// LENT to the writer instead of copied; 0 copies every body. A typed flag and
-// [tune] both beat this, the way every other choice in here is beaten.
-mrb_value conf_zc_set(mrb_state* mrb, mrb_value self) {
-  mrb_int n;
-  mrb_get_args(mrb, "i", &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (n < 0 || n > static_cast<mrb_int>(kZeroCopyMax)) {
-    // %i and not %lld: mruby's mrb_raisef is NOT printf. src/error.c
-    // reads %l as a char* AND a size_t - a length, not a width - so a
-    // long long here was consumed as a pointer, and conf.zero_copy_
-    // threshold = 999999999999 SEGFAULTED instead of refusing. %d takes
-    // an int, %i takes an mrb_int, and there is no third choice.
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "conf.zero_copy_threshold = %i is outside 0..%i bytes",
-               static_cast<mrb_int>(n), static_cast<mrb_int>(kZeroCopyMax));
-  }
-  s->zero_copy_threshold = static_cast<long long>(n);
-  return mrb_nil_value();
-}
-
-// conf.file_map_threshold = N. The file size from which response.file maps
-// instead of reading window by window; 0 never maps. A typed flag and [tune]
-// both beat this, the way every other choice in here is beaten.
-mrb_value conf_map_set(mrb_state* mrb, mrb_value self) {
-  mrb_int n;
-  mrb_get_args(mrb, "i", &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (n < 0 || n > static_cast<mrb_int>(kFileMapMax)) {
-    // %i, for the reason spelled out over conf_zero_copy_threshold.
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "conf.file_map_threshold = %i is outside 0..%i bytes",
-               static_cast<mrb_int>(n), static_cast<mrb_int>(kFileMapMax));
-  }
-  s->file_map_threshold = static_cast<long long>(n);
-  return mrb_nil_value();
-}
-
-// conf.docroot = PATH. The ONE directory response.file may reach, resolved
-// and opened once before the first accept. --docroot and [server] docroot
-// both beat this, the same order everything else in here is beaten. Nothing
-// is checked here on purpose: the path is validated where it is opened, so
-// ONE refusal names it however the operator spelled it.
-mrb_value conf_docroot_set(mrb_state* mrb, mrb_value self) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.docroot is empty");
-  s->docroot.assign(p, static_cast<size_t>(n));
-  return mrb_nil_value();
-}
-
-// conf.certificate = PATH and conf.private_key = PATH. Paths, not bytes:
-// acme renews them under this process and a path can be read again, which
-// a string handed over once cannot.
-mrb_value conf_certificate_set(mrb_state* mrb, mrb_value self) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.certificate is empty");
-  s->cert_path.assign(p, static_cast<size_t>(n));
-  return mrb_nil_value();
-}
-
-mrb_value conf_private_key_set(mrb_state* mrb, mrb_value self) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (n == 0) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.private_key is empty");
-  s->key_path.assign(p, static_cast<size_t>(n));
-  return mrb_nil_value();
 }
 
 // The whole set of settings a URL or a config file may reach, and the
@@ -322,12 +212,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
 // listener can serve. A path is ignored under http and https, as it was
 // before: webmachine-ruby's conf.url may carry one and it names no
 // listener. Under unix the path IS the listener.
-mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
-  const char* p;
-  mrb_int n;
-  mrb_get_args(mrb, "s", &p, &n);
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  const std::string u(p, static_cast<size_t>(n));
+void apply_url(mrb_state* mrb, AppSpec* s, const std::string& u) {
 
   auto parsed = ada::parse<ada::url_aggregator>(u);
   if (!parsed) {
@@ -391,22 +276,146 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
     ada::url_search_params params{search.substr(1)};
     for (const auto& kv : params) apply_setting(mrb, s, kv.first, kv.second);
   }
-  return mrb_nil_value();
 }
 
-// conf.url reads both ways: the ask before the bind, the truth after it.
-mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
-  AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  if (s->bound) return mrb_str_new(mrb, s->bound_url.data(), s->bound_url.size());
-  const char* const scheme = s->tls ? "https" : "http";
-  switch (s->form) {
-    case AppSpec::Form::kUnix: return mrb_format(mrb, "unix://%s", s->unix_path.c_str());
-    case AppSpec::Form::kUrl:
-      return mrb_format(mrb, "%s://%s:%d", scheme, s->url_host.c_str(), s->port);
-    case AppSpec::Form::kPort: return mrb_format(mrb, "%s://0.0.0.0:%d", scheme, s->port);
-    case AppSpec::Form::kNone: break;
+// The configuration arrives as ONE value: the Webmachine::Config struct
+// mrblib defines. A Struct in mruby IS an array (MRB_TT_STRUCT is struct
+// RArray in value.h), so this walks it - through mrb_ary_entry, never by
+// reaching into the object - and decides what each slot means.
+//
+// The ORDER is the contract, and it is written down twice on purpose:
+// once as the member list in mrblib/webmachine.rb and once here. The
+// length check below is what notices if the two ever drift, at the first
+// Application.new rather than in whichever knob happened to move.
+//
+// Ruby collects; this decides. Every ceiling, every refusal and the
+// whole grammar of conf.url are here, in the words they had when they
+// were nine separate setters.
+enum ConfIdx {
+  kConfPort,
+  kConfUnixPath,
+  kConfUrl,
+  kConfDocroot,
+  kConfCertificate,
+  kConfPrivateKey,
+  kConfFileMapThreshold,
+  kConfZeroCopyThreshold,
+  kConfDisableHttpCats,
+  kConfMax,
+};
+
+// A named string slot: absent is nothing said, present and empty is a
+// refusal, because an empty path is a mistake and not an answer.
+bool conf_str(mrb_state* mrb, mrb_value conf, ConfIdx at, const char* name, std::string* out) {
+  const mrb_value v = mrb_ary_entry(conf, at);
+  if (mrb_nil_p(v)) return false;
+  if (!mrb_string_p(v)) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s wants a String", name);
   }
-  return mrb_nil_value();
+  if (RSTRING_LEN(v) == 0) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s is empty", name);
+  }
+  out->assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  return true;
+}
+
+// A named whole-number slot, refused by the ceiling that owns it.
+bool conf_int(mrb_state* mrb, mrb_value conf, ConfIdx at, const char* name, mrb_int ceiling,
+              const char* unit, mrb_int* out) {
+  const mrb_value v = mrb_ary_entry(conf, at);
+  if (mrb_nil_p(v)) return false;
+  if (!mrb_integer_p(v)) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s wants an Integer", name);
+  }
+  const mrb_int n = mrb_integer(v);
+  if (n < 0 || n > ceiling) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s = %i is outside 0..%i%s", name, n, ceiling,
+               unit);
+  }
+  *out = n;
+  return true;
+}
+
+void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
+  // MRB_TT_STRUCT, not MRB_TT_ARRAY: a Struct is struct RArray in memory
+  // and mrb_ary_entry reads it, but it carries its OWN type tag, so
+  // mrb_array_p says no. Checked before the first mrb_ary_entry, because
+  // that one trusts the tag it was handed.
+  if (mrb_type(conf) != MRB_TT_STRUCT || RARRAY_LEN(conf) != kConfMax) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf is not the %i values Webmachine::Config names - application.cpp's "
+               "ConfIdx and mrblib's Struct member list have drifted apart",
+               static_cast<mrb_int>(kConfMax));
+  }
+
+  // The listener first, and exactly one spelling of it: claim_form is
+  // what refuses the second, and it refuses in member order now rather
+  // than in the order the app happened to write them.
+  mrb_int n = 0;
+  if (conf_int(mrb, conf, kConfPort, "port", 65535, "", &n)) {
+    claim_form(mrb, s, {AppSpec::Form::kPort, "port"});
+    s->port = static_cast<int>(n);
+  }
+  std::string text;
+  if (conf_str(mrb, conf, kConfUnixPath, "unix_path", &text)) {
+    claim_form(mrb, s, {AppSpec::Form::kUnix, "unix_path"});
+    s->unix_path = text;
+  }
+  if (conf_str(mrb, conf, kConfUrl, "url", &text)) apply_url(mrb, s, text);
+
+  if (conf_str(mrb, conf, kConfDocroot, "docroot", &text)) {
+    if (!s->docroot.empty()) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
+    }
+    s->docroot = text;
+  }
+  if (conf_str(mrb, conf, kConfCertificate, "certificate", &text)) {
+    if (!s->cert_path.empty()) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: certificate was already named");
+    }
+    s->cert_path = text;
+  }
+  if (conf_str(mrb, conf, kConfPrivateKey, "private_key", &text)) {
+    if (!s->key_path.empty()) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: private_key was already named");
+    }
+    s->key_path = text;
+  }
+  if (conf_int(mrb, conf, kConfFileMapThreshold, "file_map_threshold",
+               static_cast<mrb_int>(kFileMapMax), " bytes", &n)) {
+    if (s->file_map_threshold >= 0) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: file_map_threshold was already named");
+    }
+    s->file_map_threshold = n;
+  }
+  if (conf_int(mrb, conf, kConfZeroCopyThreshold, "zero_copy_threshold",
+               static_cast<mrb_int>(kZeroCopyMax), " bytes", &n)) {
+    if (s->zero_copy_threshold >= 0) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: zero_copy_threshold was already named");
+    }
+    s->zero_copy_threshold = n;
+  }
+  const mrb_value cats = mrb_ary_entry(conf, kConfDisableHttpCats);
+  if (!mrb_nil_p(cats)) {
+    const int8_t want = mrb_test(cats) ? 1 : 0;
+    if (s->disable_http_cats >= 0) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: disable_http_cats was already named");
+    }
+    s->disable_http_cats = want;
+  }
+
+  // conf.url reads both ways: the ask before the bind, the truth after
+  // it. Before the bind there is nothing truer than what was written, so
+  // the slot keeps it; app_mark_bound overwrites it with what the
+  // listener really became.
+  if (mrb_nil_p(mrb_ary_entry(conf, kConfUrl)) && s->form != AppSpec::Form::kNone) {
+    const char* const scheme = s->tls ? "https" : "http";
+    const mrb_value said =
+        s->form == AppSpec::Form::kUnix
+            ? mrb_format(mrb, "unix://%s", s->unix_path.c_str())
+            : mrb_format(mrb, "%s://0.0.0.0:%d", scheme, s->port);
+    mrb_ary_set(mrb, conf, kConfUrl, said);
+  }
 }
 
 // The token array crosses the boundary ONCE, here, for all three route kinds.
@@ -583,12 +592,24 @@ mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
   mrb_data_init(self, s, &app_type);
-  mrb_iv_set(mrb, self, MRB_IVSYM(conf),
-             mrb_obj_value(mrb_data_object_alloc(mrb, conf_class_, s, &app_type)));
+  // Looked up here and not at gem init: mrblib runs AFTER the C side, so
+  // Webmachine::Config does not exist yet when this file's init does.
+  if (config_class_ == nullptr) {
+    config_class_ = mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)),
+                                           MRB_SYM(Config));
+  }
+  // The conf object is Ruby's: mrblib names the members, this only reads
+  // them back at the end of the block. mrb_obj_new and not a hand-built
+  // array, so Struct.new's own initialize decides the shape.
+  const mrb_value conf = mrb_obj_new(mrb, config_class_, 0, nullptr);
+  s->conf = conf;
+  mrb_gc_register(mrb, conf);
+  mrb_iv_set(mrb, self, MRB_IVSYM(conf), conf);
   mrb_iv_set(mrb, self, MRB_IVSYM(routes),
              mrb_obj_value(mrb_data_object_alloc(mrb, route_class_, s, &app_type)));
   if (mrb_nil_p(blk)) return self;
   mrb_yield(mrb, blk, self);
+  read_config(mrb, conf, s);
   register_app(mrb, s);
   return self;
 }
@@ -627,6 +648,17 @@ mrb_value app_ready(mrb_state* mrb, mrb_value self) {
 
 // Webmachine::Application and its two hidden facade classes.
 void application_init(mrb_state* mrb, struct RClass* wm) {
+  // The ceilings, named once. mrblib's Config refuses a value against
+  // these at the moment it is assigned - which is what makes a refusal
+  // catchable where it was caused - and read_config checks them again on
+  // the way out, because Struct#[]= reaches a member without a writer.
+  // One source, two readers; the numbers are not written down in Ruby.
+  mrb_define_const_id(mrb, wm, MRB_SYM(PORT_MAX), mrb_fixnum_value(65535));
+  mrb_define_const_id(mrb, wm, MRB_SYM(FILE_MAP_MAX),
+                      mrb_fixnum_value(static_cast<mrb_int>(kFileMapMax)));
+  mrb_define_const_id(mrb, wm, MRB_SYM(ZERO_COPY_MAX),
+                      mrb_fixnum_value(static_cast<mrb_int>(kZeroCopyMax)));
+
   struct RClass* app = mrb_define_class_under_id(mrb, wm, MRB_SYM(Application),
                                                  mrb->object_class);
   MRB_SET_INSTANCE_TT(app, MRB_TT_CDATA);
@@ -639,27 +671,6 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, app, MRB_SYM(add_route), route_add, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, app, MRB_SYM(add_websocket), route_websocket, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, app, MRB_SYM(add_sse), route_sse, MRB_ARGS_REQ(2));
-
-  conf_class_ = mrb_class_new(mrb, mrb->object_class);
-  MRB_SET_INSTANCE_TT(conf_class_, MRB_TT_CDATA);
-  mrb_gc_register(mrb, mrb_obj_value(conf_class_));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(port), conf_port_set, MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(disable_http_cats),
-                       conf_disable_http_cats_set, MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(unix_path), conf_unix_set,
-                       MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(url), conf_url_set, MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM(url), conf_url_get, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(file_map_threshold), conf_map_set,
-                       MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(zero_copy_threshold), conf_zc_set,
-                       MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(certificate), conf_certificate_set,
-                       MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(private_key), conf_private_key_set,
-                       MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, conf_class_, MRB_SYM_E(docroot), conf_docroot_set,
-                       MRB_ARGS_REQ(1));
 
   route_class_ = mrb_class_new(mrb, mrb->object_class);
   MRB_SET_INSTANCE_TT(route_class_, MRB_TT_CDATA);
@@ -790,7 +801,7 @@ AppSpec* app_assets_only() {
 }
 
 // What the listener REALLY became; this is what conf.url reads back.
-void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
+void app_mark_bound(mrb_state* mrb, AppSpec& spec, const char* unix_path, int port) {
   if (unix_path != nullptr) {
     spec.bound_url = std::string("unix://") + unix_path;
   } else if (!spec.url_host.empty()) {
@@ -799,6 +810,10 @@ void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
     spec.bound_url = "http://0.0.0.0:" + std::to_string(port);
   }
   spec.bound = true;
+  if (!mrb_nil_p(spec.conf)) {
+    mrb_ary_set(mrb, spec.conf, kConfUrl,
+                mrb_str_new(mrb, spec.bound_url.data(), spec.bound_url.size()));
+  }
 }
 
 // Run the ready hook from the TOOL, outside any VM frame - so, funcall.

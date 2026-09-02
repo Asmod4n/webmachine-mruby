@@ -454,7 +454,7 @@ void build(mrb_state* mrb) {
   ring_ = std::move(ring);
 
   for (size_t i = 0; i < specs_.size(); i++) {
-    app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,
+    app_mark_bound(mrb, *specs_[i], cfg.listeners[i].unix_path,
                    ring_->bound_port(static_cast<uint32_t>(i)));
     app_ready_run(mrb, *specs_[i]);
   }

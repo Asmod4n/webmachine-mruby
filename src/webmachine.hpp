@@ -4787,6 +4787,11 @@ struct AppSpec {
   std::vector<std::unique_ptr<SseResource, void (*)(SseResource*)>> sse_resources;
   mrb_value ready = mrb_nil_value();
   bool have_ready = false;
+  // The Webmachine::Config struct this app was configured through,
+  // kept because app_mark_bound writes the bound listener back into
+  // its url slot - conf.url reads the ask before the bind and the
+  // truth after it. GC-registered at Application.new.
+  mrb_value conf = mrb_nil_value();
   bool registered = false;
   // conf.disable_http_cats = true; -1 = this app said nothing. The pack
   // is one mount for the process, so the first app with an opinion is the
@@ -4836,7 +4841,7 @@ void app_registered_all(mrb_state* mrb, Registered out);
 
 AppSpec* app_assets_only();
 
-void app_mark_bound(AppSpec& spec, const char* unix_path, int port);
+void app_mark_bound(mrb_state* mrb, AppSpec& spec, const char* unix_path, int port);
 
 void app_ready_run(mrb_state* mrb, AppSpec& spec);
 }
