@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -213,9 +214,14 @@ class BodyApp {
 
   // Wire bytes in: one byte is one request. A chunk that is not the last
   // of its CQE arrives with plan == nullptr and can only be counted.
-  bool feed(Conn& st, const char*, size_t len, std::string& sink, Plan* plan) {
-    st.owed += static_cast<unsigned>(len);
-    if (plan != nullptr && st.owed != 0) emit(st, sink, *plan);
+  struct Sink {
+    std::string& bytes;
+    Plan* plan;
+  };
+
+  bool feed(Conn& st, std::string_view in, Sink out) {
+    st.owed += static_cast<unsigned>(in.size());
+    if (out.plan != nullptr && st.owed != 0) emit(st, out.bytes, *out.plan);
     return true;
   }
 

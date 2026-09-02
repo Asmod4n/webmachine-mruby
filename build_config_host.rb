@@ -11,8 +11,8 @@ MRuby::Lockfile.disable
 MRuby::Build.new do |conf|
   conf.toolchain
 
-  conf.cc.flags << '-O3' << '-march=native'
-  conf.cxx.flags << '-O3' << '-march=native' << '-std=c++20'
+  conf.cc.flags << '-O3' << '-march=x86-64-v3'
+  conf.cxx.flags << '-O3' << '-march=x86-64-v3' << '-std=c++20'
 
   [conf.cc, conf.cxx, conf.objc, conf.asm].each do |c|
     c.flags.each { |f| f.delete('-g') if f.is_a?(Array) }

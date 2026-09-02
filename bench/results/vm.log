@@ -262,3 +262,31 @@ harness: lighttpd-assets htgen h1 -c64 -d5s reps=5 workers=1 6.18.44-fc-v22 x86_
    1048576      304          83389        15.67            0       99            -
    1048576      206        REFUSED client-bound       524288        -            -
 steal +76 ticks over the whole sweep
+==== 2026-09-02T04:19Z repo=f0c79c8 mruby=f38ef47 ====
+harness: assets htgen h1 -c64 -d3s reps=1 warm=default log=0 6.18.44-fc-v22 x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         165156       677.27         4096       97            -
+      4096      304         219425        17.58            0       98            -
+steal +0 ticks over the whole sweep
+==== 2026-09-02T05:05Z A/B: signature pass 6c0ac54 -> f0c79c8 ====
+harness: floor.sh htgen -c400 -d5s h1 unix app=examples/hello.rb, BIN= alternated,
+  15 rounds each, interleaved before/after. cflags=-O3 -march=x86-64-v3, NOT native:
+  this container migrates between hosts, so a native binary built on one of them is
+  an illegal instruction on the next. 6.18.44-fc-v22 x86_64, 4 cpus.
+       build     n    median rps       mean        min        max      sd    range
+      before    15       526851     491598     340280     590388   18.2%     47%
+       after    15       522638     485439     315865     578728   18.1%     50%
+  after/before on the medians: 0.992. Welch on the means: t = -0.18, 95% CI on the
+  difference -14.9% .. +12.4%. NO DIFFERENCE MEASURED - and at n=15 this harness
+  could not have seen one below 13.6% if there had been one.
+
+  The spread is the HARNESS, not the machine. sysbench cpu on the same box, six
+  runs under nice -10, ranged 1059.51..1067.05 events/s: sigma 0.24%, range 0.71%,
+  which is the stability this tree's notes already claim for it. At -c400 on 4 cpus
+  htgen and webmachine are BOTH pegged (server 96-99%, client 97-100% of a core), so
+  what the scheduler hands each of them decides the number. floor.sh's own guard
+  does not catch this: it refuses when the SERVER has headroom under a pegged
+  client, and here neither end has any. A number from this harness on this box is
+  worth nothing under ~15%; the load has to come from a second machine.
+  before: 340280 341486 356119 397847 428616 509932 516455 526851 531845 532081 557428 576718 581142 586786 590388
+  after:  315865 343110 350997 413560 428129 501702 505630 522638 529365 540701 543546 565895 566041 575687 578728

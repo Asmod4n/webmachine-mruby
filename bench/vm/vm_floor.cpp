@@ -206,8 +206,8 @@ bool bind_bench_resource(const char* cls, const char* mrb_path, webmachine::Reso
     std::fprintf(stderr, "bench bind: %s raised while loading\n", cls);
     return false;
   }
-  if (!webmachine::resource_fold(own, mrb_obj_value(mrb_class_get(own, cls)), out, err,
-                                 sizeof(err))) {
+  if (!webmachine::resource_fold({own, {err, sizeof(err)}},
+                                 mrb_obj_value(mrb_class_get(own, cls)), out)) {
     std::fprintf(stderr, "bench bind: %s\n", err);
     return false;
   }
@@ -416,7 +416,8 @@ void BM_runtime_1cb(benchmark::State& state) {
     // No request view or values (#116 slice 4): these two measure the
     // VM entry and the callbacks, and a callback that asked `request`
     // anything would be measuring the accessor instead.
-    uint16_t st = webmachine::resource_run(g_res1, facts, nullptr, nullptr, &body, &have, &headers);
+    uint16_t st = webmachine::resource_run(g_res1, {facts, nullptr, nullptr, 0},
+                                           {&body, &have, &headers});
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
@@ -429,7 +430,8 @@ void BM_runtime_4cb(benchmark::State& state) {
   std::string headers;
   bool have = false;
   for (auto _ : state) {
-    uint16_t st = webmachine::resource_run(g_res4, facts, nullptr, nullptr, &body, &have, &headers);
+    uint16_t st = webmachine::resource_run(g_res4, {facts, nullptr, nullptr, 0},
+                                           {&body, &have, &headers});
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(body);
   }
