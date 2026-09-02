@@ -310,6 +310,19 @@ OUT=$(mktemp)
   # frames at 120Hz), short enough to be "now". ENV_NOTE names what no
   # sampler can (ENV_NOTE="plasma 4k120" ...); the desktop the numbers
   # are measured beside is part of every number.
+  #
+  # Read runnable=N/M against THIS machine's own quiet floor, never
+  # against zero. M is every thread that exists, and a desktop keeps
+  # far more of them than the desktop shows: forgecore idles at ~865
+  # with nothing running but a Plasma session, part of which is a
+  # display manager holding a second VT (an Xorg greeter on tty2, as
+  # root, which `ps x` does not list for you). That number is not load,
+  # it is the floor to subtract. N is the part that competes.
+  # The browser is the one thing worth closing by hand: a Firefox with
+  # its content processes took a fifth of the server's core here, and a
+  # fifth off the answer is not noise that averages out over runs - it
+  # is a different number. Runs made with it open and closed sit in
+  # bench/results/ next to each other and do not agree.
   RUNQ=$(cut -d' ' -f4 /proc/loadavg)
   read -r _ U1 N1 S1 I1 IO1 IRQ1 SIRQ1 ST1 _REST < /proc/stat
   sleep 0.2
@@ -376,6 +389,15 @@ OUT=$(mktemp)
     # What ELSE ran. Same unit as the two numbers beside it, so a run
     # that came out low can be read at a glance: the machine was busy
     # with something, or it was not and the answer is elsewhere.
+    #
+    # A hint, and deliberately NOT a gate. Most of what lands here on a
+    # loaded run is the bench's own doing: ~9M AF_UNIX messages a
+    # second is softirq that neither process pays for out of its utime,
+    # so a perfectly healthy -c16 run reports other: 12-14%. A
+    # threshold on this number would refuse exactly those runs and wave
+    # through a quiet -m1 run with a browser open beside it. The two
+    # are not separable here - separating them is the reader's job,
+    # with runnable= above and the knowledge of what was closed.
     OTHER=$(awk -v m0="$M0" -v m1="$M1" -v hz="$HZ" -v d="$DURATION" -v sc="$SCPU" -v cc="$CCPU" \
       'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
     echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
