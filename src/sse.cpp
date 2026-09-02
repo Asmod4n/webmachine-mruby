@@ -123,13 +123,10 @@ SseResource* sse_resource_new() { return new SseResource(); }
 void sse_resource_free(SseResource* r) { delete r; }
 
 // WHATWG HTML: fold a resource class for an SSE route, once, at route.sse.
-bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
+void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out) {
   if (!mrb_class_p(klass)) {
-    std::snprintf(err, errlen, "route.sse wants a class inheriting Webmachine::SseResource");
-    return false;
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "route.sse wants a class inheriting Webmachine::SseResource, not %v", klass);
   }
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
@@ -141,11 +138,11 @@ bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
     }
   }
   if (!ok) {
-    std::snprintf(err, errlen,
-                  "route.sse: the class does not inherit Webmachine::SseResource - an event "
-                  "stream is NOT a Webmachine::Resource: no status to negotiate, no "
-                  "representation to compare, no end to declare");
-    return false;
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "route.sse: %v does not inherit Webmachine::SseResource - an event stream is "
+               "NOT a Webmachine::Resource: no status to negotiate, no representation to "
+               "compare, no end to declare",
+               klass);
   }
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
@@ -153,10 +150,9 @@ bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
   {
     struct RClass* owner = out.klass;
     if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_tick)))) {
-      std::snprintf(err, errlen,
-                    "route.sse: the resource defines no on_tick - that is the one method an "
-                    "SSE resource IS, asked once a second for what it has to say");
-      return false;
+      mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+                "route.sse: the resource defines no on_tick - that is the one method an SSE "
+                "resource IS, asked once a second for what it has to say");
     }
   }
   {
@@ -168,25 +164,19 @@ bool sse_fold(Setup s, mrb_value klass, SseResource& out) {
     struct RClass* meta = mrb_class(mrb, klass);
     if (!MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &meta, MRB_SYM(heartbeat)))) {
       const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(heartbeat), 0, nullptr);
-      if (mrb->exc != nullptr) {
-        std::snprintf(err, errlen, "route.sse: heartbeat raised (exception below)");
-        mrb_print_error(mrb);
-        mrb->exc = nullptr;
-        return false;
-      }
+      if (mrb->exc != nullptr) rethrow(mrb);
       const auto secs = mrb_chrono::ceil<std::chrono::seconds>(mrb, v);
       if (secs.count() < 0 || secs.count() > 86400) {
-        std::snprintf(err, errlen,
-                      "route.sse: heartbeat is a duration from 0 (never) to a day - 15.s is "
-                      "the default");
-        return false;
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "route.sse: heartbeat is a duration from 0 (never) to a day - 15.s is the "
+                   "default, %v is not in range",
+                   v);
       }
       out.heartbeat = static_cast<int64_t>(secs.count());
     }
   }
 
   mrb_obj_freeze(mrb, klass);
-  return true;
 }
 
 // WHATWG HTML: build THIS stream's resource; its initialize is the open hook.

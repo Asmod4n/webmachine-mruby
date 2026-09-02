@@ -324,10 +324,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   walk_tokens(mrb, s->ws_table, {toks, "route.websocket"});
 
   std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
-  char err[512] = "";
-  if (!ws_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
-    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
-  }
+  ws_fold(mrb, klass, *res);
   route.commit();
   s->ws_resources.push_back(std::move(res));
   return self;
@@ -344,10 +341,7 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
 
   std::unique_ptr<SseResource, void (*)(SseResource*)> res(sse_resource_new(),
                                                            sse_resource_free);
-  char err[512] = "";
-  if (!sse_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
-    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
-  }
+  sse_fold(mrb, klass, *res);
   route.commit();
   s->sse_resources.push_back(std::move(res));
   return self;

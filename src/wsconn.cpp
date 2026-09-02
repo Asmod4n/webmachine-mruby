@@ -601,14 +601,11 @@ void ws_resource_free(WsResource* r) {
 
 // RFC 6455: fold a resource class for a websocket route, once, at
 // route.websocket - arities read, konst answers asked, the class frozen.
-bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
+void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   if (!mrb_class_p(klass)) {
-    std::snprintf(err, errlen,
-                  "route.websocket wants a class inheriting Webmachine::WebsocketResource");
-    return false;
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "route.websocket wants a class inheriting Webmachine::WebsocketResource, not %v",
+               klass);
   }
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(WebsocketResource));
@@ -620,21 +617,19 @@ bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
     }
   }
   if (!ok) {
-    std::snprintf(err, errlen,
-                  "route.websocket: the class does not inherit "
-                  "Webmachine::WebsocketResource - a websocket resource is NOT a "
-                  "Webmachine::Resource: no response, no status, no flow survives the "
-                  "upgrade, only the handshake's head");
-    return false;
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "route.websocket: %v does not inherit Webmachine::WebsocketResource - a "
+               "websocket resource is NOT a Webmachine::Resource: no response, no status, no "
+               "flow survives the upgrade, only the handshake's head",
+               klass);
   }
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
 
   if (!method_argc(mrb, {out.klass, MRB_SYM(on_data)}, 2, &out.data_argc)) {
-    std::snprintf(err, errlen,
-                  "route.websocket: the resource defines no on_data - that is the one "
-                  "method a websocket resource IS (on_data(data) or on_data(data, binary))");
-    return false;
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "route.websocket: the resource defines no on_data - that is the one method a "
+              "websocket resource IS (on_data(data) or on_data(data, binary))");
   }
   out.have_close =
       method_argc(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.close_argc);
@@ -644,13 +639,7 @@ bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
     mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(validate_text));
     if (!MRB_METHOD_UNDEF_P(m)) {
       const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM_Q(validate_text), 0, nullptr);
-      if (mrb->exc != nullptr) {
-        std::snprintf(err, errlen,
-                      "route.websocket: validate_text? raised (exception below)");
-        mrb_print_error(mrb);
-        mrb->exc = nullptr;
-        return false;
-      }
+      if (mrb->exc != nullptr) rethrow(mrb);
       out.validate_text = mrb_test(v);
     }
   }
@@ -661,13 +650,7 @@ bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
     if (!MRB_METHOD_UNDEF_P(m)) {
       const mrb_value v =
           mrb_funcall_argv(mrb, klass, MRB_SYM_Q(permessage_deflate), 0, nullptr);
-      if (mrb->exc != nullptr) {
-        std::snprintf(err, errlen,
-                      "route.websocket: permessage_deflate? raised (exception below)");
-        mrb_print_error(mrb);
-        mrb->exc = nullptr;
-        return false;
-      }
+      if (mrb->exc != nullptr) rethrow(mrb);
       out.want_deflate = mrb_test(v);
     }
   }
@@ -677,26 +660,18 @@ bool ws_fold(Setup s, mrb_value klass, WsResource& out) {
     mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM(max_message));
     if (!MRB_METHOD_UNDEF_P(m)) {
       const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(max_message), 0, nullptr);
-      if (mrb->exc != nullptr) {
-        std::snprintf(err, errlen, "route.websocket: max_message raised (exception below)");
-        mrb_print_error(mrb);
-        mrb->exc = nullptr;
-        return false;
-      }
+      if (mrb->exc != nullptr) rethrow(mrb);
       if (!mrb_fixnum_p(v) || mrb_fixnum(v) <= 0) {
-        std::snprintf(err, errlen,
-                      "route.websocket: max_message answers with a positive Integer of "
-                      "bytes, or it is not defined at all (the default is %zu)",
-                      kMaxWsMessageDefault);
-        return false;
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "route.websocket: max_message answers with a positive Integer of bytes, or "
+                   "it is not defined at all (the default is %i) - not %v",
+                   static_cast<mrb_int>(kMaxWsMessageDefault), v);
       }
       out.max_message = static_cast<size_t>(mrb_fixnum(v));
     }
   }
 
   mrb_obj_freeze(mrb, klass);
-
-  return true;
 }
 
 // RFC 6455 4.2.2: build THIS peer's resource; its initialize is the

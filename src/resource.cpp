@@ -46,18 +46,6 @@ using flow::Node;
 
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
-// A setup callback raised, mrb_protect_error caught it and take_pending
-// left it in mrb->exc. Let it out again: the exception's own class,
-// message and backtrace name what went wrong better than any sentence
-// this frame could spell, and since #33 there is no string channel left
-// to spell one into - it used to be printed here and replaced by
-// "<callback> (exception below)", which is a note about a note.
-[[noreturn]] void rethrow(mrb_state* mrb) {
-  const mrb_value exc = mrb_obj_value(mrb->exc);
-  mrb->exc = nullptr;
-  mrb_exc_raise(mrb, exc);
-}
-
 // mruby: unwrap MRB_PROC_ALIAS once, at fold, instead of at every call.
 mrb_method_t resolve_alias(mrb_method_t m) {
   if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) return m;

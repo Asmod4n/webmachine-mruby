@@ -681,6 +681,20 @@ struct Setup {
 // throw here, MRB_USE_CXX_EXCEPTION is always on - so the restore belongs
 // to a destructor, not to fifteen copies of the same line before fifteen
 // returns, each of which was a chance to forget one.
+// A setup callback raised and the VM left the exception in mrb->exc
+// (mrb_funcall_argv catches it there; mrb_protect_error hands it back and
+// take_pending puts it there). Let it out again: the exception's own
+// class, message and backtrace name what went wrong better than any
+// sentence the frame that caught it could spell - and since #33 there is
+// no string channel left to spell one into. What this replaced printed
+// the exception to stderr, which nothing reads unless the process dies,
+// and passed "<callback> (exception below)" upwards: a note about a note.
+[[noreturn]] inline void rethrow(mrb_state* mrb) {
+  const mrb_value exc = mrb_obj_value(mrb->exc);
+  mrb->exc = nullptr;
+  mrb_exc_raise(mrb, exc);
+}
+
 class ArenaGuard {
  public:
   explicit ArenaGuard(mrb_state* mrb) : mrb_(mrb), at_(mrb_gc_arena_save(mrb)) {}
@@ -3382,7 +3396,7 @@ struct WsResource;
 
 struct WsConn;
 
-bool ws_fold(Setup s, mrb_value klass, WsResource& out);
+void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out);
 
 bool ws_wants_deflate(const WsResource* r);
 WsResource* ws_resource_new();
@@ -3410,7 +3424,7 @@ struct SseResource;
 
 struct SseStream;
 
-bool sse_fold(Setup s, mrb_value klass, SseResource& out);
+void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out);
 SseResource* sse_resource_new();
 void sse_resource_free(SseResource* r);
 
