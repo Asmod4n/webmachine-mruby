@@ -161,3 +161,36 @@ size      var          wall_med    wall_min    wall_max    ringcpu req/entr
 262144    copy           131471      126299      139857     120452     1.75
 262144    zero           122732      117726      135248     115113     2.03
 262144      paired zero     /copy median 0.930  (+7.0% vs copy)  won 6/7 reps
+# The first ring_body run since the scripts were repaired. Container
+# numbers - the A/B between copy, copyhold and zero is readable here
+# only because it is PAIRED per rep; the absolute figures are not.
+==== 2026-09-02T07:46Z repo=3dd21ae mruby=f38ef47 ====
+harness: ring_body (real Ring<App>, AF_UNIX) 6.18.44-fc-v22 x86_64
+conns=8 reps=13 pin ring=0 client=1
+
+size      var          wall_med    wall_min    wall_max    ringcpu req/entr
+64        copy             5629        5402        5834       3681     2.59
+64        copyhold         5694        5544        6245       3820     2.60
+64        zero             5651        5571        5833       3755     2.60
+64          paired copyhold /copy median 1.027  (-2.7% vs copy)  won 3/13 reps
+64          paired zero     /copy median 1.003  (-0.3% vs copy)  won 6/13 reps
+32768     copy            13066       12376       13875      10778     2.66
+32768     copyhold        13961       13198       15102      11719     2.66
+32768     zero            12496       12124       13428      10276     2.66
+32768       paired copyhold /copy median 1.078  (-7.8% vs copy)  won 0/13 reps
+32768       paired zero     /copy median 0.954  (+4.6% vs copy)  won 11/13 reps
+262144    copy            90864       73366      108741      84071     1.82
+262144    copyhold       104705       84002      118510      88780     1.47
+262144    zero            78224       64974       90850      71524     2.09
+262144      paired copyhold /copy median 1.106  (-10.6% vs copy)  won 0/13 reps
+262144      paired zero     /copy median 0.840  (+16.0% vs copy)  won 13/13 reps
+1048576   copy           384735      360458      400677     336521     0.84
+1048576   copyhold       425477      405069      441888     382936     0.84
+1048576   zero           357673      328528      404051     317648     0.87
+1048576     paired copyhold /copy median 1.124  (-12.4% vs copy)  won 0/13 reps
+1048576     paired zero     /copy median 0.929  (+7.1% vs copy)  won 12/13 reps
+4194304   copy          1582355     1513187     1810013    1463428     0.81
+4194304   copyhold      1927722     1795883     2105039    1818924     0.81
+4194304   zero          1509471     1436959     1677141    1461088     0.83
+4194304     paired copyhold /copy median 1.214  (-21.4% vs copy)  won 0/13 reps
+4194304     paired zero     /copy median 0.946  (+5.4% vs copy)  won 10/13 reps

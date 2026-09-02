@@ -33,6 +33,7 @@
 
 #include <mruby.h>
 #include <mruby/class.h>
+#include <mruby/error.h>
 #include <mruby/string.h>
 
 #include <atomic>
@@ -199,16 +200,18 @@ class BodyApp {
     }
   };
 
+  // Http1::Plan's shape, field for field: what the kernel touches carries
+  // the kernel's names, and the Ring reads this one through App::Plan.
   struct Plan {
     struct Seg {
-      const char* base;
-      size_t off;
-      size_t len;
+      const char* iov_base;
+      size_t off;  // not ABI: where in the sink, when iov_base is null
+      size_t iov_len;
     };
     static constexpr unsigned kSegs = 1023;
-    Seg seg[kSegs];
-    unsigned nseg = 0;
-    size_t iov_len = 0;
+    Seg iov[kSegs];
+    unsigned iovlen = 0;
+    size_t byte_total = 0;
     size_t byte_cap = 0;
   };
 
@@ -260,6 +263,25 @@ class BodyApp {
   webmachine::Logger* access_log() { return nullptr; }
   webmachine::Logger* error_log() { return nullptr; }
 
+  // The reactor tells its App the send deadline it will enforce; this
+  // one has no deadline of its own to keep in step with it.
+  void set_send_timeout(int) {}
+
+  // The file tier, answered "there is no file" throughout. This bench
+  // measures a String leaving the VM; it has nothing to say about files,
+  // and these exist because Ring<App> asks its App for them.
+  static bool file_answerable(const Conn&) { return false; }
+  static size_t file_map_len(const Conn&) { return 0; }
+  static void file_release(Conn&) {}
+  void file_abandon(Conn&) {}
+  const char* file_take(Conn&) { return nullptr; }
+  void file_reject(Conn&) {}
+  void file_error(Conn&, const char*) {}
+  bool file_stat(Conn&, const struct statx&, size_t*) { return false; }
+  char* file_buffer(Conn&, size_t) { return nullptr; }
+  void file_ready_now(Conn&, size_t) {}
+  void file_mapped(Conn&, const char*, size_t) {}
+
  private:
   // One response: the head into the sink, the body either copied in
   // behind it (a) or handed over as an external pointer (b).
@@ -277,8 +299,8 @@ class BodyApp {
 
     const size_t hoff = sink.size();
     sink.append(g_header);
-    plan.seg[plan.nseg++] = Plan::Seg{nullptr, hoff, g_header.size()};
-    plan.iov_len += g_header.size();
+    plan.iov[plan.iovlen++] = Plan::Seg{nullptr, hoff, g_header.size()};
+    plan.byte_total += g_header.size();
 
     const int ai = mrb_gc_arena_save(mrb);
     // What a resource's to_html-style callback hands back: a fresh
@@ -299,7 +321,7 @@ class BodyApp {
       // External pointer, resolved as-is by take_plan - the same door
       // an mmap'd asset walks through in http1.cpp. Only legal because
       // the hold above pins the buffer for the whole in-flight window.
-      plan.seg[plan.nseg++] = Plan::Seg{RSTRING_PTR(v), 0, blen};
+      plan.iov[plan.iovlen++] = Plan::Seg{RSTRING_PTR(v), 0, blen};
     } else {
       // resource.cpp's run_body->assign(RSTRING_PTR(v), RSTRING_LEN(v)),
       // one hop later: the bytes land in the connection's own sink and
@@ -308,9 +330,9 @@ class BodyApp {
       sink.append(RSTRING_PTR(v), blen);
       // Offset, not pointer: append may reallocate, and take_plan is
       // the first moment the address is final.
-      plan.seg[plan.nseg++] = Plan::Seg{nullptr, boff, blen};
+      plan.iov[plan.iovlen++] = Plan::Seg{nullptr, boff, blen};
     }
-    plan.iov_len += blen;
+    plan.byte_total += blen;
     if (prof) {
       const int64_t now = mono_ns();
       g_move_ns += now - t_move;
@@ -320,6 +342,20 @@ class BodyApp {
     mrb_gc_arena_restore(mrb, ai);
   }
 };
+
+// #33: Ring::init raises, so the driver needs a frame for it - the ring
+// it brings up and the shape it brings it up in.
+struct RingInit {
+  webmachine::Ring<BodyApp>* ring;
+  const webmachine::RingConfig* cfg;
+};
+
+mrb_value ring_init_body(mrb_state*, void* ud) {
+  RingInit* a = static_cast<RingInit*>(ud);
+  a->ring->init(*a->cfg);
+  return mrb_nil_value();
+}
+
 
 // --------------------------------------------------------------- client
 
@@ -525,12 +561,16 @@ int main(int argc, char** argv) {
     cfg.stop_fd = stop_pipe[0];
     // Generous, so a slow neighbour cannot reap a live connection
     // mid-measurement and turn a timeout into a "result".
-    cfg.to_header = 600;
-    cfg.to_send = 600;
-    cfg.to_idle = 600;
-    char err[256];
-    if (!ring.init(cfg, err, sizeof err)) {
-      std::fprintf(stderr, "ring_body: ring init: %s\n", err);
+    cfg.header_timeout = 600;
+    cfg.send_timeout = 600;
+    cfg.idle_timeout = 600;
+    cfg.mrb = mrb;
+    // #33: init refuses by raising, and this driver is no Ruby frame.
+    RingInit ask{&ring, &cfg};
+    mrb_bool raised = FALSE;
+    mrb_protect_error(mrb, ring_init_body, &ask, &raised);
+    if (raised) {
+      std::fprintf(stderr, "ring_body: ring init refused\n");
       mrb_close(mrb);
       return 1;
     }

@@ -290,3 +290,52 @@ harness: floor.sh htgen -c400 -d5s h1 unix app=examples/hello.rb, BIN= alternate
   worth nothing under ~15%; the load has to come from a second machine.
   before: 340280 341486 356119 397847 428616 509932 516455 526851 531845 532081 557428 576718 581142 586786 590388
   after:  315865 343110 350997 413560 428129 501702 505630 522638 529365 540701 543546 565895 566041 575687 578728
+# The first vm_floor run since the scripts were repaired (renamed gem,
+# vendored OpenSSL, two flow names). Container numbers: the spread here
+# is 13-18% at n=15 and nothing under that is resolvable - these say the
+# harness builds and runs, not what the tree costs.
+==== 2026-09-02T07:40Z repo=3dd21ae mruby=f38ef47 ====
+harness: vm_floor google-benchmark v1.9.5 6.18.44-fc-v22 x86_64
+BM_vm_entry                              0.106 us        0.106 us     26781713
+BM_copy_floor_small                      0.158 us        0.158 us     17715958 bytes_per_second=163.363Mi/s
+BM_copy_floor_browser                    0.157 us        0.157 us     18046103 bytes_per_second=3.00282Gi/s
+BM_copy_floor_cached_sym                 0.104 us        0.104 us     27333494
+BM_flow_tier0_get                         41.4 ns         41.4 ns     67840546
+BM_flow_tier0_304                         41.1 ns         41.1 ns     68926602
+BM_flow_tier0_get_compiled                3.65 ns         3.65 ns    735752655
+BM_flow_tier0_304_compiled                1.75 ns         1.75 ns   1587513407
+BM_body_alloc_only/64                    0.033 us        0.033 us     85596374 bytes_per_second=1.79151Gi/s
+BM_body_alloc_only/4096                   4.23 us         4.20 us       660737 bytes_per_second=929.468Mi/s
+BM_body_alloc_only/32768                  2.23 us         2.23 us      1293924 bytes_per_second=13.7108Gi/s
+BM_body_alloc_only/262144                 14.2 us         14.2 us       201666 bytes_per_second=17.2068Gi/s
+BM_body_alloc_only/1048576                66.3 us         66.3 us        36350 bytes_per_second=14.7199Gi/s
+BM_body_alloc_only/4194304                 373 us          372 us         7453 bytes_per_second=10.4866Gi/s
+BM_body_copy_out/64                      0.050 us        0.050 us     56692086 bytes_per_second=1.18067Gi/s
+BM_body_copy_out/4096                    0.269 us        0.269 us     11026731 bytes_per_second=14.1869Gi/s
+BM_body_copy_out/32768                    2.58 us         2.58 us      1069042 bytes_per_second=11.8308Gi/s
+BM_body_copy_out/262144                   20.9 us         20.9 us       137147 bytes_per_second=11.6542Gi/s
+BM_body_copy_out/1048576                   150 us          150 us        18377 bytes_per_second=6.5273Gi/s
+BM_body_copy_out/4194304                   711 us          711 us         3776 bytes_per_second=5.49527Gi/s
+BM_body_register_hold/64                 0.124 us        0.124 us     22577282 bytes_per_second=494.19Mi/s
+BM_body_register_hold/4096               0.247 us        0.247 us     12419095 bytes_per_second=15.4335Gi/s
+BM_body_register_hold/32768               1.83 us         1.83 us      1521751 bytes_per_second=16.6381Gi/s
+BM_body_register_hold/262144              13.8 us         13.8 us       205423 bytes_per_second=17.7518Gi/s
+BM_body_register_hold/1048576             67.1 us         67.1 us        40654 bytes_per_second=14.5559Gi/s
+BM_body_register_hold/4194304              371 us          371 us         7401 bytes_per_second=10.5255Gi/s
+BM_body_register_hold_multi/64            1.34 us         1.34 us      2116131 bytes_per_second=364.562Mi/s
+BM_body_register_hold_multi/262144         133 us          133 us        21592 bytes_per_second=14.6455Gi/s
+BM_body_register_hold_multi/4194304      26097 us        26091 us          100 bytes_per_second=1.19772Gi/s
+BM_wire_copy_send/64                      1.00 us         1.00 us      2887345 bytes_per_second=60.8569Mi/s
+BM_wire_copy_send/4096                    1.65 us         1.65 us      1722529 bytes_per_second=2.31311Gi/s
+BM_wire_copy_send/32768                   6.37 us         6.36 us       452884 bytes_per_second=4.79612Gi/s
+BM_wire_copy_send/262144                  48.4 us         48.4 us        59399 bytes_per_second=5.0427Gi/s
+BM_wire_copy_send/1048576                  335 us          335 us         8007 bytes_per_second=2.91492Gi/s
+BM_wire_copy_send/4194304                 1561 us         1560 us         1759 bytes_per_second=2.50338Gi/s
+BM_wire_register_sendmsg/64               1.13 us         1.13 us      2484050 bytes_per_second=54.0121Mi/s
+BM_wire_register_sendmsg/4096             1.65 us         1.65 us      1637307 bytes_per_second=2.31124Gi/s
+BM_wire_register_sendmsg/32768            5.47 us         5.47 us       533783 bytes_per_second=5.57854Gi/s
+BM_wire_register_sendmsg/262144           39.9 us         39.9 us        71491 bytes_per_second=6.12444Gi/s
+BM_wire_register_sendmsg/1048576           265 us          265 us        10770 bytes_per_second=3.69189Gi/s
+BM_wire_register_sendmsg/4194304          1199 us         1199 us         2213 bytes_per_second=3.25786Gi/s
+BM_runtime_1cb                           0.348 us        0.347 us      8259757
+BM_runtime_4cb                           0.443 us        0.443 us      6455943

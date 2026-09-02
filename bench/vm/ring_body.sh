@@ -31,7 +31,8 @@ cd ..
 BIN=bench/vm/ring_body
 SRC=bench/vm/ring_body.cpp
 LIBMRUBY=mruby/build/host/lib/libmruby.a
-LIBURING=mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a
+LIBURING=mruby/build/host/mrbgems/mruby-slipstreamio/build/lib/liburing.a
+OSSL=mruby/build/host/mrbgems/mruby-ktls/openssl
 [ -f "$LIBMRUBY" ] || { echo "$LIBMRUBY missing - run: rake compile" >&2; exit 1; }
 [ -f "$LIBURING" ] || { echo "$LIBURING missing - run: rake compile" >&2; exit 1; }
 
@@ -43,9 +44,11 @@ if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
     -Imruby/include -Imruby/build/host/include \
     -Ideps/ls-hpack -Ideps/ls-hpack/deps/xxhash \
     -Imruby/build/repos/host/mruby-string-is-utf8/include \
-    -Imruby/build/host/mrbgems/mruby-io-uring/build/include \
+    -Imruby/build/host/mrbgems/mruby-slipstreamio/build/include \
+    -Imruby/build/host/include/mruby/gems/mruby-ktls/include \
     "$SRC" "$LIBMRUBY" "$LIBURING" \
-    -lpthread -lm -lz -lcrypto -o "$BIN"
+    -L"$OSSL" -lssl -lcrypto -Wl,-rpath,"$PWD/$OSSL" \
+    -lpthread -lm -lz -o "$BIN"
 fi
 
 # 4096 is left out on purpose: it was the noisy size in the blocking-syscall

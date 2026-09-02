@@ -16,14 +16,24 @@ MRuby::Lockfile.disable
 # clang, because libFuzzer is clang's. -no-pie because libmruby.a is
 # built without -fPIE and clang defaults to PIE. -fno-sanitize=alignment
 # because ls-hpack and phr read unaligned on purpose.
+# mrbc is a TOOL, and a tool must not carry the fuzzer's entry point:
+# -fsanitize=fuzzer goes to EVERY link in a build, and mrbc has a main of
+# its own - the link dies on the collision (and on libFuzzer's missing
+# LLVMFuzzerTestOneInput) long before the fuzz binary is reached. So mrbc
+# is built HERE, first, by a plain toolchain, and the fuzz build is
+# pointed at it. In this file, because an mrbc named under mruby/bin has
+# no rule that produces it and left a cold tree unbuildable; and under
+# its own name, because a build called 'host' would write into the
+# directory the shipped build owns.
+MRuby::Build.new('libfuzzer-tools') do |conf|
+  conf.toolchain
+  conf.gem core: 'mruby-bin-mrbc'
+end
+
 MRuby::Build.new('libfuzzer') do |conf|
   conf.toolchain :clang
 
-  # mrbc is a TOOL of this build, not an artifact of another one: the
-  # gem builds it here. Naming an external mrbc under mruby/bin
-  # instead made a cold tree unbuildable - nothing in this config
-  # produces that path, so rake had no rule for it.
-  conf.gem core: 'mruby-bin-mrbc'
+  conf.mrbcfile = "#{MRuby.targets['libfuzzer-tools'].build_dir}/bin/mrbc"
 
   conf.enable_debug
 

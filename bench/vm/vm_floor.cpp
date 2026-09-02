@@ -121,7 +121,7 @@ BENCHMARK(BM_copy_floor_cached_sym)->Unit(benchmark::kMicrosecond);
 // difference between a konst answer and a budgeted VM entry.
 void BM_flow_tier0_get(benchmark::State& state) {
   const webmachine::flow::KonstAnswers k =
-      webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+      webmachine::flow::answers_of_an_unoverridden_resource(webmachine::flow::Method::kGet);
   webmachine::flow::ReqFacts req;  // the wrk shape: plain GET, no conditionals
   for (auto _ : state) {
     benchmark::DoNotOptimize(req);
@@ -134,10 +134,10 @@ BENCHMARK(BM_flow_tier0_get)->Unit(benchmark::kNanosecond);
 // The conditional-request path: If-None-Match: * short-circuits to 304.
 void BM_flow_tier0_304(benchmark::State& state) {
   const webmachine::flow::KonstAnswers k =
-      webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+      webmachine::flow::answers_of_an_unoverridden_resource(webmachine::flow::Method::kGet);
   webmachine::flow::ReqFacts req;
   req.has_if_none_match = true;
-  req.inm_star = true;
+  req.if_none_match_star = true;
   for (auto _ : state) {
     benchmark::DoNotOptimize(req);
     uint16_t status = webmachine::flow::walk(req, k);
@@ -150,7 +150,7 @@ BENCHMARK(BM_flow_tier0_304)->Unit(benchmark::kNanosecond);
 // graph reduced to a chain of request-fact tests. Interpreted vs
 // compiled is a Gebot-10 A/B - the loser goes.
 void BM_flow_tier0_get_compiled(benchmark::State& state) {
-  constexpr auto kK = webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  constexpr auto kK = webmachine::flow::answers_of_an_unoverridden_resource(webmachine::flow::Method::kGet);
   webmachine::flow::ReqFacts req;
   for (auto _ : state) {
     benchmark::DoNotOptimize(req);
@@ -161,10 +161,10 @@ void BM_flow_tier0_get_compiled(benchmark::State& state) {
 BENCHMARK(BM_flow_tier0_get_compiled)->Unit(benchmark::kNanosecond);
 
 void BM_flow_tier0_304_compiled(benchmark::State& state) {
-  constexpr auto kK = webmachine::flow::default_konst(webmachine::flow::Method::kGet);
+  constexpr auto kK = webmachine::flow::answers_of_an_unoverridden_resource(webmachine::flow::Method::kGet);
   webmachine::flow::ReqFacts req;
   req.has_if_none_match = true;
-  req.inm_star = true;
+  req.if_none_match_star = true;
   for (auto _ : state) {
     benchmark::DoNotOptimize(req);
     uint16_t status = webmachine::flow::walk_compiled<kK>(req);

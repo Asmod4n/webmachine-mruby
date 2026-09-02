@@ -33,17 +33,23 @@ done
 
 BIN=bench/vm/vm_floor
 if [ ! -x "$BIN" ] || [ bench/vm/vm_floor.cpp -nt "$BIN" ]; then
-  # liburing.a: libmruby.a carries mruby-io-uring's objects but not the
-  # vendored liburing they call into.
+  # liburing.a and the vendored OpenSSL: libmruby.a carries the objects
+  # of mruby-slipstreamio and mruby-ktls, but not the libraries they call
+  # into. The crypto is vendored on purpose (mruby-ktls's mrbgem.rake says
+  # why), so the rpath points at the copy this build made and not at the
+  # distribution's.
+  OSSL=mruby/build/host/mrbgems/mruby-ktls/openssl
   g++ -O2 -g -std=c++20 \
     -Imruby/include -Imruby/build/host/include -I"$GB_DIR/include" \
     -Ideps/ls-hpack -Ideps/ls-hpack/deps/xxhash \
     -Imruby/build/repos/host/mruby-string-is-utf8/include \
-    -Imruby/build/host/mrbgems/mruby-io-uring/build/include \
+    -Imruby/build/host/mrbgems/mruby-slipstreamio/build/include \
+    -Imruby/build/host/include/mruby/gems/mruby-ktls/include \
     bench/vm/vm_floor.cpp "$LIBMRUBY" \
-    mruby/build/host/mrbgems/mruby-io-uring/build/lib/liburing.a \
+    mruby/build/host/mrbgems/mruby-slipstreamio/build/lib/liburing.a \
     "$GB_DIR/build/src/libbenchmark.a" \
-    -lpthread -lm -lz -lcrypto -o "$BIN"
+    -L"$OSSL" -lssl -lcrypto -Wl,-rpath,"$PWD/$OSSL" \
+    -lpthread -lm -lz -o "$BIN"
 fi
 
 # Results outlive the terminal, written by the machine that measured.
