@@ -929,6 +929,45 @@ struct LogRec {
   uint16_t user_agent_len;
 };
 inline constexpr uint8_t kLogRecVersion = 3;
+
+// One row of the password database, shared by webmachine-passwd, which
+// writes it, and the server, which verifies against it.
+//
+// The format is ours, and it exists for one reason: argon2's own encoded
+// form ($argon2id$v=19$m=...,t=...,p=...$salt$hash) cannot carry the ad
+// parameter. argon2id_hash_encoded takes a password, a salt and the
+// three costs and nothing else; ad needs the context API, and that hands
+// back a raw hash. So salt and cost are written here instead of read out
+// of a string.
+//
+// ad is the sub-database's NAME, and it is NOT stored. Both sides
+// already hold it - the tool from its argument, the server from the
+// route that named it - and a record therefore verifies only in the set
+// it was made for. Copying a row from one sub-database to another leaves
+// it unverifiable.
+//
+// Native widths and native order. That is not a shortcut: LMDB refuses a
+// file written by a different endianness or word size, so a record can
+// never outlive the constraint the database is already under.
+struct PasswdRec {
+  uint8_t version;
+  uint8_t salt_len;
+  uint8_t hash_len;
+  uint8_t lanes;   // argon2's p
+  uint32_t m_kib;  // argon2's m, in KiB
+  uint32_t t;      // argon2's t
+  // When this user was first written, and when their password last
+  // changed. Seconds, the clock's, and they answer the questions an
+  // operator actually asks of a user list: who is new, and who has not
+  // changed a password since the cost was raised. A record whose m_kib
+  // is below what the machine now uses and whose mtime is old is
+  // exactly the row to ask about.
+  int64_t ctime;
+  int64_t mtime;
+  // salt_len bytes of salt follow, then hash_len bytes of hash.
+};
+inline constexpr uint8_t kPasswdRecVersion = 1;
+
 inline constexpr uint8_t kLogH2 = 1;       // RFC 9113: the version token
 inline constexpr uint8_t kLogNoTrack = 2;  // no RFC: operator's choice
 

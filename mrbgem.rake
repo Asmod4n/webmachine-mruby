@@ -12,7 +12,8 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # LLVMFuzzerTestOneInput to offer, and libFuzzer's main would collide
   # with the server's.
   fuzzing = build.cc.defines.include?('WM_FUZZ_BUILD')
-  spec.bins = fuzzing ? ['webmachine-fuzz'] : ['webmachine-server', 'webmachine-logd']
+  spec.bins = fuzzing ? ['webmachine-fuzz']
+                     : ['webmachine-server', 'webmachine-logd', 'webmachine-passwd']
 
   # -fsanitize=fuzzer belongs to THIS GEM and not to the build: a flag in
   # a build's linker reaches every binary the build produces, and mrbc -
