@@ -36,3 +36,20 @@ the peer nor the decoder meant.
 
 Pinned at v2.3.5 (cf0f70d), which is upstream HEAD. Found 2026-09-02 by
 tools/fuzz-run.sh, four-way fork, at ~7500 units.
+
+### Upstream, as of 2026-09-02
+
+Nobody has reported either this or the `lshpack_arr_push` NULL + 0, and
+nobody has sent a patch. Checked: all 8 issues (open: #24 the fast Huffman
+decoder accepting over-long padding, #21 CMake packaging, #15 vcpkg) and
+all 16 pull requests. The only open PR is #25, the maintainer's own draft
+removing a `FALL_THROUGH;` in the Huffman decoder, marked "just a marker"
+and "has to be finished".
+
+lighttpd vendors ls-hpack at `src/ls-hpack/lshpack.c`, and its copy of
+both functions is byte-identical to ours - so the largest downstream
+consumer has not patched around either defect. That is worth knowing
+before assuming somebody has already thought this through: nobody has.
+
+#24 has been open since June 2026 for a decoder-correctness bug, which is
+the response time to expect from a report.
