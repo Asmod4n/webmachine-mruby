@@ -236,13 +236,17 @@ mrb_value native_call_body(mrb_state* mrb, void* ud) {
 // mrb_obj_ptr on anything else reads a Fixnum's bits as a pointer, and
 // mruby's immediates (Integer, Symbol, nil, true, false) carry no
 // object at all. Checked once, here, for every protected call.
+//
+// No branch hint: both callers reach this from inside their own
+// WM_RES_UNLIKELY(raised), so every path through here is already cold,
+// and a hint here only bought a second negation to read past.
 void take_pending(mrb_state* mrb, mrb_value v) {
-  if (!WM_RES_UNLIKELY(!mrb_exception_p(v))) {
-    mrb->exc = mrb_obj_ptr(v);
+  if (!mrb_exception_p(v)) {
+    mrb->exc = mrb_obj_ptr(
+        mrb_exc_new_lit(mrb, E_WM_ERROR(mrb), "a callback ended without an exception object"));
     return;
   }
-  mrb->exc = mrb_obj_ptr(
-      mrb_exc_new_lit(mrb, E_WM_ERROR(mrb), "a callback ended without an exception object"));
+  mrb->exc = mrb_obj_ptr(v);
 }
 
 mrb_value call_native(mrb_state* mrb, NativeCall call) {
@@ -961,12 +965,16 @@ void epoch_memo(Run& r, const DateField& d) {
   if (!cb.has) return;
   mrb_value v = cbv(r, cb);
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
-  if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
-  if (WM_RES_UNLIKELY(!mrb_integer_p(v))) {
-    mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer",
-               mrb_sym_name(mrb, cb.sym));
+  // mruby owns this conversion already: Integer straight through, Time
+  // and anything else through #to_i, nil back when the answer is neither.
+  // The _check form is the one that returns rather than raises, and it is
+  // taken for the message - mruby's own would name the value and #to_i,
+  // and never the callback the author has to go and fix.
+  const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
+  if (WM_RES_UNLIKELY(mrb_nil_p(n))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%n must answer a Time or an epoch Integer, not %v", cb.sym, v);
   }
-  *d.epoch = static_cast<int64_t>(mrb_integer(v));
+  *d.epoch = static_cast<int64_t>(mrb_integer(n));
   *d.present = true;
 }
 
