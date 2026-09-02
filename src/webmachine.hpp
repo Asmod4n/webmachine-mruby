@@ -5245,6 +5245,7 @@ class Ring {
       rc = io_uring_queue_init_params(sq_entries_, &ring_, &p);
       if (rc == 0) {
         sq_entries_ = p.sq_entries;
+        cq_entries_ = p.cq_entries;
         break;
       }
       if (sq_entries_ <= sq_floor) {
@@ -5358,6 +5359,15 @@ class Ring {
 
   // Did the stop signal's completion land?
   bool stopped() const { return stop_; }
+
+  // #shed: is this core keeping up? Three quarters of the completion
+  // queue waiting means it is not - the ring is what everything arrives
+  // through, so a backlog there is every client's backlog. What this
+  // answers is admission to the COMPUTE POOL and nothing else: a request
+  // that would take 40 ms of a core is refused before it costs anything,
+  // while every cheap request keeps being served. Shedding what is cheap
+  // would save nothing and lose everything.
+  bool overloaded() const { return behind_ * 4 >= cq_entries_ * 3; }
 
   // Drain, then FORGET: the listeners close at once, and what survives the
   // grace is ended by the destructor's ring exit.
@@ -7117,6 +7127,25 @@ class Ring {
       now_s_ = static_cast<int64_t>(now.tv_sec);
     }
     app_.on_tick();
+    // #shed: how much work arrived that we have not answered yet. It is
+    // a load of a u32 out of the shared ring - no syscall, and current
+    // as of this instant - and it is the only number that says whether
+    // this core is keeping up, because it is the queue this core is
+    // behind on. Taken HERE: after the wait, before the drain, so it is
+    // the depth of what this pass is about to do rather than what is
+    // left over from it.
+    behind_ = io_uring_cq_ready(&ring_);
+    // Said once a second while it lasts, and never once per pass: a
+    // server that is behind must not spend what it has left on saying
+    // so. It is said HERE rather than in the once-a-second sweep below,
+    // because the sweep runs after the drain and a pass that is behind
+    // is exactly the pass whose drain takes long. The line is what an
+    // operator - and fail2ban, which does the blocking - goes on.
+    if (WM_UNLIKELY(overloaded()) && now_s_ != last_shed_s_) {
+      last_shed_s_ = now_s_;
+      std::fprintf(stderr, "webmachine: overloaded - %u of %u completions waiting\n", behind_,
+                   cq_entries_);
+    }
     bool worked = false;
     struct io_uring_cqe* cqe = nullptr;
     while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
@@ -7190,6 +7219,10 @@ class Ring {
   int log_fd_ = -1;
   int err_fd_ = -1;
   unsigned sq_entries_ = 0;
+  unsigned cq_entries_ = 0;
+  // #shed: completions that had arrived when this pass began.
+  unsigned behind_ = 0;
+  int64_t last_shed_s_ = 0;
   // Whose exception this is, when the reactor has to give up. See fatal().
   mrb_state* mrb_ = nullptr;
   int backlog_ = SOMAXCONN;
