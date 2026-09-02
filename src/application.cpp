@@ -92,9 +92,14 @@ mrb_value conf_zc_set(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "i", &n);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   if (n < 0 || n > static_cast<mrb_int>(kZeroCopyMax)) {
+    // %i and not %lld: mruby's mrb_raisef is NOT printf. src/error.c
+    // reads %l as a char* AND a size_t - a length, not a width - so a
+    // long long here was consumed as a pointer, and conf.zero_copy_
+    // threshold = 999999999999 SEGFAULTED instead of refusing. %d takes
+    // an int, %i takes an mrb_int, and there is no third choice.
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "conf.zero_copy_threshold = %lld is outside 0..%lld bytes",
-               static_cast<long long>(n), static_cast<long long>(kZeroCopyMax));
+               "conf.zero_copy_threshold = %i is outside 0..%i bytes",
+               static_cast<mrb_int>(n), static_cast<mrb_int>(kZeroCopyMax));
   }
   s->zero_copy_threshold = static_cast<long long>(n);
   return mrb_nil_value();
@@ -108,9 +113,10 @@ mrb_value conf_map_set(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "i", &n);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   if (n < 0 || n > static_cast<mrb_int>(kFileMapMax)) {
+    // %i, for the reason spelled out over conf_zero_copy_threshold.
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "conf.file_map_threshold = %lld is outside 0..%lld bytes",
-               static_cast<long long>(n), static_cast<long long>(kFileMapMax));
+               "conf.file_map_threshold = %i is outside 0..%i bytes",
+               static_cast<mrb_int>(n), static_cast<mrb_int>(kFileMapMax));
   }
   s->file_map_threshold = static_cast<long long>(n);
   return mrb_nil_value();
@@ -154,9 +160,143 @@ mrb_value conf_private_key_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-// conf.url = "scheme://host:port" - webmachine-ruby's own spelling,
-// parsed by ada (WHATWG URL Standard) rather than by find("://") and
-// rfind(':').
+// The whole set of settings a URL or a config file may reach, and the
+// reason it is a TABLE and not a name lookup.
+//
+// The parameters are spelled like the conf setters on purpose - a knob
+// is called the same thing everywhere it can be named (AppSpec's own
+// comment says so). It would therefore be one line to send the setter
+// by that name and be done. That line would be remote code execution:
+// whoever writes the URL or the config file would be calling methods on
+// the conf object by name, and every method conf ever gains would join
+// the attack surface by existing. Routes are Ruby because a route names
+// a CLASS; nothing here may name one.
+//
+// So the names are a convention for people, and the dispatch is this
+// switch. What a URL can set is countable by reading it, an unknown key
+// is refused, and add_route, add_websocket, add_sse and ready are not
+// reachable from here because they are not in it.
+enum class Setting : uint8_t {
+  kDocroot,
+  kCertificate,
+  kPrivateKey,
+  kFileMapThreshold,
+  kZeroCopyThreshold,
+  kDisableHttpCats,
+  kUnknown,
+};
+
+Setting setting_for(std::string_view k) {
+  if (k == "docroot") return Setting::kDocroot;
+  if (k == "certificate") return Setting::kCertificate;
+  if (k == "private_key") return Setting::kPrivateKey;
+  if (k == "file_map_threshold") return Setting::kFileMapThreshold;
+  if (k == "zero_copy_threshold") return Setting::kZeroCopyThreshold;
+  if (k == "disable_http_cats") return Setting::kDisableHttpCats;
+  return Setting::kUnknown;
+}
+
+// A whole-string unsigned read: strtoll would accept "8k" and a leading
+// '+' or space, and this must not.
+bool whole_number(std::string_view v, long long* out) {
+  if (v.empty() || v.size() > 19) return false;
+  long long n = 0;
+  for (const char c : v) {
+    if (c < '0' || c > '9') return false;
+    n = n * 10 + (c - '0');
+  }
+  *out = n;
+  return true;
+}
+
+// RFC-nothing: what an operator writes for a flag. Spelled out rather
+// than "anything that is not 0", so a typo is a refusal and not a
+// silent true.
+bool whole_flag(std::string_view v, bool* out) {
+  if (v == "1" || v == "true") { *out = true; return true; }
+  if (v == "0" || v == "false") { *out = false; return true; }
+  return false;
+}
+
+// One setting from the URL's query, refused rather than applied twice.
+// The bounds are the setters' own - a value that conf.docroot= would
+// reject is rejected here in the same words, because there is one rule
+// per knob and this is not a second one.
+void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string_view val) {
+  const Setting what = setting_for(key);
+  if (what == Setting::kUnknown) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf.url: %s is not a setting - a URL may name docroot, certificate, "
+               "private_key, file_map_threshold, zero_copy_threshold or "
+               "disable_http_cats, and routes stay in Ruby",
+               std::string(key).c_str());
+  }
+  long long n = 0;
+  bool flag = false;
+  switch (what) {
+    case Setting::kDocroot:
+      if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot is empty");
+      if (!s->docroot.empty()) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
+      }
+      s->docroot.assign(val);
+      return;
+    case Setting::kCertificate:
+      if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: certificate is empty");
+      if (!s->cert_path.empty()) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: certificate was already named");
+      }
+      s->cert_path.assign(val);
+      return;
+    case Setting::kPrivateKey:
+      if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: private_key is empty");
+      if (!s->key_path.empty()) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: private_key was already named");
+      }
+      s->key_path.assign(val);
+      return;
+    case Setting::kFileMapThreshold:
+      if (!whole_number(val, &n) || n > static_cast<long long>(kFileMapMax)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                   "conf.url: file_map_threshold = %s is outside 0..%i bytes",
+                   std::string(val).c_str(), static_cast<mrb_int>(kFileMapMax));
+      }
+      if (s->file_map_threshold >= 0) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: file_map_threshold was already named");
+      }
+      s->file_map_threshold = n;
+      return;
+    case Setting::kZeroCopyThreshold:
+      if (!whole_number(val, &n) || n > static_cast<long long>(kZeroCopyMax)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                   "conf.url: zero_copy_threshold = %s is outside 0..%i bytes",
+                   std::string(val).c_str(), static_cast<mrb_int>(kZeroCopyMax));
+      }
+      if (s->zero_copy_threshold >= 0) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: zero_copy_threshold was already named");
+      }
+      s->zero_copy_threshold = n;
+      return;
+    case Setting::kDisableHttpCats:
+      if (!whole_flag(val, &flag)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                   "conf.url: disable_http_cats = %s is not 1, 0, true or false",
+                   std::string(val).c_str());
+      }
+      if (s->disable_http_cats >= 0) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: disable_http_cats was already named");
+      }
+      s->disable_http_cats = flag ? 1 : 0;
+      return;
+    case Setting::kUnknown:
+      break;
+  }
+  __builtin_unreachable();
+}
+
+// conf.url = "scheme://host[:port][?setting=value&...]" - webmachine-ruby's
+// own spelling, parsed by ada (WHATWG URL Standard) rather than by
+// find("://") and rfind(':').
 //
 // What the hand-rolled one got wrong, and no test covered because every
 // test used the same happy shape:
@@ -169,49 +309,88 @@ mrb_value conf_private_key_set(mrb_state* mrb, mrb_value self) {
 //                             "user@127.0.0.1" - userinfo folded into
 //                             the host and on into bound_url.
 //
-// Credentials in a listener URL name nothing this can serve, so they are
-// refused here rather than carried. A path is ignored, as it was before:
-// webmachine-ruby's conf.url may carry one and it names no listener.
+// The scheme names the listener - http, https, or unix for a socket
+// path - and the query carries the rest of the conf object, under the
+// setters' own names. It is an ADDITION: every setter stays, and a knob
+// named twice is a ConfigError rather than a precedence rule, the same
+// answer claim_form gives a listener named twice.
+//
+// What may appear there is apply_setting's table and nothing else, for
+// the reason written above it: routes name classes and stay in Ruby.
+//
+// Credentials are refused rather than carried - they name nothing a
+// listener can serve. A path is ignored under http and https, as it was
+// before: webmachine-ruby's conf.url may carry one and it names no
+// listener. Under unix the path IS the listener.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
   mrb_get_args(mrb, "s", &p, &n);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
-  claim_form(mrb, s, {AppSpec::Form::kUrl, "url"});
   const std::string u(p, static_cast<size_t>(n));
 
   auto parsed = ada::parse<ada::url_aggregator>(u);
   if (!parsed) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s is not scheme://host[:port]", u.c_str());
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf.url = %s is not scheme://host[:port] or unix:///path", u.c_str());
   }
   // ada spells a scheme with its colon; the message says what was asked
   // for, not what ada calls it.
   const std::string_view proto = parsed->get_protocol();
+  const bool unix_form = proto == "unix:";
   const bool tls = proto == "https:";
-  if (!tls && proto != "http:") {
+  if (!unix_form && !tls && proto != "http:") {
     const std::string scheme(proto.substr(0, proto.size() - 1));
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url scheme %s is not http or https",
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url scheme %s is not http, https or unix",
                scheme.c_str());
   }
   if (parsed->has_credentials()) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s carries credentials, which name no listener",
-               u.c_str());
-  }
-  const std::string_view host = parsed->get_hostname();
-  if (host.empty()) mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no host", u.c_str());
-
-  // An absent port IS the scheme's default; ada leaves get_port() empty
-  // for it rather than writing 80 or 443 back out.
-  int port = tls ? 443 : 80;
-  const std::string_view ps = parsed->get_port();
-  if (!ps.empty()) {
-    port = 0;
-    for (char c : ps) port = port * 10 + (c - '0');
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "conf.url = %s carries credentials, which name no listener", u.c_str());
   }
 
-  s->tls = tls;
-  s->url_host.assign(host);
-  s->port = port;
+  // The FORM is the URL's, not the setter's: everything downstream reads
+  // it to decide what to bind (server.cpp), which listener collides with
+  // which (app_register), and what conf.url reads back. A unix:// URL
+  // that claimed kUrl would be bound as a port - port 0, since it never
+  // named one.
+  claim_form(mrb, s, {unix_form ? AppSpec::Form::kUnix : AppSpec::Form::kUrl, "url"});
+
+  if (unix_form) {
+    // A socket path, percent-decoded: ada hands the pathname back in the
+    // URL's own spelling, and a path with a space in it is written %20.
+    const std::string_view path = parsed->get_pathname();
+    const size_t pct = path.find('%');
+    const std::string sock = pct == std::string_view::npos
+                                 ? std::string(path)
+                                 : ada::unicode::percent_decode(path, pct);
+    if (sock.empty() || sock == "/") {
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s names no socket path", u.c_str());
+    }
+    s->tls = false;
+    s->unix_path = sock;
+  } else {
+    const std::string_view host = parsed->get_hostname();
+    if (host.empty()) mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no host", u.c_str());
+    // An absent port IS the scheme's default; ada leaves get_port() empty
+    // for it rather than writing 80 or 443 back out.
+    int port = tls ? 443 : 80;
+    const std::string_view ps = parsed->get_port();
+    if (!ps.empty()) {
+      port = 0;
+      for (char c : ps) port = port * 10 + (c - '0');
+    }
+    s->tls = tls;
+    s->url_host.assign(host);
+    s->port = port;
+  }
+
+  const std::string_view search = parsed->get_search();
+  if (!search.empty()) {
+    // get_search() keeps the '?'; url_search_params wants the query.
+    ada::url_search_params params{search.substr(1)};
+    for (const auto& kv : params) apply_setting(mrb, s, kv.first, kv.second);
+  }
   return mrb_nil_value();
 }
 

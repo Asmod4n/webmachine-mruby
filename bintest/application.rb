@@ -1038,13 +1038,120 @@ assert('application: conf.url is a URL, and ada parses it as one') do
     app.configure { |conf| conf.url = 'ftp://example.com' }
     app.add_route [:*], R
   BODY
-  assert_true out.include?('is not http or https'), out
+  assert_true out.include?('is not http, https or unix'), out
 
   out = ap_refused_unaided(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'not-a-url' }
     app.add_route [:*], R
   BODY
-  assert_true out.include?('is not scheme://host[:port]'), out
+  assert_true out.include?('is not scheme://host[:port] or unix:///path'), out
+end
+
+assert('application: a threshold above its ceiling is refused, not a crash') do
+  # This SEGFAULTED. mruby's mrb_raisef is not printf: src/error.c reads
+  # %l as a char* AND a size_t, so the "%lld" these two messages used
+  # consumed the number as a pointer. A config typo took the server down
+  # instead of naming itself.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure do |conf|
+      conf.port = 20006
+      conf.zero_copy_threshold = 999999999999
+    end
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('conf.zero_copy_threshold = 999999999999 is outside 0..1073741824 bytes'), out
+
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure do |conf|
+      conf.port = 20007
+      conf.file_map_threshold = 999999999999
+    end
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('conf.file_map_threshold = 999999999999 is outside 0..1073741824 bytes'), out
+end
+
+assert('application: a conf.url query names settings, and only settings') do
+  # The query carries the rest of the conf object under the setters' own
+  # names. What may appear there is a fixed table in C++ - NOT a method
+  # sent by name, which is what would turn a URL into remote code
+  # execution. Routes name classes and stay in Ruby.
+  port = 20000 + rand(11000)
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'q'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.url = 'http://127.0.0.1:#{port}?docroot=%2Ftmp&file_map_threshold=65536'
+        app.add_route [:*], R
+        app.ready do
+          puts "ready \#{app.conf.url}"
+        end
+      end
+    end
+  RUBY
+  app = ap_compile(src)
+  out = "/tmp/wm-ap-q-out-#{$$}.log"
+  err = "/tmp/wm-ap-q-err-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  begin
+    line = nil
+    100.times do
+      text = begin File.read(out) rescue '' end
+      line = text[/^ready (\S+)$/, 1]
+      break if line
+      break unless Process.wait(pid, Process::WNOHANG).nil?
+      sleep 0.05
+    end
+    assert_true !line.nil?, "no ready line; stderr: #{begin File.read(err) rescue '' end}"
+    # conf.url reads back the LISTENER, not the settings it also carried.
+    assert_equal "http://127.0.0.1:#{port}", line
+    # The percent-encoded docroot arrived decoded.
+    assert_true File.read(err).include?('docroot /tmp'), File.read(err)
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(out) rescue nil
+    File.unlink(err) rescue nil
+    app.unlink
+  end
+
+  # A name that is not a setting is refused - including one that IS a
+  # method on the app. This is the line between a config URL and RCE.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'http://127.0.0.1:20002?add_route=Evil' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('add_route is not a setting'), out
+  assert_true out.include?('routes stay in Ruby'), out
+
+  # A value the setter would refuse is refused here too, in its words.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'http://127.0.0.1:20003?file_map_threshold=8k' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('file_map_threshold = 8k is outside'), out
+
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'http://127.0.0.1:20004?disable_http_cats=yes' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('is not 1, 0, true or false'), out
+
+  # Named twice is a ConfigError, not a precedence rule - the same answer
+  # claim_form gives a listener named twice.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure do |conf|
+      conf.docroot = '/tmp'
+      conf.url = 'http://127.0.0.1:20005?docroot=%2Fsrv'
+    end
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('docroot was already named'), out
 end
 
 assert('application: conf.url port 0 - the kernel picks, ready reads the pick back') do
