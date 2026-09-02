@@ -676,6 +676,23 @@ struct Setup {
   Refusal why;
 };
 
+// mruby's GC arena is a stack, and a setup that gives up has to leave it
+// where it found it. Since #33 those exits are raises - a raise is a C++
+// throw here, MRB_USE_CXX_EXCEPTION is always on - so the restore belongs
+// to a destructor, not to fifteen copies of the same line before fifteen
+// returns, each of which was a chance to forget one.
+class ArenaGuard {
+ public:
+  explicit ArenaGuard(mrb_state* mrb) : mrb_(mrb), at_(mrb_gc_arena_save(mrb)) {}
+  ~ArenaGuard() { mrb_gc_arena_restore(mrb_, at_); }
+  ArenaGuard(const ArenaGuard&) = delete;
+  ArenaGuard& operator=(const ArenaGuard&) = delete;
+
+ private:
+  mrb_state* const mrb_;
+  const int at_;
+};
+
 inline constexpr size_t kMaxRouteBindings = 16;
 
 struct RouteSpans {
@@ -831,6 +848,29 @@ class RouteTable {
   size_t pending_blob_ = 0;
   size_t pending_binds_ = 0;
   bool pending_splat_ = false;
+};
+
+// route.add: a route is open from its first token until it stands. Every
+// other way out of that window - a token that is not a segment, a class
+// the fold refuses - leaves NOTHING registered, and since #33 every one
+// of those ways out is a raise.
+class OpenRoute {
+ public:
+  explicit OpenRoute(RouteTable& table) : table_(table) { table_.open(); }
+  ~OpenRoute() {
+    if (!stands_) table_.abandon();
+  }
+  OpenRoute(const OpenRoute&) = delete;
+  OpenRoute& operator=(const OpenRoute&) = delete;
+  // The route stands: there is nothing left to roll back.
+  void commit() {
+    table_.commit();
+    stands_ = true;
+  }
+
+ private:
+  RouteTable& table_;
+  bool stands_ = false;
 };
 }
 
@@ -2517,7 +2557,7 @@ struct Resource {
   mutable std::vector<std::string> run_variances;
 };
 
-bool resource_fold(Setup s, mrb_value klass, Resource& out);
+void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out);
 
 // One request as a bound run receives it: what the parse settled, the
 // header values the calling frame still holds (none where that frame is

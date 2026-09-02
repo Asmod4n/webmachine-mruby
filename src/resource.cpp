@@ -46,13 +46,16 @@ using flow::Node;
 
 constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
 
-// mruby: a setup raise becomes a named refusal, printed by the VM itself.
-void exc_into(mrb_state* mrb, const char* what, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
-  std::snprintf(err, errlen, "%s (exception below)", what);
-  mrb_print_error(mrb);
+// A setup callback raised, mrb_protect_error caught it and take_pending
+// left it in mrb->exc. Let it out again: the exception's own class,
+// message and backtrace name what went wrong better than any sentence
+// this frame could spell, and since #33 there is no string channel left
+// to spell one into - it used to be printed here and replaced by
+// "<callback> (exception below)", which is a note about a note.
+[[noreturn]] void rethrow(mrb_state* mrb) {
+  const mrb_value exc = mrb_obj_value(mrb->exc);
   mrb->exc = nullptr;
+  mrb_exc_raise(mrb, exc);
 }
 
 // mruby: unwrap MRB_PROC_ALIAS once, at fold, instead of at every call.
@@ -278,8 +281,6 @@ mrb_value call_resolved(mrb_state* mrb, const Resolved& r, On on) {
 struct Folding {
   mrb_state* mrb;
   mrb_value klass;
-  char* err;
-  size_t errlen;
 };
 
 // One callback fold time asks: the symbol it is found by, and the name a
@@ -290,20 +291,16 @@ struct Asked {
 };
 
 // RFC 9110: one konst flow callback, asked once on the class.
-bool ask(const Folding& f, Asked a, bool defv, bool* out) {
+void ask(const Folding& f, Asked a, bool defv, bool* out) {
   mrb_state* const mrb = f.mrb;
   const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) {
     *out = defv;
-    return true;
+    return;
   }
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, a.name, {f.err, f.errlen});
-    return false;
-  }
+  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
   *out = mrb_test(v);
-  return true;
 }
 
 // #202: a `def self.x` is asked HERE, once, and its answer is kept for the
@@ -322,11 +319,11 @@ struct BakedValue {
   Resource::KonstValue& out;
 };
 
-bool bake_value(const Folding& f, const BakedValue& bake) {
+void bake_value(const Folding& f, const BakedValue& bake) {
   mrb_state* const mrb = f.mrb;
   const Resource::ValueCb& cb = bake.cb;
   Resource::KonstValue& out = bake.out;
-  if (!cb.has || !cb.on_class) return true;
+  if (!cb.has || !cb.on_class) return;
   out.asked = true;
   Resolved r;
   r.m = cb.m;
@@ -334,30 +331,28 @@ bool bake_value(const Folding& f, const BakedValue& bake) {
   r.native = cb.native;
   r.defined = true;
   mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, bake.name, {f.err, f.errlen});
-    return false;
-  }
-  if (mrb_nil_p(v) || mrb_false_p(v)) return true;
+  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+  if (mrb_nil_p(v) || mrb_false_p(v)) return;
   if (bake.spell) {
     if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
     http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), out.text);
     out.present = true;
-    return true;
+    return;
   }
-  if (!mrb_integer_p(v)) v = mrb_funcall_argv(mrb, v, MRB_SYM(to_i), 0, nullptr);
-  if (WM_RES_UNLIKELY(!mrb_integer_p(v) || mrb->exc != nullptr)) {
-    std::snprintf(f.err, f.errlen, "%s must answer a Time or an epoch Integer", bake.name);
-    mrb->exc = nullptr;
-    return false;
+  // Same conversion as epoch_memo's, and the same reason for the _check
+  // form: mruby's own TypeError names the value and #to_i, never the
+  // callback whose class form has to be fixed.
+  const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
+  if (WM_RES_UNLIKELY(mrb_nil_p(n))) {
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s must answer a Time or an epoch Integer, not %v",
+               bake.name, v);
   }
-  out.epoch = static_cast<int64_t>(mrb_integer(v));
+  out.epoch = static_cast<int64_t>(mrb_integer(n));
   out.present = true;
-  return true;
 }
 
 // One run of space- or comma-separated method tokens, marked off in seen[].
-bool mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
+void mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
   const char* p = RSTRING_PTR(v);
   const char* const end = p + RSTRING_LEN(v);
   while (p < end) {
@@ -375,41 +370,39 @@ bool mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
       }
     }
     if (WM_RES_UNLIKELY(!known)) {
-      std::snprintf(f.err, f.errlen, "%s names '%.*s' - outside the compiled method set",
-                    a.name, static_cast<int>(p - tok), tok);
-      return false;
+      mrb_raisef(f.mrb, E_WM_ROUTE_ERROR(f.mrb),
+                 "%s names '%l' - outside the compiled method set", a.name, tok,
+                 static_cast<size_t>(p - tok));
     }
   }
-  return true;
 }
 
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens or
 // webmachine-ruby's Array-of-Strings form.
-bool ask_methods(const Folding& f, Asked a, bool seen[7]) {
+void ask_methods(const Folding& f, Asked a, bool seen[7]) {
   mrb_state* const mrb = f.mrb;
   const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
-  if (!r.defined) return true;
+  if (!r.defined) return;
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    exc_into(mrb, a.name, {f.err, f.errlen});
-    return false;
-  }
+  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
   for (uint8_t m = 0; m < 7; m++) seen[m] = false;
-  if (mrb_string_p(v)) return mark_tokens(f, a, v, seen);
-  if (mrb_array_p(v)) {
-    for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
-      const mrb_value s = RARRAY_PTR(v)[j];
-      if (WM_RES_UNLIKELY(!mrb_string_p(s))) {
-        std::snprintf(f.err, f.errlen, "%s must return method Strings", a.name);
-        return false;
-      }
-      if (!mark_tokens(f, a, s, seen)) return false;
-    }
-    return true;
+  if (mrb_string_p(v)) {
+    mark_tokens(f, a, v, seen);
+    return;
   }
-  std::snprintf(f.err, f.errlen,
-                "%s must return an Array of Strings or a String like 'GET HEAD'", a.name);
-  return false;
+  if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "%s must return an Array of Strings or a String like 'GET HEAD', not %v", a.name,
+               v);
+  }
+  for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
+    const mrb_value one = RARRAY_PTR(v)[j];
+    if (WM_RES_UNLIKELY(!mrb_string_p(one))) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s must return method Strings, and %v is not one",
+                 a.name, one);
+    }
+    mark_tokens(f, a, one, seen);
+  }
 }
 
 struct BoolCb {
@@ -1634,41 +1627,33 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
 
 // RFC 9110: fold one resource class - every konst callback asked once,
 // every dynamic callback resolved, the class frozen.
-bool resource_fold(Setup s, mrb_value klass, Resource& out) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
-  const Folding fold = {mrb, klass, err, errlen};
-  const int ai = mrb_gc_arena_save(mrb);
+void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
+  const Folding fold = {mrb, klass};
+  const ArenaGuard arena(mrb);
   out = Resource{};
   out.mrb = mrb;
 
   for (const NamedSym& cb : kUnhonored) {
     if (WM_RES_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
                         instance_defined(mrb, klass, cb.sym))) {
-      std::snprintf(err, errlen,
-                    "%s is defined but i18n/charset conversion does not exist in this tree",
-                    cb.name);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "%s is defined but i18n/charset conversion does not exist in this tree",
+                 cb.name);
     }
   }
   for (const NamedSym& cb : kKonstOnly) {
     if (WM_RES_UNLIKELY(instance_defined(mrb, klass, cb.sym))) {
-      std::snprintf(err, errlen, "%s shapes the compiled vectors - declare it konst (def self.%s)",
-                    cb.name, cb.name);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "%s shapes the compiled vectors - declare it konst (def self.%s)", cb.name,
+                 cb.name);
     }
   }
   for (const NamedSym& cb : kWorkOnly) {
     if (WM_RES_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined)) {
-      std::snprintf(err, errlen,
-                    "%s does work, so it runs per request - declare it on the instance (def %s), "
-                    "not on the class: def self.%s would be asked once at setup and never again",
-                    cb.name, cb.name, cb.name);
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "%s does work, so it runs per request - declare it on the instance (def %s), "
+                 "not on the class: def self.%s would be asked once at setup and never again",
+                 cb.name, cb.name, cb.name);
     }
   }
 
@@ -1687,10 +1672,7 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
       out.node_argc[at] = argc_of(inst.m, cb.maxargs);
       continue;
     }
-    if (WM_RES_UNLIKELY(!ask(fold, {cb.sym, cb.name}, cb.defv, &ans[i]))) {
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
-    }
+    ask(fold, {cb.sym, cb.name}, cb.defv, &ans[i]);
   }
 
   // flow.rb b8: a value-semantics node - instance method into the node
@@ -1730,14 +1712,9 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
   out.cb_last_modified = value_cb(mrb, klass, {MRB_SYM(last_modified), true});
   out.cb_expires = value_cb(mrb, klass, {MRB_SYM(expires), true});
   // #202: the class forms of the three caching answers are asked once, now.
-  if (WM_RES_UNLIKELY(
-          !bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag}) ||
-          !bake_value(fold, {out.cb_last_modified, "last_modified", false,
-                             out.konst_last_modified}) ||
-          !bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires}))) {
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
+  bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag});
+  bake_value(fold, {out.cb_last_modified, "last_modified", false, out.konst_last_modified});
+  bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires});
   // A konst that was asked and answered nothing is an answer: the
   // callback behind it is not asked again. So there is something to say
   // only where a konst holds a value, or where no konst was taken and a
@@ -1782,21 +1759,17 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
     const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
     if (ct.defined) {
       const mrb_value v = call_resolved(mrb, ct, {klass, mrb_class(mrb, klass)});
-      if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(v))) {
-        mrb->exc == nullptr
-            ? static_cast<void>(std::snprintf(err, errlen, "content_type must return a String"))
-            : exc_into(mrb, "content_type", {err, errlen});
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+      if (WM_RES_UNLIKELY(!mrb_string_p(v))) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "content_type must return a String, not %v", v);
       }
       content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
       // RFC 9110 8.3 / 12.5.1: a resource that names no media type cannot
       // be negotiated with, and c4 would have nothing to weigh an Accept
       // against. Said here, once, instead of guarded on every request.
       if (WM_RES_UNLIKELY(content_type.empty())) {
-        std::snprintf(err, errlen, "content_type must name a media type, not an empty String");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+        mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+                  "content_type must name a media type, not an empty String");
       }
     }
   }
@@ -1807,25 +1780,19 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
     const Resolved ctp = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_types_provided));
     if (ctp.defined) {
       const mrb_value v = call_resolved(mrb, ctp, {klass, mrb_class(mrb, klass)});
-      if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-        exc_into(mrb, "content_types_provided", {err, errlen});
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
-      }
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
       if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
-        std::snprintf(err, errlen,
-                      "content_types_provided must return [[type, handler]] pairs");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "content_types_provided must return [[type, handler]] pairs, not %v", v);
       }
       for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
         const mrb_value pair = RARRAY_PTR(v)[j];
         if (WM_RES_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                             !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                             !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
-          std::snprintf(err, errlen, "content_types_provided pairs are [String, Symbol]");
-          mrb_gc_arena_restore(mrb, ai);
-          return false;
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "content_types_provided pairs are [String, Symbol], and %v is not one",
+                     pair);
         }
         Resource::TypedHandler th;
         th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
@@ -1843,13 +1810,10 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
         const Resolved hk = resolve(mrb, mrb_class(mrb, klass), th.handler);
         if (hk.defined) {
           const mrb_value rendered = call_resolved(mrb, hk, {klass, mrb_class(mrb, klass)});
-          if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
-            mrb->exc == nullptr
-                ? static_cast<void>(std::snprintf(err, errlen,
-                                                  "the body handler must return a String"))
-                : exc_into(mrb, "body handler raised", {err, errlen});
-            mrb_gc_arena_restore(mrb, ai);
-            return false;
+          if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+          if (WM_RES_UNLIKELY(!mrb_string_p(rendered))) {
+            mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v", th.handler,
+                       rendered);
           }
           th.baked.assign(RSTRING_PTR(rendered), static_cast<size_t>(RSTRING_LEN(rendered)));
           th.has_baked = true;
@@ -1874,13 +1838,9 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
     const Resolved enc = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(encodings_provided));
     if (enc.defined) {
       const mrb_value v = call_resolved(mrb, enc, {klass, mrb_class(mrb, klass)});
-      if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_hash_p(v))) {
-        mrb->exc == nullptr
-            ? static_cast<void>(
-                  std::snprintf(err, errlen, "encodings_provided must return a Hash"))
-            : exc_into(mrb, "encodings_provided", {err, errlen});
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+      if (WM_RES_UNLIKELY(!mrb_hash_p(v))) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "encodings_provided must return a Hash, not %v", v);
       }
       out.gzip_offered = mrb_hash_key_p(mrb, v, mrb_str_new_lit(mrb, "gzip"));
     }
@@ -1895,12 +1855,10 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
     if (body_k.defined) {
       const mrb_value rendered =
           call_resolved(mrb, body_k, {klass, mrb_class(mrb, klass)});
-      if (WM_RES_UNLIKELY(mrb->exc != nullptr || !mrb_string_p(rendered))) {
-        mrb->exc == nullptr
-            ? static_cast<void>(std::snprintf(err, errlen, "the body handler must return a String"))
-            : exc_into(mrb, "body handler raised", {err, errlen});
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+      if (WM_RES_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+      if (WM_RES_UNLIKELY(!mrb_string_p(rendered))) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v", first.handler,
+                   rendered);
       }
       out.konst.body.assign(RSTRING_PTR(rendered), RSTRING_LEN(rendered));
     } else if (!MRB_METHOD_UNDEF_P(first.m)) {
@@ -1916,17 +1874,12 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
   }
 
   bool known[7] = {true, true, true, true, true, true, false};
-  if (!out.cb_known_methods.has &&
-      WM_RES_UNLIKELY(!ask_methods(fold, {MRB_SYM(known_methods), "known_methods"}, known))) {
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
+  if (!out.cb_known_methods.has) {
+    ask_methods(fold, {MRB_SYM(known_methods), "known_methods"}, known);
   }
   bool allowed[7] = {true, true, false, false, false, false, false};
-  if (!out.cb_allowed_methods.has &&
-      WM_RES_UNLIKELY(
-          !ask_methods(fold, {MRB_SYM(allowed_methods), "allowed_methods"}, allowed))) {
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
+  if (!out.cb_allowed_methods.has) {
+    ask_methods(fold, {MRB_SYM(allowed_methods), "allowed_methods"}, allowed);
   }
 
   // RFC 9110 9.3.3 / 9.3.4: n11 and o14/p3 are action nodes, and every action
@@ -1971,8 +1924,6 @@ bool resource_fold(Setup s, mrb_value klass, Resource& out) {
   out.init_needed = init.defined;
   out.init_m = init.m;
   out.init_irep = init.irep;
-  mrb_gc_arena_restore(mrb, ai);
-  return true;
 }
 
 // RFC 9110: decision + render for one request inside one bound frame; the

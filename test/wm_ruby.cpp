@@ -161,10 +161,7 @@ mrb_value fsm_init(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "ooo", &klass, &req, &resp);
   Fsm* f = new Fsm();
   mrb_data_init(self, f, &fsm_type);
-  char err[512] = {0};
-  if (!webmachine::resource_fold({mrb, {err, sizeof err}}, klass, f->res)) {
-    mrb_raisef(mrb, E_RUNTIME_ERROR, "%s", err);
-  }
+  webmachine::resource_fold(mrb, klass, f->res);
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@request"), req);
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@response"), resp);
   return self;

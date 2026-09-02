@@ -8,6 +8,7 @@
 #include <mruby.h>
 #include <mruby/class.h>
 #include <mruby/dump.h>   // mrb_load_irep_file: bytecode, never source (#100)
+#include <mruby/error.h>  // mrb_protect_error: the fold raises (#33)
 #include <mruby/string.h>
 
 #include <cstdio>
@@ -195,8 +196,19 @@ bool load_irep(mrb_state* m, const char* path) {
   return m->exc == nullptr;
 }
 
+// What resource_fold is asked to fold, and where the folded resource goes.
+struct BindAsk {
+  mrb_value klass;
+  webmachine::Resource* out;
+};
+
+mrb_value bind_body(mrb_state* m, void* ud) {
+  const BindAsk* a = static_cast<const BindAsk*>(ud);
+  webmachine::resource_fold(m, a->klass, *a->out);
+  return mrb_nil_value();
+}
+
 bool bind_bench_resource(const char* cls, const char* mrb_path, webmachine::Resource& out) {
-  char err[256];
   // Its own VM: the two bench resources must not see each other's
   // classes. The fold is what route.add does (#116) - the same call,
   // without a listener in front of it.
@@ -206,9 +218,16 @@ bool bind_bench_resource(const char* cls, const char* mrb_path, webmachine::Reso
     std::fprintf(stderr, "bench bind: %s raised while loading\n", cls);
     return false;
   }
-  if (!webmachine::resource_fold({own, {err, sizeof(err)}},
-                                 mrb_obj_value(mrb_class_get(own, cls)), out)) {
-    std::fprintf(stderr, "bench bind: %s\n", err);
+  // #33: the fold refuses by raising, and route.add is called from Ruby
+  // where that lands somewhere. A bench binary has no frame above it, so
+  // it spells out the protection the VM would otherwise have provided.
+  BindAsk ask{mrb_obj_value(mrb_class_get(own, cls)), &out};
+  mrb_bool raised = FALSE;
+  const mrb_value e = mrb_protect_error(own, bind_body, &ask, &raised);
+  if (raised) {
+    const mrb_value msg = mrb_obj_as_string(own, e);
+    std::fprintf(stderr, "bench bind: %s: %.*s\n", cls, static_cast<int>(RSTRING_LEN(msg)),
+                 RSTRING_PTR(msg));
     return false;
   }
   return true;

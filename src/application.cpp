@@ -228,11 +228,9 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
   const mrb_value toks = t.list;
   const char* const who = t.who;
   const mrb_int n = RARRAY_LEN(toks);
-  table.open();
   for (mrb_int i = 0; i < n; i++) {
     const mrb_value t = mrb_ary_entry(toks, i);
     if (table.pending_splat()) {
-      table.abandon();
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                  "%s: :* is the tail of a route - nothing may follow it", who);
     }
@@ -247,7 +245,6 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
       const char* lit = RSTRING_PTR(t);
       const size_t litlen = static_cast<size_t>(RSTRING_LEN(t));
       if (std::memchr(lit, '/', litlen) != nullptr) {
-        table.abandon();
         if (litlen == 1) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "%s: [\"/\"] is a route with one segment named \"/\", which no request "
@@ -258,13 +255,11 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
                    "into one token per segment", who, t);
       }
       if (litlen == 0) {
-        table.abandon();
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "%s: an empty token is a segment no request can have - to route the root, "
                    "pass no tokens at all", who);
       }
       if (!table.literal(lit, litlen)) {
-        table.abandon();
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s: a literal token is too long", who);
       }
       continue;
@@ -275,13 +270,11 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
         continue;
       }
       if (!table.binding(static_cast<uint32_t>(mrb_symbol(t)))) {
-        table.abandon();
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "%s: too many bindings in one route (16 is the table's width)", who);
       }
       continue;
     }
-    table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                "%s: a token is a String (literal), a Symbol (binding) or :* (tail)", who);
   }
@@ -311,15 +304,12 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
                klass);
   }
 
+  OpenRoute route(s->table);
   walk_tokens(mrb, s->table, {toks, "route.add"});
 
   auto res = std::unique_ptr<Resource>(new Resource());
-  char err[512] = "";
-  if (!resource_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
-    s->table.abandon();
-    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "route.add: %s", err);
-  }
-  s->table.commit();
+  resource_fold(mrb, klass, *res);
+  route.commit();
   s->resources.push_back(std::move(res));
   return self;
 }
@@ -330,15 +320,15 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "Ao", &toks, &klass);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
+  OpenRoute route(s->ws_table);
   walk_tokens(mrb, s->ws_table, {toks, "route.websocket"});
 
   std::unique_ptr<WsResource, void (*)(WsResource*)> res(ws_resource_new(), ws_resource_free);
   char err[512] = "";
   if (!ws_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
-    s->ws_table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
   }
-  s->ws_table.commit();
+  route.commit();
   s->ws_resources.push_back(std::move(res));
   return self;
 }
@@ -349,16 +339,16 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "Ao", &toks, &klass);
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
 
+  OpenRoute route(s->sse_table);
   walk_tokens(mrb, s->sse_table, {toks, "route.sse"});
 
   std::unique_ptr<SseResource, void (*)(SseResource*)> res(sse_resource_new(),
                                                            sse_resource_free);
   char err[512] = "";
   if (!sse_fold({mrb, {err, sizeof(err)}}, klass, *res)) {
-    s->sse_table.abandon();
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s", err);
   }
-  s->sse_table.commit();
+  route.commit();
   s->sse_resources.push_back(std::move(res));
   return self;
 }
