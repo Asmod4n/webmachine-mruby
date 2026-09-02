@@ -2683,6 +2683,42 @@ void response_bind(const Resource* res);
 class Assets;
 void response_bind_error_assets(Assets* a);
 
+// #80: the compute pool. Threads that answer a promise, fed and heard
+// through io_uring's own MSG_RING - see src/promise.cpp for why that is
+// the queue and not a ring buffer of this tree's own.
+//
+// It holds no mrb_state and touches none: a job is a C function over
+// bytes, because the VM is not thread-safe and work that wanted it would
+// be work for the reactor's core.
+class ComputePool {
+ public:
+  using Fn = void (*)(void* arg);
+
+  ComputePool() = default;
+  ~ComputePool() { stop(); }
+  ComputePool(const ComputePool&) = delete;
+  ComputePool& operator=(const ComputePool&) = delete;
+
+  // nullptr, or the reason it could not start. A pool that cannot be
+  // built refuses startup rather than falling back to the reactor's
+  // core, which is the thing it exists to keep free.
+  const char* start(unsigned workers, unsigned depth, struct io_uring* home);
+  void stop();
+
+  // False when every slot is taken. The caller decides what a full pool
+  // means - this layer does not invent a refusal for it.
+  bool submit(Fn fn, void* arg, uint64_t answer);
+  // The answer arrived and the slot is the caller's to reuse.
+  void release(uint64_t answer);
+  unsigned workers() const;
+
+  struct Impl;
+
+ private:
+  static void worker(Impl* impl, unsigned me);
+  Impl* impl_ = nullptr;
+};
+
 // Webmachine::Watcher - a description, never a registration. Ruby builds
 // one and hands it back; the server arms it. The mask, the abort flag and
 // the handle live in its CDATA and NOT in its iv table, which holds
@@ -5114,7 +5150,11 @@ enum : uint8_t {
   kTlsBye = 19,
   // A send key turned before its record limit. The completion matters:
   // nothing more may go out under the old key.
-  kTlsTxKey = 20
+  kTlsTxKey = 20,
+  // #80: a compute worker answered. The tag is the connection's, so the
+  // generation guard every other op relies on discards an answer whose
+  // connection is already gone.
+  kPromise = 21
 };
 
 
