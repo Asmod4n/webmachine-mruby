@@ -972,6 +972,81 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
   end
 end
 
+assert('application: conf.url is a URL, and ada parses it as one') do
+  # Two shapes the hand-rolled parser got wrong, and no test reached:
+  # rfind(':') landed inside an IPv6 literal, so http://[::1] was refused
+  # for having "no usable port"; and userinfo was folded into the host
+  # and carried on into bound_url.
+
+  # An IPv6 literal without a port is a valid absolute URL whose port is
+  # the scheme's 80. A fixed port below ip_local_port_range says the same
+  # thing about the literal without needing to bind 80, and without port
+  # 0, which this kernel cannot read back.
+  port = 20000 + rand(11000)
+  src = <<~RUBY
+    class R < Webmachine::Resource
+      def self.to_html
+        'v6'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.url = 'http://[::1]:#{port}'
+        app.add_route [:*], R
+        app.ready do
+          puts "ready \#{app.conf.url}"
+        end
+      end
+    end
+  RUBY
+  app = ap_compile(src)
+  out = "/tmp/wm-ap-v6-out-#{$$}.log"
+  err = "/tmp/wm-ap-v6-err-#{$$}.log"
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  begin
+    line = nil
+    100.times do
+      text = begin File.read(out) rescue '' end
+      line = text[/^ready (\S+)$/, 1]
+      break if line
+      break unless Process.wait(pid, Process::WNOHANG).nil?
+      sleep 0.05
+    end
+    assert_true !line.nil?, "no ready line; stderr: #{begin File.read(err) rescue '' end}"
+    # The brackets survive the round trip: bound_url is built from the
+    # host this parsed, and an IPv6 host without them is not a host.
+    assert_equal "http://[::1]:#{port}", line
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(out) rescue nil
+    File.unlink(err) rescue nil
+    app.unlink
+  end
+
+  # Credentials name no listener, so they are refused rather than folded
+  # into the host the way they used to be.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'http://user@127.0.0.1:20001' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('credentials'), out
+
+  # A scheme that is neither, and something that is not a URL at all.
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'ftp://example.com' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('is not http or https'), out
+
+  out = ap_refused_unaided(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'not-a-url' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('is not scheme://host[:port]'), out
+end
+
 assert('application: conf.url port 0 - the kernel picks, ready reads the pick back') do
   src = <<~RUBY
     class R < Webmachine::Resource

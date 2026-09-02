@@ -16,6 +16,8 @@
 #include <cstring>
 #include <string>
 
+#include <ada.h>
+
 namespace webmachine {
 namespace {
 std::vector<std::unique_ptr<AppSpec>> specs_;
@@ -152,7 +154,24 @@ mrb_value conf_private_key_set(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-// conf.url = "scheme://host:port" - webmachine-ruby's own spelling.
+// conf.url = "scheme://host:port" - webmachine-ruby's own spelling,
+// parsed by ada (WHATWG URL Standard) rather than by find("://") and
+// rfind(':').
+//
+// What the hand-rolled one got wrong, and no test covered because every
+// test used the same happy shape:
+//
+//   http://[::1]              refused with "has no usable port" -
+//                             rfind(':') landed INSIDE the literal, so
+//                             the port read as "1]". A valid absolute
+//                             URL whose port is the scheme's 80.
+//   http://user@127.0.0.1:80  accepted, and url_host became
+//                             "user@127.0.0.1" - userinfo folded into
+//                             the host and on into bound_url.
+//
+// Credentials in a listener URL name nothing this can serve, so they are
+// refused here rather than carried. A path is ignored, as it was before:
+// webmachine-ruby's conf.url may carry one and it names no listener.
 mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   const char* p;
   mrb_int n;
@@ -160,36 +179,38 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   claim_form(mrb, s, {AppSpec::Form::kUrl, "url"});
   const std::string u(p, static_cast<size_t>(n));
-  const size_t sep = u.find("://");
-  if (sep == std::string::npos) {
+
+  auto parsed = ada::parse<ada::url_aggregator>(u);
+  if (!parsed) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s is not scheme://host[:port]", u.c_str());
   }
-  const std::string scheme = u.substr(0, sep);
-  if (scheme != "http" && scheme != "https") {
+  // ada spells a scheme with its colon; the message says what was asked
+  // for, not what ada calls it.
+  const std::string_view proto = parsed->get_protocol();
+  const bool tls = proto == "https:";
+  if (!tls && proto != "http:") {
+    const std::string scheme(proto.substr(0, proto.size() - 1));
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url scheme %s is not http or https",
                scheme.c_str());
   }
-  const bool tls = scheme == "https";
-  s->tls = tls;
-  std::string rest = u.substr(sep + 3);
-  const size_t slash = rest.find('/');
-  if (slash != std::string::npos) rest.resize(slash);
-  int port = tls ? 443 : 80;
-  const size_t colon = rest.rfind(':');
-  if (colon != std::string::npos) {
-    const std::string ps = rest.substr(colon + 1);
-    port = ps.empty() ? -1 : 0;
-    for (char c : ps) {
-      if (c < '0' || c > '9') { port = -1; break; }
-      port = port * 10 + (c - '0');
-    }
-    if (port < 0 || port > 65535) {
-      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no usable port", u.c_str());
-    }
-    rest.resize(colon);
+  if (parsed->has_credentials()) {
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s carries credentials, which name no listener",
+               u.c_str());
   }
-  if (rest.empty()) mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no host", u.c_str());
-  s->url_host = rest;
+  const std::string_view host = parsed->get_hostname();
+  if (host.empty()) mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no host", u.c_str());
+
+  // An absent port IS the scheme's default; ada leaves get_port() empty
+  // for it rather than writing 80 or 443 back out.
+  int port = tls ? 443 : 80;
+  const std::string_view ps = parsed->get_port();
+  if (!ps.empty()) {
+    port = 0;
+    for (char c : ps) port = port * 10 + (c - '0');
+  }
+
+  s->tls = tls;
+  s->url_host.assign(host);
   s->port = port;
   return mrb_nil_value();
 }
