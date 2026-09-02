@@ -658,6 +658,15 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 }
 }
 
+// The three classes this library refuses with. Defined here, above the
+// first raise, because since #33 a refusal IS one of these.
+#define E_WM_ERROR(mrb) \
+  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
+#define E_WM_CONFIG_ERROR(mrb) \
+  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ConfigError)))
+#define E_WM_ROUTE_ERROR(mrb) \
+  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(RouteError)))
+
 namespace webmachine {
 
 // Where a setup refusal is spelled. A pointer and a length are one thing,
@@ -689,10 +698,18 @@ struct Setup {
 // no string channel left to spell one into. What this replaced printed
 // the exception to stderr, which nothing reads unless the process dies,
 // and passed "<callback> (exception below)" upwards: a note about a note.
+// The same, for what mrb_protect_error hands BACK rather than leaves in
+// mrb->exc. Only an exception object can be raised, and protect_error
+// returns whatever was pending - the trap take_pending is about.
+[[noreturn]] inline void reraise(mrb_state* mrb, mrb_value pending) {
+  if (mrb_exception_p(pending)) mrb_exc_raise(mrb, pending);
+  mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
+}
+
 [[noreturn]] inline void rethrow(mrb_state* mrb) {
   const mrb_value exc = mrb_obj_value(mrb->exc);
   mrb->exc = nullptr;
-  mrb_exc_raise(mrb, exc);
+  reraise(mrb, exc);
 }
 
 class ArenaGuard {
@@ -2709,7 +2726,7 @@ namespace webmachine {
 // lookup and says which file answered, because the answer differs per host.
 class MimeDb {
  public:
-  bool load(const char* configured, Refusal why);
+  void load(mrb_state* mrb, const char* configured);
   // RFC 9110 8.3: which media-type database answered.
   const std::string& source() const { return source_; }
   // RFC 9110 8.3: how many extensions it holds.
@@ -2789,7 +2806,7 @@ class Assets {
   Assets(const Assets&) = delete;
   Assets& operator=(const Assets&) = delete;
 
-  bool open(const char* zip_path, const MimeDb& mime, Refusal why);
+  void open(mrb_state* mrb, const char* zip_path, const MimeDb& mime);
 
   AssetEntry* find(const char* path, size_t len);
 
@@ -2895,7 +2912,7 @@ class ErrorPages {
   // One instance of the class, and the handlers it answers to. A class
   // that answers to none, or that raises being built, is a startup
   // refusal with a name.
-  bool open(Setup s, Assets* assets);
+  void open(mrb_state* mrb, Assets* assets);
   bool ready() const { return ready_; }
 
   // RFC 9110 12.5.1: which form this client can read, as an index into
@@ -4033,7 +4050,7 @@ class Http1 {
   // rather than owning it - the h1 model (#173) is bytes in, bytes out,
   // and a caller that never calls this gets the bodyless statuses it
   // always got.
-  bool open_error_assets(Setup s, Assets* error_assets);
+  void open_error_assets(mrb_state* mrb, Assets* error_assets);
 
   void on_tick();
 
@@ -4820,7 +4837,7 @@ namespace webmachine {
 // canonical absolute path and opened O_DIRECTORY|O_PATH once at startup. That
 // fd is what RESOLVE_BENEATH anchors against - the kernel does the
 // confinement, this code never does path math of its own.
-bool docroot_open(const char* path, Refusal why);
+void docroot_open(mrb_state* mrb, const char* path);
 
 // Did an operator configure one? response.file= refuses by name when not.
 bool docroot_ready();
@@ -4907,13 +4924,6 @@ struct Config {
 
 void config_load(mrb_state* mrb, const char* path, Config& out);
 }
-
-#define E_WM_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
-#define E_WM_CONFIG_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ConfigError)))
-#define E_WM_ROUTE_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(RouteError)))
 
 #ifndef SO_MEMINFO
 #define SO_MEMINFO 55

@@ -109,9 +109,7 @@ void MimeDb::parse_globs2(const char* p, const char* end) {
 }
 
 // RFC 9110 8.3: the machine's own media-type database, first that exists.
-bool MimeDb::load(const char* configured, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void MimeDb::load(mrb_state* mrb, const char* configured) {
   static const char* const kTypesPaths[] = {
       "/etc/mime.types", "/etc/apache2/mime.types", "/etc/httpd/conf/mime.types",
       "/usr/local/etc/mime.types"};
@@ -121,8 +119,8 @@ bool MimeDb::load(const char* configured, Refusal why) {
   bool globs2 = false;
   if (configured != nullptr && configured[0] != '\0') {
     if (!slurp(configured, text)) {
-      std::snprintf(err, errlen, "media types: %s: %s", configured, std::strerror(errno));
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
+                 std::strerror(errno));
     }
     source_ = configured;
     globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
@@ -155,10 +153,9 @@ bool MimeDb::load(const char* configured, Refusal why) {
   by_ext_.erase(std::unique(by_ext_.begin(), by_ext_.end(), SameExt()), by_ext_.end());
 
   if (by_ext_.empty()) {
-    std::snprintf(err, errlen, "media types: %s holds no extension at all", source_.c_str());
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s holds no extension at all",
+               source_.c_str());
   }
-  return true;
 }
 
 // RFC 9110 8.3: the type a filename claims; octet-stream when unknown.

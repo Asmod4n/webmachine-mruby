@@ -8,7 +8,9 @@
 #include <unistd.h>
 #include <mruby/chrono.hpp>
 #include <mruby/class.h>
+#include <mruby/error.h>
 #include <mruby/presym.h>
+#include <mruby/string.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -37,6 +39,20 @@ bool error_assets_up_ = false;
 // the error log's fd is spawned further down and its Logger only turns on
 // once Http1 exists. So the sentence waits here for its destination.
 std::string error_assets_note_;
+
+// Assets::open, and what it opens: the pack, its path, and the media
+// types every entry's Content-Type comes from.
+struct OpenPack {
+  Assets* pack;
+  const char* path;
+  const MimeDb* mime;
+};
+
+mrb_value open_pack_body(mrb_state* mrb, void* ud) {
+  OpenPack* p = static_cast<OpenPack*>(ud);
+  p->pack->open(mrb, p->path, *p->mime);
+  return mrb_nil_value();
+}
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
@@ -318,7 +334,7 @@ bool build(Setup s) {
       if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
     }
     if (dr != nullptr) {
-      if (!docroot_open(dr, s.why)) return false;
+      docroot_open(s.mrb, dr);
       std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
     }
   }
@@ -333,22 +349,27 @@ bool build(Setup s) {
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
-    if (!mime_.load(opts_.mime_types_path, s.why)) return false;
+    mime_.load(s.mrb, opts_.mime_types_path);
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
   }
-  if (opts_.assets_path != nullptr) {
-    if (!assets_.open(opts_.assets_path, mime_, s.why)) return false;
-  }
+  if (opts_.assets_path != nullptr) assets_.open(s.mrb, opts_.assets_path, mime_);
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
-    char eerr[512] = "";
-    if (error_assets_.open(error_assets_file.c_str(), mime_, {eerr, sizeof eerr})) {
+    // Caught ON PURPOSE, and the only startup refusal that is not one: a
+    // picture is no reason not to serve. What it refused with is said in
+    // the error log, and the pages render without it.
+    OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
+    mrb_bool raised = FALSE;
+    const mrb_value e = mrb_protect_error(s.mrb, open_pack_body, &pack, &raised);
+    if (!raised) {
       error_assets_up_ = true;
       std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
     } else {
-      error_assets_note_ = "error assets at " + error_assets_file + " unusable (" + eerr +
+      const mrb_value said = mrb_obj_as_string(s.mrb, e);
+      error_assets_note_ = "error assets at " + error_assets_file + " unusable (" +
+                           std::string(RSTRING_PTR(said), static_cast<size_t>(RSTRING_LEN(said))) +
                            ") - pages without pictures";
     }
   } else if (no_cats == 1) {
@@ -424,9 +445,7 @@ bool build(Setup s) {
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.
-  if (!http_->open_error_assets(s, error_assets_up_ ? &error_assets_ : nullptr)) {
-    return false;
-  }
+  http_->open_error_assets(s.mrb, error_assets_up_ ? &error_assets_ : nullptr);
   // #210: and the same assets under response.error_asset("404.jpg"),
   // so an app can answer with one of these pictures wherever it likes,
   // not only where the error resource does.

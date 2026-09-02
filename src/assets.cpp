@@ -121,27 +121,23 @@ Assets::~Assets() {
 
 // ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
 // parses; this reads only the 30-byte Local Header, to skip it.
-bool Assets::open(const char* zip_path, const MimeDb& mime, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void Assets::open(mrb_state* mrb, const char* zip_path, const MimeDb& mime) {
   const int fd = ::open(zip_path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
-    std::snprintf(err, errlen, "%s: %s", zip_path, std::strerror(errno));
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s", zip_path, std::strerror(errno));
   }
   struct stat st;
   if (::fstat(fd, &st) != 0 || st.st_size < 22) {
     ::close(fd);
-    std::snprintf(err, errlen, "%s: not a ZIP (too small for an end record)", zip_path);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: not a ZIP (too small for an end record)",
+               zip_path);
   }
   map_length_ = static_cast<size_t>(st.st_size);
   void* m = ::mmap(nullptr, map_length_, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);
   if (m == MAP_FAILED) {
     map_length_ = 0;
-    std::snprintf(err, errlen, "mmap %s: %s", zip_path, std::strerror(errno));
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "mmap %s: %s", zip_path, std::strerror(errno));
   }
   map_addr_ = static_cast<const char*>(m);
   const unsigned char* base = reinterpret_cast<const unsigned char*>(map_addr_);
@@ -149,9 +145,8 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, Refusal why) {
   mz_zip_archive za;
   std::memset(&za, 0, sizeof(za));
   if (!mz_zip_reader_init_mem(&za, map_addr_, map_length_, 0)) {
-    std::snprintf(err, errlen, "%s: not a readable ZIP (%s)", zip_path,
-                  mz_zip_get_error_string(mz_zip_get_last_error(&za)));
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: not a readable ZIP (%s)", zip_path,
+               mz_zip_get_error_string(mz_zip_get_last_error(&za)));
   }
   struct Ender {
     mz_zip_archive* z;
@@ -161,52 +156,47 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, Refusal why) {
 
   const mz_uint n = mz_zip_reader_get_num_files(&za);
   if (n >= 0xffff) {
-    std::snprintf(err, errlen, "%s: %u entries - Zip64 territory, excluded by design",
-                  zip_path, n);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %d entries - Zip64 territory, excluded by design",
+               zip_path, static_cast<int>(n));
   }
   entries_.reserve(n);
 
   for (mz_uint i = 0; i < n; i++) {
     mz_zip_archive_file_stat st;
     if (!mz_zip_reader_file_stat(&za, i, &st)) {
-      std::snprintf(err, errlen, "%s: entry %u: %s", zip_path, i,
-                    mz_zip_get_error_string(mz_zip_get_last_error(&za)));
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: entry %d: %s", zip_path, static_cast<int>(i),
+                 mz_zip_get_error_string(mz_zip_get_last_error(&za)));
     }
     const size_t nlen = std::strlen(st.m_filename);
 
     if (st.m_is_directory) continue;
     if (st.m_is_encrypted) {
-      std::snprintf(err, errlen, "%s: %s is encrypted - not supported", zip_path,
-                    st.m_filename);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s is encrypted - not supported", zip_path,
+                 st.m_filename);
     }
     if (st.m_method != 0 && st.m_method != MZ_DEFLATED) {
-      std::snprintf(err, errlen,
-                    "%s: %s uses method %u - only stored (0) and deflate (8) are served",
-                    zip_path, st.m_filename, static_cast<unsigned>(st.m_method));
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                 "%s: %s uses method %d - only stored (0) and deflate (8) are served", zip_path,
+                 st.m_filename, static_cast<int>(st.m_method));
     }
     if (st.m_comp_size > 0xffffffffULL || st.m_uncomp_size > 0xffffffffULL) {
-      std::snprintf(err, errlen, "%s: %s is 4 GB or larger - Zip64, excluded by design",
-                    zip_path, st.m_filename);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s is 4 GB or larger - Zip64, excluded by "
+                                              "design",
+                 zip_path, st.m_filename);
     }
 
     const size_t lho = static_cast<size_t>(st.m_local_header_ofs);
     if (lho + 30 > map_length_ || MZ_READ_LE32(base + lho) != 0x04034b50) {
-      std::snprintf(err, errlen, "%s: %s has a broken local header", zip_path,
-                    st.m_filename);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s has a broken local header", zip_path,
+                 st.m_filename);
     }
     const size_t extra_off = lho + 30 + MZ_READ_LE16(base + lho + 26);
     const size_t extra_len = MZ_READ_LE16(base + lho + 28);
     const size_t data_off = extra_off + extra_len;
     const size_t comp = static_cast<size_t>(st.m_comp_size);
     if (data_off + comp > map_length_) {
-      std::snprintf(err, errlen, "%s: %s data overruns the file", zip_path, st.m_filename);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s data overruns the file", zip_path,
+                 st.m_filename);
     }
 
     AssetEntry e;
@@ -270,7 +260,6 @@ bool Assets::open(const char* zip_path, const MimeDb& mime, Refusal why) {
 
   build_triple(s405_, {kStatus405, nullptr, std::string(kAllowField) + "Content-Length: 0\r\n"});
   build_triple(s406_, {kStatus406, nullptr, std::string(kVaryField) + "Content-Length: 0\r\n"});
-  return true;
 }
 
 // One entry, by name, exact bytes.

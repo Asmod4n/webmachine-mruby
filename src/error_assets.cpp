@@ -204,22 +204,17 @@ ErrorPages::~ErrorPages() {
 // #210: one instance of Webmachine::ErrorResource, and the handlers it
 // answers to. Rooted with mrb_gc_register, not the arena: it outlives
 // every arena mark the setup path takes and every one a request takes.
-bool ErrorPages::open(Setup s, Assets* assets) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
+void ErrorPages::open(mrb_state* mrb, Assets* assets) {
   mrb_ = mrb;
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   if (wm == nullptr) {
-    std::snprintf(err, errlen, "error pages: Webmachine is not defined");
-    return false;
+    mrb_raise(mrb, E_WM_ERROR(mrb), "error pages: Webmachine is not defined");
   }
   if (!mrb_const_defined_at(mrb, mrb_obj_value(wm), MRB_SYM(ErrorResource))) {
-    std::snprintf(err, errlen, "error pages: Webmachine::ErrorResource is not defined");
-    return false;
+    mrb_raise(mrb, E_WM_ERROR(mrb), "error pages: Webmachine::ErrorResource is not defined");
   }
   struct RClass* klass = mrb_class_get_under_id(mrb, wm, MRB_SYM(ErrorResource));
-  const int ai = mrb_gc_arena_save(mrb);
+  const ArenaGuard arena(mrb);
   mrb_bool raised = FALSE;
   {
     // A class body that raises (a template of its own that does not
@@ -230,16 +225,10 @@ bool ErrorPages::open(Setup s, Assets* assets) {
         mrb,
         handler_no_args,
         &c, &raised);
-    if (raised) {
-      std::snprintf(err, errlen, "error pages: Webmachine::ErrorResource.new raised");
-      mrb->exc = nullptr;
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
-    }
+    if (raised) reraise(mrb, obj);
     res_ = obj;
     mrb_gc_register(mrb, res_);
   }
-  mrb_gc_arena_restore(mrb, ai);
 
   // cb.rb content_types_provided: the same word an ordinary resource
   // uses, and the whole negotiation. What it lists is what an error may
@@ -251,13 +240,12 @@ bool ErrorPages::open(Setup s, Assets* assets) {
         mrb,
         handler_no_args,
         &c, &raised);
-    if (raised || !mrb_array_p(v)) {
-      std::snprintf(err, errlen,
-                    "error pages: ErrorResource.content_types_provided must answer "
-                    "[[type, handler]] pairs");
-      mrb->exc = nullptr;
-      mrb_gc_arena_restore(mrb, ai);
-      return false;
+    if (raised) reraise(mrb, v);
+    if (!mrb_array_p(v)) {
+      mrb_raisef(mrb, E_WM_ERROR(mrb),
+                 "error pages: ErrorResource.content_types_provided must answer "
+                 "[[type, handler]] pairs, not %v",
+                 v);
     }
     const mrb_int n = RARRAY_LEN(v);
     for (mrb_int i = 0; i < n; i++) {
@@ -266,10 +254,10 @@ bool ErrorPages::open(Setup s, Assets* assets) {
       const mrb_value type = mrb_ary_ref(mrb, pair, 0);
       const mrb_value hnd = mrb_ary_ref(mrb, pair, 1);
       if (!mrb_string_p(type) || !mrb_symbol_p(hnd)) {
-        std::snprintf(err, errlen,
-                      "error pages: content_types_provided pairs are [String, Symbol]");
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+        mrb_raisef(mrb, E_WM_ERROR(mrb),
+                   "error pages: content_types_provided pairs are [String, Symbol], and %v is "
+                   "not one",
+                   pair);
       }
       Handler h;
       h.sym = mrb_symbol(hnd);
@@ -281,18 +269,14 @@ bool ErrorPages::open(Setup s, Assets* assets) {
       if (h.from_pack) {
         if (assets == nullptr) continue;
       } else if (!mrb_respond_to(mrb, res_, h.sym)) {
-        std::snprintf(err, errlen, "error pages: %s names %s, which is not defined",
-                      h.type.c_str(), mrb_sym_name(mrb, h.sym));
-        mrb_gc_arena_restore(mrb, ai);
-        return false;
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "error pages: %s names %n, which is not defined",
+                   h.type.c_str(), h.sym);
       }
       have_.push_back(std::move(h));
     }
   }
-  mrb_gc_arena_restore(mrb, ai);
   if (have_.empty()) {
-    std::snprintf(err, errlen, "error pages: ErrorResource offers no content type");
-    return false;
+    mrb_raise(mrb, E_WM_ERROR(mrb), "error pages: ErrorResource offers no content type");
   }
   types_.reserve(have_.size());
   for (const Handler& h : have_) types_.push_back(h.type);
@@ -322,7 +306,6 @@ bool ErrorPages::open(Setup s, Assets* assets) {
   // After the cats: their URL is part of the page, so a page prepared
   // before them would be a page without one.
   read_prepared();
-  return true;
 }
 
 // RFC 9110 12.5.1: which form this client can read. An error is not a
