@@ -449,11 +449,11 @@ bool build(Setup s) {
   }
   if (fmt >= 0) http_->set_file_map_threshold(static_cast<size_t>(fmt));
 
-  ring_.reset(new Ring<Http1>(*http_));
-  if (!ring_->init(cfg, s.why)) {
-    ring_.reset();
-    return false;
-  }
+  // Built into a local first: a refusal from init unwinds through this
+  // one's destructor, and ring_ is only ever a ring that came up.
+  auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*http_));
+  ring->init(cfg);
+  ring_ = std::move(ring);
 
   for (size_t i = 0; i < specs_.size(); i++) {
     app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,

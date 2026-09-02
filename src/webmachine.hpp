@@ -5125,14 +5125,17 @@ class Ring {
 
   // Everything through the ring: unlink, socket_direct, setsockopt, bind,
   // listen as ONE linked chain, every CQE checked, a failure naming its stage.
-  bool init(const RingConfig& cfg, Refusal why) {
-    char* const err = why.buf;
-    const size_t errlen = why.len;
+  void init(const RingConfig& cfg) {
     mrb_ = cfg.mrb;
+    // The one refusal here that cannot raise: there is no VM to raise
+    // into. A caller that leaves RingConfig::mrb null is a bug in this
+    // tree and not an operator's mistake, so it dies here saying so -
+    // and a process that dies is the one case where stderr is read.
     if (mrb_ == nullptr) {
-      std::snprintf(err, errlen, "RingConfig::mrb is required - the reactor raises rather "
-                                 "than ending a process it does not own");
-      return false;
+      std::fputs("webmachine: RingConfig::mrb is required - the reactor raises rather than "
+                 "ending a process it does not own\n",
+                 stderr);
+      std::abort();
     }
     int rc = 0;
     raise_memlock();
@@ -5152,9 +5155,8 @@ class Ring {
         break;
       }
       if (sq_entries_ <= sq_floor) {
-        std::snprintf(err, errlen, "io_uring_queue_init(%u): %s", sq_entries_,
-                      std::strerror(-rc));
-        return false;
+        mrb_raisef(mrb_, E_WM_ERROR(mrb_), "io_uring_queue_init(%d): %s",
+                   static_cast<int>(sq_entries_), std::strerror(-rc));
       }
     }
     io_uring_register_ring_fd(&ring_);
@@ -5170,40 +5172,35 @@ class Ring {
     app_.set_send_timeout(send_timeout_);
     max_conns_ = derive_max_conns({nofile});
     if (max_conns_ == 0) {
-      std::snprintf(err, errlen,
-                    "RLIMIT_NOFILE %llu leaves no room for connections "
-                    "(reserve %u + listeners %u)",
-                    static_cast<unsigned long long>(nofile), kFdReserve, kMaxListeners);
-      return false;
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                 "RLIMIT_NOFILE %i leaves no room for connections (reserve %d + listeners %d)",
+                 static_cast<mrb_int>(nofile), static_cast<int>(kFdReserve),
+                 static_cast<int>(kMaxListeners));
     }
     listener_base_ = max_conns_;
 
     rc = io_uring_register_files_sparse(&ring_, max_conns_ + kMaxListeners);
     if (rc != 0) {
-      std::snprintf(err, errlen, "register_files_sparse(%u): %s",
-                    max_conns_ + kMaxListeners, std::strerror(-rc));
-      return false;
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_files_sparse(%d): %s",
+                 static_cast<int>(max_conns_ + kMaxListeners), std::strerror(-rc));
     }
     rc = io_uring_register_file_alloc_range(&ring_, 0, max_conns_);
     if (rc != 0) {
-      std::snprintf(err, errlen, "register_file_alloc_range: %s", std::strerror(-rc));
-      return false;
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_file_alloc_range: %s", std::strerror(-rc));
     }
 
     const size_t pool_bytes = static_cast<size_t>(kBufCount) * kBufSize;
     void* mem =
         ::mmap(nullptr, pool_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) {
-      std::snprintf(err, errlen, "mmap pool: %s", std::strerror(errno));
-      return false;
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "mmap pool: %s", std::strerror(errno));
     }
     pool_ = static_cast<char*>(mem);
 
     int bre = 0;
     buf_ring_ = io_uring_setup_buf_ring(&ring_, kBufCount, kBufGroup, 0, &bre);
     if (buf_ring_ == nullptr) {
-      std::snprintf(err, errlen, "setup_buf_ring: %s", std::strerror(-bre));
-      return false;
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "setup_buf_ring: %s", std::strerror(-bre));
     }
     const int mask = io_uring_buf_ring_mask(kBufCount);
     for (uint32_t i = 0; i < kBufCount; i++) {
@@ -5218,13 +5215,12 @@ class Ring {
     }
 
     if (cfg.nlisteners == 0 || cfg.nlisteners > kMaxListeners) {
-      std::snprintf(err, errlen, "listener count %u out of range (1..%u)", cfg.nlisteners,
-                    kMaxListeners);
-      return false;
+      mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener count %d out of range (1..%d)",
+                 static_cast<int>(cfg.nlisteners), static_cast<int>(kMaxListeners));
     }
     for (uint32_t li = 0; li < cfg.nlisteners; li++) {
-      if (!setup_listener(li, cfg.listeners[li], why)) return false;
-      if (!setup_keys(li, cfg.listeners[li], why)) return false;
+      setup_listener(li, cfg.listeners[li]);
+      setup_keys(li, cfg.listeners[li]);
     }
     nlisteners_ = cfg.nlisteners;
 
@@ -5233,14 +5229,19 @@ class Ring {
     rearm_.reserve(64);
 
     if (cfg.stop_fd >= 0) {
-      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+      struct io_uring_sqe* s = setup_sqe();
       io_uring_prep_poll_add(s, cfg.stop_fd, POLLIN);
       io_uring_sqe_set_data64(s, detail::tag(detail::kStop, 0, 0));
     }
 
     for (uint32_t li = 0; li < nlisteners_; li++) arm_accept(li);
-    return true;
+  }
+
+  // Every setup step wants an SQE and none of them can go on without one.
+  struct io_uring_sqe* setup_sqe() {
+    struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
+    if (s == nullptr) mrb_raise(mrb_, E_WM_ERROR(mrb_), "SQ empty at setup");
+    return s;
   }
 
   // Loop until the stop signal's completion lands.
@@ -5289,9 +5290,7 @@ class Ring {
  private:
   // One listener as one linked chain; a stale unix path is unlinked OUTSIDE
   // the chain, because ENOENT there is normal.
-  bool setup_listener(uint32_t li, const ListenerSpec& want, Refusal r) {
-    char* const err = r.buf;
-    const size_t errlen = r.len;
+  void setup_listener(uint32_t li, const ListenerSpec& want) {
     const uint32_t slot = listener_base_ + li;
     const bool is_unix = want.unix_path != nullptr;
     struct sockaddr_un sun {};
@@ -5302,33 +5301,29 @@ class Ring {
       sun.sun_family = AF_UNIX;
       const size_t payload_length = std::strlen(want.unix_path);
       if (payload_length >= sizeof(sun.sun_path)) {
-        std::snprintf(err, errlen, "listener %u: unix path too long (%zu)", li, payload_length);
-        return false;
+        mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener %d: unix path too long (%i)",
+                   static_cast<int>(li), static_cast<mrb_int>(payload_length));
       }
       std::memcpy(sun.sun_path, want.unix_path, payload_length + 1);
       sa = reinterpret_cast<struct sockaddr*>(&sun);
       salen = sizeof(sun);
 
-      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) {
-        std::snprintf(err, errlen, "SQ empty at setup");
-        return false;
-      }
+      struct io_uring_sqe* s = setup_sqe();
       io_uring_prep_unlink(s, want.unix_path, 0);
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
       io_uring_submit_and_wait(&ring_, 1);
       struct io_uring_cqe* cqe = nullptr;
       if (io_uring_peek_cqe(&ring_, &cqe) == 0) {
         if (cqe->res < 0 && cqe->res != -ENOENT) {
-          std::snprintf(err, errlen, "unlink %s: %s", want.unix_path, std::strerror(-cqe->res));
-          return false;
+          mrb_raisef(mrb_, E_WM_ERROR(mrb_), "unlink %s: %s", want.unix_path,
+                     std::strerror(-cqe->res));
         }
         io_uring_cqe_seen(&ring_, cqe);
       }
     } else {
       if (want.port < 0 || want.port > 65535) {
-        std::snprintf(err, errlen, "listener %u: port %d out of range", li, want.port);
-        return false;
+        mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener %d: port %d out of range",
+                   static_cast<int>(li), want.port);
       }
       sin.sin_family = AF_INET;
       sin.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -5340,16 +5335,14 @@ class Ring {
     static const int kOne = 1;
     unsigned chain = 0;
     {
-      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+      struct io_uring_sqe* s = setup_sqe();
       io_uring_prep_socket_direct(s, is_unix ? AF_UNIX : AF_INET, SOCK_STREAM, 0, slot, 0);
       s->flags |= IOSQE_IO_LINK;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStSocket));
       chain++;
 
       if (!is_unix) {
-        s = io_uring_get_sqe(&ring_);
-        if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+        s = setup_sqe();
         io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, slot, SOL_SOCKET, SO_REUSEADDR,
                                const_cast<int*>(&kOne), sizeof(kOne));
         s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
@@ -5357,15 +5350,13 @@ class Ring {
         chain++;
       }
 
-      s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+      s = setup_sqe();
       io_uring_prep_bind(s, slot, sa, salen);
       s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStBind));
       chain++;
 
-      s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+      s = setup_sqe();
       io_uring_prep_listen(s, slot, backlog_);
       s->flags |= IOSQE_FIXED_FILE;
       io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, detail::kStListen));
@@ -5373,23 +5364,24 @@ class Ring {
     }
     io_uring_submit_and_wait(&ring_, chain);
     {
-      bool failed = false;
+      // Every CQE of the chain has to be seen before anything else can
+      // use this ring, so the first failure is kept and raised after the
+      // drain rather than in the middle of it.
+      std::string failed;
       struct io_uring_cqe* cqe = nullptr;
       while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
-        if (cqe->res < 0 && !failed) {
-          if (cqe->res != -ECANCELED) {
-            const uint32_t st = static_cast<uint32_t>(io_uring_cqe_get_data64(cqe));
-            std::snprintf(err, errlen, "listener %u %s: %s", li, detail::stage_name(st),
-                          std::strerror(-cqe->res));
-            failed = true;
-          } else if (err[0] == '\0') {
-            std::snprintf(err, errlen, "listener %u: setup chain canceled", li);
-            failed = true;
-          }
+        if (cqe->res < 0 && failed.empty()) {
+          const uint32_t st = static_cast<uint32_t>(io_uring_cqe_get_data64(cqe));
+          failed = cqe->res != -ECANCELED
+                       ? std::string(detail::stage_name(st)) + ": " + std::strerror(-cqe->res)
+                       : std::string("setup chain canceled");
         }
         io_uring_cqe_seen(&ring_, cqe);
       }
-      if (failed) return false;
+      if (!failed.empty()) {
+        mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d %s", static_cast<int>(li),
+                   failed.c_str());
+      }
     }
     if (is_unix) unix_paths_.emplace_back(want.unix_path);
     unix_listener_[li] = is_unix;
@@ -5399,8 +5391,7 @@ class Ring {
       if (want.port == 0) {
         struct sockaddr_storage ss {};
         socklen_t slen = sizeof(ss);
-        struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-        if (s == nullptr) { std::snprintf(err, errlen, "SQ empty at setup"); return false; }
+        struct io_uring_sqe* s = setup_sqe();
         io_uring_prep_cmd_getsockname(s, static_cast<int>(slot),
                                       reinterpret_cast<struct sockaddr*>(&ss), &slen, 0);
         s->flags |= IOSQE_FIXED_FILE;
@@ -5413,24 +5404,21 @@ class Ring {
           io_uring_cqe_seen(&ring_, cqe);
         }
         if (res < 0) {
-          std::snprintf(err, errlen,
-                        "listener %u: port 0 needs the bound port read back and this kernel "
-                        "cannot (SOCKET_URING_OP_GETSOCKNAME: %s) - name a port",
-                        li, std::strerror(-res));
-          return false;
+          mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                     "listener %d: port 0 needs the bound port read back and this kernel "
+                     "cannot (SOCKET_URING_OP_GETSOCKNAME: %s) - name a port",
+                     static_cast<int>(li), std::strerror(-res));
         }
         if (ss.ss_family == AF_INET) {
           bound_port_[li] = ntohs(reinterpret_cast<struct sockaddr_in*>(&ss)->sin_port);
         } else if (ss.ss_family == AF_INET6) {
           bound_port_[li] = ntohs(reinterpret_cast<struct sockaddr_in6*>(&ss)->sin6_port);
         } else {
-          std::snprintf(err, errlen, "listener %u: bound name family %d?", li,
-                        static_cast<int>(ss.ss_family));
-          return false;
+          mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d: bound name family %d?",
+                     static_cast<int>(li), static_cast<int>(ss.ss_family));
         }
       }
     }
-    return true;
   }
 
   // NO RFC - one slot of the reactor, so what the kernel touches carries
@@ -5762,17 +5750,33 @@ class Ring {
   // The certificate a TLS listener answers with, and the two suites this
   // build speaks. Once per listener, at boot: every exchange this
   // listener ever opens is opened from it.
-  bool setup_keys(uint32_t li, const ListenerSpec& want, Refusal r) {
-    char* const err = r.buf;
-    const size_t errlen = r.len;
-    if (want.cert_pem == nullptr) return true;
+  // ktls_keys is a C handle: every refusal below unwinds past it now, so
+  // its free belongs to a destructor and not to a line before each of
+  // four returns.
+  struct HeldKeys {
+    ktls_keys* k = nullptr;
+    explicit HeldKeys(ktls_keys* keys) : k(keys) {}
+    ~HeldKeys() {
+      if (k != nullptr) ktls_keys_free(k);
+    }
+    HeldKeys(const HeldKeys&) = delete;
+    HeldKeys& operator=(const HeldKeys&) = delete;
+    ktls_keys* release() {
+      ktls_keys* const out = k;
+      k = nullptr;
+      return out;
+    }
+  };
+
+  void setup_keys(uint32_t li, const ListenerSpec& want) {
+    if (want.cert_pem == nullptr) return;
     // The certificate BEFORE the kernel, deliberately: both can be wrong
     // at once, and the one the operator can fix is the one worth saying.
     // It also means a machine without the module still checks the config.
-    ktls_keys* k = ktls_keys_server(want.cert_pem, want.cert_len, want.key_pem, want.key_len);
-    if (k == nullptr) {
-      std::snprintf(err, errlen, "listener %u certificate: %s", li, ktls_last_error());
-      return false;
+    HeldKeys keys{ktls_keys_server(want.cert_pem, want.cert_len, want.key_pem, want.key_len)};
+    if (keys.k == nullptr) {
+      mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener %d certificate: %s",
+                 static_cast<int>(li), ktls_last_error());
     }
     // AES first where the machine has the instructions, ChaCha first
     // otherwise (.DESIGN.md "Two suites, and why not three"). Said out
@@ -5785,34 +5789,28 @@ class Ring {
     const char* suites = aes_is_fast
                              ? "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256"
                              : "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
-    if (ktls_keys_set_ciphers(k, suites) != 0) {
-      std::snprintf(err, errlen, "listener %u ciphers: %s", li, ktls_last_error());
-      ktls_keys_free(k);
-      return false;
+    if (ktls_keys_set_ciphers(keys.k, suites) != 0) {
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d ciphers: %s", static_cast<int>(li),
+                 ktls_last_error());
     }
     // Both, in preference order. Nothing downstream reads the answer:
     // RFC 9113 3.4's preface is the first thing an h2 client sends, and
     // Http1::feed_parse already decides on it - over TLS those bytes
     // arrive exactly as they do in the clear.
     static const char* const kProtocols[] = {"h2", "http/1.1"};
-    if (ktls_keys_set_alpn(k, kProtocols, 2) != 0) {
-      std::snprintf(err, errlen, "listener %u alpn: %s", li, ktls_last_error());
-      ktls_keys_free(k);
-      return false;
+    if (ktls_keys_set_alpn(keys.k, kProtocols, 2) != 0) {
+      mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d alpn: %s", static_cast<int>(li),
+                 ktls_last_error());
     }
     if (!ktls_available()) {
       const int rc = ktls_load_module();
       if (rc != 0 || !ktls_available()) {
-        std::snprintf(err, errlen,
-                      "listener %u serves TLS and this kernel has no tls ULP "
-                      "(modprobe tls): %s",
-                      li, ktls_last_error());
-        ktls_keys_free(k);
-        return false;
+        mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                   "listener %d serves TLS and this kernel has no tls ULP (modprobe tls): %s",
+                   static_cast<int>(li), ktls_last_error());
       }
     }
-    tls_keys_[li] = k;
-    return true;
+    tls_keys_[li] = keys.release();
   }
 
   // The listeners leave through the ring; idempotent, or a later accept
