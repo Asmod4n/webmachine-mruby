@@ -1309,3 +1309,74 @@ harness: /usr/local/bin/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, o
 env: runnable=1/1080 busy=0% (200ms sample)
 responses=27875622 bad=0 seconds=10.000 rps=2787561 bytes=2313677314 MB/s=220.65 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=362410894 tx_MB/s=34.56
 server: 99% of one core (95u/4s)   client: 20% of one core (20u/0s)   other: 18% of one core
+==== 2026-09-02T04:24Z nginx/1.31.4 gzip_static ====
+harness: nginx-assets htgen h1 -c192 -d10s reps=1 workers=1 sendfile=on 7.2.2-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         109624       454.88         4096       99            -
+      4096     gzip         111501       172.05         1340      100            -
+      4096      304         155156        26.78            0       99            -
+      4096      206         107188       237.97         2048      100            -
+     32768   stored         102717      3234.98        32768       99            -
+     32768     gzip         106037       930.65         8924      100            -
+     32768      304         155005        26.76            0      100            -
+     32768      206         103621      1647.04        16384      100            -
+    262144   stored          33530      8390.76       262144      100            -
+    262144     gzip          63247      4184.69        69097      100            -
+    262144      304         154679        26.85            0      100            -
+    262144      206          52930      6630.74       131072      100            -
+   1048576   stored          10203     10205.42      1048576       99            -
+   1048576     gzip          33085      8843.94       280014      100            -
+   1048576      304         155387        27.12            0      100            -
+   1048576      206          19369      9690.07       524288      100            -
+steal +0 ticks over the whole sweep
+==== 2026-09-02T04:27Z repo=f115504 mruby=3d13b7e ====
+harness: assets htgen h1 -c192 -d10s reps=1 warm=default log=0 7.2.2-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         227890       934.53         4096      100            -
+      4096     gzip         240904       363.46         1330       99            -
+      4096      304         251450        20.14            0      100            -
+      4096      206         232420       499.38         2048      100            -
+     32768   stored         159637      5019.86        32768      100            -
+     32768     gzip         208180      1819.58         8913       99            -
+     32768      304         252006        20.19            0      100            -
+     32768      206         198756      3144.99        16384       99            -
+    262144   stored          37665      9423.60       262144      100            -
+    262144     gzip          91771      6068.46        69085      100            -
+    262144      304         245383        19.66            0       99            -
+    262144      206          68627      8592.17       131072      100            -
+   1048576   stored           9372      9373.51      1048576      100            -
+   1048576     gzip          37121      9921.37       280001      100            -
+   1048576      304         250689        20.08            0      100            -
+   1048576      206          19293      9650.29       524288      100            -
+steal +0 ticks over the whole sweep
+setup: 1 entry 6205us, 5000 entries 22246us (boot floor, min of 5; floor jitter 1009us)
+setup: => 3208ns per entry
+==== 2026-09-02T04:48Z repo=f115504 mruby=3d13b7e ====
+harness: assets htgen h1 -c192 -d10s reps=1 warm=default log=0 7.2.2-1-default x86_64
+      size      arm          req/s         MB/s         wire     cpu%  req/syscall
+      4096   stored         223749       917.55         4096       99            -
+      4096     gzip         236218       356.38         1330       99            -
+      4096      304         242578        19.43            0       99            -
+      4096      206         226616       486.91         2048       99            -
+     32768   stored         150118      4720.55        32768       97            -
+     32768     gzip         206153      1801.87         8913       99            -
+     32768      304         244605        19.60            0       99            -
+     32768      206         179577      2841.51        16384       99            -
+    262144   stored          36881      9227.56       262144       99            -
+    262144     gzip          90638      5993.49        69085       93            -
+    262144      304         234636        18.80            0       99            -
+    262144      206          53897      6747.91       131072       96            -
+   1048576   stored           8909      8910.93      1048576       98            -
+   1048576     gzip          27919      7462.11       280001      100            -
+==== 2026-09-02T04:59Z repo=f115504 mruby=3d13b7e ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/1349 busy=0% (200ms sample)
+responses=9888830 bad=0 seconds=10.000 rps=988880 bytes=1532768650 MB/s=146.18 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=346114370 tx_MB/s=33.01
+server: 99% of one core (10u/89s)   client: 90% of one core (0u/90s)   other: 13% of one core
+==== 2026-09-02T05:01Z repo=f115504 mruby=3d13b7e ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/1001 busy=0% (200ms sample)
+responses=10007810 bad=0 seconds=10.000 rps=1000780 bytes=1551210550 MB/s=147.93 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=350278670 tx_MB/s=33.41
+server: 99% of one core (11u/88s)   client: 90% of one core (0u/90s)   other: 14% of one core
