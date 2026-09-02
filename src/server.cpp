@@ -73,17 +73,14 @@ struct LogdSpawn {
   unsigned long long max_bytes;
 };
 
-int spawn_logd(const LogdSpawn& log, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
   const char* const mode = log.mode;
   const char* const path = log.path;
   const char* const privacy = log.privacy;
   const unsigned long long max_bytes = log.max_bytes;
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
-    std::snprintf(err, errlen, "--%s log socketpair: %s", mode, std::strerror(errno));
-    return -1;
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "--%s log socketpair: %s", mode, std::strerror(errno));
   }
   char self[4096];
   const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
@@ -99,7 +96,7 @@ int spawn_logd(const LogdSpawn& log, Refusal why) {
   std::snprintf(cap, sizeof cap, "%llu", max_bytes);
   const pid_t pid = ::fork();
   if (pid < 0) {
-    std::snprintf(err, errlen, "--%s log fork: %s", mode, std::strerror(errno));
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "--%s log fork: %s", mode, std::strerror(errno));
     ::close(sp[0]);
     ::close(sp[1]);
     return -1;
@@ -133,15 +130,13 @@ struct PemFile {
   const char* what;
 };
 
-bool read_pem(PemFile f, std::string& out, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void read_pem(mrb_state* mrb, PemFile f, std::string& out) {
   const std::string& path = f.path;
   const char* const what = f.what;
   std::FILE* fp = std::fopen(path.c_str(), "rb");
   if (fp == nullptr) {
-    std::snprintf(err, errlen, "conf.%s %s: %s", what, path.c_str(), std::strerror(errno));
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: %s", what, path.c_str(),
+               std::strerror(errno));
   }
   out.clear();
   char buf[4096];
@@ -150,81 +145,70 @@ bool read_pem(PemFile f, std::string& out, Refusal why) {
   const bool bad = std::ferror(fp) != 0;
   std::fclose(fp);
   if (bad) {
-    std::snprintf(err, errlen, "conf.%s %s: read failed", what, path.c_str());
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: read failed", what, path.c_str());
   }
   if (out.empty()) {
-    std::snprintf(err, errlen, "conf.%s %s is empty", what, path.c_str());
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s is empty", what, path.c_str());
   }
-  return true;
 }
 
 // https, a certificate and a key are one decision spelled three ways, so
 // naming any of them means naming all of them.
-bool build_listener_tls(RingConfig& cfg, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
   pem_.assign(specs_.size() * 2, std::string());
   for (size_t i = 0; i < specs_.size(); i++) {
     const AppSpec& spec = *specs_[i];
     const bool named_files = !spec.cert_path.empty() || !spec.key_path.empty();
     if (!spec.tls && !named_files) continue;
     if (!spec.tls) {
-      std::snprintf(err, errlen,
-                    "application %zu names a certificate but its listener is not https - "
-                    "conf.url = \"https://...\" is what turns TLS on",
-                    i);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                 "application %i names a certificate but its listener is not https - "
+                 "conf.url = \"https://...\" is what turns TLS on",
+                 static_cast<mrb_int>(i));
     }
     if (spec.cert_path.empty() || spec.key_path.empty()) {
-      std::snprintf(err, errlen,
-                    "application %zu serves https and needs both conf.certificate and "
-                    "conf.private_key; it named %s",
-                    i, spec.cert_path.empty() ? "only the key" : "only the certificate");
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                 "application %i serves https and needs both conf.certificate and "
+                 "conf.private_key; it named %s",
+                 static_cast<mrb_int>(i),
+                 spec.cert_path.empty() ? "only the key" : "only the certificate");
     }
     if (cfg.listeners[i].unix_path != nullptr) {
-      std::snprintf(err, errlen,
-                    "application %zu serves https on a unix socket. TLS there is a real "
-                    "thing, but the kernel's record layer is a TCP ULP - setsockopt("
-                    "IPPROTO_TCP, TCP_ULP) on AF_UNIX is ENOTSUP - and this server has no "
-                    "record layer of its own to fall back to",
-                    i);
-      return false;
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                 "application %i serves https on a unix socket. TLS there is a real thing, "
+                 "but the kernel's record layer is a TCP ULP - setsockopt(IPPROTO_TCP, "
+                 "TCP_ULP) on AF_UNIX is ENOTSUP - and this server has no record layer of "
+                 "its own to fall back to",
+                 static_cast<mrb_int>(i));
     }
     std::string& cert = pem_[i * 2];
     std::string& key = pem_[i * 2 + 1];
-    if (!read_pem({spec.cert_path, "certificate"}, cert, why)) return false;
-    if (!read_pem({spec.key_path, "private_key"}, key, why)) return false;
+    read_pem(mrb, {spec.cert_path, "certificate"}, cert);
+    read_pem(mrb, {spec.key_path, "private_key"}, key);
     cfg.listeners[i].cert_pem = cert.data();
     cfg.listeners[i].cert_len = cert.size();
     cfg.listeners[i].key_pem = key.data();
     cfg.listeners[i].key_len = key.size();
   }
-  return true;
 }
 
-bool build_listeners(RingConfig& cfg, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void build_listeners(mrb_state* mrb, RingConfig& cfg) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
   const bool cli = opts_.cli_unix != nullptr || opts_.cli_port != 0;
   if (cli && specs_.size() > 1) {
-    std::snprintf(err, errlen,
-                  "--unix/--port names one listener and this file registered %zu "
-                  "applications - drop the override and let each app's conf speak",
-                  specs_.size());
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "--unix/--port names one listener and this file registered %i applications - "
+               "drop the override and let each app's conf speak",
+               static_cast<mrb_int>(specs_.size()));
   }
   if (opts_.cli_unix != nullptr) {
     cfg.listeners[0].unix_path = opts_.cli_unix;
-    return true;
+    return;
   }
   if (opts_.cli_port != 0) {
     cfg.listeners[0].port = opts_.cli_port;
-    return true;
+    return;
   }
   for (size_t i = 0; i < specs_.size(); i++) {
     switch (specs_[i]->form) {
@@ -234,15 +218,13 @@ bool build_listeners(RingConfig& cfg, Refusal why) {
       case AppSpec::Form::kPort:
       case AppSpec::Form::kUrl: cfg.listeners[i].port = specs_[i]->port; break;
       case AppSpec::Form::kNone:
-        std::snprintf(err, errlen,
-                      "application %zu has no listener - its configure block names one "
-                      "(conf.port / conf.unix_path / conf.url), or pass --port/--unix for "
-                      "a file with a single app",
-                      i);
-        return false;
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                   "application %i has no listener - its configure block names one "
+                   "(conf.port / conf.unix_path / conf.url), or pass --port/--unix for a "
+                   "file with a single app",
+                   static_cast<mrb_int>(i));
     }
   }
-  return true;
 }
 }
 
@@ -318,8 +300,8 @@ bool build(Setup s) {
   cfg.header_timeout = opts_.header_timeout;
   cfg.send_timeout = opts_.send_timeout;
   cfg.idle_timeout = opts_.idle_timeout;
-  if (!build_listeners(cfg, s.why)) return false;
-  if (!build_listener_tls(cfg, s.why)) return false;
+  build_listeners(s.mrb, cfg);
+  build_listener_tls(s.mrb, cfg);
 
   // server.docroot: a typed flag beats [server], and both beat the app's
   // conf - the same order --unix and --port already follow. The canonical
@@ -402,8 +384,7 @@ bool build(Setup s) {
     const LogdSpawn access = {
         "access", opts_.log_path,
         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", opts_.log_max_bytes};
-    log_fd_ = spawn_logd(access, s.why);
-    if (log_fd_ < 0) return false;
+    log_fd_ = spawn_logd(s.mrb, access);
     cfg.log_fd = log_fd_;
   }
   if (opts_.error_log_path != nullptr) {
@@ -414,8 +395,7 @@ bool build(Setup s) {
     // FIRST entry is the one that names the cause and everything after it
     // is consequence. A ceiling that keeps the newest half would throw
     // away exactly the line worth having.
-    err_fd_ = spawn_logd({"error", opts_.error_log_path, nullptr, 0}, s.why);
-    if (err_fd_ < 0) return false;
+    err_fd_ = spawn_logd(s.mrb, {"error", opts_.error_log_path, nullptr, 0});
     cfg.err_fd = err_fd_;
   }
 
