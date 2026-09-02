@@ -1,0 +1,56 @@
+From 4b5ea911c5d3302785732fd400d51b82cecb8a20 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 2 Sep 2026 10:07:01 +0000
+Subject: [PATCH 3/3] Shift the top octet as unsigned in the range check
+
+The six-octet arm of lshpack_dec_dec_int's range check computes
+
+    val - (src[-1] << 28) < val
+
+src[-1] is an unsigned char, which promotes to int, so this is a SIGNED
+shift by 28. It overflows for any value above 7 - and the arm is guarded
+by src[-1] <= 0xF, so 8 through 0xF are exactly the values that reach
+it. Signed overflow is undefined (C17 6.5p5), and the whole point of the
+expression is an unsigned wrap comparison.
+
+test/test_int.c reports it on the case that decodes UINT32_MAX, whose
+last octet is 0x0F:
+
+    lshpack.c:1339:65: runtime error: left shift of 15 by 28 places
+                       cannot be represented in type 'int'
+
+Casting to uint32_t says what was meant. On the usual two's-complement
+target the bits were already right; this makes them right by the
+standard rather than by the compiler's mood.
+
+With this, all five tests in the suite run clean under
+-fsanitize=address,undefined (-fno-sanitize=alignment for the bundled
+xxhash, which reads unaligned by design).
+---
+ lshpack.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/lshpack.c b/lshpack.c
+index d539dff..e26d7fb 100644
+--- a/lshpack.c
++++ b/lshpack.c
+@@ -1348,7 +1348,15 @@ lshpack_dec_dec_int (const unsigned char **src_p, const unsigned char *src_end,
+     }
+     while (B & 0x80);
+ 
+-    if (M <= 28 || (M == 35 && src[-1] <= 0xF && val - (src[-1] << 28) < val))
++    /* src[-1] is an unsigned char and promotes to int, so src[-1] << 28
++     * is a signed shift that overflows for any value above 7 - and this
++     * arm is reached only when src[-1] is at most 0xF, so 8 through 0xF
++     * are exactly the values it sees.  The subtraction wants that
++     * octet's contribution at bit 28 as an unsigned quantity.
++     */
++    if (M <= 28
++            || (M == 35 && src[-1] <= 0xF
++                        && val - ((uint32_t) src[-1] << 28) < val))
+     {
+         *src_p = src;
+         *value_p = val;
+-- 
+2.43.0
+

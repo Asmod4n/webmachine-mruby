@@ -1,0 +1,7 @@
+GET /ws HTTP/1.0
+Host: p
+Upgrade: websocket
+CoConnection: close
+nnection: Upgrade
+Sec-s: pee
+

@@ -1,0 +1,11 @@
+PUT / HTTP/1.1
+Host: x
+Expect: 100-continue
+Content-Length: 3
+
+abPUT / HTTP/1.1
+Host: x
+Expect: 100-continue
+Content-Length: 3
+
+abcc

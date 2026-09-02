@@ -1,0 +1,62 @@
+From 277d5411da1799ab8e34a6a4e8ac4218abfa34cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 2 Sep 2026 10:06:47 +0000
+Subject: [PATCH 2/3] Stop decoding an integer once it cannot be a uint32_t
+
+lshpack_dec_dec_int's continuation loop is bounded by the buffer, not by
+the encoding: it reads while the high bit is set and src < src_end. The
+shift M grows by 7 each time, so the sixth continuation octet is added
+with
+
+    val = val + ((B & 0x7f) << M)
+
+at M == 35, and B is a uint32_t. A shift wider than the type is
+undefined (C17 6.5.7p3). LSHPACK_UINT32_ENC_SZ already names the limit -
+six octets, the prefix and five continuations, the last shifted by 28 -
+but it is only consulted when the BUFFER runs out, not when the encoding
+does.
+
+test/test_int.c reaches it with its own case:
+
+    { .it_prefix_bits = 7,
+      .it_encoded = { 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+      .it_enc_sz = 11, .it_dec_retval = -2 },
+
+    lshpack.c:1329:37: runtime error: shift exponent 35 is too large
+                       for 32-bit type 'unsigned int'
+
+The bound is checked before the octet is consumed, so an encoding of six
+or more continuations returns -2 without shifting. That is the value the
+post-loop check already produced for those inputs - M would be 42 or
+more, and it accepts only M <= 28 or M == 35 - so no accepted encoding
+changes. The 6-octet UINT32_MAX case in test_int still decodes.
+---
+ lshpack.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/lshpack.c b/lshpack.c
+index 7c7d4eb..d539dff 100644
+--- a/lshpack.c
++++ b/lshpack.c
+@@ -1326,6 +1326,17 @@ lshpack_dec_dec_int (const unsigned char **src_p, const unsigned char *src_end,
+     {
+         if (src < src_end)
+         {
++            /* A uint32_t integer is at most LSHPACK_UINT32_ENC_SZ octets
++             * (RFC 7541 5.1): the prefix and five continuations, the last
++             * of which is shifted by 28.  Without this bound the loop
++             * keeps reading while the high bit is set, and the sixth
++             * continuation shifts by 35 - undefined for a 32-bit type.
++             * The check below rejects such an encoding anyway (M would be
++             * 42, which neither of its arms accepts), so this returns the
++             * same -2 it always did, before the shift instead of after.
++             */
++            if (src - orig_src >= LSHPACK_UINT32_ENC_SZ)
++                return -2;
+             B = *src++;
+             val = val + ((B & 0x7f) << M);
+             M += 7;
+-- 
+2.43.0
+

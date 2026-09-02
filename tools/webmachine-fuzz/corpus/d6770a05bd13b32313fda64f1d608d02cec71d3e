@@ -1,0 +1,8 @@
+GET / HTTP/1.1
+Host: x
+If-Modified:u HTTP/2.1
+950:3u HTTP/1f-Modified:u HTTP/2.1
+950:3u HTTP/1.01
+59:37 GMTimag7 GMTimage/ñ.1
+950:37 GMTimag7 GMTimage/ñèeg
+

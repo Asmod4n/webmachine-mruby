@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Host: x
+Rangest: x
+Range: 컴컴컴컴컴컴컴컴컴컴컴컴=-0
+

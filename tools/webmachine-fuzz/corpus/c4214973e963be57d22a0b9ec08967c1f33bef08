@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+HosT:1x
+If-Modified-%incd: T
+

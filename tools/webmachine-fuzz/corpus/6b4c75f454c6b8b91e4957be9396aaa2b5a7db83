@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Host: x
+Accept: HTTP/1.1
+ texttf-8
+

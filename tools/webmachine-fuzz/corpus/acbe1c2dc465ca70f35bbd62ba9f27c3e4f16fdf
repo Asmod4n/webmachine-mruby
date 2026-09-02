@@ -1,0 +1,10 @@
+POST / HTTP/1.1
+Host: x
+Cojwent-Type:P/1.1
+Host: x
+Cojwent-Type: textP/p+GET / HTTP/1.1
+Host: x
+
+h teP/-Length: 2
+
+hello

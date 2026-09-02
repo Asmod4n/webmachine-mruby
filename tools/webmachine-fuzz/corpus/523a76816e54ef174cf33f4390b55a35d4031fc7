@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: y: dGhub25jZQ==
+Sec-WebSocket-Version: TP/1.1
+Host: x
+
+ET http://x/ 

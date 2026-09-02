@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Hostccept: text/htgzäp
+Accept-Langut-C: de
+Accept-Chars%t: u
+

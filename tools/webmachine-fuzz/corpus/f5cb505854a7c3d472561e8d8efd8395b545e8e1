@@ -1,0 +1,8 @@
+GET / HTTP/1.1
+Host: gg
+Atept: text
+Acceptpt: : GET / HTTP/1 text
+If-Match: utf-8
+
+ Accmpt-Langu
+Host

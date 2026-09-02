@@ -1,0 +1,5 @@
+GET /wsÂ HTTP/1.1
+Host: x
+Ue-Key: dGhlIHNh
+Sec-XebSocket-Version: 13
+

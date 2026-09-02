@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: x
+Accept: text/html;q=ÿ0/9, */*;q=Ø.0
+Accept-Encoding: gzip
+Accept-Lat-Charset: utf-8
+

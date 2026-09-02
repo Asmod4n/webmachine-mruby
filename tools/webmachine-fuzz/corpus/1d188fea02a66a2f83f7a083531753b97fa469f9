@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: x
+Uet-Key: dGhlIHNhbXZSBub25: x
+Uet-Key: dGey: dGhlIHNhbXBsZSBub25: x
+Uet-Key: dGhlIHNhbXBs-Version: Nh
+

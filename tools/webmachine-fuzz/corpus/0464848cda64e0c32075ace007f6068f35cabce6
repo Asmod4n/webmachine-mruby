@@ -1,0 +1,10 @@
+GET / HTTP/1.1
+Host: x
+Ast: x
+ost: x
+Expect: 10=0.1
+Accept-Encoding: gzip
+Accept-Langut-C:1
+Accept-Encoding: de
+Accept-Char`set: utf-8
+

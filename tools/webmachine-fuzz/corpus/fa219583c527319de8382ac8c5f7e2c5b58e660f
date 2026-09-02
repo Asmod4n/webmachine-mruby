@@ -1,7 +1,0 @@
-GE /T HTTP/1.1
-Host: x
-Iv-None-Match:T / HTTP/1.1
-Host: x
-If-None-Match: »
- "abc"
-

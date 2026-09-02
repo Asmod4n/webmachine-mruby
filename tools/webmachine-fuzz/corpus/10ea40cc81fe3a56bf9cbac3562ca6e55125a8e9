@@ -1,6 +1,0 @@
-GET /ws HTTP/1.1
-Host: x
-Upgrade: websocket&
-Connection: U%grade
-Sec-WebSocket-Key: dGhlIHNhbXBsZSBu2b5jZQÃÂòõ¬šœÍWebSocket-Version: 13
-

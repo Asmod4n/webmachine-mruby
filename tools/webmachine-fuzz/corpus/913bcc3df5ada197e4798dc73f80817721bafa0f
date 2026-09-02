@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+Hst:GETn,  x
+If-Mgdified-Since: SuGn, 06 Nov 19
+

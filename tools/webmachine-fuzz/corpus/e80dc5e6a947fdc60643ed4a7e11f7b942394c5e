@@ -1,7 +1,0 @@
-GET /ws HTTP/1.0
-Host: x
-Upgrade: websocket
-CoConnection: close
-nnection: Upgrade
-Sec-WebSocket-Key: dGhlIHNhbXBsZSt-Extensions: permessage-deflate
-

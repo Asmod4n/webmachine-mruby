@@ -1,0 +1,9 @@
+GET /wsÂ HTTP/1.1
+Ht: x
+If-Unmodified-Sinceo3t: x
+If-Unmodified-Since: Ue-o3t: x
+If-Unmodified-Since: UehbXBcZÙSBuQZUpgrade: websocket
+26Host: x
+-Xmket-DNT: 1
+ 13
+

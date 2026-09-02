@@ -1,8 +1,0 @@
-GET /ws HTTP/1.1
-Host: x
-Upgrade: websocket
-Connection: Upgrade:
-Secccept: text/html;q=0/9, */*;q=Ø.Socket-Key: dGhlIHNhbXBsZSBub14jZQ==
-Sec-WebSoMatcnech: »close
-nec5ion: ceflate
-

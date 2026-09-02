@@ -1,6 +1,0 @@
-GET / HTTP/1.1
-Host: x
-Accept: text/html;q=If-Unmodified-Since: t-Encoding: gzip
-Accept-Language: de
-Accept-Csarset: utf-8
-

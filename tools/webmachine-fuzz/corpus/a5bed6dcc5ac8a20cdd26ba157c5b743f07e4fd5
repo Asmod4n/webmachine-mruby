@@ -1,7 +1,0 @@
-GET / HTTP/1.1
-Host: x
-If-Modified-Since: ~Sun,                           ck       :37ection: Upgrade
-Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
-SecSec-WebSet-Version: 13
- GMT
-

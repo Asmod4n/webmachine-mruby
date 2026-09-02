@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+Host: x
+Accept: te.t: te.t/html;qt/html;q=0.9,
+

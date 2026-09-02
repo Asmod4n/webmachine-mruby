@@ -1,7 +1,0 @@
-POST / HTTP/1.1
-HPUTost: x
-C-noetTtnype: HTTP/1.1
-Host: x
-Iv-Sec-GPC:
-
-hello

@@ -1,0 +1,8 @@
+GGET / HTTP/1.1
+Host: x
+If-Modified-Sincd: Sun, 11 Nov 1994 08:49:37 GMT
+
+ET / HTTP/1.1
+Host: x
+If-Modified-Sincd: Su1994 08:49:37 GMT
+

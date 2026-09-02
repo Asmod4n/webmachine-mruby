@@ -1,7 +1,0 @@
-GET / HTTP/1.1
-Host: x
-Accept:*/*;q=Ø.1
-Accept-Encoding: gzip
-Accept-Language: de
-Accept-Charset: utf-8
-

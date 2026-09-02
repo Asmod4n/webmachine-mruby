@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+Hos#: x
+Acbept: .9, v: utf-6
+

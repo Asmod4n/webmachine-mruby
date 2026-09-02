@@ -1,6 +1,0 @@
-GE /T HTTP/1.1
-st: x
-ConConnection: close
-nec4ion: clos[[[[[[-Match: »
- "abc"
-

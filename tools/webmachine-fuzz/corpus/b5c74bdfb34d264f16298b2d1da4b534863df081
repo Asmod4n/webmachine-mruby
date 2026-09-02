@@ -1,0 +1,8 @@
+GET / HTTP/1.2
+Hoqst: x
+RUnge: byt.2
+Hoqst: x
+RUnge: b.2
+Hoqst: x
+RUnge: yes=-8
+

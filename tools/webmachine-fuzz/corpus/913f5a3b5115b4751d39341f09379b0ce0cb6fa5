@@ -1,9 +1,0 @@
-GET /ws HTTP/1.1
-Host: x
-Upgrade: websockEt
-Connection: Upgrade
-Sec-WebSocket-Key: dGhlion1
-Host: x
-Upgrade: websockEt
-Connec: 13
-

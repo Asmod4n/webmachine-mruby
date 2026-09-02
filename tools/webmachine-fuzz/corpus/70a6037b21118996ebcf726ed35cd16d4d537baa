@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: x
+Accept: text
+Acceptpt: text
+If-Match: utf-8
+

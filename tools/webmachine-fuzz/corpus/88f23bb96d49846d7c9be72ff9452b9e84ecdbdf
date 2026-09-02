@@ -1,0 +1,4 @@
+GET ," HTTP/1.1
+Host: x
+Accept: tccept: text, */*=5.9, */*=Ø;q.1ml;q0.9, */*=*=5.9, */*=Ø;q.1ml;q0.9, */*8
+
