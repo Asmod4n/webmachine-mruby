@@ -456,10 +456,12 @@ const NamedSym kWorkOnly[] = {
     {MRB_SYM(finish_request), "finish_request"},
 };
 
-// RFC 9110 5.1: case-insensitive token equality, neither side canonical.
-bool ci_eq(const char* a, size_t an, const char* b, size_t bn) {
-  if (an != bn) return false;
-  for (size_t i = 0; i < an; i++) {
+// RFC 9110 5.1: case-insensitive token equality with neither side
+// canonical - both are folded. Not http::ci_eq, which folds one side
+// because the other is a lowercase literal in this source.
+bool ci_same(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); i++) {
     char x = a[i];
     char y = b[i];
     if (x >= 'A' && x <= 'Z') x = static_cast<char>(x + 32);
@@ -467,6 +469,46 @@ bool ci_eq(const char* a, size_t an, const char* b, size_t bn) {
     if (x != y) return false;
   }
   return true;
+}
+
+// RFC 9110 5.6.3: OWS around a value is not part of the value.
+std::string_view trim_ows(std::string_view s) {
+  size_t at = 0;
+  size_t end = s.size();
+  while (at < end && (s[at] == ' ' || s[at] == '\t')) at++;
+  while (end > at && (s[end - 1] == ' ' || s[end - 1] == '\t')) end--;
+  return s.substr(at, end - at);
+}
+
+// RFC 9110 5.6.6: a field value up to its first parameter - the media
+// type itself, without the space a sender may leave before the ';'.
+std::string_view media_base(std::string_view value) {
+  return trim_ows(value.substr(0, value.find(';')));
+}
+
+// RFC 9110 5.6.6: what follows that first ';' - the parameter list, or
+// nothing at all when the value carries none.
+std::string_view media_params(std::string_view value) {
+  const size_t semi = value.find(';');
+  return semi == std::string_view::npos ? std::string_view{} : value.substr(semi + 1);
+}
+
+// RFC 9110 5.6.6: one parameter taken off the front of a list, and the
+// list that is left. A parameter with no '=' has an EMPTY value, which is
+// not the same as one that is not there; a nameless one is a stray ';'.
+struct NextParam {
+  http::Field param;
+  std::string_view rest;
+};
+
+NextParam take_param(std::string_view list) {
+  const size_t semi = list.find(';');
+  const std::string_view one = list.substr(0, semi);
+  const std::string_view rest =
+      semi == std::string_view::npos ? std::string_view{} : list.substr(semi + 1);
+  const size_t eq = one.find('=');
+  if (eq == std::string_view::npos) return {{trim_ows(one), {}}, rest};
+  return {{trim_ows(one.substr(0, eq)), trim_ows(one.substr(eq + 1))}, rest};
 }
 
 // RFC 9110 10.2.2: does this run's header block already carry a Location line?
@@ -980,49 +1022,54 @@ int add_caching(Run& r) {
 }
 
 bool param_find(Param p, std::string_view& value) {
-  const char* const s = p.in.data();
-  const size_t n = p.in.size();
-  const char* const key = p.name.data();
-  const size_t kn = p.name.size();
-    size_t i = 0;
-    while (i < n && s[i] != ';') i++;
-    while (i < n) {
-      i++;
-      while (i < n && (s[i] == ' ' || s[i] == '\t')) i++;
-      size_t ks = i;
-      while (i < n && s[i] != '=' && s[i] != ';') i++;
-      size_t ke = i;
-      while (ke > ks && (s[ke - 1] == ' ' || s[ke - 1] == '\t')) ke--;
-      const char* v = nullptr;
-      size_t vlen = 0;
-      if (i < n && s[i] == '=') {
-        i++;
-        size_t vs = i;
-        while (i < n && s[i] != ';') i++;
-        size_t vend = i;
-        while (vend > vs && (s[vend - 1] == ' ' || s[vend - 1] == '\t')) vend--;
-        v = s + vs;
-        vlen = vend - vs;
-      }
-      if (ci_eq(s + ks, ke - ks, key, kn)) {
-        value = {v, vlen};
-        return true;
-      }
+  std::string_view list = media_params(p.in);
+  while (!list.empty()) {
+    const NextParam next = take_param(list);
+    list = next.rest;
+    if (ci_same(next.param.name, p.name)) {
+      value = next.param.value;
+      return true;
     }
-    return false;
+  }
+  return false;
+}
+
+// RFC 9110 12.5.1: a type PATTERN against the type that arrived - */*,
+// type/*, or the two tokens themselves. Parameters are not part of this
+// question; params_agree is.
+bool type_matches(std::string_view pattern, std::string_view arrived) {
+  if (pattern == "*/*") return true;
+  if (pattern.size() >= 2 && pattern.substr(pattern.size() - 2) == "/*") {
+    const size_t slash = arrived.find('/');
+    if (slash == std::string_view::npos) return false;
+    return ci_same(pattern.substr(0, pattern.size() - 2), arrived.substr(0, slash));
+  }
+  return ci_same(pattern, arrived);
+}
+
+// RFC 9110 12.5.1: every parameter the offered type names has to be on
+// the type that arrived, with the same bytes. A nameless one is a stray
+// ';' and names nothing to disagree about.
+bool params_agree(std::string_view offered, std::string_view arrived) {
+  std::string_view list = media_params(offered);
+  while (!list.empty()) {
+    const NextParam next = take_param(list);
+    list = next.rest;
+    if (next.param.name.empty()) continue;
+    std::string_view found;
+    if (!param_find({arrived, next.param.name}, found)) return false;
+    if (found != next.param.value) return false;
+  }
+  return true;
 }
 
 int accept_helper(Run& r) {
   mrb_state* mrb = r.mrb;
-  const char* ct = "application/octet-stream";
-  size_t ct_full = 24;
+  std::string_view arrived = "application/octet-stream";
   if (r.vals != nullptr && r.vals->content_type != nullptr) {
-    ct = r.vals->content_type;
-    ct_full = r.vals->content_type_len;
+    arrived = {r.vals->content_type, r.vals->content_type_len};
   }
-  size_t ctn = 0;
-  while (ctn < ct_full && ct[ctn] != ';') ctn++;
-  while (ctn > 0 && (ct[ctn - 1] == ' ' || ct[ctn - 1] == '\t')) ctn--;
+  const std::string_view arrived_base = media_base(arrived);
   if (!r.res.cb_content_types_accepted.has) return 415;
   const mrb_value v = cbv(r, r.res.cb_content_types_accepted);
   if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
@@ -1036,49 +1083,11 @@ int accept_helper(Run& r) {
                         !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_accepted pairs are [String, Symbol]");
     }
-    const char* pt = RSTRING_PTR(RARRAY_PTR(pair)[0]);
-    const size_t pt_full = static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]));
-    size_t pn = 0;
-    while (pn < pt_full && pt[pn] != ';') pn++;
-    while (pn > 0 && (pt[pn - 1] == ' ' || pt[pn - 1] == '\t')) pn--;
-    bool hit;
-    if (pn == 3 && pt[0] == '*' && pt[1] == '/' && pt[2] == '*') {
-      hit = true;
-    } else if (pn >= 2 && pt[pn - 1] == '*' && pt[pn - 2] == '/') {
-      size_t slash = 0;
-      while (slash < ctn && ct[slash] != '/') slash++;
-      hit = slash == pn - 2 && ci_eq(pt, pn - 2, ct, slash);
-    } else {
-      hit = ci_eq(pt, pn, ct, ctn);
-    }
-    if (hit && pn < pt_full) {
-      size_t i = pn;
-      while (i < pt_full && pt[i] != ';') i++;
-      while (hit && i < pt_full) {
-        i++;
-        while (i < pt_full && (pt[i] == ' ' || pt[i] == '\t')) i++;
-        size_t ks = i;
-        while (i < pt_full && pt[i] != '=' && pt[i] != ';') i++;
-        size_t ke = i;
-        while (ke > ks && (pt[ke - 1] == ' ' || pt[ke - 1] == '\t')) ke--;
-        const char* pv = nullptr;
-        size_t pvn = 0;
-        if (i < pt_full && pt[i] == '=') {
-          i++;
-          size_t vs = i;
-          while (i < pt_full && pt[i] != ';') i++;
-          size_t vend = i;
-          while (vend > vs && (pt[vend - 1] == ' ' || pt[vend - 1] == '\t')) vend--;
-          pv = pt + vs;
-          pvn = vend - vs;
-        }
-        if (ke == ks) continue;
-        std::string_view found;
-        hit = param_find({{ct, ct_full}, {pt + ks, ke - ks}}, found) &&
-              found.size() == pvn && (pvn == 0 || std::memcmp(found.data(), pv, pvn) == 0);
-      }
-    }
-    if (!hit) continue;
+    const std::string_view offered{
+        RSTRING_PTR(RARRAY_PTR(pair)[0]),
+        static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]))};
+    if (!type_matches(media_base(offered), arrived_base)) continue;
+    if (!params_agree(offered, arrived)) continue;
     const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
     const mrb_value answer = mrb_funcall_argv(mrb, r.res.live, hs, 0, nullptr);
     if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
