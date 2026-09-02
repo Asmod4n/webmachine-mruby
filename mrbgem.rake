@@ -100,6 +100,20 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # amalgamation is 103 KB of .text.
   spec.add_dependency 'mruby-uri-parser', github: 'Asmod4n/mruby-uri-parser', branch: 'master'
 
+  # Authentication: the password database is LMDB, the hash is argon2,
+  # and both gems carry their C library, so naming them is enough - each
+  # exports its vendored header's directory, and argon2.h and lmdb.h
+  # land on this gem's compiler path with nothing to wire up here.
+  #
+  # What is stored is argon2's OWN encoded form,
+  # $argon2id$v=19$m=...,t=...,p=...$salt$hash. Salt and parameters
+  # travel inside it, so there is no record format belonging to this
+  # tree that webmachine-passwd, which writes, and the server, which
+  # verifies, would have to keep in step. Raising the cost later is a
+  # per-record decision, because every record says what it cost.
+  spec.add_dependency 'mruby-argon2'
+  spec.add_dependency 'mruby-lmdb'
+
   # The error pages are mustache templates (#210). They are rendered per
   # response, not once at boot: a 404 names what was not found, so the set
   # of bodies is as large as the set of request targets.
