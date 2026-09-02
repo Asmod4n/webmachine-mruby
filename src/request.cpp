@@ -10,6 +10,8 @@
 
 #include <picohttpparser.h>
 
+#include <ada.h>
+
 namespace webmachine {
 namespace {
 const ReqView* view_ = nullptr;
@@ -120,63 +122,39 @@ mrb_value req_query_string(mrb_state* mrb, mrb_value) {
   return lend(mrb, v->request_target + off, v->request_target_len - off);
 }
 
-// RFC 9110 2.4 / percent-encoding: one hex digit, or -1.
-int hex(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-// RFC 9110 2.4: one percent-decoded value; '+' is a space, a bad escape is kept.
-mrb_value decoded(mrb_state* mrb, const char* p, size_t n) {
-  mrb_value s = mrb_str_new_capa(mrb, n);
-  for (size_t i = 0; i < n; i++) {
-    if (p[i] == '+') {
-      mrb_str_cat(mrb, s, " ", 1);
-      continue;
-    }
-    if (p[i] == '%' && i + 2 < n) {
-      const int hi = hex(p[i + 1]);
-      const int lo = hex(p[i + 2]);
-      if (hi >= 0 && lo >= 0) {
-        const char b = static_cast<char>((hi << 4) | lo);
-        mrb_str_cat(mrb, s, &b, 1);
-        i += 2;
-        continue;
-      }
-    }
-    mrb_str_cat(mrb, s, p + i, 1);
-  }
-  return s;
-}
-
-// RFC 9110 4.2.1: key=value pairs, '&' or ';' separated.
+// application/x-www-form-urlencoded, WHATWG URL Standard: the pairs of
+// a query string, percent-decoded, '+' read as a space.
+//
+// NOT RFC 9110: this comment used to cite 4.2.1 for "'&' or ';'
+// separated", and that section says no such thing - it defines the http
+// URI scheme, where the query is an opaque string, as it is in RFC 3986
+// 3.4. Key-value pairs are not an HTTP concept at all; they are the
+// form encoding's, and its living definition is the URL Standard. That
+// standard splits on '&' (0x26) and nothing else. The ';' this used to
+// accept came from a note to CGI authors in HTML 4.01 B.2.2 and was
+// removed from the web platform in 2020, so it goes here too. Cookies
+// keep their ';' - that one IS specified, in RFC 6265 4.2.
+//
+// ada owns the decoded pairs for the length of the call and hands out
+// views into them, so every String below is made while they are alive.
 mrb_value req_query(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value h = mrb_hash_new(mrb);
   if (v->path_len >= v->request_target_len) return h;
   const char* p = v->request_target + v->path_len + 1;
   const size_t n = v->request_target_len - v->path_len - 1;
-  size_t at = 0;
+
+  ada::url_search_params params{std::string_view(p, n)};
   // Two Strings per pair, and the pair count is the client's to choose:
   // held to the end they would fill a 100-slot MRB_GC_FIXED_ARENA at ~50
   // pairs. The hash is rooted before the save, so it keeps what it was
   // handed and the restore only drops the temporaries.
   const int ai = mrb_gc_arena_save(mrb);
-  while (at < n) {
-    const size_t start = at;
-    while (at < n && p[at] != '&' && p[at] != ';') at++;
-    const size_t len = at - start;
-    if (at < n) at++;
-    if (len == 0) continue;
-    size_t eq = 0;
-    while (eq < len && p[start + eq] != '=') eq++;
+  for (const auto& kv : params) {
     // Frozen key: hash.c h_key_for would otherwise dup it (ea96df2).
-    const mrb_value key = mrb_obj_freeze(mrb, decoded(mrb, p + start, eq));
-    const mrb_value val =
-        eq < len ? decoded(mrb, p + start + eq + 1, len - eq - 1) : mrb_str_new(mrb, "", 0);
-    mrb_hash_set(mrb, h, key, val);
+    const mrb_value key =
+        mrb_obj_freeze(mrb, mrb_str_new(mrb, kv.first.data(), kv.first.size()));
+    mrb_hash_set(mrb, h, key, mrb_str_new(mrb, kv.second.data(), kv.second.size()));
     mrb_gc_arena_restore(mrb, ai);
   }
   return h;

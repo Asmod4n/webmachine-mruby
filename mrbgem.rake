@@ -91,6 +91,15 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   spec.add_dependency 'mruby-toml'
 
+  # ada-url, vendored by this gem as its 3.4.4 amalgamation, and put on
+  # this one's compiler path the way mruby does for a dependency's
+  # include/. What is wanted here is the decoding, not the URL parser:
+  # a request target arrives already split by picohttpparser, and an
+  # origin-form target is a path and a query. Affordable only because
+  # the host build drops the sections nothing reaches - whole, the
+  # amalgamation is 103 KB of .text.
+  spec.add_dependency 'mruby-uri-parser', github: 'Asmod4n/mruby-uri-parser', branch: 'master'
+
   # The error pages are mustache templates (#210). They are rendered per
   # response, not once at boot: a 404 names what was not found, so the set
   # of bodies is as large as the set of request targets.

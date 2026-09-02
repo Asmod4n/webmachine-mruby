@@ -834,6 +834,18 @@ assert('application: request names what the route captured, per request') do
     assert_equal 'buzz=two', g[4]
     assert_equal '', g[5]
     assert_equal '', g[7]
+
+    # application/x-www-form-urlencoded, WHATWG URL Standard: '&' is the
+    # only separator, '+' is a space, and a broken escape stays as it was
+    # written. ';' is NOT a separator - it was a note to CGI authors in
+    # HTML 4.01 B.2.2 and left the web platform in 2020 - so 'b=2;c=3' is
+    # one value, semicolons and all. Cookies are the other decision and
+    # keep their ';' (RFC 6265 4.2).
+    s.write("GET /fizz/three?a=one+word&b=2;c=3&d=%zz HTTP/1.1\r\nHost: x\r\n\r\n")
+    _, body3 = ap_read(s)
+    q = body3.split("\n", -1)
+    assert_equal 'a=one word,b=2;c=3,d=%zz', q[6]
+    assert_equal 'a=one+word&b=2;c=3&d=%zz', q[7]
     s.close
   end
 end
