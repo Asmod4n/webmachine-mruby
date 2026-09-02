@@ -5624,6 +5624,15 @@ class Ring {
     __builtin_unreachable();
   }
 
+  // The same, with the sentence built by mruby instead of by a 160-byte
+  // buffer on the way to it. %d, %i, %s and %v are mrb_format's, not
+  // printf's - there is no length modifier left to get wrong.
+  template <typename... Args>
+  [[noreturn]] void fatalf(const char* fmt, Args... args) {
+    mrb_raisef(mrb_, E_WM_ERROR(mrb_), fmt, args...);
+    __builtin_unreachable();
+  }
+
   // Never null on return: a full SQ is drained by submitting it, and the
   // retry then has room. io_uring_enter(2) can refuse that submit, and
   // its ANSWER is the thing worth reading - EINTR and EAGAIN are ordinary
@@ -5637,18 +5646,13 @@ class Ring {
     for (int attempt = 0; attempt < 8; attempt++) {
       const int rc = io_uring_submit(&ring_);
       if (rc < 0 && rc != -EINTR && rc != -EAGAIN) {
-        char msg[160];
-        std::snprintf(msg, sizeof msg,
-                      "SQ (%u entries) full and io_uring_enter refused it: %s",
-                      sq_entries_, std::strerror(-rc));
-        fatal(msg);
+        fatalf("SQ (%d entries) full and io_uring_enter refused it: %s",
+               static_cast<int>(sq_entries_), std::strerror(-rc));
       }
       s = io_uring_get_sqe(&ring_);
       if (WM_LIKELY(s != nullptr)) return s;
     }
-    char msg[160];
-    std::snprintf(msg, sizeof msg, "SQ (%u entries) stuck after 8 submits", sq_entries_);
-    fatal(msg);
+    fatalf("SQ (%d entries) stuck after 8 submits", static_cast<int>(sq_entries_));
   }
 
   static constexpr uint32_t kStreamAccess = 0;
@@ -5710,10 +5714,8 @@ class Ring {
     if (lg == nullptr) return;
     if (WM_UNLIKELY(cqe->res < 0)) {
       if (stream == kStreamError && cqe->res == -ECANCELED) return;
-      char msg[160];
-      std::snprintf(msg, sizeof msg, "%s log write failed: %s - refusing to drop lines",
-                    stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
-      fatal(msg);
+      fatalf("%s log write failed: %s - refusing to drop lines",
+             stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
     }
     if (stream == kStreamError) {
       if (gen == 1) return;
