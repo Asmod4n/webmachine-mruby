@@ -11,8 +11,17 @@ MRuby::Lockfile.disable
 MRuby::Build.new do |conf|
   conf.toolchain
 
-  conf.cc.flags << '-O3' << '-march=x86-64-v3'
-  conf.cxx.flags << '-O3' << '-march=x86-64-v3' << '-std=c++20'
+  # -march: forgecore builds native and always has, and every number in
+  # bench/results/forgecore.log was taken that way - changing that here
+  # would make the next A/B measure the ISA as well as the change. A box
+  # that MIGRATES between hosts cannot use native: gcc resolves it to
+  # whatever the machine booted on (cascadelake, on the container this
+  # was written on), and that binary meets an illegal instruction on the
+  # next host - and under valgrind. WM_MARCH= is how such a box asks for
+  # a fixed ISA without changing what anybody else builds.
+  march = ENV['WM_MARCH'] || 'native'
+  conf.cc.flags << '-O3' << "-march=#{march}"
+  conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
 
   [conf.cc, conf.cxx, conf.objc, conf.asm].each do |c|
     c.flags.each { |f| f.delete('-g') if f.is_a?(Array) }

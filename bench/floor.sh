@@ -283,6 +283,12 @@ OUT=$(mktemp)
     *)        CFLAGS_SRC=build_config_host.rb ;;
   esac
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
+  # The config spells -march through a variable so a host that migrates
+  # can pin it (WM_MARCH); the LOG has to say which ISA, not which shell
+  # expression, or every line after this reads the same for two builds
+  # that are not the same.
+  CFLAGS_LINE=${CFLAGS_LINE//\$\{march\}/${WM_MARCH:-native}}
+  CFLAGS_LINE=${CFLAGS_LINE//#\{march\}/${WM_MARCH:-native}}
   # WHICH htgen - not just "htgen". A stale binary earlier in PATH than
   # the one just built is invisible otherwise, and the number it produces
   # looks exactly like the number the new one would have produced.
