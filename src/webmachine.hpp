@@ -5258,7 +5258,7 @@ class Ring {
     const uint64_t nofile = raise_nofile();
     log_fd_ = cfg.log_fd;
     err_fd_ = cfg.err_fd;
-    backlog_ = cfg.backlog != 0 ? cfg.backlog : 511;
+    backlog_ = cfg.backlog != 0 ? cfg.backlog : SOMAXCONN;
     header_timeout_ = cfg.header_timeout != 0 ? cfg.header_timeout : 60;
     send_timeout_ = cfg.send_timeout != 0 ? cfg.send_timeout : 60;
     idle_timeout_ = cfg.idle_timeout != 0 ? cfg.idle_timeout : 75;
@@ -7192,7 +7192,7 @@ class Ring {
   unsigned sq_entries_ = 0;
   // Whose exception this is, when the reactor has to give up. See fatal().
   mrb_state* mrb_ = nullptr;
-  int backlog_ = 511;
+  int backlog_ = SOMAXCONN;
   int header_timeout_ = 60;
   int send_timeout_ = 60;
   int idle_timeout_ = 75;
