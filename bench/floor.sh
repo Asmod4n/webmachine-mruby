@@ -76,7 +76,13 @@ PIPELINE="${PIPELINE:-1}"
 # (github.com/Asmod4n/htgen) - a load generator is not part of an HTTP
 # state model, and it was building against this tree's build directory,
 # which tied a measuring instrument to the thing it measures.
+# $HOME is not where the trees are on every machine: this container's is
+# /root while both this repo and htgen sit under /home/user, so the
+# generator was "not found" with the binary right beside the checkout.
+# Look there too - a clone next to this one is the ordinary layout - and
+# then on PATH.
 HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"
 [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
   echo "htgen not found. Build it once:" >&2
   echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2

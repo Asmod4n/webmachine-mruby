@@ -245,6 +245,7 @@ case "$PROTO" in
   *) echo "PROTO=$PROTO is neither h1 nor h2" >&2; exit 1 ;;
 esac
 HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
 [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
   echo "htgen not found. Build it once:" >&2
   echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2

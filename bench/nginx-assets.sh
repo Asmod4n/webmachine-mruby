@@ -53,6 +53,7 @@ command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exi
   exit 2
 }
 HTGEN="${HTGEN:-$HOME/htgen/htgen}"
+[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
 [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
   echo "htgen not found. Build it once:" >&2
   echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
