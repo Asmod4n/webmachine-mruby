@@ -90,15 +90,9 @@ void define_resources(mrb_state* mrb) {
 // run_guarded's shape: what the example serves, once the VM is up.
 int serve_body(mrb_state* mrb, void* ud) {
   const webmachine::ServerOptions* opts = static_cast<const webmachine::ServerOptions*>(ud);
-  char err[512] = "";
-  if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts->app_path)) {
-    std::fprintf(stderr, "webmachine-example: %s: %s\n", opts->app_path, err);
-    return 1;
-  }
+  webmachine::app_load(mrb, opts->app_path);
   if (webmachine::server_entered()) return 0;
-  const int rc = webmachine::server_run({mrb, {err, sizeof(err)}});
-  if (rc != 0) std::fprintf(stderr, "webmachine-example: %s\n", err);
-  return rc;
+  return webmachine::server_run(mrb);
 }
 
 int main(int argc, char** argv) {

@@ -198,22 +198,15 @@ mrb_value conf_url_set(mrb_state* mrb, mrb_value self) {
 mrb_value conf_url_get(mrb_state* mrb, mrb_value self) {
   AppSpec* s = static_cast<AppSpec*>(mrb_data_get_ptr(mrb, self, &app_type));
   if (s->bound) return mrb_str_new(mrb, s->bound_url.data(), s->bound_url.size());
-  char buf[300];
-  int n = 0;
+  const char* const scheme = s->tls ? "https" : "http";
   switch (s->form) {
-    case AppSpec::Form::kUnix:
-      n = std::snprintf(buf, sizeof(buf), "unix://%s", s->unix_path.c_str());
-      break;
+    case AppSpec::Form::kUnix: return mrb_format(mrb, "unix://%s", s->unix_path.c_str());
     case AppSpec::Form::kUrl:
-      n = std::snprintf(buf, sizeof(buf), "%s://%s:%d", s->tls ? "https" : "http",
-                        s->url_host.c_str(), s->port);
-      break;
-    case AppSpec::Form::kPort:
-      n = std::snprintf(buf, sizeof(buf), "%s://0.0.0.0:%d", s->tls ? "https" : "http", s->port);
-      break;
-    case AppSpec::Form::kNone: return mrb_nil_value();
+      return mrb_format(mrb, "%s://%s:%d", scheme, s->url_host.c_str(), s->port);
+    case AppSpec::Form::kPort: return mrb_format(mrb, "%s://0.0.0.0:%d", scheme, s->port);
+    case AppSpec::Form::kNone: break;
   }
-  return mrb_str_new(mrb, buf, static_cast<size_t>(n < 0 ? 0 : n));
+  return mrb_nil_value();
 }
 
 // The token array crosses the boundary ONCE, here, for all three route kinds.
@@ -519,23 +512,18 @@ int run_guarded(mrb_state* mrb, Guarded step) {
 }
 
 // Load the app's bytecode and call its `main`. A .rb is refused by name.
-bool app_load(Setup s, const char* path) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
+void app_load(mrb_state* mrb, const char* path) {
   const size_t path_len = std::strlen(path);
   if (path_len >= 3 && std::memcmp(path + path_len - 3, ".rb", 3) == 0) {
     const std::string mrb_path(path, path_len - 3);
-    std::snprintf(err, errlen,
-                  "%s is Ruby source, not bytecode - this server loads bytecode only. "
-                  "Compile it first: mrbc -o %s.mrb %s",
-                  path, mrb_path.c_str(), path);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "%s is Ruby source, not bytecode - this server loads bytecode only. Compile "
+               "it first: mrbc -o %s.mrb %s",
+               path, mrb_path.c_str(), path);
   }
   FILE* f = std::fopen(path, "rb");
   if (f == nullptr) {
-    std::snprintf(err, errlen, "cannot open %s", path);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "cannot open %s: %s", path, std::strerror(errno));
   }
   // Read before loading, so the bytes can be hashed: app_build_hash is
   // what every error fingerprint is taken over first, and it is these
@@ -547,59 +535,42 @@ bool app_load(Setup s, const char* path) {
   while ((got = std::fread(chunk, 1, sizeof chunk, f)) != 0) image.append(chunk, got);
   std::fclose(f);
   if (image.empty()) {
-    std::snprintf(err, errlen, "%s is empty - that is no bytecode", path);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s is empty - that is no bytecode", path);
   }
   app_build_hash() = fnv1a(kFnvBasis, image.data(), image.size());
-  const int ai = mrb_gc_arena_save(mrb);
+  const ArenaGuard arena(mrb);
   mrb_load_irep_buf(mrb, image.data(), image.size());
-  if (mrb->exc != nullptr) {
-    std::snprintf(err, errlen, "app raised while loading (exception below)");
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
+  // The app's own exception, with its class and its line. It used to be
+  // printed here and replaced by "app raised while loading (exception
+  // below)" - which said less than the exception and went to a stream
+  // nothing reads.
+  if (mrb->exc != nullptr) rethrow(mrb);
   struct RClass* owner = mrb->object_class;
   if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(main)))) {
-    std::snprintf(err, errlen,
-                  "the app defines no `main` - since #116 an app file defines exactly "
-                  "that, and Webmachine::Application.new inside it registers the app");
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "%s defines no `main` - since #116 an app file defines exactly that, and "
+               "Webmachine::Application.new inside it registers the app",
+               path);
   }
   mrb_funcall_argv(mrb, mrb_top_self(mrb), MRB_SYM(main), 0, nullptr);
-  if (mrb->exc != nullptr) {
-    std::snprintf(err, errlen, "main raised (exception below)");
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  mrb_gc_arena_restore(mrb, ai);
-  return true;
+  if (mrb->exc != nullptr) rethrow(mrb);
 }
 
 // Every application `main` registered - registration order IS listener order.
-bool app_registered_all(Registered out_, Refusal why) {
-  char* const err = why.buf;
-  const size_t errlen = why.len;
+void app_registered_all(mrb_state* mrb, Registered out_) {
   std::vector<AppSpec*>& out = out_.specs;
   const size_t max_listeners = out_.max_listeners;
   if (registered_.empty()) {
-    std::snprintf(err, errlen,
-                  "main registered no application - Webmachine::Application.new takes a "
-                  "block, and returning from it is what registers the app");
-    return false;
+    mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
+              "main registered no application - Webmachine::Application.new takes a block, "
+              "and returning from it is what registers the app");
   }
   if (registered_.size() > max_listeners) {
-    std::snprintf(err, errlen,
-                  "main registered %zu applications and the ring holds %zu listeners",
-                  registered_.size(), max_listeners);
-    return false;
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+               "main registered %i applications and the ring holds %i listeners",
+               static_cast<mrb_int>(registered_.size()), static_cast<mrb_int>(max_listeners));
   }
   out.assign(registered_.begin(), registered_.end());
-  return true;
 }
 
 // A pack and no app: the asset tier answers before routing, so this app
@@ -620,33 +591,21 @@ AppSpec* app_assets_only() {
 
 // What the listener REALLY became; this is what conf.url reads back.
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port) {
-  char buf[300];
-  if (unix_path != nullptr) std::snprintf(buf, sizeof(buf), "unix://%s", unix_path);
-  else if (!spec.url_host.empty()) {
-    std::snprintf(buf, sizeof(buf), "http://%s:%d", spec.url_host.c_str(), port);
+  if (unix_path != nullptr) {
+    spec.bound_url = std::string("unix://") + unix_path;
+  } else if (!spec.url_host.empty()) {
+    spec.bound_url = "http://" + spec.url_host + ":" + std::to_string(port);
   } else {
-    std::snprintf(buf, sizeof(buf), "http://0.0.0.0:%d", port);
+    spec.bound_url = "http://0.0.0.0:" + std::to_string(port);
   }
-  spec.bound_url = buf;
   spec.bound = true;
 }
 
 // Run the ready hook from the TOOL, outside any VM frame - so, funcall.
-bool app_ready_run(Setup s, AppSpec& spec) {
-  mrb_state* const mrb = s.mrb;
-  char* const err = s.why.buf;
-  const size_t errlen = s.why.len;
-  if (!spec.have_ready) return true;
-  const int ai = mrb_gc_arena_save(mrb);
+void app_ready_run(mrb_state* mrb, AppSpec& spec) {
+  if (!spec.have_ready) return;
+  const ArenaGuard arena(mrb);
   mrb_funcall_argv(mrb, spec.ready, MRB_SYM(call), 0, nullptr);
-  if (mrb->exc != nullptr) {
-    std::snprintf(err, errlen, "ready raised (exception below)");
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  mrb_gc_arena_restore(mrb, ai);
-  return true;
+  if (mrb->exc != nullptr) rethrow(mrb);
 }
 }

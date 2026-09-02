@@ -212,11 +212,7 @@ int serve(mrb_state* mrb, Invocation& in) {
   webmachine::server_options(opts);
 
   if (opts.app_path != nullptr) {
-    char err[512];
-    if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts.app_path)) {
-      std::fprintf(stderr, "webmachine: %s: %s\n", opts.app_path, err);
-      return 1;
-    }
+    webmachine::app_load(mrb, opts.app_path);
   } else if (opts.assets_path != nullptr) {
     // A pack alone is something to serve. Everything it does not name is
     // a 404, because no resource stands behind it.
@@ -229,10 +225,7 @@ int serve(mrb_state* mrb, Invocation& in) {
   }
 
   if (webmachine::server_entered()) return 0;
-  char err[512] = "";
-  const int rc = webmachine::server_run({mrb, {err, sizeof(err)}});
-  if (rc != 0) std::fprintf(stderr, "webmachine: %s\n", err);
-  return rc;
+  return webmachine::server_run(mrb);
 }
 
 // run_guarded's shape: the step it protects takes what it needs as void*.

@@ -669,22 +669,6 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 
 namespace webmachine {
 
-// Where a setup refusal is spelled. A pointer and a length are one thing,
-// and every one of these buffers is the same thing: the sentence the
-// operator reads when the process will not come up. #33 retires the pair
-// for a raise; until then it travels as one argument, not two.
-struct Refusal {
-  char* buf;
-  size_t len;
-};
-
-// One setup, before the first request has been read: the VM the process
-// carries, and where a refusal about it goes.
-struct Setup {
-  mrb_state* mrb;
-  Refusal why;
-};
-
 // mruby's GC arena is a stack, and a setup that gives up has to leave it
 // where it found it. Since #33 those exits are raises - a raise is a C++
 // throw here, MRB_USE_CXX_EXCEPTION is always on - so the restore belongs
@@ -4815,7 +4799,7 @@ struct Guarded {
 // exactly the moment a process dies.
 int run_guarded(mrb_state* mrb, Guarded step);
 
-bool app_load(Setup s, const char* path);
+void app_load(mrb_state* mrb, const char* path);
 
 // Where every registered application goes, and how many listeners this
 // build can carry - one more than that is a refusal, not a truncation.
@@ -4823,13 +4807,13 @@ struct Registered {
   std::vector<AppSpec*>& specs;
   size_t max_listeners;
 };
-bool app_registered_all(Registered out, Refusal why);
+void app_registered_all(mrb_state* mrb, Registered out);
 
 AppSpec* app_assets_only();
 
 void app_mark_bound(AppSpec& spec, const char* unix_path, int port);
 
-bool app_ready_run(Setup s, AppSpec& spec);
+void app_ready_run(mrb_state* mrb, AppSpec& spec);
 }
 
 namespace webmachine {
@@ -4882,11 +4866,11 @@ struct ServerOptions {
 };
 void server_options(const ServerOptions& opts);
 
-bool server_backend_ok();
+void server_backend_say();
 
 void server_init(mrb_state* mrb, struct RClass* wm);
 
-int server_run(Setup s);
+int server_run(mrb_state* mrb);
 
 bool server_entered();
 }

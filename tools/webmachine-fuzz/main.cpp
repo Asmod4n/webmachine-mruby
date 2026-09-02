@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <mruby.h>
+#include <mruby/error.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
 
@@ -59,6 +60,16 @@ void tick() {
   }
 }
 
+// #33: app_load raises, and the fuzz driver is not a Ruby frame.
+struct LoadApp {
+  const char* path;
+};
+
+mrb_value load_app_body(mrb_state* mrb, void* ud) {
+  webmachine::app_load(mrb, static_cast<LoadApp*>(ud)->path);
+  return mrb_nil_value();
+}
+
 void setup() {
   ::unlink(kSock);
   g_mrb = mrb_open();
@@ -74,11 +85,12 @@ void setup() {
   webmachine::server_options(opts);
 
   if (opts.app_path != nullptr) {
-    char err[512] = "";
-    if (!webmachine::app_load(g_mrb, opts.app_path, err, sizeof(err))) {
-      std::fprintf(stderr, "webmachine-fuzz: %s: %s\n", opts.app_path, err);
-      std::exit(1);
-    }
+    // The fuzz driver has no frame above it either, and #33 means the
+    // load refuses by raising.
+    LoadApp ask{opts.app_path};
+    mrb_bool raised = FALSE;
+    mrb_protect_error(g_mrb, load_app_body, &ask, &raised);
+    if (raised) std::exit(1);
   }
   tick();  // builds the ring and the listener, then runs one round
 }

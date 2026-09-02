@@ -234,7 +234,7 @@ void build_listeners(mrb_state* mrb, RingConfig& cfg) {
 // works either way now - the slipstream seam underneath it hands every
 // call to the engine when the kernel refuses io_uring - and the banner
 // is the receipt. Silence is the kernel side.
-bool server_backend_ok() {
+void server_backend_say() {
   if (slipstream_syscall_uses_engine()) {
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
     char buf[32] = "";
@@ -280,17 +280,15 @@ bool server_backend_ok() {
   // has just said. The check that used to stand here asked a Ruby
   // constant that a since-removed gem defined, so it answered "no
   // liburing" for a binary that carries it.
-  return true;
 }
 
 namespace {
 // Everything between "main returned" and "the first accept", once.
-bool build(Setup s) {
-  mrb_state* const mrb = s.mrb;
-  if (built_) return true;
-  if (!server_backend_ok()) return false;
+void build(mrb_state* mrb) {
+  if (built_) return;
+  server_backend_say();
 
-  if (!app_registered_all({specs_, kMaxListeners}, s.why)) return false;
+  app_registered_all(mrb, {specs_, kMaxListeners});
   RingConfig cfg;
   cfg.sq_entries = opts_.sq_entries;
   // The gem is embedded: a reactor that has to give up raises into this
@@ -300,8 +298,8 @@ bool build(Setup s) {
   cfg.header_timeout = opts_.header_timeout;
   cfg.send_timeout = opts_.send_timeout;
   cfg.idle_timeout = opts_.idle_timeout;
-  build_listeners(s.mrb, cfg);
-  build_listener_tls(s.mrb, cfg);
+  build_listeners(mrb, cfg);
+  build_listener_tls(mrb, cfg);
 
   // server.docroot: a typed flag beats [server], and both beat the app's
   // conf - the same order --unix and --port already follow. The canonical
@@ -316,7 +314,7 @@ bool build(Setup s) {
       if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
     }
     if (dr != nullptr) {
-      docroot_open(s.mrb, dr);
+      docroot_open(mrb, dr);
       std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
     }
   }
@@ -331,11 +329,11 @@ bool build(Setup s) {
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
-    mime_.load(s.mrb, opts_.mime_types_path);
+    mime_.load(mrb, opts_.mime_types_path);
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
   }
-  if (opts_.assets_path != nullptr) assets_.open(s.mrb, opts_.assets_path, mime_);
+  if (opts_.assets_path != nullptr) assets_.open(mrb, opts_.assets_path, mime_);
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
@@ -344,12 +342,12 @@ bool build(Setup s) {
     // the error log, and the pages render without it.
     OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
     mrb_bool raised = FALSE;
-    const mrb_value e = mrb_protect_error(s.mrb, open_pack_body, &pack, &raised);
+    const mrb_value e = mrb_protect_error(mrb, open_pack_body, &pack, &raised);
     if (!raised) {
       error_assets_up_ = true;
       std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
     } else {
-      const mrb_value said = mrb_obj_as_string(s.mrb, e);
+      const mrb_value said = mrb_obj_as_string(mrb, e);
       error_assets_note_ = "error assets at " + error_assets_file + " unusable (" +
                            std::string(RSTRING_PTR(said), static_cast<size_t>(RSTRING_LEN(said))) +
                            ") - pages without pictures";
@@ -384,7 +382,7 @@ bool build(Setup s) {
     const LogdSpawn access = {
         "access", opts_.log_path,
         opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", opts_.log_max_bytes};
-    log_fd_ = spawn_logd(s.mrb, access);
+    log_fd_ = spawn_logd(mrb, access);
     cfg.log_fd = log_fd_;
   }
   if (opts_.error_log_path != nullptr) {
@@ -395,7 +393,7 @@ bool build(Setup s) {
     // FIRST entry is the one that names the cause and everything after it
     // is consequence. A ceiling that keeps the newest half would throw
     // away exactly the line worth having.
-    err_fd_ = spawn_logd(s.mrb, {"error", opts_.error_log_path, nullptr, 0});
+    err_fd_ = spawn_logd(mrb, {"error", opts_.error_log_path, nullptr, 0});
     cfg.err_fd = err_fd_;
   }
 
@@ -425,7 +423,7 @@ bool build(Setup s) {
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.
-  http_->open_error_assets(s.mrb, error_assets_up_ ? &error_assets_ : nullptr);
+  http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
   // #210: and the same assets under response.error_asset("404.jpg"),
   // so an app can answer with one of these pictures wherever it likes,
   // not only where the error resource does.
@@ -458,10 +456,7 @@ bool build(Setup s) {
   for (size_t i = 0; i < specs_.size(); i++) {
     app_mark_bound(*specs_[i], cfg.listeners[i].unix_path,
                    ring_->bound_port(static_cast<uint32_t>(i)));
-    if (!app_ready_run(s, *specs_[i])) {
-      ring_.reset();
-      return false;
-    }
+    app_ready_run(mrb, *specs_[i]);
   }
 
   std::fprintf(stderr, "webmachine: http/1.1 up, pid %d, %u listener(s)\n", getpid(),
@@ -475,15 +470,12 @@ bool build(Setup s) {
     }
   }
   built_ = true;
-  return true;
 }
 
-// The Ruby doors all need the server standing; a failure to build raises.
+// The Ruby doors all need the server standing, and since #33 build says
+// so itself - this is only the door that marks the server entered.
 void ensure(mrb_state* mrb) {
-  char err[512] = "";
-  if (!build({mrb, {err, sizeof(err)}})) {
-    mrb_raisef(mrb, E_RUNTIME_ERROR, "webmachine: %s", err);
-  }
+  build(mrb);
   entered_ = true;
 }
 
@@ -561,8 +553,8 @@ void server_init(mrb_state* mrb, struct RClass* wm) {
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.
-int server_run(Setup s) {
-  if (!build(s)) return 1;
+int server_run(mrb_state* mrb) {
+  build(mrb);
   entered_ = true;
   ring_->run();
   ring_.reset();
