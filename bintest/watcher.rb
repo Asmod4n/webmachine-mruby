@@ -19,7 +19,7 @@ def wa_body(app_source)
   sock = "/tmp/wm-wa-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-wa-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WA_BIN, '--unix', sock, '--app', mrb.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, WA_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

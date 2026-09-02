@@ -36,10 +36,10 @@ def ap_server(app_source, sock: nil, args: nil)
   app = ap_compile(app_source)
   sock ||= "/tmp/wm-ap-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
-  args ||= ['--unix', sock]
+  args ||= ["--unix=#{sock}"]
   out = "/tmp/wm-ap-stdout-#{$$}.log"
   err = "/tmp/wm-ap-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, *args, '--app', app.path, out: out, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, *args, "--app=#{app.path}", out: out, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
@@ -55,8 +55,8 @@ end
 def ap_refused(app_source)
   app = ap_compile(app_source)
   err = "/tmp/wm-ap-refuse-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--unix', "/tmp/wm-ap-refuse-#{$$}.sock",
-              '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
+              "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
   File.read(err)
@@ -69,7 +69,7 @@ end
 def ap_refused_unaided(app_source)
   app = ap_compile(app_source)
   err = "/tmp/wm-ap-unaided-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
   File.read(err)
@@ -371,7 +371,7 @@ assert('application: conf.url names the listener when nothing overrides it') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-url-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     up = false
     50.times do
@@ -591,7 +591,7 @@ assert('application: two applications, two listeners, one ring - each answers it
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-two-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(a) && File.socket?(b); sleep 0.05 }
     assert_true File.socket?(a) && File.socket?(b), (File.read(err) rescue '')
@@ -690,7 +690,7 @@ assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-tick-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -734,7 +734,7 @@ assert('application: Webmachine.fd is pollable - idle costs nothing, a request w
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-fd-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -772,7 +772,7 @@ assert('application: Webmachine.run inside main serves like the tool loop') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-run-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -947,7 +947,7 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-stop-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -1003,7 +1003,7 @@ assert('application: conf.url is a URL, and ada parses it as one') do
   app = ap_compile(src)
   out = "/tmp/wm-ap-v6-out-#{$$}.log"
   err = "/tmp/wm-ap-v6-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1097,7 +1097,7 @@ assert('application: a conf.url query names settings, and only settings') do
   app = ap_compile(src)
   out = "/tmp/wm-ap-q-out-#{$$}.log"
   err = "/tmp/wm-ap-q-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1175,7 +1175,7 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
   app = ap_compile(src)
   out = "/tmp/wm-ap-eph-out-#{$$}.log"
   err = "/tmp/wm-ap-eph-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--app', app.path, out: out, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
   port = nil
   refused = false
   100.times do
@@ -1285,7 +1285,7 @@ assert('application: a server with nothing to serve refuses to start') do
   # behind any answer - and it is exactly the shape #201 was about.
   err = "/tmp/wm-ap-nothing-#{$$}.log"
   sock = "/tmp/wm-ap-nothing-#{$$}.sock"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, '--unix', sock, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--unix=#{sock}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0, 'server came up with nothing to serve'
   text = File.read(err) rescue ''
@@ -1362,7 +1362,7 @@ assert('application: response.error_asset answers with the mapped entry, byte fo
 
   sock = "/tmp/wm-ap-ea-#{$$}.sock"
   ap_server(AP_EASSET, sock: sock,
-            args: ['--unix', sock, '--error-assets', pack]) do |s|
+            args: ["--unix=#{sock}", "--error-assets=#{pack}"]) do |s|
     UNIXSocket.open(s) do |c|
       # Twice on ONE connection: a lend that was not handed back, or a
       # pointer the run frame owned, shows up on the second answer.
@@ -1394,7 +1394,7 @@ assert('application: an error_asset the archive does not carry is refused by nam
   File.unlink(log) if File.exist?(log)
   begin
     ap_server(AP_EASSET, sock: sock,
-              args: ['--unix', sock, '--error-assets', pack, '--error-log', log]) do |s|
+              args: ["--unix=#{sock}", "--error-assets=#{pack}", "--error-log=#{log}"]) do |s|
       UNIXSocket.open(s) do |c|
         c.write("GET /typo HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
         head, = ap_read(c)
@@ -1422,8 +1422,8 @@ assert('application: response.error_asset without error assets says so, and how 
     # flag off no longer reaches it: a server with nothing named now finds
     # the shipped file beside its own binary.
     ap_server(AP_EASSET, sock: sock,
-              args: ['--unix', sock, '--error-assets', '/dev/null',
-                     '--error-log', log]) do |s|
+              args: ["--unix=#{sock}", '--error-assets=/dev/null',
+                     "--error-log=#{log}"]) do |s|
       UNIXSocket.open(s) do |c|
         c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
         head, = ap_read(c)
@@ -1454,7 +1454,7 @@ assert('application: error assets are found beside the binary, with no flag at a
   # NO --error-assets. The route below leaves /favicon.ico unrouted, and
   # the Accept is the one a browser sends for a picture: image/* carries
   # q=0.8 over */* at q=0.5, so a picture is what it asked for.
-  ap_server(AP_FIZZ, sock: sock, args: ['--unix', sock]) do |s, _out, err|
+  ap_server(AP_FIZZ, sock: sock, args: ["--unix=#{sock}"]) do |s, _out, err|
     UNIXSocket.open(s) do |c|
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\n" \
               "Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n\r\n")
@@ -1487,7 +1487,7 @@ assert('application: a navigation gets the page, a picture fetch gets the pictur
 
   sock = "/tmp/wm-ap-conneg-#{$$}.sock"
   ap_server(AP_FIZZ, sock: sock,
-            args: ['--unix', sock, '--error-assets', pack]) do |s|
+            args: ["--unix=#{sock}", "--error-assets=#{pack}"]) do |s|
     UNIXSocket.open(s) do |c|
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\nAccept: #{nav}\r\n\r\n")
       head, body = ap_read(c)

@@ -59,7 +59,7 @@ def wm_smoke(build_name, label)
   sock = "/tmp/wm-#{build_name}-smoke-#{$$}.sock"
   log = "/tmp/wm-#{build_name}-smoke-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(bin, '--unix', sock, '--app', wm_smoke_app, out: File::NULL, err: log)
+  pid = spawn(bin, "--unix=#{sock}", "--app=#{wm_smoke_app}", out: File::NULL, err: log)
   begin
     200.times do
       break if File.socket?(sock)

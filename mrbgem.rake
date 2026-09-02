@@ -115,6 +115,12 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-argon2'
   spec.add_dependency 'mruby-lmdb'
 
+  # The command line is TypedArgs' grammar (--key=value), parsed in Ruby
+  # by the gem rather than by a switch over argv here. One parser, one
+  # set of refusals, and the structured forms are there the day a flag
+  # needs a list or a record instead of a scalar.
+  spec.add_dependency 'typedargs', github: 'Asmod4n/typedargs', branch: 'main'
+
   # The error pages are mustache templates (#210). They are rendered per
   # response, not once at boot: a 404 names what was not found, so the set
   # of bodies is as large as the set of request targets.

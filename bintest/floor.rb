@@ -40,7 +40,7 @@ end
 def floor_server(bundles: false)
   sock = "/tmp/wm-floor-#{$$}-#{bundles ? 'b' : 'r'}.sock"
   File.unlink(sock) if File.exist?(sock)
-  args = [SERVER_BIN, '--unix', sock, '--app', floor_app]
+  args = [SERVER_BIN, "--unix=#{sock}", "--app=#{floor_app}"]
   err = "/tmp/wm-floor-stderr-#{$$}.log"
   pid = spawn({ 'WM_BUNDLE' => bundles ? '1' : '0' }, *args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
@@ -77,8 +77,8 @@ end
 assert('floor: the ring-built TCP listener answers like the unix one') do
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--port', port.to_s,
-              '--app', floor_app, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, "--port=#{port.to_s}",
+              "--app=#{floor_app}", out: File::NULL, err: err)
   begin
     s = nil
     100.times do
@@ -104,8 +104,8 @@ end
 assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, '--unix', sock,
-              '--app', floor_app, out: File::NULL, err: File::NULL)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, "--unix=#{sock}",
+              "--app=#{floor_app}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   assert_true File.socket?(sock)
   Process.kill('TERM', pid)

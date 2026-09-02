@@ -91,15 +91,15 @@ if [ -n "${APP:-}" ]; then
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
       APP_MRB=/tmp/wm-h2-app.mrb
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
-      APP_ARGS=(--app "$APP_MRB")
+      APP_ARGS=(--app="$APP_MRB")
       ;;
-    *) APP_ARGS=(--app "$APP") ;;
+    *) APP_ARGS=(--app="$APP") ;;
   esac
 fi
 
 LOG="${LOG:-0}"
 LOG_ARGS=()
-[ "$LOG" = 1 ] && LOG_ARGS=(--log "/tmp/wm-h2bench-access.$$.log")
+[ "$LOG" = 1 ] && LOG_ARGS=(--log="/tmp/wm-h2bench-access.$$.log")
 # THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
 # already has (and bench/floor.sh now too), ported here: a number where
 # the client burned as much CPU as the server describes the client, not
@@ -121,9 +121,9 @@ parse_child_cpu() {
 
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix "$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
 else
-  "$BIN" --port "$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+  "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
 fi
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"; rm -f "$SOCK"' EXIT

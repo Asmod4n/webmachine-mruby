@@ -26,7 +26,7 @@ def cppr_server
   sock = "/tmp/wm-cppr-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-cppr-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, CPPR_BIN, '--unix', sock, '--app', app.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, CPPR_BIN, "--unix=#{sock}", "--app=#{app.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "example server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

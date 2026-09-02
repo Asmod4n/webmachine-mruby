@@ -35,7 +35,7 @@ end
 ```
 rake
 mruby/build/host/mrbc/bin/mrbc -o hello.mrb examples/hello.rb
-mruby/build/host/bin/webmachine-server --app hello.mrb
+mruby/build/host/bin/webmachine-server --app=hello.mrb
 ```
 
 The server runs bytecode, not source — `mrbc` first, always.
@@ -57,13 +57,16 @@ A String is a literal segment, a Symbol binds one, `:*` is the tail.
 ## Running it
 
 ```
-webmachine-server [--config FILE.toml] [--unix PATH | --port N]
-                  [--app FILE.mrb] [--assets FILE.zip] [--mime-types FILE]
-                  [--log FILE [--log-privacy none|anon|full]]
-                  [--error-log FILE] [--log-max-bytes N] [--pidfile PATH]
+webmachine-server [--config=FILE.toml] [--unix=PATH | --port=N]
+                  [--app=FILE.mrb] [--assets=FILE.zip] [--mime-types=FILE]
+                  [--log=FILE [--log-privacy=none|anon|full]]
+                  [--error-log=FILE] [--log-max-bytes=N] [--pidfile=PATH]
 ```
 
-Precedence is CLI > `webmachine.toml` > the app's `conf`. Static files
+Every option is `--key=value`; the command line is parsed by
+[TypedArgs](https://github.com/Asmod4n/typedargs), so a flag and its
+value are one argument. Precedence is CLI > `webmachine.toml` > the
+app's `conf`. Static files
 are served from a ZIP (`--assets`), gzip synthesized from the archive's
 own deflate stream.
 
@@ -94,7 +97,7 @@ A 4xx reaches neither: nothing raised, so there is nothing to explain
 and no reference to hand out.
 
 The pages show a cat per status, from a pack the server finds on its own
-or is given with `--error-assets FILE.zip`. `app.conf.disable_http_cats =
+or is given with `--error-assets=FILE.zip`. `app.conf.disable_http_cats =
 true` turns that off: the pack is never opened, so no page names a
 picture and nothing is mounted at `/error_assets/`. The pages themselves
 stay - they live in `Webmachine::ErrorResource`, not in the pack.

@@ -36,7 +36,7 @@ def h1_server
   sock = "/tmp/wm-h1-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h1-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H1_BIN, '--unix', sock, '--app', h1_app_mrb,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, H1_BIN, "--unix=#{sock}", "--app=#{h1_app_mrb}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   unless File.socket?(sock)

@@ -36,7 +36,7 @@ def resource_server(app_source)
   sock = "/tmp/wm-res-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, '--unix', sock, '--app', app.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, "--unix=#{sock}", "--app=#{app.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -53,8 +53,8 @@ end
 def resource_refused(app_source)
   app = wm_compile(app_source)
   err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, '--unix', "/tmp/wm-res-#{$$}.sock",
-              '--app', app.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
+              "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
   File.read(err)
@@ -67,8 +67,8 @@ def resource_refused_rb(app_source)
   src.write(app_source)
   src.close
   err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, '--unix', "/tmp/wm-res-#{$$}.sock",
-              '--app', src.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, RES_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
+              "--app=#{src.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused the .rb path' if $?.exitstatus == 0
   [File.read(err), src.path]

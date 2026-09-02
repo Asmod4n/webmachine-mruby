@@ -271,8 +271,8 @@ parse_child_cpu() {
 
 start_srv() {  # start_srv <port> [zip]
   local port=$1 zip=${2:-$WORK/assets.zip}
-  local args=(--port "$port" --assets "$zip")
-  [ "$LOG" = 1 ] && args+=(--log "$WORK/access.log")
+  local args=(--port="$port" --assets="$zip")
+  [ "$LOG" = 1 ] && args+=(--log="$WORK/access.log")
   local env_pfx=()
   [ -n "$WARM" ] && env_pfx=(env "WM_WARM_BUDGET=$WARM")
   "${env_pfx[@]}" "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
@@ -460,7 +460,7 @@ boot_ns() {
   local zip=$1 port=$2 lo= hi= t0 t1 d
   for _ in 1 2 3 4 5; do
     t0=$(date +%s%N)
-    "$BIN" --port "$port" --assets "$zip" >/dev/null 2>"$WORK/boot.log" &
+    "$BIN" --port="$port" --assets="$zip" >/dev/null 2>"$WORK/boot.log" &
     SRV=$!
     # Busy poll, no sleep: the whole quantity being measured is smaller
     # than the shortest sleep this shell can take.

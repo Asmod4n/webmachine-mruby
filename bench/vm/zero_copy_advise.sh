@@ -105,7 +105,7 @@ awk -v margin="$MARGIN" '
     print "  [tune]"
     printf "  zero_copy_threshold = %d\n", pick
     print ""
-    printf "webmachine: or --zero-copy-threshold %d, or conf.zero_copy_threshold = %d\n",
+    printf "webmachine: or --zero-copy-threshold=%d, or conf.zero_copy_threshold = %d\n",
            pick, pick
     if (pick != n[1]) {
       printf "webmachine: (%d and below did not clear the margin - see the table.)\n", n[1]

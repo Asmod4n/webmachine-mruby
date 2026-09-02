@@ -25,19 +25,19 @@ struct open_how how_ {};
 void docroot_open(mrb_state* mrb, const char* path) {
   char real[PATH_MAX];
   if (::realpath(path, real) == nullptr) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot %s: %s", path, std::strerror(errno));
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot=%s: %s", path, std::strerror(errno));
   }
   struct stat st {};
   if (::stat(real, &st) != 0) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot %s: %s", real, std::strerror(errno));
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot=%s: %s", real, std::strerror(errno));
   }
   if (!S_ISDIR(st.st_mode)) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot %s is not a directory", real);
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot=%s is not a directory", real);
   }
   // O_PATH is all a dirfd owes openat2: it names the anchor, it never reads.
   const int fd = ::open(real, O_DIRECTORY | O_PATH | O_CLOEXEC);
   if (fd < 0) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot %s: %s", real, std::strerror(errno));
+    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "--docroot=%s: %s", real, std::strerror(errno));
   }
   if (fd_ >= 0) ::close(fd_);
   fd_ = fd;

@@ -1,5 +1,9 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <mruby.h>
+#include <mruby/array.h>
+#include <mruby/hash.h>
+#include <mruby/presym.h>
+#include <mruby/string.h>
 #include <mruby/variable.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
@@ -21,6 +25,8 @@
 struct Invocation {
   webmachine::ServerOptions opts;
   webmachine::Config fc;
+  int argc = 0;
+  char** argv = nullptr;
   const char* pidfile = nullptr;
   const char* config_path = nullptr;
   const char* cli_unix = nullptr;
@@ -31,100 +37,149 @@ struct Invocation {
   int cli_port = 0;
 };
 
-// The CLI states what this INVOCATION decides. False is a usage refusal,
+void usage(const char* me) {
+  std::fprintf(stderr,
+               "usage: %s [OPTIONS]\n"
+               "\n"
+               "  Every option is --key=value. At least one of --app and --assets;\n"
+               "  with nothing to serve, no start.\n"
+               "\n"
+               "LISTENER\n"
+               "  --unix=PATH              answer on a unix socket; beats the app's conf\n"
+               "  --port=N                 answer on a TCP port; beats the app's conf\n"
+               "\n"
+               "SERVE\n"
+               "  --app=FILE.mrb           the application, as bytecode\n"
+               "  --assets=FILE.zip        assets from one mapping; alone, 404s the rest\n"
+               "  --error-assets=FILE.zip  what an error answer may hand over\n"
+               "  --docroot=DIR            the only directory response.file may reach\n"
+               "  --mime-types=FILE        this media-type database, not the machine's\n"
+               "\n"
+               "LOG\n"
+               "  --log=FILE               the access log\n"
+               "  --log-privacy=MODE       none | anon | full                       (anon)\n"
+               "  --error-log=FILE         what a callback raised; mrbc -g for line numbers\n"
+               "  --log-max-bytes=N        ceiling on the access log, 0 = none    (500 MB)\n"
+               "\n"
+               "TUNE\n"
+               "  --zero-copy-threshold=N  lend a body this big instead of copying (128 KiB)\n"
+               "\n"
+               "OTHER\n"
+               "  --config=FILE.toml       these choices from a file; flags beat it\n"
+               "  --pidfile=PATH           write this pid, remove it on the way out\n"
+               ,
+               me);
+}
+
+// Every flag this build answers to. The parser accepts any well-formed
+// key, so the set a typo is measured against has to be stated: it is
+// this one, and it is also what the usage text above lists.
+const char* const kFlags[] = {
+    "unix", "port", "app", "assets", "error-assets", "docroot", "mime-types",
+    "log", "log-privacy", "error-log", "log-max-bytes", "file-map-threshold",
+    "zero-copy-threshold", "pidfile", "config",
+};
+
+// A path, or nullptr when the flag was not given. The string is the
+// hash's, and the hash outlives this process's start-up (see below), so
+// what is handed out here stays good for as long as anything reads it.
+const char* text_of(mrb_state* mrb, mrb_value h, const char* key) {
+  const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
+  if (mrb_nil_p(v)) return nullptr;
+  if (!mrb_string_p(v)) mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s takes text", key);
+  return mrb_string_cstr(mrb, v);
+}
+
+// A whole number, or `missing` when the flag was not given. TypedArgs
+// has already decided that `--port=8080` is an Integer and `--port=x`
+// is not one, so this only has to say which it wanted.
+mrb_int number_of(mrb_state* mrb, mrb_value h, const char* key, mrb_int missing) {
+  const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
+  if (mrb_nil_p(v)) return missing;
+  if (!mrb_integer_p(v)) mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s takes a whole number", key);
+  return mrb_integer(v);
+}
+
+// The CLI states what this INVOCATION decides, and TypedArgs states what
+// the CLI is: `--key=value`, parsed by the gem in Ruby, refused by the
+// gem with a caret under the byte it choked on. False is a usage refusal,
 // already spelled to the operator who typed it.
-bool parse_argv(int argc, char** argv, Invocation& in) {
-  webmachine::ServerOptions& opts = in.opts;
-  const char*& pidfile = in.pidfile;
-  const char*& config_path = in.config_path;
-  const char*& cli_unix = in.cli_unix;
-  const char*& log_path = in.log_path;
-  const char*& log_privacy = in.log_privacy;
-  const char*& error_log_path = in.error_log_path;
-  long long& log_max_bytes = in.log_max_bytes;
-  int& cli_port = in.cli_port;
+bool parse_argv(mrb_state* mrb, Invocation& in) {
+  const int argc = in.argc;
+  char** argv = in.argv;
+
+  // TypedArgs reads flags and walks past everything else, which would
+  // turn the old `--app foo.mrb` into `app=true` with the path dropped
+  // on the floor. A bare word is a refusal here, so that spelling ends
+  // loudly rather than serving the wrong thing.
+  mrb_value av = mrb_ary_new_capa(mrb, argc > 1 ? argc - 1 : 0);
   for (int i = 1; i < argc; i++) {
-    if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
-      cli_unix = argv[++i];
-    } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-      cli_port = std::atoi(argv[++i]);
-    } else if (std::strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
-      opts.app_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
-      opts.assets_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--error-assets") == 0 && i + 1 < argc) {
-      opts.error_assets_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--docroot") == 0 && i + 1 < argc) {
-      opts.docroot_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--mime-types") == 0 && i + 1 < argc) {
-      opts.mime_types_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
-      log_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--log-privacy") == 0 && i + 1 < argc) {
-      log_privacy = argv[++i];
-    } else if (std::strcmp(argv[i], "--error-log") == 0 && i + 1 < argc) {
-      error_log_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--log-max-bytes") == 0 && i + 1 < argc) {
-      log_max_bytes = std::atoll(argv[++i]);
-      if (log_max_bytes < 0) {
-        std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
-        return false;
-      }
-    } else if (std::strcmp(argv[i], "--file-map-threshold") == 0 && i + 1 < argc) {
-      opts.file_map_threshold = std::atoll(argv[++i]);
-      if (opts.file_map_threshold < 0 ||
-          opts.file_map_threshold > static_cast<long long>(webmachine::kFileMapMax)) {
-        std::fprintf(stderr, "webmachine: --file-map-threshold is a byte count, 0 to never "
-                             "map a served file\n");
-        return false;
-      }
-    } else if (std::strcmp(argv[i], "--zero-copy-threshold") == 0 && i + 1 < argc) {
-      opts.zero_copy_threshold = std::atoll(argv[++i]);
-      if (opts.zero_copy_threshold < 0 ||
-          opts.zero_copy_threshold > static_cast<long long>(webmachine::kZeroCopyMax)) {
-        std::fprintf(stderr, "webmachine: --zero-copy-threshold is a byte count, 0 to copy "
-                             "every body\n");
-        return false;
-      }
-    } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
-      pidfile = argv[++i];
-    } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-      config_path = argv[++i];
-    } else {
-      std::fprintf(stderr,
-                   "usage: %s [OPTIONS]\n"
-                   "\n"
-                   "  At least one of --app and --assets. With nothing to serve, no start.\n"
-                   "\n"
-                   "LISTENER\n"
-                   "  --unix PATH              answer on a unix socket; beats the app's conf\n"
-                   "  --port N                 answer on a TCP port; beats the app's conf\n"
-                   "\n"
-                   "SERVE\n"
-                   "  --app FILE.mrb           the application, as bytecode\n"
-                   "  --assets FILE.zip        assets from one mapping; alone, 404s the rest\n"
-                   "  --error-assets FILE.zip  what an error answer may hand over\n"
-                   "  --docroot DIR            the only directory response.file may reach\n"
-                   "  --mime-types FILE        this media-type database, not the machine's\n"
-                   "\n"
-                   "LOG\n"
-                   "  --log FILE               the access log\n"
-                   "  --log-privacy MODE       none | anon | full                       (anon)\n"
-                   "  --error-log FILE         what a callback raised; mrbc -g for line numbers\n"
-                   "  --log-max-bytes N        ceiling on the access log, 0 = none    (500 MB)\n"
-                   "\n"
-                   "TUNE\n"
-                   "  --zero-copy-threshold N  lend a body this big instead of copying (128 KiB)\n"
-                   "\n"
-                   "OTHER\n"
-                   "  --config FILE.toml       these choices from a file; flags beat it\n"
-                   "  --pidfile PATH           write this pid, remove it on the way out\n"
-                   ,
-                   argv[0]);
+    if (argv[i][0] != '-') {
+      std::fprintf(stderr, "webmachine: '%s'? every option is --key=value\n", argv[i]);
+      return false;
+    }
+    mrb_ary_push(mrb, av, mrb_str_new_static_frozen(mrb, argv[i], std::strlen(argv[i])));
+  }
+  mrb_obj_freeze(mrb, av);
+  mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(ARGV), av);
+
+  const mrb_value h = mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get(mrb, "TypedArgs")),
+                                     MRB_SYM(opts), 0);
+  // The paths below are borrowed out of this hash and read as late as the
+  // last accept, so it is kept alive for the life of the process rather
+  // than for the life of this call.
+  mrb_gc_register(mrb, h);
+
+  const mrb_value keys = mrb_hash_keys(mrb, h);
+  for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
+    const mrb_value k = mrb_ary_entry(keys, i);
+    const char* name = mrb_string_cstr(mrb, k);
+    bool known = false;
+    for (const char* f : kFlags) {
+      if (std::strcmp(name, f) == 0) { known = true; break; }
+    }
+    if (!known) {
+      std::fprintf(stderr, "webmachine: --%s?\n", name);
+      usage(argv[0]);
       return false;
     }
   }
-  if (cli_unix != nullptr && cli_port != 0) {
+
+  webmachine::ServerOptions& opts = in.opts;
+  in.cli_unix = text_of(mrb, h, "unix");
+  in.cli_port = static_cast<int>(number_of(mrb, h, "port", 0));
+  opts.app_path = text_of(mrb, h, "app");
+  opts.assets_path = text_of(mrb, h, "assets");
+  opts.error_assets_path = text_of(mrb, h, "error-assets");
+  opts.docroot_path = text_of(mrb, h, "docroot");
+  opts.mime_types_path = text_of(mrb, h, "mime-types");
+  in.log_path = text_of(mrb, h, "log");
+  in.log_privacy = text_of(mrb, h, "log-privacy");
+  in.error_log_path = text_of(mrb, h, "error-log");
+  in.pidfile = text_of(mrb, h, "pidfile");
+  in.config_path = text_of(mrb, h, "config");
+
+  in.log_max_bytes = number_of(mrb, h, "log-max-bytes", -1);
+  if (in.log_max_bytes < -1) {
+    std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
+    return false;
+  }
+  opts.file_map_threshold = number_of(mrb, h, "file-map-threshold", -1);
+  if (opts.file_map_threshold < -1 ||
+      opts.file_map_threshold > static_cast<long long>(webmachine::kFileMapMax)) {
+    std::fprintf(stderr, "webmachine: --file-map-threshold is a byte count, 0 to never "
+                         "map a served file\n");
+    return false;
+  }
+  opts.zero_copy_threshold = number_of(mrb, h, "zero-copy-threshold", -1);
+  if (opts.zero_copy_threshold < -1 ||
+      opts.zero_copy_threshold > static_cast<long long>(webmachine::kZeroCopyMax)) {
+    std::fprintf(stderr, "webmachine: --zero-copy-threshold is a byte count, 0 to copy "
+                         "every body\n");
+    return false;
+  }
+
+  if (in.cli_unix != nullptr && in.cli_port != 0) {
     std::fprintf(stderr, "at most one of --unix or --port\n");
     return false;
   }
@@ -229,15 +284,21 @@ int serve(mrb_state* mrb, Invocation& in) {
 }
 
 // run_guarded's shape: the step it protects takes what it needs as void*.
+// Reading the command line is inside the frame because the parser is the
+// VM's, and a malformed flag comes back as a raise like every other
+// start-up refusal (#33).
 int serve_body(mrb_state* mrb, void* ud) {
-  return serve(mrb, *static_cast<Invocation*>(ud));
+  Invocation& in = *static_cast<Invocation*>(ud);
+  if (!parse_argv(mrb, in)) return 2;
+  return serve(mrb, in);
 }
 
 // `main` states what is served, and owns the VM and the pidfile: both
 // outlive the step that raised, and both are cleaned up here.
 int main(int argc, char** argv) {
   Invocation in;
-  if (!parse_argv(argc, argv, in)) return 2;
+  in.argc = argc;
+  in.argv = argv;
 
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {

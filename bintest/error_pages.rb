@@ -27,7 +27,7 @@ def epg_server
   log = "/tmp/wm-epg-#{$$}.log"
   err = "/tmp/wm-epg-stderr-#{$$}.log"
   [sock, log].each { |f| File.unlink(f) rescue nil }
-  pid = spawn(EPG_BIN, '--unix', sock, '--app', app.path, '--error-log', log,
+  pid = spawn(EPG_BIN, "--unix=#{sock}", "--app=#{app.path}", "--error-log=#{log}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -157,7 +157,7 @@ assert('error pages: conf.disable_http_cats leaves the pages and drops the pictu
   sock = "/tmp/wm-nocats-#{$$}.sock"
   err = "/tmp/wm-nocats-stderr-#{$$}.log"
   File.unlink(sock) rescue nil
-  pid = spawn(EPG_BIN, '--unix', sock, '--app', app.path, '--error-assets', pack,
+  pid = spawn(EPG_BIN, "--unix=#{sock}", "--app=#{app.path}", "--error-assets=#{pack}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

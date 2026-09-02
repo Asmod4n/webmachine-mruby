@@ -363,14 +363,14 @@ void build(mrb_state* mrb) {
     // reason to refuse to start - a server with no error assets is a
     // perfectly good server - but the operator hears it once.
     std::fprintf(stderr, "webmachine: no error assets found - errors answer in plain text. "
-                         "Name a file with --error-assets FILE.zip, or install one as "
+                         "Name a file with --error-assets=FILE.zip, or install one as "
                          "<prefix>/share/webmachine-mruby/error-assets.zip\n");
   }
 
   if (opts_.log_path != nullptr) {
     if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
       std::fprintf(stderr,
-                   "webmachine: --log-privacy none writes FULL client addresses to the log.\n"
+                   "webmachine: --log-privacy=none writes FULL client addresses to the log.\n"
                    "webmachine: an IP address is personal data (GDPR art. 4(1)); logging it\n"
                    "webmachine: needs a legal basis (art. 6). Security logging with short\n"
                    "webmachine: retention usually rides legitimate interest plus a privacy\n"

@@ -73,8 +73,8 @@ def zc_serve(threshold = nil)
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-zc-stderr-#{$$}.log"
   app = zc_compile(zc_app)
-  args = [ZC_BIN, '--unix', sock, '--app', app.path]
-  args += ['--zero-copy-threshold', threshold.to_s] unless threshold.nil?
+  args = [ZC_BIN, "--unix=#{sock}", "--app=#{app.path}"]
+  args += ["--zero-copy-threshold=#{threshold.to_s}"] unless threshold.nil?
   pid = spawn({ 'WM_BUNDLE' => '0' }, *args, out: File::NULL, err: err)
   200.times do
     break if File.socket?(sock)
@@ -195,7 +195,7 @@ assert('zero-copy: [tune] zero_copy_threshold is read from the config file') do
             "[tune]\nzero_copy_threshold = 1024\n")
   cfg.close
   err = "/tmp/wm-zc-toml-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, ZC_BIN, '--config', cfg.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, ZC_BIN, "--config=#{cfg.path}",
               out: File::NULL, err: err)
   begin
     200.times do
@@ -223,7 +223,7 @@ assert('zero-copy: a threshold outside the range refuses the start') do
   cfg.write("[server]\nunix = \"/tmp/wm-zc-never-#{$$}.sock\"\n\n" \
             "[tune]\nzero_copy_threshold = -1\n")
   cfg.close
-  pid = spawn({ 'WM_BUNDLE' => '0' }, ZC_BIN, '--config', cfg.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, ZC_BIN, "--config=#{cfg.path}",
               out: File::NULL, err: err)
   Process.waitpid(pid)
   ok = $?.exitstatus == 2

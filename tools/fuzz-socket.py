@@ -71,7 +71,7 @@ DICT = [
 def start():
     if os.path.exists(SOCK):
         os.unlink(SOCK)
-    p = subprocess.Popen([BIN, '--unix', SOCK], stdout=subprocess.DEVNULL,
+    p = subprocess.Popen([BIN, '--unix=' + SOCK], stdout=subprocess.DEVNULL,
                          stderr=subprocess.PIPE)
     for _ in range(200):
         if os.path.exists(SOCK):

@@ -24,6 +24,8 @@
 #include <mruby.h>
 #include <mruby/array.h>
 #include <mruby/class.h>
+#include <mruby/hash.h>
+#include <mruby/presym.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
 #include <sys/signalfd.h>
@@ -87,40 +89,65 @@ void define_resources(mrb_state* mrb) {
 }
 
 // The CLI is the server's, minus every knob an example does not need.
-// run_guarded's shape: what the example serves, once the VM is up.
+// What this invocation serves, and what it needs to say so.
+struct Invocation {
+  webmachine::ServerOptions opts;
+  int argc = 0;
+  char** argv = nullptr;
+};
+
+// run_guarded's shape: what the example serves, once the VM is up. The
+// command line is read in here because TypedArgs parses it in Ruby, and
+// a malformed flag is a raise like every other start-up refusal (#33).
 int serve_body(mrb_state* mrb, void* ud) {
-  const webmachine::ServerOptions* opts = static_cast<const webmachine::ServerOptions*>(ud);
-  webmachine::app_load(mrb, opts->app_path);
+  Invocation& in = *static_cast<Invocation*>(ud);
+  webmachine::ServerOptions& opts = in.opts;
+
+  mrb_value av = mrb_ary_new_capa(mrb, in.argc > 1 ? in.argc - 1 : 0);
+  for (int i = 1; i < in.argc; i++) {
+    mrb_ary_push(mrb, av, mrb_str_new_static_frozen(mrb, in.argv[i], std::strlen(in.argv[i])));
+  }
+  mrb_obj_freeze(mrb, av);
+  mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(ARGV), av);
+
+  const mrb_value h = mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get(mrb, "TypedArgs")),
+                                     MRB_SYM(opts), 0);
+  mrb_gc_register(mrb, h);
+
+  const mrb_value app = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "app"));
+  const mrb_value unix_path = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "unix"));
+  const mrb_value port = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "port"));
+  if (!mrb_string_p(app)) {
+    std::fprintf(stderr,
+                 "usage: webmachine-example --app=examples/cpp_resource.mrb\n"
+                 "                          (--unix=PATH | --port=N)\n"
+                 "\n"
+                 "The app file routes CppKonst and CppRun - defined in C++, in\n"
+                 "this binary - beside their Ruby twins, so the same bytes can\n"
+                 "be asked for over both.\n");
+    return 2;
+  }
+  opts.app_path = mrb_string_cstr(mrb, app);
+  opts.cli_unix = mrb_string_p(unix_path) ? mrb_string_cstr(mrb, unix_path) : nullptr;
+  opts.cli_port = mrb_integer_p(port) ? static_cast<int>(mrb_integer(port)) : 0;
+
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGTERM);
+  sigaddset(&mask, SIGINT);
+  sigprocmask(SIG_BLOCK, &mask, nullptr);
+  opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
+  webmachine::server_options(opts);
+
+  webmachine::app_load(mrb, opts.app_path);
   if (webmachine::server_entered()) return 0;
   return webmachine::server_run(mrb);
 }
 
 int main(int argc, char** argv) {
-  webmachine::ServerOptions opts;
-  const char* cli_unix = nullptr;
-  int cli_port = 0;
-  for (int i = 1; i < argc; i++) {
-    if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
-      cli_unix = argv[++i];
-    } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-      cli_port = std::atoi(argv[++i]);
-    } else if (std::strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
-      opts.app_path = argv[++i];
-    } else {
-      std::fprintf(stderr,
-                   "usage: webmachine-example --app examples/cpp_resource.mrb\n"
-                   "                          (--unix PATH | --port N)\n"
-                   "\n"
-                   "The app file routes CppKonst and CppRun - defined in C++, in\n"
-                   "this binary - beside their Ruby twins, so the same bytes can\n"
-                   "be asked for over both.\n");
-      return 2;
-    }
-  }
-  if (opts.app_path == nullptr) {
-    std::fprintf(stderr, "webmachine-example: --app is what names the routes\n");
-    return 2;
-  }
+  Invocation in;
+  in.argc = argc;
+  in.argv = argv;
 
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {
@@ -129,19 +156,10 @@ int main(int argc, char** argv) {
   }
   define_resources(mrb);
 
-  sigset_t mask;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGTERM);
-  sigaddset(&mask, SIGINT);
-  sigprocmask(SIG_BLOCK, &mask, nullptr);
-  opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
-  opts.cli_unix = cli_unix;
-  opts.cli_port = cli_port;
-  webmachine::server_options(opts);
-
-  // #33: loading the app and coming up both refuse by raising, and a
-  // raise is a C++ throw that needs a frame to land in. This is it.
-  const int rc = webmachine::run_guarded(mrb, {serve_body, &opts});
+  // #33: reading the flags, loading the app and coming up all refuse by
+  // raising, and a raise is a C++ throw that needs a frame to land in.
+  // This is it.
+  const int rc = webmachine::run_guarded(mrb, {serve_body, &in});
   mrb_close(mrb);
   return rc;
 }

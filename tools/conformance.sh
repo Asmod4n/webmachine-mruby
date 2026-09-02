@@ -70,7 +70,7 @@ stop_server() {
 start_server() {
   "$MRBC" -o "$OUT/app.mrb" "$1"
   rm -f "$PIDFILE"
-  setsid "$BIN" --app "$OUT/app.mrb" --port "$PORT" --pidfile "$PIDFILE" \
+  setsid "$BIN" --app="$OUT/app.mrb" --port="$PORT" --pidfile="$PIDFILE" \
     > "$OUT/server.log" 2>&1 &
   i=0
   while [ ! -f "$PIDFILE" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done

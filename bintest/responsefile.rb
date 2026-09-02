@@ -79,8 +79,8 @@ def rf_serve(docroot: true)
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-rf-stderr-#{$$}.log"
   app = rf_compile(rf_app)
-  args = [RF_BIN, '--unix', sock, '--app', app.path]
-  args += ['--docroot', root] if docroot
+  args = [RF_BIN, "--unix=#{sock}", "--app=#{app.path}"]
+  args += ["--docroot=#{root}"] if docroot
   pid = spawn({ 'WM_BUNDLE' => '0' }, *args, out: File::NULL, err: err)
   200.times do
     break if File.socket?(sock)
@@ -283,8 +283,8 @@ assert('a docroot that is missing or is not a directory refuses startup') do
   begin
     [[File.join(base, 'no-such-dir'), 'No such file'],
      [File.join(root, 'a.txt'), 'is not a directory']].each do |path, want|
-      out = IO.popen([RF_BIN, '--unix', "/tmp/wm-rf-never-#{$$}.sock", '--app', app.path,
-                      '--docroot', path, { err: [:child, :out] }], &:read)
+      out = IO.popen([RF_BIN, "--unix=/tmp/wm-rf-never-#{$$}.sock", "--app=#{app.path}",
+                      "--docroot=#{path}", { err: [:child, :out] }], &:read)
       assert_include out, '--docroot'
       assert_include out, want
     end
@@ -303,8 +303,8 @@ assert('response.file streams a file of any size, window by window') do
   sock = "/tmp/wm-rf-big-#{$$}-#{rand(1 << 30)}.sock"
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
-                '--docroot', root, out: File::NULL, err: File::NULL)
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+                "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     [262_143, 262_144, 262_145, 700_000, 20 << 20].each do |n|
@@ -341,8 +341,8 @@ assert('response.file that shrinks mid-flight ends the request, never hangs') do
   File.binwrite(path, 'S' * (48 << 20))
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
-                '--docroot', root, out: File::NULL, err: File::NULL)
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+                "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     cutter = Thread.new { sleep 0.05; File.truncate(path, 1 << 20) rescue nil }
@@ -417,8 +417,8 @@ assert('response.file serves a file larger than one send can move') do
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
-                '--docroot', root, out: File::NULL, err: File::NULL)
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+                "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     head, len, got, last = rf_stream(sock, 'huge.bin')
@@ -447,8 +447,8 @@ assert('response.file survives an mmap it cannot make, and still serves') do
   pid = nil
   begin
     # An address space too small for the mapping, large enough for the server.
-    cmd = "ulimit -v 2000000; exec #{RF_BIN} --unix #{sock} --app #{app.path} " \
-          "--docroot #{root}"
+    cmd = "ulimit -v 2000000; exec #{RF_BIN} --unix=#{sock} --app=#{app.path} " \
+          "--docroot=#{root}"
     pid = spawn({ 'WM_BUNDLE' => '0' }, 'sh', '-c', cmd, out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), 'the server never came up under the limit'
@@ -482,8 +482,8 @@ assert('response.file writes one access line per request, not one per window') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
-                '--docroot', root, '--log', logf, '--file-map-threshold', '0',
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+                "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -518,8 +518,8 @@ assert('response.file logs an abandoned transfer once, with what really left') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--unix', sock, '--app', app.path,
-                '--docroot', root, '--log', logf, '--file-map-threshold', '0',
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+                "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -592,9 +592,9 @@ assert('response.file serves a client slower than one send-timeout of body') do
   cfg.close
   pid = nil
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, '--config', cfg.path,
-                '--app', app.path, '--docroot', root,
-                '--file-map-threshold', '65536',
+    pid = spawn({ 'WM_BUNDLE' => '0' }, RF_BIN, "--config=#{cfg.path}",
+                "--app=#{app.path}", "--docroot=#{root}",
+                '--file-map-threshold=65536',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)

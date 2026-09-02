@@ -268,9 +268,9 @@ if [ -n "${APP:-}" ]; then
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
       APP_MRB=/tmp/wm-profile-app.mrb
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
-      APP_ARGS=(--app "$APP_MRB")
+      APP_ARGS=(--app="$APP_MRB")
       ;;
-    *) APP_ARGS=(--app "$APP") ;;
+    *) APP_ARGS=(--app="$APP") ;;
   esac
 fi
 
@@ -317,7 +317,7 @@ if [ -n "$ASSETS" ]; then
       ZIP="$WORK/pack.zip"
       ;;
   esac
-  ASSET_ARGS=(--assets "$ZIP")
+  ASSET_ARGS=(--assets="$ZIP")
 fi
 
 OUT=bench/profile
@@ -367,7 +367,7 @@ leg() {
   # ONE bind for both protocols: the client speaks h2 over AF_UNIX, so
   # there is no reason left to put the TCP stack in the profile.
   rm -f "$WM_SOCK"
-  local bindargs=(--unix "$WM_SOCK")
+  local bindargs=(--unix="$WM_SOCK")
   "$PERF" record "${EVENT_ARGS[@]}" -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
     "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >/tmp/wm-profile-srv.log 2>&1 &

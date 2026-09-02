@@ -22,7 +22,7 @@ def sse_server(app_src)
   sock = "/tmp/wm-sse-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-sse-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SSE_BIN, '--unix', sock, '--app', app.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, SSE_BIN, "--unix=#{sock}", "--app=#{app.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "sse server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

@@ -55,7 +55,7 @@ def ep_server
   sock = "/tmp/wm-ep-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-ep-stderr-#{$$}.log"
-  pid = spawn(EP_BIN, '--unix', sock, '--app', app.path, out: File::NULL, err: err)
+  pid = spawn(EP_BIN, "--unix=#{sock}", "--app=#{app.path}", out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin

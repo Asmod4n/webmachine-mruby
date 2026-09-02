@@ -53,7 +53,7 @@ def a_server(zip_bytes, extra = [])
   # machine's timezone. Pinned here so the assertion tests the header,
   # not the test host - the server's own zone dependency is its own
   # question, and a separate one.
-  pid = spawn({ 'WM_BUNDLE' => '0', 'TZ' => 'UTC' }, A_BIN, '--unix', sock, '--assets', zf.path, *extra,
+  pid = spawn({ 'WM_BUNDLE' => '0', 'TZ' => 'UTC' }, A_BIN, "--unix=#{sock}", "--assets=#{zf.path}", *extra,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -218,8 +218,8 @@ assert('assets: an archive this tier cannot serve refuses the start by name') do
   zf.write(a_build_zip([['weird.dat', 'x' * 32, 12]]))
   zf.close
   err = "/tmp/wm-assets-refuse-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', "/tmp/wm-assets-refuse-#{$$}.sock",
-              '--assets', zf.path, out: File::NULL, err: err)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=/tmp/wm-assets-refuse-#{$$}.sock",
+              "--assets=#{zf.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0
   msg = File.read(err)
@@ -399,7 +399,7 @@ def a_tcp_server(zip_bytes)
     # INSIDE that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
+    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--port=#{port.to_s}", "--assets=#{zf.path}",
                 out: File::NULL, err: err)
     up = false
     50.times do
@@ -558,7 +558,7 @@ def a_refusal(zip_bytes)
   sock = "/tmp/wm-assets-bad-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-bad-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
               out: File::NULL, err: err)
   Process.wait(pid)
   raise 'the server came up on an asset file it should have refused' if File.socket?(sock)
@@ -606,8 +606,8 @@ assert('access log: --log writes combined lines through the record daemon') do
   File.unlink(logf) if File.exist?(logf)
   sock = "/tmp/wm-log-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
-              '--log', logf, out: File::NULL, err: File::NULL)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
+              "--log=#{logf}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   begin
     UNIXSocket.open(sock) do |s|
@@ -658,7 +658,7 @@ assert('assets: --mime-types names the database, and the operator wins') do
   db.close
   begin
     a_server(a_build_zip([['x.wm', 'body'.b * 16, 0], ['y.zzz', 'body'.b * 16, 0]]),
-             ['--mime-types', db.path]) do |sock|
+             ["--mime-types=#{db.path}"]) do |sock|
       UNIXSocket.open(sock) do |s|
         s.write("GET /x.wm HTTP/1.1\r\nHost: x\r\n\r\n")
         head, = a_read(s)
@@ -683,8 +683,8 @@ assert('assets: a --mime-types file that cannot be read refuses the start, by na
   err = "/tmp/wm-mime-refuse-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--unix', sock, '--assets', zf.path,
-                '--mime-types', '/nonexistent/mime.types', out: File::NULL, err: err)
+    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
+                '--mime-types=/nonexistent/mime.types', out: File::NULL, err: err)
     Process.wait(pid)
     assert_false $?.success?, 'a missing media-type database started the server anyway'
     text = File.read(err) rescue ''
@@ -705,7 +705,7 @@ assert('assets: shared-mime-info globs2 is the second format, and it parses') do
   File.write(path, "# generated\n50:application/vnd.webmachine-glob:*.wm\n" \
                    "50:text/plain:*README*\n")
   begin
-    a_server(a_build_zip([['x.wm', 'body'.b * 16, 0]]), ['--mime-types', path]) do |sock|
+    a_server(a_build_zip([['x.wm', 'body'.b * 16, 0]]), ["--mime-types=#{path}"]) do |sock|
       UNIXSocket.open(sock) do |s|
         s.write("GET /x.wm HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
         head, = a_read(s)
@@ -737,8 +737,8 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   # can only ever show 127.0.0.0 and could not tell an address that
   # arrived from one that did not. This test is about arrival, so it
   # asks for the full address; the masking has its own ground.
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, '--port', port.to_s, '--assets', zf.path,
-              '--log', logf, '--log-privacy', 'none', out: File::NULL, err: errf)
+  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--port=#{port.to_s}", "--assets=#{zf.path}",
+              "--log=#{logf}", '--log-privacy=none', out: File::NULL, err: errf)
   begin
     up = false
     100.times do

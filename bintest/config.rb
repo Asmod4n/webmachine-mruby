@@ -40,7 +40,7 @@ def cfg_app
 end
 
 def cfg_spawn(args, err)
-  args = ['--app', cfg_app] + args unless args.include?('--app')
+  args = ["--app=#{cfg_app}"] + args unless args.any? { |a| a.start_with?('--app=') }
   spawn({ 'WM_BUNDLE' => '0' }, CFG_BIN, *args, out: File::NULL, err: err)
 end
 
@@ -70,7 +70,7 @@ assert('webmachine.toml: the invocation as a file') do
   File.unlink(sock) if File.exist?(sock)
   cfg = cfg_write("[server]\nunix = \"#{sock}\"\n\n[tune]\nbacklog = 128\nsq_entries = 2048\n")
   err = "/tmp/wm-cfg-stderr-#{$$}.log"
-  pid = cfg_spawn(['--config', cfg.path], err)
+  pid = cfg_spawn(["--config=#{cfg.path}"], err)
   begin
     cfg_await(sock, err)
     assert_include cfg_get(sock, '/'), '200 OK'
@@ -88,7 +88,7 @@ assert('the typed flag beats the file') do
   [sock_file, sock_cli].each { |s| File.unlink(s) if File.exist?(s) }
   cfg = cfg_write("[server]\nunix = \"#{sock_file}\"\n")
   err = "/tmp/wm-cfg-stderr2-#{$$}.log"
-  pid = cfg_spawn(['--config', cfg.path, '--unix', sock_cli], err)
+  pid = cfg_spawn(["--config=#{cfg.path}", "--unix=#{sock_cli}"], err)
   begin
     cfg_await(sock_cli, err)
     assert_include cfg_get(sock_cli, '/'), '200 OK'
@@ -108,7 +108,7 @@ assert('a bad config refuses the start by name') do
     "kaputt = [\n" => 'expected',
   }.each do |toml, named|
     cfg = cfg_write(toml)
-    pid = cfg_spawn(['--config', cfg.path], err)
+    pid = cfg_spawn(["--config=#{cfg.path}"], err)
     Process.waitpid(pid)
     assert_equal 2, $?.exitstatus
     assert_include File.read(err), named
@@ -129,7 +129,7 @@ assert('[tune] timeouts: the reaper closes what never speaks and what fell silen
     idle_timeout = 1
   TOML
   err = "/tmp/wm-cfg-to-stderr-#{$$}.log"
-  pid = cfg_spawn(['--config', cfg.path], err)
+  pid = cfg_spawn(["--config=#{cfg.path}"], err)
   begin
     cfg_await(sock, err)
     c = UNIXSocket.new(sock)
@@ -148,4 +148,27 @@ assert('[tune] timeouts: the reaper closes what never speaks and what fell silen
     Process.waitpid(pid) rescue nil
     cfg.unlink
   end
+end
+
+# The command line is TypedArgs' grammar: --key=value, one argument per
+# option. What that buys is a refusal for each way of getting it wrong -
+# the old space-separated spelling among them, which the parser would
+# otherwise read as a bare flag with the value dropped on the floor.
+def cfg_argv(*args)
+  IO.popen([CFG_BIN, *args, { err: [:child, :out] }], &:read)
+end
+
+assert('cli: --key=value, and every other spelling is refused') do
+  out = cfg_argv('--app', cfg_app)
+  assert_include out, 'every option is --key=value'
+
+  out = cfg_argv('--nosuchflag=1')
+  assert_include out, '--nosuchflag?'
+  assert_include out, 'usage:'
+
+  out = cfg_argv("--app=#{cfg_app}", '--port=eighty')
+  assert_include out, '--port takes a whole number'
+
+  out = cfg_argv("--app=#{cfg_app}", '--port=8080', '--unix=/tmp/wm-cli.sock')
+  assert_include out, 'at most one of --unix or --port'
 end

@@ -64,4 +64,4 @@ COPY --from=build /src/app.mrb /app/app.mrb
 RUN useradd --system --uid 10001 --no-create-home webmachine
 USER 10001
 EXPOSE 8080
-ENTRYPOINT ["webmachine-server", "--app", "/app/app.mrb", "--port", "8080"]
+ENTRYPOINT ["webmachine-server", "--app=/app/app.mrb", "--port=8080"]

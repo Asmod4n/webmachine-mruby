@@ -52,7 +52,7 @@ def gz_unix_server(app_source)
   sock = "/tmp/wm-gz-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-gz-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, GZ_BIN, '--unix', sock, '--app', app.path,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, GZ_BIN, "--unix=#{sock}", "--app=#{app.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -76,7 +76,7 @@ def gz_tcp_server(app_source)
     # INSIDE that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn({ 'WM_BUNDLE' => '0' }, GZ_BIN, '--port', port.to_s, '--app', app.path,
+    pid = spawn({ 'WM_BUNDLE' => '0' }, GZ_BIN, "--port=#{port.to_s}", "--app=#{app.path}",
                 out: File::NULL, err: err)
     up = false
     50.times do

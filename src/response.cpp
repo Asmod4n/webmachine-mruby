@@ -264,7 +264,7 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   if (!docroot_ready()) {
     mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
               "response.file= needs a docroot and this server has none. Name one: "
-              "--docroot PATH, or [server] docroot in the TOML, or conf.docroot in the "
+              "--docroot=PATH, or [server] docroot in the TOML, or conf.docroot in the "
               "application's configure block. There is no default - a server that guesses "
               "which directory to serve files out of serves the wrong one");
   }
@@ -300,7 +300,7 @@ mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
   if (error_assets_ == nullptr) {
     mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
               "response.error_asset needs error assets and this server found none. Name a "
-              "file: --error-assets FILE.zip, or install one where the system keeps shipped "
+              "file: --error-assets=FILE.zip, or install one where the system keeps shipped "
               "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
   }
   char name[kMaxHead];
