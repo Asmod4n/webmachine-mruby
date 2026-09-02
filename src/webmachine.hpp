@@ -4783,6 +4783,21 @@ struct AppSpec {
 
 void application_init(mrb_state* mrb, struct RClass* wm);
 
+// What a tool wants done under the VM's protection: the step, and what it
+// needs to do it.
+struct Guarded {
+  int (*body)(mrb_state*, void*);
+  void* ud;
+};
+
+// #33: a startup refuses by RAISING, and a raise is a C++ throw that needs
+// a frame to land in. A tool's main is that frame, and this is how it
+// spells one: the step runs, and what it refused with is printed and
+// becomes a non-zero exit code. Printed, because a process that will not
+// come up has no log to write into yet - and because stderr is read at
+// exactly the moment a process dies.
+int run_guarded(mrb_state* mrb, Guarded step);
+
 bool app_load(Setup s, const char* path);
 
 // Where every registered application goes, and how many listeners this
@@ -4890,7 +4905,7 @@ struct Config {
   long long file_map_threshold = -1;
 };
 
-bool config_load(Setup s, const char* path, Config& out);
+void config_load(mrb_state* mrb, const char* path, Config& out);
 }
 
 #define E_WM_ERROR(mrb) \

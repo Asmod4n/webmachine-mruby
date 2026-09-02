@@ -15,17 +15,34 @@
 #include "../../src/webmachine.hpp"
 
 
-// The CLI states what this INVOCATION decides; `main` states what is served.
-int main(int argc, char** argv) {
-  const char* pidfile = nullptr;
+// What this invocation decided. The flags fill it, the config file fills
+// what the flags left, and from there it is ONE thing travelling from the
+// first argument to the last accept - see #std-first.
+struct Invocation {
   webmachine::ServerOptions opts;
+  webmachine::Config fc;
+  const char* pidfile = nullptr;
+  const char* config_path = nullptr;
   const char* cli_unix = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
   const char* error_log_path = nullptr;
   long long log_max_bytes = -1;
-  const char* config_path = nullptr;
   int cli_port = 0;
+};
+
+// The CLI states what this INVOCATION decides. False is a usage refusal,
+// already spelled to the operator who typed it.
+bool parse_argv(int argc, char** argv, Invocation& in) {
+  webmachine::ServerOptions& opts = in.opts;
+  const char*& pidfile = in.pidfile;
+  const char*& config_path = in.config_path;
+  const char*& cli_unix = in.cli_unix;
+  const char*& log_path = in.log_path;
+  const char*& log_privacy = in.log_privacy;
+  const char*& error_log_path = in.error_log_path;
+  long long& log_max_bytes = in.log_max_bytes;
+  int& cli_port = in.cli_port;
   for (int i = 1; i < argc; i++) {
     if (std::strcmp(argv[i], "--unix") == 0 && i + 1 < argc) {
       cli_unix = argv[++i];
@@ -51,7 +68,7 @@ int main(int argc, char** argv) {
       log_max_bytes = std::atoll(argv[++i]);
       if (log_max_bytes < 0) {
         std::fprintf(stderr, "webmachine: --log-max-bytes is a byte count, 0 for no ceiling\n");
-        return 2;
+        return false;
       }
     } else if (std::strcmp(argv[i], "--file-map-threshold") == 0 && i + 1 < argc) {
       opts.file_map_threshold = std::atoll(argv[++i]);
@@ -59,7 +76,7 @@ int main(int argc, char** argv) {
           opts.file_map_threshold > static_cast<long long>(webmachine::kFileMapMax)) {
         std::fprintf(stderr, "webmachine: --file-map-threshold is a byte count, 0 to never "
                              "map a served file\n");
-        return 2;
+        return false;
       }
     } else if (std::strcmp(argv[i], "--zero-copy-threshold") == 0 && i + 1 < argc) {
       opts.zero_copy_threshold = std::atoll(argv[++i]);
@@ -67,7 +84,7 @@ int main(int argc, char** argv) {
           opts.zero_copy_threshold > static_cast<long long>(webmachine::kZeroCopyMax)) {
         std::fprintf(stderr, "webmachine: --zero-copy-threshold is a byte count, 0 to copy "
                              "every body\n");
-        return 2;
+        return false;
       }
     } else if (std::strcmp(argv[i], "--pidfile") == 0 && i + 1 < argc) {
       pidfile = argv[++i];
@@ -104,31 +121,34 @@ int main(int argc, char** argv) {
                    "  --pidfile PATH           write this pid, remove it on the way out\n"
                    ,
                    argv[0]);
-      return 2;
+      return false;
     }
   }
   if (cli_unix != nullptr && cli_port != 0) {
     std::fprintf(stderr, "at most one of --unix or --port\n");
-    return 2;
+    return false;
   }
+  return true;
+}
 
-  mrb_state* mrb = mrb_open();
-  if (mrb == nullptr) {
-    std::fprintf(stderr, "webmachine: mrb_open failed\n");
-    return 1;
-  }
-
-  webmachine::Config fc;
+// From the config file to the last accept. Every step here refuses by
+// raising since #33, so it runs inside run_guarded's frame.
+int serve(mrb_state* mrb, Invocation& in) {
+  webmachine::ServerOptions& opts = in.opts;
+  webmachine::Config& fc = in.fc;
+  const char*& pidfile = in.pidfile;
+  const char*& config_path = in.config_path;
+  const char*& cli_unix = in.cli_unix;
+  const char*& log_path = in.log_path;
+  const char*& log_privacy = in.log_privacy;
+  const char*& error_log_path = in.error_log_path;
+  long long& log_max_bytes = in.log_max_bytes;
+  int& cli_port = in.cli_port;
   if (config_path == nullptr && ::access("webmachine.toml", R_OK) == 0) {
     config_path = "webmachine.toml";
   }
   if (config_path != nullptr) {
-    char cerr[512];
-    if (!webmachine::config_load({mrb, {cerr, sizeof(cerr)}}, config_path, fc)) {
-      std::fprintf(stderr, "webmachine: %s\n", cerr);
-      mrb_close(mrb);
-      return 2;
-    }
+    webmachine::config_load(mrb, config_path, fc);
     std::fprintf(stderr, "webmachine: config %s\n", config_path);
     if (cli_unix == nullptr && cli_port == 0) {
       if (!fc.unix_path.empty()) cli_unix = fc.unix_path.c_str();
@@ -171,7 +191,6 @@ int main(int argc, char** argv) {
     FILE* pf = std::fopen(pidfile, "we");
     if (pf == nullptr) {
       std::fprintf(stderr, "webmachine: cannot write pidfile %s\n", pidfile);
-      mrb_close(mrb);
       return 1;
     }
     std::fprintf(pf, "%d\n", getpid());
@@ -196,7 +215,6 @@ int main(int argc, char** argv) {
     char err[512];
     if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts.app_path)) {
       std::fprintf(stderr, "webmachine: %s: %s\n", opts.app_path, err);
-      mrb_close(mrb);
       return 1;
     }
   } else if (opts.assets_path != nullptr) {
@@ -207,17 +225,34 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "webmachine: nothing to serve - name an application with --app FILE.mrb "
                  "(or app = in the config), or a pack with --assets FILE.zip\n");
-    mrb_close(mrb);
     return 1;
   }
 
-  int rc = 0;
-  if (!webmachine::server_entered()) {
-    char err[512] = "";
-    rc = webmachine::server_run({mrb, {err, sizeof(err)}});
-    if (rc != 0) std::fprintf(stderr, "webmachine: %s\n", err);
+  if (webmachine::server_entered()) return 0;
+  char err[512] = "";
+  const int rc = webmachine::server_run({mrb, {err, sizeof(err)}});
+  if (rc != 0) std::fprintf(stderr, "webmachine: %s\n", err);
+  return rc;
+}
+
+// run_guarded's shape: the step it protects takes what it needs as void*.
+int serve_body(mrb_state* mrb, void* ud) {
+  return serve(mrb, *static_cast<Invocation*>(ud));
+}
+
+// `main` states what is served, and owns the VM and the pidfile: both
+// outlive the step that raised, and both are cleaned up here.
+int main(int argc, char** argv) {
+  Invocation in;
+  if (!parse_argv(argc, argv, in)) return 2;
+
+  mrb_state* mrb = mrb_open();
+  if (mrb == nullptr) {
+    std::fprintf(stderr, "webmachine: mrb_open failed\n");
+    return 1;
   }
+  const int rc = webmachine::run_guarded(mrb, {serve_body, &in});
   mrb_close(mrb);
-  if (pidfile != nullptr) ::unlink(pidfile);
+  if (in.pidfile != nullptr) ::unlink(in.pidfile);
   return rc;
 }

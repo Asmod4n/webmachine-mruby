@@ -87,6 +87,20 @@ void define_resources(mrb_state* mrb) {
 }
 
 // The CLI is the server's, minus every knob an example does not need.
+// run_guarded's shape: what the example serves, once the VM is up.
+int serve_body(mrb_state* mrb, void* ud) {
+  const webmachine::ServerOptions* opts = static_cast<const webmachine::ServerOptions*>(ud);
+  char err[512] = "";
+  if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts->app_path)) {
+    std::fprintf(stderr, "webmachine-example: %s: %s\n", opts->app_path, err);
+    return 1;
+  }
+  if (webmachine::server_entered()) return 0;
+  const int rc = webmachine::server_run({mrb, {err, sizeof(err)}});
+  if (rc != 0) std::fprintf(stderr, "webmachine-example: %s\n", err);
+  return rc;
+}
+
 int main(int argc, char** argv) {
   webmachine::ServerOptions opts;
   const char* cli_unix = nullptr;
@@ -131,18 +145,9 @@ int main(int argc, char** argv) {
   opts.cli_port = cli_port;
   webmachine::server_options(opts);
 
-  char err[512] = "";
-  if (!webmachine::app_load({mrb, {err, sizeof(err)}}, opts.app_path)) {
-    std::fprintf(stderr, "webmachine-example: %s: %s\n", opts.app_path, err);
-    mrb_close(mrb);
-    return 1;
-  }
-
-  int rc = 0;
-  if (!webmachine::server_entered()) {
-    rc = webmachine::server_run({mrb, {err, sizeof(err)}});
-    if (rc != 0) std::fprintf(stderr, "webmachine-example: %s\n", err);
-  }
+  // #33: loading the app and coming up both refuse by raising, and a
+  // raise is a C++ throw that needs a frame to land in. This is it.
+  const int rc = webmachine::run_guarded(mrb, {serve_body, &opts});
   mrb_close(mrb);
   return rc;
 }

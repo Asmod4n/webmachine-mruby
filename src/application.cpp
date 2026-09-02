@@ -478,6 +478,46 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, route_class_, MRB_SYM(assets), route_assets, MRB_ARGS_ANY());
 }
 
+namespace {
+// mrb_protect_error's shape: one mrb_value in, one out. The tool's step
+// wants a process exit code, so the code comes back through Guarded.
+struct GuardedRun {
+  Guarded step;
+  int rc;
+};
+
+mrb_value guarded_body(mrb_state* mrb, void* ud) {
+  GuardedRun* g = static_cast<GuardedRun*>(ud);
+  g->rc = g->step.body(mrb, g->step.ud);
+  return mrb_nil_value();
+}
+}  // namespace
+
+int run_guarded(mrb_state* mrb, Guarded step) {
+  GuardedRun g{step, 0};
+  mrb_bool raised = FALSE;
+  const mrb_value e = mrb_protect_error(mrb, guarded_body, &g, &raised);
+  if (!raised) return g.rc;
+  // mrb_protect_error hands back whatever was pending, and mrb->exc takes
+  // an exception object or nothing - the same trap resource.cpp's
+  // take_pending is about. With one, mruby prints class, message and
+  // backtrace better than any format string here could.
+  if (mrb_exception_p(e)) {
+    mrb->exc = mrb_obj_ptr(e);
+    mrb_print_error(mrb);
+    mrb->exc = nullptr;
+    // The exit code is the exception's CLASS. A config the operator wrote
+    // wrong is 2 - the shell's "what you asked for cannot be done" - and
+    // every other refusal is 1. Nothing else has to agree on a number.
+    return mrb_obj_is_kind_of(mrb, e, E_WM_CONFIG_ERROR(mrb)) ? 2 : 1;
+  }
+  const mrb_value said = mrb_obj_as_string(mrb, e);
+  std::fputs("webmachine: ", stderr);
+  std::fwrite(RSTRING_PTR(said), 1, static_cast<size_t>(RSTRING_LEN(said)), stderr);
+  std::fputc('\n', stderr);
+  return 1;
+}
+
 // Load the app's bytecode and call its `main`. A .rb is refused by name.
 bool app_load(Setup s, const char* path) {
   mrb_state* const mrb = s.mrb;
