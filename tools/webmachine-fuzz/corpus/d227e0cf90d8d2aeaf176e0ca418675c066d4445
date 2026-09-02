@@ -1,0 +1,8 @@
+GET /â HTTP/1.1
+Host: x
+If-NoGne-Mast: xHTTP/1.1
+Host: xä
+If-NoGne-Mast: x
+If-NAugone-Mattch: "DEL
+If-None-Mattch: "DELETEabc"
+

@@ -177,11 +177,15 @@ def mutate(rng, corpus):
 def main():
     secs = float(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1][0].isdigit() else 60.0
     corpus = []
-    # The seed corpora the old per-method harness accumulated. Its targets
-    # go (#206), these files stay: h1 heads, h2 frames and ws frames are
-    # still the shapes a payload wants to start from.
+    # The one corpus, shared with the coverage-guided fuzzer next door:
+    # what is worth starting a payload from does not depend on which of
+    # the two is sending it. build/fuzz/corpus-* is where the retired
+    # per-method harness left its files, and is read if a checkout still
+    # has them.
     import glob
-    for d in glob.glob('build/fuzz/corpus-*'):
+    for d in ['tools/webmachine-fuzz/corpus'] + glob.glob('build/fuzz/corpus-*'):
+        if not os.path.isdir(d):
+            continue
         for f in os.listdir(d):
             try:
                 with open(os.path.join(d, f), 'rb') as fh:

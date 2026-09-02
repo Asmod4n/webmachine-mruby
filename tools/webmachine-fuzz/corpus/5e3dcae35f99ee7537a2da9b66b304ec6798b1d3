@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Hostncoding: gzip
+Accept-Language: de
+Accept-Charset: utf-8
+

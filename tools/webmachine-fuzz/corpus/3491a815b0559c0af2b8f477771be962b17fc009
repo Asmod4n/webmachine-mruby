@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: x
+Upgrade: websocket
+ConnectWebSHTTP2-Settings: ocketcÿÿÿÿÿÿÿÿ=Ø;q.1
+Accep-Version: 13
+

@@ -1,0 +1,4 @@
+GET /wsÂ HTTP/1.1
+Host: x
+Uket-Version: 26
+

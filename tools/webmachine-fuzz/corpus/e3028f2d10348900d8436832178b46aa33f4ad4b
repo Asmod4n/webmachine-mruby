@@ -1,0 +1,4 @@
+FET /ws HTTP/1.1
+Host: x
+Upgrade: 13
+

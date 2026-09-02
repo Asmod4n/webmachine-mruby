@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: x
+Up3rade: websocket
+Cection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSoMatcnech: »close
+nec5ion: clos[[[[[[cket-Version: 13
+

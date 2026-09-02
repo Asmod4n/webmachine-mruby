@@ -1,0 +1,9 @@
+FETGET /ws HTTP/1.1
+Host: x
+Uet-Key: dGhlIHNhbXBsZSBub25jZQ==
+S.ccept: ec-WebSocket-VersioT /ws HTTP/1.1
+Host: x
+Upgrade: websockEt
+Connection: Upgrade
+Sec-WebSocketn: 13
+

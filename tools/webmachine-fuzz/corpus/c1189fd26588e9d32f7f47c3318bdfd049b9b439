@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+Host:1x
+If-Modified-%incd: Sun, 12 Nov 1994 08:49:37 GMT
+

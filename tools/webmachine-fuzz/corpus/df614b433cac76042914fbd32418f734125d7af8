@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Host: x
+Upgrade: websocket
+Copermessage-deflatennectn: U%grade
+Sec-WebSocket-Kmy: dGhlIHNhbXBsZSBu2b5jZQÃÂòõ¬šœÍWebSocket-Version: 13
+

@@ -1,0 +1,16 @@
+# UBSan findings that are NOT this server's, with the reason each is here.
+# A campaign that stops on somebody else's defect at run one is a campaign
+# that never runs, and an -fno-sanitize= would turn the whole check off
+# for our code too. This names the file and the check instead.
+#
+# ls-hpack, lshpack.c:236 - lshpack_arr_push's first growth does
+#   memcpy(new, arr->els + arr->off, 0) with els == NULL and off == 0.
+#   NULL + 0 is undefined even though the copy moves nothing, and it
+#   fires on the FIRST dynamic-table insert of every h2 connection, which
+#   is to say on the first h2 request a campaign sends. deps/ls-hpack is
+#   a submodule pinned at upstream; this line goes when the pin moves
+#   past a fix. #208 was the other kind - that one was ours.
+#   The one line trips two checks: NULL + 0 is pointer-overflow, and
+#   handing that to memcpy is nonnull-attribute.
+pointer-overflow:lshpack.c
+nonnull-attribute:lshpack.c

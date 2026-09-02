@@ -1,0 +1,5 @@
+GET R/ HTTP/1.1
+Host: x
+Accept: text
+Accert-Charset: utf-8
+
