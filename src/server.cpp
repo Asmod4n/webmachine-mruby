@@ -33,6 +33,10 @@ Assets assets_;
 // reserved prefix whether or not --assets was given.
 Assets error_assets_;
 bool error_assets_up_ = false;
+// An unusable error pack is found before there is a log to say it in -
+// the error log's fd is spawned further down and its Logger only turns on
+// once Http1 exists. So the sentence waits here for its destination.
+std::string error_assets_note_;
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
@@ -344,9 +348,8 @@ bool build(Setup s) {
       error_assets_up_ = true;
       std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
     } else {
-      std::fprintf(stderr, "webmachine: error assets at %s unusable (%s) - pages without "
-                           "pictures\n",
-                   error_assets_file.c_str(), eerr);
+      error_assets_note_ = "error assets at " + error_assets_file + " unusable (" + eerr +
+                           ") - pages without pictures";
     }
   } else if (no_cats == 1) {
     // Asked for, so not a complaint: the pages still render, they just
@@ -430,6 +433,10 @@ bool build(Setup s) {
   response_bind_error_assets(error_assets_up_ ? &error_assets_ : nullptr);
   if (opts_.log_path != nullptr) http_->enable_access_log();
   if (opts_.error_log_path != nullptr) http_->enable_error_log();
+  if (!error_assets_note_.empty()) {
+    say_server_error(http_->error_log(), error_assets_note_);
+    error_assets_note_.clear();
+  }
   // A typed flag and [tune] beat the app's conf, and all three beat the
   // built-in default - the same order --unix and --port already follow.
   long long zct = opts_.zero_copy_threshold;

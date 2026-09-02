@@ -1202,6 +1202,19 @@ inline void log_internal_error(Logger& lg, const ErrorLine& line) {
   log_error(lg, f);
 }
 
+// A condition the server hit with nobody to answer for it: no request, no
+// peer, no status. The error log is where it belongs and it goes there
+// whole. stderr gets it only when no error log was configured, because
+// then there is nothing else to read - a line printed beside a log that
+// IS being read is a line nobody reads.
+inline void say_server_error(Logger* lg, std::string_view why) {
+  if (lg != nullptr && lg->enabled) {
+    log_internal_error(*lg, {{}, {}, why, 0});
+    return;
+  }
+  std::fprintf(stderr, "webmachine: %.*s\n", static_cast<int>(why.size()), why.data());
+}
+
 // Which build this is. mruby's enable_debug defines MRB_DEBUG and the
 // ship configs do not, so this is the build's own word for itself and
 // not a second switch to keep in step with the first.
@@ -5577,31 +5590,30 @@ class Ring {
     throw ConnFailed{what, err};
   }
 
-  // Once per distinct reason, so a peer that can provoke one cannot
-  // provoke a line per attempt. The error log is where these belong and
-  // gets every one; stderr gets the first of each, because a server run
-  // without --log still has an operator who needs to know.
+  // The error log is where these belong, and with a peer to name they
+  // carry it. Without a log they fall to stderr - and there once per
+  // distinct reason, so a peer that can provoke one cannot provoke a
+  // line per attempt.
   void say_connection_failed(const ConnFailed& f, const Conn& c) {
+    const std::string why =
+        f.err < 0 ? std::string(f.what) + ": " + std::strerror(-f.err) : std::string(f.what);
     Logger* el = app_.error_log();
     if (el != nullptr && el->enabled) {
-      char why[192];
-      const int n = std::snprintf(why, sizeof why, "%s%s%s", f.what, f.err < 0 ? ": " : "",
-                                  f.err < 0 ? std::strerror(-f.err) : "");
       log_internal_error(
           *el, {c.peer != nullptr
                     ? std::string_view{reinterpret_cast<const char*>(&c.peer->addr),
                                        static_cast<size_t>(c.peer->addrlen)}
                     : std::string_view{},
                 {},
-                {why, static_cast<size_t>(n < 0 ? 0 : n)},
+                why,
                 0});
+      return;
     }
     for (unsigned i = 0; i < said_count_; i++) {
       if (said_[i] == f.what) return;
     }
     if (said_count_ < kSaidMax) said_[said_count_++] = f.what;
-    std::fprintf(stderr, "webmachine: %s%s%s (said once)\n", f.what, f.err < 0 ? ": " : "",
-                 f.err < 0 ? std::strerror(-f.err) : "");
+    std::fprintf(stderr, "webmachine: %s (said once)\n", why.c_str());
   }
 
   [[noreturn]] void fatal(const char* what) {
@@ -6780,8 +6792,8 @@ class Ring {
       static bool warned = false;
       if (!warned) {
         warned = true;
-        std::fprintf(stderr, "webmachine: peer address unavailable (%s); %%h logs '-'\n",
-                     std::strerror(-cqe->res));
+        say_server_error(app_.error_log(), std::string("peer address unavailable (") +
+                                               std::strerror(-cqe->res) + "); %h logs '-'");
       }
       return;
     }
