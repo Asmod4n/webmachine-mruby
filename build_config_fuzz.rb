@@ -27,21 +27,22 @@ MRuby::Build.new('fuzz') do |conf|
 
   conf.enable_debug
 
-  # ONE FLAG PER ENTRY, as Strings: mruby-io_uring's mrbgem.rake looks
-  # for a cc.flags entry that is_a?(String) and starts with -fsanitize=,
-  # and only then hands liburing's configure --enable-sanitizer. Pushed
-  # as an Array the check misses, and liburing ends up built WITHOUT
-  # sanitizer support while everything around it has it.
-  san = %w[-fsanitize=address,undefined -fno-sanitize-recover=undefined
-           -fno-omit-frame-pointer -fno-sanitize=alignment]
-  # ls-hpack and phr read unaligned on purpose; that is not what this
-  # campaign is about, and it fires on the first frame otherwise.
+  # The toolchain's own: it puts ONE -fsanitize= string into cc, cxx and
+  # the linker, which is what mruby-slipstreamio's mrbgem.rake looks for
+  # before it hands liburing's configure --enable-sanitizer. Hand-pushed
+  # flags used to have to be one String per entry for the same reason.
+  conf.enable_sanitizer 'address', 'undefined'
 
-  san.each { |f| conf.cc.flags << f }
+  # After enable_sanitizer, because a -fno-sanitize= only subtracts from
+  # an -fsanitize= to its left. ls-hpack and phr read unaligned on
+  # purpose; that is not what this campaign is about, and it fires on the
+  # first frame otherwise.
+  tuning = %w[-fno-sanitize-recover=undefined -fno-omit-frame-pointer
+              -fno-sanitize=alignment]
+  tuning.each { |f| conf.cc.flags << f }
   conf.cc.flags << '-O1' << '-g3'
-  san.each { |f| conf.cxx.flags << f }
+  tuning.each { |f| conf.cxx.flags << f }
   conf.cxx.flags << '-O1' << '-g3' << '-std=c++20'
-  conf.linker.flags << '-fsanitize=address,undefined'
 
   conf.cc.defines  << 'MRB_UTF8_STRING'
   conf.cxx.defines << 'MRB_UTF8_STRING'

@@ -16,41 +16,38 @@ MRuby::Lockfile.disable
 # clang, because libFuzzer is clang's. -no-pie because libmruby.a is
 # built without -fPIE and clang defaults to PIE. -fno-sanitize=alignment
 # because ls-hpack and phr read unaligned on purpose.
-# mrbc is a TOOL, and a tool must not carry the fuzzer's entry point:
-# -fsanitize=fuzzer goes to EVERY link in a build, and mrbc has a main of
-# its own - the link dies on the collision (and on libFuzzer's missing
-# LLVMFuzzerTestOneInput) long before the fuzz binary is reached. So mrbc
-# is built HERE, first, by a plain toolchain, and the fuzz build is
-# pointed at it. In this file, because an mrbc named under mruby/bin has
-# no rule that produces it and left a cold tree unbuildable; and under
-# its own name, because a build called 'host' would write into the
-# directory the shipped build owns.
-MRuby::Build.new('libfuzzer-tools') do |conf|
-  conf.toolchain
-  conf.gem core: 'mruby-bin-mrbc'
-end
-
+#
+# -fsanitize=fuzzer is NOT here, and that is the whole point: a flag in a
+# build's linker reaches every binary the build produces, and mrbc - a
+# tool of this build, from a core gem - has a main of its own for
+# libFuzzer's to collide with. So the fuzzer flag lives with the fuzz
+# binary, in mrbgem.rake, and only the sanitizers are build-wide.
 MRuby::Build.new('libfuzzer') do |conf|
   conf.toolchain :clang
 
-  conf.mrbcfile = "#{MRuby.targets['libfuzzer-tools'].build_dir}/bin/mrbc"
+  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # gem builds it here. Naming an external mrbc under mruby/bin
+  # instead made a cold tree unbuildable - nothing in this config
+  # produces that path, so rake had no rule for it.
+  conf.gem core: 'mruby-bin-mrbc'
 
   conf.enable_debug
 
-  # ONE FLAG PER ENTRY, as Strings: mruby-io_uring's mrbgem.rake looks
-  # for a cc.flags entry that is_a?(String) and starts with -fsanitize=,
-  # and only then hands liburing's configure --enable-sanitizer. Pushed
-  # as an Array the check misses, and liburing ends up built WITHOUT
-  # sanitizer support while everything around it has it.
-  san = %w[-fsanitize=fuzzer-no-link,address,undefined
-           -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-           -fno-sanitize=alignment]
+  # The toolchain's own: it puts ONE -fsanitize= string into cc, cxx and
+  # the linker, which is what mruby-slipstreamio's mrbgem.rake looks for
+  # before it hands liburing's configure --enable-sanitizer. Hand-pushed
+  # flags used to have to be one String per entry for the same reason.
+  conf.enable_sanitizer 'address', 'undefined'
 
-  san.each { |f| conf.cc.flags << f }
+  # After enable_sanitizer, because a -fno-sanitize= only subtracts from
+  # an -fsanitize= to its left.
+  tuning = %w[-fno-sanitize-recover=undefined -fno-omit-frame-pointer
+              -fno-sanitize=alignment]
+  tuning.each { |f| conf.cc.flags << f }
   conf.cc.flags << '-O1' << '-g'
-  san.each { |f| conf.cxx.flags << f }
+  tuning.each { |f| conf.cxx.flags << f }
   conf.cxx.flags << '-O1' << '-g' << '-std=c++20'
-  conf.linker.flags << '-fsanitize=fuzzer,address,undefined' << '-no-pie'
+  conf.linker.flags << '-no-pie'
 
   conf.cc.defines  << 'MRB_UTF8_STRING' << 'WM_FUZZ_BUILD'
   conf.cxx.defines << 'MRB_UTF8_STRING' << 'WM_FUZZ_BUILD'

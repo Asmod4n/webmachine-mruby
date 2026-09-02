@@ -8,11 +8,23 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # The fuzz binary is the SAME sources with libFuzzer's entry instead of
   # the CLI's, and it exists ONLY in the build that asked for it - the
   # shipped server never carries it (#206).
-  # ONE binary in that build, and it is the fuzz one: -fsanitize=fuzzer
-  # goes to every link in a build, so libFuzzer's main would collide with
-  # the server's and the server has no LLVMFuzzerTestOneInput to offer.
+  # ONE binary in that build, and it is the fuzz one: the server has no
+  # LLVMFuzzerTestOneInput to offer, and libFuzzer's main would collide
+  # with the server's.
   fuzzing = build.cc.defines.include?('WM_FUZZ_BUILD')
   spec.bins = fuzzing ? ['webmachine-fuzz'] : ['webmachine-server', 'webmachine-logd']
+
+  # -fsanitize=fuzzer belongs to THIS GEM and not to the build: a flag in
+  # a build's linker reaches every binary the build produces, and mrbc -
+  # mruby-bin-mrbc's tool, built in the same tree - has a main of its own
+  # for libFuzzer's to collide with. The build carries the sanitizers
+  # (conf.enable_sanitizer) and this carries the fuzzer.
+  if fuzzing
+    fuzz_flags = %w[-fsanitize=fuzzer]
+    spec.cc.flags << fuzz_flags
+    spec.cxx.flags << fuzz_flags
+    spec.linker.flags << fuzz_flags
+  end
 
   # The C++ resource example (#207) is a BINARY, because that is what a
   # C++ resource is: an embedder's own main, linking this library and
