@@ -708,7 +708,23 @@ class ArenaGuard {
   const int at_;
 };
 
+// How many segments of a path one route may bind. It is mruby's own
+// number: vm.c holds a mrb_funcall's arguments in mrb_value
+// argv[MRB_FUNCALL_ARGC_MAX] and raises above it rather than growing a
+// buffer, which is this array's shape exactly. mrbconf.h declares the
+// knob but nothing defines it unless a build does, so the fallback here
+// is vm.c's own - and a build that lowers the VM's number lowers this
+// one with it, because the two are the same decision.
+//
+// The refusal moves EARLIER than mruby can move it: a mrb_funcall is
+// only known when it happens, while a route is known when the app
+// registers it, so binding() refuses the one Symbol past the limit at
+// add_route and the match loop never tests anything.
+#ifdef MRB_FUNCALL_ARGC_MAX
+inline constexpr size_t kMaxRouteBindings = MRB_FUNCALL_ARGC_MAX;
+#else
 inline constexpr size_t kMaxRouteBindings = 16;
+#endif
 
 struct RouteSpans {
   struct Span {
