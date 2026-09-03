@@ -5663,13 +5663,18 @@ class Ring {
     };
     std::unique_ptr<FileIo> file_io;
 
-    // Not ABI: our own cap, one segment more than a Plan can hold, for
-    // the head that rides in front of it.
+    // Not ABI: our own ceiling, one segment more than a Plan can hold, for
+    // the head that rides in front of it. It is what a round may NEVER
+    // exceed, not what a connection allocates - see take_plan.
     static constexpr unsigned kMsgIovMax = App::Plan::kSegs + 1;
     size_t plan_byte_total = 0;
     struct msghdr msg {};
 
     unsigned msg_iovlen = 0;
+    // How many segments msg_iov has room for. A high-water mark, because
+    // the slot outlives the connection and a grown array is the answer to
+    // the next round on it as well.
+    unsigned msg_iov_cap = 0;
     // How much of `out` the kernel has already taken. Only ever non-zero
     // on an offloaded connection, which is the only one that resumes a
     // send; everywhere else MSG_WAITALL makes one send the whole round.
@@ -7004,8 +7009,14 @@ class Ring {
   // RESOLVE a plan into iovecs: a sink segment carried an OFFSET, and this
   // is the first moment the address is final.
   void take_plan(Conn& c, const typename App::Plan& req) {
-    if (!c.msg_iov) {
-      c.msg_iov = std::make_unique<struct iovec[]>(Conn::kMsgIovMax);
+    // What this round needs, not what a round could ever need: kMsgIovMax
+    // is 1024 entries, 16 KB, and a plan carries one to four segments.
+    // Allocating the ceiling cost every connection that ever sent 16 KB it
+    // does not use - and a slow reader holds it for as long as it stalls.
+    const unsigned want = req.iovlen + 1;  // + the sink head, when it prepends
+    if (c.msg_iov_cap < want) {
+      c.msg_iov = std::make_unique<struct iovec[]>(want);
+      c.msg_iov_cap = want;
     }
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
