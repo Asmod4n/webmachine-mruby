@@ -808,6 +808,12 @@ class RouteTable {
   // RFC 9110 4.2.1: the FIRST route that matches wins (registration order).
   // -1 is a miss, and a miss answers 404 before B13.
   int match(const char* path, size_t len, RouteSpans& out) const {
+    // What the caller may read whatever this returns. The spans behind
+    // them are written only as far as nbind and has_splat admit, which
+    // is what lets RouteSpans stay uninitialized at the top of a
+    // request path.
+    out.nbind = 0;
+    out.has_splat = false;
     size_t plen = len;
     for (size_t i = 0; i < len; i++) {
       if (path[i] == '?') {
@@ -2338,7 +2344,11 @@ struct ReqView {
   // No RFC: this server's route table and what the match captured.
   const RouteTable* table = nullptr;
   int route = -1;
-  RouteSpans spans {};
+  // NOT zero-initialized: nbind and has_splat say how much of it is
+  // used, and match() writes those two on every exit - so zeroing the
+  // spans themselves would be 280 bytes of stores per request that
+  // nothing reads.
+  RouteSpans spans;
   // RFC 9110 6.3: the header field section, in the parser's own layout.
   // Only request.headers reads it - it is the one caller that asked for
   // ALL of them. Every named accessor reads `values` instead.
