@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <coroutine>
 #include <cstring>
 #include <ctime>
 #include <limits>
@@ -4710,6 +4711,91 @@ class Http1 {
     bool head_only;
   };
   void spell_error(const ErrorAnswer& e, std::string& sink);
+  // #80: a bound run that can STOP. Only a resource that declared a
+  // promise or a watch is called through one, so a run that can never
+  // stop pays no frame for the ability - the same reasoning #cold-paths
+  // applies to code, applied to control flow.
+  //
+  // WHY a coroutine and not a stage on the connection: at the stop the
+  // round's borrowed pointers have to be saved somewhere, and there is
+  // no choice about that - `view`, `method`, `path` and every field in
+  // ReqValues point into a PROVIDED BUFFER, and on_recv hands that
+  // buffer back to the kernel (replenish_/io_uring_buf_ring_advance)
+  // before anything could resume. Holding it instead is not an option:
+  // the ring has kBufCount of them for the whole process, and a run that
+  // parked for 40 ms of argon2 while holding one starves every other
+  // connection's recv. So the bytes are copied, and the frame is the one
+  // obvious place for the copy rather than a hand-built park struct that
+  // has to be re-pointed by hand on the way back.
+  //
+  // The head and the body are held SEPARATELY even though carry holds
+  // them adjacent today: a head is a few hundred bytes and a body may be
+  // a megabyte, and the megabyte is the one that will later be spilled to
+  // an O_TMPFILE through the ring. A spilled body is not addressable at
+  // all until a read completes, so it can never be a span beside the
+  // head - it is a descriptor and a length, and fetching it is a second
+  // stop this same coroutine takes.
+  struct Run {
+    struct promise_type;
+    using handle = std::coroutine_handle<promise_type>;
+
+    struct promise_type {
+      // RFC 9110 15: what the run answered, once it has.
+      uint16_t status = 0;
+      bool finished = false;
+
+      Run get_return_object() { return Run{handle::from_promise(*this)}; }
+      // Runs eagerly: a run that never stops must reach its answer inside
+      // the call that started it, exactly as resource_run does today.
+      std::suspend_never initial_suspend() noexcept { return {}; }
+      // Suspends at the end so the caller can read `status` off the frame
+      // and destroy it deliberately - a self-destroying coroutine would
+      // take the answer with it.
+      std::suspend_always final_suspend() noexcept { return {}; }
+      void return_value(uint16_t s) {
+        status = s;
+        finished = true;
+      }
+      // #mruby-raises: a raise IS a C++ throw here, and the run frames
+      // above already catch it. Rethrowing leaves this frame suspended at
+      // its final point, which is where the caller destroys it.
+      void unhandled_exception() { throw; }
+    };
+
+    Run() = default;
+    explicit Run(handle h) : co(h) {}
+    Run(const Run&) = delete;
+    Run& operator=(const Run&) = delete;
+    Run(Run&& o) noexcept : co(o.co) { o.co = {}; }
+    Run& operator=(Run&& o) noexcept {
+      if (this != &o) {
+        destroy();
+        co = o.co;
+        o.co = {};
+      }
+      return *this;
+    }
+    ~Run() { destroy(); }
+
+    // Did it reach an answer, or is it parked on something?
+    bool done() const { return !co || co.promise().finished; }
+    uint16_t status() const { return co ? co.promise().status : 0; }
+    void destroy() {
+      if (co) co.destroy();
+      co = {};
+    }
+    // Handed to whatever will resume it - the reactor keeps this and
+    // nothing else, because the handle IS the parked run's name. There is
+    // no slot table and no tag field to translate.
+    handle release() {
+      const handle h = co;
+      co = {};
+      return h;
+    }
+
+    handle co{};
+  };
+
   // What one request round already knows by the time the head is parsed.
   // A step that leaves the straight line takes this instead of twenty
   // arguments - which is what made those steps stay inline before.
