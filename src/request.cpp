@@ -75,20 +75,24 @@ mrb_value req_path(mrb_state* mrb, mrb_value) {
 mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   if (disp_override_set_) return lend(mrb, disp_override_.data(), disp_override_.size());
-  if (v->spans.has_splat) return lend(mrb, v->spans.splat.p, v->spans.splat.n);
+  // The spans are the matching frame's; a view without a match has none.
+  if (v->spans != nullptr && v->spans->has_splat) {
+    return lend(mrb, v->spans->splat.p, v->spans->splat.n);
+  }
   return lend(mrb, v->request_target, v->path_len);
 }
 
 // RFC 9110 4.2.1: the Symbol tokens this route bound, by name.
 mrb_value req_path_info(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
-  mrb_value h = mrb_hash_new_capa(mrb, v->spans.nbind);
+  if (v->spans == nullptr) return mrb_hash_new(mrb);
+  mrb_value h = mrb_hash_new_capa(mrb, v->spans->nbind);
   if (v->table == nullptr || v->route < 0) return h;
-  for (uint8_t i = 0; i < v->spans.nbind; i++) {
+  for (uint8_t i = 0; i < v->spans->nbind; i++) {
     const mrb_sym k = static_cast<mrb_sym>(v->table->binding_sym(v->route, i));
     if (k == 0) continue;
     mrb_hash_set(mrb, h, mrb_symbol_value(k),
-                 lend(mrb, v->spans.bind[i].p, v->spans.bind[i].n));
+                 lend(mrb, v->spans->bind[i].p, v->spans->bind[i].n));
   }
   return h;
 }
@@ -97,9 +101,9 @@ mrb_value req_path_info(mrb_state* mrb, mrb_value) {
 mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
   const ReqView* v = live(mrb);
   mrb_value a = mrb_ary_new(mrb);
-  if (!v->spans.has_splat) return a;
-  const char* p = v->spans.splat.p;
-  size_t n = v->spans.splat.n;
+  if (v->spans == nullptr || !v->spans->has_splat) return a;
+  const char* p = v->spans->splat.p;
+  size_t n = v->spans->splat.n;
   size_t at = 0;
   // One String per segment, and a splat takes as many as the client
   // sends. The array is rooted before the save.

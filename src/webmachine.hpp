@@ -2344,11 +2344,12 @@ struct ReqView {
   // No RFC: this server's route table and what the match captured.
   const RouteTable* table = nullptr;
   int route = -1;
-  // NOT zero-initialized: nbind and has_splat say how much of it is
-  // used, and match() writes those two on every exit - so zeroing the
-  // spans themselves would be 280 bytes of stores per request that
-  // nothing reads.
-  RouteSpans spans;
+  // LENT, not carried: the match loop's own RouteSpans lives in the
+  // frame that matched, which is the frame this view is read from - so
+  // pointing at it costs one store where a copy cost 280 bytes, most of
+  // them past nbind and unreadable by contract. nullptr where nothing
+  // matched, and the accessors say so.
+  const RouteSpans* spans = nullptr;
   // RFC 9110 6.3: the header field section, in the parser's own layout.
   // Only request.headers reads it - it is the one caller that asked for
   // ALL of them. Every named accessor reads `values` instead.
@@ -4780,6 +4781,9 @@ class Http1 {
   struct Parked {
     std::string_view target;
     ReqView& view;
+    // Where the re-match writes its captures. The view only points at
+    // them, so they have to live in the caller's frame, beside the view.
+    RouteSpans& spans;
   };
   const ReqView* h2_parked_view(Conn& st, Parked p);
   // What one h2 access line is written from: the facts the stream carried,

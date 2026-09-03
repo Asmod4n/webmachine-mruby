@@ -1124,7 +1124,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         rv.method_token_len = method_len;
         rv.table = slot.table;
         rv.route = route;
-        rv.spans = spans;
+        rv.spans = &spans;
         rv.fields = headers;
         rv.field_count = num_headers;
         rv.values = &vals;
@@ -1419,7 +1419,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   rv.method = flow::Method::kGet;
   rv.table = slot.ws_table;
   rv.route = route;
-  rv.spans = spans;
+  rv.spans = &spans;
   rv.fields = hdrs;
   rv.field_count = nhdr;
   rv.values = &vals;
@@ -1511,7 +1511,7 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
   rv.method = flow::Method::kGet;
   rv.table = slot.sse_table;
   rv.route = route;
-  rv.spans = spans;
+  rv.spans = &spans;
   rv.fields = hdrs;
   rv.field_count = nhdr;
   rv.values = &vals;

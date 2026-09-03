@@ -103,8 +103,9 @@ const ReqView* Http1::h2_parked_view(Conn& st0, Parked p) {
   ReqView& out = p.view;
   if (target.empty()) return nullptr;
   const AppSlot& slot = apps_[st0.listener];
-  const int r = slot.table->match(target.data(), target.size(), out.spans);
+  const int r = slot.table->match(target.data(), target.size(), p.spans);
   if (r < 0) return nullptr;
+  out.spans = &p.spans;
   out.request_target = target.data();
   out.request_target_len = target.size();
   out.path_len = http::path_only(target.data(), target.size());
@@ -360,13 +361,14 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     http::ReqValues pvals;
     values_of_copied_fields({hv, nh}, pvals);
     ReqView rv;
+    RouteSpans pspans;
     rv.method = facts.method;
     rv.content = body.empty() ? nullptr : body.data();
     rv.content_len = body.size();
     rv.fields = nh != 0 ? hv : nullptr;
     rv.field_count = nh;
     rv.values = &pvals;
-    const ReqView* rvp = h2_parked_view(st0, {target, rv});
+    const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
     const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
     if (!h2_answer(st0, q, sink)) {
       return false;
@@ -507,7 +509,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.method = facts.method;
     rv.table = apps_[st0.listener].table;
     rv.route = r;
-    rv.spans = spans;
+    rv.spans = &spans;
     // hdrbuf is still the block this dispatch decoded, so the fields can
     // be lent for the length of the answer.
     rv.fields = hv;
@@ -1498,6 +1500,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           http::ReqValues pvals;
           values_of_copied_fields({hv, nh}, pvals);
           ReqView rv;
+          RouteSpans pspans;
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.
           rv.method = facts.method;
@@ -1505,7 +1508,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           rv.content_len = body.size();
           rv.fields = nh != 0 ? hv : nullptr;
           rv.field_count = nh;
-          const ReqView* rvp = h2_parked_view(st0, {target, rv});
+          const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
           if (!h2_answer(st0, q, sink)) {            return false;
           }
