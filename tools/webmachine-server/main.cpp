@@ -274,8 +274,8 @@ int serve(mrb_state* mrb, Invocation& in) {
     webmachine::app_assets_only();
   } else {
     std::fprintf(stderr,
-                 "webmachine: nothing to serve - name an application with --app FILE.mrb "
-                 "(or app = in the config), or a pack with --assets FILE.zip\n");
+                 "webmachine: nothing to serve - name an application with --app=FILE.mrb "
+                 "(or app = in the config), or a pack with --assets=FILE.zip\n");
     return 1;
   }
 
