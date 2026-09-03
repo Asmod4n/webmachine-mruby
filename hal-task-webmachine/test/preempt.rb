@@ -18,3 +18,4 @@ assert('hal: a sleeping task wakes, and the ticker was parked meanwhile') do
   Task.run
   assert_true $hal_woke
 end
+

@@ -39,6 +39,11 @@
 */
 
 #include <mruby.h>
+#include <mruby/class.h>
+#include <mruby/presym.h>
+#include <mruby/variable.h>
+
+#include "mruby/task_hal_webmachine.h"
 
 #include "task.h"
 #include "task_hal.h"
@@ -258,12 +263,18 @@ void mrb_hal_task_idle_cpu(mrb_state* mrb) {
   s->idle.wait_for(lk, std::chrono::milliseconds(MRB_TICK_UNIT));
 }
 
-// This gem has no Ruby surface: it exists to supply the HAL symbols
-// mruby-task's scheduler calls. mruby asks every gem for these two, so
-// they are here and empty - the HAL's own life is per mrb_state, and
-// mruby-task drives that through mrb_hal_task_init / _final.
+// This gem has no Ruby surface: the HAL's life is per mrb_state and
+// mruby-task drives it through mrb_hal_task_init / _final. mruby asks
+// every gem for these two, so they are here and empty.
 void mrb_hal_task_webmachine_gem_init(mrb_state*) {}
 void mrb_hal_task_webmachine_gem_final(mrb_state*) {}
+
+// Why this exists, and why it cannot be gem_init's job: see
+// include/mruby/task_hal_webmachine.h.
+void mrb_hal_task_drop_queue(mrb_state* mrb) {
+  struct RClass* task = mrb_class_get_id(mrb, MRB_SYM(Task));
+  mrb_const_remove(mrb, mrb_obj_value(task), MRB_SYM(Queue));
+}
 
 void mrb_hal_task_sleep_us(mrb_state* mrb, mrb_int usec) {
   (void)mrb;
