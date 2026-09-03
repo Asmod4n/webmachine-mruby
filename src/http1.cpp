@@ -276,7 +276,12 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   copy_without_tail(ok.plain, b.ok_head.plain, blen);
   copy_without_tail(ok.keep, b.ok_head.keep, blen);
   copy_without_tail(ok.close, b.ok_head.close, blen);
-  if (b.dynamic_body) {
+  // The 200 without its tail - no Content-Length, no body. A dynamic body
+  // needs it because its length is not known until the run returns; a KONST
+  // body needs it because the prebuilt 200 carries the body INSIDE the
+  // buffer whose Date stamp_variants patches every second, and a body that
+  // is lent rather than copied must not sit in bytes that move.
+  {
     const size_t cut = ok_tail.size();
     copy_without_tail(ok.plain, b.ok_prefix.plain, cut);
     copy_without_tail(ok.keep, b.ok_prefix.keep, cut);
@@ -398,12 +403,6 @@ void Http1::build(const AppInput* apps, size_t napps) {
     sse_at += apps[a].sse_nroutes;
   }
 
-  if (const char* w = std::getenv("WM_WARM_BUDGET")) {
-    char* end = nullptr;
-    const unsigned long v = std::strtoul(w, &end, 10);
-    if (end != w) warm_budget_ = static_cast<size_t>(v);
-  }
-
   if (assets_ != nullptr) {
     h2_build_asset_shared();
     for (AssetEntry& e : assets_->entries()) h2_build_asset_blocks(e);
@@ -513,7 +512,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   if (ae == nullptr) return Took::kNo;
   const uint16_t as = tier->verdict(*ae, {r.facts, r.vals});
   const AssetStep step =
-      asset_step(*ae, {as, r.head_only, r.facts.method, r.vals, warm_budget_});
+      asset_step(*ae, {as, r.head_only, r.facts.method, r.vals});
   const Assets::ConnectionOption conn =
       r.minor >= 1 ? (r.persist ? Assets::kNoConnectionField : Assets::kConnClose)
                    : (r.persist ? Assets::kKeepAlive : Assets::kConnClose);
@@ -568,14 +567,10 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   if (sent_page) sink.append(ebody, eblen);
   bool started_xfer = false;
   if (step.sends_content) {
-    if (step.copy_content) {
-      Assets::copy_wire(*ae, {step.first_byte_pos, step.content_length}, sink);
-    } else {
-      r.st.asset = ae;
-      r.st.asset_off = step.first_byte_pos;
-      r.st.asset_end = step.first_byte_pos + step.content_length;
-      started_xfer = true;
-    }
+    r.st.asset = ae;
+    r.st.asset_off = step.first_byte_pos;
+    r.st.asset_end = step.first_byte_pos + step.content_length;
+    started_xfer = true;
   }
   if (alog_.enabled) {
     log_access(alog_, {{static_cast<const char*>(r.st.peer), r.st.peer_len},
@@ -1372,6 +1367,19 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           spell_error({prefix, bodyless, status,
                        err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
                       sink);
+        } else if (status == 200 && !head_only && plan != nullptr &&
+                   !b->konst.body.empty()) {
+          // The konst body is a std::string built at SETUP and immortal for
+          // the life of the process - no mrb_value, nothing for the GC to
+          // move or collect, so it is LENT as a pointer rather than copied
+          // into this connection's sink. Copying it cost every stalled
+          // reader a private duplicate of the same answer.
+          const Resp& pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
+                                       : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
+          sink.append(pfx.bytes);
+          char cl[40];
+          sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
+          lend_body(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
         } else {
           sink.append(bodyless.bytes);
         }

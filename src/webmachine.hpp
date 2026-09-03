@@ -3816,8 +3816,6 @@ static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's pla
 inline constexpr size_t kCompressFloor = 1280;
 inline constexpr size_t kDeliverChunk = 64u * 1024;
 
-inline constexpr size_t kWarmBudgetDefault = kDeliverChunk;
-
 // At or above this many bytes a dynamic body is LENT to the writer instead
 // of copied into the send buffer. 128 KiB and not 64: through the real ring
 // the measured win at 64 KiB (+7.5%) sits inside the harness's own +/-10%
@@ -4359,8 +4357,6 @@ class Http1 {
   //   content_length   RFC 9110 8.6 - the span sent, and what the access
   //                    line counts
   //   sends_content    RFC 9110 6.4
-  //   copy_content     no RFC: small enough to ride the sink instead of
-  //                    being lent out of the mapping
   struct AssetStep {
     // Which of the four heads this request gets; the enum is HeadKind, not
     // Head, because AssetEntry::Head is a head - this only picks one.
@@ -4370,19 +4366,16 @@ class Http1 {
     size_t first_byte_pos = 0;
     size_t content_length = 0;
     bool sends_content = false;
-    bool copy_content = false;
   };
   // RFC 9110 14.1/14.2: a range is honoured only on a GET that would have
   // been a 200, and only when If-Range still matches the representation.
   // What the range decision weighs besides the entry: the verdict c4 has
-  // already reached, what the request asked for, and how much of a cold
-  // mapping this connection may warm inside one answer.
+  // already reached, and what the request asked for.
   struct RangeAsk {
     uint16_t verdict;
     bool head_only;
     flow::Method method;
     const http::ReqValues& vals;
-    size_t warm_budget;
   };
   static AssetStep asset_step(const AssetEntry& e, const RangeAsk& ask) {
     const uint16_t verdict = ask.verdict;
@@ -4420,7 +4413,6 @@ class Http1 {
       s.content_length = complete_length;
       s.sends_content = true;
     }
-    s.copy_content = s.sends_content && s.content_length <= ask.warm_budget;
     return s;
   }
 
@@ -4879,7 +4871,6 @@ class Http1 {
   H2Block h2_asset405_;
   H2Block h2_asset406_;
   Assets* assets_ = nullptr;
-  size_t warm_budget_ = kWarmBudgetDefault;
   size_t zc_min_ = kZeroCopyDefault;
   size_t map_min_ = kFileMapDefault;
   size_t send_chunk_ = file_send_chunk(60);
@@ -5664,17 +5655,30 @@ class Ring {
     std::unique_ptr<FileIo> file_io;
 
     // Not ABI: our own ceiling, one segment more than a Plan can hold, for
-    // the head that rides in front of it. It is what a round may NEVER
-    // exceed, not what a connection allocates - see take_plan.
+    // the head that rides in front of it - and the kernel's own UIO_MAXIOV.
+    // It is what a round may NEVER exceed, not what a connection carries.
+    //
+    // What a round actually plans, counted: an h1 answer that lends takes
+    // THREE segments (the head out of the sink, and a gzip member's two
+    // halves out of the mapping), an h2 one nine. The ceiling is reachable
+    // only by heavy multiplexing. So the common case rides inline and
+    // costs no allocation at all, and the heap is for the round that does
+    // not fit - see take_plan.
+    //
+    // FOUR and not sixteen: this is paid by every slot the FD budget
+    // allows, live or not (conns_.resize(max_conns_)), so each entry is
+    // 16 bytes times ~19k here. Four covers h1's three; h2 takes one heap
+    // array on a connection that already carries an H2State.
     static constexpr unsigned kMsgIovMax = App::Plan::kSegs + 1;
+    static constexpr unsigned kMsgIovInline = 4;
     size_t plan_byte_total = 0;
     struct msghdr msg {};
 
     unsigned msg_iovlen = 0;
-    // How many segments msg_iov has room for. A high-water mark, because
-    // the slot outlives the connection and a grown array is the answer to
-    // the next round on it as well.
-    unsigned msg_iov_cap = 0;
+    // How many segments the CURRENT store has room for. A high-water mark,
+    // because the slot outlives the connection and a grown array is the
+    // answer to the next round on it as well.
+    unsigned msg_iov_cap = kMsgIovInline;
     // How much of `out` the kernel has already taken. Only ever non-zero
     // on an offloaded connection, which is the only one that resumes a
     // send; everywhere else MSG_WAITALL makes one send the whole round.
@@ -5689,7 +5693,11 @@ class Ring {
 
     typename App::Conn app;
 
-    std::unique_ptr<struct iovec[]> msg_iov;
+    // Where the resolved iovecs live: inline until a round needs more,
+    // heap from then on. `iov()` is the one way to reach them.
+    struct iovec msg_iov_inline[kMsgIovInline];
+    std::unique_ptr<struct iovec[]> msg_iov_heap;
+    struct iovec* iov() { return msg_iov_heap ? msg_iov_heap.get() : msg_iov_inline; }
 
     // Everything TLS on this connection, and nothing on a connection that
     // is not one - most servers run a plaintext listener beside the TLS
@@ -6273,16 +6281,17 @@ class Ring {
   // mappings and lent Strings they already did.
   static void plan_drop_front(Conn& c, size_t took) {
     unsigned seg = 0;
-    while (seg < c.msg_iovlen && took >= c.msg_iov[seg].iov_len) {
-      took -= c.msg_iov[seg].iov_len;
+    struct iovec* const iov = c.iov();
+    while (seg < c.msg_iovlen && took >= iov[seg].iov_len) {
+      took -= iov[seg].iov_len;
       seg++;
     }
     if (seg < c.msg_iovlen && took != 0) {
-      c.msg_iov[seg].iov_base = static_cast<char*>(c.msg_iov[seg].iov_base) + took;
-      c.msg_iov[seg].iov_len -= took;
+      iov[seg].iov_base = static_cast<char*>(iov[seg].iov_base) + took;
+      iov[seg].iov_len -= took;
     }
     const unsigned left = c.msg_iovlen - seg;
-    for (unsigned i = 0; i < left; i++) c.msg_iov[i] = c.msg_iov[seg + i];
+    for (unsigned i = 0; i < left; i++) iov[i] = iov[seg + i];
     c.msg_iovlen = left;
   }
 
@@ -6309,7 +6318,7 @@ class Ring {
                          c.out.size() - c.out_sent, flags);
     } else {
       c.msg = msghdr{};
-      c.msg.msg_iov = c.msg_iov.get();
+      c.msg.msg_iov = c.iov();
       c.msg.msg_iovlen = c.msg_iovlen;
       io_uring_prep_sendmsg(s, static_cast<int>(idx), &c.msg, flags);
     }
@@ -7009,34 +7018,34 @@ class Ring {
   // RESOLVE a plan into iovecs: a sink segment carried an OFFSET, and this
   // is the first moment the address is final.
   void take_plan(Conn& c, const typename App::Plan& req) {
-    // What this round needs, not what a round could ever need: kMsgIovMax
-    // is 1024 entries, 16 KB, and a plan carries one to four segments.
-    // Allocating the ceiling cost every connection that ever sent 16 KB it
-    // does not use - and a slow reader holds it for as long as it stalls.
+    // What this round needs, not what a round could ever need: allocating
+    // kMsgIovMax was 1024 entries, 16 KB, on every connection that ever
+    // lent - and a slow reader holds it for as long as it stalls.
     const unsigned want = req.iovlen + 1;  // + the sink head, when it prepends
-    if (c.msg_iov_cap < want) {
-      c.msg_iov = std::make_unique<struct iovec[]>(want);
+    if (WM_UNLIKELY(c.msg_iov_cap < want)) {
+      c.msg_iov_heap = std::make_unique<struct iovec[]>(want);
       c.msg_iov_cap = want;
     }
+    struct iovec* const iov = c.iov();
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
     bool sink_covered = false;
     for (unsigned i = 0; i < req.iovlen; i++) {
       const typename App::Plan::Seg& sg = req.iov[i];
       if (sg.iov_base != nullptr) {
-        c.msg_iov[c.msg_iovlen].iov_base = const_cast<char*>(sg.iov_base);
+        iov[c.msg_iovlen].iov_base = const_cast<char*>(sg.iov_base);
       } else {
-        c.msg_iov[c.msg_iovlen].iov_base = c.out.data() + sg.off;
+        iov[c.msg_iovlen].iov_base = c.out.data() + sg.off;
         sink_covered = true;
       }
-      c.msg_iov[c.msg_iovlen].iov_len = sg.iov_len;
+      iov[c.msg_iovlen].iov_len = sg.iov_len;
       c.plan_byte_total += sg.iov_len;
       c.msg_iovlen++;
     }
     if (!sink_covered && !c.out.empty()) {
-      for (unsigned i = c.msg_iovlen; i > 0; i--) c.msg_iov[i] = c.msg_iov[i - 1];
-      c.msg_iov[0].iov_base = c.out.data();
-      c.msg_iov[0].iov_len = c.out.size();
+      for (unsigned i = c.msg_iovlen; i > 0; i--) iov[i] = iov[i - 1];
+      iov[0].iov_base = c.out.data();
+      iov[0].iov_len = c.out.size();
       c.plan_byte_total += c.out.size();
       c.msg_iovlen++;
     }
