@@ -265,6 +265,38 @@ wm_case('flow c4: an acceptable Accept does not answer 406 and types the respons
   assert_equal 'text/html; charset=utf-8', res.headers['Content-Type']
 end
 
+# The O(1) shortcut: an Accept whose first range IS the type offered
+# answers c3/c4 with one memcmp, and everything it does not recognise
+# falls back to the full weighing rather than guessing.
+wm_case('flow c4: an Accept that is exactly the offered type is served') do
+  res = wm_run(wm_res_default, 'GET', wm_h('Accept' => 'text/html'))
+  assert_equal 200, res.code
+  assert_equal 'text/html; charset=utf-8', res.headers['Content-Type']
+end
+
+wm_case('flow c4: the offered type first in a list is served (a browser)') do
+  browser = 'text/html,application/xhtml+xml,application/xml;q=0.9,' \
+            'image/avif,image/webp,*/*;q=0.8'
+  assert_equal 200, wm_run(wm_res_default, 'GET', wm_h('Accept' => browser)).code
+end
+
+wm_case('flow c4: a q=0 on the offered type is still a refusal') do
+  assert_equal 406, wm_run(wm_res_default, 'GET', wm_h('Accept' => 'text/html;q=0')).code
+end
+
+wm_case('flow c4: the shortcut does not fire on a longer type') do
+  assert_equal 406, wm_run(wm_res_default, 'GET', wm_h('Accept' => 'text/htmlish')).code
+end
+
+wm_case('flow c4: a differently cased Accept is weighed, not refused') do
+  assert_equal 200, wm_run(wm_res_default, 'GET', wm_h('Accept' => 'TEXT/HTML')).code
+end
+
+wm_case('flow c4: parameters on the offered type are weighed') do
+  res = wm_run(wm_res_default, 'GET', wm_h('Accept' => 'text/html;q=0.5'))
+  assert_equal 200, res.code
+end
+
 wm_case('flow c3: no Accept negotiates nothing and types the response') do
   h = wm_h
   assert_nil h['Accept']

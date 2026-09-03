@@ -1252,8 +1252,16 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // resource with exactly one media type (two would have bound it), so
         // the question is one match, asked here in C++ and never in the VM.
         if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr)) {
-          facts.accept_ok =
-              http::choose_media_type({{&b->accept_type, 1}, {vals.accept, vals.accept_len}}) >= 0;
+          if (http::accept_is_exact({vals.accept, vals.accept_len}, b->accept_type)) {
+            // Asked and answered: this Accept names the one type offered,
+            // so c3/c4 have nothing left to decide and the request is as
+            // plain as one that never negotiated.
+            facts.has_accept = false;
+          } else {
+            facts.plain = false;
+            facts.accept_ok =
+                http::choose_media_type({{&b->accept_type, 1}, {vals.accept, vals.accept_len}}) >= 0;
+          }
         }
         const size_t mi = static_cast<size_t>(facts.method);
         status = flow::answer(facts, {b->konst.per_method[mi], b->konst.shortcut[mi]});

@@ -532,7 +532,7 @@ struct Decided {
 // RFC 9110: the one entry point the request path calls. Two integer tests
 // where the graph could not have said anything else.
 constexpr uint16_t answer(const ReqFacts& req, Decided d) {
-  if (d.shortcut.always || req.plain) return d.shortcut.status;
+  if (d.shortcut.always || (req.plain && !req.has_accept)) return d.shortcut.status;
   return walk(req, d.konst);
 }
 
@@ -1937,6 +1937,30 @@ struct Conneg {
   std::string_view accept;
 };
 
+// RFC 9110 12.5.1: an exact type/subtype is the most specific match a
+// range can be, so a first range that IS the offered type answers the
+// whole question - no q ordering to do, nothing later that can outrank
+// it. One memcmp of the type's own length, whatever the client sent
+// after it: htmx 4's `text/html` and a browser's
+// `text/html,application/xhtml+xml,...,*/*;q=0.8` cost the same here.
+//
+// Deliberately narrow. A parameter (`;q=`, `;charset=`) on that first
+// range, or a case that does not match byte for byte, falls back to
+// choose_media_type, which is case-insensitive and weighs q properly.
+// This answers the common shape in constant time and refuses to guess
+// about any other.
+inline bool accept_is_exact(std::string_view accept, std::string_view type) {
+  const char* const a = accept.data();
+  const size_t n = accept.size();
+  size_t i = 0;
+  while (i < n && (a[i] == ' ' || a[i] == '\t')) i++;
+  if (n - i < type.size()) return false;
+  if (std::memcmp(a + i, type.data(), type.size()) != 0) return false;
+  i += type.size();
+  while (i < n && (a[i] == ' ' || a[i] == '\t')) i++;
+  return i == n || a[i] == ',';
+}
+
 inline int choose_media_type(Conneg c) {
   const std::string* const types = c.provided.data();
   const size_t ntypes = c.provided.size();
@@ -2209,8 +2233,12 @@ static inline bool header_switch(Field f, FactSink into) {
       break;
     case 6:
       if (tok_eq({name, nlen}, "accept")) {
+        // NOT plain = false: has_accept is asked separately by answer(),
+        // so the request path can clear it when the Accept turns out to
+        // name exactly what the route offers - a negotiation with one
+        // outcome, back on the shortcut. Everything else that clears
+        // plain stays as it is.
         facts.has_accept = true;
-        facts.plain = false;
         vals.accept = value;
         vals.accept_len = vlen;
         vals.named.note(NamedField::kAccept, at);
