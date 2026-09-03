@@ -5286,6 +5286,7 @@ class Ring {
     io_uring_register_ring_fd(&ring_);
     ring_up_ = true;
 
+    shed_stats_ = ::getenv("WM_SHED_STATS") != nullptr;
     const uint64_t nofile = raise_nofile();
     log_fd_ = cfg.log_fd;
     err_fd_ = cfg.err_fd;
@@ -7165,6 +7166,20 @@ class Ring {
     // the depth of what this pass is about to do rather than what is
     // left over from it.
     behind_ = io_uring_cq_ready(&ring_);
+    if (WM_UNLIKELY(shed_stats_)) {
+      if (behind_ > behind_max_) behind_max_ = behind_;
+      behind_sum_ += behind_;
+      behind_passes_++;
+      if (now_s_ != last_stats_s_) {
+        last_stats_s_ = now_s_;
+        std::fprintf(stderr, "shed-stats: passes=%llu mean=%.1f max=%u of %u (%.2f%% / %.1f%%)\n",
+                     static_cast<unsigned long long>(behind_passes_),
+                     double(behind_sum_) / double(behind_passes_), behind_max_, cq_entries_,
+                     100.0 * double(behind_sum_) / double(behind_passes_) / cq_entries_,
+                     100.0 * behind_max_ / cq_entries_);
+        behind_max_ = 0; behind_sum_ = 0; behind_passes_ = 0;
+      }
+    }
     // Said once a second while it lasts, and never once per pass: a
     // server that is behind must not spend what it has left on saying
     // so. It is said HERE rather than in the once-a-second sweep below,
@@ -7253,6 +7268,13 @@ class Ring {
   // #shed: completions that had arrived when this pass began.
   unsigned behind_ = 0;
   int64_t last_shed_s_ = 0;
+  // Only while the mark is being chosen: what the ring actually looks
+  // like under load, per second. WM_SHED_STATS in the environment.
+  bool shed_stats_ = false;
+  unsigned behind_max_ = 0;
+  uint64_t behind_sum_ = 0;
+  uint64_t behind_passes_ = 0;
+  int64_t last_stats_s_ = 0;
   // Whose exception this is, when the reactor has to give up. See fatal().
   mrb_state* mrb_ = nullptr;
   int backlog_ = SOMAXCONN;
