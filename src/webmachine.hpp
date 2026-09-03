@@ -1629,6 +1629,35 @@ struct ReqValues {
   NamedFieldIndex named;
 };
 
+// #80: every pointer in ReqValues, in ONE place. A parked run has to
+// rebase all of them onto bytes it owns, and rebasing eleven of twelve
+// is a dangling pointer that only bites the run that stopped - which is
+// the rarest path there is, so it would be found in production and not
+// here. Written as member pointers rather than as twelve assignments so
+// there is one list to be right about.
+//
+// The size assert is the whole guard: a field added to the struct above
+// changes it, and the build stops until the field is listed here too. It
+// fixes nothing else - what a byte MEANS is not this list's business.
+inline constexpr const char* ReqValues::*kReqValueSpans[] = {
+    &ReqValues::log_ref,       &ReqValues::log_ua,        &ReqValues::accept_encoding,
+    &ReqValues::if_match,      &ReqValues::if_none_match, &ReqValues::range,
+    &ReqValues::if_range,      &ReqValues::authorization, &ReqValues::content_type,
+    &ReqValues::accept,        &ReqValues::host,          &ReqValues::cookie,
+};
+static_assert(sizeof(ReqValues) == 224,
+              "ReqValues changed shape: a new field belongs in kReqValueSpans, and a "
+              "removed one has to leave it - see #80, the parked run's rebase");
+
+// Move every span in `v` by `delta`. A null span stays null: it names no
+// bytes, so there is nothing to move and an offset from nullptr is
+// undefined besides.
+inline void rebase(ReqValues& v, ptrdiff_t delta) {
+  for (const char* ReqValues::*m : kReqValueSpans) {
+    if (v.*m != nullptr) v.*m += delta;
+  }
+}
+
 // #210: the fields this request steered by, one per line, for the error
 // record and the fingerprint over it. These are the ones the server reads
 // BECAUSE they change the answer - which is why ReqValues holds them at
@@ -4800,6 +4829,44 @@ class Http1 {
     }
 
     handle co{};
+  };
+
+  // #80: everything a stopped run BORROWED, rebased onto bytes it owns.
+  // Named Held and not Parked because Http1 already has a Parked, and
+  // that one is an h2 stream's view - a different thing entirely.
+  //
+  // What borrows, and it is more than ReqValues: ReqView's
+  // request_target and method_token, the framer's phr_header array with
+  // a name and a value each, and RouteSpans' captures. All of it points
+  // into ONE contiguous head - the provided buffer, or carry - so one
+  // delta moves the lot, and the only way to get that wrong is to miss a
+  // member. Hence kReqValueSpans and its size assert.
+  //
+  // The BODY is not held here. Today it is the bytes right behind the
+  // head and could ride along; tomorrow it is an O_TMPFILE that a read
+  // has to fetch, and then it is not a span at all. Holding it apart
+  // from the start is what keeps that from being a second rewrite.
+  struct Held {
+    // The bytes. Everything below points INTO this string, so it must
+    // not move once hold() has run - no append, no reserve, no swap.
+    std::string head;
+    http::ReqValues vals{};
+    RouteSpans spans{};
+    ReqView rv{};
+    std::unique_ptr<struct phr_header[]> fields;
+    size_t nfields = 0;
+
+    Held();
+    ~Held();
+    Held(Held&&) noexcept;
+    Held& operator=(Held&&) noexcept;
+    Held(const Held&) = delete;
+    Held& operator=(const Held&) = delete;
+
+    // Copy the head and re-point `from` at the copy. After this the
+    // provided buffer may go back to the kernel, which is the whole
+    // point - see Run.
+    void hold(const char* head_at, size_t head_len, const ReqView& from);
   };
 
   // What one request round already knows by the time the head is parsed.

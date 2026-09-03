@@ -3,6 +3,7 @@
 
 #include <picohttpparser.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -910,6 +911,85 @@ void Http1::file_ready_now(Conn& st, size_t n) {
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
+// #80: Held's out-of-line half. It is out of line because phr_header is
+// incomplete in webmachine.hpp on purpose - the framer's header does not
+// belong in this tree's one contract - and a unique_ptr<T[]> needs T
+// complete exactly where these are defined.
+Http1::Held::Held() = default;
+Http1::Held::~Held() = default;
+Http1::Held::Held(Held&&) noexcept = default;
+Http1::Held& Http1::Held::operator=(Held&&) noexcept = default;
+
+void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from) {
+  head.assign(head_at, head_len);
+  const ptrdiff_t delta = head.data() - head_at;
+
+  vals = *from.values;
+  http::rebase(vals, delta);
+
+  nfields = from.field_count;
+  if (nfields != 0) {
+    fields = std::make_unique<struct phr_header[]>(nfields);
+    const auto* src = static_cast<const struct phr_header*>(from.fields);
+    for (size_t i = 0; i < nfields; i++) {
+      fields[i] = src[i];
+      if (fields[i].name != nullptr) fields[i].name += delta;
+      if (fields[i].value != nullptr) fields[i].value += delta;
+    }
+  }
+  vals.named = from.values->named;
+
+  // RouteSpans: only the ones nbind/has_splat say are readable. Past
+  // nbind the array is uninitialised by contract, and moving those would
+  // be reading it.
+  if (from.spans != nullptr) {
+    spans = *from.spans;
+    for (uint8_t i = 0; i < spans.nbind; i++) {
+      if (spans.bind[i].p != nullptr) spans.bind[i].p += delta;
+    }
+    if (spans.has_splat && spans.splat.p != nullptr) spans.splat.p += delta;
+  }
+
+  rv = from;
+  if (rv.request_target != nullptr) rv.request_target += delta;
+  if (rv.method_token != nullptr) rv.method_token += delta;
+  rv.values = &vals;
+  rv.fields = fields.get();
+  rv.spans = from.spans != nullptr ? &spans : nullptr;
+  // The body stays where the caller put it: it is the one span that will
+  // not always be a span (#80, the O_TMPFILE spill).
+  rv.content = from.content;
+  rv.content_len = from.content_len;
+
+  // The check the member table cannot do for itself. kReqValueSpans is a
+  // list, and a list can be short by one - and the member it is short by
+  // is a pointer still aimed at a buffer the kernel already has back. So
+  // look at ReqValues as WORDS and refuse any that still lands in the
+  // source: a forgotten member is found here, on the first parked run in
+  // a debug build, instead of in production on the rarest path there is.
+  //
+  // The epoch fields are words too and are read the same way. A date in
+  // seconds cannot collide with a stack or heap address, so they cost
+  // nothing but the loop.
+  if constexpr (kDebugBuild) {
+    const uintptr_t lo = reinterpret_cast<uintptr_t>(head_at);
+    const uintptr_t hi = lo + head_len;
+    const unsigned char* raw = reinterpret_cast<const unsigned char*>(&vals);
+    for (size_t i = 0; i + sizeof(uintptr_t) <= sizeof(vals); i += sizeof(uintptr_t)) {
+      uintptr_t w = 0;
+      std::memcpy(&w, raw + i, sizeof(w));
+      if (w >= lo && w < hi) {
+        std::fprintf(stderr,
+                     "webmachine: #80 hold() left a ReqValues word at offset %zu pointing "
+                     "into the buffer it was supposed to leave - add the member to "
+                     "kReqValueSpans\n",
+                     i);
+        std::abort();
+      }
+    }
+  }
+}
+
 bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   const char* data = in.data();
   size_t len = in.size();
