@@ -16,8 +16,11 @@
 **
 **   - Per-thread state, in thread_local storage: the VMs opened on this
 **     thread, one mutex, one condition variable. A thread only ever
-**     touches its own, so MRB_TASK_MAX_VMS is a per-thread ceiling and
-**     eight workers plus a reactor never approach it.
+**     touches its own, which is what the locking needs - but the CEILING
+**     is the process's. MRB_TASK_MAX_VMS is what a build asked for, and
+**     reading it per thread would quietly grant a multiple of it. A pool
+**     sizes itself from that number instead: workers = MAX_VMS - 1, the
+**     reactor's own VM being the one that must always fit.
 **   - One ticker thread for the process, started with the first VM and
 **     joined with the last. It is what makes preemption possible at all:
 **     a worker blocked inside mrb_vm_exec cannot tick itself, and the
@@ -166,11 +169,12 @@ void mrb_hal_task_init(mrb_state* mrb) {
       if (ts->vms[i] == mrb) { known = true; break; }
     }
     if (!known) {
-      if (ts->nvms >= MRB_TASK_MAX_VMS) {
-        // The operator's number, read and never raised: a pool sizes
-        // itself from MRB_TASK_MAX_VMS rather than the other way round.
+      // The operator's number, read and never raised, and counted where
+      // they meant it: over the process. Per thread it would be a
+      // multiple of what the build asked for.
+      if (g_vm_total >= MRB_TASK_MAX_VMS || ts->nvms >= MRB_TASK_MAX_VMS) {
         mrb_raisef(mrb, E_RUNTIME_ERROR,
-                   "too many mrb_states with task scheduler on this thread (max: %d)",
+                   "too many mrb_states with task scheduler (max: %d)",
                    MRB_TASK_MAX_VMS);
       }
       ts->vms[ts->nvms++] = mrb;
