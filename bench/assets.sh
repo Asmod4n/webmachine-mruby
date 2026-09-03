@@ -46,8 +46,12 @@
 # Knobs: CONNS mandatory (the harness is part of the number),
 # SIZES (space-separated asset byte sizes, default "4096 32768 262144
 # 1048576"), ARMS (default all four), DURATION (default 10), REPS
-# (default 1), WARM (passed as WM_WARM_BUDGET; empty = the built-in
-# default), PORT (default 8123), SETUP_ENTRIES (default 5000, 0 skips).
+# (default 1), PORT (default 8123), SETUP_ENTRIES (default 5000, 0
+# skips). WARM= is gone: it set WM_WARM_BUDGET, which chose between
+# copying a body into the connection's sink and lending it out of the
+# mapping. The copy is gone - it cost a stalled reader a private
+# duplicate of the answer (~65 KB per phone at 64 KB) and was no faster
+# (39 B: 0.995 over 9 pairs; 64 KB: 1.35 for lending).
 # Appends to bench/results/$(hostname).log; failed runs write nothing.
 #
 # SPREAD, measured with foreign benchmarks under bench_priority, so the
@@ -107,7 +111,10 @@ PROTO="${PROTO:-h1}"
 MULTI="${MULTI:-32}"
 SIZES="${SIZES:-4096 32768 262144 1048576}"
 ARMS="${ARMS:-stored gzip 304 206}"
-WARM="${WARM:-}"
+[ -z "${WARM:-}" ] || {
+  echo "WARM= is gone with WM_WARM_BUDGET: the asset tier always lends now." >&2
+  exit 2
+}
 PORT="${PORT:-8123}"
 # LOG=1 turns the access log on (--log into the workdir): the cost of
 # a line per request, end to end, including the record daemon.
@@ -273,9 +280,7 @@ start_srv() {  # start_srv <port> [zip]
   local port=$1 zip=${2:-$WORK/assets.zip}
   local args=(--port="$port" --assets="$zip")
   [ "$LOG" = 1 ] && args+=(--log="$WORK/access.log")
-  local env_pfx=()
-  [ -n "$WARM" ] && env_pfx=(env "WM_WARM_BUDGET=$WARM")
-  "${env_pfx[@]}" "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
+  "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
   SRV=$!
   # WAIT for it to answer, never a fixed sleep: on this container the
   # first curl raced the listener, the stored arm compared an EMPTY
@@ -488,7 +493,7 @@ fi
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
-  echo "harness: assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS warm=${WARM:-default} log=${LOG} $(uname -mr)"
+  echo "harness: assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS log=${LOG} $(uname -mr)"
   s0=$(steal_ticks)
   # cpu% = server CPU over the run, percent of ONE core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx
