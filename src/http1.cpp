@@ -908,6 +908,156 @@ void Http1::file_ready_now(Conn& st, size_t n) {
 // RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
+// #80: the answer, spelled. Split out of feed_parse so the bound tier can
+// reach it from inside a coroutine while the konst tier keeps calling it
+// straight - a run that can never stop must not pay for a frame.
+// Returns the step it took, because the access line counts what it wrote.
+Http1::AnswerStep Http1::spell_answer(Round& r, Spelling sp) {
+  Conn& st = r.st;
+  const Bundle* const b = r.b;
+  const int minor = r.minor;
+  const bool persist = r.persist;
+  const bool head_only = r.head_only;
+  const http::ReqValues& vals = r.vals;
+  const char* const method = r.method;
+  const size_t method_len = r.method_len;
+  const char* const path = r.path;
+  const size_t path_len = r.path_len;
+  std::string& sink = sp.sink;
+  Plan* const plan = sp.plan;
+  const uint16_t status = sp.status;
+  const char* const lent = sp.lent;
+  const size_t lent_len = sp.lent_len;
+  const bool answered = sp.answered;
+  const bool have_body = sp.have_body;
+  const bool accept_gzip = sp.accept_gzip;
+  const std::array<uint16_t, 600>* const idx = sp.idx;
+  AnswerStep astep = answer_step({status, body_.size(), lent_len, answered, have_body,
+                                  lent != nullptr, b != nullptr && b->gzip_ok,
+                                  b != nullptr && b->bound});
+  mrb_value exc_value = mrb_nil_value();
+  // #210: what led here, gathered once - the record and the page carry
+  // the same hash because they are taken over the same facts.
+  ErrFacts ef;
+  std::string ef_backtrace;
+  std::string ef_steering;
+  char ef_hash[kFingerprintLen] = {};
+  if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
+    ef.peer = st.peer;
+    ef.peer_len = st.peer_len;
+    ef.request_target = path;
+    ef.request_target_len = path_len;
+    ef.method = method;
+    ef.method_len = method_len;
+    spell_steering(&vals, ef_steering);
+    ef.steering = ef_steering.data();
+    ef.steering_len = ef_steering.size();
+    // The request as the resource saw it: lent for this frame, which is
+    // the frame still being answered.
+    ef.body = b->res->run_req != nullptr ? b->res->run_req->content : nullptr;
+    ef.body_len = b->res->run_req != nullptr ? b->res->run_req->content_len : 0;
+    ef.body_full = ef.body_len;
+    ef.status_code = 500;
+    exception_facts(b->res->mrb, {ef, ef_backtrace});
+    spell_fingerprint(ef_hash, fingerprint_of(ef));
+    if (elog_.enabled) log_error(elog_, ef);
+    // #210: handle_exception lives on the error resource and nowhere
+    // else, so the exception object itself is what crosses over - not
+    // a message some resource already made of it.
+    if (resource_exception_take(*b->res, &exc_value)) astep.answered = true;
+    else astep.shape = AnswerStep::Shape::kStatus;
+  }
+  switch (astep.shape) {
+    case AnswerStep::Shape::kAlready:
+      break;
+    case AnswerStep::Shape::kLent: {
+      const Variants& pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
+      const Resp& pfx = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                   : (persist ? pv.keep : pv.close);
+      sink.append(pfx.bytes);
+      char cl[40];
+      sink.append(cl, http::spell_content_length(cl, lent_len));
+      lend_body(st, sink, {{lent, lent_len}, *plan});
+      break;
+    }
+    case AnswerStep::Shape::kGzip: {
+      const Resp& prefix_id =
+          minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
+                     : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close);
+      const Resp& prefix_gz =
+          minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
+                     : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
+      assemble_dynamic({prefix_id, prefix_gz, accept_gzip && st.packetized, head_only}, sink);
+      break;
+    }
+    case AnswerStep::Shape::kPlain: {
+      const Resp& prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
+                                      : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
+      assemble(sink, {prefix, body_, head_only});
+      break;
+    }
+    case AnswerStep::Shape::kException: {
+      std::string message;
+      err_pages_.exception_text(exc_value, message);
+      const Variants& pv = store_prefix_[(*idx)[500]];
+      const Variants& bv = store_[(*idx)[500]];
+      ErrorPages::Fields f;
+      f.message = message.data();
+      f.message_len = message.size();
+      f.fingerprint = ef_hash;
+      // A ship build says what was thrown and where the log has the rest; a
+      // debug build is already telling you about itself, so the trace goes
+      // on the page too.
+      if (kDebugBuild) {
+        f.backtrace = ef.backtrace;
+        f.backtrace_len = ef.backtrace_len;
+      }
+      const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                      : (persist ? pv.keep : pv.close);
+      const Resp& bodyless = minor >= 1 ? (persist ? bv.plain : bv.close)
+                                        : (persist ? bv.keep : bv.close);
+      spell_error({prefix, bodyless, 500,
+                   err_pages_.media_for(500, vals.accept, vals.accept_len), f, head_only},
+                  sink);
+      break;
+    }
+    case AnswerStep::Shape::kStatus: {
+      const Variants& sv =
+          (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
+      const Resp& bodyless = minor >= 1 ? (persist ? sv.plain : sv.close)
+                                        : (persist ? sv.keep : sv.close);
+      // RFC 9110 15: only a 4xx or 5xx has something to explain. A 204,
+      // a 304 or a redirect is an answer, and answers carry no page.
+      if (status >= 400) {
+        const Variants& pv = store_prefix_[(*idx)[status]];
+        const ErrorPages::Fields f;
+        const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
+                                        : (persist ? pv.keep : pv.close);
+        spell_error({prefix, bodyless, status,
+                     err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
+                    sink);
+      } else if (status == 200 && !head_only && plan != nullptr &&
+                 !b->konst.body.empty()) {
+        // The konst body is a std::string built at SETUP and immortal for
+        // the life of the process - no mrb_value, nothing for the GC to
+        // move or collect, so it is LENT as a pointer rather than copied
+        // into this connection's sink. Copying it cost every stalled
+        // reader a private duplicate of the same answer.
+        const Resp& pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
+                                     : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
+        sink.append(pfx.bytes);
+        char cl[40];
+        sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
+        lend_body(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
+      } else {
+        sink.append(bodyless.bytes);
+      }
+      break;
+    }
+  }
+  return astep;
+}
+
 bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   const char* data = in.data();
   size_t len = in.size();
@@ -1263,129 +1413,12 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       }
     }
 
-    AnswerStep astep = answer_step({status, body_.size(), lent_len, answered, have_body,
-                                    lent != nullptr, b != nullptr && b->gzip_ok,
-                                    b != nullptr && b->bound});
-    mrb_value exc_value = mrb_nil_value();
-    // #210: what led here, gathered once - the record and the page carry
-    // the same hash because they are taken over the same facts.
-    ErrFacts ef;
-    std::string ef_backtrace;
-    std::string ef_steering;
-    char ef_hash[kFingerprintLen] = {};
-    if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
-      ef.peer = st.peer;
-      ef.peer_len = st.peer_len;
-      ef.request_target = path;
-      ef.request_target_len = path_len;
-      ef.method = method;
-      ef.method_len = method_len;
-      spell_steering(&vals, ef_steering);
-      ef.steering = ef_steering.data();
-      ef.steering_len = ef_steering.size();
-      // The request as the resource saw it: lent for this frame, which is
-      // the frame still being answered.
-      ef.body = b->res->run_req != nullptr ? b->res->run_req->content : nullptr;
-      ef.body_len = b->res->run_req != nullptr ? b->res->run_req->content_len : 0;
-      ef.body_full = ef.body_len;
-      ef.status_code = 500;
-      exception_facts(b->res->mrb, {ef, ef_backtrace});
-      spell_fingerprint(ef_hash, fingerprint_of(ef));
-      if (elog_.enabled) log_error(elog_, ef);
-      // #210: handle_exception lives on the error resource and nowhere
-      // else, so the exception object itself is what crosses over - not
-      // a message some resource already made of it.
-      if (resource_exception_take(*b->res, &exc_value)) astep.answered = true;
-      else astep.shape = AnswerStep::Shape::kStatus;
-    }
-    switch (astep.shape) {
-      case AnswerStep::Shape::kAlready:
-        break;
-      case AnswerStep::Shape::kLent: {
-        const Variants& pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
-        const Resp& pfx = minor >= 1 ? (persist ? pv.plain : pv.close)
-                                     : (persist ? pv.keep : pv.close);
-        sink.append(pfx.bytes);
-        char cl[40];
-        sink.append(cl, http::spell_content_length(cl, lent_len));
-        lend_body(st, sink, {{lent, lent_len}, *plan});
-        break;
-      }
-      case AnswerStep::Shape::kGzip: {
-        const Resp& prefix_id =
-            minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
-                       : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close);
-        const Resp& prefix_gz =
-            minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
-                       : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
-        assemble_dynamic({prefix_id, prefix_gz, accept_gzip && st.packetized, head_only}, sink);
-        break;
-      }
-      case AnswerStep::Shape::kPlain: {
-        const Resp& prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
-                                        : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-        assemble(sink, {prefix, body_, head_only});
-        break;
-      }
-      case AnswerStep::Shape::kException: {
-        std::string message;
-        err_pages_.exception_text(exc_value, message);
-        const Variants& pv = store_prefix_[(*idx)[500]];
-        const Variants& bv = store_[(*idx)[500]];
-        ErrorPages::Fields f;
-        f.message = message.data();
-        f.message_len = message.size();
-        f.fingerprint = ef_hash;
-        // A ship build says what was thrown and where the log has the rest; a
-        // debug build is already telling you about itself, so the trace goes
-        // on the page too.
-        if (kDebugBuild) {
-          f.backtrace = ef.backtrace;
-          f.backtrace_len = ef.backtrace_len;
-        }
-        const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
-                                        : (persist ? pv.keep : pv.close);
-        const Resp& bodyless = minor >= 1 ? (persist ? bv.plain : bv.close)
-                                          : (persist ? bv.keep : bv.close);
-        spell_error({prefix, bodyless, 500,
-                     err_pages_.media_for(500, vals.accept, vals.accept_len), f, head_only},
-                    sink);
-        break;
-      }
-      case AnswerStep::Shape::kStatus: {
-        const Variants& sv =
-            (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
-        const Resp& bodyless = minor >= 1 ? (persist ? sv.plain : sv.close)
-                                          : (persist ? sv.keep : sv.close);
-        // RFC 9110 15: only a 4xx or 5xx has something to explain. A 204,
-        // a 304 or a redirect is an answer, and answers carry no page.
-        if (status >= 400) {
-          const Variants& pv = store_prefix_[(*idx)[status]];
-          const ErrorPages::Fields f;
-          const Resp& prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
-                                          : (persist ? pv.keep : pv.close);
-          spell_error({prefix, bodyless, status,
-                       err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
-                      sink);
-        } else if (status == 200 && !head_only && plan != nullptr &&
-                   !b->konst.body.empty()) {
-          // The konst body is a std::string built at SETUP and immortal for
-          // the life of the process - no mrb_value, nothing for the GC to
-          // move or collect, so it is LENT as a pointer rather than copied
-          // into this connection's sink. Copying it cost every stalled
-          // reader a private duplicate of the same answer.
-          const Resp& pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
-                                       : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-          sink.append(pfx.bytes);
-          char cl[40];
-          sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
-          lend_body(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
-        } else {
-          sink.append(bodyless.bytes);
-        }
-        break;
-      }
-    }
+    Round ar{st,   b,        view,      viewlen,  off + static_cast<size_t>(ret),
+             static_cast<size_t>(ret), in_place, method,   method_len,
+             path, path_len, minor,     persist,  head_only,
+             w.content_length, lflags,   facts,    vals};
+    const AnswerStep astep = spell_answer(
+        ar, {sink, plan, status, lent, lent_len, answered, have_body, accept_gzip, idx});
     if (alog_.enabled) {
       log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
                          {method, method_len},

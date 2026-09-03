@@ -4828,6 +4828,23 @@ class Http1 {
     kClose         // answered, and the connection ends
   };
 
+  // #80: what the answer switch needs beyond the Round - the sink it
+  // writes to, the plan a lend rides out on, and what the run left
+  // behind. A struct because these travelled together as nine
+  // arguments, and #std-first says that is a type.
+  struct Spelling {
+    std::string& sink;
+    Plan* plan;
+    uint16_t status;
+    const char* lent;
+    size_t lent_len;
+    bool answered;
+    bool have_body;
+    bool accept_gzip;
+    const std::array<uint16_t, 600>* idx;
+  };
+  AnswerStep spell_answer(Round& r, Spelling sp);
+
   // RFC 9110 6.3: response.file named a file, so no body is spelled here
   // - the framing goes onto the connection and the reactor drives
   // openat2/statx/read. Answers whether it took the round.
