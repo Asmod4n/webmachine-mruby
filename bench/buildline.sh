@@ -18,11 +18,29 @@ wm_build_line() {
              grep -oE '(GCC:|clang version).*' | head -1 | sed 's/^GCC: /gcc /' | tr -s ' ')
   wm_bl_cxx=$(ldd "$wm_bl_bin" 2>/dev/null | grep -oE '/[^ ]*libstdc\+\+\.so[^ ]*' | head -1)
   [ -n "$wm_bl_cxx" ] && wm_bl_cxx=$(basename "$(readlink -f "$wm_bl_cxx")")
-  wm_bl_libc=$(ldd "$wm_bl_bin" 2>/dev/null | grep -oE '/[^ ]*/libc\.so[^ ]*' | head -1)
-  if [ -n "$wm_bl_libc" ]; then
-    wm_bl_libc=$("$wm_bl_libc" --version 2>/dev/null | head -1 |
-                 grep -oE '(GLIBC|musl)[^)]*' | head -1)
+  # WHICH libc, and whether there is one at all. The path answers the
+  # second question and the library itself answers the first.
+  #
+  # It used to look for the word GLIBC in `libc.so --version`. Ubuntu
+  # writes it - "(Ubuntu GLIBC 2.39-0ubuntu8.7)" - and openSUSE writes
+  # "(GNU libc)", so the search found nothing there and the line fell
+  # back to the word "static". Every run on that machine said the binary
+  # was statically linked. It was not. A build line that guesses is worse
+  # than one that says it does not know.
+  wm_bl_libc_so=$(ldd "$wm_bl_bin" 2>/dev/null | grep -oE '/[^ ]*/libc\.so[^ ]*' | head -1)
+  if [ -n "$wm_bl_libc_so" ]; then
+    wm_bl_libc_v=$("$wm_bl_libc_so" --version 2>/dev/null | head -1)
+    case "$wm_bl_libc_v" in
+      *musl*) wm_bl_libc="musl $(printf '%s' "$wm_bl_libc_v" |
+                                 grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)" ;;
+      *)      wm_bl_libc="glibc $(printf '%s' "$wm_bl_libc_v" |
+                                  grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | tail -1)" ;;
+    esac
+    # A library that answers nothing still counts as present.
+    [ "$wm_bl_libc" = "glibc " ] && wm_bl_libc="glibc ?"
+  else
+    wm_bl_libc=static
   fi
   echo "build: $wm_bl_bin cc=${wm_bl_cc:-?} libstdc++=${wm_bl_cxx:-static}" \
-       "libc=${wm_bl_libc:-static} kernel=$(uname -r) host=$(uname -n)"
+       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n)"
 }
