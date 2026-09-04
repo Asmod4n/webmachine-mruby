@@ -4004,6 +4004,9 @@ class Http1 {
       // here rather than through a reference the frame is holding.
       std::string* sink = nullptr;
       struct Plan* plan = nullptr;
+      // RFC 9112 9.3: whether the connection lives past this answer. The
+      // round decided it before the run started; `more` returns it.
+      bool persist = true;
 
       Run get_return_object() { return Run{handle::from_promise(*this)}; }
       // Runs eagerly: a run that never stops must reach its answer inside
@@ -4095,6 +4098,19 @@ class Http1 {
     // that up, because that is the one point at which a fresh sink and a
     // fresh plan exist to write into.
     bool promise_ready = false;
+    // Is a run stopped on this connection? Nothing else may speak for it
+    // while one is - not the carry behind it, and not a pipelined request
+    // (RFC 9112 9.3.2: responses go out in the order the requests came).
+    bool run_parked() const { return static_cast<bool>(parked.co) && !parked.done(); }
+    // The work the stopped run wants done, waiting for the reactor to
+    // hand it to a worker. Http1 has no ring - the same reason a watcher
+    // waits in w_pending and a file name waits for file_take.
+    ComputePool::Fn job_fn = nullptr;
+    void* job_arg = nullptr;
+    // The pool had no slot. What the run makes of that is the run's -
+    // 503 with a Retry-After is the obvious answer and not this layer's
+    // to choose.
+    bool promise_full = false;
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4385,6 +4401,28 @@ class Http1 {
   bool feed(Conn& st, std::string_view data, Sink out);
 
   bool more(Conn& st, std::string& sink, Plan& plan);
+
+  // #80: the reactor saying a worker or a watcher answered. Only a flag -
+  // the run is resumed in `more`, where a sink and a plan exist.
+  static void promise_answered(Conn& st) { st.promise_ready = true; }
+  // The job a stopped run left, or nullptr. Taken, not read: the reactor
+  // arms it once and the connection stops naming it - exactly file_take.
+  // Every worker slot is taken. The run is told rather than the layer
+  // inventing a refusal - it answers this the way it answers anything.
+  static void promise_refused(Conn& st) {
+    st.promise_ready = true;
+    st.promise_full = true;
+  }
+  static ComputePool::Fn promise_take(Conn& st, void** arg) {
+    const ComputePool::Fn fn = st.job_fn;
+    *arg = st.job_arg;
+    st.job_fn = nullptr;
+    st.job_arg = nullptr;
+    return fn;
+  }
+  // Is this connection waiting on one? The Ring asks before it lets
+  // anything else speak for the connection.
+  static bool promise_pending(const Conn& st) { return st.run_parked() && !st.promise_ready; }
 
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside
@@ -5465,6 +5503,10 @@ inline uint32_t derive_max_conns(FdBudget b) {
   return static_cast<uint32_t>(n);
 }
 
+// #80: jobs in flight per worker. Small on purpose - a promise is work
+// this process decided not to do on its core, and a deep queue in front
+// of it only hides that every worker is already busy.
+inline constexpr unsigned kPromiseDepth = 16;
 inline constexpr uint32_t kBufCount = 2048;
 inline constexpr uint32_t kBufSize = 4096;
 inline constexpr uint16_t kBufGroup = 0;
@@ -6914,6 +6956,7 @@ class Ring {
     // A run that named a file answered nothing yet: the open is the
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
+    arm_promise(idx);
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would
     // ever come back to collect it.
@@ -6951,6 +6994,7 @@ class Ring {
     // A run that named a file answered nothing yet: the open is the
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
+    arm_promise(idx);
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would ever
     // come back to collect it.
@@ -7156,6 +7200,35 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileOpen, c.gen, idx));
   }
 
+  // #80: the work a stopped run left, handed to a worker. Started here
+  // and not at setup: a server whose resources never stop must not carry
+  // threads it will never use, and this runs once for the whole process
+  // the first time anything stops.
+  void arm_promise(uint32_t idx) {
+    Conn& c = conns_[idx];
+    void* arg = nullptr;
+    const typename ComputePool::Fn fn = App::promise_take(c.app, &arg);
+    if (fn == nullptr) return;
+    if (compute_.workers() == 0) {
+      // One per core the process may use, less the reactor's own. Not
+      // MRB_TASK_MAX_VMS: that is the ceiling for worker VMs, and a
+      // worker holds no mrb_state yet (src/promise.cpp says why). When
+      // one does, this becomes MRB_TASK_MAX_VMS - 1 and the reason will
+      // be the VM count rather than the core count.
+      const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
+      const unsigned want = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
+      if (const char* why = compute_.start(want, kPromiseDepth, &ring_)) {
+        conn_failed(why, -EAGAIN);
+      }
+    }
+    if (!compute_.submit(fn, arg, detail::tag(detail::kPromise, c.gen, idx))) {
+      // Every slot taken. Not a refusal this layer invents - the run is
+      // told, and it answers 503 the way it would answer anything else.
+      App::promise_refused(c.app);
+      if (!c.sending) continue_conn(idx);
+    }
+  }
+
   // The fd leaves through the ring like every other descriptor here.
   void arm_file_close(uint32_t idx, int fd, uint16_t gen) {
     if (fd < 0) return;
@@ -7168,6 +7241,24 @@ class Ring {
   // mid-send is left to on_send's own continuation.
   void file_wake(uint32_t idx) {
     if (!conns_[idx].sending) continue_conn(idx);
+  }
+
+  // #80: a worker answered. The tag is the CONNECTION's, so the same
+  // generation guard every other op relies on discards an answer whose
+  // connection is already gone - the run died with the slot, and its
+  // frame with it.
+  //
+  // Nothing is resumed here. The run needs a sink and a plan to write
+  // its answer into, and this is not a point where either exists; `more`
+  // is. So this only says the answer arrived, and takes the same door
+  // response.file takes.
+  void on_promise(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+    (void)cqe;
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen) return;
+    App::promise_answered(c.app);
+    if (!c.sending) continue_conn(idx);
   }
 
   // ENOENT, EXDEV (RESOLVE_BENEATH), ELOOP (RESOLVE_NO_SYMLINKS), EACCES -
@@ -7421,6 +7512,7 @@ class Ring {
     req.byte_cap = c.round_cap;
     if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
+    arm_promise(idx);
     if (req.iovlen != 0) {
       take_plan(c, req);
       arm_send(idx);
@@ -7508,6 +7600,7 @@ class Ring {
         case detail::kTlsBye: break;
         case detail::kTlsRx: on_tls_ready({idx, gen, cqe}); break;
         case detail::kTlsTxKey: on_tls_tx_key({idx, gen, cqe}); break;
+        case detail::kPromise: on_promise(idx, gen, cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;
       }
@@ -7661,6 +7754,9 @@ class Ring {
   uint32_t live_ = 0;
   std::vector<uint64_t> live_bits_;
   char* pool_ = nullptr;
+  // #80: the threads a promise is answered by. Empty until the first run
+  // stops; ComputePool::stop() runs from its own destructor.
+  ComputePool compute_;
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   unsigned replenish_ = 0;
   // Built in place and never moved: a slot holds a coroutine handle and

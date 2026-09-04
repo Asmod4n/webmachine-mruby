@@ -1339,6 +1339,24 @@ bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
   // drained, so a body lent to that round is off the wire. Before the next
   // one is built, so a connection never holds two.
   st.zc_release();
+  // #80: a run stopped on this connection. THIS is where it may go on and
+  // nowhere else - the sink and the plan it writes into exist here, and
+  // did not exist at the completion that said its answer had arrived.
+  if (WM_H1_UNLIKELY(st.run_parked())) {
+    // Still owed. Nothing else may speak for this connection while a run
+    // is stopped, least of all a pipelined request behind it: RFC 9112
+    // 9.3.2 puts the responses out in the order the requests came.
+    if (!st.promise_ready) return true;
+    st.promise_ready = false;
+    auto& p = st.parked.co.promise();
+    p.sink = &sink;
+    p.plan = &plan;
+    st.parked.co.resume();
+    if (!st.parked.done()) return true;
+    const bool persist = p.persist;
+    st.parked.destroy();
+    return persist;
+  }
   // response.file, spelled: the head, then the window buffer or a chunk of
   // the mapping LENT as an external segment - the same door the asset tier
   // and a lent body use, so the bytes reach the kernel without a copy.
