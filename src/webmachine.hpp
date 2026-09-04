@@ -2624,6 +2624,29 @@ struct Resource {
   // short by one - the same argument Held is built on.
   struct RunState {
     mrb_value live = {};
+    // #80: where the walk stands. A run that parks returns out of the
+    // node loop, and these three are what it re-enters with - the node
+    // it stopped BEFORE, the status it had collected, and the media type
+    // conneg had settled on. Nothing of a Ruby stack is here, because
+    // the stop is between callbacks and never inside one.
+    flow::Node stop_node = flow::Node::kB13;
+    uint16_t stop_status = 0;
+    int chosen = 0;
+    // May this run stop at all? The konst tier and the error resource
+    // say no: they are not called through a frame that could hold a
+    // parked run, and a stop with nobody to resume it is a hang.
+    bool can_park = false;
+    // It stopped, and the reactor has the job now.
+    bool stopped = false;
+    // The worker answered, and the answer is `answer`. The node the run
+    // re-enters reads this INSTEAD of calling its callback - that is the
+    // whole of "the graph carries on from B8".
+    bool answered = false;
+    mrb_value answer = {};
+    // What the promised callback was going to be handed. Held because
+    // the reactor sends it to the worker after the walk has returned.
+    mrb_value job_arg = {};
+    bool job_has_arg = false;
     const flow::ReqFacts* facts = nullptr;
     std::string* body = nullptr;
     bool have_body = false;
@@ -2740,6 +2763,11 @@ struct RunAsk {
   const http::ReqValues* vals;
   const ReqView* req;
   size_t zc_min = 0;
+  // #80: may this run stop at a promised node? Only a caller that holds
+  // a frame able to keep the parked run says yes. The konst tier and the
+  // error resource say no, and then `promise` costs one branch and
+  // changes nothing else.
+  bool can_park = false;
 };
 
 // Where a bound run writes what it produced: the body it spelled, whether
@@ -2750,7 +2778,15 @@ struct RunAnswer {
   std::string* headers;
 };
 
+// The walk, once. It answers a status, or it STOPPED: `resource_stopped`
+// says which, and the job the reactor owes a worker is read with
+// `resource_job`. A stopped run keeps everything it wrote in res.run,
+// which the caller takes with it.
 uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
+// #80: the same walk, re-entered at the node it stopped before, with the
+// worker's answer standing in for that node's callback.
+uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer);
+bool resource_stopped(const Resource& res);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
 

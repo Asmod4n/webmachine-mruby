@@ -804,6 +804,40 @@ mrb_value nodecall(Run& r, Node nd, Args args) {
     return naked(r, b, args);
 }
 
+// #80: a node whose answer a worker may give. Three ways out, and the
+// caller reads which by the return value:
+//
+//   - the answer is already here (the worker gave it) - it is handed
+//     back and the memo is cleared, so the node cannot read it twice;
+//   - the node is promised and this run may park - the walk's place is
+//     written down, the argument is kept for the reactor, and the walk
+//     RETURNS. Nothing of a Ruby stack needs saving, because the stop is
+//     between callbacks;
+//   - neither - the callback is called here, on this thread, exactly as
+//     it always was. That is every node of every resource that never
+//     said `promise`, and it costs one predicted branch.
+bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
+    const Resource& res = r.res;
+    const size_t i = static_cast<size_t>(nd);
+    if (WM_RES_UNLIKELY(res.run.answered)) {
+      res.run.answered = false;
+      *out = res.run.answer;
+      res.run.answer = mrb_nil_value();
+      return true;
+    }
+    if (WM_RES_UNLIKELY(((res.promise >> i) & 1) != 0 && res.run.can_park)) {
+      res.run.stop_node = nd;
+      res.run.stop_status = status;
+      res.run.chosen = r.chosen;
+      res.run.job_has_arg = !args.empty();
+      res.run.job_arg = args.empty() ? mrb_nil_value() : args[0];
+      res.run.stopped = true;
+      return false;
+    }
+    *out = nodecall(r, nd, args);
+    return true;
+}
+
 mrb_value arg_for(Run& r, Node nd) {
     switch (nd) {
       case Node::kB8:
@@ -1162,7 +1196,7 @@ int run_n11(Run& r) {
   return -1;
 }
 
-mrb_value run_engine(mrb_state* mrb, const Resource& res);
+mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming);
 
 // mruby: the ONE guarded entry per request. Without a jmpbuf on the
 // state a raise reaches mrb_exc_raise with mrb->jmp NULL, which prints
@@ -1170,16 +1204,30 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res);
 // buys it for a C function pointer, with no method lookup and no
 // object to construct.
 mrb_value run_engine_body(mrb_state* mrb, void* ud) {
-  return run_engine(mrb, *static_cast<const Resource*>(ud));
+  return run_engine(mrb, *static_cast<const Resource*>(ud), false);
 }
 
-mrb_value run_engine(mrb_state* mrb, const Resource& res) {
+// #80: the same walk, re-entered where it stopped. The instance is
+// still here and initialize has already run, so both are skipped - a
+// resumed run is the SAME run, not a second one.
+mrb_value run_resume_body(mrb_state* mrb, void* ud) {
+  return run_engine(mrb, *static_cast<const Resource*>(ud), true);
+}
+
+mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // #181: the resource instance belongs to ONE request. Allocate it and
   // nothing else - mrb_obj_new would search for initialize twice per
   // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
   // fold already stands. The call itself, when one is owed, is below,
   // where the direct-entry path exists.
-  res.run.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
+  //
+  // #80: a resumed run keeps the instance it already has. Allocating a
+  // second one would throw away everything the first half of the walk
+  // wrote on it.
+  res.run.stopped = false;
+  if (WM_RES_LIKELY(!resuming)) {
+    res.run.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
+  }
   Run r{mrb,
         res,
         *res.run.facts,
@@ -1201,7 +1249,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // rather than looked up again. init_needed is false for every resource
   // that did not override Object's - the implicit one is not a reason to
   // run anything.
-  if (WM_RES_UNLIKELY(res.init_needed)) {
+  if (WM_RES_UNLIKELY(res.init_needed && !resuming)) {
     naked(r, {res.init_m, res.init_irep, nullptr, MRB_SYM(initialize)});
   }
 
@@ -1262,8 +1310,16 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // flow.rb n11: post_is_create?/create_path/base_uri or process_post; the
   // 303 answer needs a Location the run already set.
 
+  // #80: where the walk starts. A fresh run starts at the top; a resumed
+  // one starts at the node it stopped BEFORE, and node_answer hands that
+  // node the worker's answer instead of calling its callback.
   Node n = Node::kB13;
   uint16_t status = 0;
+  if (WM_RES_UNLIKELY(resuming)) {
+    n = res.run.stop_node;
+    status = res.run.stop_status;
+    r.chosen = res.run.chosen;
+  }
   bool halted = false;
   int& chosen = r.chosen;
   while (!halted) {
@@ -1287,7 +1343,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const size_t i = static_cast<size_t>(Node::kB8);
         mrb_value a = mrb_nil_value();
         if (res.node_argc[i] != 0) a = arg_for(r, n);
-        const mrb_value v = nodecall(r, n, {&a, static_cast<size_t>(res.node_argc[i])});
+        mrb_value v;
+        if (!node_answer(r, n, {&a, static_cast<size_t>(res.node_argc[i])}, status, &v)) {
+          return mrb_nil_value();
+        }
         if (mrb_true_p(v)) {
           take_edge({n, status, halted}, true);
           continue;
@@ -1465,7 +1524,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         const size_t i = static_cast<size_t>(n);
         bool conflict;
         if ((res.dynamic >> i) & 1) {
-          const mrb_value v = nodecall(r, n, {});
+          mrb_value v;
+          if (!node_answer(r, n, {}, status, &v)) return mrb_nil_value();
           if (mrb_integer_p(v)) {
             status = halt_of(r, v, res.node_sym[i]);
             halted = true;
@@ -1592,7 +1652,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
       const size_t i = static_cast<size_t>(n);
       mrb_value a = mrb_nil_value();
       if (res.node_argc[i] != 0) a = arg_for(r, n);
-      const mrb_value v = nodecall(r, n, {&a, static_cast<size_t>(res.node_argc[i])});
+      mrb_value v;
+      if (!node_answer(r, n, {&a, static_cast<size_t>(res.node_argc[i])}, status, &v)) {
+        return mrb_nil_value();
+      }
       // ANY callback may answer with an Integer, and then that integer
       // IS the response status - webmachine-ruby's own convention.
       if (WM_RES_UNLIKELY(mrb_integer_p(v))) {
@@ -1985,6 +2048,112 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
 // it, and a raise leaves the exception pending for the error resource.
+// #80: what BOTH entries do once the guarded walk has returned - the
+// first one and every resumption after it. It was the tail of
+// resource_run, and a second caller is exactly the reason it is a
+// function now rather than a block of lines copied twice.
+struct Thrown {
+  mrb_value value;
+  mrb_bool raised;
+};
+
+uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
+  mrb_state* mrb = res.mrb;
+  const mrb_value thrown = t.value;
+  const mrb_bool raised = t.raised;
+  uint16_t status = res.run.resp_code;
+  // A raise voids whatever the run lent: the rescue path spells its own
+  // body, and a root nobody comes back for outlives the process.
+  if (WM_RES_UNLIKELY(res.run.zc_have && raised != FALSE)) {
+    resource_body_unlend(mrb, res.run.zc);
+    res.run.zc_have = false;
+  }
+  if (WM_RES_UNLIKELY(raised != FALSE)) {
+    // fsm.rb: finish_request still runs on the raise path, and it may
+    // raise again, so it gets its own guarded frame - the rare path pays
+    // for a second one.
+    RescueCtx rc = {&res, thrown};
+    mrb_bool again = FALSE;
+    const mrb_value second = mrb_protect_error(mrb, run_rescue_body, &rc, &again);
+    // The writer's contract (resource_exception_take): the exception is
+    // still pending when this returns, because the error resource is what
+    // turns it into words.
+    if (again != FALSE) {
+      if (mrb_exception_p(second)) mrb->exc = mrb_obj_ptr(second);
+    } else if (mrb_exception_p(thrown)) {
+      mrb->exc = mrb_obj_ptr(thrown);
+    }
+    status = res.run.resp_code != 0 ? res.run.resp_code : 500;
+  }
+  // #80: it stopped. Everything the walk wrote stays in res.run, and the
+  // caller takes that struct with it - so nothing here is cleared and
+  // the instance is not let go.
+  //
+  // It IS rooted, though: while the run is parked nothing on the VM's
+  // stack names the instance or the argument, and a GC between now and
+  // the answer would collect both. The register is paired with the
+  // unregister in resource_resume, once per park.
+  if (WM_RES_UNLIKELY(res.run.stopped && raised == FALSE)) {
+    mrb_gc_register(mrb, res.run.live);
+    if (res.run.job_has_arg) mrb_gc_register(mrb, res.run.job_arg);
+    // The two bindings are the PROCESS's "which request is speaking".
+    // The reactor answers other connections while this one waits, so
+    // they go now and come back in resource_resume.
+    request_bind(nullptr);
+    response_bind(nullptr);
+    return 0;
+  }
+  request_bind(nullptr);
+  response_bind(nullptr);
+  res.run.live = mrb_nil_value();
+  res.run.vals = nullptr;
+  res.run.req = nullptr;
+  res.run.headers = nullptr;
+  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
+    if (res.run.zc_have) {
+      resource_body_unlend(mrb, res.run.zc);
+      res.run.zc_have = false;
+    }
+    *out.have_body = false;
+    return 500;
+  }
+  *out.have_body = res.run.have_body;
+  res.run.status = status;
+  return status;
+}
+
+// #80: is the run this resource holds a stopped one? The reactor asks
+// before it does anything else with the connection.
+bool resource_stopped(const Resource& res) { return res.run.stopped; }
+
+// #80: the walk, re-entered. `answer` is what the worker said, in THIS
+// VM's values - the crossing back happened before this is called. It
+// stands in for the promised node's callback, and the graph carries on
+// from that node.
+//
+// A resumed run may stop again: a resource is free to promise two nodes,
+// and the second stop is answered exactly like the first.
+uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
+  mrb_state* mrb = res.mrb;
+  // What the park took away, back: the bindings, and the roots.
+  request_bind(res.run.req);
+  response_bind(&res);
+  res.run.headers = out.headers;
+  res.run.body = out.body;
+  mrb_gc_unregister(mrb, res.run.live);
+  if (res.run.job_has_arg) mrb_gc_unregister(mrb, res.run.job_arg);
+  res.run.job_has_arg = false;
+  res.run.job_arg = mrb_nil_value();
+  res.run.answer = answer;
+  res.run.answered = true;
+  res.run.stopped = false;
+
+  mrb_bool raised = FALSE;
+  const mrb_value thrown =
+      mrb_protect_error(mrb, run_resume_body, const_cast<Resource*>(&res), &raised);
+  return run_settle(res, out, {thrown, raised});
+}
+
 uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   mrb_state* mrb = res.mrb;
   request_bind(ask.req);
@@ -1992,6 +2161,9 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   res.run.facts = &ask.facts;
   res.run.vals = ask.vals;
   res.run.req = ask.req;
+  res.run.can_park = ask.can_park;
+  res.run.stopped = false;
+  res.run.answered = false;
   res.run.headers = out.headers;
   out.headers->clear();
   res.run.body = out.body;
@@ -2022,47 +2194,7 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   mrb_bool raised = FALSE;
   const mrb_value thrown =
       mrb_protect_error(mrb, run_engine_body, const_cast<Resource*>(&res), &raised);
-  uint16_t status = res.run.resp_code;
-  // A raise voids whatever the run lent: the rescue path spells its own
-  // body, and a root nobody comes back for outlives the process.
-  if (WM_RES_UNLIKELY(res.run.zc_have && raised != FALSE)) {
-    resource_body_unlend(mrb, res.run.zc);
-    res.run.zc_have = false;
-  }
-  if (WM_RES_UNLIKELY(raised != FALSE)) {
-    // fsm.rb: finish_request still runs on the raise path, and it may
-    // raise again, so it gets its own guarded frame - the rare path pays
-    // for a second one.
-    RescueCtx rc = {&res, thrown};
-    mrb_bool again = FALSE;
-    const mrb_value second = mrb_protect_error(mrb, run_rescue_body, &rc, &again);
-    // The writer's contract (resource_exception_take): the exception is
-    // still pending when this returns, because the error resource is what
-    // turns it into words.
-    if (again != FALSE) {
-      if (mrb_exception_p(second)) mrb->exc = mrb_obj_ptr(second);
-    } else if (mrb_exception_p(thrown)) {
-      mrb->exc = mrb_obj_ptr(thrown);
-    }
-    status = res.run.resp_code != 0 ? res.run.resp_code : 500;
-  }
-  request_bind(nullptr);
-  response_bind(nullptr);
-  res.run.live = mrb_nil_value();
-  res.run.vals = nullptr;
-  res.run.req = nullptr;
-  res.run.headers = nullptr;
-  if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    if (res.run.zc_have) {
-      resource_body_unlend(mrb, res.run.zc);
-      res.run.zc_have = false;
-    }
-    *out.have_body = false;
-    return 500;
-  }
-  *out.have_body = res.run.have_body;
-  res.run.status = status;
-  return status;
+  return run_settle(res, out, {thrown, raised});
 }
 
 // The lend window OPENS here for the caller: the run is over, so the value
