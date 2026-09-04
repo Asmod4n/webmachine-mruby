@@ -767,7 +767,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
           status = h2_refuse_file(st0, req);
         }
       }
-      dynamic = (!b->res->run_content_type.empty() || !rhdrs_.empty()) && status != 500;
+      dynamic = (!b->res->run.content_type.empty() || !rhdrs_.empty()) && status != 500;
     } else {
       // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
       // they belong to the stream - so the one negotiated bit is answered on
@@ -802,7 +802,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   // h2_flush_pending against the window. Nothing is rooted: the entry
   // lives in a mapping that outlives every stream that parks on it.
   const AssetEntry* run_asset =
-      (b != nullptr && b->res != nullptr) ? b->res->run_asset : nullptr;
+      (b != nullptr && b->res != nullptr) ? b->res->run.asset : nullptr;
   // Its wire length is the answer's length: what h2_build_block declares,
   // what the access log counts, and what END_STREAM is measured against.
   const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
@@ -831,7 +831,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       }
     }
     if (!bodyless && ctype.empty()) {
-      if (!b->res->run_content_type.empty()) ctype = http::with_charset(b->res->run_content_type);
+      if (!b->res->run.content_type.empty()) ctype = http::with_charset(b->res->run.content_type);
       else if (have_body || baked) ctype = b->konst.content_type;
     }
     h2_build_block(dynblk, {status, ctype.empty() ? nullptr : &ctype});

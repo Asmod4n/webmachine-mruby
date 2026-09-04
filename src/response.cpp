@@ -41,7 +41,7 @@ const Resource* live(mrb_state* mrb) {
 // method needs - run_headers is null between runs even when cur_ is not.
 const Resource* live_headers(mrb_state* mrb) {
   const Resource* r = live(mrb);
-  if (r->run_headers == nullptr) {
+  if (r->run.headers == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "response.headers: no header buffer is bound for this run");
   }
   return r;
@@ -117,8 +117,8 @@ mrb_value hdrs_get(mrb_state* mrb, mrb_value) {
   mrb_int klen;
   mrb_get_args(mrb, "s", &k, &klen);
   Line h;
-  if (!find_line(*r->run_headers, {k, static_cast<size_t>(klen)}, h)) return mrb_nil_value();
-  return mrb_str_new(mrb, r->run_headers->data() + h.val_off, h.val_len);
+  if (!find_line(*r->run.headers, {k, static_cast<size_t>(klen)}, h)) return mrb_nil_value();
+  return mrb_str_new(mrb, r->run.headers->data() + h.val_off, h.val_len);
 }
 
 // RFC 9110 6.3: Headers#[]= - a String replaces the line of the same
@@ -130,7 +130,7 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
   mrb_int klen;
   mrb_value v;
   mrb_get_args(mrb, "so", &k, &klen, &v);
-  std::string& buf = *r->run_headers;
+  std::string& buf = *r->run.headers;
   Line h;
   const bool found = find_line(buf, {k, static_cast<size_t>(klen)}, h);
   if (mrb_nil_p(v)) {
@@ -161,7 +161,7 @@ mrb_value hdrs_key(mrb_state* mrb, mrb_value) {
   mrb_int klen;
   mrb_get_args(mrb, "s", &k, &klen);
   Line h;
-  return mrb_bool_value(find_line(*r->run_headers, {k, static_cast<size_t>(klen)}, h));
+  return mrb_bool_value(find_line(*r->run.headers, {k, static_cast<size_t>(klen)}, h));
 }
 
 // RFC 9110 6.3: Headers#delete - cut the line, hand back the value it held.
@@ -170,7 +170,7 @@ mrb_value hdrs_delete(mrb_state* mrb, mrb_value) {
   const char* k;
   mrb_int klen;
   mrb_get_args(mrb, "s", &k, &klen);
-  std::string& buf = *r->run_headers;
+  std::string& buf = *r->run.headers;
   Line h;
   if (!find_line(buf, {k, static_cast<size_t>(klen)}, h)) return mrb_nil_value();
   const mrb_value old = mrb_str_new(mrb, buf.data() + h.val_off, h.val_len);
@@ -191,7 +191,7 @@ mrb_value resp_headers(mrb_state* mrb, mrb_value self) {
 // still owns the answer (0 = unset).
 mrb_value resp_code(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
-  return r->run_resp_code == 0 ? mrb_nil_value() : mrb_fixnum_value(r->run_resp_code);
+  return r->run.resp_code == 0 ? mrb_nil_value() : mrb_fixnum_value(r->run.resp_code);
 }
 
 // RFC 9110 15: a callback naming the status itself.
@@ -199,15 +199,15 @@ mrb_value resp_code_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_int v;
   mrb_get_args(mrb, "i", &v);
-  r->run_resp_code = static_cast<uint16_t>(v);
+  r->run.resp_code = static_cast<uint16_t>(v);
   return mrb_fixnum_value(v);
 }
 
 // RFC 9110 6.4: the representation a callback built, or nil.
 mrb_value resp_body(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
-  if (!r->run_have_body || r->run_body == nullptr) return mrb_nil_value();
-  return mrb_str_new(mrb, r->run_body->data(), r->run_body->size());
+  if (!r->run.have_body || r->run.body == nullptr) return mrb_nil_value();
+  return mrb_str_new(mrb, r->run.body->data(), r->run.body->size());
 }
 
 // RFC 9110 6.4: a callback handing the representation over (String), or
@@ -217,25 +217,25 @@ mrb_value resp_body_set(mrb_state* mrb, mrb_value) {
   mrb_value v;
   mrb_get_args(mrb, "o", &v);
   if (mrb_nil_p(v)) {
-    r->run_have_body = false;
+    r->run.have_body = false;
     return v;
   }
   if (!mrb_string_p(v)) {
     mrb_raise(mrb, E_TYPE_ERROR, "response.body= takes a String, or nil to clear it");
   }
-  if (r->run_body == nullptr) {
+  if (r->run.body == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "response.body=: no body buffer is bound for this run");
   }
-  r->run_body->assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-  r->run_have_body = true;
+  r->run.body->assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  r->run.have_body = true;
   return v;
 }
 
 // The file a callback named, or nil.
 mrb_value resp_file(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
-  if (!r->run_have_file) return mrb_nil_value();
-  return mrb_str_new(mrb, r->run_file.data(), r->run_file.size());
+  if (!r->run.have_file) return mrb_nil_value();
+  return mrb_str_new(mrb, r->run.file.data(), r->run.file.size());
 }
 
 // response.file = "rel/path": the NAME of a file under the configured
@@ -254,8 +254,8 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   mrb_value v;
   mrb_get_args(mrb, "o", &v);
   if (mrb_nil_p(v)) {
-    r->run_have_file = false;
-    r->run_file_bad = false;
+    r->run.have_file = false;
+    r->run.file_bad = false;
     return v;
   }
   if (!mrb_string_p(v)) {
@@ -272,9 +272,9 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   // own limits: an embedded NUL would truncate the name openat2 actually
   // sees, and an empty name asks for nothing. Both answer the SAME 404 a
   // rejected resolve does, so neither is a signal to probe with.
-  r->run_file.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-  r->run_file_bad = r->run_file.empty() || r->run_file.find('\0') != std::string::npos;
-  r->run_have_file = true;
+  r->run.file.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  r->run.file_bad = r->run.file.empty() || r->run.file.find('\0') != std::string::npos;
+  r->run.have_file = true;
   return v;
 }
 
@@ -314,9 +314,9 @@ mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
   if (e == nullptr || e->deflated) {
     mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: the error assets hold no %v", v);
   }
-  r->run_content_type.assign(e->content_type);
-  r->run_asset = e;
-  r->run_have_body = true;
+  r->run.content_type.assign(e->content_type);
+  r->run.asset = e;
+  r->run.have_body = true;
   return v;
 }
 
@@ -328,18 +328,18 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
   mrb_value loc = mrb_nil_value();
   mrb_get_args(mrb, "|o", &loc);
   if (!mrb_nil_p(loc)) {
-    if (r->run_headers == nullptr) {
+    if (r->run.headers == nullptr) {
       mrb_raise(mrb, E_RUNTIME_ERROR,
                 "response.do_redirect: no header buffer is bound for this run");
     }
     const mrb_value s = mrb_obj_as_string(mrb, loc);
-    std::string& buf = *r->run_headers;
+    std::string& buf = *r->run.headers;
     Line h;
     if (find_line(buf, "Location", h)) buf.erase(h.start, h.end - h.start);
     append_field(buf,
                  {"Location", {RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s))}});
   }
-  r->run_redirect = true;
+  r->run.redirect = true;
   return mrb_true_value();
 }
 
@@ -347,7 +347,7 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
 // predicate, not a bang-method - webmachine-ruby spells it is_redirect?
 // and so does this.
 mrb_value resp_is_redirect(mrb_state* mrb, mrb_value) {
-  return mrb_bool_value(live(mrb)->run_redirect);
+  return mrb_bool_value(live(mrb)->run.redirect);
 }
 
 // App-level only: no C++ run slot backs an error message, so it lives
@@ -391,7 +391,7 @@ void add_cookie_attr(mrb_state* mrb, std::string& line, CookieAttr a) {
 
 mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
-  if (r->run_headers == nullptr) {
+  if (r->run.headers == nullptr) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "response.set_cookie: no header buffer is bound for this run");
   }
   mrb_value name, value;
@@ -426,7 +426,7 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "response.set_cookie wants no CR, LF or NUL in name, value or attributes");
   }
-  append_field(*r->run_headers, {"Set-Cookie", line});
+  append_field(*r->run.headers, {"Set-Cookie", line});
   return mrb_nil_value();
 }
 

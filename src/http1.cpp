@@ -649,8 +649,8 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
   if (st.file == nullptr) st.file = new Conn::FileXfer();
   st.file->pathname.assign(wanted.name);
   st.file->field_lines = rhdrs_;
-  st.file->content_type = !r.b->res->run_content_type.empty()
-                              ? http::with_charset(r.b->res->run_content_type)
+  st.file->content_type = !r.b->res->run.content_type.empty()
+                              ? http::with_charset(r.b->res->run.content_type)
                               : r.b->konst.content_type;
   st.file->minor = r.minor;
   st.file->persist = r.persist;
@@ -1237,8 +1237,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // a mapping that outlives every request, so nothing here is
         // rooted and nothing is released: a plan carries the segment
         // (wire_iov), and without one the bytes are copied (copy_wire).
-        if (WM_H1_UNLIKELY(b->res->run_asset != nullptr)) {
-          const AssetEntry& ae = *b->res->run_asset;
+        if (WM_H1_UNLIKELY(b->res->run.asset != nullptr)) {
+          const AssetEntry& ae = *b->res->run.asset;
           const size_t n = Assets::wire_len(ae);
           if (plan != nullptr) {
             struct iovec iv[3];
@@ -1274,7 +1274,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         }
         // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
         // this run spells its own. 500 stays on the exception path below.
-        if (WM_H1_UNLIKELY((!b->res->run_content_type.empty() || !rhdrs_.empty()) &&
+        if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !rhdrs_.empty()) &&
                            status != 500)) {
           const bool bodyless = status == 204 || status == 304;
           if (bodyless || !have_body) {
@@ -1308,8 +1308,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
             }
           }
           if (!bodyless && ctype.empty()) {
-            if (!b->res->run_content_type.empty()) {
-              ctype = http::with_charset(b->res->run_content_type);
+            if (!b->res->run.content_type.empty()) {
+              ctype = http::with_charset(b->res->run.content_type);
             }
             else if (have_body || baked) ctype = b->konst.content_type;
           }

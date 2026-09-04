@@ -2481,6 +2481,7 @@ struct AssetEntry;
 inline constexpr unsigned kMaxWatchers = 256;
 
 struct Resource {
+
   flow::KonstSet konst;
   mrb_state* mrb = nullptr;
   struct RClass* klass = nullptr;
@@ -2517,25 +2518,6 @@ struct Resource {
   mrb_method_t init_m = {};
   bool init_irep = false;
   enum mrb_vtype live_tt = MRB_TT_OBJECT;
-  mutable mrb_value live = {};
-  mutable const flow::ReqFacts* run_facts = nullptr;
-  mutable std::string* run_body = nullptr;
-  mutable bool run_have_body = false;
-  // #210 response.error_asset: THE ENTRY, not its bytes. The error assets
-  // are mmap'd for the life of the process, and both writers already know
-  // how to put a mapped entry on the wire - Assets::wire_len/wire_iov/
-  // copy_wire on h1, Content::Src::kAsset on h2 - so this run hands over
-  // the same handle the asset tier hands over, and nothing is rooted,
-  // copied or released for it.
-  mutable const AssetEntry* run_asset = nullptr;
-  mutable uint16_t run_status = 0;
-  // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
-  // own String is frozen and rooted and LENT to the writer, instead of
-  // being copied into run_body. 0 = never lend, which is every caller
-  // that does not pass a threshold.
-  mutable size_t run_zc_min = 0;
-  mutable mrb_value run_zc = {};
-  mutable bool run_zc_have = false;
 
   // How many arguments each node's callback ASKED for, read once at
   // fold from its own signature. webmachine-ruby hands several of them
@@ -2632,44 +2614,100 @@ struct Resource {
   };
   std::vector<TypedHandler> content_types_provided;
 
-  // Per-request slots for the RUNTIME tier, all reset by resource_run
-  // at frame entry. `run_headers` takes the field lines this request
-  // produced; the writer appends it between the prebuilt head and
-  // Content-Length, which is exactly where the prebuilt head stops, so
-  // no prebuilt byte moves.
-  mutable std::string* run_headers = nullptr;
-  mutable const http::ReqValues* run_vals = nullptr;
-  mutable const ReqView* run_req = nullptr;
-  // response.code= / response.do_redirect (response.cpp writes these;
-  // the flow's halt seeds run_resp_code, finish_request may change it
-  // - fsm.rb's respond order).
-  mutable uint16_t run_resp_code = 0;
-  mutable bool run_redirect = false;
-  // The conneg choice when the head cannot stay prebuilt: non-empty
-  // means the writer spells THIS Content-Type in a dynamic head
-  // instead of using the baked prefix. Empty = prebuilt path,
-  // byte-identical to today.
-  //
-  // There is no second flag saying "the head went dynamic", because there
-  // is nothing a flag could say that these two buffers do not: a run needs
-  // its own head exactly when it negotiated a Content-Type (this) or
-  // produced a field line (run_headers). It used to be a bool as well, set
-  // at eight places, and BOTH writers had to OR it with run_headers being
-  // non-empty - which is the proof that it never carried the second half
-  // by itself. One of the eight places forgot to set it, and nothing
-  // broke, for the same reason.
-  mutable std::string run_content_type;
-  // n11: create_path's override of request.disp_path.
-  mutable std::string run_disp_path;
-  mutable bool run_disp_set = false;
-  // response.file = "rel/path": the NAME only. Nothing is opened here - the
-  // reactor does that through the ring, so a callback never blocks on a
-  // disk. run_file_bad is a name this process refused before the kernel saw
-  // it (empty, embedded NUL); it answers 404 in the SAME shape a rejected
-  // resolve does, so neither is distinguishable from a plain miss.
-  mutable std::string run_file;
-  mutable bool run_have_file = false;
-  mutable bool run_file_bad = false;
+  // #80: EVERYTHING one request writes on the way through, in one
+  // place. It used to be thirty-one `mutable` members on Resource, and
+  // that was right while a run could not stop: only one ran at a time.
+  // A run that PARKS breaks it - the next request on the same route
+  // writes these while the parked one still needs them. So the parked
+  // run takes the whole struct with it and gives it back on the way in.
+  // One move each way, and no hand-written member list that can be
+  // short by one - the same argument Held is built on.
+  struct RunState {
+    mrb_value live = {};
+    const flow::ReqFacts* facts = nullptr;
+    std::string* body = nullptr;
+    bool have_body = false;
+    // #210 response.error_asset: THE ENTRY, not its bytes. The error assets
+    // are mmap'd for the life of the process, and both writers already know
+    // how to put a mapped entry on the wire - Assets::wire_len/wire_iov/
+    // copy_wire on h1, Content::Src::kAsset on h2 - so this run hands over
+    // the same handle the asset tier hands over, and nothing is rooted,
+    // copied or released for it.
+    const AssetEntry* asset = nullptr;
+    uint16_t status = 0;
+    // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
+    // own String is frozen and rooted and LENT to the writer, instead of
+    // being copied into run_body. 0 = never lend, which is every caller
+    // that does not pass a threshold.
+    size_t zc_min = 0;
+    mrb_value zc = {};
+    bool zc_have = false;
+
+    // Per-request slots for the RUNTIME tier, all reset by resource_run
+    // at frame entry. `run_headers` takes the field lines this request
+    // produced; the writer appends it between the prebuilt head and
+    // Content-Length, which is exactly where the prebuilt head stops, so
+    // no prebuilt byte moves.
+    std::string* headers = nullptr;
+    const http::ReqValues* vals = nullptr;
+    const ReqView* req = nullptr;
+    // response.code= / response.do_redirect (response.cpp writes these;
+    // the flow's halt seeds run_resp_code, finish_request may change it
+    // - fsm.rb's respond order).
+    uint16_t resp_code = 0;
+    bool redirect = false;
+    // The conneg choice when the head cannot stay prebuilt: non-empty
+    // means the writer spells THIS Content-Type in a dynamic head
+    // instead of using the baked prefix. Empty = prebuilt path,
+    // byte-identical to today.
+    //
+    // There is no second flag saying "the head went dynamic", because there
+    // is nothing a flag could say that these two buffers do not: a run needs
+    // its own head exactly when it negotiated a Content-Type (this) or
+    // produced a field line (run_headers). It used to be a bool as well, set
+    // at eight places, and BOTH writers had to OR it with run_headers being
+    // non-empty - which is the proof that it never carried the second half
+    // by itself. One of the eight places forgot to set it, and nothing
+    // broke, for the same reason.
+    std::string content_type;
+    // n11: create_path's override of request.disp_path.
+    std::string disp_path;
+    bool disp_set = false;
+    // response.file = "rel/path": the NAME only. Nothing is opened here - the
+    // reactor does that through the ring, so a callback never blocks on a
+    // disk. run_file_bad is a name this process refused before the kernel saw
+    // it (empty, embedded NUL); it answers 404 in the SAME shape a rejected
+    // resolve does, so neither is distinguishable from a plain miss.
+    std::string file;
+    bool have_file = false;
+    bool file_bad = false;
+
+    // Once-per-run memos: generate_etag / last_modified / expires are
+    // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share
+    // last_modified), whatever the graph visits.
+    bool etag_asked = false;
+    bool etag_present = false;
+    std::string etag_value;  // spelled, quoted form
+    bool last_modified_asked = false;
+    bool last_modified_present = false;
+    int64_t last_modified_epoch = 0;
+    bool expires_asked = false;
+    bool expires_present = false;
+    int64_t expires_epoch = 0;
+    // Marshalled once per run where the app answered dynamically;
+    // capacity survives across requests.
+    // The dynamic content_types_provided, marshalled from the app's Array.
+    // It SURVIVES the run on purpose: the handler's method is resolved here,
+    // and re-resolving it per request is a method search per request on the
+    // path that renders every body. marshal_ct compares the app's fresh
+    // answer against this and only rebuilds when it actually differs - which
+    // for every resource that answers the same list each time is never.
+    std::vector<TypedHandler> content_types_provided;
+    bool content_types_marshalled = false;
+    std::vector<std::string> methods;
+    std::vector<std::string> variances;
+  };
+  mutable RunState run;
   // #202: what a `def self.x` ANSWERED, once, while the app was being set
   // up. That is what the class form is for - the value belongs to the
   // process, not to a request, so no request ever enters the VM for it.
@@ -2689,31 +2727,6 @@ struct Resource {
   // ask. Decided once when the resource is baked, because the answer
   // cannot change afterwards, and o18 asks it on every GET.
   bool has_caching = false;
-
-  // Once-per-run memos: generate_etag / last_modified / expires are
-  // asked at most ONCE (g11+k13+o18 share etag; h12+l17+o18 share
-  // last_modified), whatever the graph visits.
-  mutable bool etag_asked = false;
-  mutable bool etag_present = false;
-  mutable std::string etag_value;  // spelled, quoted form
-  mutable bool last_modified_asked = false;
-  mutable bool last_modified_present = false;
-  mutable int64_t last_modified_epoch = 0;
-  mutable bool expires_asked = false;
-  mutable bool expires_present = false;
-  mutable int64_t expires_epoch = 0;
-  // Marshalled once per run where the app answered dynamically;
-  // capacity survives across requests.
-  // The dynamic content_types_provided, marshalled from the app's Array.
-  // It SURVIVES the run on purpose: the handler's method is resolved here,
-  // and re-resolving it per request is a method search per request on the
-  // path that renders every body. marshal_ct compares the app's fresh
-  // answer against this and only rebuilds when it actually differs - which
-  // for every resource that answers the same list each time is never.
-  mutable std::vector<TypedHandler> run_content_types_provided;
-  mutable bool run_content_types_marshalled = false;
-  mutable std::vector<std::string> run_methods;
-  mutable std::vector<std::string> run_variances;
 };
 
 void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out);
@@ -5041,8 +5054,8 @@ class Http1 {
       ef.steering_len = ef_steering.size();
       // The request as the resource saw it: lent for this frame, which is
       // the frame still being answered.
-      ef.body = b->res->run_req != nullptr ? b->res->run_req->content : nullptr;
-      ef.body_len = b->res->run_req != nullptr ? b->res->run_req->content_len : 0;
+      ef.body = b->res->run.req != nullptr ? b->res->run.req->content : nullptr;
+      ef.body_len = b->res->run.req != nullptr ? b->res->run.req->content_len : 0;
       ef.body_full = ef.body_len;
       ef.status_code = 500;
       exception_facts(b->res->mrb, {ef, ef_backtrace});

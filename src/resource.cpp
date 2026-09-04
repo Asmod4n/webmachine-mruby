@@ -541,9 +541,9 @@ struct RescueCtx {
 mrb_value run_rescue_body(mrb_state* mrb, void* ud) {
   RescueCtx& rc = *static_cast<RescueCtx*>(ud);
   const Resource& res = *rc.res;
-  if (res.cb_finish_request.has && !mrb_nil_p(res.live)) {
+  if (res.cb_finish_request.has && !mrb_nil_p(res.run.live)) {
     const mrb_value frecv =
-        MRB_METHOD_UNDEF_P(res.cb_finish_request.m) ? mrb_obj_value(res.klass) : res.live;
+        MRB_METHOD_UNDEF_P(res.cb_finish_request.m) ? mrb_obj_value(res.klass) : res.run.live;
     mrb_funcall_argv(mrb, frecv, res.cb_finish_request.sym, 0, nullptr);
   }
   return mrb_nil_value();
@@ -587,9 +587,9 @@ uint16_t halt_of(Run& r, mrb_value v, mrb_sym sym) {
 // RFC 9110 9.1: the method token as the request spelled it, or the name
 // of the one the parse settled on.
 void method_name(Run& r, const char** p, size_t* len) {
-  if (WM_RES_LIKELY(r.res.run_req != nullptr && r.res.run_req->method_token != nullptr)) {
-    *p = r.res.run_req->method_token;
-    *len = r.res.run_req->method_token_len;
+  if (WM_RES_LIKELY(r.res.run.req != nullptr && r.res.run.req->method_token != nullptr)) {
+    *p = r.res.run.req->method_token;
+    *len = r.res.run.req->method_token_len;
   } else {
     const size_t m = static_cast<size_t>(r.facts.method);
     *p = m < 6 ? kMethodName[m] : "";
@@ -603,7 +603,7 @@ bool methods_contain(Run& r) {
   const char* mp;
   size_t mn;
   method_name(r, &mp, &mn);
-  for (const std::string& s : r.res.run_methods) {
+  for (const std::string& s : r.res.run.methods) {
     if (s.size() == mn && std::memcmp(s.data(), mp, mn) == 0) return true;
   }
   return false;
@@ -612,7 +612,7 @@ bool methods_contain(Run& r) {
 // RFC 9110 12.5.1: the list c3/c4 negotiate against - the run's own where
 // the resource answered per request, the folded one otherwise.
 const std::vector<Resource::TypedHandler>& active_ct(Run& r) {
-  return r.ct_dyn ? r.res.run_content_types_provided : r.res.content_types_provided;
+  return r.ct_dyn ? r.res.run.content_types_provided : r.res.content_types_provided;
 }
 
 // RFC 9110 5.6.2 / 5.5: the gate for everything an app puts into the head -
@@ -751,16 +751,16 @@ mrb_value naked(Run& r, Bound b, Args args) {
     // The cheapest of the three tiers: our own C++ body, entered with the
     // arguments in hand. It never reads the callinfo, so there is nothing
     // to build for it.
-    if (native != nullptr) return call_native(r.mrb, {native, r.res.live, argc, argv});
-    if (WM_RES_UNLIKELY(!b.irep || mrb_obj_ptr(r.res.live)->c != r.res.klass)) {
-      return mrb_funcall_argv(r.mrb, r.res.live, sym, argc, argv);
+    if (native != nullptr) return call_native(r.mrb, {native, r.res.run.live, argc, argv});
+    if (WM_RES_UNLIKELY(!b.irep || mrb_obj_ptr(r.res.run.live)->c != r.res.klass)) {
+      return mrb_funcall_argv(r.mrb, r.res.run.live, sym, argc, argv);
     }
     mrb_callinfo* ci = r.mrb->c->ci;
     const mrb_sym saved = ci->mid;
     ci->mid = sym;
     mrb_value answer = mrb_yield_with_class(
         r.mrb, mrb_obj_value(const_cast<struct RProc*>(MRB_METHOD_PROC(b.m))), argc, argv,
-        r.res.live,
+        r.res.run.live,
         r.res.klass);
     ci->mid = saved;
     return answer;
@@ -811,11 +811,11 @@ mrb_value arg_for(Run& r, Node nd) {
                    ? mrb_str_new(r.mrb, r.vals->authorization, r.vals->authorization_len)
                    : mrb_nil_value();
       case Node::kB11:
-        return r.res.run_req != nullptr && r.res.run_req->request_target != nullptr
-                   ? mrb_str_new(r.mrb, r.res.run_req->request_target, r.res.run_req->request_target_len)
+        return r.res.run.req != nullptr && r.res.run.req->request_target != nullptr
+                   ? mrb_str_new(r.mrb, r.res.run.req->request_target, r.res.run.req->request_target_len)
                    : mrb_nil_value();
       case Node::kB6: {
-        const mrb_value rq = mrb_funcall_argv(r.mrb, r.res.live, MRB_SYM(request), 0, nullptr);
+        const mrb_value rq = mrb_funcall_argv(r.mrb, r.res.run.live, MRB_SYM(request), 0, nullptr);
         const mrb_value hs = mrb_funcall_argv(r.mrb, rq, MRB_SYM(headers), 0, nullptr);
         const mrb_value out = mrb_hash_new(r.mrb);
         if (mrb_hash_p(hs)) {
@@ -835,7 +835,7 @@ mrb_value arg_for(Run& r, Node nd) {
                    : mrb_nil_value();
       case Node::kB4:
         return mrb_int_value(
-            r.mrb, static_cast<mrb_int>(r.res.run_req != nullptr ? r.res.run_req->content_len : 0));
+            r.mrb, static_cast<mrb_int>(r.res.run.req != nullptr ? r.res.run.req->content_len : 0));
       default:
         return mrb_nil_value();
     }
@@ -843,7 +843,7 @@ mrb_value arg_for(Run& r, Node nd) {
 
 void marshal_methods(Run& r, const Resource::ValueCb& cb) {
   mrb_state* mrb = r.mrb;
-  r.res.run_methods.clear();
+  r.res.run.methods.clear();
   const mrb_value v = cbv(r, cb);
   if (mrb_array_p(v)) {
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
@@ -852,7 +852,7 @@ void marshal_methods(Run& r, const Resource::ValueCb& cb) {
         mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer method Strings",
                    mrb_sym_name(mrb, cb.sym));
       }
-      r.res.run_methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+      r.res.run.methods.emplace_back(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
     }
     return;
   }
@@ -866,7 +866,7 @@ void marshal_methods(Run& r, const Resource::ValueCb& cb) {
     while (p < end && (*p == ' ' || *p == ',')) p++;
     const char* tok = p;
     while (p < end && *p != ' ' && *p != ',') p++;
-    if (tok != p) r.res.run_methods.emplace_back(tok, static_cast<size_t>(p - tok));
+    if (tok != p) r.res.run.methods.emplace_back(tok, static_cast<size_t>(p - tok));
   }
 }
 
@@ -895,7 +895,7 @@ void field_list(Run& r, const FieldList& f) {
 
 void allow_line(Run& r) {
     if (r.res.cb_allowed_methods.has) {
-      field_list(r, {"Allow", {}, r.res.run_methods});
+      field_list(r, {"Allow", {}, r.res.run.methods});
     } else {
       field(r, {"Allow", r.res.konst.allow});
     }
@@ -903,8 +903,8 @@ void allow_line(Run& r) {
 
 void marshal_ct(Run& r) {
   mrb_state* mrb = r.mrb;
-  if (!r.ct_dyn || r.res.run_content_types_marshalled) return;
-  r.res.run_content_types_marshalled = true;
+  if (!r.ct_dyn || r.res.run.content_types_marshalled) return;
+  r.res.run.content_types_marshalled = true;
   const mrb_value v = cbv(r, r.res.cb_content_types_provided);
   if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
@@ -915,7 +915,7 @@ void marshal_ct(Run& r) {
   // it, resolutions included, and nothing has to be rebuilt or searched
   // for. A pair that is not [String, Symbol] simply fails to match and
   // falls into the rebuild below, which names the refusal.
-  std::vector<Resource::TypedHandler>& cur = r.res.run_content_types_provided;
+  std::vector<Resource::TypedHandler>& cur = r.res.run.content_types_provided;
   bool same = cur.size() == static_cast<size_t>(count);
   for (mrb_int j = 0; same && j < count; j++) {
     const mrb_value pair = RARRAY_PTR(v)[j];
@@ -951,13 +951,13 @@ void marshal_ct(Run& r) {
 }
 
 int ensure_etag(Run& r) {
-    if (r.res.etag_asked) return -1;
-    r.res.etag_asked = true;
+    if (r.res.run.etag_asked) return -1;
+    r.res.run.etag_asked = true;
     // #202: the class form answered at setup - there is nothing to ask.
     if (r.res.konst_etag.asked) {
       if (r.res.konst_etag.present) {
-        r.res.etag_value = r.res.konst_etag.text;
-        r.res.etag_present = true;
+        r.res.run.etag_value = r.res.konst_etag.text;
+        r.res.run.etag_present = true;
       }
       return -1;
     }
@@ -966,8 +966,8 @@ int ensure_etag(Run& r) {
     if (mrb_integer_p(v)) return halt_of(r, v, r.res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
     if (!mrb_string_p(v)) v = mrb_obj_as_string(r.mrb, v);
-    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), r.res.etag_value);
-    r.res.etag_present = true;
+    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), r.res.run.etag_value);
+    r.res.run.etag_present = true;
     return -1;
 }
 
@@ -1008,16 +1008,16 @@ int add_caching(Run& r) {
     if (!r.res.has_caching) return -1;
     const int h = ensure_etag(r);
     if (h >= 0) return h;
-    if (r.res.etag_present) {
-      field(r, {"ETag", r.res.etag_value});
+    if (r.res.run.etag_present) {
+      field(r, {"ETag", r.res.run.etag_value});
     }
-    epoch_memo(r, {r.res.cb_expires, r.res.konst_expires, &r.res.expires_asked,
-                   &r.res.expires_present, &r.res.expires_epoch});
-    if (r.res.expires_present) date_line(r, "Expires", r.res.expires_epoch);
+    epoch_memo(r, {r.res.cb_expires, r.res.konst_expires, &r.res.run.expires_asked,
+                   &r.res.run.expires_present, &r.res.run.expires_epoch});
+    if (r.res.run.expires_present) date_line(r, "Expires", r.res.run.expires_epoch);
     epoch_memo(r, {r.res.cb_last_modified, r.res.konst_last_modified,
-                   &r.res.last_modified_asked, &r.res.last_modified_present,
-                   &r.res.last_modified_epoch});
-    if (r.res.last_modified_present) date_line(r, "Last-Modified", r.res.last_modified_epoch);
+                   &r.res.run.last_modified_asked, &r.res.run.last_modified_present,
+                   &r.res.run.last_modified_epoch});
+    if (r.res.run.last_modified_present) date_line(r, "Last-Modified", r.res.run.last_modified_epoch);
     return -1;
 }
 
@@ -1089,7 +1089,7 @@ int accept_helper(Run& r) {
     if (!type_matches(media_base(offered), arrived_base)) continue;
     if (!params_agree(offered, arrived)) continue;
     const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
-    const mrb_value answer = mrb_funcall_argv(mrb, r.res.live, hs, 0, nullptr);
+    const mrb_value answer = mrb_funcall_argv(mrb, r.res.run.live, hs, 0, nullptr);
     if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
     return -1;
   }
@@ -1138,8 +1138,8 @@ int run_n11(Run& r) {
         }
       }
       const size_t plen = http::path_only(uri.data() + at, uri.size() - at);
-      r.res.run_disp_path.assign(uri.data() + at, plen);
-      r.res.run_disp_set = true;
+      r.res.run.disp_path.assign(uri.data() + at, plen);
+      r.res.run.disp_set = true;
       request_disp_override(uri.data() + at, plen);
       field(r, {"Location", uri});
     }
@@ -1155,7 +1155,7 @@ int run_n11(Run& r) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "process_post must answer true or a response code");
     }
   }
-  if (r.res.run_redirect) {
+  if (r.res.run.redirect) {
     if (headers_has_location(r.hdrs)) return 303;
     mrb_raise(mrb, E_WM_ERROR(mrb), "do_redirect requires a Location header");
   }
@@ -1179,13 +1179,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
   // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
   // fold already stands. The call itself, when one is owed, is below,
   // where the direct-entry path exists.
-  res.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
+  res.run.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
   Run r{mrb,
         res,
-        *res.run_facts,
-        res.konst.per_method[static_cast<size_t>(res.run_facts->method)],
-        res.run_vals,
-        *res.run_headers,
+        *res.run.facts,
+        res.konst.per_method[static_cast<size_t>(res.run.facts->method)],
+        res.run.vals,
+        *res.run.headers,
         Node::kB13,
         0,
         false,
@@ -1337,7 +1337,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         if (!facts.has_accept) {
           chosen = 0;
           if (r.ct_dyn) {
-            res.run_content_type = active_ct(r)[0].type;
+            res.run.content_type = active_ct(r)[0].type;
           }
           n = after_accept(facts);
           continue;
@@ -1364,7 +1364,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         }
         chosen = idx;
         if (idx != 0 || r.ct_dyn) {
-          res.run_content_type = cts[static_cast<size_t>(idx)].type;
+          res.run.content_type = cts[static_cast<size_t>(idx)].type;
         }
         n = after_accept(facts);
         continue;
@@ -1375,19 +1375,19 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "variances must answer an Array of Strings");
           }
-          res.run_variances.clear();
+          res.run.variances.clear();
           for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
             const mrb_value s = RARRAY_PTR(v)[j];
             if (mrb_string_p(s)) {
-              res.run_variances.emplace_back(RSTRING_PTR(s),
+              res.run.variances.emplace_back(RSTRING_PTR(s),
                                              static_cast<size_t>(RSTRING_LEN(s)));
             }
           }
         }
         const bool accept_varies = active_ct(r).size() > 1;
-        if (accept_varies || !res.run_variances.empty()) {
+        if (accept_varies || !res.run.variances.empty()) {
           field_list(r, {"Vary", accept_varies ? "Accept" : std::string_view(),
-                         res.run_variances});
+                         res.run.variances});
         }
         break;
       }
@@ -1398,9 +1398,9 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take_edge({n, status, halted}, res.etag_present && vals != nullptr && vals->if_match != nullptr &&
+        take_edge({n, status, halted}, res.run.etag_present && vals != nullptr && vals->if_match != nullptr &&
              http::etag_list_match({{vals->if_match, vals->if_match_len},
-                                    res.etag_value, false}));
+                                    res.run.etag_value, false}));
         continue;
       }
       case Node::kK13: {
@@ -1410,23 +1410,23 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           halted = true;
           continue;
         }
-        take_edge({n, status, halted}, res.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
+        take_edge({n, status, halted}, res.run.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
              http::etag_list_match({{vals->if_none_match, vals->if_none_match_len},
-                                    res.etag_value, true}));
+                                    res.run.etag_value, true}));
         continue;
       }
       case Node::kH12: {
-        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
-                       &res.last_modified_present, &res.last_modified_epoch});
-        take_edge({n, status, halted}, res.last_modified_present && vals != nullptr &&
-             res.last_modified_epoch > vals->if_unmodified_since_epoch);
+        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.run.last_modified_asked,
+                       &res.run.last_modified_present, &res.run.last_modified_epoch});
+        take_edge({n, status, halted}, res.run.last_modified_present && vals != nullptr &&
+             res.run.last_modified_epoch > vals->if_unmodified_since_epoch);
         continue;
       }
       case Node::kL17: {
-        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.last_modified_asked,
-                       &res.last_modified_present, &res.last_modified_epoch});
-        take_edge({n, status, halted}, !res.last_modified_present || vals == nullptr ||
-             res.last_modified_epoch > vals->if_modified_since_epoch);
+        epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.run.last_modified_asked,
+                       &res.run.last_modified_present, &res.run.last_modified_epoch});
+        take_edge({n, status, halted}, !res.run.last_modified_present || vals == nullptr ||
+             res.run.last_modified_epoch > vals->if_modified_since_epoch);
         continue;
       }
       case Node::kI4:
@@ -1509,14 +1509,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
           } else if (th.has_baked) {
             // A negotiated pair whose handler is a `def self.` - the answer
             // was rendered at setup, and o18 is only where it is handed over.
-            res.run_body->assign(th.baked);
-            res.run_have_body = true;
+            res.run.body->assign(th.baked);
+            res.run.have_body = true;
           } else {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
               v = naked(r, {th.m, th.irep, th.native, th.handler});
             } else if (r.ct_dyn) {
-              v = mrb_funcall_argv(mrb, res.live, th.handler, 0, nullptr);
+              v = mrb_funcall_argv(mrb, res.run.live, th.handler, 0, nullptr);
             } else {
               v = mrb_funcall_argv(mrb, mrb_obj_value(res.klass), th.handler, 0, nullptr);
             }
@@ -1534,14 +1534,14 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
             // the copy is worth taking. The caller reads run_have_file and
             // run_asset first and never looks at run_body/run_have_body for
             // this run.
-            if (!res.run_have_file && res.run_asset == nullptr) {
+            if (!res.run.have_file && res.run.asset == nullptr) {
               const size_t blen = static_cast<size_t>(RSTRING_LEN(v));
               // Already frozen means the app kept this String, so a second
               // connection may be holding it too - and the release would
               // lift a freeze that was not ours. Our own freeze is
               // therefore also the interlock: one lend per String at a
               // time, everything else copies.
-              if (res.run_zc_min != 0 && blen >= res.run_zc_min &&
+              if (res.run.zc_min != 0 && blen >= res.run.zc_min &&
                   !mrb_frozen_p(mrb_basic_ptr(v))) {
                 // Frozen so mrb_str_modify cannot realloc the bytes out
                 // from under a send in flight, rooted so the GC cannot
@@ -1549,13 +1549,13 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
                 // kernel.
                 mrb_obj_freeze(mrb, v);
                 mrb_gc_register(mrb, v);
-                res.run_zc = v;
-                res.run_zc_have = true;
-                res.run_body->clear();
+                res.run.zc = v;
+                res.run.zc_have = true;
+                res.run.body->clear();
               } else {
-                res.run_body->assign(RSTRING_PTR(v), blen);
+                res.run.body->assign(RSTRING_PTR(v), blen);
               }
-              res.run_have_body = true;
+              res.run.have_body = true;
             }
           }
         }
@@ -1573,7 +1573,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
         break;
       }
       case Node::kO20: {
-        take_edge({n, status, halted}, res.run_have_body);
+        take_edge({n, status, halted}, res.run.have_body);
         continue;
       }
       case Node::kP11: {
@@ -1614,10 +1614,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res) {
     const int h = add_caching(r);
     if (h >= 0) status = static_cast<uint16_t>(h);
   }
-  res.run_resp_code = status;
-  res.run_status = status;
+  res.run.resp_code = status;
+  res.run.status = status;
   if (res.cb_finish_request.has) cbv(r, res.cb_finish_request);
-  res.run_status = res.run_resp_code;
+  res.run.status = res.run.resp_code;
   return mrb_nil_value();
 }
 }
@@ -1702,6 +1702,12 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   // where every refusal about one is spelled. A promise is a bit beside
   // `dynamic`, so a run reads both in one load and knows before its
   // first VM entry whether this node can stop.
+  //
+  // A NATIVE callback is not refused. It is a function pointer, and both
+  // VMs are the same process, so the pointer is the same number on
+  // either side - there is no irep to dump and none to load, and only
+  // the arguments and the answer cross, as CBOR. It is the cheaper of
+  // the two crossings, not the impossible one.
   {
     const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(promised));
     const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
@@ -1744,13 +1750,6 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "promise :%n, but %n answers on the class - it is asked once and its answer "
                    "stands, so no worker is owed one",
-                   want, want);
-      }
-      // A native callback is C++ on this thread. It has no irep to dump,
-      // so nothing of it could cross into a worker VM.
-      if (WM_RES_UNLIKELY(out.node_native[at] != nullptr)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "promise :%n, but %n is a native callback - only mruby crosses into a worker",
                    want, want);
       }
       out.promise |= uint64_t{1} << at;
@@ -1990,45 +1989,45 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   mrb_state* mrb = res.mrb;
   request_bind(ask.req);
   response_bind(&res);
-  res.run_facts = &ask.facts;
-  res.run_vals = ask.vals;
-  res.run_req = ask.req;
-  res.run_headers = out.headers;
+  res.run.facts = &ask.facts;
+  res.run.vals = ask.vals;
+  res.run.req = ask.req;
+  res.run.headers = out.headers;
   out.headers->clear();
-  res.run_body = out.body;
-  res.run_have_body = false;
-  res.run_asset = nullptr;
-  res.run_zc_min = ask.zc_min;
-  res.run_zc_have = false;
-  res.run_status = 0;
-  res.run_resp_code = 0;
-  res.run_redirect = false;
-  res.run_content_type.clear();
-  res.run_disp_path.clear();
-  res.run_disp_set = false;
-  res.run_have_file = false;
-  res.run_file_bad = false;
-  res.etag_asked = false;
-  res.etag_present = false;
-  res.etag_value.clear();
-  res.last_modified_asked = false;
-  res.last_modified_present = false;
-  res.last_modified_epoch = 0;
-  res.expires_asked = false;
-  res.expires_present = false;
-  res.expires_epoch = 0;
-  res.run_content_types_marshalled = false;
-  res.run_methods.clear();
-  res.run_variances.clear();
+  res.run.body = out.body;
+  res.run.have_body = false;
+  res.run.asset = nullptr;
+  res.run.zc_min = ask.zc_min;
+  res.run.zc_have = false;
+  res.run.status = 0;
+  res.run.resp_code = 0;
+  res.run.redirect = false;
+  res.run.content_type.clear();
+  res.run.disp_path.clear();
+  res.run.disp_set = false;
+  res.run.have_file = false;
+  res.run.file_bad = false;
+  res.run.etag_asked = false;
+  res.run.etag_present = false;
+  res.run.etag_value.clear();
+  res.run.last_modified_asked = false;
+  res.run.last_modified_present = false;
+  res.run.last_modified_epoch = 0;
+  res.run.expires_asked = false;
+  res.run.expires_present = false;
+  res.run.expires_epoch = 0;
+  res.run.content_types_marshalled = false;
+  res.run.methods.clear();
+  res.run.variances.clear();
   mrb_bool raised = FALSE;
   const mrb_value thrown =
       mrb_protect_error(mrb, run_engine_body, const_cast<Resource*>(&res), &raised);
-  uint16_t status = res.run_resp_code;
+  uint16_t status = res.run.resp_code;
   // A raise voids whatever the run lent: the rescue path spells its own
   // body, and a root nobody comes back for outlives the process.
-  if (WM_RES_UNLIKELY(res.run_zc_have && raised != FALSE)) {
-    resource_body_unlend(mrb, res.run_zc);
-    res.run_zc_have = false;
+  if (WM_RES_UNLIKELY(res.run.zc_have && raised != FALSE)) {
+    resource_body_unlend(mrb, res.run.zc);
+    res.run.zc_have = false;
   }
   if (WM_RES_UNLIKELY(raised != FALSE)) {
     // fsm.rb: finish_request still runs on the raise path, and it may
@@ -2045,44 +2044,44 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
     } else if (mrb_exception_p(thrown)) {
       mrb->exc = mrb_obj_ptr(thrown);
     }
-    status = res.run_resp_code != 0 ? res.run_resp_code : 500;
+    status = res.run.resp_code != 0 ? res.run.resp_code : 500;
   }
   request_bind(nullptr);
   response_bind(nullptr);
-  res.live = mrb_nil_value();
-  res.run_vals = nullptr;
-  res.run_req = nullptr;
-  res.run_headers = nullptr;
+  res.run.live = mrb_nil_value();
+  res.run.vals = nullptr;
+  res.run.req = nullptr;
+  res.run.headers = nullptr;
   if (WM_RES_UNLIKELY(mrb->exc != nullptr)) {
-    if (res.run_zc_have) {
-      resource_body_unlend(mrb, res.run_zc);
-      res.run_zc_have = false;
+    if (res.run.zc_have) {
+      resource_body_unlend(mrb, res.run.zc);
+      res.run.zc_have = false;
     }
     *out.have_body = false;
     return 500;
   }
-  *out.have_body = res.run_have_body;
-  res.run_status = status;
+  *out.have_body = res.run.have_body;
+  res.run.status = status;
   return status;
 }
 
 // The lend window OPENS here for the caller: the run is over, so the value
 // has to leave the Resource - the next request through it resets the slot.
 bool resource_body_lent(const Resource& res, LentBody& out) {
-  if (!res.run_zc_have) return false;
-  res.run_zc_have = false;
-  out.value = res.run_zc;
-  out.bytes = {RSTRING_PTR(res.run_zc), static_cast<size_t>(RSTRING_LEN(res.run_zc))};
+  if (!res.run.zc_have) return false;
+  res.run.zc_have = false;
+  out.value = res.run.zc;
+  out.bytes = {RSTRING_PTR(res.run.zc), static_cast<size_t>(RSTRING_LEN(res.run.zc))};
   return true;
 }
 
 // response.file, handed over the same way: the run is over, so the name
 // leaves the Resource before the next request through it resets the slot.
 bool resource_file_wanted(const Resource& res, WantedFile& out) {
-  if (!res.run_have_file) return false;
-  res.run_have_file = false;
-  out.name = res.run_file;
-  out.bad = res.run_file_bad;
+  if (!res.run.have_file) return false;
+  res.run.have_file = false;
+  out.name = res.run.file;
+  out.bad = res.run.file_bad;
   return true;
 }
 

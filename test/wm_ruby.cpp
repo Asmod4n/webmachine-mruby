@@ -248,8 +248,8 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   // is reconstructed here rather than left to the wire.
   std::string ct;
   if (entity_status(status)) {
-    if (!f->res.run_content_type.empty()) {
-      ct = webmachine::http::with_charset(f->res.run_content_type);
+    if (!f->res.run.content_type.empty()) {
+      ct = webmachine::http::with_charset(f->res.run.content_type);
     } else if (!f->res.content_types_provided.empty()) {
       ct = webmachine::http::with_charset(f->res.content_types_provided[0].type);
     }
