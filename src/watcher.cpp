@@ -1,4 +1,6 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
+#include <cstdio>
+
 #include "webmachine.hpp"
 
 #include <mruby/class.h>
@@ -6,6 +8,7 @@
 #include <mruby/presym.h>
 #include <mruby/proc.h>
 #include <mruby/variable.h>
+#include <mruby/string.h>
 
 #include <liburing.h>
 #include <poll.h>
@@ -199,8 +202,18 @@ double watcher_timeout(mrb_value v) {
   return d != nullptr ? d->timeout : 0.0;
 }
 
-bool watcher_deadline_passed(mrb_state* mrb, mrb_value v) {
-  return mrb_bool(watcher_deadline_passed_m(mrb, v));
+// The deadline, delivered. The answer says whether the wait goes on;
+// `said` takes the block's own value, which is the run's answer when the
+// block ends the wait here - a watcher that gives up still has something
+// to say, and dropping it would make a timeout answer nil forever.
+bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said) {
+  const mrb_value blk = mrb_iv_get(mrb, v, MRB_IVSYM(block));
+  const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), v};
+  const mrb_value answer = mrb_yield_argv(mrb, blk, 2, argv);
+  if (said != nullptr) *said = answer;
+  // The block can abort, and abort frees nothing - the CDATA is still
+  // here, so it is read after the call and not before.
+  return !live(mrb, v)->aborted;
 }
 
 int watcher_fd(mrb_value v) {
@@ -324,9 +337,12 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     return WatchStep::kDone;
   }
   if (watcher_aborted_p(w)) {
+    // ROOT IT FIRST. The block's answer is held by the arena and by
+    // nothing else; restoring the arena before registering it hands the
+    // collector a value the run is about to read.
     st.answer_value = said;
-    mrb_gc_arena_restore(mrb, ai);
     mrb_gc_register(mrb, st.answer_value);
+    mrb_gc_arena_restore(mrb, ai);
     st.answer_ready = true;
     return WatchStep::kDone;
   }
@@ -344,9 +360,15 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   // watcher over its deadline is usually the WORLD - the peer said
   // nothing - and that is a fact the application has to learn, not a
   // failure of its own (.DESIGN.md #promise-bound).
-  const bool again = watcher_deadline_passed(mrb, w);
+  mrb_value said = mrb_nil_value();
+  const bool again = watcher_deadline_passed(mrb, w, &said);
+  if (mrb->exc != nullptr) {
+    mrb->exc = nullptr;
+    said = mrb_nil_value();
+  }
   if (!again) {
-    st.answer_value = mrb_nil_value();
+    st.answer_value = said;
+    mrb_gc_register(mrb, st.answer_value);
     mrb_gc_arena_restore(mrb, ai);
     st.answer_ready = true;
     return WatchStep::kDone;
