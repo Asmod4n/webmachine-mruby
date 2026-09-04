@@ -30,6 +30,22 @@ where a tool default puts one there. `Co-Authored-By:` stays allowed.
 
 must be 0.
 
+## Write in Simplified Technical English
+
+Everything written here follows ASD-STE100: code comments, commit
+messages, documentation, and the answers in a session.
+
+The rules that matter most:
+
+- One thought per sentence.
+- Short sentences. About 20 words is the limit.
+- Active voice. Name who does the thing.
+- Simple words. One word keeps one meaning.
+- No metaphors, no idioms, no rhetorical questions.
+
+This is account-wide knowledge. A session does not always receive it,
+so it is written here as well.
+
 ## No bang methods
 
 No methods with `!`. Public capability questions are `?` predicates
