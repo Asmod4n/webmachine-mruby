@@ -996,6 +996,141 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
 // and an inline block inside a loop body cannot be re-entered. Nothing
 // else changed with the move: what it used to read from the loop now
 // comes from the Round and the BoundAsk beside it.
+
+// #80: what happens to a bound run's answer AFTER the walk - the lend,
+// the error asset, response.file, and the head a run spells for itself.
+// It is its own function because two callers reach it: the straight one
+// above, and the coroutine that a promising resource is run through.
+// Both arrive here with the same three facts, and out carries them in.
+Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
+  Conn& st = r.st;
+  const Bundle* const b = r.b;
+  const bool head_only = r.head_only;
+  const int minor = r.minor;
+  const bool persist = r.persist;
+  const http::ReqValues& vals = r.vals;
+  Plan* const plan = ask.plan;
+  std::string& sink = ask.sink;
+  uint16_t status = out.status;
+  bool have_body = out.have_body;
+  bool answered = false;
+  const char* lent = nullptr;
+  size_t lent_len = 0;
+  LentBody lent_body;
+  if (WM_H1_UNLIKELY(resource_body_lent(*b->res, lent_body))) {
+    st.zc_value = lent_body.value;
+    lent = lent_body.bytes.data();
+    lent_len = lent_body.bytes.size();
+    st.zc_mrb = b->res->mrb;
+    st.zc_lent = true;
+  }
+  // #210 response.error_asset: the run named an entry of the error
+  // assets, and an entry goes on the wire the way the asset tier
+  // already puts one there - through Assets' own accessors, which
+  // are the one place that knows an entry's wire form. It lives in
+  // a mapping that outlives every request, so nothing here is
+  // rooted and nothing is released: a plan carries the segment
+  // (wire_iov), and without one the bytes are copied (copy_wire).
+  if (WM_H1_UNLIKELY(b->res->run.asset != nullptr)) {
+    const AssetEntry& ae = *b->res->run.asset;
+    const size_t n = Assets::wire_len(ae);
+    if (plan != nullptr) {
+      struct iovec iv[3];
+      const unsigned k = Assets::wire_iov(ae, {0, n}, iv);
+      // One segment for a stored entry; a deflated one would be
+      // three, and response.error_asset refuses those - the head
+      // spelled here carries no Content-Encoding to declare them.
+      lent = k == 1 ? static_cast<const char*>(iv[0].iov_base) : nullptr;
+      lent_len = k == 1 ? iv[0].iov_len : 0;
+    }
+    if (lent == nullptr) {
+      body_.clear();
+      Assets::copy_wire(ae, {0, n}, body_);
+    }
+  }
+  // response.file: the run named a file instead of spelling a body,
+  // and opening one is disk work that does not belong in a reactor
+  // step. NOTHING is answered here - the framing this answer will need
+  // is copied onto the connection, the reactor drives openat2/statx/
+  // read through the ring, and `more` puts the result on the wire. A
+  // name this process already refused takes the same 404 the kernel's
+  // own refusal takes, spelled right here since no ring trip is owed.
+  {
+    if (WM_H1_UNLIKELY(answer_from_file(r, status))) {
+      body_.clear();
+      // accept_gzip came in with `out` and stays there: the caller read
+      // Accept-Encoding once, and a file answer does not change what the
+      // client will take.
+      out.status = status;
+      out.have_body = false;
+      out.answered = false;
+      out.lent = nullptr;
+      out.lent_len = 0;
+      return Took::kOwed;
+    }
+  }
+  // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
+  // this run spells its own. 500 stays on the exception path below.
+  if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !rhdrs_.empty()) &&
+                     status != 500)) {
+    const bool bodyless = status == 204 || status == 304;
+    if (bodyless || !have_body) {
+      body_.clear();
+      st.zc_release();
+      lent = nullptr;
+      lent_len = 0;
+    }
+    // helpers.rb encode_body: a `def self.to_html` renders at SETUP, so
+    // a run that reaches o18 with one produces no body - the bundle's
+    // prebuilt 200 carries it. That head is not the one being spelled
+    // here, so the bake has to be named, or this answer goes out empty.
+    const bool baked = !bodyless && !have_body && lent == nullptr && status == 200 &&
+                       !b->dynamic_body && !b->konst.body.empty();
+    std::string ctype;
+    std::string epage;
+    // RFC 9110 15: a 4xx or 5xx is owed the page its status carries,
+    // and a run that wrote a field of its own - a 405's Allow, most
+    // often - lands here instead of at spell_error. Without this it
+    // goes out as the bare status: the same answer the prebuilt one
+    // gives, minus the page the prebuilt one has.
+    if (status >= 400 && !bodyless && !have_body && lent == nullptr) {
+      const int em = err_pages_.media_for(status, vals.accept, vals.accept_len);
+      size_t elen = 0;
+      const ErrorPages::Fields none;
+      const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
+      if (ep != nullptr) {
+        body_.assign(ep, elen);
+        have_body = true;
+        ctype = err_pages_.media_type(em);
+      }
+    }
+    if (!bodyless && ctype.empty()) {
+      if (!b->res->run.content_type.empty()) {
+        ctype = http::with_charset(b->res->run.content_type);
+      }
+      else if (have_body || baked) ctype = b->konst.content_type;
+    }
+    const SpelledHead head = {
+        status, date_, ctype, rhdrs_, minor, persist, bodyless,
+        lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size())};
+    spell_head(sink, head);
+    if (!bodyless && !head_only) {
+      if (lent != nullptr) lend_body(st, sink, {{lent, lent_len}, *plan});
+      else sink.append(baked ? b->konst.body : body_);
+    }
+    have_body = false;
+    answered = true;
+  }
+
+
+  out.status = status;
+  out.have_body = have_body;
+  out.answered = answered;
+  out.lent = lent;
+  out.lent_len = lent_len;
+  return Took::kNextRequest;
+}
+
 Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
   Conn& st = r.st;
   const Bundle* const b = r.b;
@@ -1054,107 +1189,10 @@ Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
   const RunAsk asked = {facts, &vals, &rv, zc_min};
   const RunAnswer answer = {&body_, &have_body, &rhdrs_};
   status = resource_run(*b->res, asked, answer);
-  LentBody lent_body;
-  if (WM_H1_UNLIKELY(resource_body_lent(*b->res, lent_body))) {
-    st.zc_value = lent_body.value;
-    lent = lent_body.bytes.data();
-    lent_len = lent_body.bytes.size();
-    st.zc_mrb = b->res->mrb;
-    st.zc_lent = true;
-  }
-  // #210 response.error_asset: the run named an entry of the error
-  // assets, and an entry goes on the wire the way the asset tier
-  // already puts one there - through Assets' own accessors, which
-  // are the one place that knows an entry's wire form. It lives in
-  // a mapping that outlives every request, so nothing here is
-  // rooted and nothing is released: a plan carries the segment
-  // (wire_iov), and without one the bytes are copied (copy_wire).
-  if (WM_H1_UNLIKELY(b->res->run.asset != nullptr)) {
-    const AssetEntry& ae = *b->res->run.asset;
-    const size_t n = Assets::wire_len(ae);
-    if (plan != nullptr) {
-      struct iovec iv[3];
-      const unsigned k = Assets::wire_iov(ae, {0, n}, iv);
-      // One segment for a stored entry; a deflated one would be
-      // three, and response.error_asset refuses those - the head
-      // spelled here carries no Content-Encoding to declare them.
-      lent = k == 1 ? static_cast<const char*>(iv[0].iov_base) : nullptr;
-      lent_len = k == 1 ? iv[0].iov_len : 0;
-    }
-    if (lent == nullptr) {
-      body_.clear();
-      Assets::copy_wire(ae, {0, n}, body_);
-    }
-  }
-  // response.file: the run named a file instead of spelling a body,
-  // and opening one is disk work that does not belong in a reactor
-  // step. NOTHING is answered here - the framing this answer will need
-  // is copied onto the connection, the reactor drives openat2/statx/
-  // read through the ring, and `more` puts the result on the wire. A
-  // name this process already refused takes the same 404 the kernel's
-  // own refusal takes, spelled right here since no ring trip is owed.
-  {
-    if (WM_H1_UNLIKELY(answer_from_file(r, status))) {
-      body_.clear();
-      out = {status, false, false, accept_gzip, nullptr, 0};
-      return Took::kOwed;
-    }
-  }
-  // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
-  // this run spells its own. 500 stays on the exception path below.
-  if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !rhdrs_.empty()) &&
-                     status != 500)) {
-    const bool bodyless = status == 204 || status == 304;
-    if (bodyless || !have_body) {
-      body_.clear();
-      st.zc_release();
-      lent = nullptr;
-      lent_len = 0;
-    }
-    // helpers.rb encode_body: a `def self.to_html` renders at SETUP, so
-    // a run that reaches o18 with one produces no body - the bundle's
-    // prebuilt 200 carries it. That head is not the one being spelled
-    // here, so the bake has to be named, or this answer goes out empty.
-    const bool baked = !bodyless && !have_body && lent == nullptr && status == 200 &&
-                       !b->dynamic_body && !b->konst.body.empty();
-    std::string ctype;
-    std::string epage;
-    // RFC 9110 15: a 4xx or 5xx is owed the page its status carries,
-    // and a run that wrote a field of its own - a 405's Allow, most
-    // often - lands here instead of at spell_error. Without this it
-    // goes out as the bare status: the same answer the prebuilt one
-    // gives, minus the page the prebuilt one has.
-    if (status >= 400 && !bodyless && !have_body && lent == nullptr) {
-      const int em = err_pages_.media_for(status, vals.accept, vals.accept_len);
-      size_t elen = 0;
-      const ErrorPages::Fields none;
-      const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
-      if (ep != nullptr) {
-        body_.assign(ep, elen);
-        have_body = true;
-        ctype = err_pages_.media_type(em);
-      }
-    }
-    if (!bodyless && ctype.empty()) {
-      if (!b->res->run.content_type.empty()) {
-        ctype = http::with_charset(b->res->run.content_type);
-      }
-      else if (have_body || baked) ctype = b->konst.content_type;
-    }
-    const SpelledHead head = {
-        status, date_, ctype, rhdrs_, minor, persist, bodyless,
-        lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size())};
-    spell_head(sink, head);
-    if (!bodyless && !head_only) {
-      if (lent != nullptr) lend_body(st, sink, {{lent, lent_len}, *plan});
-      else sink.append(baked ? b->konst.body : body_);
-    }
-    have_body = false;
-    answered = true;
-  }
-
-  out = {status, have_body, answered, accept_gzip, lent, lent_len};
-  return Took::kNextRequest;
+  out.status = status;
+  out.have_body = have_body;
+  out.accept_gzip = accept_gzip;
+  return bound_finish(r, ask, out);
 }
 
 bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {

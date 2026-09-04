@@ -5059,6 +5059,9 @@ class Http1 {
   // kOwed = nothing is answered yet: the body is still coming, or a file
   // is being fetched through the ring.
   Took answer_bound(Round& r, const BoundAsk& ask, BoundOut& out);
+  // The half after the walk. Reached from answer_bound and, once a run
+  // can park, from the coroutine a promising resource runs through.
+  Took bound_finish(Round& r, const BoundAsk& ask, BoundOut& out);
 
   // #80: what the answer switch needs beyond the Round - the sink it
   // writes to, the plan a lend rides out on, and what the run left
