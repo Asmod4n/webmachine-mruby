@@ -860,12 +860,15 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.stopped = true;
       return false;
     }
-    // #30: a callback may answer a Webmachine::Watcher instead of a
-    // value. The run then stops until the descriptor says something and
-    // the watcher's block says the wait is over. Nothing is declared for
-    // this - a Watcher IS the declaration, and the type test costs one
-    // tag check on a value that is almost never a DATA object.
-    if (WM_RES_UNLIKELY(mrb_data_p(v) && watcher_p(r.mrb, v))) {
+    // #30: a node the resource declared with `watch` answers with a
+    // Webmachine::Watcher. The run then stops until the descriptor says
+    // something and the block says the wait is over.
+    if (WM_RES_UNLIKELY(((res.watch >> i) & 1) != 0)) {
+      if (WM_RES_UNLIKELY(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
+                   res.node_sym[i], v);
+      }
       if (WM_RES_UNLIKELY(!res.run.can_park)) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n answered a Webmachine::Watcher, and this run cannot stop",
@@ -1866,6 +1869,46 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+  // #30: the same fold for `watch`. A watcher's block is never dumped -
+  // it runs in this VM, on this thread - so the callback may live on the
+  // instance and keep whatever it closed over. Two things are asked: the
+  // name is a flow node, and something answers it.
+  {
+    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(watched));
+    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
+      size_t at = flow::kNodeCount;
+      for (const BoolCb& cb : kBools) {
+        if (cb.sym == want) {
+          at = static_cast<size_t>(cb.node);
+          break;
+        }
+      }
+      if (at == flow::kNodeCount) {
+        for (const NodeValueCb& cb : kNodeValues) {
+          if (cb.sym == want) {
+            at = static_cast<size_t>(cb.node);
+            break;
+          }
+        }
+      }
+      if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "watch :%n names no flow callback - a watcher stops the graph between nodes, "
+                   "so only a node's own callback can hold one",
+                   want);
+      }
+      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "watch :%n, but %n is not defined - write it and answer with a "
+                   "Webmachine::Watcher",
+                   want, want);
+      }
+      out.watch |= uint64_t{1} << at;
+    }
+  }
+
   // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
   out.cb_known_methods = value_cb(mrb, klass, {MRB_SYM(known_methods), false});
@@ -2362,6 +2405,31 @@ mrb_value resource_compute(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// #30: `watch :is_authorized?` - the resource naming the callbacks that
+// answer with a Webmachine::Watcher. It only WRITES the names here; the
+// fold reads them, for the same reason `compute` does: refusing here
+// would mean resolving the method before the class is finished.
+mrb_value resource_watch(mrb_state* mrb, mrb_value self) {
+  const mrb_value* names = nullptr;
+  mrb_int n = 0;
+  mrb_get_args(mrb, "*", &names, &n);
+  if (n == 0) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "watch wants the name of a callback, and got none");
+  }
+  mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(watched));
+  if (!mrb_array_p(list)) {
+    list = mrb_ary_new_capa(mrb, n);
+    mrb_iv_set(mrb, self, MRB_IVSYM(watched), list);
+  }
+  for (mrb_int i = 0; i < n; i++) {
+    if (WM_RES_UNLIKELY(!mrb_symbol_p(names[i]))) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "watch wants a symbol, and got %v", names[i]);
+    }
+    mrb_ary_push(mrb, list, names[i]);
+  }
+  return self;
+}
+
 // #181: a resource instance belongs to ONE request and the server makes it.
 // Ruby may not - a route names the CLASS, and C++ allocates from it with
 // mrb_obj_alloc. Without this, Resource.new would fail on the undef'd
@@ -2398,6 +2466,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
                              MRB_ARGS_ANY());
   mrb_define_class_method_id(mrb, res_class, MRB_SYM(compute), resource_compute,
                              MRB_ARGS_ANY());
+  mrb_define_class_method_id(mrb, res_class, MRB_SYM(watch), resource_watch, MRB_ARGS_ANY());
   webmachine::ws_init(mrb, wm);
   webmachine::sse_init(mrb, wm);
   webmachine::application_init(mrb, wm);

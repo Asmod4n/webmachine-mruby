@@ -4,18 +4,18 @@ require 'tempfile'
 # #30: the watcher against a REAL foreign descriptor.
 #
 # libpq is the case the design was written against. It says what to wait
-# for and it changes its mind in the middle of one wait: writable while
-# it flushes, readable while it reads, and during the handshake it
-# answers :reading or :writing per poll. A watcher that could not follow
-# that would be a watcher no database could use.
+# for and it changes its mind in the middle of one wait: the handshake
+# answers :reading or :writing per poll, then the query wants writable
+# while it flushes and readable while it reads. A watcher that could not
+# follow that would be a watcher no database could use.
 #
-# This needs two things the machine may not have: a libpq to link (the
-# debug build adds mruby-postgresql only when pkg-config knows one) and
-# a server to talk to. Both are asked for by name and the case skips
-# when either is missing - a test that lies about what it ran is worse
-# than one that says it did not run.
+# This needs two things a machine may not have: a libpq to link (the
+# debug build adds mruby-postgresql only when pkg-config knows one) and a
+# server to talk to. Both are asked for by name, and the case skips when
+# either is missing - a test that lies about what it ran is worse than
+# one that says it did not run.
 WPQ_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(WPQ_BIN)
-WPQ_URL = ENV['WM_PG_URL'] || 'postgresql://127.0.0.1:5432/postgres?user=postgres'
+WPQ_URL = ENV['WM_PG_URL'] || 'postgresql://127.0.0.1:5432/postgres?user=postgres' unless defined?(WPQ_URL)
 
 def wpq_server_there?(url)
   host = url[%r{//([^:/?]+)}, 1] || '127.0.0.1'
@@ -26,7 +26,7 @@ rescue StandardError
   false
 end
 
-def wpq_answer(app_source)
+def wpq_head(app_source)
   src = Tempfile.new(['wm-wpq', '.rb'])
   src.write(app_source)
   src.close
@@ -43,20 +43,13 @@ def wpq_answer(app_source)
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
     UNIXSocket.open(sock) do |c|
-      c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      c.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
       head = +''
-      loop do
+      until head.end_with?("\r\n\r\n")
         IO.select([c], nil, nil, 15) or raise "no answer in 15s\n#{File.read(err) rescue ''}"
         head << c.readpartial(1)
-        break if head.end_with?("\r\n\r\n")
       end
-      len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-      body = +''
-      while body.bytesize < len
-        IO.select([c], nil, nil, 15) or raise 'body stalled'
-        body << c.readpartial(len - body.bytesize)
-      end
-      [head, body]
+      head
     end
   ensure
     Process.kill('TERM', pid) rescue nil
@@ -67,24 +60,31 @@ def wpq_answer(app_source)
   end
 end
 
-assert('watcher: libpq drives a run, and it changes what it waits for mid-wait (#30)') do
+assert('watcher: libpq drives a stopped run, and changes what it waits for mid-wait (#30)') do
   skip 'this build has no libpq' unless system('pkg-config --exists libpq >/dev/null 2>&1')
   skip "no PostgreSQL at #{WPQ_URL}" unless wpq_server_there?(WPQ_URL)
 
-  _, body = wpq_answer(<<~RUBY)
-    class PqAnswer < Webmachine::Resource
-      def self.to_html
+  head = wpq_head(<<~RUBY)
+    class PqWatch < Webmachine::Resource
+      watch :is_authorized?
+
+      def self.is_authorized?(_header)
         conn = Pq.connect_start(#{WPQ_URL.inspect})
+        # The loop libpq documents asks FIRST and waits second. A watcher
+        # waits first, so the first answer is taken here and it decides
+        # what the watcher starts out waiting for.
+        first = conn.connect_poll
         stage = :connect
         rows = nil
-        seen = []
-        # The mask starts at :w because PQconnectStart wants to write
-        # first. After that libpq says what it wants, every time.
-        Webmachine::Watcher.new(conn.socket, :w, timeout: 5.s) do |ready, w|
-          seen << stage
-          case stage
-          when :connect
-            case conn.connect_poll
+        seen = [first]
+        Webmachine::Watcher.new(conn.socket, first == :reading ? :r : :w, timeout: 5.s) do |ready, w|
+          if ready == :timeout
+            w.abort
+            "timeout stage=\#{stage} states=\#{seen.join(',')}"
+          elsif stage == :connect
+            st = conn.connect_poll
+            seen << st
+            case st
             when :ok
               conn.nonblocking = true
               conn.send_query('select 42')
@@ -92,13 +92,13 @@ assert('watcher: libpq drives a run, and it changes what it waits for mid-wait (
               w.events = :w
             when :failed
               w.abort
-              "failed:\#{conn.error_message}"
+              "failed=\#{conn.error_message}"
             when :reading then w.events = :r
-            when :writing then w.events = :w
+            else w.events = :w
             end
-          when :flush
-            # 0 = everything is on the socket. Anything else means the
-            # kernel took some and wants the rest later.
+          elsif stage == :flush
+            # 0 = the query is on the socket. Anything else means the
+            # kernel took some of it and wants the rest later.
             if conn.flush == 0
               stage = :read
               w.events = :r
@@ -108,31 +108,38 @@ assert('watcher: libpq drives a run, and it changes what it waits for mid-wait (
           else
             conn.consume_input
             unless conn.busy?
-              res = conn.get_result
-              if res.nil?
-                # nil = every result is drained. THAT is the end, not the
-                # first row - a multi-statement query answers twice.
-                w.abort
-                "rows:\#{rows.inspect} stages:\#{seen.uniq.join(',')}"
-              else
+              # PQgetResult answers until it answers nil, and the ones
+              # after the first come out of libpq's own buffer - waiting
+              # for the socket again would wait forever.
+              while (res = conn.get_result)
                 rows = res.to_ary
               end
+              w.abort
+              # RFC 9110 11.6.1: a String from is_authorized? IS the
+              # challenge, so the row reaches the wire in a header. That
+              # is what makes this test read the value the run answered.
+              "rows=\#{rows.inspect} states=\#{seen.join(',')}"
             end
           end
         end
+      end
+
+      def to_html
+        'answered'
       end
     end
 
     def main
       Webmachine::Application.new do |app|
-        app.routes { |route| route.add [], PqAnswer }
+        app.routes { |route| route.add [], PqWatch }
       end
     end
   RUBY
 
-  # The row libpq brought back through the watcher.
-  assert_true body.include?('rows:[[42]]'), body
-  # And the wait really did pass through all three stages, which is what
-  # says the mask changed twice while the poll was live.
-  assert_true body.include?('stages:connect,flush,read'), body
+  challenge = head[/^WWW-Authenticate: (.*)\r$/, 1].to_s
+  # The row the database sent, carried back through the watcher into the
+  # flow and out onto the wire.
+  assert_true challenge.include?('rows=[[42]]'), head
+  # And the handshake really did change what it waited for, twice.
+  assert_true challenge.include?('states=writing,reading,writing,reading,ok'), head
 end

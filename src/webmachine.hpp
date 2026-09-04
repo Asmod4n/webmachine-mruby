@@ -2557,6 +2557,15 @@ struct Resource {
   // `compute`, which is what keeps the pool out of a server that has no
   // use for it.
   uint64_t compute = 0;
+  // #30: which nodes answer with a Webmachine::Watcher. Declared with
+  // `watch :is_authorized?`, the same shape as `compute` and for the
+  // same reason: the frame that can hold a stopped run is chosen before
+  // any callback runs, so the resource has to say so in advance.
+  //
+  // Unlike a compute task, the block here is never dumped - it runs in
+  // this VM, on this thread - so it may keep its environment and the
+  // callback may live on the instance.
+  uint64_t watch = 0;
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
   bool node_irep[flow::kNodeCount] = {};

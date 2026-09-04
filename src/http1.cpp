@@ -1615,7 +1615,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // the run owes and the frame finishes differently. So the gate
         // stays what a resource DECLARED, and a watcher needs a
         // declaration of its own before it can reach this path.
-        if (WM_H1_UNLIKELY(b->res->compute != 0)) {
+        if (WM_H1_UNLIKELY(b->res->compute != 0 || b->res->watch != 0)) {
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + head_len,       head_len,   method,
                                     method_len,           path,       path_len,

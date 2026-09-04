@@ -47,5 +47,23 @@ MRuby::Build.new('debug') do |conf|
 
 
 
+  # #30: the watcher is a promise about FOREIGN descriptors, and the only
+  # honest test of one drives a real database. libpq is the case the
+  # design was written against: it says what to wait for, and it changes
+  # its mind in the middle of a wait - writable while it flushes,
+  # readable while it reads.
+  #
+  # The TEST build only, and WITHOUT the gem's own tests: they need a
+  # server on the default port and they are that repository's to run, not
+  # this one's - 59 of them crashed here. bintest/watcher_pq.rb asks for
+  # a database itself and skips when there is none.
+  if system('pkg-config --exists libpq >/dev/null 2>&1')
+    conf.gem github: 'Asmod4n/mruby-postgresql', branch: 'master' do |g|
+      g.test_rbfiles = []
+      g.test_objs = []
+      g.test_preload = nil
+    end
+  end
+
   conf.gem File.expand_path(File.dirname(__FILE__))
 end
