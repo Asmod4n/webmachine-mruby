@@ -98,6 +98,22 @@ Only the debug config is built while developing:
 `portable_smoke` failing at the end of a debug `rake test` is expected -
 there is no portable binary. Nothing else may fail.
 
+## Kill a process by its pid, never by a pattern
+
+`pkill -f X` and `pgrep -f X` match every command line that holds X,
+and the command that runs them is one of those lines. This cost real
+time here, three times: once `pkill -f "rake test"` killed the shell
+that ran it, and twice a wait loop spelled `until ! pgrep -f "rake
+compile"` waited for itself and never ended.
+
+Find the pid, then kill the pid:
+
+    ps -eo pid,cmd | awk '/[r]ake test/ {print $1}' | xargs -r kill
+
+The bracket in `[r]ake` keeps the awk pattern out of its own output.
+The same rule holds for waiting: wait on a job you started, never on a
+name that your own command line also carries.
+
 ## A symbol question is an AST question
 
 A rename in C or C++ is an AST question, and a regex cannot answer it.
