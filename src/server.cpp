@@ -231,7 +231,7 @@ void build_listeners(mrb_state* mrb, RingConfig& cfg) {
 #include "slipstream_syscall.h"
 
 // Which side answers this process's rings, said at startup: liburing
-// works either way now - the slipstream seam underneath it hands every
+// works either way now - slipstream underneath it answers every
 // call to the engine when the kernel refuses io_uring - and the banner
 // is the receipt. Silence is the kernel side.
 void server_backend_say() {
@@ -273,7 +273,7 @@ void server_backend_say() {
                  "webmachine: ================================================================\n",
                  why);
   }
-  // NO runtime "is liburing here" question any more. With the seam it
+  // NO runtime "is liburing here" question any more. With the wrappers it
   // is always here - mrbgem.rake aborts the BUILD when liburing cannot
   // be built, which is the moment that can still be acted on - and the
   // only open question is which side answers, which the banner above
