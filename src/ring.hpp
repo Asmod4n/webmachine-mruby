@@ -1094,6 +1094,18 @@ class Ring {
     if (c.msg_iovlen == 0) {
       io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.out_sent,
                          c.out.size() - c.out_sent, flags);
+    } else if (c.msg_iovlen == 1 && !resumes) {
+      // ONE segment is one buffer, and a buffer does not need an iovec.
+      // sendmsg makes the kernel copy an msghdr in from user space and
+      // import the vector behind it - io_msg_copy_hdr, io_sendmsg_prep,
+      // copy_iovec_from_user, __import_iovec - which a profile of one h1
+      // run put at over 8% of everything. send carries a pointer and a
+      // length and skips all of it.
+      //
+      // An offloaded TLS socket keeps sendmsg: send_resume re-points the
+      // vector it was given, and that path is not this one to change.
+      const struct iovec* const one = c.iov();
+      io_uring_prep_send(s, static_cast<int>(idx), one[0].iov_base, one[0].iov_len, flags);
     } else {
       c.msg = msghdr{};
       c.msg.msg_iov = c.iov();
@@ -1569,6 +1581,10 @@ class Ring {
   // this code's - no path math here, on purpose.
   void arm_file_open(uint32_t idx) {
     Conn& c = conns_[idx];
+    // The same shape as arm_compute_task: the answer is no on every
+    // round that does not name a file, and file_take is a call into
+    // another translation unit to hear it.
+    if (WM_LIKELY(!App::file_waiting(c.app))) return;
     if (c.file_io != nullptr && c.file_io->reading) return;  // its buffer is still under a live read
     const char* path = app_.file_take(c.app);
     if (path == nullptr) return;
@@ -1584,6 +1600,9 @@ class Ring {
   // the first time anything stops.
   void arm_compute_task(uint32_t idx) {
     Conn& c = conns_[idx];
+    // Almost every round asks and almost none has a job. Ask first, and
+    // build nothing until the answer is yes.
+    if (WM_LIKELY(!App::compute_task_waiting(c.app))) return;
     std::string arg;
     unsigned code = 0;
     double deadline = 0.0;

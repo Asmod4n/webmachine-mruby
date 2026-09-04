@@ -4757,6 +4757,16 @@ class Http1 {
   // continuation. Any refusal - a miss, a directory, a resolve flag
   // catching an escape - lands as the SAME 404 file_reject spells.
   const char* file_take(Conn& st);
+  // The question file_take answers, asked without a call. The reactor
+  // asks it on EVERY recv and every round, and the answer is almost
+  // always no: file_take lives in another translation unit, so the no
+  // cost a call and a return. Measured at 0.38% of a whole h1 run.
+  static bool file_waiting(const Conn& st) {
+    return st.file != nullptr && st.file->stage == FileStage::kNamed;
+  }
+  // The same, for the work a stopped run left. arm_compute_task built a
+  // std::string before it asked. Measured at 0.45%.
+  static bool compute_task_waiting(const Conn& st) { return st.job_waiting; }
   void file_reject(Conn& st);
   void file_error(Conn& st, const char* why);
   bool file_stat(Conn& st, const struct statx& stx, size_t* want);
