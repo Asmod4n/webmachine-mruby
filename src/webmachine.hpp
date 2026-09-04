@@ -3962,6 +3962,102 @@ class Http1 {
   // topic: interleaving the flags with the pointers cost 34 bytes of
   // padding in 176, which is a cache line every five connections spent
   // on nothing. Widest first, the single-byte members last and together.
+  struct Plan;
+
+  // #80: a bound run that can STOP. Only a resource that declared a
+  // promise or a watch is called through one, so a run that can never
+  // stop pays no frame for the ability - the same reasoning #cold-paths
+  // applies to code, applied to control flow.
+  //
+  // WHY a coroutine and not a stage on the connection: at the stop the
+  // round's borrowed pointers have to be saved somewhere, and there is
+  // no choice about that - `view`, `method`, `path` and every field in
+  // ReqValues point into a PROVIDED BUFFER, and on_recv hands that
+  // buffer back to the kernel (replenish_/io_uring_buf_ring_advance)
+  // before anything could resume. Holding it instead is not an option:
+  // the ring has kBufCount of them for the whole process, and a run that
+  // parked for 40 ms of argon2 while holding one starves every other
+  // connection's recv. So the bytes are copied, and the frame is the one
+  // obvious place for the copy rather than a hand-built park struct that
+  // has to be re-pointed by hand on the way back.
+  //
+  // The head and the body are held SEPARATELY even though carry holds
+  // them adjacent today: a head is a few hundred bytes and a body may be
+  // a megabyte, and the megabyte is the one that will later be spilled to
+  // an O_TMPFILE through the ring. A spilled body is not addressable at
+  // all until a read completes, so it can never be a span beside the
+  // head - it is a descriptor and a length, and fetching it is a second
+  // stop this same coroutine takes.
+  struct Run {
+    struct promise_type;
+    using handle = std::coroutine_handle<promise_type>;
+
+    struct promise_type {
+      // RFC 9110 15: what the run answered, once it has.
+      uint16_t status = 0;
+      bool finished = false;
+      // Where the answer goes when the run RESUMES, and why the body may
+      // not capture them: the plan of the round that started it lived in
+      // on_recv's frame and is gone, and the sink may have swapped
+      // (out/next) while the run was stopped. The resumer sets these
+      // before resume(), and everything after a stop reads them through
+      // here rather than through a reference the frame is holding.
+      std::string* sink = nullptr;
+      struct Plan* plan = nullptr;
+
+      Run get_return_object() { return Run{handle::from_promise(*this)}; }
+      // Runs eagerly: a run that never stops must reach its answer inside
+      // the call that started it, exactly as resource_run does today.
+      std::suspend_never initial_suspend() noexcept { return {}; }
+      // Suspends at the end so the caller can read `status` off the frame
+      // and destroy it deliberately - a self-destroying coroutine would
+      // take the answer with it.
+      std::suspend_always final_suspend() noexcept { return {}; }
+      void return_value(uint16_t s) {
+        status = s;
+        finished = true;
+      }
+      // #mruby-raises: a raise IS a C++ throw here, and the run frames
+      // above already catch it. Rethrowing leaves this frame suspended at
+      // its final point, which is where the caller destroys it.
+      void unhandled_exception() { throw; }
+    };
+
+    Run() = default;
+    explicit Run(handle h) : co(h) {}
+    Run(const Run&) = delete;
+    Run& operator=(const Run&) = delete;
+    Run(Run&& o) noexcept : co(o.co) { o.co = {}; }
+    Run& operator=(Run&& o) noexcept {
+      if (this != &o) {
+        destroy();
+        co = o.co;
+        o.co = {};
+      }
+      return *this;
+    }
+    ~Run() { destroy(); }
+
+    // Did it reach an answer, or is it parked on something?
+    bool done() const { return !co || co.promise().finished; }
+    uint16_t status() const { return co ? co.promise().status : 0; }
+    void destroy() {
+      if (co) co.destroy();
+      co = {};
+    }
+    // Handed to whatever will resume it - the reactor keeps this and
+    // nothing else, because the handle IS the parked run's name. There is
+    // no slot table and no tag field to translate.
+    handle release() {
+      const handle h = co;
+      co = {};
+      return h;
+    }
+
+    handle co{};
+  };
+
+
   struct Conn {
     // No RFC: octets received and not yet parsed. The name is this
     // server's; RFC 9112 2 has no word for a parser's leftover.
@@ -3991,6 +4087,14 @@ class Http1 {
     // not use that opcode anywhere.
     mrb_state* zc_mrb = nullptr;
     mrb_value zc_value = {};
+    // #80: the run this connection stopped, if it stopped one. The handle
+    // IS its name - there is no slot table and no id to look it up by,
+    // which is what the scaffolding this replaces was reaching for.
+    Run parked;
+    // The worker or the watcher answered; `more` is where the run picks
+    // that up, because that is the one point at which a fresh sink and a
+    // fresh plan exist to write into.
+    bool promise_ready = false;
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4191,6 +4295,21 @@ class Http1 {
       asset_off = 0;
       asset_end = 0;
     }
+    // A slot is built in place and moved once, when conns_ is sized.
+    // Declared because the destructor below suppresses the implicit move,
+    // and Run is move-only - without these the vector falls back to a
+    // copy, which a coroutine handle must never have.
+    // #80: Run is move-only (a coroutine handle must never be copied),
+    // which deletes the implicit copy this struct used to have. Nothing
+    // is declared in its place ON PURPOSE: a slot is built where it
+    // lives and never moves, so the vector became a unique_ptr array -
+    // see conns_. A defaulted move here would copy ws/sse/h2/file and
+    // the GC registration and leave the source owning them too, and a
+    // hand-written one is a member list that can be short by one.
+    Conn() = default;
+    Conn(const Conn&) = delete;
+    Conn& operator=(const Conn&) = delete;
+
     // The websocket, the stream, the h2 state and a response.file transfer
     // die with the connection.
     ~Conn() {
@@ -4746,91 +4865,6 @@ class Http1 {
     bool head_only;
   };
   void spell_error(const ErrorAnswer& e, std::string& sink);
-  // #80: a bound run that can STOP. Only a resource that declared a
-  // promise or a watch is called through one, so a run that can never
-  // stop pays no frame for the ability - the same reasoning #cold-paths
-  // applies to code, applied to control flow.
-  //
-  // WHY a coroutine and not a stage on the connection: at the stop the
-  // round's borrowed pointers have to be saved somewhere, and there is
-  // no choice about that - `view`, `method`, `path` and every field in
-  // ReqValues point into a PROVIDED BUFFER, and on_recv hands that
-  // buffer back to the kernel (replenish_/io_uring_buf_ring_advance)
-  // before anything could resume. Holding it instead is not an option:
-  // the ring has kBufCount of them for the whole process, and a run that
-  // parked for 40 ms of argon2 while holding one starves every other
-  // connection's recv. So the bytes are copied, and the frame is the one
-  // obvious place for the copy rather than a hand-built park struct that
-  // has to be re-pointed by hand on the way back.
-  //
-  // The head and the body are held SEPARATELY even though carry holds
-  // them adjacent today: a head is a few hundred bytes and a body may be
-  // a megabyte, and the megabyte is the one that will later be spilled to
-  // an O_TMPFILE through the ring. A spilled body is not addressable at
-  // all until a read completes, so it can never be a span beside the
-  // head - it is a descriptor and a length, and fetching it is a second
-  // stop this same coroutine takes.
-  struct Run {
-    struct promise_type;
-    using handle = std::coroutine_handle<promise_type>;
-
-    struct promise_type {
-      // RFC 9110 15: what the run answered, once it has.
-      uint16_t status = 0;
-      bool finished = false;
-
-      Run get_return_object() { return Run{handle::from_promise(*this)}; }
-      // Runs eagerly: a run that never stops must reach its answer inside
-      // the call that started it, exactly as resource_run does today.
-      std::suspend_never initial_suspend() noexcept { return {}; }
-      // Suspends at the end so the caller can read `status` off the frame
-      // and destroy it deliberately - a self-destroying coroutine would
-      // take the answer with it.
-      std::suspend_always final_suspend() noexcept { return {}; }
-      void return_value(uint16_t s) {
-        status = s;
-        finished = true;
-      }
-      // #mruby-raises: a raise IS a C++ throw here, and the run frames
-      // above already catch it. Rethrowing leaves this frame suspended at
-      // its final point, which is where the caller destroys it.
-      void unhandled_exception() { throw; }
-    };
-
-    Run() = default;
-    explicit Run(handle h) : co(h) {}
-    Run(const Run&) = delete;
-    Run& operator=(const Run&) = delete;
-    Run(Run&& o) noexcept : co(o.co) { o.co = {}; }
-    Run& operator=(Run&& o) noexcept {
-      if (this != &o) {
-        destroy();
-        co = o.co;
-        o.co = {};
-      }
-      return *this;
-    }
-    ~Run() { destroy(); }
-
-    // Did it reach an answer, or is it parked on something?
-    bool done() const { return !co || co.promise().finished; }
-    uint16_t status() const { return co ? co.promise().status : 0; }
-    void destroy() {
-      if (co) co.destroy();
-      co = {};
-    }
-    // Handed to whatever will resume it - the reactor keeps this and
-    // nothing else, because the handle IS the parked run's name. There is
-    // no slot table and no tag field to translate.
-    handle release() {
-      const handle h = co;
-      co = {};
-      return h;
-    }
-
-    handle co{};
-  };
-
   // #80: everything a stopped run BORROWED, rebased onto bytes it owns.
   // Named Held and not Parked because Http1 already has a Parked, and
   // that one is an h2 stream's view - a different thing entirely.
@@ -5690,7 +5724,7 @@ class Ring {
     }
     nlisteners_ = cfg.nlisteners;
 
-    conns_.resize(max_conns_);
+    conns_ = std::make_unique<Conn[]>(max_conns_);
     live_bits_.assign((static_cast<size_t>(max_conns_) + 63) / 64, 0);
     rearm_.reserve(64);
 
@@ -7629,7 +7663,11 @@ class Ring {
   char* pool_ = nullptr;
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   unsigned replenish_ = 0;
-  std::vector<Conn> conns_;
+  // Built in place and never moved: a slot holds a coroutine handle and
+  // four raw pointers it owns, so growing an array of them is not a
+  // thing this should be able to do by accident. max_conns_ is decided
+  // once, from the FD budget, before the first accept.
+  std::unique_ptr<Conn[]> conns_;
   std::vector<uint32_t> rearm_;
 };
 }
