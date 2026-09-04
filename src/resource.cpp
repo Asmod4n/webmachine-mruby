@@ -1,6 +1,8 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
+#include <mruby/proc_irep_ext.h>
+
 #include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -1814,6 +1816,33 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
                    "promise :%n, but %n answers on the class - it is asked once and its answer "
                    "stands, so no worker is owed one",
                    want, want);
+      }
+      // The code, dumped once. A native callback has no irep and needs
+      // none: its pointer is the same number in every VM of this
+      // process, so only its arguments ever travel. A Ruby one is
+      // dumped HERE, at setup, and loaded once per worker - never per
+      // request.
+      if (out.node_native[at] == nullptr) {
+        if (WM_RES_UNLIKELY(!MRB_METHOD_PROC_P(out.node_m[at]))) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "promise :%n, but %n is neither Ruby nor a native callback - there is "
+                     "nothing of it that can cross into a worker",
+                     want, want);
+        }
+        // MRB_METHOD_PROC hands back a const pointer, and the dump
+        // takes a mutable one. It only reads: mrb_proc_to_irep walks
+        // the irep and writes a String. The cast is at the one place
+        // that needs it, not in the header.
+        struct RProc* const proc = const_cast<struct RProc*>(MRB_METHOD_PROC(out.node_m[at]));
+        const mrb_value bytes = mrb_proc_to_irep(mrb, proc);
+        if (WM_RES_UNLIKELY(!mrb_string_p(bytes))) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "promise :%n: %n could not be dumped - only a callback written in Ruby "
+                     "has an irep to send",
+                     want, want);
+        }
+        out.node_irep_bytes[at] = bytes;
+        mrb_gc_register(mrb, bytes);
       }
       out.promise |= uint64_t{1} << at;
     }

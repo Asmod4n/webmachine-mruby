@@ -2497,6 +2497,14 @@ struct Resource {
   // `promise`, which is what keeps the pool out of a server that has no
   // use for it.
   uint64_t promise = 0;
+  // #80: a promised node's code, ready to cross. A Ruby callback is
+  // dumped ONCE, here, as an irep - the bytes are what travels, because
+  // an mrb_value belongs to exactly one VM. A native callback needs no
+  // entry: its pointer is the same number in every VM of this process.
+  //
+  // The String is rooted for the life of the process. It is built at
+  // fold, which is setup, so nothing here costs a request anything.
+  mrb_value node_irep_bytes[flow::kNodeCount] = {};
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
   bool node_irep[flow::kNodeCount] = {};
