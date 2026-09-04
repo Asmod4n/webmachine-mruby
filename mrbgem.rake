@@ -146,9 +146,11 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # whose name ends in <short>.
   #
   # The main VM does not want the scheduler. It has no tasks, and the
-  # per-opcode check costs it 30% on dynamic Ruby. It disables the
-  # scheduler with mrb_disable_task_scheduler (mruby/mruby#7491), which is
-  # why the mruby checkout is on task-scheduler-disable.
+  # per-opcode check costs it 30% on dynamic Ruby. run_guarded disables it
+  # with mrb_disable_task_scheduler (mruby/mruby#7491), which is why the
+  # mruby checkout is on task-scheduler-disable. Until that PR is merged,
+  # patches/mruby-task-scheduler-disable.patch carries the three commits
+  # for a plain checkout.
   spec.add_dependency 'hal-task-webmachine', gemdir: "#{dir}/hal-task-webmachine"
 
   # A promised callback crosses as a dumped irep, once per worker. Its

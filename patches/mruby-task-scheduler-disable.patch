@@ -1,0 +1,314 @@
+From b784de77d784a6542d8585ab93c5c10254c29a03 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 12:11:22 +0000
+Subject: [PATCH 1/3] task: let an embedder disable the scheduler for one
+ mrb_state
+
+mruby-task makes every VM in the process 30% slower. This function
+disables the scheduler for a VM that does not use tasks.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ include/mruby.h                    |  5 +++
+ mrbgems/mruby-task/include/task.h  |  5 +++
+ mrbgems/mruby-task/src/task.c      | 50 ++++++++++++++++++++++++++++++
+ mrbgems/mruby-task/test/task.rb    | 34 ++++++++++++++++++++
+ mrbgems/mruby-task/test/tasktest.c | 39 +++++++++++++++++++++++
+ src/vm.c                           |  9 +++---
+ 6 files changed, 138 insertions(+), 4 deletions(-)
+
+diff --git a/include/mruby.h b/include/mruby.h
+index 6c5f660..e641529 100644
+--- a/include/mruby.h
++++ b/include/mruby.h
+@@ -327,6 +327,11 @@ enum mrb_idx_op_slot {
+ struct mrb_task;
+ 
+ typedef struct mrb_task_state {
++  /* Read once per dispatched instruction, so it is the first field: a VM
++     that will never run tasks says so with mrb_disable_task_scheduler() and the
++     dispatch loop's check costs one test of an already-hot word instead
++     of two dependent loads. */
++  mrb_bool enabled;
+   struct mrb_task *queues[4];      /* Task queues (dormant, ready, waiting, suspended) */
+   volatile uint32_t tick;           /* Current tick count */
+   volatile uint32_t wakeup_tick;    /* Next wakeup tick */
+diff --git a/mrbgems/mruby-task/include/task.h b/mrbgems/mruby-task/include/task.h
+index 5bab9d7..b15e8db 100644
+--- a/mrbgems/mruby-task/include/task.h
++++ b/mrbgems/mruby-task/include/task.h
+@@ -120,6 +120,11 @@ void mrb_task_mark_all(mrb_state *mrb);
+  * Core task scheduler API
+  */
+ MRB_API void mrb_tick(mrb_state *mrb);
++
++/* Take a VM out of the scheduler for good; see task.c for what it saves.
++ * After mrb_open(), before anything runs. Raises if tasks already exist. */
++MRB_API void mrb_disable_task_scheduler(mrb_state *mrb);
++MRB_API mrb_bool mrb_task_scheduler_enabled_p(mrb_state *mrb);
+ MRB_API mrb_value mrb_task_run(mrb_state *mrb);
+ MRB_API mrb_value mrb_task_run_once(mrb_state *mrb);
+ 
+diff --git a/mrbgems/mruby-task/src/task.c b/mrbgems/mruby-task/src/task.c
+index 096bf5f..9a6903f 100644
+--- a/mrbgems/mruby-task/src/task.c
++++ b/mrbgems/mruby-task/src/task.c
+@@ -531,6 +531,42 @@ execute_task(mrb_state *mrb, mrb_task *t)
+ }
+ 
+ /* Tick handler - called by timer interrupt */
++/* Task::Error, resolved from this VM. Both refusals below raise it, so a
++   caller can rescue the scheduler's own answer instead of matching on
++   RuntimeError and catching whatever else went wrong. */
++static struct RClass *
++task_error_class(mrb_state *mrb)
++{
++  return mrb_class_get_under_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Task)), MRB_SYM(Error));
++}
++
++/* Take this VM out of the scheduler for good.
++ *
++ * A process may hold VMs of both kinds - a pool whose workers run tasks
++ * so a runaway callback can be preempted, and one VM that never does.
++ * The second kind still paid for the first: RETURN_IF_TASK_STOPPED is
++ * expanded at every dispatch, and its context-status arm is read whether
++ * or not any task exists. Disabled, that check is one test of a word the
++ * dispatch loop already has.
++ *
++ * Call it after mrb_open() and before running anything. It refuses once
++ * tasks exist rather than stranding them, since a queue nobody ticks is
++ * a hang, not a saving. */
++MRB_API void
++mrb_disable_task_scheduler(mrb_state *mrb)
++{
++  if (q_ready_ || q_waiting_ || q_suspended_ || q_dormant_) {
++    mrb_raise(mrb, task_error_class(mrb), "mrb_disable_task_scheduler: this VM already has tasks");
++  }
++  mrb->task.enabled = FALSE;
++}
++
++MRB_API mrb_bool
++mrb_task_scheduler_enabled_p(mrb_state *mrb)
++{
++  return mrb->task.enabled;
++}
++
+ MRB_API void
+ mrb_tick(mrb_state *mrb)
+ {
+@@ -926,6 +962,16 @@ static mrb_task*
+ task_create_common(mrb_state *mrb, const struct RProc *proc,
+                    mrb_value name, uint8_t priority)
+ {
++  /* Every task is born here - Task.new, mrb_create_task, the C API - so
++     this is the one place a disabled VM has to say no. A task made in a
++     VM the dispatch loop no longer checks would never be preempted and
++     never be switched away from: a hang, arriving later and somewhere
++     else. mrb_disable_task_scheduler() refuses when tasks already exist
++     for the same reason, from the other side. */
++  if (!mrb->task.enabled) {
++    mrb_raise(mrb, task_error_class(mrb), "tasks are disabled for this mrb_state");
++  }
++
+   mrb_task *t = task_alloc(mrb);
+   t->priority = priority;
+   t->status = MRB_TASK_STATUS_READY;
+@@ -1885,6 +1931,10 @@ mrb_mruby_task_gem_init(mrb_state *mrb)
+   /* Initialize HAL (timer and interrupts) */
+   mrb_hal_task_init(mrb);
+ 
++  /* On unless the embedder says otherwise: a VM that will never run
++     tasks calls mrb_disable_task_scheduler() right after mrb_open(). */
++  mrb->task.enabled = TRUE;
++
+   /* Initialize main task to NULL and scheduler_lock to 0 */
+   mrb->task.main_task = NULL;
+   mrb->task.scheduler_lock = 0;
+diff --git a/mrbgems/mruby-task/test/task.rb b/mrbgems/mruby-task/test/task.rb
+index 79a1b5d..20f9fbb 100644
+--- a/mrbgems/mruby-task/test/task.rb
++++ b/mrbgems/mruby-task/test/task.rb
+@@ -430,3 +430,37 @@ assert("closure escaping a synchronously executed proc survives GC") do
+   assert_equal "sync-result", result
+   $task_escaped_proc3 = nil
+ end
++
++assert('a disabled VM refuses to make a task') do
++  # The VM under test has tasks, so it cannot be disabled here - what can
++  # be checked is the other half: TaskTest.with_tasks_disabled runs a
++  # block with the flag off, and Task.new must refuse rather than build
++  # something nothing will ever schedule.
++  caught = nil
++  TaskTest.with_tasks_disabled do
++    begin
++      Task.new { 1 }
++    rescue Task::Error => e
++      caught = e
++    end
++  end
++  assert_kind_of Task::Error, caught
++  assert_include caught.message, 'disabled'
++  assert_true TaskTest.tasks_enabled?, 'the flag was not put back'
++end
++
++assert('mrb_disable_task_scheduler refuses a VM that already has tasks') do
++  # A queue nobody ticks is a hang, not a saving, so the switch is only
++  # for a VM that has never had one. This VM has, so it must refuse - and
++  # must still be enabled afterwards.
++  Task.new { 1 }
++  caught = nil
++  begin
++    TaskTest.disable_tasks
++  rescue Task::Error => e
++    caught = e
++  end
++  assert_kind_of Task::Error, caught
++  assert_include caught.message, 'already has tasks'
++  assert_true TaskTest.tasks_enabled?
++end
+diff --git a/mrbgems/mruby-task/test/tasktest.c b/mrbgems/mruby-task/test/tasktest.c
+index 191adeb..9e158ca 100644
+--- a/mrbgems/mruby-task/test/tasktest.c
++++ b/mrbgems/mruby-task/test/tasktest.c
+@@ -26,6 +26,42 @@ tasktest_block_then_raise(mrb_state *mrb, mrb_value self)
+   return mrb_nil_value(); /* not reached */
+ }
+ 
++static mrb_value
++tasktest_yield_nil(mrb_state *mrb, void *ud)
++{
++  return mrb_yield_argv(mrb, mrb_obj_value((struct RProc*)ud), 0, NULL);
++}
++
++/* mrb_disable_task_scheduler() is the embedder's call, so the test makes it
++   from C. What Ruby can then check is the promise it makes: a VM that
++   already has tasks refuses, because a queue nobody ticks is a hang. */
++static mrb_value
++tasktest_disable_tasks(mrb_state *mrb, mrb_value self)
++{
++  mrb_disable_task_scheduler(mrb);
++  return mrb_nil_value();
++}
++
++/* The flag off for the length of a block, so the refusal can be tested
++   in a VM that is otherwise running the suite's own tasks. Not an API -
++   mrb_disable_task_scheduler() is one-way on purpose. */
++static mrb_value
++tasktest_with_tasks_disabled(mrb_state *mrb, mrb_value self)
++{
++  mrb_value blk;
++  mrb_get_args(mrb, "&", &blk);
++  mrb->task.enabled = FALSE;
++  mrb_value ret = mrb_protect_error(mrb, tasktest_yield_nil, mrb_ptr(blk), NULL);
++  mrb->task.enabled = TRUE;
++  return ret;
++}
++
++static mrb_value
++tasktest_tasks_enabled(mrb_state *mrb, mrb_value self)
++{
++  return mrb_bool_value(mrb_task_scheduler_enabled_p(mrb));
++}
++
+ /* Scheduler-hook probes. Two counters so the replace semantics can be
+    observed: which counter grows tells which hook is installed. */
+ static uint32_t probe_count_a;
+@@ -271,6 +307,9 @@ void
+ mrb_mruby_task_gem_test(mrb_state* mrb)
+ {
+   struct RClass *tasktest = mrb_define_module(mrb, "TaskTest");
++  mrb_define_module_function(mrb, tasktest, "disable_tasks", tasktest_disable_tasks, MRB_ARGS_NONE());
++  mrb_define_module_function(mrb, tasktest, "tasks_enabled?", tasktest_tasks_enabled, MRB_ARGS_NONE());
++  mrb_define_module_function(mrb, tasktest, "with_tasks_disabled", tasktest_with_tasks_disabled, MRB_ARGS_BLOCK());
+   mrb_define_module_function(mrb, tasktest, "block_then_raise", tasktest_block_then_raise, MRB_ARGS_REQ(1));
+   mrb_define_module_function(mrb, tasktest, "install_probe_hook", tasktest_install_probe_hook, MRB_ARGS_REQ(1));
+   mrb_define_module_function(mrb, tasktest, "probe_count", tasktest_probe_count, MRB_ARGS_REQ(1));
+diff --git a/src/vm.c b/src/vm.c
+index af753bf..b7794e4 100644
+--- a/src/vm.c
++++ b/src/vm.c
+@@ -2334,10 +2334,11 @@ task_across_c_boundary(mrb_state *mrb)
+    This macro must only be expanded where prev_jmp is in scope, i.e.
+    inside mrb_vm_exec (via NEXT / END_DISPATCH). */
+ #define RETURN_IF_TASK_STOPPED(mrb) do { \
+-  if (((mrb)->task.switching && (mrb)->c != (mrb)->root_c && \
+-       !(mrb)->exc && \
+-       !(mrb)->gc.iterating && !task_across_c_boundary(mrb)) || \
+-      (mrb)->c->status == MRB_TASK_STOPPED) { \
++  if ((mrb)->task.enabled && \
++      ((((mrb)->task.switching && (mrb)->c != (mrb)->root_c && \
++        !(mrb)->exc && \
++        !(mrb)->gc.iterating && !task_across_c_boundary(mrb)) || \
++       (mrb)->c->status == MRB_TASK_STOPPED))) { \
+     (mrb)->jmp = prev_jmp; \
+     return mrb_nil_value(); \
+   } \
+-- 
+2.43.0
+
+
+From 21c70acf389524cabf7445f20898ab1990952197 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 4 Sep 2026 06:03:49 +0000
+Subject: [PATCH 2/3] task: re-raise an exception from with_tasks_disabled
+
+mrb_protect_error received NULL for error_p. An exception in the block
+came back as an ordinary value. A test that let one escape would pass.
+The helper now re-raises it, after it puts the flag back.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ mrbgems/mruby-task/test/tasktest.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mrbgems/mruby-task/test/tasktest.c b/mrbgems/mruby-task/test/tasktest.c
+index 9e158ca..3a4615a 100644
+--- a/mrbgems/mruby-task/test/tasktest.c
++++ b/mrbgems/mruby-task/test/tasktest.c
+@@ -51,8 +51,12 @@ tasktest_with_tasks_disabled(mrb_state *mrb, mrb_value self)
+   mrb_value blk;
+   mrb_get_args(mrb, "&", &blk);
+   mrb->task.enabled = FALSE;
+-  mrb_value ret = mrb_protect_error(mrb, tasktest_yield_nil, mrb_ptr(blk), NULL);
++  mrb_bool error = FALSE;
++  mrb_value ret = mrb_protect_error(mrb, tasktest_yield_nil, mrb_ptr(blk), &error);
+   mrb->task.enabled = TRUE;
++  /* mrb_protect_error returns the exception as an ordinary value. Without
++     this, a raise in the block looks like a result and the test passes. */
++  if (error) mrb_exc_raise(mrb, ret);
+   return ret;
+ }
+ 
+-- 
+2.43.0
+
+
+From ec6890bdc0ad98d07241c0f6848c7471fd64063f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 4 Sep 2026 06:04:53 +0000
+Subject: [PATCH 3/3] task: document mrb_task_scheduler_enabled_p
+
+The function shared a comment with mrb_disable_task_scheduler. It is
+public API, so it gets its own line.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ mrbgems/mruby-task/include/task.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mrbgems/mruby-task/include/task.h b/mrbgems/mruby-task/include/task.h
+index b15e8db..c5de785 100644
+--- a/mrbgems/mruby-task/include/task.h
++++ b/mrbgems/mruby-task/include/task.h
+@@ -124,6 +124,8 @@ MRB_API void mrb_tick(mrb_state *mrb);
+ /* Take a VM out of the scheduler for good; see task.c for what it saves.
+  * After mrb_open(), before anything runs. Raises if tasks already exist. */
+ MRB_API void mrb_disable_task_scheduler(mrb_state *mrb);
++
++/* TRUE while this VM still runs tasks. A VM starts enabled. */
+ MRB_API mrb_bool mrb_task_scheduler_enabled_p(mrb_state *mrb);
+ MRB_API mrb_value mrb_task_run(mrb_state *mrb);
+ MRB_API mrb_value mrb_task_run_once(mrb_state *mrb);
+-- 
+2.43.0
+
