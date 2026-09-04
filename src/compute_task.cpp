@@ -650,6 +650,14 @@ void run_job(WorkerVm& vm, Slot& s) {
   mrb_gc_arena_restore(mrb, ai);
 }
 
+unsigned compute_worker_ceiling() {
+  // The reactor's VM is one of them and it is always there, so the pool
+  // may have the rest. Never zero: a build with MRB_TASK_MAX_VMS 1 has
+  // no room for a worker, and one worker that refuses to open says so
+  // at startup - better than a pool that silently answers nothing.
+  return MRB_TASK_MAX_VMS > 1 ? static_cast<unsigned>(MRB_TASK_MAX_VMS - 1) : 1;
+}
+
 // One worker: block, run what the slot names, answer, repeat.
 void ComputePool::worker(Impl* impl, unsigned me) {
   struct io_uring* ring = &impl->rings[me];
@@ -670,10 +678,23 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // exist in this worker and in no other.
   worker_builds_close();
 
+  // ONE VM at a time, whatever the pool's size. mrb_open is safe per VM,
+  // but the gems in this build are not all safe against each other:
+  // mruby-task keeps file-scope statics and takes a process-wide lock in
+  // its init, and a core dump from a 28-core machine showed twenty-eight
+  // threads inside mrb_init_mrbgems together, with three of them aborting
+  // in a name lookup that had no protect frame.
+  //
+  // This costs startup time once per worker and nothing afterwards: a
+  // worker opens its VM before it takes its first job.
   WorkerVm vm;
-  if (!vm.open()) {
-    vm.close();
-    return;
+  {
+    static std::mutex opening;
+    const std::lock_guard<std::mutex> hold(opening);
+    if (!vm.open()) {
+      vm.close();
+      return;
+    }
   }
 
   for (;;) {

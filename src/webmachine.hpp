@@ -2967,6 +2967,13 @@ unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime
 // for that id.
 bool compute_task_code_of(unsigned id, std::string* irep, double* max_runtime);
 
+// How many workers this build may ever run: MRB_TASK_MAX_VMS less the
+// reactor's own VM. The number is mruby-task's, and it counts VMs over
+// the whole PROCESS - a worker that cannot register its VM answers
+// nothing, so asking here is not a preference, it is the ceiling.
+// Defined in compute_task.cpp, which is where mruby-task's header is.
+unsigned compute_worker_ceiling();
+
 // What one job left behind. The bytes are the answer; the rest is what
 // the reactor needs to write a failure down, because a worker cannot -
 // the error log belongs to the reactor's thread.

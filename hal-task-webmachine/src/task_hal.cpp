@@ -363,8 +363,18 @@ void mrb_hal_task_webmachine_gem_final(mrb_state*) {}
 // Why this exists, and why it cannot be gem_init's job: see
 // include/mruby/task_hal_webmachine.h.
 void mrb_hal_task_drop_queue(mrb_state* mrb) {
-  struct RClass* task = mrb_class_get_id(mrb, MRB_SYM(Task));
-  mrb_const_remove(mrb, mrb_obj_value(task), MRB_SYM(Queue));
+  // ASK, do not assume. mrb_class_get_id raises NameError when the name
+  // is not there, and this runs on a worker thread with no protect frame
+  // around it: under MRB_USE_CXX_EXCEPTION the raise is a throw that
+  // nothing catches, so the process aborts. A core dump from forgecore
+  // showed exactly that, three threads at once, while twenty-eight
+  // workers opened their VMs together.
+  const mrb_value top = mrb_obj_value(mrb->object_class);
+  if (!mrb_const_defined_at(mrb, top, MRB_SYM(Task))) return;
+  const mrb_value task = mrb_const_get(mrb, top, MRB_SYM(Task));
+  if (!mrb_class_p(task) && !mrb_module_p(task)) return;
+  if (!mrb_const_defined_at(mrb, task, MRB_SYM(Queue))) return;
+  mrb_const_remove(mrb, task, MRB_SYM(Queue));
 }
 
 // The host loop's own entry. See the header for the contract.

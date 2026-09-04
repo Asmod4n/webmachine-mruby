@@ -1589,12 +1589,17 @@ class Ring {
     double deadline = 0.0;
     if (!App::compute_task_take(c.app, &code, arg, &deadline)) return;
     if (compute_.workers() == 0) {
-      // One per core the process may use, less the reactor's own. Every
-      // worker now opens an mrb_state of its own, so this is also a VM
-      // count - and the operator's ceiling on those is what bounds it
-      // once MRB_TASK_MAX_VMS is read here.
+      // One per core the process may use, less the reactor's own - and
+      // never more VMs than the build allows. Every worker opens an
+      // mrb_state, the HAL counts those across the PROCESS, and a VM
+      // over the ceiling is refused: the worker then dies, its ring
+      // still takes its turn in the round robin, and the jobs sent to it
+      // are never answered. On a four-core machine that never showed; on
+      // a bigger one every compute task hung.
       const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
-      const unsigned want = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
+      const unsigned by_core = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
+      const unsigned ceiling = compute_worker_ceiling();
+      const unsigned want = by_core < ceiling ? by_core : ceiling;
       if (const char* why = compute_.start(want, kComputeDepth, &ring_)) {
         conn_failed(why, -EAGAIN);
       }
