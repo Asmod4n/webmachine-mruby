@@ -2713,6 +2713,11 @@ struct Resource {
     mrb_value compute_task_args = {};
     double compute_task_deadline = 0.0;
     bool compute_task_held = false;
+    // #30: the Watcher this run stopped on. A value of THIS VM, held
+    // until the frame hands it to the connection - the connection's hash
+    // is what roots it while the run waits.
+    mrb_value watch = {};
+    bool watch_held = false;
     const flow::ReqFacts* facts = nullptr;
     std::string* body = nullptr;
     bool have_body = false;
@@ -4374,11 +4379,11 @@ class Http1 {
     // #80: what the worker said, in THIS VM's values. The reactor puts
     // it here on the way in and the resumed walk reads it once. It is
     // rooted while it waits - nothing on the VM's stack names it.
-    mrb_value compute_task_answer = {};
+    mrb_value answer_value = {};
     // The worker or the watcher answered; `spell_next_round` is where the run picks
     // that up, because that is the one point at which a fresh sink and a
     // fresh plan exist to write into.
-    bool compute_task_ready = false;
+    bool answer_ready = false;
     // Is a run stopped on this connection? Nothing else may speak for it
     // while one is - not the carry behind it, and not a pipelined request
     // (RFC 9112 9.3.2: responses go out in the order the requests came).
@@ -4400,6 +4405,10 @@ class Http1 {
     // Whose VM the answer is decoded back into. It outlives the
     // crossing, because the answer comes long after.
     const Resource* job_res = nullptr;
+    // #30: the slot of the watcher this run waits on, or -1. A run
+    // stops on ONE watcher: the callback answered one, and the walk
+    // cannot go on to answer another before this one is done.
+    int w_slot = -1;
     // The pool had no slot: LOAD, and load passes. 429 with a
     // Retry-After of a few seconds (.DESIGN.md #promise-bound).
     bool compute_task_full = false;
@@ -4717,7 +4726,7 @@ class Http1 {
   // Every worker slot is taken. The run is told rather than the layer
   // inventing a refusal - it answers this the way it answers anything.
   static void compute_task_refused(Conn& st) {
-    st.compute_task_ready = true;
+    st.answer_ready = true;
     st.compute_task_full = true;
   }
   // The three refusals a stopped run can meet, told apart here so no
@@ -4753,6 +4762,44 @@ class Http1 {
   // an id and the arguments become CBOR. After this nothing of the VM is
   // named, which is what lets a worker touch the result at all.
   static bool compute_task_hand_over(Conn& st, const Resource& res);
+  // #30: the watcher a stopped run left, handed to the connection. The
+  // connection files it under a slot and roots it; the reactor arms what
+  // `w_pending` names. False when the connection can hold no more, and
+  // the run is told the way a full pool tells it.
+  static bool watch_hand_over(Conn& st, const Resource& res);
+  // What one event did to the wait.
+  enum class WatchStep : uint8_t {
+    kWait,    // the block wants the same thing again
+    kRearm,   // the block asked for other events
+    kDone,    // the block called abort; `answer_value` is its last word
+  };
+  // #30: one readiness, delivered to the block. The block decides what
+  // happens next, and it says so through the watcher: `abort` ends the
+  // wait, `events=` changes what to wait for, anything else waits again.
+  // The RETURN VALUE never means "keep waiting" - a block may answer nil
+  // and mean it.
+  static WatchStep watcher_event(Conn& st, int slot, unsigned revents);
+  // The watcher was quiet for as long as it allowed. The block hears
+  // `:timeout` and answers whether the wait goes on.
+  static WatchStep watcher_deadline(Conn& st, int slot);
+  // What a watcher waits for right now, as poll bits, and how long it
+  // may stay quiet. The reactor asks both when it arms one.
+  static unsigned watcher_mask(Conn& st, int slot);
+  static int watcher_descriptor(Conn& st, int slot);
+  static void watcher_is_armed(Conn& st, int slot, struct io_uring* ring);
+  static void watchers_drop_slot(Conn& st, int slot);
+  // A watcher this connection has not armed yet. Taken, not read: the
+  // reactor arms it once and the connection stops naming it - exactly
+  // file_take and compute_task_take.
+  static bool watch_take(Conn& st, int* slot) {
+    if (st.w_pending.empty()) return false;
+    *slot = st.w_pending.back();
+    st.w_pending.pop_back();
+    return true;
+  }
+  // Which watcher this connection waits on, or -1.
+  static int watcher_waiting_slot(const Conn& st) { return st.w_slot; }
+  static double watcher_quiet_seconds(Conn& st, int slot);
   // The work a stopped run left, or false. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   static bool compute_task_take(Conn& st, unsigned* code, std::string& bytes,
@@ -4767,7 +4814,7 @@ class Http1 {
   }
   // Is this connection waiting on one? The Ring asks before it lets
   // anything else speak for the connection.
-  static bool compute_task_pending(const Conn& st) { return st.run_parked() && !st.compute_task_ready; }
+  static bool run_answer_pending(const Conn& st) { return st.run_parked() && !st.answer_ready; }
 
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside

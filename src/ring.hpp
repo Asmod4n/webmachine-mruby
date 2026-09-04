@@ -359,6 +359,11 @@ class Ring {
   // flags sat between the 8-byte members and cost 21 bytes of padding.
   struct Conn {
     int64_t deadline_s = 0;
+    // #30: when the watcher this connection's stopped run waits on has
+    // been quiet for as long as it allowed. 0 = nothing is armed. It is
+    // NOT deadline_s: the peer on this socket is fine, some other
+    // descriptor is the quiet one, and nothing here closes anything.
+    int64_t w_deadline_s = 0;
 
     static constexpr size_t kRoundFloor = 64u * 1024;
     size_t round_cap = kRoundFloor;
@@ -1347,6 +1352,7 @@ class Ring {
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
     arm_compute_task(idx);
+    arm_watchers(idx);
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would
     // ever come back to collect it.
@@ -1598,6 +1604,67 @@ class Ring {
   // and not at setup: a server whose resources never stop must not carry
   // threads it will never use, and this runs once for the whole process
   // the first time anything stops.
+  // #30: what a stopped run left to wait on. The connection filed each
+  // watcher under a slot; this puts a poll on its descriptor with the
+  // events it asks for, and the slot rides in the tag.
+  //
+  // ONE-SHOT, not multishot. A watcher changes what it waits for in the
+  // middle of a wait - libpq wants writable while it flushes and
+  // readable while it reads, and hiredis says so through addWrite and
+  // delWrite - and a one-shot poll is re-armed with the new mask
+  // anyway. A multishot would have to be cancelled for every change.
+  void arm_watchers(uint32_t idx) {
+    Conn& c = conns_[idx];
+    int slot = -1;
+    while (App::watch_take(c.app, &slot)) arm_watch(idx, c, slot);
+  }
+
+  void arm_watch(uint32_t idx, Conn& c, int slot) {
+    const int fd = App::watcher_descriptor(c.app, slot);
+    const unsigned mask = App::watcher_mask(c.app, slot);
+    if (fd < 0 || mask == 0) return;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_poll_add(s, fd, mask);
+    io_uring_sqe_set_data64(s, detail::watch_tag(c.gen, idx, static_cast<uint8_t>(slot)));
+    App::watcher_is_armed(c.app, slot, &ring_);
+    // How long this one may stay quiet. The sweep reads whole seconds,
+    // so a fraction becomes the next whole second up - a deadline that
+    // fires early is a promise broken, one that fires late is not.
+    const double quiet = App::watcher_quiet_seconds(c.app, slot);
+    if (quiet > 0.0) {
+      const int64_t secs = static_cast<int64_t>(quiet) + (quiet > static_cast<double>(static_cast<int64_t>(quiet)) ? 1 : 0);
+      c.w_deadline_s = now_s_ + (secs > 0 ? secs : 1);
+    }
+  }
+
+  // One readiness for one watcher. The block decides what happens next.
+  void on_watch(uint32_t idx, uint16_t gen, uint8_t slot, struct io_uring_cqe* cqe) {
+    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    if (!c.live || c.gen != gen) return;
+    // A poll that failed says the descriptor is gone. The block hears
+    // nothing more; the run reads nil and answers for it.
+    const unsigned revents =
+        cqe->res > 0 ? static_cast<unsigned>(cqe->res) : static_cast<unsigned>(POLLERR);
+    step_watch(idx, c, static_cast<int>(slot), App::watcher_event(c.app, slot, revents));
+  }
+
+  void step_watch(uint32_t idx, Conn& c, int slot, typename App::WatchStep step) {
+    switch (step) {
+      case App::WatchStep::kWait:
+      case App::WatchStep::kRearm:
+        // Both arm again - the mask is read fresh either way, so the two
+        // differ only in what the reader learns from the name.
+        arm_watch(idx, c, slot);
+        return;
+      case App::WatchStep::kDone:
+        c.w_deadline_s = 0;
+        App::watchers_drop_slot(c.app, slot);
+        if (!c.sending) continue_conn(idx);
+        return;
+    }
+  }
+
   void arm_compute_task(uint32_t idx) {
     Conn& c = conns_[idx];
     // Almost every round asks and almost none has a job. Ask first, and
@@ -1941,6 +2008,7 @@ class Ring {
     if (!app_.spell_next_round(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
     arm_compute_task(idx);
+    arm_watchers(idx);
     if (req.iovlen != 0) {
       take_plan(c, req);
       arm_send(idx);
@@ -2029,6 +2097,7 @@ class Ring {
         case detail::kTlsRx: on_tls_ready({idx, gen, cqe}); break;
         case detail::kTlsTxKey: on_tls_tx_key({idx, gen, cqe}); break;
         case detail::kComputeTask: on_compute_task(idx, gen, cqe); break;
+        case detail::kWatch: on_watch(idx, gen, detail::watch_slot(cqe->user_data), cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;
       }
@@ -2117,6 +2186,20 @@ class Ring {
           if (!c.sending && app_.timed(c.app)) {
             c.deadline_s = now_s_ + idle_timeout_;
             continue_conn(i);
+            continue;
+          }
+          // #30: a watcher that said nothing for as long as it allowed.
+          // This is NOT the connection's own deadline - the peer on the
+          // socket is fine, some other descriptor is quiet - so it is
+          // asked first and it never closes anything.
+          if (c.w_deadline_s != 0 && c.w_deadline_s < now_s_) {
+            const int slot = App::watcher_waiting_slot(c.app);
+            if (slot >= 0) {
+              c.w_deadline_s = 0;
+              step_watch(i, c, slot, App::watcher_deadline(c.app, slot));
+            } else {
+              c.w_deadline_s = 0;
+            }
             continue;
           }
           if (c.deadline_s >= now_s_) continue;

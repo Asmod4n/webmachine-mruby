@@ -1290,6 +1290,16 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // own state are still to hand. One line later res.run is gone
       // from the resource, and neither could be read again.
       compute_task_hand_over(st, res);
+      // #30: the same moment for a watcher. It is a value of the
+      // reactor's VM and it must reach the connection's hash before the
+      // frame takes res.run away - a watcher nobody roots is collected
+      // while its descriptor is still in the ring. A connection that can
+      // hold no more says so, and the run is answered rather than left
+      // waiting for a poll nobody armed.
+      if (res.run.watch_held && !watch_hand_over(st, res)) {
+        st.answer_value = mrb_nil_value();
+        st.answer_ready = true;
+      }
 
       // The walk's own state travels with the frame. res.run belongs to
       // the ROUTE, and the next request on it would write over this.
@@ -1329,7 +1339,7 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
         body.clear();
         rhdrs.assign(refused.retry_after);
       } else {
-        status = resource_resume(res, {&body, &have_body, &rhdrs}, st.compute_task_answer);
+        status = resource_resume(res, {&body, &have_body, &rhdrs}, st.answer_value);
       }
     }
 

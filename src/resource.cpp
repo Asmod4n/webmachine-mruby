@@ -860,6 +860,25 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.stopped = true;
       return false;
     }
+    // #30: a callback may answer a Webmachine::Watcher instead of a
+    // value. The run then stops until the descriptor says something and
+    // the watcher's block says the wait is over. Nothing is declared for
+    // this - a Watcher IS the declaration, and the type test costs one
+    // tag check on a value that is almost never a DATA object.
+    if (WM_RES_UNLIKELY(mrb_data_p(v) && watcher_p(r.mrb, v))) {
+      if (WM_RES_UNLIKELY(!res.run.can_park)) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::Watcher, and this run cannot stop",
+                   res.node_sym[i]);
+      }
+      res.run.stop_node = nd;
+      res.run.stop_status = status;
+      res.run.chosen = r.chosen;
+      res.run.watch = v;
+      res.run.watch_held = true;
+      res.run.stopped = true;
+      return false;
+    }
     *out = v;
     return true;
 }

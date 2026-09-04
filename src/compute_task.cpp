@@ -280,8 +280,8 @@ bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
 // #80: the way back. Only this thread may build a value in the
 // reactor's VM, so the decode happens here and nowhere else.
 void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
-  st.compute_task_ready = true;
-  st.compute_task_answer = mrb_nil_value();
+  st.answer_ready = true;
+  st.answer_value = mrb_nil_value();
   st.compute_task_over_deadline = answered.over_deadline;
   // A raise and a deadline are told apart, because the answers are not
   // the same one: 503 says come back, 500 says nothing will change.
@@ -295,7 +295,7 @@ void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
     mrb->exc = nullptr;
     return;
   }
-  st.compute_task_answer = v;
+  st.answer_value = v;
   mrb_gc_register(mrb, v);
 }
 

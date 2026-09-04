@@ -258,3 +258,101 @@ void watcher_init_class(mrb_state* mrb, struct RClass* wm) {
 }
 
 }  // namespace webmachine
+
+// #30: the reactor's half. Everything above describes a watcher; this
+// is what the server does with one, and it runs on the reactor's thread
+// with the reactor's VM - the same rule the compute task follows.
+namespace webmachine {
+
+// The watcher a stopped run left, filed under a slot on the connection.
+// The connection's hash is what roots it: the run's own frame is gone
+// one line later, and a watcher nobody holds is collected while the
+// descriptor is still in the ring.
+bool Http1::watch_hand_over(Conn& st, const Resource& res) {
+  if (!res.run.watch_held) return false;
+  const int slot = st.watchers_add(res.mrb, res.run.watch);
+  if (slot < 0) return false;
+  st.w_slot = slot;
+  return true;
+}
+
+int Http1::watcher_descriptor(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  return mrb_nil_p(w) ? -1 : watcher_fd(w);
+}
+
+void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring) {
+  const mrb_value w = st.watchers_at(slot);
+  if (!mrb_nil_p(w)) watcher_armed(w, ring);
+}
+
+// The wait is over, however it ended. The watcher goes, and with it the
+// descriptor's place in the ring.
+void Http1::watchers_drop_slot(Conn& st, int slot) {
+  st.watchers_drop(slot);
+  if (st.w_slot == slot) st.w_slot = -1;
+}
+
+unsigned Http1::watcher_mask(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  if (mrb_nil_p(w)) return 0;
+  return watcher_events_mask(w);
+}
+
+double Http1::watcher_quiet_seconds(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  if (mrb_nil_p(w)) return 0.0;
+  return watcher_timeout(w);
+}
+
+Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
+  const mrb_value w = st.watchers_at(slot);
+  if (mrb_nil_p(w)) return WatchStep::kDone;
+  mrb_state* const mrb = st.w_mrb;
+  const int ai = mrb_gc_arena_save(mrb);
+  const unsigned before = watcher_events_mask(w);
+  const mrb_value block = watcher_block_of(mrb, w);
+  const mrb_value argv[2] = {sym_of(mrb, revents), w};
+  const mrb_value said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
+  if (mrb->exc != nullptr) {
+    // A raise inside the block ends the wait. The run reads nil and
+    // answers 500 the way it answers any raise.
+    mrb->exc = nullptr;
+    mrb_gc_arena_restore(mrb, ai);
+    st.answer_value = mrb_nil_value();
+    st.answer_ready = true;
+    return WatchStep::kDone;
+  }
+  if (watcher_aborted_p(w)) {
+    st.answer_value = said;
+    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_register(mrb, st.answer_value);
+    st.answer_ready = true;
+    return WatchStep::kDone;
+  }
+  mrb_gc_arena_restore(mrb, ai);
+  return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
+}
+
+Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  if (mrb_nil_p(w)) return WatchStep::kDone;
+  mrb_state* const mrb = st.w_mrb;
+  const int ai = mrb_gc_arena_save(mrb);
+  const unsigned before = watcher_events_mask(w);
+  // The block hears :timeout and answers whether the wait goes on. A
+  // watcher over its deadline is usually the WORLD - the peer said
+  // nothing - and that is a fact the application has to learn, not a
+  // failure of its own (.DESIGN.md #promise-bound).
+  const bool again = watcher_deadline_passed(mrb, w);
+  if (!again) {
+    st.answer_value = mrb_nil_value();
+    mrb_gc_arena_restore(mrb, ai);
+    st.answer_ready = true;
+    return WatchStep::kDone;
+  }
+  mrb_gc_arena_restore(mrb, ai);
+  return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
+}
+
+}  // namespace webmachine
