@@ -296,6 +296,48 @@ assert('compute: a worker answers the node, and the graph carries on (#80)') do
   end
 end
 
+assert('compute: a task over its max_runtime answers 500 and no Retry-After (#80)') do
+  src = <<~RUBY
+    class ComputeTooSlow < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 20.ms) { loop { } }
+      end
+      def to_html; 'x'; end
+    end
+  RUBY
+  resource_server(wm_app('ComputeTooSlow', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 500'), head
+      # The author's number was wrong. A second attempt costs the same,
+      # so nothing tells the client to come back.
+      assert_false head.match?(/^Retry-After:/i), head
+    end
+  end
+end
+
+assert('compute: a worker that raises answers 503 and Retry-After: 60 (#80)') do
+  src = <<~RUBY
+    class ComputeRaises < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { raise 'the handle is gone' }
+      end
+      def to_html; 'x'; end
+    end
+  RUBY
+  resource_server(wm_app('ComputeRaises', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 503'), head
+      assert_true head.match?(/^Retry-After: 60\r$/i), head
+    end
+  end
+end
+
 assert('resource: an instance body renders per request through the VM') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   resource_server(src) do |sock|

@@ -22,13 +22,13 @@
 
 #include <mruby/task_hal_webmachine.h>
 
+
 #include <liburing.h>
 #include <pthread.h>
 
 #include <mruby/array.h>
 #include <mruby/cbor.h>
 #include <mruby/class.h>
-#include <mruby/compile.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
 #include <mruby/presym.h>
@@ -73,6 +73,14 @@ struct Slot {
   // answer from a raise: the author's number was wrong, and a retry
   // would take just as long (.DESIGN.md #promise-bound).
   bool over_deadline = false;
+  // What the raise said, in text. An exception object belongs to the
+  // worker's VM and cannot cross, so the worker reads it here and the
+  // reactor writes it to the error log.
+  std::string exception_class;
+  std::string message;
+  std::string backtrace;
+  // Which worker ran it, as the name its thread carries.
+  std::string worker_name;
   // The reactor's own tag for this compute task: what its completion will
   // carry, so the reactor knows whose answer arrived. The pool never
   // looks inside it.
@@ -271,13 +279,18 @@ bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
 
 // #80: the way back. Only this thread may build a value in the
 // reactor's VM, so the decode happens here and nowhere else.
-void Http1::compute_task_answered(Conn& st, const std::string& out, bool raised) {
+void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
   st.compute_task_ready = true;
   st.compute_task_answer = mrb_nil_value();
+  st.compute_task_over_deadline = answered.over_deadline;
+  // A raise and a deadline are told apart, because the answers are not
+  // the same one: 503 says come back, 500 says nothing will change.
+  st.compute_task_raised = answered.raised && !answered.over_deadline;
   const Resource* const res = st.job_res;
-  if (res == nullptr || raised || out.empty()) return;
+  if (res == nullptr || answered.raised || answered.bytes.empty()) return;
   mrb_state* const mrb = res->mrb;
-  const mrb_value v = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, out.data(), out.size()));
+  const mrb_value v =
+      mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
   if (mrb->exc != nullptr) {
     mrb->exc = nullptr;
     return;
@@ -322,6 +335,10 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
   st.job_code = id;
   st.job_deadline = res.run.compute_task_deadline;
   st.job_waiting = true;
+  // A new job, so nothing of the last one speaks for it.
+  st.compute_task_full = false;
+  st.compute_task_over_deadline = false;
+  st.compute_task_raised = false;
   return true;
 }
 
@@ -381,14 +398,11 @@ struct ComputePool::Impl {
 struct WorkerVm {
   mrb_state* mrb = nullptr;
   std::vector<mrb_value> procs;
-  // A lambda that wraps a block and its arguments into a proc that
-  // takes none. mruby-task cannot start a proc WITH arguments -
-  // mrb_create_task takes none, and mrb_execute_proc_synchronously
-  // ignores the ones it is given ("reserved for future use"). So the
-  // worker closes over them HERE, in its own VM, where closing over is
-  // allowed: the ban is on DUMPING an environment, not on making one.
-  mrb_value wrap = {};
-
+  // Webmachine::Workers, which holds `wrap`: a block and its arguments
+  // made into a proc that takes none. mrblib carries it, so mrbc
+  // translated it at build time and every VM that opens has it. A ship
+  // build has no mruby-compiler, so nothing may be translated here.
+  mrb_value workers = {};
   bool open() {
     mrb = mrb_open();
     if (mrb == nullptr) return false;
@@ -397,16 +411,18 @@ struct WorkerVm {
     // one VM answers with another VM's objects. The HAL header says why
     // it can only happen here, after mrb_open.
     mrb_hal_task_drop_queue(mrb);
+    // Webmachine::Workers, looked up ONCE. A module is rooted by the
+    // constant that names it, so nothing else has to hold it.
+    workers = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
+    if (mrb->exc == nullptr) workers = mrb_const_get(mrb, workers, MRB_SYM(Workers));
+    if (mrb->exc != nullptr) {
+      mrb->exc = nullptr;
+      return false;
+    }
     // The scheduler STAYS on. Every declared block runs as a Task, which
     // is what makes a deadline enforceable: mruby preempts Ruby at a
     // safe point, and mrb_terminate_task ends a run that is over its
     // max_runtime. A worker VM with the scheduler off could not do that.
-    wrap = mrb_load_string(mrb, "->(blk, a) { proc { blk.call(*a) } }");
-    if (mrb->exc != nullptr || !mrb_proc_p(wrap)) {
-      mrb->exc = nullptr;
-      return false;
-    }
-    mrb_gc_register(mrb, wrap);
     return build_registry();
   }
 
@@ -473,17 +489,54 @@ double now_seconds() {
 }
 
 
+// One failure inside a worker, written down before the VM forgets it.
+// The exception is cleared here and nowhere else: a VM that keeps an
+// exception raises it again on the next job, and the next job belongs
+// to another request.
+//
+// `step` names the part of the job that failed - decode, build, run,
+// encode. The class and the message speak about the Ruby; `step` says
+// which of the four steps was running when it broke.
+void note_raise(mrb_state* mrb, Slot& s, const char* step) {
+  s.raised = true;
+  ErrFacts f;
+  std::string backtrace;
+  exception_facts(mrb, {f, backtrace});
+  if (f.exception_class != nullptr) {
+    s.exception_class.assign(f.exception_class, f.exception_class_len);
+    if (f.message != nullptr) s.message.assign(f.message, f.message_len);
+    s.backtrace.swap(backtrace);
+  } else {
+    // Nothing raised, and the step still refused: a block that is not
+    // there, a value CBOR cannot carry. It is the server's own fault
+    // and it carries the server's own class.
+    s.exception_class = "Webmachine::Error";
+  }
+  if (!s.message.empty()) s.message.append(" - ");
+  s.message.append(step);
+  mrb->exc = nullptr;
+}
+
 // What a worker does with one slot: decode the argument, run the
 // callback, encode the answer. Every step stays inside this VM.
 void run_job(WorkerVm& vm, Slot& s) {
   mrb_state* const mrb = vm.mrb;
   const int ai = mrb_gc_arena_save(mrb);
   s.raised = false;
+  s.over_deadline = false;
   s.out.clear();
+  s.exception_class.clear();
+  s.message.clear();
+  s.backtrace.clear();
 
   mrb_value arg = mrb_nil_value();
   if (!s.arg.empty()) {
     arg = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, s.arg.data(), s.arg.size()));
+    if (mrb->exc != nullptr) {
+      note_raise(mrb, s, "decoding the arguments of a compute task");
+      mrb_gc_arena_restore(mrb, ai);
+      return;
+    }
   }
   // The arguments arrive as one Array, because that is what
   // ComputeTask.new(*args, max_runtime:) collected. A C function is not a second kind of
@@ -491,7 +544,7 @@ void run_job(WorkerVm& vm, Slot& s) {
   // pointer runs inside this VM like any other method.
   const mrb_value block = vm.proc_for(s.code_id);
   if (mrb_nil_p(block)) {
-    s.raised = true;
+    note_raise(mrb, s, "the worker has no block under this id");
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
@@ -504,19 +557,20 @@ void run_job(WorkerVm& vm, Slot& s) {
   // while the thread sits in a syscall that answers EINTR. argon2 sits
   // in none. So the deadline holds for what mruby can preempt, and
   // admission holds for the rest (.DESIGN.md #promise-bound).
-  const mrb_value wrapped_args[2] = {block, mrb_array_p(arg) ? arg : mrb_ary_new(mrb)};
-  const mrb_value task_proc = mrb_funcall_argv(mrb, vm.wrap, MRB_SYM(call), 2, wrapped_args);
+  // A task body has to be Ruby: task_init_context reads
+  // proc->body.irep, so a proc built from a C function has nothing the
+  // scheduler could run. The wrapper makes a Ruby one.
+  const mrb_value wrapped[2] = {block, mrb_array_p(arg) ? arg : mrb_ary_new(mrb)};
+  const mrb_value task_proc = mrb_funcall_argv(mrb, vm.workers, MRB_SYM(wrap), 2, wrapped);
   if (mrb->exc != nullptr || !mrb_proc_p(task_proc)) {
-    mrb->exc = nullptr;
-    s.raised = true;
+    note_raise(mrb, s, "building the proc of a compute task");
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
   const mrb_value task = mrb_create_task(mrb, mrb_proc_ptr(task_proc), mrb_nil_value(),
                                          mrb_nil_value(), mrb_nil_value());
   if (mrb->exc != nullptr || mrb_nil_p(task)) {
-    mrb->exc = nullptr;
-    s.raised = true;
+    note_raise(mrb, s, "starting the task of a compute task");
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
@@ -538,6 +592,9 @@ void run_job(WorkerVm& vm, Slot& s) {
     if (mark != 0.0 && now_seconds() >= mark) {
       mrb_terminate_task(mrb, task);
       s.over_deadline = true;
+      s.raised = true;
+      s.exception_class = "Webmachine::Error";
+      s.message = "the compute task ran past its max_runtime and the worker ended it";
       // One more step, so the scheduler sees the task end and every
       // queue empties. Without it the task stays in a queue and the
       // next job on this worker would find it there.
@@ -556,22 +613,36 @@ void run_job(WorkerVm& vm, Slot& s) {
     }
   }
   if (mrb->exc != nullptr) {
-    mrb->exc = nullptr;
-    s.raised = true;
+    note_raise(mrb, s, "running a compute task");
+    mrb_gc_arena_restore(mrb, ai);
+    return;
+  }
+  if (s.over_deadline) {
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
   const mrb_value answer = mrb_task_value(mrb, task);
   if (mrb->exc != nullptr) {
-    s.raised = true;
-    mrb->exc = nullptr;
+    note_raise(mrb, s, "reading the answer of a compute task");
+    mrb_gc_arena_restore(mrb, ai);
+    return;
+  }
+  // A task that raised does NOT leave the exception in mrb->exc: the
+  // scheduler moves it to the task's result and clears the VM
+  // (mruby-task/src/task.c:424). So the result IS the raise, and asking
+  // mrb->exc would say the run went well and then hand an Exception to
+  // CBOR - which the reactor cannot read back.
+  if (mrb_obj_is_kind_of(mrb, answer, mrb->eException_class)) {
+    // note_raise reads the VM, so the exception goes back for the one
+    // call that needs it. It clears it again.
+    mrb->exc = mrb_obj_ptr(answer);
+    note_raise(mrb, s, "running a compute task");
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
   const mrb_value bytes = mrb_cbor_encode_fast(mrb, answer);
   if (mrb->exc != nullptr || !mrb_string_p(bytes)) {
-    s.raised = true;
-    mrb->exc = nullptr;
+    note_raise(mrb, s, "encoding the answer of a compute task");
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
@@ -587,12 +658,10 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // to say WHICH worker. Linux takes 16 bytes with the terminator, so
   // the number has to fit inside that - it is not a place to be
   // generous with words.
+  char thread_name[16];
+  std::snprintf(thread_name, sizeof(thread_name), "wm-compute%u", me);
 #if defined(__linux__)
-  {
-    char name[16];
-    std::snprintf(name, sizeof(name), "wm-compute%u", me);
-    pthread_setname_np(pthread_self(), name);
-  }
+  pthread_setname_np(pthread_self(), thread_name);
 #endif
   // The VM this worker answers in, built ONCE. A worker that cannot
   // open one answers nothing: it goes, and the pool is short one
@@ -625,6 +694,9 @@ void ComputePool::worker(Impl* impl, unsigned me) {
     if (job >= impl->slots.size()) continue;
 
     Slot& s = impl->slots[static_cast<size_t>(job)];
+    // The reader of an error record asks WHERE it ran before anything
+    // else, so the name goes in beside the answer.
+    s.worker_name = thread_name;
     run_job(vm, s);
 
     // The answer goes home as a completion. The reactor reads the slot
@@ -729,15 +801,23 @@ bool ComputePool::submit(unsigned code_id, std::string_view arg, double deadline
 // The answer, handed over once. Taking it frees the slot, so a second
 // read finds nothing - which is what makes "the run reads its answer
 // exactly once" a property of this layer rather than of its callers.
-bool ComputePool::take(uint64_t answer, std::string& out, bool* raised) {
+bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
   if (impl_ == nullptr) return false;
   for (Slot& s : impl_->slots) {
     if (s.busy && s.answer == answer) {
-      out.swap(s.out);
-      *raised = s.raised;
+      out->bytes.swap(s.out);
+      out->raised = s.raised;
+      out->over_deadline = s.over_deadline;
+      out->exception_class.swap(s.exception_class);
+      out->message.swap(s.message);
+      out->backtrace.swap(s.backtrace);
+      out->worker_name = s.worker_name;
       s.busy = false;
       s.arg.clear();
       s.out.clear();
+      s.exception_class.clear();
+      s.message.clear();
+      s.backtrace.clear();
       return true;
     }
   }

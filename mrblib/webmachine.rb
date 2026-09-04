@@ -1,4 +1,28 @@
 module Webmachine
+  module Workers
+    # The block of a compute task, and its arguments, made into a proc
+    # that takes none.
+    #
+    # mruby-task starts a proc WITHOUT arguments: mrb_create_task takes
+    # none, and mrb_execute_proc_synchronously ignores the ones it is
+    # given ("reserved for future use"). So the worker closes over them
+    # here, inside its own VM, where closing over is allowed - the ban
+    # is on DUMPING an environment, not on making one.
+    #
+    # A task body must be Ruby. task_init_context reads
+    # proc->body.irep, so a proc built from a C function has nothing the
+    # scheduler could run.
+    #
+    # It lives in mrblib because mrbc translates mrblib at BUILD time. A
+    # ship build carries no mruby-compiler, so a worker cannot translate
+    # a string of Ruby when it opens its VM.
+    def self.wrap(block, args)
+      proc { block.call(*args) }
+    end
+  end
+end
+
+module Webmachine
   class Application
     attr_reader :conf
   end

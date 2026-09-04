@@ -1268,7 +1268,25 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       plan = pr.plan;
       pr.persist = s.persist;
       res.run = std::move(mine);
-      status = resource_resume(res, {&body, &have_body, &rhdrs}, st.compute_task_answer);
+      // Three refusals, and they must not be confused: a full pool is
+      // load and passes, a deadline the author got wrong does not, and
+      // a handle that died may come back (.DESIGN.md #promise-bound).
+      // A refused run does not walk on - there is no answer to walk to.
+      const ComputeRefusal refused = compute_task_refusal(st);
+      if (WM_H1_UNLIKELY(refused.status != 0)) {
+        // Nothing the run said still holds: it never reached an answer.
+        // A content type, a file name, an error asset - all of them
+        // belong to a walk that was refused, and the finish would try
+        // to serve them. The status and the Retry-After are the whole
+        // answer.
+        res.run = Resource::RunState{};
+        status = refused.status;
+        have_body = false;
+        body.clear();
+        rhdrs.assign(refused.retry_after);
+      } else {
+        status = resource_resume(res, {&body, &have_body, &rhdrs}, st.compute_task_answer);
+      }
     }
 
     Round fr{st,          b,           s.view,      s.viewlen,    s.off,

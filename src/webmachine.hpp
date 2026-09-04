@@ -1265,6 +1265,46 @@ inline void log_internal_error(Logger& lg, const ErrorLine& line) {
   log_error(lg, f);
 }
 
+// A raise inside a worker VM, written by the reactor. The exception
+// object itself cannot cross - an mrb_value belongs to the VM that made
+// it - so the worker spells it out as text and these are its words. The
+// worker's thread name goes into the message, because a fault that says
+// what broke and not WHERE it ran sends the reader to the wrong core.
+struct ComputeFault {
+  std::string_view exception_class;
+  std::string_view message;
+  std::string_view backtrace;
+  std::string_view worker_name;
+  std::string_view peer;
+  std::string_view request_target;
+};
+
+inline void log_compute_fault(Logger& lg, const ComputeFault& x) {
+  if (!lg.enabled) return;
+  std::string message;
+  message.reserve(x.message.size() + x.worker_name.size() + 4);
+  message.append(x.message);
+  if (!x.worker_name.empty()) {
+    if (!message.empty()) message.append(" ");
+    message.append("(").append(x.worker_name).append(")");
+  }
+  ErrFacts f;
+  f.peer = x.peer.data();
+  f.peer_len = x.peer.size();
+  f.request_target = x.request_target.data();
+  f.request_target_len = x.request_target.size();
+  f.exception_class = x.exception_class.data();
+  f.exception_class_len = x.exception_class.size();
+  f.message = message.data();
+  f.message_len = message.size();
+  f.backtrace = x.backtrace.data();
+  f.backtrace_len = x.backtrace.size();
+  // A compute task that raised answers nothing, and 500 is what the run
+  // sends. The record says the same number the client got.
+  f.status_code = 500;
+  log_error(lg, f);
+}
+
 // A condition the server hit with nobody to answer for it: no request, no
 // peer, no status. The error log is where it belongs and it goes there
 // whole. stderr gets it only when no error log was configured, because
@@ -2927,6 +2967,23 @@ unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime
 // for that id.
 bool compute_task_code_of(unsigned id, std::string* irep, double* max_runtime);
 
+// What one job left behind. The bytes are the answer; the rest is what
+// the reactor needs to write a failure down, because a worker cannot -
+// the error log belongs to the reactor's thread.
+struct ComputeAnswer {
+  std::string bytes;  // the answer as CBOR, empty when the job raised
+  bool raised = false;
+  // The task ran past its max_runtime and the worker ended it. Not a
+  // raise: the author's number was wrong, and a retry costs the same
+  // (.DESIGN.md #promise-bound).
+  bool over_deadline = false;
+  std::string exception_class;
+  std::string message;
+  std::string backtrace;
+  // The thread that ran it, as the name a backtrace shows.
+  std::string worker_name;
+};
+
 class ComputePool {
  public:
 
@@ -2946,9 +3003,9 @@ class ComputePool {
   // every slot is taken; the caller decides what a full pool means, and
   // this layer does not invent a refusal for it.
   bool submit(unsigned code_id, std::string_view arg, double deadline, uint64_t answer);
-  // What the worker answered, as CBOR, and whether it raised. Reading it
-  // frees the slot: the answer is handed over once.
-  bool take(uint64_t answer, std::string& out, bool* raised);
+  // What the worker answered. Reading it frees the slot: the answer is
+  // handed over once.
+  bool take(uint64_t answer, ComputeAnswer* out);
   unsigned workers() const;
 
   struct Impl;
@@ -4316,10 +4373,15 @@ class Http1 {
     // Whose VM the answer is decoded back into. It outlives the
     // crossing, because the answer comes long after.
     const Resource* job_res = nullptr;
-    // The pool had no slot. What the run makes of that is the run's -
-    // 503 with a Retry-After is the obvious answer and not this layer's
-    // to choose.
+    // The pool had no slot: LOAD, and load passes. 429 with a
+    // Retry-After of a few seconds (.DESIGN.md #promise-bound).
     bool compute_task_full = false;
+    // The worker ended the task at its max_runtime. NOT load: a second
+    // attempt costs the same, so 500 and no Retry-After.
+    bool compute_task_over_deadline = false;
+    // The worker raised. The registry holds what dies - a database, a
+    // connection - so 503 with a Retry-After of a minute.
+    bool compute_task_raised = false;
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4622,7 +4684,7 @@ class Http1 {
   // here, which is the only thread that may build a value in it. A
   // worker that raised, or an answer CBOR cannot carry, is nil - the
   // run reads it like any other answer and decides for itself.
-  static void compute_task_answered(Conn& st, const std::string& out, bool raised);
+  static void compute_task_answered(Conn& st, const ComputeAnswer& answered);
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // Every worker slot is taken. The run is told rather than the layer
@@ -4630,6 +4692,35 @@ class Http1 {
   static void compute_task_refused(Conn& st) {
     st.compute_task_ready = true;
     st.compute_task_full = true;
+  }
+  // The three refusals a stopped run can meet, told apart here so no
+  // call site has to (.DESIGN.md #promise-bound). Status 0 means the
+  // worker answered and the run reads the answer.
+  //
+  // Retry-After holds a whole header line, ready to append: these are
+  // the only three the refusals send, and they are constants so a
+  // refusal costs no formatting and no allocation.
+  struct ComputeRefusal {
+    uint16_t status = 0;
+    std::string_view retry_after;
+  };
+  static ComputeRefusal compute_task_refusal(Conn& st) {
+    // A full pool is load, and load passes. The seconds move over 3..5
+    // so a burst that was refused together does not come back together.
+    if (st.compute_task_full) {
+      static const char* const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
+                                           "Retry-After: 5\r\n"};
+      static unsigned turn = 0;
+      return {429, kWait[turn++ % 3]};
+    }
+    // The author's number was wrong. Coming back does not make the work
+    // shorter, so nothing tells the client to.
+    if (st.compute_task_over_deadline) return {500, {}};
+    // A handle the worker needs is gone. A database that is restarted
+    // comes back, and a minute is the size of that, not the seconds a
+    // burst of load lives on.
+    if (st.compute_task_raised) return {503, "Retry-After: 60\r\n"};
+    return {};
   }
   // #80: the crossing, done by the frame at the stop. The block becomes
   // an id and the arguments become CBOR. After this nothing of the VM is
@@ -7579,14 +7670,32 @@ class Ring {
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     const uint64_t tag = detail::tag(detail::kComputeTask, gen, idx);
-    std::string out;
-    bool raised = false;
-    const bool have = compute_.take(tag, out, &raised);
+    ComputeAnswer answered;
+    const bool have = compute_.take(tag, &answered);
+    if (!have) answered.raised = true;
+    // A raise inside a worker is the one failure nobody else can see:
+    // it happened on another thread, in another VM, and the client only
+    // gets a 500. So it goes to the error log whole - class, message,
+    // backtrace and which worker - and it goes there even when the
+    // connection is gone, because the fault is the application's either
+    // way.
+    if (answered.raised && !answered.exception_class.empty()) {
+      Logger* const el = app_.error_log();
+      if (el != nullptr && el->enabled) {
+        log_compute_fault(*el, {answered.exception_class, answered.message, answered.backtrace,
+                                answered.worker_name,
+                                c.live && c.gen == gen && c.peer != nullptr
+                                    ? std::string_view{reinterpret_cast<const char*>(&c.peer->addr),
+                                                       static_cast<size_t>(c.peer->addrlen)}
+                                    : std::string_view{},
+                                {}});
+      }
+    }
     // A generation that moved means the connection is gone and its run
     // died with it. The answer is still TAKEN, because the slot is the
     // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
-    App::compute_task_answered(c.app, out, raised || !have);
+    App::compute_task_answered(c.app, answered);
     if (!c.sending) continue_conn(idx);
   }
 
