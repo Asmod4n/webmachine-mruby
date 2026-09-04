@@ -31,6 +31,8 @@
 
 #include "../../src/webmachine.hpp"
 
+#include "../../src/ring.hpp"
+
 namespace {
 
 const char* kSock = "/tmp/wm-libfuzzer.sock";

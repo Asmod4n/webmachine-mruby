@@ -1,6 +1,8 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
+#include "ring.hpp"
+
 #include <cstring>
 #include <fcntl.h>
 #include <signal.h>
