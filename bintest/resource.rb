@@ -338,6 +338,25 @@ assert('compute: a worker that raises answers 503 and Retry-After: 60 (#80)') do
   end
 end
 
+assert('a konst answer carries a real Date, not the placeholder (RFC 9110 6.6.1)') do
+  src = <<~RUBY
+    class KonstDate < Webmachine::Resource
+      def self.to_html; 'x'; end
+    end
+  RUBY
+  resource_server(wm_app('KonstDate', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _ = resource_read(s)
+      date = head[/^Date: (.*)\r$/, 1]
+      assert_true !date.nil?, head
+      # The prebuilt heads carry a placeholder until the ticker stamps
+      # them. One that reaches a client says the server never did.
+      assert_false date.include?('1970'), head
+    end
+  end
+end
+
 assert('resource: an instance body renders per request through the VM') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   resource_server(src) do |sock|
