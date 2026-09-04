@@ -253,14 +253,12 @@ int serve(mrb_state* mrb, Invocation& in) {
     std::fclose(pf);
   }
 
+  // main() blocked these before it made a thread. The fd is the only
+  // reader; there is no handler anywhere in this process.
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGINT);
-  // pthread_sigmask and not sigprocmask: this process has threads. The
-  // task HAL runs a ticker, and sigprocmask is unspecified once a second
-  // thread exists.
-  pthread_sigmask(SIG_BLOCK, &mask, nullptr);
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
   opts.log_path = log_path;
@@ -303,6 +301,24 @@ int main(int argc, char** argv) {
   Invocation in;
   in.argc = argc;
   in.argv = argv;
+
+  // A signalfd reads TERM and INT. Nothing else does, and this process
+  // installs no signal handler.
+  //
+  // The block belongs HERE, before the first thread. A thread inherits
+  // the mask of the thread that makes it, and mrb_open() below makes one:
+  // the task HAL's ticker. The kernel gives a signal to any thread that
+  // does not block it. With the block set later, the ticker was that
+  // thread, it had no handler, and TERM killed the process at 143 with
+  // the unix socket still on disk.
+  //
+  // pthread_sigmask and not sigprocmask: sigprocmask is unspecified once
+  // a process has threads.
+  sigset_t stop_signals;
+  sigemptyset(&stop_signals);
+  sigaddset(&stop_signals, SIGTERM);
+  sigaddset(&stop_signals, SIGINT);
+  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {

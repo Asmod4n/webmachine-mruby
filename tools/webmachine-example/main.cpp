@@ -28,6 +28,7 @@
 #include <mruby/presym.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
+#include <pthread.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
@@ -131,11 +132,12 @@ int serve_body(mrb_state* mrb, void* ud) {
   opts.cli_unix = mrb_string_p(unix_path) ? mrb_string_cstr(mrb, unix_path) : nullptr;
   opts.cli_port = mrb_integer_p(port) ? static_cast<int>(mrb_integer(port)) : 0;
 
+  // main() blocked these before it made a thread. The fd is the only
+  // reader; this process installs no signal handler.
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGINT);
-  sigprocmask(SIG_BLOCK, &mask, nullptr);
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
   webmachine::server_options(opts);
 
@@ -148,6 +150,15 @@ int main(int argc, char** argv) {
   Invocation in;
   in.argc = argc;
   in.argv = argv;
+
+  // Before the first thread: mrb_open() makes one, and a thread inherits
+  // the mask of the thread that makes it. See tools/webmachine-server
+  // for what a late block cost.
+  sigset_t stop_signals;
+  sigemptyset(&stop_signals);
+  sigaddset(&stop_signals, SIGTERM);
+  sigaddset(&stop_signals, SIGINT);
+  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
   mrb_state* mrb = mrb_open();
   if (mrb == nullptr) {
