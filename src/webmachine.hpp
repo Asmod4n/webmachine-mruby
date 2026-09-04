@@ -4061,7 +4061,7 @@ class Http1 {
       std::string* sink = nullptr;
       struct Plan* plan = nullptr;
       // RFC 9112 9.3: whether the connection lives past this answer. The
-      // round decided it before the run started; `more` returns it.
+      // round decided it before the run started; `spell_next_round` returns it.
       bool persist = true;
 
       Run get_return_object() { return Run{handle::from_promise(*this)}; }
@@ -4116,6 +4116,23 @@ class Http1 {
     handle co{};
   };
 
+  // #80: the stop itself. It always suspends, and what it hands back on
+  // the way in is the run's OWN promise - because the sink and the plan
+  // it must write into belong to the round that RESUMED it, not to the
+  // round that started it. The resumer sets them just before resume(),
+  // so reading them through the promise is the only way to read the
+  // right ones. A reference captured before the stop would name a sink
+  // that is gone.
+  struct Park {
+    Run::promise_type* p = nullptr;
+    bool await_ready() const noexcept { return false; }
+    bool await_suspend(Run::handle h) noexcept {
+      p = &h.promise();
+      return true;
+    }
+    Run::promise_type& await_resume() const noexcept { return *p; }
+  };
+
 
   struct Conn {
     // No RFC: octets received and not yet parsed. The name is this
@@ -4150,7 +4167,11 @@ class Http1 {
     // IS its name - there is no slot table and no id to look it up by,
     // which is what the scaffolding this replaces was reaching for.
     Run parked;
-    // The worker or the watcher answered; `more` is where the run picks
+    // #80: what the worker said, in THIS VM's values. The reactor puts
+    // it here on the way in and the resumed walk reads it once. It is
+    // rooted while it waits - nothing on the VM's stack names it.
+    mrb_value promise_answer = {};
+    // The worker or the watcher answered; `spell_next_round` is where the run picks
     // that up, because that is the one point at which a fresh sink and a
     // fresh plan exist to write into.
     bool promise_ready = false;
@@ -4194,7 +4215,7 @@ class Http1 {
     bool zc_split = false;
     // response.file: the answer a run DEFERRED to the reactor. `want` = the
     // open is owed, `busy` = the ring is on it, `ready` = the head is
-    // spelled and `more` may put it on the wire. Nothing else about the
+    // spelled and `spell_next_round` may put it on the wire. Nothing else about the
     // request survives the run, so the framing it needs is copied here.
     //
     // Lazy, like h2/ws/sse below - most connections never call
@@ -4456,10 +4477,15 @@ class Http1 {
   };
   bool feed(Conn& st, std::string_view data, Sink out);
 
-  bool more(Conn& st, std::string& sink, Plan& plan);
+  // The sink has drained, and this connection may still owe bytes: a
+  // stopped run, a file transfer, an event stream, an h2 frame, an
+  // asset. This spells the next round of them, and when nothing is owed
+  // it takes the next request out of the carry. It answers whether the
+  // connection lives past that round.
+  bool spell_next_round(Conn& st, std::string& sink, Plan& plan);
 
   // #80: the reactor saying a worker or a watcher answered. Only a flag -
-  // the run is resumed in `more`, where a sink and a plan exist.
+  // the run is resumed in `spell_next_round`, where a sink and a plan exist.
   static void promise_answered(Conn& st) { st.promise_ready = true; }
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
@@ -4484,7 +4510,7 @@ class Http1 {
   // of spelling a body; opening it is disk work, so it never happens inside
   // the run. These five are the whole contract with the Ring - it drives
   // openat2/statx/read through the ring and hands each result back here,
-  // and the answer reaches the wire through `more` like every other
+  // and the answer reaches the wire through `spell_next_round` like every other
   // continuation. Any refusal - a miss, a directory, a resolve flag
   // catching an escape - lands as the SAME 404 file_reject spells.
   const char* file_take(Conn& st);
@@ -4494,7 +4520,7 @@ class Http1 {
   char* file_buffer(Conn& st, size_t n);
   void file_ready_now(Conn& st, size_t n);
   void file_mapped(Conn& st, const char* p, size_t n);
-  // Is a round waiting for `more` to run? kDone counts: it puts nothing on
+  // Is a round waiting for `spell_next_round` to run? kDone counts: it puts nothing on
   // the wire, but it is the round that hands the mapping back and writes
   // the access line, so nothing may go idle in front of it.
   static bool file_answerable(const Conn& st) {
@@ -4667,7 +4693,7 @@ class Http1 {
 
   // The next round of a transfer, computed and not performed.
   //
-  // Defined HERE, not in a .cpp: `more` lives in another translation unit
+  // Defined HERE, not in a .cpp: `spell_next_round` lives in another translation unit
   // and this build has no LTO, so a definition over there would be a real
   // call with a 48-byte return through memory (SysV returns anything past
   // 16 bytes that way). Inlined, the FileStep never exists - the compiler
@@ -5064,6 +5090,51 @@ class Http1 {
     const char* lent = nullptr;
     size_t lent_len = 0;
   };
+  // What the walk is handed, built once and read by both entries. The
+  // ReqView is a member and not a return value because everything in it
+  // POINTS at bytes somebody else owns, and the owner has to outlive it.
+  struct BoundPrep {
+    ReqView rv;
+    size_t zc_min = 0;
+    bool accept_gzip = false;
+  };
+  void bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep);
+
+  // #80: everything a stopped run has to keep about the REQUEST, by
+  // value. The Round it is built from holds references into feed_parse's
+  // frame, and that frame is gone the moment the run stops - so the
+  // coroutine takes copies and re-seats them at `head` once hold() has
+  // run.
+  struct BoundStart {
+    const Bundle* b;
+    const char* head_at;  // the request head's first byte, for hold()
+    const char* view;
+    size_t viewlen;
+    size_t off;
+    size_t head_len;
+    const char* method;
+    size_t method_len;
+    const char* path;
+    size_t path_len;
+    size_t content_length;
+    const void* fields;
+    size_t nfields;
+    RouteSpans spans;
+    const RouteTable* table;
+    flow::ReqFacts facts;
+    http::ReqValues vals;
+    int route;
+    int minor;
+    uint8_t lflags;
+    bool in_place;
+    bool persist;
+    bool head_only;
+  };
+  // The whole bound answer for a resource that declared a promise, in a
+  // frame that can stop. A resource that declared none never reaches
+  // this and pays no frame.
+  Run bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan);
+
   // kOwed = nothing is answered yet: the body is still coming, or a file
   // is being fetched through the ring.
   Took answer_bound(Round& r, const BoundAsk& ask, BoundOut& out);
@@ -7335,7 +7406,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileClose, gen, idx));
   }
 
-  // The head is spelled; `more` is what puts it on the wire, so a connection
+  // The head is spelled; `spell_next_round` is what puts it on the wire, so a connection
   // mid-send is left to on_send's own continuation.
   void file_wake(uint32_t idx) {
     if (!conns_[idx].sending) continue_conn(idx);
@@ -7347,7 +7418,7 @@ class Ring {
   // frame with it.
   //
   // Nothing is resumed here. The run needs a sink and a plan to write
-  // its answer into, and this is not a point where either exists; `more`
+  // its answer into, and this is not a point where either exists; `spell_next_round`
   // is. So this only says the answer arrived, and takes the same door
   // response.file takes.
   void on_promise(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
@@ -7608,7 +7679,7 @@ class Ring {
     }
     typename App::Plan req;
     req.byte_cap = c.round_cap;
-    if (!app_.more(c.app, c.out, req)) c.close_after_send = true;
+    if (!app_.spell_next_round(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
     arm_promise(idx);
     if (req.iovlen != 0) {

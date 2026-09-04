@@ -634,7 +634,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
 // RFC 9110 6.3: the run named a file rather than spelling a body, and
 // opening one is disk work that does not belong in a reactor step. The
 // framing is copied onto the connection, the reactor drives openat2/
-// statx/read through the ring, and `more` puts the result on the wire.
+// statx/read through the ring, and `spell_next_round` puts the result on the wire.
 // A name this process already refused takes the same 404 the kernel's
 // own refusal would, spelled here since no ring trip is owed.
 bool Http1::answer_from_file(Round& r, uint16_t status, const std::string& rhdrs) {
@@ -857,7 +857,7 @@ char* Http1::file_buffer(Conn& st, size_t n) {
   return &st.file->buf[0];
 }
 
-// The whole file, mapped. No read happened and none will: more() lends the
+// The whole file, mapped. No read happened and none will: the next round lends the
 // mapping to one send and zc_release() gives it back when that round drains.
 void Http1::file_mapped(Conn& st, const char* p, size_t n) {
   // A mapping still installed here belongs to no round: nothing lent it,
@@ -902,7 +902,7 @@ void Http1::file_abandon(Conn& st) {
   st.file->stage = FileStage::kNone;
 }
 
-// The bytes are in. `more` is what puts head and body on the wire.
+// The bytes are in. `spell_next_round` is what puts head and body on the wire.
 void Http1::file_ready_now(Conn& st, size_t n) {
   st.file->buf_filled = n;
   st.file->stage = FileStage::kDeliver;
@@ -1002,6 +1002,55 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
 // It is its own function because two callers reach it: the straight one
 // above, and the coroutine that a promising resource is run through.
 // Both arrive here with the same three facts, and out carries them in.
+
+// #80: what the walk is handed, built once. Both entries need it - the
+// straight one, and the coroutine a promising resource runs through -
+// and neither may build it differently from the other.
+void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
+  Conn& st = r.st;
+  const Bundle* const b = r.b;
+  const char* const view = r.view;
+  const size_t off = r.off - r.head_len;
+  const size_t head_len = r.head_len;
+  const char* const method = r.method;
+  const size_t method_len = r.method_len;
+  const char* const path = r.path;
+  const size_t path_len = r.path_len;
+  const bool head_only = r.head_only;
+  const flow::ReqFacts& facts = r.facts;
+  const http::ReqValues& vals = r.vals;
+  const struct phr_header* const headers = static_cast<const struct phr_header*>(ask.fields);
+  const size_t num_headers = ask.nfields;
+  const RouteSpans& spans = ask.spans;
+  Plan* const plan = ask.plan;
+  ReqView& rv = prep.rv;
+  rv.request_target = path;
+  rv.request_target_len = path_len;
+  rv.path_len = http::path_only(path, path_len);
+  rv.method = facts.method;
+  rv.method_token = method;
+  rv.method_token_len = method_len;
+  rv.table = ask.table;
+  rv.route = ask.route;
+  rv.spans = &spans;
+  rv.fields = headers;
+  rv.field_count = num_headers;
+  rv.values = &vals;
+  if (r.content_length != 0) {
+    rv.content = view + off + head_len;
+    rv.content_len = r.content_length;
+  }
+  prep.accept_gzip = !facts.has_accept_encoding ||
+                http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
+  // A run may LEND its body only where nothing downstream touches the
+  // bytes anyway: HEAD sends none, gzip copies them, one connection
+  // holds one lend, and an external segment fits through a plan only.
+  const bool gz_now = prep.accept_gzip && b->gzip_ok && st.packetized;
+  prep.zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_lent && !head_only && !gz_now)
+                    ? zc_min_
+                    : 0;
+}
+
 Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   Conn& st = r.st;
   const Bundle* const b = r.b;
@@ -1052,7 +1101,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   // and opening one is disk work that does not belong in a reactor
   // step. NOTHING is answered here - the framing this answer will need
   // is copied onto the connection, the reactor drives openat2/statx/
-  // read through the ring, and `more` puts the result on the wire. A
+  // read through the ring, and `spell_next_round` puts the result on the wire. A
   // name this process already refused takes the same 404 the kernel's
   // own refusal takes, spelled right here since no ring trip is owed.
   {
@@ -1131,6 +1180,107 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   return Took::kNextRequest;
 }
 
+
+// #80: the bound answer for a resource that declared a promise, in a
+// frame that can STOP. The whole reason this is a coroutine and not a
+// stage on the connection: at the stop, `view`, `method`, `path` and
+// every span in ReqValues point into a PROVIDED BUFFER, and on_recv
+// hands that buffer back to the kernel before anything could resume.
+// The bytes have to be copied either way; a frame the compiler manages
+// is the copy that cannot be short by one member.
+//
+// A resource that never says `promise` never reaches this. Its answer
+// goes through answer_bound, straight, with no frame - #cold-paths
+// applied to control flow.
+Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan) {
+  const Bundle* const b = s.b;
+  const Resource& res = *b->res;
+
+  // The frame's own scratch. A parked run may share none of it with the
+  // next request on this connection: that one would write over what this
+  // one still owes.
+  std::string body;
+  std::string rhdrs;
+  Held held;
+  bool have_body = false;
+
+  {
+    Round r{st,          b,           s.view,      s.viewlen,    s.off,
+            s.head_len,  s.in_place,  s.method,    s.method_len, s.path,
+            s.path_len,  s.minor,     s.persist,   s.head_only,  s.content_length,
+            s.lflags,    s.facts,     s.vals};
+    const BoundAsk ask = {s.fields, s.nfields, s.spans, s.table, s.route,
+                          plan,     *sink,     body,    rhdrs};
+    BoundPrep prep;
+    bound_prepare(r, ask, prep);
+
+    // can_park: this frame IS the thing that can hold a stopped run, so
+    // the walk is told it may stop.
+    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
+    const RunAnswer answer = {&body, &have_body, &rhdrs};
+    uint16_t status = resource_run(res, asked, answer);
+
+    while (WM_H1_UNLIKELY(resource_stopped(res))) {
+      // The head, copied, and everything re-pointed at the copy. After
+      // this the provided buffer may go back to the kernel.
+      held.hold(s.head_at, s.head_len, prep.rv);
+      s.view = held.head.data();
+      s.viewlen = held.head.size();
+      s.off = held.head.size();
+      s.method = held.rv.method_token;
+      s.path = held.rv.request_target;
+      s.fields = held.fields.get();
+      s.nfields = held.nfields;
+      s.spans = held.spans;
+      s.vals = held.vals;
+
+      // The walk's own state travels with the frame. res.run belongs to
+      // the ROUTE, and the next request on it would write over this.
+      Resource::RunState mine = std::move(res.run);
+      res.run = Resource::RunState{};
+
+      Run::promise_type& pr = co_await Park{};
+
+      // Back, into a round that is not the one that left. Only the WIRE
+      // is the resumer's: the sink to write into and the plan a lend
+      // rides out on, because the ones this run started with were
+      // locals of a parse that has returned.
+      //
+      // RFC 9112 9.3: `persist` is NOT the resumer's. Whether the
+      // connection lives past this answer was decided by the request
+      // itself - its version and its Connection field - before the run
+      // began. It travels in this frame, and `spell_next_round` reads it back out of
+      // the promise once the run is done.
+      sink = pr.sink;
+      plan = pr.plan;
+      pr.persist = s.persist;
+      res.run = std::move(mine);
+      status = resource_resume(res, {&body, &have_body, &rhdrs}, st.promise_answer);
+    }
+
+    Round fr{st,          b,           s.view,      s.viewlen,    s.off,
+             s.head_len,  s.in_place,  s.method,    s.method_len, s.path,
+             s.path_len,  s.minor,     s.persist,   s.head_only,  s.content_length,
+             s.lflags,    s.facts,     s.vals};
+    const BoundAsk fask = {s.fields, s.nfields, s.spans, s.table, s.route,
+                           plan,     *sink,     body,    rhdrs};
+    BoundOut out;
+    out.status = status;
+    out.have_body = have_body;
+    out.accept_gzip = prep.accept_gzip;
+    if (WM_H1_UNLIKELY(bound_finish(fr, fask, out) == Took::kOwed)) {
+      // response.file: the reactor fetches it and `spell_next_round` puts it on the
+      // wire. Nothing is spelled here.
+      co_return 0;
+    }
+    const AnswerStep astep = spell_answer(
+        fr, {*sink, plan, out.status, out.lent, out.lent_len, out.answered, out.have_body,
+             out.accept_gzip, &b->index});
+    (void)astep;
+    co_return out.status;
+  }
+}
+
 Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
   Conn& st = r.st;
   const Bundle* const b = r.b;
@@ -1159,33 +1309,11 @@ Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
   bool accept_gzip = false;
   const int minor = r.minor;
   const bool persist = r.persist;
-  ReqView rv;
-  rv.request_target = path;
-  rv.request_target_len = path_len;
-  rv.path_len = http::path_only(path, path_len);
-  rv.method = facts.method;
-  rv.method_token = method;
-  rv.method_token_len = method_len;
-  rv.table = ask.table;
-  rv.route = ask.route;
-  rv.spans = &spans;
-  rv.fields = headers;
-  rv.field_count = num_headers;
-  rv.values = &vals;
-  if (r.content_length != 0) {
-    rv.content = view + off + head_len;
-    rv.content_len = r.content_length;
-  }
-  accept_gzip = !facts.has_accept_encoding ||
-                http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
-  // A run may LEND its body only where nothing downstream touches the
-  // bytes anyway: HEAD sends none, gzip copies them, one connection
-  // holds one lend, and an external segment fits through a plan only.
-  const bool gz_now = accept_gzip && b->gzip_ok && st.packetized;
-  const size_t zc_min = (zc_min_ != 0 && plan != nullptr && !st.zc_lent && !head_only &&
-                         !gz_now)
-                            ? zc_min_
-                            : 0;
+  BoundPrep prep;
+  bound_prepare(r, ask, prep);
+  ReqView& rv = prep.rv;
+  const size_t zc_min = prep.zc_min;
+  accept_gzip = prep.accept_gzip;
   const RunAsk asked = {facts, &vals, &rv, zc_min};
   const RunAnswer answer = {&ask.body, &have_body, &ask.rhdrs};
   status = resource_run(*b->res, asked, answer);

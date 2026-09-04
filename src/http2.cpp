@@ -1323,7 +1323,7 @@ bool Http1::pending(const Conn& st) const {
     return false;
   }
   // A file the reactor is still opening owes bytes too - and saying so is
-  // what keeps `more` from re-feeding the carry ahead of that answer.
+  // what keeps spell_next_round from re-feeding the carry ahead of that answer.
   // kDone is deliberately NOT owed bytes: its last lend has drained and it
   // only has bookkeeping left. Counting it here cost 60 us per request -
   // MSG_MORE corked the final send, and on_send took the arm_meminfo
@@ -1334,7 +1334,7 @@ bool Http1::pending(const Conn& st) const {
 }
 
 // The continuation both protocols share: the sink has fully drained.
-bool Http1::more(Conn& st, std::string& sink, Plan& plan) {
+bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   // THE release point: the Ring reaches here only once a whole round has
   // drained, so a body lent to that round is off the wire. Before the next
   // one is built, so a connection never holds two.

@@ -32,8 +32,10 @@ must be 0.
 
 ## Write in Simplified Technical English
 
-Everything written here follows ASD-STE100: code comments, commit
-messages, documentation, and the answers in a session.
+Everything written here follows ASD-STE100 - https://asd-ste100.org/ -
+and everything means everything: code comments, names, commit messages,
+documentation, refusal messages, help text, and the answers in a
+session.
 
 The rules that matter most:
 
@@ -42,6 +44,12 @@ The rules that matter most:
 - Active voice. Name who does the thing.
 - Simple words. One word keeps one meaning.
 - No metaphors, no idioms, no rhetorical questions.
+
+A NAME follows the same rule, and it is the rule that is broken most
+often. A function is named for what it does. A file is named for what
+is in it. A reader who has never seen this tree must know from the name
+alone. `more` was a name that said nothing, and it is now
+`spell_next_round`.
 
 This is account-wide knowledge. A session does not always receive it,
 so it is written here as well.
