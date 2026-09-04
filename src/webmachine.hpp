@@ -2489,6 +2489,13 @@ struct Resource {
   // the fold freezes klass, so this pointer is as stable as klass itself.
   struct RClass* meta_klass = nullptr;
   uint64_t dynamic = 0;
+  // #80: one bit per node whose callback a worker answers. A subset of
+  // `dynamic` - only a node the VM decides can be promised at all - and
+  // read in the same load, so a run knows before it enters the VM
+  // whether this node can stop. Zero for every resource that never says
+  // `promise`, which is what keeps the pool out of a server that has no
+  // use for it.
+  uint64_t promise = 0;
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
   bool node_irep[flow::kNodeCount] = {};

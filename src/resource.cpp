@@ -1697,6 +1697,66 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+  // #80: `promise :is_authorized`. The names were only written down at
+  // class body time; here the fold knows what each one is, so here is
+  // where every refusal about one is spelled. A promise is a bit beside
+  // `dynamic`, so a run reads both in one load and knows before its
+  // first VM entry whether this node can stop.
+  {
+    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(promised));
+    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
+      size_t at = flow::kNodeCount;
+      for (const BoolCb& cb : kBools) {
+        if (cb.sym == want) {
+          at = static_cast<size_t>(cb.node);
+          break;
+        }
+      }
+      if (at == flow::kNodeCount) {
+        for (const NodeValueCb& cb : kNodeValues) {
+          if (cb.sym == want) {
+            at = static_cast<size_t>(cb.node);
+            break;
+          }
+        }
+      }
+      // Not a flow node at all. A value callback (generate_etag,
+      // process_post) is not refused here because it is one - it is
+      // refused because a promise stops the graph BETWEEN nodes, and
+      // one of those is not a node.
+      if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "promise :%n names no flow callback - a promise stops the graph between "
+                   "nodes, so only a node's own callback can be one",
+                   want);
+      }
+      // A node the fold answered on the class, or never found. Both mean
+      // there is nothing per request to send anywhere.
+      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "promise :%n, but %n is not defined on the instance - a promise answers per "
+                   "request, and there is nothing here to ask",
+                   want, want);
+      }
+      if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) != 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "promise :%n, but %n answers on the class - it is asked once and its answer "
+                   "stands, so no worker is owed one",
+                   want, want);
+      }
+      // A native callback is C++ on this thread. It has no irep to dump,
+      // so nothing of it could cross into a worker VM.
+      if (WM_RES_UNLIKELY(out.node_native[at] != nullptr)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "promise :%n, but %n is a native callback - only mruby crosses into a worker",
+                   want, want);
+      }
+      out.promise |= uint64_t{1} << at;
+    }
+  }
+
   // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
   out.cb_known_methods = value_cb(mrb, klass, {MRB_SYM(known_methods), false});
@@ -2087,6 +2147,36 @@ void define_native(mrb_state* mrb, struct RClass* c, Native n) {
 }
 
 
+// #80: `promise :is_authorized` - the resource naming the callbacks a
+// worker answers. It only WRITES the names here; the fold reads them,
+// because only the fold knows whether the name is a flow node and
+// whether the author defined it on the instance. Refusing here would
+// mean resolving the method before the class is finished, and a
+// `promise` above the `def` is the ordinary way to write it.
+//
+// The list lives on the class, so a subclass that says nothing inherits
+// nothing: a promise is a property of the resource that declared it.
+mrb_value resource_promise(mrb_state* mrb, mrb_value self) {
+  const mrb_value* names = nullptr;
+  mrb_int n = 0;
+  mrb_get_args(mrb, "*", &names, &n);
+  if (n == 0) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "promise wants the name of a callback, and got none");
+  }
+  mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(promised));
+  if (!mrb_array_p(list)) {
+    list = mrb_ary_new_capa(mrb, n);
+    mrb_iv_set(mrb, self, MRB_IVSYM(promised), list);
+  }
+  for (mrb_int i = 0; i < n; i++) {
+    if (WM_RES_UNLIKELY(!mrb_symbol_p(names[i]))) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "promise wants a symbol, and got %v", names[i]);
+    }
+    mrb_ary_push(mrb, list, names[i]);
+  }
+  return self;
+}
+
 // #181: a resource instance belongs to ONE request and the server makes it.
 // Ruby may not - a route names the CLASS, and C++ allocates from it with
 // mrb_obj_alloc. Without this, Resource.new would fail on the undef'd
@@ -2120,6 +2210,8 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
       mrb_define_class_under_id(mrb, wm, MRB_SYM(Resource), mrb->object_class);
   mrb_undef_method_id(mrb, res_class, MRB_SYM(initialize));
   mrb_define_class_method_id(mrb, res_class, MRB_SYM(new), resource_new_refused,
+                             MRB_ARGS_ANY());
+  mrb_define_class_method_id(mrb, res_class, MRB_SYM(promise), resource_promise,
                              MRB_ARGS_ANY());
   webmachine::ws_init(mrb, wm);
   webmachine::sse_init(mrb, wm);

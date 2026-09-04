@@ -203,6 +203,78 @@ assert('resource: i18n callbacks refuse the start by name') do
   assert_true resource_refused(wm_app('LangResource', src)).include?('languages_provided')
 end
 
+assert('promise: a name that is no flow callback is refused at the start (#80)') do
+  src = <<~RUBY
+    class PromiseNoNode < Webmachine::Resource
+      promise :generate_etag
+      def to_html; 'x'; end
+    end
+  RUBY
+  out = resource_refused(wm_app('PromiseNoNode', src))
+  assert_true out.include?('generate_etag')
+  assert_true out.include?('between')
+end
+
+assert('promise: a callback that is not defined is refused at the start (#80)') do
+  src = <<~RUBY
+    class PromiseUndefined < Webmachine::Resource
+      promise :is_authorized?
+      def to_html; 'x'; end
+    end
+  RUBY
+  out = resource_refused(wm_app('PromiseUndefined', src))
+  assert_true out.include?('is_authorized')
+  assert_true out.include?('not defined on the instance')
+end
+
+assert('promise: a callback on the class is refused at the start (#80)') do
+  src = <<~RUBY
+    class PromiseOnClass < Webmachine::Resource
+      promise :is_authorized?
+      def self.is_authorized?(_h); true; end
+      def to_html; 'x'; end
+    end
+  RUBY
+  out = resource_refused(wm_app('PromiseOnClass', src))
+  assert_true out.include?('answers on the class')
+end
+
+assert('promise: it wants a symbol, and at least one (#80)') do
+  src = <<~RUBY
+    class PromiseNoName < Webmachine::Resource
+      promise
+      def to_html; 'x'; end
+    end
+  RUBY
+  assert_true resource_refused(wm_app('PromiseNoName', src)).include?('got none')
+
+  src2 = <<~RUBY
+    class PromiseNotSym < Webmachine::Resource
+      promise 'is_authorized?'
+      def to_html; 'x'; end
+    end
+  RUBY
+  assert_true resource_refused(wm_app('PromiseNotSym', src2)).include?('wants a symbol')
+end
+
+assert('promise: a declared and defined callback lets the server come up (#80)') do
+  src = <<~RUBY
+    class PromiseFine < Webmachine::Resource
+      promise :is_authorized?
+      def is_authorized?(_h); true; end
+      def to_html; 'promised'; end
+    end
+  RUBY
+  resource_server(wm_app('PromiseFine', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200')
+      assert_equal 'promised', body
+    end
+  end
+end
+
 assert('resource: an instance body renders per request through the VM') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   resource_server(src) do |sock|
