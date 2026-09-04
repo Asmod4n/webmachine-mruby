@@ -11,14 +11,45 @@ file MRUBY_DIR do
   sh "git clone --depth 1 https://github.com/mruby/mruby.git #{MRUBY_DIR}"
 end
 
+# WHAT this tree needs and upstream mruby does not carry yet. Each entry
+# is a file, the name that says the patch is in it, and the patch. The
+# NAME is the question - a marker file beside the checkout could say yes
+# after somebody reset it.
+MRUBY_PATCHES = [
+  ['mrbgems/mruby-task/include/task.h', 'mrb_disable_task_scheduler',
+   'mruby-task-scheduler-disable.patch'],
+].freeze
+
+# A patch that does not apply does NOT stop the build. Every one of them
+# buys speed or a smaller binary, never correctness: the tree builds and
+# answers requests without them, and mrbgem.rake asks the same headers
+# before it defines anything. So this says what happened and goes on.
+task patch_mruby: MRUBY_DIR do
+  MRUBY_PATCHES.each do |file, name, patch|
+    path = File.join(MRUBY_DIR, file)
+    next if File.exist?(path) && File.read(path).include?(name)
+    full = File.expand_path("patches/#{patch}", __dir__)
+    unless File.exist?(full)
+      warn "webmachine: #{patch} is gone, so #{name} stays missing"
+      next
+    end
+    if system("git -C #{MRUBY_DIR} apply #{full}")
+      puts "mruby: applied #{patch}"
+    else
+      warn "webmachine: #{patch} did not apply. The build goes on without " \
+           "#{name} - it is slower, not wrong. patches/README.md says what it is."
+    end
+  end
+end
+
 desc 'build'
-task compile: MRUBY_DIR do
+task compile: [MRUBY_DIR, :patch_mruby] do
   sh "git -C #{MRUBY_DIR} --no-pager log -1 --format='mruby %h %ad' --date=short"
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake"
 end
 
 desc 'build and run every test'
-task test: MRUBY_DIR do
+task test: [MRUBY_DIR, :patch_mruby] do
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{TEST_CONFIG} rake all test"
 end
 
@@ -86,7 +117,7 @@ def wm_smoke(build_name, label)
 end
 
 desc 'the SHIP binary starts and answers - what the suite (debug) never checks'
-task ship_smoke: MRUBY_DIR do
+task ship_smoke: [MRUBY_DIR, :patch_mruby] do
   # The shipped binary is the host build's, so this builds THAT one and
   # smokes it. It is not part of `rake test`: the suite is the debug
   # build's, and a debug run cannot answer for a binary it never made.
