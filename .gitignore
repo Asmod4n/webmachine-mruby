@@ -32,3 +32,6 @@ bench/vm/*.mrb
 build/fuzz/
 build/conformance/
 /pgo-profile/
+
+# Agent worktrees. They are checkouts of this repository, not content.
+.claude/worktrees/
