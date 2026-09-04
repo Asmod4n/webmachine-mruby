@@ -56,6 +56,8 @@
 #include <mutex>
 #include <thread>
 
+#include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 
 namespace {
@@ -70,18 +72,38 @@ struct ThreadState {
 
 // The registry the ticker walks, and the ticker's own life. Nothing here
 // is touched while a thread's own mutex is held.
-std::mutex g_reg;
-ThreadState* g_threads = nullptr;
-int g_vm_total = 0;
-std::thread g_ticker;
-bool g_ticker_up = false;
+//
+// LEAKED ON PURPOSE, and the reason is a deadlock this cost:
+//
+//   mruby -h prints its usage and calls exit(0). It never calls
+//   mrb_close(). exit() runs the static destructors. One of them
+//   destroys the condition variable that the ticker still waits on.
+//   pthread_cond_destroy then blocks, and the process hangs with two
+//   threads waiting on each other.
+//
+// An embedder may end a process without closing every VM. That is
+// normal. So the state a live thread touches must outlive every static
+// destructor. It is allocated once and never freed, and the ticker is
+// detached rather than joined.
+struct Globals {
+  std::mutex reg;
+  ThreadState* threads = nullptr;
+  int vm_total = 0;
+  std::thread ticker;
+  bool ticker_up = false;
 
-// Parked until somebody has a task. Woken by enable_irq, and by the last
-// VM going away.
-std::mutex g_wake;
-std::condition_variable g_work;
-bool g_has_work = false;
-bool g_stop = false;
+  // Parked until somebody has a task. Woken by enable_irq, and by the
+  // last VM going away.
+  std::mutex wake;
+  std::condition_variable work;
+  bool has_work = false;
+  bool stop = false;
+};
+
+Globals& g() {
+  static Globals* const state = new Globals();
+  return *state;
+}
 
 thread_local ThreadState* ts = nullptr;
 
@@ -101,10 +123,10 @@ bool thread_has_tasks(ThreadState* s) {
 
 void wake_ticker() {
   {
-    std::lock_guard<std::mutex> lk(g_wake);
-    g_has_work = true;
+    std::lock_guard<std::mutex> lk(g().wake);
+    g().has_work = true;
   }
-  g_work.notify_one();
+  g().work.notify_one();
 }
 
 // One tick for every VM on every registered thread, each under the mutex
@@ -113,8 +135,8 @@ void wake_ticker() {
 // is read at the VM's next safe point.
 bool tick_all() {
   bool any = false;
-  std::lock_guard<std::mutex> reg(g_reg);
-  for (ThreadState* s = g_threads; s != nullptr; s = s->next) {
+  std::lock_guard<std::mutex> reg(g().reg);
+  for (ThreadState* s = g().threads; s != nullptr; s = s->next) {
     {
       std::lock_guard<std::mutex> lk(s->irq);
       for (int i = 0; i < s->nvms; i++) {
@@ -131,16 +153,16 @@ bool tick_all() {
 void ticker_main() {
   for (;;) {
     {
-      std::unique_lock<std::mutex> lk(g_wake);
-      g_work.wait(lk, [] { return g_has_work || g_stop; });
-      if (g_stop) return;
+      std::unique_lock<std::mutex> lk(g().wake);
+      g().work.wait(lk, [] { return g().has_work || g().stop; });
+      if (g().stop) return;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(MRB_TICK_UNIT));
     if (!tick_all()) {
       // Nothing left to wake anywhere: park until enable_irq says
       // otherwise. The re-arm is a wake, not a poll.
-      std::lock_guard<std::mutex> lk(g_wake);
-      g_has_work = false;
+      std::lock_guard<std::mutex> lk(g().wake);
+      g().has_work = false;
     }
   }
 }
@@ -163,7 +185,7 @@ void mrb_hal_task_init(mrb_state* mrb) {
 
   bool start_ticker = false;
   {
-    std::lock_guard<std::mutex> reg(g_reg);
+    std::lock_guard<std::mutex> reg(g().reg);
     bool known = false;
     for (int i = 0; i < ts->nvms; i++) {
       if (ts->vms[i] == mrb) { known = true; break; }
@@ -172,23 +194,39 @@ void mrb_hal_task_init(mrb_state* mrb) {
       // The operator's number, read and never raised, and counted where
       // they meant it: over the process. Per thread it would be a
       // multiple of what the build asked for.
-      if (g_vm_total >= MRB_TASK_MAX_VMS || ts->nvms >= MRB_TASK_MAX_VMS) {
+      if (g().vm_total >= MRB_TASK_MAX_VMS || ts->nvms >= MRB_TASK_MAX_VMS) {
         mrb_raisef(mrb, E_RUNTIME_ERROR,
                    "too many mrb_states with task scheduler (max: %d)",
                    MRB_TASK_MAX_VMS);
       }
       ts->vms[ts->nvms++] = mrb;
-      g_vm_total++;
+      g().vm_total++;
     }
     if (first_on_thread) {
-      ts->next = g_threads;
-      g_threads = ts;
+      ts->next = g().threads;
+      g().threads = ts;
     }
-    if (!g_ticker_up) {
-      g_stop = false;
-      g_has_work = false;
-      g_ticker = std::thread(ticker_main);
-      g_ticker_up = true;
+    if (!g().ticker_up) {
+      g().stop = false;
+      g().has_work = false;
+      // The ticker must never receive a signal. An embedder installs
+      // its handlers for the thread it runs on, and it may block a
+      // signal there and read it from a signalfd. The kernel then picks
+      // any thread that does not block the signal, and the ticker is
+      // one - with no handler, so the default action kills the process.
+      // A new thread inherits the mask of the thread that makes it, so
+      // it is made with every signal blocked.
+      //
+      // This tree lost a TERM to exactly that: the server blocked TERM
+      // after mrb_open(), the ticker already existed with TERM open, and
+      // the process died at 143 instead of removing its socket.
+      sigset_t all;
+      sigset_t prev;
+      sigfillset(&all);
+      pthread_sigmask(SIG_SETMASK, &all, &prev);
+      g().ticker = std::thread(ticker_main);
+      pthread_sigmask(SIG_SETMASK, &prev, nullptr);
+      g().ticker_up = true;
       start_ticker = true;
     }
   }
@@ -201,34 +239,34 @@ void mrb_hal_task_final(mrb_state* mrb) {
   bool last_on_thread = false;
   bool stop_ticker = false;
   {
-    std::lock_guard<std::mutex> reg(g_reg);
+    std::lock_guard<std::mutex> reg(g().reg);
     for (int i = 0; i < ts->nvms; i++) {
       if (ts->vms[i] != mrb) continue;
       for (int j = i; j < ts->nvms - 1; j++) ts->vms[j] = ts->vms[j + 1];
       ts->vms[--ts->nvms] = nullptr;
-      g_vm_total--;
+      g().vm_total--;
       break;
     }
     if (ts->nvms == 0) {
-      ThreadState** link = &g_threads;
+      ThreadState** link = &g().threads;
       while (*link != nullptr && *link != ts) link = &(*link)->next;
       if (*link == ts) *link = ts->next;
       last_on_thread = true;
     }
-    if (g_vm_total == 0 && g_ticker_up) {
-      g_ticker_up = false;
+    if (g().vm_total == 0 && g().ticker_up) {
+      g().ticker_up = false;
       stop_ticker = true;
     }
   }
 
   if (stop_ticker) {
     {
-      std::lock_guard<std::mutex> lk(g_wake);
-      g_stop = true;
-      g_has_work = true;
+      std::lock_guard<std::mutex> lk(g().wake);
+      g().stop = true;
+      g().has_work = true;
     }
-    g_work.notify_one();
-    g_ticker.join();
+    g().work.notify_one();
+    g().ticker.join();
   }
 
   if (last_on_thread) {

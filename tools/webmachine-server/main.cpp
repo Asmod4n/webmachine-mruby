@@ -5,6 +5,7 @@
 #include <mruby/presym.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
+#include <pthread.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
@@ -256,7 +257,10 @@ int serve(mrb_state* mrb, Invocation& in) {
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGINT);
-  sigprocmask(SIG_BLOCK, &mask, nullptr);
+  // pthread_sigmask and not sigprocmask: this process has threads. The
+  // task HAL runs a ticker, and sigprocmask is unspecified once a second
+  // thread exists.
+  pthread_sigmask(SIG_BLOCK, &mask, nullptr);
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
   opts.log_path = log_path;
