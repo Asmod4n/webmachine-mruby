@@ -11,6 +11,14 @@ MRuby::Lockfile.disable
 MRuby::Build.new('debug') do |conf|
   conf.toolchain
 
+  # -Wundef is mruby's own default (mruby/tasks/toolchains/gcc.rake). It
+  # finds nothing in this tree and hundreds of lines in the vendored
+  # sources every gem here carries - simdutf, ada, lmdb, ls-hpack - which
+  # belong to other people and are not ours to fix. A build whose real
+  # warnings scroll off the screen has no warnings. The last flag wins.
+  conf.cc.flags  << '-Wno-undef'
+  conf.cxx.flags << '-Wno-undef'
+
   # mrbc is a TOOL of this build, not an artifact of another one.
   # `conf.mrbcfile = mruby/bin/mrbc` named a path only a HOST build
   # installs, and this build is named 'debug' - mruby runs its mrbc

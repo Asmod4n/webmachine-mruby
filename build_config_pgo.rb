@@ -11,6 +11,14 @@ MRuby::Lockfile.disable
 MRuby::Build.new('pgo') do |conf|
   conf.toolchain
 
+  # -Wundef is mruby's own default (mruby/tasks/toolchains/gcc.rake). It
+  # finds nothing in this tree and hundreds of lines in the vendored
+  # sources every gem here carries - simdutf, ada, lmdb, ls-hpack - which
+  # belong to other people and are not ours to fix. A build whose real
+  # warnings scroll off the screen has no warnings. The last flag wins.
+  conf.cc.flags  << '-Wno-undef'
+  conf.cxx.flags << '-Wno-undef'
+
   # mrbc is a TOOL of this build, not an artifact of another one: the
   # gem builds it here. Naming an external mrbc under mruby/bin
   # instead made a cold tree unbuildable - nothing in this config

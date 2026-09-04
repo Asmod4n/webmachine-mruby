@@ -11,6 +11,14 @@ MRuby::Lockfile.disable
 MRuby::Build.new do |conf|
   conf.toolchain
 
+  # -Wundef is mruby's own default (mruby/tasks/toolchains/gcc.rake). It
+  # finds nothing in this tree and hundreds of lines in the vendored
+  # sources every gem here carries - simdutf, ada, lmdb, ls-hpack - which
+  # belong to other people and are not ours to fix. A build whose real
+  # warnings scroll off the screen has no warnings. The last flag wins.
+  conf.cc.flags  << '-Wno-undef'
+  conf.cxx.flags << '-Wno-undef'
+
   # -march: forgecore builds native and always has, and every number in
   # bench/results/forgecore.log was taken that way - changing that here
   # would make the next A/B measure the ISA as well as the change. A box
