@@ -20,6 +20,8 @@
 // from one resolved by a disk.
 #include "webmachine.hpp"
 
+#include <mruby/task_hal_webmachine.h>
+
 #include <liburing.h>
 #include <pthread.h>
 
@@ -64,9 +66,13 @@ struct Slot {
   // out. Bytes both ways, because an mrb_value belongs to one VM.
   std::string arg;
   std::string out;
-  // Seconds. The worker ends a task that runs past it.
+  // Seconds of EXECUTION. The worker ends a task that runs past it.
   double deadline = 0.0;
   bool raised = false;
+  // The task was ended because it passed its deadline. A different
+  // answer from a raise: the author's number was wrong, and a retry
+  // would take just as long (.DESIGN.md #promise-bound).
+  bool over_deadline = false;
   // The reactor's own tag for this compute task: what its completion will
   // carry, so the reactor knows whose answer arrived. The pool never
   // looks inside it.
@@ -277,9 +283,6 @@ struct ComputePool::Impl {
 // not a limit here: nothing of the reactor's VM is ever touched from a
 // worker, and nothing of a worker's VM ever leaves it. Only bytes
 // cross, both ways.
-// Defined below, beside the deadline it enforces. Named here because
-// the VM registers it while it opens.
-void deadline_hook(mrb_state* mrb, void* ud);
 
 struct WorkerVm {
   mrb_state* mrb = nullptr;
@@ -291,10 +294,6 @@ struct WorkerVm {
   // worker closes over them HERE, in its own VM, where closing over is
   // allowed: the ban is on DUMPING an environment, not on making one.
   mrb_value wrap = {};
-  // The task that is running right now, and when it must be over. The
-  // scheduler hook reads both. A zero deadline means nothing is timed.
-  mrb_value running = {};
-  double deadline_at = 0.0;
 
   bool open() {
     mrb = mrb_open();
@@ -309,8 +308,6 @@ struct WorkerVm {
       return false;
     }
     mrb_gc_register(mrb, wrap);
-    running = mrb_nil_value();
-    mrb_task_set_scheduler_hook(mrb, deadline_hook, this);
     return true;
   }
 
@@ -348,18 +345,6 @@ double now_seconds() {
   return static_cast<double>(t.tv_sec) + static_cast<double>(t.tv_nsec) * 1e-9;
 }
 
-// #80: the deadline, enforced. mruby calls this at every scheduler
-// entry, in this worker's own thread, which is the one place a running
-// task can be looked at. A task past its max_runtime is terminated
-// where it stands - that is what mruby's preemption is for, and it is
-// the only abort this tree has for Ruby.
-void deadline_hook(mrb_state* mrb, void* ud) {
-  WorkerVm* const vm = static_cast<WorkerVm*>(ud);
-  if (vm->deadline_at == 0.0 || mrb_nil_p(vm->running)) return;
-  if (now_seconds() < vm->deadline_at) return;
-  vm->deadline_at = 0.0;
-  mrb_terminate_task(mrb, vm->running);
-}
 
 // What a worker does with one slot: decode the argument, run the
 // callback, encode the answer. Every step stays inside this VM.
@@ -408,11 +393,41 @@ void run_job(WorkerVm& vm, Slot& s) {
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
-  vm.running = task;
-  vm.deadline_at = s.deadline > 0.0 ? now_seconds() + s.deadline : 0.0;
-  mrb_task_run(mrb);
-  vm.running = mrb_nil_value();
-  vm.deadline_at = 0.0;
+  // The WORKER decides when the VM runs, never the VM. Task.run hands
+  // the thread to the scheduler until every queue is empty, and while
+  // any task waits it sits in the idle hook - this thread has its own
+  // loop and could not serve it again. mrb_hal_task_step is one step
+  // plus an answer: when to come back. mruby-task/ports/glib drives a
+  // GTK loop the same way.
+  //
+  // The deadline is checked HERE, between steps, because this loop is
+  // the host's. max_runtime is EXECUTION time, so the mark is taken
+  // now - the wait in the queue was not this task's to pay.
+  const double mark = s.deadline > 0.0 ? now_seconds() + s.deadline : 0.0;
+  for (;;) {
+    const int64_t next_us = mrb_hal_task_step();
+    if (mrb->exc != nullptr) break;
+    if (mrb_symbol(mrb_task_status(mrb, task)) == MRB_SYM(DORMANT)) break;
+    if (mark != 0.0 && now_seconds() >= mark) {
+      mrb_terminate_task(mrb, task);
+      s.over_deadline = true;
+      // One more step, so the scheduler sees the task end and every
+      // queue empties. Without it the task stays in a queue and the
+      // next job on this worker would find it there.
+      mrb_hal_task_step();
+      break;
+    }
+    // Nothing is ready and nothing sleeps, yet the task is not done:
+    // it waits on something this loop cannot see. A worker has no
+    // such thing to offer, so this is the end of it.
+    if (next_us < 0) break;
+    if (next_us > 0) {
+      const int64_t left = mark == 0.0 ? next_us
+                                       : static_cast<int64_t>((mark - now_seconds()) * 1e6);
+      const int64_t wait = (mark != 0.0 && left < next_us) ? left : next_us;
+      if (wait > 0) mrb_hal_task_sleep_us(mrb, static_cast<mrb_int>(wait));
+    }
+  }
   if (mrb->exc != nullptr) {
     mrb->exc = nullptr;
     s.raised = true;

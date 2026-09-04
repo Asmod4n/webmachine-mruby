@@ -2,6 +2,8 @@
 
 #include <mruby.h>
 
+#include <stdint.h>
+
 MRB_BEGIN_DECL
 
 /*
@@ -22,5 +24,29 @@ MRB_BEGIN_DECL
  * earlier comes back. After mrb_open there is nothing left to undo it.
  */
 MRB_API void mrb_hal_task_drop_queue(mrb_state *mrb);
+
+/*
+ * Advance the schedulers of every VM this thread opened, by ONE step
+ * each, and answer when the caller has to come back.
+ *
+ * This is what a host loop calls. It is the whole reason it exists: a
+ * VM must not decide when it runs. Task.run hands the thread to the
+ * scheduler until every queue is empty, and while any task waits it
+ * sits in the idle hook - a thread that has its own loop, an io_uring
+ * worker among them, cannot do that and still serve its own work.
+ * mruby-task/ports/glib arrived at the same shape from a GTK main
+ * loop; this is that shape without GLib.
+ *
+ * The answer is microseconds:
+ *
+ *   0   a task is ready. Call again at once.
+ *   > 0 every task is asleep. Call again after this long, or sooner if
+ *       the loop has other work - calling early is always allowed.
+ *   -1  no VM on this thread has a task. Nothing to come back for.
+ *
+ * The caller may wait on its own descriptors for that long, which is
+ * what makes one loop serve both.
+ */
+MRB_API int64_t mrb_hal_task_step(void);
 
 MRB_END_DECL

@@ -48,6 +48,8 @@
 
 #include "mruby/task_hal_webmachine.h"
 
+#include <stdint.h>
+
 #include "task.h"
 #include "task_hal.h"
 
@@ -119,6 +121,47 @@ bool thread_has_tasks(ThreadState* s) {
     if (s->vms[i] != nullptr && vm_has_tasks(s->vms[i])) return true;
   }
   return false;
+}
+
+// When this thread's VMs need attention again, in microseconds. The
+// same question mruby-task/ports/glib asks in arm_locked, and the same
+// three answers:
+//
+//   0   something is ready now
+//   > 0 everything sleeps; this is until the first one wakes
+//   -1  no task anywhere on this thread
+//
+// A sleeper's wakeup is counted in TICKS, so the distance to it is a
+// tick count times the tick period. The scheduler's own clock is what
+// the ticker advances, and this reads the same numbers rather than a
+// second clock beside them.
+int64_t thread_next_us(ThreadState* s) {
+  bool sleeping = false;
+  int32_t soonest = 0;
+  for (int i = 0; i < s->nvms; i++) {
+    mrb_state* const vm = s->vms[i];
+    if (vm == nullptr) continue;
+    if (vm->task.queues[MRB_TASK_QUEUE_READY] != nullptr) return 0;
+    for (mrb_task* w = vm->task.queues[MRB_TASK_QUEUE_WAITING]; w != nullptr; w = w->next) {
+      uint32_t wake;
+      if (w->reason == MRB_TASK_REASON_SLEEP) {
+        wake = w->wait.wakeup_tick;
+      } else if (w->reason == MRB_TASK_REASON_QUEUE &&
+                 w->wait.queue.wakeup_tick != UINT32_MAX) {
+        wake = w->wait.queue.wakeup_tick;
+      } else {
+        continue;
+      }
+      const int32_t offset = static_cast<int32_t>(wake - vm->task.tick);
+      if (!sleeping || offset < soonest) {
+        soonest = offset;
+        sleeping = true;
+      }
+    }
+  }
+  if (!sleeping) return -1;
+  if (soonest <= 0) return 0;
+  return static_cast<int64_t>(soonest) * MRB_TICK_UNIT * 1000;
 }
 
 void wake_ticker() {
@@ -322,6 +365,35 @@ void mrb_hal_task_webmachine_gem_final(mrb_state*) {}
 void mrb_hal_task_drop_queue(mrb_state* mrb) {
   struct RClass* task = mrb_class_get_id(mrb, MRB_SYM(Task));
   mrb_const_remove(mrb, mrb_obj_value(task), MRB_SYM(Queue));
+}
+
+// The host loop's own entry. See the header for the contract.
+//
+// One step per VM, and the step is mruby-task's own single-step
+// scheduler call. What this adds is the ANSWER: the host is told when
+// to come back, so it can wait on its own descriptors for that long
+// instead of spinning.
+//
+// The VM list is copied under the lock and stepped outside it, because
+// a task body may open or close a VM on this thread and the list would
+// change under the walk. mruby-task/ports/glib copies for the same
+// reason.
+int64_t mrb_hal_task_step(void) {
+  ThreadState* const s = ts;
+  if (s == nullptr) return -1;
+
+  mrb_state* copy[MRB_TASK_MAX_VMS];
+  int n = 0;
+  {
+    std::lock_guard<std::mutex> lk(s->irq);
+    n = s->nvms;
+    for (int i = 0; i < n; i++) copy[i] = s->vms[i];
+  }
+  for (int i = 0; i < n; i++) {
+    if (copy[i] != nullptr) (void)mrb_task_run_once(copy[i]);
+  }
+  std::lock_guard<std::mutex> lk(s->irq);
+  return thread_next_us(s);
 }
 
 void mrb_hal_task_sleep_us(mrb_state* mrb, mrb_int usec) {
