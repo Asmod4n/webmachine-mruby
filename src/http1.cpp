@@ -1365,33 +1365,16 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
 }
 
 Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
-  Conn& st = r.st;
+  // What this function still reads. It used to unpack the whole request
+  // here, because it used to spell the answer as well; bound_finish and
+  // spell_answer took that half, and the unpacking stayed behind as
+  // twenty-two names nothing used.
   const Bundle* const b = r.b;
-  const char* const view = r.view;
-  const size_t viewlen = r.viewlen;
-  const size_t off = r.off - r.head_len;
-  const size_t head_len = r.head_len;
-  const bool in_place = r.in_place;
-  const char* const method = r.method;
-  const size_t method_len = r.method_len;
-  const char* const path = r.path;
-  const size_t path_len = r.path_len;
-  const bool head_only = r.head_only;
   const flow::ReqFacts& facts = r.facts;
   const http::ReqValues& vals = r.vals;
-  const struct phr_header* const headers = static_cast<const struct phr_header*>(ask.fields);
-  const size_t num_headers = ask.nfields;
-  const RouteSpans& spans = ask.spans;
-  Plan* const plan = ask.plan;
-  std::string& sink = ask.sink;
   uint16_t status = 0;
   bool have_body = false;
-  bool answered = false;
-  const char* lent = nullptr;
-  size_t lent_len = 0;
   bool accept_gzip = false;
-  const int minor = r.minor;
-  const bool persist = r.persist;
   BoundPrep prep;
   bound_prepare(r, ask, prep);
   ReqView& rv = prep.rv;
