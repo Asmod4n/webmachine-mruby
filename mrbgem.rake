@@ -153,6 +153,17 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # for a plain checkout.
   spec.add_dependency 'hal-task-webmachine', gemdir: "#{dir}/hal-task-webmachine"
 
+  # mrb_disable_task_scheduler is not in upstream mruby yet
+  # (mruby/mruby#7491). A checkout without it still has to build, so the
+  # call is asked for by name and not assumed: the header decides.
+  # Without it every VM keeps the per-opcode check and answers requests
+  # slower - patches/ carries the three commits that fix that.
+  task_header = "#{build.root}/mrbgems/mruby-task/include/task.h"
+  if File.exist?(task_header) && File.read(task_header).include?('mrb_disable_task_scheduler')
+    spec.cc.defines  << 'WM_TASK_SCHEDULER_CAN_BE_DISABLED'
+    spec.cxx.defines << 'WM_TASK_SCHEDULER_CAN_BE_DISABLED'
+  end
+
   # A promised callback crosses as a dumped irep, once per worker. Its
   # arguments and its answer cross as CBOR, once per request. Nothing else
   # crosses. An mrb_value belongs to one mrb_state, so a handle, an object

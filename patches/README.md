@@ -12,11 +12,18 @@ WORKERS, and the define reaches every VM: `mrb_vm_exec` then evaluates
 only `task.enabled` can turn that off at run time. The reactor's VM runs
 no task and pays that check on every request.
 
-`run_guarded` (`src/application.cpp`) calls it right after `mrb_open`.
+`run_guarded` (`src/application.cpp`) calls it right after `mrb_open`,
+but only when the checkout HAS it: mrbgem.rake reads mruby-task's header
+and defines `WM_TASK_SCHEDULER_CAN_BE_DISABLED` when the name is there.
+So a plain checkout builds and answers requests - it keeps the check and
+is slower.
 
 Upstream: mruby/mruby#7491. When it is merged, delete this patch and the
 fork branch with it.
 
 Apply it to a plain mruby checkout with:
 
-    git -C mruby am ../patches/mruby-task-scheduler-disable.patch
+    git -C mruby am -3 ../patches/mruby-task-scheduler-disable.patch
+
+The three commits sit on `4e2bc5c`. On a newer mruby `-3` lets git merge
+them.

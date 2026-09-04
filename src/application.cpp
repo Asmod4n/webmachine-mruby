@@ -714,7 +714,14 @@ int run_guarded(mrb_state* mrb, Guarded step) {
   //
   // mrbgem.rake said this was already done. It was not: nothing called
   // it, in any binary, so every request walked Ruby with the check on.
+  //
+  // The function is not in upstream mruby yet (mruby/mruby#7491), so
+  // mrbgem.rake reads mruby-task's header and defines this only when the
+  // checkout has it. A checkout without it builds and answers requests -
+  // slower, with the check on. patches/ carries the three commits.
+#ifdef WM_TASK_SCHEDULER_CAN_BE_DISABLED
   mrb_disable_task_scheduler(mrb);
+#endif
   GuardedRun g{step, 0};
   mrb_bool raised = FALSE;
   const mrb_value e = mrb_protect_error(mrb, guarded_body, &g, &raised);
