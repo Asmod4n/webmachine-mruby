@@ -159,6 +159,13 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
                                              branch: 'master'
   spec.add_dependency 'mruby-cbor', github: 'Asmod4n/mruby-cbor', branch: 'main'
 
+  # A worker runs every promised block as a Task, so a deadline can end
+  # one. That API lives in mruby-task's own header, and the gem does not
+  # export its include path - so it is named here rather than declared a
+  # second time in our source. One fact, one source.
+  spec.cc.include_paths  << "#{build.root}/mrbgems/mruby-task/include"
+  spec.cxx.include_paths << "#{build.root}/mrbgems/mruby-task/include"
+
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
   spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"

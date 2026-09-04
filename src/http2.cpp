@@ -1346,8 +1346,8 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
     // Still owed. Nothing else may speak for this connection while a run
     // is stopped, least of all a pipelined request behind it: RFC 9112
     // 9.3.2 puts the responses out in the order the requests came.
-    if (!st.promise_ready) return true;
-    st.promise_ready = false;
+    if (!st.compute_task_ready) return true;
+    st.compute_task_ready = false;
     auto& p = st.parked.co.promise();
     p.sink = &sink;
     p.plan = &plan;

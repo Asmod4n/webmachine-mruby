@@ -203,74 +203,95 @@ assert('resource: i18n callbacks refuse the start by name') do
   assert_true resource_refused(wm_app('LangResource', src)).include?('languages_provided')
 end
 
-assert('promise: a name that is no flow callback is refused at the start (#80)') do
+assert('compute: a name that is no flow callback is refused at the start (#80)') do
   src = <<~RUBY
-    class PromiseNoNode < Webmachine::Resource
-      promise :generate_etag
+    class ComputeNoNode < Webmachine::Resource
+      compute :generate_etag
       def to_html; 'x'; end
     end
   RUBY
-  out = resource_refused(wm_app('PromiseNoNode', src))
+  out = resource_refused(wm_app('ComputeNoNode', src))
   assert_true out.include?('generate_etag')
   assert_true out.include?('between')
 end
 
-assert('promise: a callback that is not defined is refused at the start (#80)') do
+assert('compute: a callback that is not defined is refused at the start (#80)') do
   src = <<~RUBY
-    class PromiseUndefined < Webmachine::Resource
-      promise :is_authorized?
+    class ComputeUndefined < Webmachine::Resource
+      compute :is_authorized?
       def to_html; 'x'; end
     end
   RUBY
-  out = resource_refused(wm_app('PromiseUndefined', src))
+  out = resource_refused(wm_app('ComputeUndefined', src))
   assert_true out.include?('is_authorized')
-  assert_true out.include?('not defined on the instance')
+  assert_true out.include?('def self.')
 end
 
-assert('promise: a callback on the class is refused at the start (#80)') do
+assert('compute: a callback on the instance is refused at the start (#80)') do
   src = <<~RUBY
-    class PromiseOnClass < Webmachine::Resource
-      promise :is_authorized?
-      def self.is_authorized?(_h); true; end
+    class ComputeOnInstance < Webmachine::Resource
+      compute :is_authorized?
+      def is_authorized?(_h); true; end
       def to_html; 'x'; end
     end
   RUBY
-  out = resource_refused(wm_app('PromiseOnClass', src))
-  assert_true out.include?('answers on the class')
+  out = resource_refused(wm_app('ComputeOnInstance', src))
+  assert_true out.include?('carries no environment')
 end
 
-assert('promise: it wants a symbol, and at least one (#80)') do
+assert('compute: it wants a symbol, and at least one (#80)') do
   src = <<~RUBY
-    class PromiseNoName < Webmachine::Resource
-      promise
+    class ComputeNoName < Webmachine::Resource
+      compute
       def to_html; 'x'; end
     end
   RUBY
-  assert_true resource_refused(wm_app('PromiseNoName', src)).include?('got none')
+  assert_true resource_refused(wm_app('ComputeNoName', src)).include?('got none')
 
   src2 = <<~RUBY
-    class PromiseNotSym < Webmachine::Resource
-      promise 'is_authorized?'
+    class ComputeNotSym < Webmachine::Resource
+      compute 'is_authorized?'
       def to_html; 'x'; end
     end
   RUBY
-  assert_true resource_refused(wm_app('PromiseNotSym', src2)).include?('wants a symbol')
+  assert_true resource_refused(wm_app('ComputeNotSym', src2)).include?('wants a symbol')
 end
 
-assert('promise: a declared and defined callback lets the server come up (#80)') do
+assert('ComputeTask wants a block and a deadline that is a time (#80)') do
   src = <<~RUBY
-    class PromiseFine < Webmachine::Resource
-      promise :is_authorized?
-      def is_authorized?(_h); true; end
-      def to_html; 'promised'; end
+    class ComputeNoBlock < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 50.ms)
+      end
+      def to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('PromiseFine', src)) do |sock|
+  resource_server(wm_app('ComputeNoBlock', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 500')
+    end
+  end
+end
+
+assert('compute: a worker answers the node, and the graph carries on (#80)') do
+  src = <<~RUBY
+    class ComputeAuth < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(header)
+        Webmachine::ComputeTask.new(header, max_runtime: 500.ms) { |h| !h.nil? }
+      end
+      def to_html; 'answered by a worker'; end
+    end
+  RUBY
+  resource_server(wm_app('ComputeAuth', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
       head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
-      assert_equal 'promised', body
+      assert_equal 'answered by a worker', body
     end
   end
 end

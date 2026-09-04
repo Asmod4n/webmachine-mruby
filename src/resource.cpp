@@ -811,13 +811,13 @@ mrb_value nodecall(Run& r, Node nd, Args args) {
 //
 //   - the answer is already here (the worker gave it) - it is handed
 //     back and the memo is cleared, so the node cannot read it twice;
-//   - the node is promised and this run may park - the walk's place is
+//   - the node is declared `compute` and this run may park - the walk's place is
 //     written down, the argument is kept for the reactor, and the walk
 //     RETURNS. Nothing of a Ruby stack needs saving, because the stop is
 //     between callbacks;
 //   - neither - the callback is called here, on this thread, exactly as
 //     it always was. That is every node of every resource that never
-//     said `promise`, and it costs one predicted branch.
+//     said `compute`, and it costs one predicted branch.
 bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
     const Resource& res = r.res;
     const size_t i = static_cast<size_t>(nd);
@@ -827,16 +827,40 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.answer = mrb_nil_value();
       return true;
     }
-    if (WM_RES_UNLIKELY(((res.promise >> i) & 1) != 0 && res.run.can_park)) {
+    // A declared node is CALLED like any other, and its class method is
+    // cheap by construction: it only builds the arguments this request
+    // has to hand. What it answers must be a Webmachine::Worker::Promise
+    // - a callback that declared one owes one.
+    const mrb_value v = nodecall(r, nd, args);
+    if (WM_RES_UNLIKELY(((res.compute >> i) & 1) != 0)) {
+      ComputeTaskAsk ask;
+      if (WM_RES_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n is declared `compute` and answered %v - it owes a "
+                   "Webmachine::Worker::Promise",
+                   res.node_sym[i], v);
+      }
+      // Nobody can park this run: the caller holds no frame that could
+      // keep a stopped one. So the block runs HERE, on this thread. It
+      // is the same block with the same arguments, and the only thing
+      // lost is that the reactor waits for it.
+      if (WM_RES_UNLIKELY(!res.run.can_park)) {
+        *out = mrb_funcall_argv(r.mrb, ask.block, MRB_SYM(call),
+                                static_cast<mrb_int>(RARRAY_LEN(ask.args)),
+                                RARRAY_PTR(ask.args));
+        return true;
+      }
       res.run.stop_node = nd;
       res.run.stop_status = status;
       res.run.chosen = r.chosen;
-      res.run.job_has_arg = !args.empty();
-      res.run.job_arg = args.empty() ? mrb_nil_value() : args[0];
+      res.run.compute_task_block = ask.block;
+      res.run.compute_task_args = ask.args;
+      res.run.compute_task_deadline = ask.max_runtime;
+      res.run.compute_task_held = true;
       res.run.stopped = true;
       return false;
     }
-    *out = nodecall(r, nd, args);
+    *out = v;
     return true;
 }
 
@@ -1762,9 +1786,9 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
-  // #80: `promise :is_authorized`. The names were only written down at
+  // #80: `compute :is_authorized`. The names were only written down at
   // class body time; here the fold knows what each one is, so here is
-  // where every refusal about one is spelled. A promise is a bit beside
+  // where every refusal about one is spelled. A compute declaration is a bit beside
   // `dynamic`, so a run reads both in one load and knows before its
   // first VM entry whether this node can stop.
   //
@@ -1774,7 +1798,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   // the arguments and the answer cross, as CBOR. It is the cheaper of
   // the two crossings, not the impossible one.
   {
-    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(promised));
+    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(computed));
     const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
     for (mrb_int i = 0; i < n; i++) {
       const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
@@ -1795,56 +1819,31 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
       }
       // Not a flow node at all. A value callback (generate_etag,
       // process_post) is not refused here because it is one - it is
-      // refused because a promise stops the graph BETWEEN nodes, and
+      // refused because a compute task stops the graph BETWEEN nodes, and
       // one of those is not a node.
       if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "promise :%n names no flow callback - a promise stops the graph between "
+                   "compute :%n names no flow callback - a compute task stops the graph between "
                    "nodes, so only a node's own callback can be one",
                    want);
       }
-      // A node the fold answered on the class, or never found. Both mean
-      // there is nothing per request to send anywhere.
+      // A declared callback answers on the CLASS. The block it hands
+      // over carries no environment - a dumped proc cannot - so it
+      // needs nothing of an instance, and an instance form would only
+      // promise state the worker can never see.
       if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "promise :%n, but %n is not defined on the instance - a promise answers per "
-                   "request, and there is nothing here to ask",
-                   want, want);
+                   "compute :%n, but %n is not defined - write it as def self.%n and answer "
+                   "with a Webmachine::Worker::Promise",
+                   want, want, want);
       }
-      if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) != 0)) {
+      if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "promise :%n, but %n answers on the class - it is asked once and its answer "
-                   "stands, so no worker is owed one",
-                   want, want);
+                   "compute :%n, but %n is defined on the instance - a declared block carries "
+                   "no environment, so it can use nothing of an instance. Write def self.%n",
+                   want, want, want);
       }
-      // The code, dumped once. A native callback has no irep and needs
-      // none: its pointer is the same number in every VM of this
-      // process, so only its arguments ever travel. A Ruby one is
-      // dumped HERE, at setup, and loaded once per worker - never per
-      // request.
-      if (out.node_native[at] == nullptr) {
-        if (WM_RES_UNLIKELY(!MRB_METHOD_PROC_P(out.node_m[at]))) {
-          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                     "promise :%n, but %n is neither Ruby nor a native callback - there is "
-                     "nothing of it that can cross into a worker",
-                     want, want);
-        }
-        // MRB_METHOD_PROC hands back a const pointer, and the dump
-        // takes a mutable one. It only reads: mrb_proc_to_irep walks
-        // the irep and writes a String. The cast is at the one place
-        // that needs it, not in the header.
-        struct RProc* const proc = const_cast<struct RProc*>(MRB_METHOD_PROC(out.node_m[at]));
-        const mrb_value bytes = mrb_proc_to_irep(mrb, proc);
-        if (WM_RES_UNLIKELY(!mrb_string_p(bytes))) {
-          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                     "promise :%n: %n could not be dumped - only a callback written in Ruby "
-                     "has an irep to send",
-                     want, want);
-        }
-        out.node_irep_bytes[at] = bytes;
-        mrb_gc_register(mrb, bytes);
-      }
-      out.promise |= uint64_t{1} << at;
+      out.compute |= uint64_t{1} << at;
     }
   }
 
@@ -2124,7 +2123,10 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   // unregister in resource_resume, once per park.
   if (WM_RES_UNLIKELY(res.run.stopped && raised == FALSE)) {
     mrb_gc_register(mrb, res.run.live);
-    if (res.run.job_has_arg) mrb_gc_register(mrb, res.run.job_arg);
+    if (res.run.compute_task_held) {
+      mrb_gc_register(mrb, res.run.compute_task_block);
+      mrb_gc_register(mrb, res.run.compute_task_args);
+    }
     // The two bindings are the PROCESS's "which request is speaking".
     // The reactor answers other connections while this one waits, so
     // they go now and come back in resource_resume.
@@ -2153,14 +2155,14 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
 
 // #80: is the run this resource holds a stopped one? The reactor asks
 // before it does anything else with the connection.
-bool resource_stopped(const Resource& res) { return res.run.stopped; }
+bool run_stopped(const Resource& res) { return res.run.stopped; }
 
 // #80: the walk, re-entered. `answer` is what the worker said, in THIS
 // VM's values - the crossing back happened before this is called. It
-// stands in for the promised node's callback, and the graph carries on
+// stands in for the declared node's callback, and the graph carries on
 // from that node.
 //
-// A resumed run may stop again: a resource is free to promise two nodes,
+// A resumed run may stop again: a resource is free to declare two nodes,
 // and the second stop is answered exactly like the first.
 uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
   mrb_state* mrb = res.mrb;
@@ -2170,9 +2172,13 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
   res.run.headers = out.headers;
   res.run.body = out.body;
   mrb_gc_unregister(mrb, res.run.live);
-  if (res.run.job_has_arg) mrb_gc_unregister(mrb, res.run.job_arg);
-  res.run.job_has_arg = false;
-  res.run.job_arg = mrb_nil_value();
+  if (res.run.compute_task_held) {
+    mrb_gc_unregister(mrb, res.run.compute_task_block);
+    mrb_gc_unregister(mrb, res.run.compute_task_args);
+  }
+  res.run.compute_task_held = false;
+  res.run.compute_task_block = mrb_nil_value();
+  res.run.compute_task_args = mrb_nil_value();
   res.run.answer = answer;
   res.run.answered = true;
   res.run.stopped = false;
@@ -2307,30 +2313,30 @@ void define_native(mrb_state* mrb, struct RClass* c, Native n) {
 }
 
 
-// #80: `promise :is_authorized` - the resource naming the callbacks a
+// #80: `compute :is_authorized` - the resource naming the callbacks a
 // worker answers. It only WRITES the names here; the fold reads them,
 // because only the fold knows whether the name is a flow node and
 // whether the author defined it on the instance. Refusing here would
 // mean resolving the method before the class is finished, and a
-// `promise` above the `def` is the ordinary way to write it.
+// `compute` above the `def` is the ordinary way to write it.
 //
 // The list lives on the class, so a subclass that says nothing inherits
-// nothing: a promise is a property of the resource that declared it.
-mrb_value resource_promise(mrb_state* mrb, mrb_value self) {
+// nothing: a compute task is a property of the resource that declared it.
+mrb_value resource_compute(mrb_state* mrb, mrb_value self) {
   const mrb_value* names = nullptr;
   mrb_int n = 0;
   mrb_get_args(mrb, "*", &names, &n);
   if (n == 0) {
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "promise wants the name of a callback, and got none");
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "compute wants the name of a callback, and got none");
   }
-  mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(promised));
+  mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(computed));
   if (!mrb_array_p(list)) {
     list = mrb_ary_new_capa(mrb, n);
-    mrb_iv_set(mrb, self, MRB_IVSYM(promised), list);
+    mrb_iv_set(mrb, self, MRB_IVSYM(computed), list);
   }
   for (mrb_int i = 0; i < n; i++) {
     if (WM_RES_UNLIKELY(!mrb_symbol_p(names[i]))) {
-      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "promise wants a symbol, and got %v", names[i]);
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "compute wants a symbol, and got %v", names[i]);
     }
     mrb_ary_push(mrb, list, names[i]);
   }
@@ -2371,7 +2377,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   mrb_undef_method_id(mrb, res_class, MRB_SYM(initialize));
   mrb_define_class_method_id(mrb, res_class, MRB_SYM(new), resource_new_refused,
                              MRB_ARGS_ANY());
-  mrb_define_class_method_id(mrb, res_class, MRB_SYM(promise), resource_promise,
+  mrb_define_class_method_id(mrb, res_class, MRB_SYM(compute), resource_compute,
                              MRB_ARGS_ANY());
   webmachine::ws_init(mrb, wm);
   webmachine::sse_init(mrb, wm);
@@ -2379,6 +2385,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   webmachine::request_init(mrb, wm);
   webmachine::response_init(mrb, wm);
   webmachine::watcher_init_class(mrb, wm);
+  webmachine::compute_task_init_class(mrb, wm);
   webmachine::server_init(mrb, wm);
 }
 

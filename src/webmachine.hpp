@@ -2494,17 +2494,9 @@ struct Resource {
   // `dynamic` - only a node the VM decides can be promised at all - and
   // read in the same load, so a run knows before it enters the VM
   // whether this node can stop. Zero for every resource that never says
-  // `promise`, which is what keeps the pool out of a server that has no
+  // `compute`, which is what keeps the pool out of a server that has no
   // use for it.
-  uint64_t promise = 0;
-  // #80: a promised node's code, ready to cross. A Ruby callback is
-  // dumped ONCE, here, as an irep - the bytes are what travels, because
-  // an mrb_value belongs to exactly one VM. A native callback needs no
-  // entry: its pointer is the same number in every VM of this process.
-  //
-  // The String is rooted for the life of the process. It is built at
-  // fold, which is setup, so nothing here costs a request anything.
-  mrb_value node_irep_bytes[flow::kNodeCount] = {};
+  uint64_t compute = 0;
   mrb_sym node_sym[flow::kNodeCount] = {};
   mrb_method_t node_m[flow::kNodeCount] = {};
   bool node_irep[flow::kNodeCount] = {};
@@ -2651,10 +2643,16 @@ struct Resource {
     // whole of "the graph carries on from B8".
     bool answered = false;
     mrb_value answer = {};
-    // What the promised callback was going to be handed. Held because
-    // the reactor sends it to the worker after the walk has returned.
-    mrb_value job_arg = {};
-    bool job_has_arg = false;
+    // #80: what the stopped run owes a worker - which block, and the
+    // arguments this request built for it. The arguments are an Array
+    // in this VM until the reactor turns them into CBOR.
+    // The block itself, until the reactor interns it. It is a value of
+    // THIS VM, so it never leaves this struct - what leaves is the id
+    // the intern answers with.
+    mrb_value compute_task_block = {};
+    mrb_value compute_task_args = {};
+    double compute_task_deadline = 0.0;
+    bool compute_task_held = false;
     const flow::ReqFacts* facts = nullptr;
     std::string* body = nullptr;
     bool have_body = false;
@@ -2773,7 +2771,7 @@ struct RunAsk {
   size_t zc_min = 0;
   // #80: may this run stop at a promised node? Only a caller that holds
   // a frame able to keep the parked run says yes. The konst tier and the
-  // error resource say no, and then `promise` costs one branch and
+  // error resource say no, and then `compute` costs one branch and
   // changes nothing else.
   bool can_park = false;
 };
@@ -2786,7 +2784,7 @@ struct RunAnswer {
   std::string* headers;
 };
 
-// The walk, once. It answers a status, or it STOPPED: `resource_stopped`
+// The walk, once. It answers a status, or it STOPPED: `run_stopped`
 // says which, and the job the reactor owes a worker is read with
 // `resource_job`. A stopped run keeps everything it wrote in res.run,
 // which the caller takes with it.
@@ -2794,7 +2792,7 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
 // #80: the same walk, re-entered at the node it stopped before, with the
 // worker's answer standing in for that node's callback.
 uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer);
-bool resource_stopped(const Resource& res);
+bool run_stopped(const Resource& res);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
 
@@ -2832,16 +2830,79 @@ void response_bind(const Resource* res);
 class Assets;
 void response_bind_error_assets(Assets* a);
 
-// #80: the compute pool. Threads that answer a promise, fed and heard
-// through io_uring's own MSG_RING - see src/promise.cpp for why that is
+// #80: the compute pool. Threads that answer a compute task, fed and heard
+// through io_uring's own MSG_RING - see src/compute_task.cpp for why that is
 // the queue and not a ring buffer of this tree's own.
 //
 // It holds no mrb_state and touches none: a job is a C function over
 // bytes, because the VM is not thread-safe and work that wanted it would
 // be work for the reactor's core.
+// #80: what a declared callback RETURNS. Webmachine::ComputeTask,
+// built on the reactor by a callback that only builds it:
+//
+//   compute :is_authorized?
+//   def self.is_authorized?(header)
+//     Webmachine::ComputeTask.new(header, max_runtime: 50.ms) do |h|
+//       argon2_verify(h)
+//     end
+//   end
+//
+// The method is fast and runs where every other callback runs. What
+// goes to a worker is the BLOCK, with its own arguments and its own
+// deadline - so the stop still lies between two flow nodes, and no
+// Ruby method is ever suspended mid-run.
+//
+// A callback that is declared `compute` and answers anything else is a
+// mistake this tree names rather than guesses at.
+struct ComputeTaskAsk {
+  // The block, and the arguments it is called with. Both belong to the
+  // reactor's VM; the crossing turns them into bytes.
+  mrb_value block = {};
+  mrb_value args = {};
+  // Seconds. mruby-chrono spells it: 50.ms is 0.05.
+  double max_runtime = 0.0;
+};
+// Reads the three fields off a Promise, or answers false. It raises
+// when the value is not a Promise at all, because a callback that
+// declared one owes one.
+bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out);
+void compute_task_init_class(mrb_state* mrb, struct RClass* wm);
+
+// #80: a declared callback, ready to cross into a worker. Filled at
+// fold, read by every worker when the pool starts. The id IS the index -
+// what crosses a MSG_RING is a slot number, and the slot names this.
+//
+// Exactly one of the two is set. A Ruby callback travels as its dumped
+// irep, which every worker loads once. A native one travels as nothing
+// at all: the pointer is the same number in every VM of this process.
+struct ComputeTaskCode {
+  // The block, dumped once. A worker loads it once and calls it many
+  // times.
+  std::string irep;
+  // Seconds, from max_runtime:. Admission is arithmetic over this, and
+  // a worker ends a Task that runs past it. It comes from the same
+  // Promise the block came from, so it is read once as well.
+  double max_runtime = 0.0;
+};
+// No block: the dump refused, which only a proc that mruby cannot dump
+// does. A run that gets this answers as if the pool were full.
+inline constexpr unsigned kComputeTaskNoCode = ~0u;
+
+// The id of this block, dumping it the first time it is seen.
+//
+// NOT at fold: the class method that answers the Promise builds its
+// arguments out of the request, and add_route has no request. So the
+// first request through the node pays one dump (0.63 us, measured) and
+// every request after it pays a lookup - the same code at the same
+// place carries the same irep, whatever RProc is built around it.
+unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime);
+// The bytes and the deadline of one entry, copied out under the lock.
+// A worker calls this the first time it meets an id, and never again
+// for that id.
+bool compute_task_code_of(unsigned id, std::string* irep, double* max_runtime);
+
 class ComputePool {
  public:
-  using Fn = void (*)(void* arg);
 
   ComputePool() = default;
   ~ComputePool() { stop(); }
@@ -2854,11 +2915,14 @@ class ComputePool {
   const char* start(unsigned workers, unsigned depth, struct io_uring* home);
   void stop();
 
-  // False when every slot is taken. The caller decides what a full pool
-  // means - this layer does not invent a refusal for it.
-  bool submit(Fn fn, void* arg, uint64_t answer);
-  // The answer arrived and the slot is the caller's to reuse.
-  void release(uint64_t answer);
+  // One declared callback, sent to a worker. `arg` is the argument as
+  // CBOR - bytes, because an mrb_value belongs to one VM. False when
+  // every slot is taken; the caller decides what a full pool means, and
+  // this layer does not invent a refusal for it.
+  bool submit(unsigned code_id, std::string_view arg, double deadline, uint64_t answer);
+  // What the worker answered, as CBOR, and whether it raised. Reading it
+  // frees the slot: the answer is handed over once.
+  bool take(uint64_t answer, std::string& out, bool* raised);
   unsigned workers() const;
 
   struct Impl;
@@ -4194,11 +4258,11 @@ class Http1 {
     // #80: what the worker said, in THIS VM's values. The reactor puts
     // it here on the way in and the resumed walk reads it once. It is
     // rooted while it waits - nothing on the VM's stack names it.
-    mrb_value promise_answer = {};
+    mrb_value compute_task_answer = {};
     // The worker or the watcher answered; `spell_next_round` is where the run picks
     // that up, because that is the one point at which a fresh sink and a
     // fresh plan exist to write into.
-    bool promise_ready = false;
+    bool compute_task_ready = false;
     // Is a run stopped on this connection? Nothing else may speak for it
     // while one is - not the carry behind it, and not a pipelined request
     // (RFC 9112 9.3.2: responses go out in the order the requests came).
@@ -4206,12 +4270,24 @@ class Http1 {
     // The work the stopped run wants done, waiting for the reactor to
     // hand it to a worker. Http1 has no ring - the same reason a watcher
     // waits in w_pending and a file name waits for file_take.
-    ComputePool::Fn job_fn = nullptr;
-    void* job_arg = nullptr;
+    // #80: the job a stopped run left. `job_code` says which promised
+    // callback, `job_bytes` is its argument as CBOR. Bytes, because an
+    // mrb_value belongs to one VM and the worker has its own.
+    // #80: the work a stopped run left, ALREADY across. The frame does
+    // the crossing itself, at the stop, because that is the last moment
+    // the reactor's VM and the run's own state are both to hand - the
+    // frame takes that state with it one line later.
+    unsigned job_code = 0;
+    std::string job_bytes;
+    double job_deadline = 0.0;
+    bool job_waiting = false;
+    // Whose VM the answer is decoded back into. It outlives the
+    // crossing, because the answer comes long after.
+    const Resource* job_res = nullptr;
     // The pool had no slot. What the run makes of that is the run's -
     // 503 with a Retry-After is the obvious answer and not this layer's
     // to choose.
-    bool promise_full = false;
+    bool compute_task_full = false;
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4510,25 +4586,38 @@ class Http1 {
 
   // #80: the reactor saying a worker or a watcher answered. Only a flag -
   // the run is resumed in `spell_next_round`, where a sink and a plan exist.
-  static void promise_answered(Conn& st) { st.promise_ready = true; }
+  // The worker answered. The bytes come back into the reactor's VM
+  // here, which is the only thread that may build a value in it. A
+  // worker that raised, or an answer CBOR cannot carry, is nil - the
+  // run reads it like any other answer and decides for itself.
+  static void compute_task_answered(Conn& st, const std::string& out, bool raised);
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // Every worker slot is taken. The run is told rather than the layer
   // inventing a refusal - it answers this the way it answers anything.
-  static void promise_refused(Conn& st) {
-    st.promise_ready = true;
-    st.promise_full = true;
+  static void compute_task_refused(Conn& st) {
+    st.compute_task_ready = true;
+    st.compute_task_full = true;
   }
-  static ComputePool::Fn promise_take(Conn& st, void** arg) {
-    const ComputePool::Fn fn = st.job_fn;
-    *arg = st.job_arg;
-    st.job_fn = nullptr;
-    st.job_arg = nullptr;
-    return fn;
+  // #80: the crossing, done by the frame at the stop. The block becomes
+  // an id and the arguments become CBOR. After this nothing of the VM is
+  // named, which is what lets a worker touch the result at all.
+  static bool compute_task_hand_over(Conn& st, const Resource& res);
+  // The work a stopped run left, or false. Taken, not read: the reactor
+  // arms it once and the connection stops naming it - exactly file_take.
+  static bool compute_task_take(Conn& st, unsigned* code, std::string& bytes,
+                                double* deadline) {
+    if (!st.job_waiting) return false;
+    *code = st.job_code;
+    *deadline = st.job_deadline;
+    bytes.swap(st.job_bytes);
+    st.job_bytes.clear();
+    st.job_waiting = false;
+    return true;
   }
   // Is this connection waiting on one? The Ring asks before it lets
   // anything else speak for the connection.
-  static bool promise_pending(const Conn& st) { return st.run_parked() && !st.promise_ready; }
+  static bool compute_task_pending(const Conn& st) { return st.run_parked() && !st.compute_task_ready; }
 
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside
@@ -5158,7 +5247,7 @@ class Http1 {
     bool persist;
     bool head_only;
   };
-  // The whole bound answer for a resource that declared a promise, in a
+  // The whole bound answer for a resource that declared a compute task, in a
   // frame that can stop. A resource that declared none never reaches
   // this and pays no frame.
   Run bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan);
@@ -5703,10 +5792,10 @@ inline uint32_t derive_max_conns(FdBudget b) {
   return static_cast<uint32_t>(n);
 }
 
-// #80: jobs in flight per worker. Small on purpose - a promise is work
+// #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
 // of it only hides that every worker is already busy.
-inline constexpr unsigned kPromiseDepth = 16;
+inline constexpr unsigned kComputeDepth = 16;
 inline constexpr uint32_t kBufCount = 2048;
 inline constexpr uint32_t kBufSize = 4096;
 inline constexpr uint16_t kBufGroup = 0;
@@ -5803,7 +5892,7 @@ enum : uint8_t {
   // #80: a compute worker answered. The tag is the connection's, so the
   // generation guard every other op relies on discards an answer whose
   // connection is already gone.
-  kPromise = 21
+  kComputeTask = 21
 };
 
 
@@ -7156,7 +7245,7 @@ class Ring {
     // A run that named a file answered nothing yet: the open is the
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
-    arm_promise(idx);
+    arm_compute_task(idx);
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would
     // ever come back to collect it.
@@ -7194,7 +7283,7 @@ class Ring {
     // A run that named a file answered nothing yet: the open is the
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
-    arm_promise(idx);
+    arm_compute_task(idx);
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would ever
     // come back to collect it.
@@ -7404,27 +7493,28 @@ class Ring {
   // and not at setup: a server whose resources never stop must not carry
   // threads it will never use, and this runs once for the whole process
   // the first time anything stops.
-  void arm_promise(uint32_t idx) {
+  void arm_compute_task(uint32_t idx) {
     Conn& c = conns_[idx];
-    void* arg = nullptr;
-    const typename ComputePool::Fn fn = App::promise_take(c.app, &arg);
-    if (fn == nullptr) return;
+    std::string arg;
+    unsigned code = 0;
+    double deadline = 0.0;
+    if (!App::compute_task_take(c.app, &code, arg, &deadline)) return;
     if (compute_.workers() == 0) {
-      // One per core the process may use, less the reactor's own. Not
-      // MRB_TASK_MAX_VMS: that is the ceiling for worker VMs, and a
-      // worker holds no mrb_state yet (src/promise.cpp says why). When
-      // one does, this becomes MRB_TASK_MAX_VMS - 1 and the reason will
-      // be the VM count rather than the core count.
+      // One per core the process may use, less the reactor's own. Every
+      // worker now opens an mrb_state of its own, so this is also a VM
+      // count - and the operator's ceiling on those is what bounds it
+      // once MRB_TASK_MAX_VMS is read here.
       const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
       const unsigned want = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
-      if (const char* why = compute_.start(want, kPromiseDepth, &ring_)) {
+      if (const char* why = compute_.start(want, kComputeDepth, &ring_)) {
         conn_failed(why, -EAGAIN);
       }
     }
-    if (!compute_.submit(fn, arg, detail::tag(detail::kPromise, c.gen, idx))) {
+    if (!compute_.submit(code, arg, deadline,
+                         detail::tag(detail::kComputeTask, c.gen, idx))) {
       // Every slot taken. Not a refusal this layer invents - the run is
       // told, and it answers 503 the way it would answer anything else.
-      App::promise_refused(c.app);
+      App::compute_task_refused(c.app);
       if (!c.sending) continue_conn(idx);
     }
   }
@@ -7452,12 +7542,19 @@ class Ring {
   // its answer into, and this is not a point where either exists; `spell_next_round`
   // is. So this only says the answer arrived, and takes the same door
   // response.file takes.
-  void on_promise(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_compute_task(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     (void)cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
+    const uint64_t tag = detail::tag(detail::kComputeTask, gen, idx);
+    std::string out;
+    bool raised = false;
+    const bool have = compute_.take(tag, out, &raised);
+    // A generation that moved means the connection is gone and its run
+    // died with it. The answer is still TAKEN, because the slot is the
+    // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
-    App::promise_answered(c.app);
+    App::compute_task_answered(c.app, out, raised || !have);
     if (!c.sending) continue_conn(idx);
   }
 
@@ -7712,7 +7809,7 @@ class Ring {
     req.byte_cap = c.round_cap;
     if (!app_.spell_next_round(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
-    arm_promise(idx);
+    arm_compute_task(idx);
     if (req.iovlen != 0) {
       take_plan(c, req);
       arm_send(idx);
@@ -7800,7 +7897,7 @@ class Ring {
         case detail::kTlsBye: break;
         case detail::kTlsRx: on_tls_ready({idx, gen, cqe}); break;
         case detail::kTlsTxKey: on_tls_tx_key({idx, gen, cqe}); break;
-        case detail::kPromise: on_promise(idx, gen, cqe); break;
+        case detail::kComputeTask: on_compute_task(idx, gen, cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;
       }
@@ -7954,7 +8051,7 @@ class Ring {
   uint32_t live_ = 0;
   std::vector<uint64_t> live_bits_;
   char* pool_ = nullptr;
-  // #80: the threads a promise is answered by. Empty until the first run
+  // #80: the threads a compute task is answered by. Empty until the first run
   // stops; ComputePool::stop() runs from its own destructor.
   ComputePool compute_;
   struct io_uring_buf_ring* buf_ring_ = nullptr;

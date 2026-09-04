@@ -120,5 +120,12 @@ A rename in C or C++ is an AST question, and a regex cannot answer it.
 Use a language server. clangd as an MCP server is the best form,
 because it answers inside the session; the command line is the fallback
 when no such server is attached.
+
+READ THE DIFF EITHER WAY. These tools are beta, and they say so. Here,
+`clang-refactor local-rename` of one struct rewrote an unrelated line
+of the flow table: `to(Node::kG9)` became `ComputeJobAsk:kG9)`. The
+compiler would have caught that one, but a rename that stays
+type-correct would go through. So: rename with the tool, then read what
+it changed, then build.
 Which tool answers what, the invocations, what clang-refactor cannot do,
 and what no tool can answer about an mruby method: `.DESIGN.md#tooling`.

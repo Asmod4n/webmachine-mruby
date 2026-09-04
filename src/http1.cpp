@@ -1181,7 +1181,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 }
 
 
-// #80: the bound answer for a resource that declared a promise, in a
+// #80: the bound answer for a resource that declared a compute task, in a
 // frame that can STOP. The whole reason this is a coroutine and not a
 // stage on the connection: at the stop, `view`, `method`, `path` and
 // every span in ReqValues point into a PROVIDED BUFFER, and on_recv
@@ -1189,7 +1189,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 // The bytes have to be copied either way; a frame the compiler manages
 // is the copy that cannot be short by one member.
 //
-// A resource that never says `promise` never reaches this. Its answer
+// A resource that never says `compute` never reaches this. Its answer
 // goes through answer_bound, straight, with no frame - #cold-paths
 // applied to control flow.
 Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan) {
@@ -1220,17 +1220,14 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
     BoundPrep prep;
     bound_prepare(r, ask, prep);
 
-    // can_park: this frame IS the thing that can hold a stopped run. It
-    // stays FALSE until a worker exists to answer one - a run that stops
-    // with nobody to resume it is a connection that hangs, and that is
-    // worse than a promise that is not kept yet. The declaration, the
-    // stop and the frame are all proven without it; this flag is the
-    // last line the crossing turns on.
-    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, false};
+    // can_park: this frame IS the thing that can hold a stopped run, so
+    // the walk may stop in it. What answers the stop is a worker, and
+    // the crossing to one is complete.
+    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
     const RunAnswer answer = {&body, &have_body, &rhdrs};
     uint16_t status = resource_run(res, asked, answer);
 
-    while (WM_H1_UNLIKELY(resource_stopped(res))) {
+    while (WM_H1_UNLIKELY(run_stopped(res))) {
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
       held.hold(s.head_at, s.head_len, prep.rv);
@@ -1243,6 +1240,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       s.nfields = held.nfields;
       s.spans = held.spans;
       s.vals = held.vals;
+
+      // The crossing, BEFORE the state travels: the block becomes an id
+      // and the arguments become CBOR while both the VM and the run's
+      // own state are still to hand. One line later res.run is gone
+      // from the resource, and neither could be read again.
+      compute_task_hand_over(st, res);
 
       // The walk's own state travels with the frame. res.run belongs to
       // the ROUTE, and the next request on it would write over this.
@@ -1260,12 +1263,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // connection lives past this answer was decided by the request
       // itself - its version and its Connection field - before the run
       // began. It travels in this frame, and `spell_next_round` reads it back out of
-      // the promise once the run is done.
+      // the promise_type once the run is done.
       sink = pr.sink;
       plan = pr.plan;
       pr.persist = s.persist;
       res.run = std::move(mine);
-      status = resource_resume(res, {&body, &have_body, &rhdrs}, st.promise_answer);
+      status = resource_resume(res, {&body, &have_body, &rhdrs}, st.compute_task_answer);
     }
 
     Round fr{st,          b,           s.view,      s.viewlen,    s.off,
@@ -1299,7 +1302,7 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
                          out.status,
                          s.lflags});
     }
-    // RFC 9112 9.3: the caller reads this out of the promise, whether it
+    // RFC 9112 9.3: the caller reads this out of the compute task, whether it
     // is the parse that started the run or the round that resumed it.
     co_return out.status;
   }
@@ -1549,10 +1552,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           else st.carry.erase(0, off);
           return true;
         }
-        // #80: a resource that declared a promise is answered inside a
+        // #80: a resource that declared a compute task is answered inside a
         // frame that can stop. The frame spells the whole answer,
         // including the access line, so nothing below is owed for it.
-        if (WM_H1_UNLIKELY(b->res->promise != 0)) {
+        if (WM_H1_UNLIKELY(b->res->compute != 0)) {
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + head_len,       head_len,   method,
                                     method_len,           path,       path_len,
