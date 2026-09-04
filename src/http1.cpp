@@ -637,7 +637,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
 // statx/read through the ring, and `more` puts the result on the wire.
 // A name this process already refused takes the same 404 the kernel's
 // own refusal would, spelled here since no ring trip is owed.
-bool Http1::answer_from_file(Round& r, uint16_t status) {
+bool Http1::answer_from_file(Round& r, uint16_t status, const std::string& rhdrs) {
   WantedFile wanted;
   if (!resource_file_wanted(*r.b->res, wanted) || status != 200) return false;
 
@@ -648,7 +648,7 @@ bool Http1::answer_from_file(Round& r, uint16_t status) {
   st.zc_release();
   if (st.file == nullptr) st.file = new Conn::FileXfer();
   st.file->pathname.assign(wanted.name);
-  st.file->field_lines = rhdrs_;
+  st.file->field_lines = rhdrs;
   st.file->content_type = !r.b->res->run.content_type.empty()
                               ? http::with_charset(r.b->res->run.content_type)
                               : r.b->konst.content_type;
@@ -1044,8 +1044,8 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
       lent_len = k == 1 ? iv[0].iov_len : 0;
     }
     if (lent == nullptr) {
-      body_.clear();
-      Assets::copy_wire(ae, {0, n}, body_);
+      ask.body.clear();
+      Assets::copy_wire(ae, {0, n}, ask.body);
     }
   }
   // response.file: the run named a file instead of spelling a body,
@@ -1056,8 +1056,8 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   // name this process already refused takes the same 404 the kernel's
   // own refusal takes, spelled right here since no ring trip is owed.
   {
-    if (WM_H1_UNLIKELY(answer_from_file(r, status))) {
-      body_.clear();
+    if (WM_H1_UNLIKELY(answer_from_file(r, status, ask.rhdrs))) {
+      ask.body.clear();
       // accept_gzip came in with `out` and stays there: the caller read
       // Accept-Encoding once, and a file answer does not change what the
       // client will take.
@@ -1071,11 +1071,11 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   }
   // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
   // this run spells its own. 500 stays on the exception path below.
-  if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !rhdrs_.empty()) &&
+  if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !ask.rhdrs.empty()) &&
                      status != 500)) {
     const bool bodyless = status == 204 || status == 304;
     if (bodyless || !have_body) {
-      body_.clear();
+      ask.body.clear();
       st.zc_release();
       lent = nullptr;
       lent_len = 0;
@@ -1099,7 +1099,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
       const ErrorPages::Fields none;
       const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
       if (ep != nullptr) {
-        body_.assign(ep, elen);
+        ask.body.assign(ep, elen);
         have_body = true;
         ctype = err_pages_.media_type(em);
       }
@@ -1111,12 +1111,12 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
       else if (have_body || baked) ctype = b->konst.content_type;
     }
     const SpelledHead head = {
-        status, date_, ctype, rhdrs_, minor, persist, bodyless,
-        lent != nullptr ? lent_len : (baked ? b->konst.body.size() : body_.size())};
+        status, date_, ctype, ask.rhdrs, minor, persist, bodyless,
+        lent != nullptr ? lent_len : (baked ? b->konst.body.size() : ask.body.size())};
     spell_head(sink, head);
     if (!bodyless && !head_only) {
       if (lent != nullptr) lend_body(st, sink, {{lent, lent_len}, *plan});
-      else sink.append(baked ? b->konst.body : body_);
+      else sink.append(baked ? b->konst.body : ask.body);
     }
     have_body = false;
     answered = true;
@@ -1187,7 +1187,7 @@ Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
                             ? zc_min_
                             : 0;
   const RunAsk asked = {facts, &vals, &rv, zc_min};
-  const RunAnswer answer = {&body_, &have_body, &rhdrs_};
+  const RunAnswer answer = {&ask.body, &have_body, &ask.rhdrs};
   status = resource_run(*b->res, asked, answer);
   out.status = status;
   out.have_body = have_body;
@@ -1402,7 +1402,12 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
                  path, path_len, minor,     persist,  head_only,
                  w.content_length, lflags,   facts,    vals};
         BoundOut bo;
-        const BoundAsk basked = {headers, num_headers, spans, slot.table, route, plan, sink};
+        // body_ and rhdrs_ are this writer's own scratch, reused request
+        // after request. The straight path hands them in; a parked run
+        // will hand in a pair of its own.
+        const BoundAsk basked = {headers, num_headers, spans,  slot.table,
+                                 route,   plan,        sink,   body_,
+                                 rhdrs_};
         if (WM_H1_UNLIKELY(answer_bound(br, basked, bo) == Took::kOwed)) {
           have_body = false;
           return true;

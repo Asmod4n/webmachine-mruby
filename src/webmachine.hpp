@@ -5042,6 +5042,14 @@ class Http1 {
     int route;
     Plan* plan;
     std::string& sink;
+    // Where the run writes its body and its field lines. They used to be
+    // two Http1 members, reused request after request. A run that PARKS
+    // may not share them: the next request on this connection's ring
+    // would write over what the parked one still owes, so a parked run
+    // brings its own and the straight path keeps handing in the pair it
+    // always reused.
+    std::string& body;
+    std::string& rhdrs;
   };
   // What the bound branch produced. `answered` means it spelled its own
   // head into the sink and the answer switch has nothing left to do.
@@ -5231,7 +5239,7 @@ class Http1 {
   // RFC 9110 6.3: response.file named a file, so no body is spelled here
   // - the framing goes onto the connection and the reactor drives
   // openat2/statx/read. Answers whether it took the round.
-  bool answer_from_file(Round& r, uint16_t status);
+  bool answer_from_file(Round& r, uint16_t status, const std::string& rhdrs);
 
   // RFC 9110 6.3 / RFC 9111: a mounted archive answers this target, head
   // and body, without the flow or the VM. /error_assets/ resolves against
