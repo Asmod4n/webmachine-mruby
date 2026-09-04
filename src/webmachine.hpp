@@ -1098,23 +1098,6 @@ inline constexpr size_t kFingerprintLen = 16;
 // the retention that says so.
 inline constexpr size_t kBodyKept = 4096;
 
-// WHEN a body is worth lending instead of copying (#39b8c1a).
-//
-// A lend saves the copy and costs a segment: the head is in the sink and
-// the body is somewhere else, so the round leaves as sendmsg with an
-// iovec instead of send with one pointer. On h1 that is one syscall per
-// answer, and the kernel's iovec walk is more than a memcpy of a few
-// hundred bytes - measured on examples/hello.rb, whose body is 39 bytes:
-// 1002595 rps before the lend, 885187 after.
-//
-// So a small body is copied, as it always was, and a big one is lent -
-// which is where the lend was going all along: 300 stalled readers of a
-// 64 KB answer held 19.5 MB of duplicates.
-//
-// The number is a break-even and belongs to the machine that runs it.
-// Move it with bench/floor.sh, not by reasoning.
-inline constexpr size_t kLendFloor = 4096;
-
 // What THIS build of the app is: FNV-1a over the bytecode the server
 // loaded, taken once at startup. Every fingerprint carries it, so a rake
 // that changed anything gives every failure a new hash - a hash reported
@@ -5546,17 +5529,12 @@ class Http1 {
                        err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
                       sink);
         } else if (status == 200 && !head_only && plan != nullptr &&
-                   b->konst.body.size() >= kLendFloor) {
+                   !b->konst.body.empty()) {
           // The konst body is a std::string built at SETUP and immortal for
           // the life of the process - no mrb_value, nothing for the GC to
           // move or collect, so it is LENT as a pointer rather than copied
           // into this connection's sink. Copying it cost every stalled
           // reader a private duplicate of the same answer.
-          //
-          // Only from kLendFloor up. Below it the whole prebuilt 200 goes
-          // into the sink - head, Content-Length and body in one piece,
-          // which leaves as ONE send instead of a sendmsg with two
-          // segments.
           const Resp& pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                        : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
           sink.append(pfx.bytes);
