@@ -1098,6 +1098,26 @@ inline constexpr size_t kFingerprintLen = 16;
 // the retention that says so.
 inline constexpr size_t kBodyKept = 4096;
 
+// WHEN a body is worth lending instead of copying.
+//
+// A lend saves the copy and costs a segment: the head is in the sink and
+// the body is somewhere else, so the answer leaves as sendmsg with an
+// iovec instead of send with one pointer. Two profiles of the same h1
+// run say what that costs. Before the lend: io_send 2.26%, import_ubuf
+// 0.27%, io_send_setup 0.14%. After it: io_msg_copy_hdr 1.68,
+// copy_iovec_from_user 1.39, ____sys_sendmsg 1.42, __import_iovec 0.81,
+// io_net_import_vec 0.72, iovec_from_user 0.50, __copy_msghdr 0.13, plus
+// io_sendmsg_prep and io_sendmsg_setup. Five points of one core.
+//
+// examples/hello.rb has a 39-byte body. The copy it saves is nothing.
+// So a small body is copied, as it was, and a big one is lent - which is
+// the case the lend was written for: 300 stalled readers of a 64 KB
+// answer held 19.5 MB of duplicates.
+//
+// The number is a break-even and belongs to the machine that runs it.
+// bench/floor.sh moves it, not an argument.
+inline constexpr size_t kLendFloor = 4096;
+
 // What THIS build of the app is: FNV-1a over the bytecode the server
 // loaded, taken once at startup. Every fingerprint carries it, so a rake
 // that changed anything gives every failure a new hash - a hash reported
@@ -5561,12 +5581,16 @@ class Http1 {
                        err_pages_.media_for(status, vals.accept, vals.accept_len), f, head_only},
                       sink);
         } else if (status == 200 && !head_only && plan != nullptr &&
-                   !b->konst.body.empty()) {
+                   b->konst.body.size() >= kLendFloor) {
           // The konst body is a std::string built at SETUP and immortal for
           // the life of the process - no mrb_value, nothing for the GC to
           // move or collect, so it is LENT as a pointer rather than copied
           // into this connection's sink. Copying it cost every stalled
           // reader a private duplicate of the same answer.
+          //
+          // From kLendFloor up. Below it the whole prebuilt 200 goes into
+          // the sink - head, Content-Length and body in one piece - and
+          // the round leaves as ONE send.
           const Resp& pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                        : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
           sink.append(pfx.bytes);
