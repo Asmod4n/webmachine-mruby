@@ -5391,6 +5391,21 @@ class Http1 {
   // frame that can stop. A resource that declared none never reaches
   // this and pays no frame.
   Run bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan);
+  // What one such round leaves for the parse to do next.
+  enum class ComputeRound : uint8_t {
+    kNext,    // answered here; read the next request out of this buffer
+    kParked,  // stopped; what is left waits in the carry
+    kClosed,  // the answer was the connection's last
+  };
+  // The whole compute round, OUT of feed_parse. It is cold - a resource
+  // that never said `compute` does not reach it - and feed_parse is the
+  // hottest function in the server, 20764 bytes against a 32 KiB L1i
+  // (.DESIGN.md #cold-paths, which measured ~14 KB before this branch
+  // existed). Inlined here it was paid for by every request that never
+  // ran a compute task.
+  __attribute__((noinline)) ComputeRound start_compute_round(Conn& st, const BoundStart& s,
+                                                             std::string* sink, Plan* plan,
+                                                             size_t& off);
 
   // kOwed = nothing is answered yet: the body is still coming, or a file
   // is being fetched through the ring.

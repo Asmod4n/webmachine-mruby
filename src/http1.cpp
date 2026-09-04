@@ -1194,6 +1194,42 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 // A resource that never says `compute` never reaches this. Its answer
 // goes through answer_bound, straight, with no frame - #cold-paths
 // applied to control flow.
+// The compute round, out of line and out of feed_parse (#cold-paths).
+// Everything here happens only for a resource that said `compute`, and
+// feed_parse is walked by every request that did not.
+Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, std::string* sink,
+                                               Plan* plan, size_t& off) {
+  st.parked = bound_run(st, s, sink, plan);
+  // The bookkeeping is done HERE either way, because the bytes it moves
+  // belong to the buffer the parse was handed, and a stopped run
+  // outlives it. #decide-then-do. BoundStart::off is already past the
+  // head, which is what the parse has to carry on from.
+  off = s.off;
+  if (s.content_length != 0) {
+    const size_t avail = s.viewlen - off;
+    const size_t skip = s.content_length < avail ? s.content_length : avail;
+    off += skip;
+    st.content_skip = s.content_length - skip;
+  }
+  if (!st.parked.done()) {
+    // Stopped. What is left in the buffer waits in the carry: RFC 9112
+    // 9.3.2 puts the answers out in the order the requests came, so
+    // nothing behind it may speak first.
+    const size_t rest = s.viewlen - off;
+    if (s.in_place) st.carry.assign(s.view + off, rest);
+    else st.carry.erase(0, off);
+    return ComputeRound::kParked;
+  }
+  const bool alive = st.parked.co.promise().persist;
+  st.parked.destroy();
+  if (!alive) {
+    st.carry.clear();
+    st.content_skip = 0;
+    return ComputeRound::kClosed;
+  }
+  return ComputeRound::kNext;
+}
+
 Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan) {
   const Bundle* const b = s.b;
   const Resource& res = *b->res;
@@ -1583,33 +1619,9 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
                                     spans,    slot.table, facts,      vals,
                                     route,    minor,      lflags,     in_place,
                                     persist,  head_only};
-          st.parked = bound_run(st, start, &sink, plan);
-          // The bookkeeping is done HERE either way, because the bytes
-          // it moves belong to the buffer this call was handed, and a
-          // stopped run outlives it. #decide-then-do.
-          off += head_len;
-          if (w.content_length != 0) {
-            const size_t avail = viewlen - off;
-            const size_t skip = w.content_length < avail ? w.content_length : avail;
-            off += skip;
-            st.content_skip = w.content_length - skip;
-          }
-          if (WM_H1_UNLIKELY(!st.parked.done())) {
-            // Stopped. What is left in the buffer waits in the carry:
-            // RFC 9112 9.3.2 puts the answers out in the order the
-            // requests came, so nothing behind it may speak first.
-            const size_t rest = viewlen - off;
-            if (in_place) st.carry.assign(view + off, rest);
-            else st.carry.erase(0, off);
-            return true;
-          }
-          const bool alive = st.parked.co.promise().persist;
-          st.parked.destroy();
-          if (WM_H1_UNLIKELY(!alive)) {
-            st.carry.clear();
-            st.content_skip = 0;
-            return false;
-          }
+          const ComputeRound r = start_compute_round(st, start, &sink, plan, off);
+          if (WM_H1_UNLIKELY(r == ComputeRound::kParked)) return true;
+          if (WM_H1_UNLIKELY(r == ComputeRound::kClosed)) return false;
           continue;
         }
         Round br{st,   b,        view,      viewlen,  off + head_len,
