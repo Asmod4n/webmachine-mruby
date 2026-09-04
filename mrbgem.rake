@@ -273,6 +273,16 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   end
   spec.cxx.include_paths << mime_gen
 
+  # -Wundef comes from mruby's own gcc toolchain
+  # (mruby/tasks/toolchains/gcc.rake:3) and reaches every source this gem
+  # builds. It finds nothing here and hundreds of lines in the headers
+  # this tree INCLUDES - ada.h, simdutf.h, lshpack.c - which are other
+  # people's and not ours to fix. The result is a build whose real
+  # warnings scroll away, and the last flag wins, so this turns it off
+  # for THIS gem's sources only. Every other warning stays.
+  spec.cc.flags  << '-Wno-undef'
+  spec.cxx.flags << '-Wno-undef'
+
   # SHA1() for the websocket handshake (#175) comes out of the SAME
   # libcrypto the key exchange uses - mruby-ktls vendors it and exports
   # its headers, and this gem no longer names the machine's. The
