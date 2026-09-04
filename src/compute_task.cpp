@@ -159,11 +159,105 @@ mrb_value compute_task_initialize(mrb_state* mrb, mrb_value self) {
 
 }  // namespace
 
+// #80: Webmachine::Workers::Registry. What a worker keeps between
+// jobs, and the only way it can keep anything: a block carries no
+// environment, so a database or a connection has to be built inside
+// the worker's own VM.
+//
+// The main VM registers a proc. Every worker runs it once when it
+// opens, and keeps what it answers under the same key. The key travels
+// as a string, because an mrb_sym is a number one VM handed out.
+namespace {
+
+std::mutex& builds_mutex() {
+  static std::mutex m;
+  return m;
+}
+
+std::vector<WorkerBuild>& builds() {
+  static std::vector<WorkerBuild> v;
+  return v;
+}
+
+bool builds_closed_ = false;
+
+// The table a worker built for itself, under the same keys. Read by a
+// block through Registry[], and by nothing else.
+mrb_value worker_table(mrb_state* mrb) {
+  struct RClass* const workers = mrb_module_get_under_id(
+      mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Workers));
+  return mrb_iv_get(mrb, mrb_obj_value(workers), MRB_IVSYM(built));
+}
+
+// Registry[key] - inside a worker, this worker's own value.
+mrb_value registry_get(mrb_state* mrb, mrb_value self) {
+  (void)self;
+  mrb_value key;
+  mrb_get_args(mrb, "o", &key);
+  const mrb_value table = worker_table(mrb);
+  if (!mrb_hash_p(table)) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "Webmachine::Workers::Registry answers inside a worker only - the values are "
+              "built there, one per worker, and this VM has none");
+  }
+  return mrb_hash_get(mrb, table, key);
+}
+
+// Registry[key] = proc - in the main VM, at startup.
+mrb_value registry_set(mrb_state* mrb, mrb_value self) {
+  (void)self;
+  mrb_value key;
+  mrb_value block;
+  mrb_get_args(mrb, "oo", &key, &block);
+  if (!mrb_proc_p(block)) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "Webmachine::Workers::Registry takes a proc that BUILDS the value, not the "
+              "value - an object cannot cross into a worker, and how to build one can");
+  }
+  const mrb_value name = mrb_obj_as_string(mrb, key);
+  if (!worker_build_register(mrb, std::string(RSTRING_PTR(name), RSTRING_LEN(name)), block)) {
+    mrb_raisef(mrb, E_WM_ERROR(mrb),
+               "Webmachine::Workers::Registry[%v] was set after the workers started - they "
+               "were built already, so this key exists in none of them",
+               key);
+  }
+  return block;
+}
+
+}  // namespace
+
+bool worker_build_register(mrb_state* mrb, std::string key, mrb_value block) {
+  std::lock_guard<std::mutex> hold(builds_mutex());
+  if (builds_closed_) return false;
+  const mrb_value bytes = mrb_proc_to_irep(mrb, mrb_proc_ptr(block));
+  if (mrb->exc != nullptr || !mrb_string_p(bytes)) {
+    mrb->exc = nullptr;
+    return false;
+  }
+  WorkerBuild b;
+  b.key = std::move(key);
+  b.irep.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+  builds().push_back(std::move(b));
+  return true;
+}
+
+const std::vector<WorkerBuild>& worker_builds() { return builds(); }
+
+void worker_builds_close() {
+  std::lock_guard<std::mutex> hold(builds_mutex());
+  builds_closed_ = true;
+}
+
 void compute_task_init_class(mrb_state* mrb, struct RClass* wm) {
   compute_task_class_ = mrb_define_class_under_id(mrb, wm, MRB_SYM(ComputeTask),
                                                  mrb->object_class);
   mrb_define_method_id(mrb, compute_task_class_, MRB_SYM(initialize), compute_task_initialize,
                        MRB_ARGS_ANY() | MRB_ARGS_BLOCK());
+
+  struct RClass* workers = mrb_define_module_under_id(mrb, wm, MRB_SYM(Workers));
+  struct RClass* registry = mrb_define_module_under_id(mrb, workers, MRB_SYM(Registry));
+  mrb_define_class_method_id(mrb, registry, MRB_OPSYM(aref), registry_get, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, registry, MRB_OPSYM(aset), registry_set, MRB_ARGS_REQ(2));
 }
 
 bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
@@ -298,6 +392,11 @@ struct WorkerVm {
   bool open() {
     mrb = mrb_open();
     if (mrb == nullptr) return false;
+    // Every mrb_state in this process, and a worker's is one: mruby-task
+    // caches VM-owned objects in file-scope statics, so a queue built in
+    // one VM answers with another VM's objects. The HAL header says why
+    // it can only happen here, after mrb_open.
+    mrb_hal_task_drop_queue(mrb);
     // The scheduler STAYS on. Every declared block runs as a Task, which
     // is what makes a deadline enforceable: mruby preempts Ruby at a
     // safe point, and mrb_terminate_task ends a run that is over its
@@ -308,6 +407,34 @@ struct WorkerVm {
       return false;
     }
     mrb_gc_register(mrb, wrap);
+    return build_registry();
+  }
+
+  // What the application registered, built HERE, once, in this VM. A
+  // handle belongs to the VM that opened it, so every worker opens its
+  // own - and reads it back without a lock, because nothing is shared.
+  //
+  // A build that fails takes the worker with it. That is the same rule
+  // every other startup failure follows: a path that cannot be opened
+  // is said at the start, never on the first request.
+  bool build_registry() {
+    const mrb_value table = mrb_hash_new(mrb);
+    struct RClass* const workers = mrb_module_get_under_id(
+        mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Workers));
+    mrb_iv_set(mrb, mrb_obj_value(workers), MRB_IVSYM(built), table);
+    for (const WorkerBuild& b : worker_builds()) {
+      const mrb_value proc = mrb_proc_from_irep(mrb, b.irep.data(), b.irep.size());
+      if (mrb->exc != nullptr || !mrb_proc_p(proc)) {
+        mrb->exc = nullptr;
+        return false;
+      }
+      const mrb_value v = mrb_funcall_argv(mrb, proc, MRB_SYM(call), 0, nullptr);
+      if (mrb->exc != nullptr) {
+        mrb->exc = nullptr;
+        return false;
+      }
+      mrb_hash_set(mrb, table, mrb_symbol_value(mrb_intern(mrb, b.key.data(), b.key.size())), v);
+    }
     return true;
   }
 
@@ -470,6 +597,10 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // The VM this worker answers in, built ONCE. A worker that cannot
   // open one answers nothing: it goes, and the pool is short one
   // thread rather than quietly running a job on the wrong VM.
+  // No key may be added once a worker has read the list: it would
+  // exist in this worker and in no other.
+  worker_builds_close();
+
   WorkerVm vm;
   if (!vm.open()) {
     vm.close();

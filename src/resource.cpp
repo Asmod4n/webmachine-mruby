@@ -829,7 +829,7 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
     }
     // A declared node is CALLED like any other, and its class method is
     // cheap by construction: it only builds the arguments this request
-    // has to hand. What it answers must be a Webmachine::Worker::Promise
+    // has to hand. What it answers must be a Webmachine::ComputeTask
     // - a callback that declared one owes one.
     const mrb_value v = nodecall(r, nd, args);
     if (WM_RES_UNLIKELY(((res.compute >> i) & 1) != 0)) {
@@ -837,7 +837,7 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       if (WM_RES_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n is declared `compute` and answered %v - it owes a "
-                   "Webmachine::Worker::Promise",
+                   "Webmachine::ComputeTask",
                    res.node_sym[i], v);
       }
       // Nobody can park this run: the caller holds no frame that could
@@ -1834,7 +1834,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
       if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "compute :%n, but %n is not defined - write it as def self.%n and answer "
-                   "with a Webmachine::Worker::Promise",
+                   "with a Webmachine::ComputeTask",
                    want, want, want);
       }
       if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) == 0)) {

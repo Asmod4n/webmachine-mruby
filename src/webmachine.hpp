@@ -2884,6 +2884,32 @@ struct ComputeTaskCode {
   // Promise the block came from, so it is read once as well.
   double max_runtime = 0.0;
 };
+// #80: what a worker keeps between jobs. A block carries no
+// environment, so it cannot hold a database or a connection - and
+// opening one per request would cost more than the work it exists for.
+//
+// So the application registers HOW TO BUILD one, and every worker runs
+// that once when it opens its VM:
+//
+//   Webmachine::Workers::Registry[:db] = proc { MDB::Env.new(path) }
+//
+// and a block reads back its OWN worker's value under the same key. No
+// lock anywhere: nothing is shared, because each worker built its own.
+//
+// The key crosses as a STRING, not as a symbol. An mrb_sym is a number
+// one VM handed out, and it means nothing in another.
+struct WorkerBuild {
+  std::string key;
+  std::string irep;
+};
+// Registered from the main VM at startup. Answers false when the pool
+// has already started - a key set then exists in no worker.
+bool worker_build_register(mrb_state* mrb, std::string key, mrb_value block);
+const std::vector<WorkerBuild>& worker_builds();
+// Said once, when the first worker starts. After it a registration is
+// refused rather than silently missing from every worker.
+void worker_builds_close();
+
 // No block: the dump refused, which only a proc that mruby cannot dump
 // does. A run that gets this answers as if the pool were full.
 inline constexpr unsigned kComputeTaskNoCode = ~0u;
