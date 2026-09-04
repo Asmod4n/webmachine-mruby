@@ -5029,6 +5029,37 @@ class Http1 {
     kClose         // answered, and the connection ends
   };
 
+  // #80: what the BOUND answer needs beyond the Round. The bound branch
+  // used to sit inline in feed_parse, and it has to leave: a run that
+  // parks returns out of it and comes back later, which an inline block
+  // in a loop body cannot do. Same rule as Spelling below - these
+  // travelled together as a dozen arguments, so they are a type.
+  struct BoundAsk {
+    const void* fields;
+    size_t nfields;
+    const RouteSpans& spans;
+    const RouteTable* table;
+    int route;
+    Plan* plan;
+    std::string& sink;
+  };
+  // What the bound branch produced. `answered` means it spelled its own
+  // head into the sink and the answer switch has nothing left to do.
+  struct BoundOut {
+    uint16_t status = 0;
+    bool have_body = false;
+    bool answered = false;
+    // Read once here and used twice: the zero-copy gate inside, and
+    // assemble_dynamic in the answer switch outside. Accept-Encoding does
+    // not change between the two, so it is not read twice.
+    bool accept_gzip = false;
+    const char* lent = nullptr;
+    size_t lent_len = 0;
+  };
+  // kOwed = nothing is answered yet: the body is still coming, or a file
+  // is being fetched through the ring.
+  Took answer_bound(Round& r, const BoundAsk& ask, BoundOut& out);
+
   // #80: what the answer switch needs beyond the Round - the sink it
   // writes to, the plan a lend rides out on, and what the run left
   // behind. A struct because these travelled together as nine

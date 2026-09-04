@@ -151,6 +151,12 @@ bool tick_all() {
 }
 
 void ticker_main() {
+  // Named, so a backtrace says which thread this is. A tick that fires
+  // in the wrong place is found by reading a stack, and a stack that
+  // only says "Thread 3" hides the one fact worth having.
+#if defined(__linux__)
+  pthread_setname_np(pthread_self(), "wm-task-tick");
+#endif
   for (;;) {
     {
       std::unique_lock<std::mutex> lk(g().wake);

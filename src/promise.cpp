@@ -22,6 +22,8 @@
 
 #include <liburing.h>
 
+#include <pthread.h>
+
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -76,6 +78,18 @@ struct ComputePool::Impl {
 // wanted one would be a job for the reactor's core.
 void ComputePool::worker(Impl* impl, unsigned me) {
   struct io_uring* ring = &impl->rings[me];
+  // A thread with no name is a number in a backtrace, and a backtrace
+  // taken while a promise is being answered is exactly the one that has
+  // to say WHICH worker. Linux takes 16 bytes with the terminator, so
+  // the number has to fit inside that - it is not a place to be
+  // generous with words.
+#if defined(__linux__)
+  {
+    char name[16];
+    std::snprintf(name, sizeof(name), "wm-promise%u", me);
+    pthread_setname_np(pthread_self(), name);
+  }
+#endif
   for (;;) {
     struct io_uring_cqe* cqe = nullptr;
     const int rc = io_uring_wait_cqe(ring, &cqe);
