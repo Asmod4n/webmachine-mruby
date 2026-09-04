@@ -2940,6 +2940,12 @@ void watcher_init_class(mrb_state* mrb, struct RClass* wm);
 bool watcher_p(mrb_state* mrb, mrb_value v);
 unsigned watcher_events_mask(mrb_value v);
 bool watcher_aborted_p(mrb_value v);
+// The seconds a watcher may stay quiet, as `timeout:` gave them.
+double watcher_timeout(mrb_value v);
+// The deadline passed. The block runs with the `:timeout` event and
+// answers what happens next: true says the watcher waits again, false
+// says it aborted and the run goes on without it.
+bool watcher_deadline_passed(mrb_state* mrb, mrb_value v);
 int watcher_fd(mrb_value v);
 int watcher_slot(mrb_value v);
 void watcher_set_slot(mrb_value v, int slot);

@@ -25,6 +25,11 @@ struct WatcherData {
   unsigned events = POLLIN;
   // Set by watcher.abort, read after the block returns.
   bool aborted = false;
+  // #30: how many seconds this watcher may stay quiet. A descriptor
+  // that says nothing is the usual end of a wait, so a watcher owes a
+  // deadline the same way a compute task owes max_runtime. What the two
+  // do at the deadline differs, and only that.
+  double timeout = 0.0;
   struct io_uring* ring = nullptr;
   bool armed = false;
 };
@@ -74,17 +79,35 @@ mrb_value sym_of(mrb_state* mrb, unsigned mask) {
   return mrb_symbol_value(MRB_SYM(r));
 }
 
-// Watcher.new(source, :r) { |revents, watcher| ... } - a description.
-// Arming happens when a resource hands one back; see #30.
+// Watcher.new(source, :r, timeout: 5.0) { |revents, watcher| ... } - a
+// description. Arming happens when a resource hands one back; see #30.
 mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   mrb_value source;
   mrb_value events = mrb_symbol_value(MRB_SYM(r));
   mrb_value blk = mrb_nil_value();
-  mrb_get_args(mrb, "o|o&", &source, &events, &blk);
+  // mruby checks keywords against a DECLARED table. timeout is declared
+  // optional, so the refusal below is ours and says why a deadline is
+  // owed. The slot starts as undef, because mrb_get_args leaves a key
+  // that was not given untouched.
+  const mrb_sym kw_names[] = {MRB_SYM(timeout)};
+  mrb_value kw_values[1] = {mrb_undef_value()};
+  const mrb_kwargs kwargs = {1, 0, kw_names, kw_values, nullptr};
+  mrb_get_args(mrb, "o|o:&", &source, &events, &kwargs, &blk);
 
   if (mrb_nil_p(blk)) {
     mrb_raise(mrb, E_ARGUMENT_ERROR,
               "a watcher without a block would have nothing to do when it fires");
+  }
+
+  const mrb_value wait = mrb_undef_p(kw_values[0]) ? mrb_nil_value() : kw_values[0];
+  if (mrb_nil_p(wait)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR,
+              "a watcher wants timeout: - without a deadline it waits for a wakeup that "
+              "can stop coming, and the run waits with it");
+  }
+  const mrb_float secs = mrb_as_float(mrb, wait);
+  if (!(secs > 0.0)) {
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "timeout: %v is not a time a watcher could wait", wait);
   }
 
   // An Integer passes through; anything else is asked for fileno.
@@ -97,6 +120,7 @@ mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   auto* d = new WatcherData();
   d->fd = static_cast<int>(fd);
   d->events = mask_of(mrb, events);
+  d->timeout = static_cast<double>(secs);
   mrb_data_init(self, d, &watcher_type);
 
   // The only two the GC has to see.
@@ -134,6 +158,28 @@ mrb_value watcher_aborted(mrb_state* mrb, mrb_value self) {
   return mrb_bool_value(live(mrb, self)->aborted);
 }
 
+mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
+  return mrb_float_value(mrb, live(mrb, self)->timeout);
+}
+
+// #30: the peer said nothing for `timeout` seconds. That is the world
+// and not a fault of the application, so it arrives at the block as an
+// event, exactly as a readable descriptor does. `:timeout` is a value
+// that ARRIVES and cannot be ordered, which is why revents and events
+// do not share a menu.
+//
+// The block answers with what it does: it calls abort to give up, or it
+// returns and waits again. The reactor reads that answer here.
+mrb_value watcher_deadline_passed_m(mrb_state* mrb, mrb_value self) {
+  live(mrb, self);
+  const mrb_value blk = mrb_iv_get(mrb, self, MRB_IVSYM(block));
+  const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), self};
+  mrb_yield_argv(mrb, blk, 2, argv);
+  // The block can abort, and abort frees nothing - the CDATA is still
+  // here, so it is read after the call and not before.
+  return mrb_bool_value(!live(mrb, self)->aborted);
+}
+
 }  // namespace
 
 bool watcher_p(mrb_state* mrb, mrb_value v) {
@@ -146,6 +192,15 @@ unsigned watcher_events_mask(mrb_value v) {
 
 bool watcher_aborted_p(mrb_value v) {
   return static_cast<const WatcherData*>(DATA_PTR(v))->aborted;
+}
+
+double watcher_timeout(mrb_value v) {
+  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->timeout : 0.0;
+}
+
+bool watcher_deadline_passed(mrb_state* mrb, mrb_value v) {
+  return mrb_bool(watcher_deadline_passed_m(mrb, v));
 }
 
 int watcher_fd(mrb_value v) {
@@ -189,13 +244,17 @@ mrb_value watcher_block_of(mrb_state* mrb, mrb_value v) {
 void watcher_init_class(mrb_state* mrb, struct RClass* wm) {
   struct RClass* c = mrb_define_class_under_id(mrb, wm, MRB_SYM(Watcher), mrb->object_class);
   MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
-  mrb_define_method_id(mrb, c, MRB_SYM(initialize), watcher_init, MRB_ARGS_ARG(1, 1) | MRB_ARGS_BLOCK());
+  mrb_define_method_id(mrb, c, MRB_SYM(initialize), watcher_init,
+                       MRB_ARGS_ARG(1, 1) | MRB_ARGS_KEY(1, 0) | MRB_ARGS_BLOCK());
   mrb_define_method_id(mrb, c, MRB_SYM(source), watcher_source, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM(block), watcher_block, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM(events), watcher_events, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM_E(events), watcher_events_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(abort), watcher_abort, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM_Q(aborted), watcher_aborted, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, c, MRB_SYM(timeout), watcher_timeout_m, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, c, MRB_SYM(deadline_passed), watcher_deadline_passed_m,
+                       MRB_ARGS_NONE());
 }
 
 }  // namespace webmachine
