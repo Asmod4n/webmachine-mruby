@@ -17,10 +17,11 @@
 #
 #   CONNS=400 bench/floor.sh                      # AF_UNIX (default)
 #   CONNS=400 TRANSPORT=tcp bench/floor.sh
-#   IMPL=portable ...  the emergency exit (slipstreamIO, select(2)) -
-#                      what the way out costs, on the same wire
 #   IMPL=pgo ...       the same flags as host plus -fprofile-use, so the
 #                      A/B against IMPL=uring is PGO and nothing else
+#   IMPL=portable ...  REFUSED. 0b0b11d removed build_config_portable.rb,
+#                      so this named a binary nobody can produce - the
+#                      exact failure this file's header forbids.
 #   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
 #   REQPATH=/cpp ...   which route to ask for, when the app has several
 #   PIPELINE=8 ...     h1 requests in flight per connection (RFC 9112 9.3.2)
@@ -50,9 +51,14 @@ BIN="${BIN:-}"
 if [ -z "$BIN" ]; then
   case "$IMPL" in
     uring) BIN=mruby/build/host/bin/webmachine-server ;;
-    portable) BIN=mruby/build/portable/bin/webmachine-server ;;
     pgo) BIN=mruby/build/pgo/bin/webmachine-server ;;
-    *) echo "IMPL must be uring, portable or pgo" >&2; exit 2 ;;
+    portable)
+      echo "IMPL=portable is gone with build_config_portable.rb (0b0b11d)." >&2
+      echo "It would have run mruby/build/portable/bin/webmachine-server, which" >&2
+      echo "no config in this tree builds. Use IMPL=uring or IMPL=pgo." >&2
+      exit 2
+      ;;
+    *) echo "IMPL must be uring or pgo" >&2; exit 2 ;;
   esac
   cd "$(dirname "$0")/.." || exit 1
 else
@@ -282,12 +288,10 @@ OUT=$(mktemp)
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
   # The compiler flags are part of every number since they became a
   # variable (O2 -> O3+native landed mid-archive).
-  # Read from the config that built THIS binary - since the split there
-  # are four, and portable's flags are not host's.
-  case "$IMPL" in
-    portable) CFLAGS_SRC=build_config_portable.rb ;;
-    *)        CFLAGS_SRC=build_config_host.rb ;;
-  esac
+  # Read from the config that built THIS binary. pgo's -O and -march are
+  # host's; what it adds is -fprofile-use, which the IMPL field already
+  # says.
+  CFLAGS_SRC=build_config_host.rb
   CFLAGS_LINE=$(grep -o "'-O[^']*'.*" "$CFLAGS_SRC" 2>/dev/null | head -1 | tr -d "'\"" | tr '<' ' ' | tr -s ' ')
   # The config spells -march through a variable so a host that migrates
   # can pin it (WM_MARCH); the LOG has to say which ISA, not which shell
