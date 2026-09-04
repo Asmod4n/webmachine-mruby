@@ -101,5 +101,8 @@ there is no portable binary. Nothing else may fail.
 ## A symbol question is an AST question
 
 A rename in C or C++ is an AST question, and a regex cannot answer it.
+Use a language server. clangd as an MCP server is the best form,
+because it answers inside the session; the command line is the fallback
+when no such server is attached.
 Which tool answers what, the invocations, what clang-refactor cannot do,
 and what no tool can answer about an mruby method: `.DESIGN.md#tooling`.

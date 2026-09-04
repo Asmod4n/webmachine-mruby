@@ -454,13 +454,13 @@ void Http1::assemble_dynamic(const DynamicBody& d, std::string& sink) {
   bool use_gzip = false;
   if (d.may_gzip) {
     char cl[40];
-    const size_t cl_len = http::spell_content_length(cl, body_.size());
-    if (d.prefix_id.bytes.size() + cl_len + body_.size() >= kCompressFloor) {
-      use_gzip = gzip::compress(body_, gz_body_);
+    const size_t cl_len = http::spell_content_length(cl, d.body.size());
+    if (d.prefix_id.bytes.size() + cl_len + d.body.size() >= kCompressFloor) {
+      use_gzip = gzip::compress(d.body, gz_body_);
     }
   }
   if (use_gzip) assemble(sink, {d.prefix_gz, gz_body_, d.head_only});
-  else assemble(sink, {d.prefix_id, body_, d.head_only});
+  else assemble(sink, {d.prefix_id, d.body, d.head_only});
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
@@ -1204,6 +1204,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
   Held held;
   bool have_body = false;
 
+  // RFC 9112 9.3: the request decided this, and the caller reads it off
+  // the frame - whether that caller is the parse that started the run or
+  // the round that resumed it.
+  Run::promise_type& me = co_await Self{};
+  me.persist = s.persist;
+
   {
     Round r{st,          b,           s.view,      s.viewlen,    s.off,
             s.head_len,  s.in_place,  s.method,    s.method_len, s.path,
@@ -1214,9 +1220,13 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
     BoundPrep prep;
     bound_prepare(r, ask, prep);
 
-    // can_park: this frame IS the thing that can hold a stopped run, so
-    // the walk is told it may stop.
-    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
+    // can_park: this frame IS the thing that can hold a stopped run. It
+    // stays FALSE until a worker exists to answer one - a run that stops
+    // with nobody to resume it is a connection that hangs, and that is
+    // worse than a promise that is not kept yet. The declaration, the
+    // stop and the frame are all proven without it; this flag is the
+    // last line the crossing turns on.
+    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, false};
     const RunAnswer answer = {&body, &have_body, &rhdrs};
     uint16_t status = resource_run(res, asked, answer);
 
@@ -1269,14 +1279,28 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
     out.have_body = have_body;
     out.accept_gzip = prep.accept_gzip;
     if (WM_H1_UNLIKELY(bound_finish(fr, fask, out) == Took::kOwed)) {
-      // response.file: the reactor fetches it and `spell_next_round` puts it on the
-      // wire. Nothing is spelled here.
+      // response.file: the reactor fetches it and spell_next_round puts
+      // it on the wire. Nothing is spelled here.
       co_return 0;
     }
     const AnswerStep astep = spell_answer(
         fr, {*sink, plan, out.status, out.lent, out.lent_len, out.answered, out.have_body,
-             out.accept_gzip, &b->index});
-    (void)astep;
+             out.accept_gzip, &b->index, body});
+    // The access line is written HERE and not by the caller: a stopped
+    // run answers long after the caller returned, and the line belongs
+    // to the answer, not to the parse that started it.
+    if (alog_.enabled) {
+      log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
+                         {s.method, s.method_len},
+                         {s.path, s.path_len},
+                         {s.vals.log_ref, s.vals.log_ref_len},
+                         {s.vals.log_ua, s.vals.log_ua_len},
+                         (astep.answered && !s.head_only) ? astep.body_len : 0,
+                         out.status,
+                         s.lflags});
+    }
+    // RFC 9112 9.3: the caller reads this out of the promise, whether it
+    // is the parse that started the run or the round that resumed it.
     co_return out.status;
   }
 }
@@ -1525,6 +1549,46 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           else st.carry.erase(0, off);
           return true;
         }
+        // #80: a resource that declared a promise is answered inside a
+        // frame that can stop. The frame spells the whole answer,
+        // including the access line, so nothing below is owed for it.
+        if (WM_H1_UNLIKELY(b->res->promise != 0)) {
+          const BoundStart start = {b,        view + off, view,       viewlen,
+                                    off + head_len,       head_len,   method,
+                                    method_len,           path,       path_len,
+                                    w.content_length,     headers,    num_headers,
+                                    spans,    slot.table, facts,      vals,
+                                    route,    minor,      lflags,     in_place,
+                                    persist,  head_only};
+          st.parked = bound_run(st, start, &sink, plan);
+          // The bookkeeping is done HERE either way, because the bytes
+          // it moves belong to the buffer this call was handed, and a
+          // stopped run outlives it. #decide-then-do.
+          off += head_len;
+          if (w.content_length != 0) {
+            const size_t avail = viewlen - off;
+            const size_t skip = w.content_length < avail ? w.content_length : avail;
+            off += skip;
+            st.content_skip = w.content_length - skip;
+          }
+          if (WM_H1_UNLIKELY(!st.parked.done())) {
+            // Stopped. What is left in the buffer waits in the carry:
+            // RFC 9112 9.3.2 puts the answers out in the order the
+            // requests came, so nothing behind it may speak first.
+            const size_t rest = viewlen - off;
+            if (in_place) st.carry.assign(view + off, rest);
+            else st.carry.erase(0, off);
+            return true;
+          }
+          const bool alive = st.parked.co.promise().persist;
+          st.parked.destroy();
+          if (WM_H1_UNLIKELY(!alive)) {
+            st.carry.clear();
+            st.content_skip = 0;
+            return false;
+          }
+          continue;
+        }
         Round br{st,   b,        view,      viewlen,  off + head_len,
                  head_len, in_place, method,   method_len,
                  path, path_len, minor,     persist,  head_only,
@@ -1572,7 +1636,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
              path, path_len, minor,     persist,  head_only,
              w.content_length, lflags,   facts,    vals};
     const AnswerStep astep = spell_answer(
-        ar, {sink, plan, status, lent, lent_len, answered, have_body, accept_gzip, idx});
+        ar, {sink, plan, status, lent, lent_len, answered, have_body, accept_gzip, idx,
+             body_});
     if (alog_.enabled) {
       log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
                          {method, method_len},

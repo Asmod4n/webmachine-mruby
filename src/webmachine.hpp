@@ -4133,6 +4133,22 @@ class Http1 {
     Run::promise_type& await_resume() const noexcept { return *p; }
   };
 
+  // The same door, held open. A coroutine cannot name its own promise,
+  // and the run has to write into it before it ever stops: `persist` is
+  // the request's answer and the caller reads it off the frame. So this
+  // asks for the promise and refuses to suspend - await_suspend saying
+  // false means "carry on", which is the standard way to read your own
+  // frame without leaving it.
+  struct Self {
+    Run::promise_type* p = nullptr;
+    bool await_ready() const noexcept { return false; }
+    bool await_suspend(Run::handle h) noexcept {
+      p = &h.promise();
+      return false;
+    }
+    Run::promise_type& await_resume() const noexcept { return *p; }
+  };
+
 
   struct Conn {
     // No RFC: octets received and not yet parsed. The name is this
@@ -4954,6 +4970,10 @@ class Http1 {
   struct DynamicBody {
     const Resp& prefix_id;
     const Resp& prefix_gz;
+    // The bytes the run spelled. Handed in, never read off a member: a
+    // parked run writes into its own string, and the writer's own is
+    // already carrying the next request by the time this runs.
+    const std::string& body;
     bool may_gzip;
     bool head_only;
   };
@@ -5156,6 +5176,9 @@ class Http1 {
     bool have_body;
     bool accept_gzip;
     const std::array<uint16_t, 600>* idx;
+    // Same reason as DynamicBody::body: the run that spelled these bytes
+    // may be one that stopped, and then they are not the writer's.
+    const std::string& body;
   };
   // #80: the answer, spelled. Split out of feed_parse so the bound tier can
   // reach it from inside a coroutine while the konst tier keeps calling it
@@ -5181,7 +5204,7 @@ class Http1 {
     const bool have_body = sp.have_body;
     const bool accept_gzip = sp.accept_gzip;
     const std::array<uint16_t, 600>* const idx = sp.idx;
-    AnswerStep astep = answer_step({status, body_.size(), lent_len, answered, have_body,
+    AnswerStep astep = answer_step({status, sp.body.size(), lent_len, answered, have_body,
                                     lent != nullptr, b != nullptr && b->gzip_ok,
                                     b != nullptr && b->bound});
     mrb_value exc_value = mrb_nil_value();
@@ -5236,13 +5259,13 @@ class Http1 {
         const Resp& prefix_gz =
             minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
                        : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
-        assemble_dynamic({prefix_id, prefix_gz, accept_gzip && st.packetized, head_only}, sink);
+        assemble_dynamic({prefix_id, prefix_gz, sp.body, accept_gzip && st.packetized, head_only}, sink);
         break;
       }
       case AnswerStep::Shape::kPlain: {
         const Resp& prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                         : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-        assemble(sink, {prefix, body_, head_only});
+        assemble(sink, {prefix, sp.body, head_only});
         break;
       }
       case AnswerStep::Shape::kException: {
