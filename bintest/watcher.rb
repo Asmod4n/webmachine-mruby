@@ -52,7 +52,7 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
         r, w = IO.pipe
         lines = []
         begin
-          watcher = Webmachine::Watcher.new(r, :r) { |revents, self_| }
+          watcher = Webmachine::Watcher.new(r, :r, timeout: 5.0) { |revents, self_| }
           lines << "source:\#{watcher.source.fileno == r.fileno}"
           # events is what was ORDERED. :r is the default.
           lines << "events:\#{watcher.events}"
@@ -69,15 +69,15 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
           end
           # A bare Integer IS a source - hiredis hands its event
           # callbacks an int and has no object to offer.
-          bare = Webmachine::Watcher.new(r.fileno, :r) { }
+          bare = Webmachine::Watcher.new(r.fileno, :r, timeout: 50.ms) { }
           lines << "bare:\#{bare.source}"
           begin
-            Webmachine::Watcher.new('not a socket', :r) { }
+            Webmachine::Watcher.new('not a socket', :r, timeout: 5.0) { }
           rescue TypeError => e
             lines << "source_type:\#{e.message}"
           end
           begin
-            Webmachine::Watcher.new(r, :r)
+            Webmachine::Watcher.new(r, :r, timeout: 5.0)
           rescue ArgumentError => e
             lines << "no_block:\#{e.message}"
           end
@@ -111,4 +111,103 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
   assert_true out.match?(/^bare:\d+$/), out
   assert_true out.include?("source_type:can't convert String into Integer"), out
   assert_true out.include?('no_block:a watcher without a block'), out
+end
+
+# #30: a watcher owes a deadline, the same way a compute task owes
+# max_runtime. What the two do at the deadline is where they differ.
+assert('watcher: it owes a deadline, and it says so when it gets none') do
+  out = wa_body(<<~RUBY)
+    class Deadline < Webmachine::Resource
+      def self.to_html
+        r, w = IO.pipe
+        lines = []
+        begin
+          # mruby-chrono spells a time as Float seconds.
+          watcher = Webmachine::Watcher.new(r, :r, timeout: 50.ms) { }
+          lines << "timeout:\#{watcher.timeout}"
+          begin
+            Webmachine::Watcher.new(r, :r) { }
+          rescue ArgumentError => e
+            lines << "none:\#{e.message}"
+          end
+          begin
+            Webmachine::Watcher.new(r, :r, timeout: 0) { }
+          rescue ArgumentError => e
+            lines << "zero:\#{e.message}"
+          end
+          begin
+            Webmachine::Watcher.new(r, :r, timeout: -1.0) { }
+          rescue ArgumentError => e
+            lines << "past:\#{e.message}"
+          end
+        ensure
+          r.close
+          w.close
+        end
+        lines.join("\\n")
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], Deadline }
+      end
+    end
+  RUBY
+
+  assert_true out.include?('timeout:0.05'), out
+  assert_true out.include?('none:a watcher wants timeout:'), out
+  assert_true out.include?('zero:timeout: 0 is not a time a watcher could wait'), out
+  assert_true out.include?('past:timeout: -1.0 is not a time a watcher could wait'), out
+end
+
+# #30: the peer said nothing. That is the world, and not a fault of the
+# application - so the deadline reaches the block as an event, and the
+# block says what happens next.
+assert('watcher: the deadline reaches the block, and the block answers it') do
+  out = wa_body(<<~RUBY)
+    class Quiet < Webmachine::Resource
+      def self.to_html
+        r, w = IO.pipe
+        lines = []
+        begin
+          seen = []
+          waits = 0
+          patient = Webmachine::Watcher.new(r, :r, timeout: 50.ms) do |revents, watcher|
+            seen << revents
+            waits += 1
+            watcher.abort if waits == 2
+          end
+          # A watcher that wants to wait again says nothing, so it waits.
+          lines << "again:\#{patient.deadline_passed}"
+          lines << "alive:\#{patient.aborted?}"
+          # The second deadline makes it give up, and it says so.
+          lines << "over:\#{patient.deadline_passed}"
+          lines << "aborted:\#{patient.aborted?}"
+          lines << "events:\#{seen.join(',')}"
+        ensure
+          r.close
+          w.close
+        end
+        lines.join("\\n")
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], Quiet }
+      end
+    end
+  RUBY
+
+  # The block gets the event, and true says the run waits again.
+  assert_true out.include?('again:true'), out
+  assert_true out.include?('alive:false'), out
+  # abort inside the block is the one way to give up, and the answer
+  # carries it back to the reactor.
+  assert_true out.include?('over:false'), out
+  assert_true out.include?('aborted:true'), out
+  # `:timeout` ARRIVES, and cannot be ordered - so revents and events do
+  # not share a menu.
+  assert_true out.include?('events:timeout,timeout'), out
 end
