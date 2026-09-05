@@ -1214,3 +1214,54 @@ assert('h2: a websocket keeps taking bytes past the initial window (#30)') do
     end
   end
 end
+
+# RFC 8441 5: what a websocket needs from the handshake, h2 carries in
+# the CONNECT's fields. The subprotocol is one of those. The answer
+# names it in HPACK, and ls-hpack Huffman-codes the value, so what this
+# pins is the half that is h2's own: the client's offer reaches
+# initialize. bintest/websocket.rb pins the answer field over h1, and
+# the code that writes it is the same code.
+H2_WS_SUBPROTOCOL_APP = <<~RUBY_SRC unless defined?(H2_WS_SUBPROTOCOL_APP)
+  class H2Picky < Webmachine::WebsocketResource
+    def initialize
+      @offered = request.headers['sec-websocket-protocol'].to_s
+      'chat.v1' if @offered.split(',').map { |s| s.strip }.include?('chat.v1')
+    end
+
+    def on_data(data, binary)
+      @offered
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.websocket ['ws'], H2Picky }
+    end
+  end
+RUBY_SRC
+
+def h2_connect_subprotocol_block(path, offer)
+  b = h2_connect_block(path)
+  name = 'sec-websocket-protocol'
+  b << "\x00".b << name.bytesize.chr << name << offer.bytesize.chr << offer
+  b
+end
+
+assert('h2: the CONNECT carries the websocket subprotocol offer (RFC 8441)') do
+  h2_server(H2_WS_SUBPROTOCOL_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      offer = 'chat.v0, chat.v1'
+      s.write(h2_frame(1, 0x04, 1, h2_connect_subprotocol_block('/ws', offer)))
+      type, _flags, _stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0x88, block.getbyte(0), 'RFC 8441 answers 200'
+
+      s.write(h2_frame(0, 0x00, 1, ws_client_frame('what did I offer?')))
+      type, _flags, _stream, data = h2_next_payload(s)
+      assert_equal 0, type, 'the answer is DATA'
+      len = data.getbyte(1) & 0x7f
+      assert_equal offer, data[2, len]
+    end
+  end
+end
