@@ -1430,3 +1430,13 @@ lithium:    rps=157592 / 147845   server=99.7% of one core   MB/s=14.13 / 13.25
 webmachine: rps=219666 / 193397   server=98% of one core     MB/s=32.47 / 28.59
 # Both are server-bound, so the numbers measure the servers. At -c192 on
 # this 4-vCPU container the order turns: lithium 153104, webmachine 140192.
+==== 2026-09-05T07:12Z repo=cb163b5 comparison=lithium threads=2 ====
+# The same lithium build with s::nthreads = 2. Same box, same htgen, same
+# route. The client stays one thread, as every run in this file.
+harness: /home/user/asmod4n/htgen/htgen -c64/-c192 -d10s h1 transport=tcp
+lithium 2 threads: rps=130974 (c64) / 122589 (c192)   server=141% / 144% of one core
+lithium 1 thread:  rps=157592 (c64) / 153104 (c192)   server=100% of one core
+# Two threads are SLOWER here and cost 1.4 cores. The box has 4 vCPUs and
+# the client holds one of them, so the second server thread competes with
+# the client for what is left. This number says what happens on THIS box.
+# It does not say how lithium scales on a machine with cores to spare.
