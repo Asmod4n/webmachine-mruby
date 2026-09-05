@@ -215,8 +215,14 @@ SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
   return s;
 }
 
-// WHATWG HTML: one second has passed - ask the resource, frame what it said.
-bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
+// WHATWG HTML: one second has passed - ask the resource, and hand back
+// what it said as the event-stream bytes themselves.
+//
+// The framing is NOT here, because the two protocols frame it
+// differently: h1 wraps each tick in a chunk (RFC 9112 7.1) and h2 puts
+// the same bytes in DATA frames against the stream window (RFC 9113
+// 6.1). What the resource said is the same either way.
+bool sse_tick(SseStream* s, int64_t now_s, std::string& body) {
   const SseResource* r = s->res;
   mrb_state* mrb = r->mrb;
   if (s->last_tick_s == now_s) return true;
@@ -233,7 +239,6 @@ bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
   }
 
   bool go_on = true;
-  std::string body;
   if (mrb_symbol_p(out)) {
     if (mrb_symbol(out) != MRB_SYM(close)) {
       std::fprintf(stderr, "webmachine: SSE on_tick answered :%s - only :close is a word here\n",
@@ -260,15 +265,22 @@ bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
   mrb_gc_arena_restore(mrb, ai);
 
   if (!body.empty()) {
-    chunk(sink, body);
     s->last_out_s = now_s;
   } else if (go_on && r->heartbeat != 0 && now_s - s->last_out_s >= r->heartbeat) {
-    chunk(sink, ":\n\n");
+    // WHATWG HTML: a comment line, so a proxy in the middle sees traffic.
+    body.assign(":\n\n");
     s->last_out_s = now_s;
   }
-  if (!go_on) {
-    sink.append("0\r\n\r\n", 5);
-  }
+  return go_on;
+}
+
+// RFC 9112 7.1: h1's framing of one tick - a chunk, and a last chunk when
+// the stream ends.
+bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
+  std::string body;
+  const bool go_on = sse_tick(s, now_s, body);
+  chunk(sink, body);
+  if (!go_on) sink.append("0\r\n\r\n", 5);
   return go_on;
 }
 

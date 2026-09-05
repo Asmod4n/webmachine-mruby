@@ -3959,6 +3959,9 @@ void sse_init(mrb_state* mrb, struct RClass* wm);
 SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code);
 
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
+// WHATWG HTML: the same tick, unframed - what the resource said. h2 puts
+// these bytes in DATA frames instead of a chunk.
+bool sse_tick(SseStream* s, int64_t now_s, std::string& body);
 
 void sse_free(SseStream* s);
 }
@@ -4154,6 +4157,9 @@ struct SseResource;
 struct SseStream;
 SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code);
 bool sse_second(SseStream* s, int64_t now_s, std::string& sink);
+// WHATWG HTML: the same tick, unframed - what the resource said. h2 puts
+// these bytes in DATA frames instead of a chunk.
+bool sse_tick(SseStream* s, int64_t now_s, std::string& body);
 void sse_free(SseStream* s);
 
 struct H2State;
