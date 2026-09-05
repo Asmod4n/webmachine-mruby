@@ -58,6 +58,9 @@ enum : uint16_t {
   kH2SettingsMaxConcurrentStreams = 0x3,
   kH2SettingsInitialWindowSize = 0x4,
   kH2SettingsMaxFrameSize = 0x5,
+  // RFC 8441 3: the server says it accepts the extended CONNECT, which is
+  // how a WebSocket reaches an h2 stream.
+  kH2SettingsEnableConnectProtocol = 0x8,
 };
 
 inline constexpr char kH2Preface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

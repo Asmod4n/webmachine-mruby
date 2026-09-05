@@ -3493,6 +3493,8 @@ struct AssetEntry;
 // half is closed - so the fields are that list and nothing else.
 struct SseStream;
 void sse_free(SseStream* s);
+struct WsConn;
+void ws_free(WsConn* c);
 
 struct H2Stream {
   // RFC 9113 5.1.1: the Stream Identifier every frame carries.
@@ -3606,6 +3608,9 @@ struct H2Stream {
   bool end_headers = false;
   // RFC 9113 5.1: the peer will send no more DATA on this stream.
   bool half_closed_remote = false;
+  // RFC 8441: the WebSocket this h2 stream carries, or nothing. The
+  // stream is the transport - its DATA frames hold RFC 6455 frames.
+  WsConn* ws = nullptr;
   // WHATWG HTML: the event stream this h2 stream carries, or nothing.
   // One per STREAM, because an h2 connection multiplexes them - h1 keeps
   // its one on the connection.
@@ -3769,6 +3774,11 @@ struct H2State {
         if (streams[i].sse != nullptr) {
           sse_free(streams[i].sse);
           streams[i].sse = nullptr;
+        }
+        // RFC 6455 7: and the same for a WebSocket, which hears on_close.
+        if (streams[i].ws != nullptr) {
+          ws_free(streams[i].ws);
+          streams[i].ws = nullptr;
         }
         streams[i] = std::move(streams.back());
         streams.pop_back();
@@ -6039,6 +6049,19 @@ class Http1 {
   };
   bool h2_sse_begin(Conn& st, const H2SseAsk& ask, std::string& sink);
   void h2_sse_second(Conn& st);
+  // RFC 8441: a WebSocket on one h2 stream, opened by the extended
+  // CONNECT. The same fields the event stream needs, plus what the
+  // handshake reads.
+  struct H2WsAsk {
+    uint32_t stream_id;
+    uint16_t route;
+    std::string_view target;
+    RouteSpans* spans;
+    const void* fields;
+    size_t nfields;
+    const http::ReqValues* vals;
+  };
+  bool h2_ws_begin(Conn& st, const H2WsAsk& ask, std::string& sink);
   bool h2_frame(Conn& st, const H2Request& q, std::string& sink, H2Produced& p);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);

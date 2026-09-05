@@ -1024,3 +1024,74 @@ assert('h2: an event stream is HEADERS without END_STREAM, then DATA (#30)') do
     end
   end
 end
+
+# RFC 8441: a WebSocket on one h2 stream. The client sends an extended
+# CONNECT - :method CONNECT with :protocol websocket, and, unlike a plain
+# CONNECT, with :scheme and :path - and the answer is 200, not 101.
+H2_WS_APP = <<~RUBY_SRC unless defined?(H2_WS_APP)
+  class H2Echo < Webmachine::WebsocketResource
+    def on_data(data, binary)
+      data
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.websocket ['ws'], H2Echo }
+    end
+  end
+RUBY_SRC
+
+def h2_connect_block(path)
+  b = ''.b
+  b << "\x40\x07:method\x07CONNECT".b
+  b << "\x40\x09:protocol\x09websocket".b
+  b << "\x87".b
+  b << "\x40\x05:path#{path.bytesize.chr}#{path}".b
+  b << "\x41\x0bexample.com".b
+  b
+end
+
+# RFC 6455 5.2: a client frame is masked; this builds one.
+def ws_client_frame(payload, opcode = 0x1)
+  mask = [1, 2, 3, 4]
+  masked = payload.bytes.each_with_index.map { |b, i| b ^ mask[i % 4] }
+  ([0x80 | opcode, 0x80 | payload.bytesize] + mask + masked).pack('C*')
+end
+
+assert('h2: the server says it takes the extended CONNECT (RFC 8441)') do
+  h2_server(H2_WS_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write(H2_PREFACE + h2_frame(4, 0, 0, ''.b))
+      type, _flags, _stream, payload = h2_next(s)
+      assert_equal 4, type
+      # Every setting is a 6-byte pair; 0x8 is ENABLE_CONNECT_PROTOCOL.
+      seen = {}
+      payload.bytes.each_slice(6) { |p| seen[(p[0] << 8) | p[1]] = p[2..5].inject(0) { |a, b| (a << 8) | b } }
+      assert_equal 1, seen[0x8], seen.inspect
+    end
+  end
+end
+
+assert('h2: a websocket opens with CONNECT and echoes through DATA (RFC 8441)') do
+  h2_server(H2_WS_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_connect_block('/ws')))
+      type, flags, stream, block = h2_next(s)
+      assert_equal 1, type, 'HEADERS first'
+      assert_equal 1, stream
+      assert_true (flags & 0x04) != 0, 'END_HEADERS missing'
+      assert_true (flags & 0x01) == 0, 'a websocket stream must stay open'
+      assert_equal 0x88, block.getbyte(0), 'RFC 8441 answers 200, not 101'
+
+      s.write(h2_frame(0, 0x00, 1, ws_client_frame('hi')))
+      type, flags, stream, data = h2_next(s)
+      assert_equal 0, type, 'the answer is DATA'
+      assert_equal 1, stream
+      assert_true (flags & 0x01) == 0, 'an echo must not end the stream'
+      # RFC 6455 5.1: a server frame is not masked.
+      assert_equal [0x81, 0x02, 0x68, 0x69], data.bytes
+    end
+  end
+end

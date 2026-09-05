@@ -161,10 +161,15 @@ bool Http1::h2_begin(Conn& st, std::string& sink) {
   // The encoder allocates; without it there is no answer to send, so the
   // connection ends here rather than at the first field.
   if (!st.h2->hpack_ready) return false;
-  unsigned char payload[6];
+  unsigned char payload[12];
   payload[0] = 0;
   payload[1] = kH2SettingsMaxConcurrentStreams;
   put_u32(payload + 2, kH2MaxConcurrentStreams);
+  // RFC 8441 3: a WebSocket reaches an h2 stream through the extended
+  // CONNECT, and a client may only send one when the server said this.
+  payload[6] = 0;
+  payload[7] = kH2SettingsEnableConnectProtocol;
+  put_u32(payload + 8, 1);
   emit_control(sink, {kH2Settings, 0, 0, payload});
   return true;
 }
@@ -393,6 +398,13 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   // them first, which is also what h1 means by a header.
   struct phr_header hv[kH2MaxFields];
   size_t nh = 0;
+  // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
+  // and the method as the client spelled it - CONNECT is not one of the
+  // methods the flow knows, so parse_method answers kOther for it.
+  const char* protocol_val = nullptr;
+  size_t protocol_vlen = 0;
+  const char* method_val = nullptr;
+  size_t method_vlen = 0;
   for (size_t i = 0; ok && i < nq; i += 4) {
     const char* name = h2.hdrbuf.data() + quads[i];
     const size_t nlen = quads[i + 1];
@@ -410,6 +422,8 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       if (nlen == 7 && std::memcmp(name, ":method", 7) == 0) {
         if (have_method) { ok = false; break; }
         have_method = true;
+        method_val = val;
+        method_vlen = vlen;
         facts.method = http::parse_method(val, vlen);
       } else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) {
         if (path_val != nullptr) { ok = false; break; }
@@ -422,6 +436,11 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       } else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) {
         if (have_authority) { ok = false; break; }
         have_authority = true;
+      } else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0) {
+        // RFC 8441 4: only an extended CONNECT carries it, and only once.
+        if (protocol_val != nullptr) { ok = false; break; }
+        protocol_val = val;
+        protocol_vlen = vlen;
       } else {
         ok = false;
       }
@@ -487,6 +506,28 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
         }
       }
     }
+  }
+
+  // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
+  // Anything else that carries :protocol is malformed.
+  if (WM_H1_UNLIKELY(protocol_val != nullptr)) {
+    const bool is_connect = method_vlen == 7 && std::memcmp(method_val, "CONNECT", 7) == 0;
+    const bool is_ws = protocol_vlen == 9 && http::tok_eq({protocol_val, protocol_vlen},
+                                                          "websocket");
+    if (!is_connect || !is_ws || apps_[st0.listener].ws_table == nullptr) {
+      h2_rst(st0, stream_id, kH2ProtocolError, sink);
+      return true;
+    }
+    RouteSpans wspans;
+    const int wr = apps_[st0.listener].ws_table->match(path_val, path_vlen, wspans);
+    if (wr < 0) {
+      h2_rst(st0, stream_id, kH2RefusedStream, sink);
+      return true;
+    }
+    const H2WsAsk ask = {stream_id, static_cast<uint16_t>(wr), {path_val, path_vlen},
+                         &wspans,   hv,                       nh,
+                         &vals};
+    return h2_ws_begin(st0, ask, sink);
   }
 
   RouteSpans spans;
@@ -830,6 +871,90 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
 // other one takes the straight answer. The frame costs an allocation,
 // so only a resource that declared `compute` or `watch` pays for it -
 // the same rule h1 follows in feed_parse.
+// RFC 8441: a WebSocket on ONE h2 stream.
+//
+// The client sends an extended CONNECT - :method CONNECT with
+// :protocol websocket, and, unlike a plain CONNECT, with :scheme and
+// :path - so the route is looked up the way every other request's is.
+// The answer is 200 and not 101: there is nothing to switch, the stream
+// itself is the transport, and its DATA frames carry RFC 6455 frames.
+//
+// permessage-deflate is not negotiated here. h1 answers the extension
+// header; over h2 this opens the connection without it rather than
+// pretend a negotiation happened.
+bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
+  H2State& h2 = *st0.h2;
+  const AppSlot& slot = apps_[st0.listener];
+
+  ReqView rv;
+  rv.request_target = ask.target.data();
+  rv.request_target_len = ask.target.size();
+  rv.path_len = http::path_only(ask.target.data(), ask.target.size());
+  rv.method = flow::Method::kGet;
+  rv.table = slot.ws_table;
+  rv.route = ask.route;
+  rv.spans = ask.spans;
+  rv.fields = ask.fields;
+  rv.field_count = ask.nfields;
+  rv.values = ask.vals;
+  request_bind(&rv);
+  std::string proto;
+  uint16_t refused = 0;
+  WsConn* const c = ws_admit(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)],
+                             elog_.enabled ? &elog_ : nullptr, {proto, refused});
+  request_bind(nullptr);
+  if (c == nullptr) {
+    const uint16_t status = refused == 0 ? 403 : refused;
+    alog_status_ = status;
+    alog_bytes_ = 0;
+    H2Block blk;
+    h2_build_block(blk, {status, nullptr});
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()), kH2Headers,
+                             static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
+                             ask.stream_id});
+    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+    sink.append(blk.bytes);
+    return true;
+  }
+
+  H2Block blk;
+  h2_build_block(blk, {200, nullptr});
+  unsigned char ebuf[256];
+  unsigned char* ep = ebuf;
+  unsigned char* const eend = ebuf + sizeof(ebuf);
+  bool enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}});
+  h2.enc_ins++;
+  if (enc_ok && !proto.empty()) {
+    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
+    h2.enc_ins++;
+  }
+  if (!enc_ok) {
+    ws_free(c);
+    return h2_error(st0, kH2InternalError, sink);
+  }
+  const size_t elen = static_cast<size_t>(ep - ebuf);
+  unsigned char fh[kH2FrameHeaderLen];
+  h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
+                           kH2FlagEndHeaders, ask.stream_id});
+  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+  sink.append(blk.bytes);
+  sink.append(reinterpret_cast<const char*>(ebuf), elen);
+
+  const wsdeflate::Params none;
+  ws_open(c, none);
+  H2Stream& stp = h2.open(ask.stream_id);
+  stp.ws = c;
+  stp.streaming = true;
+  stp.end_headers = true;
+  // NOT half-closed: the peer keeps sending, and its DATA frames are the
+  // WebSocket's own.
+  stp.half_closed_remote = false;
+  alog_status_ = 200;
+  alog_bytes_ = 0;
+  return true;
+}
+
 // WHATWG HTML over RFC 9113: an event stream on ONE h2 stream.
 //
 // The head goes out as HEADERS without END_STREAM, and every later tick
@@ -1687,6 +1812,30 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           dlen--;
           if (pad > dlen) return h2_error(st0, kH2ProtocolError, sink);
           dlen -= pad;
+        }
+        // RFC 8441: on a WebSocket stream the DATA frames ARE the
+        // WebSocket. What the handler answers goes back on the same
+        // stream, against its window, like an event stream's ticks.
+        if (WM_H1_UNLIKELY(stp->ws != nullptr)) {
+          std::string out;
+          const bool go_on = ws_feed(stp->ws, {reinterpret_cast<const char*>(dp), dlen}, out);
+          if (!out.empty()) stp->response_content.append_owned(out.data(), out.size());
+          if (!go_on) {
+            // RFC 6455 7: the handler said the connection is over. What
+            // it still owes leaves first, and END_STREAM rides the last
+            // frame of it.
+            ws_free(stp->ws);
+            stp->ws = nullptr;
+            stp->streaming = false;
+            stp->half_closed_remote = true;
+            if (!stp->response_content.owes()) {
+              unsigned char eh[kH2FrameHeaderLen];
+              h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stream});
+              sink.append(reinterpret_cast<const char*>(eh), sizeof(eh));
+              h2.close_stream(stream);
+            }
+          }
+          break;
         }
         if (stp->content_received + dlen > kMaxBody) {
           h2_rst(st0, stream, kH2RefusedStream, sink);
