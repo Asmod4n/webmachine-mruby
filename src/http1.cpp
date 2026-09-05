@@ -1237,9 +1237,10 @@ Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, st
 }
 
 Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan* plan) {
+  const bool h1 = start.proto == RunStart::Proto::kH1;
   BoundStart s = start.h1;
-  const Bundle* const b = s.b;
-  const Resource& res = *b->res;
+  // h2 asks for its own bundle after the walk; h1 was handed one.
+  const Bundle* const b = h1 ? s.b : nullptr;
 
   // The frame's own scratch. A parked run may share none of it with the
   // next request on this connection: that one would write over what this
@@ -1253,31 +1254,52 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
   // the frame - whether that caller is the parse that started the run or
   // the round that resumed it.
   Run::promise_type& me = co_await Self{};
-  me.persist = s.persist;
+  me.persist = h1 ? s.persist : true;
 
   {
-    Round r{st,          b,           s.view,      s.viewlen,    s.off,
-            s.head_len,  s.in_place,  s.method,    s.method_len, s.path,
-            s.path_len,  s.minor,     s.persist,   s.head_only,  s.content_length,
-            s.lflags,    s.facts,     s.vals};
-    const BoundAsk ask = {s.fields, s.nfields, s.spans, s.table, s.route,
-                          plan,     *sink,     body,    rhdrs};
     BoundPrep prep;
-    bound_prepare(r, ask, prep);
+    H2Produced hp;
+    // h2 answers from COPIES: the dispatch buffers die with the round
+    // that read them, and a parked run answers after that. No Values
+    // either - the bytes went with them.
+    const H2Request hq = {start.h2.stream_id, start.h2.facts, nullptr,
+                          nullptr,            start.h2.target, start.h2.route,
+                          start.h2.head_only};
+    uint16_t status = 0;
+    if (h1) {
+      Round r{st,          b,           s.view,      s.viewlen,    s.off,
+              s.head_len,  s.in_place,  s.method,    s.method_len, s.path,
+              s.path_len,  s.minor,     s.persist,   s.head_only,  s.content_length,
+              s.lflags,    s.facts,     s.vals};
+      const BoundAsk ask = {s.fields, s.nfields, s.spans, s.table, s.route,
+                            plan,     *sink,     body,    rhdrs};
+      bound_prepare(r, ask, prep);
 
-    // can_park: this frame IS the thing that can hold a stopped run, so
-    // the walk may stop in it. What answers the stop is a worker, and
-    // the crossing to one is complete.
-    const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
-    const RunAnswer answer = {&body, &have_body, &rhdrs};
-    uint16_t status = resource_run(res, asked, answer);
+      // can_park: this frame IS the thing that can hold a stopped run, so
+      // the walk may stop in it. What answers the stop is a worker, and
+      // the crossing to one is complete.
+      const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
+      const RunAnswer answer = {&body, &have_body, &rhdrs};
+      status = resource_run(*b->res, asked, answer);
+    } else {
+      hp.body = &body;
+      hp.rhdrs = &rhdrs;
+      h2_produce(st, hq, true, hp);
+      status = hp.status;
+      have_body = hp.have_body;
+    }
+    // Which resource ran, if one did. A konst h2 route runs none, and
+    // then nothing here can stop.
+    const Bundle* const rb = h1 ? b : hp.b;
+    const Resource* const ran = (rb != nullptr && rb->bound) ? rb->res : nullptr;
 
     // #30: what this run waits on, in the frame that holds the run. The
     // connection only learns its ADDRESS, under a park slot, because a
     // completion carries a number and not a pointer.
     Conn::Round mine_round;
     int park = -1;
-    while (WM_H1_UNLIKELY(run_stopped(res))) {
+    while (WM_H1_UNLIKELY(ran != nullptr && run_stopped(*ran))) {
+      const Resource& res = *ran;
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
       held.hold(s.head_at, s.head_len, prep.rv);
@@ -1389,6 +1411,14 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     if (park >= 0) {
       st.park_drop(park);
       st.h1_park = -1;
+    }
+
+    // #30: the h2 tail. The walk is over, so what it left can be read
+    // now, and the frames go out through the SAME framer the straight
+    // path uses.
+    if (!h1) {
+      h2_after_run(st, hq, hp, status);
+      co_return h2_frame(st, hq, *sink, hp) ? 1 : 0;
     }
 
     Round fr{st,          b,           s.view,      s.viewlen,    s.off,

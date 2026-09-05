@@ -5665,6 +5665,17 @@ class Http1 {
     // proto == kH1. The bytes of the request, and everything the parse
     // read out of them.
     BoundStart h1{};
+    // proto == kH2. COPIES, because the dispatch buffers die with the
+    // round that read them and a parked run answers after that. It is
+    // the same reason h1 holds its head.
+    struct H2Start {
+      uint32_t stream_id = 0;
+      uint16_t route = 0;
+      bool head_only = false;
+      flow::ReqFacts facts{};
+      std::string target;
+    };
+    H2Start h2{};
   };
   Run run_parkable(Conn& st, RunStart s, std::string* sink, Plan* plan);
   // What one such round leaves for the parse to do next.
@@ -6010,6 +6021,32 @@ class Http1 {
   // fills it); empty keeps every prebuilt path byte-identical.
   std::string rhdrs_;
   char date_[29] = {};
+};
+
+// #30: the walk, and then the framing. They are two functions because a
+// run can STOP between them: a compute task or a watcher parks the run,
+// and the answer is framed when it comes back. One framer either way -
+// the parked path and the straight path must not spell two different
+// answers to the same request.
+struct Http1::H2Produced {
+  const Bundle* b = nullptr;
+  const std::array<uint16_t, 600>* idx = nullptr;
+  uint16_t status = 0;
+  bool have_body = false;
+  bool dynamic = false;
+  // What this run LENT instead of copying, if anything: not yet owned by
+  // a stream, so every path out of the framing still has to place or
+  // free it.
+  mrb_state* lent_mrb = nullptr;
+  mrb_value lent_v = {};
+  const char* lent = nullptr;
+  size_t lent_len = 0;
+  bool lent_have = false;
+  // The scratch this answer was spelled into. The straight path hands in
+  // the writer's own; a parked run hands in a pair of its own, because
+  // the writer's would be written over by the next request.
+  std::string* body = nullptr;
+  std::string* rhdrs = nullptr;
 };
 }
 

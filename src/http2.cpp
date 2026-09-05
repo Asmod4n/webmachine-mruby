@@ -716,32 +716,6 @@ uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
   return 500;
 }
 
-// #30: the walk, and then the framing. They are two functions because a
-// run can STOP between them: a compute task or a watcher parks the run,
-// and the answer is framed when it comes back. One framer either way -
-// the parked path and the straight path must not spell two different
-// answers to the same request.
-struct Http1::H2Produced {
-  const Bundle* b = nullptr;
-  const std::array<uint16_t, 600>* idx = nullptr;
-  uint16_t status = 0;
-  bool have_body = false;
-  bool dynamic = false;
-  // What this run LENT instead of copying, if anything: not yet owned by
-  // a stream, so every path out of the framing still has to place or
-  // free it.
-  mrb_state* lent_mrb = nullptr;
-  mrb_value lent_v = {};
-  const char* lent = nullptr;
-  size_t lent_len = 0;
-  bool lent_have = false;
-  // The scratch this answer was spelled into. The straight path hands in
-  // the writer's own; a parked run hands in a pair of its own, because
-  // the writer's would be written over by the next request.
-  std::string* body = nullptr;
-  std::string* rhdrs = nullptr;
-};
-
 // #30: what the run LEFT, read after it answered. A run that parked
 // answers long after h2_produce returned, so this is its own step - the
 // straight path calls it at once, and the coroutine calls it when the
