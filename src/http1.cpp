@@ -1302,9 +1302,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
         st.answer_ready = true;
       }
 
-      // The walk's own state travels with the frame. res.run belongs to
-      // the ROUTE, and the next request on it would write over this.
-      Resource::RunState mine = std::move(res.run);
+      // The walk's own state leaves the resource: res.run belongs to the
+      // ROUTE, and the next request on it would write over this. It
+      // waits on the CONNECTION, so a watcher block of this run can be
+      // given it back for as long as the block runs.
+      st.parked_run = std::move(res.run);
+      st.parked_run_held = true;
       res.run = Resource::RunState{};
 
       Run::promise_type& pr = co_await Park{};
@@ -1322,7 +1325,9 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       sink = pr.sink;
       plan = pr.plan;
       pr.persist = s.persist;
-      res.run = std::move(mine);
+      res.run = std::move(st.parked_run);
+      st.parked_run_held = false;
+      st.parked_run = Resource::RunState{};
       // Three refusals, and they must not be confused: a full pool is
       // load and passes, a deadline the author got wrong does not, and
       // a handle that died may come back (.DESIGN.md #promise-bound).

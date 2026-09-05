@@ -257,3 +257,37 @@ assert('watcher: a round waits on two watchers at one stop (#30)') do
   assert_true head.include?('ETag: "two-watchers"')
   assert_true head.include?('Last-Modified: Sun, 09 Sep 2001 01:46:40 GMT')
 end
+
+# #30: the block is written inside the resource, so `response` is in its
+# scope. While the run waits, the walk's state is on the connection -
+# and the block writes into the run that will resume.
+assert('watcher: the block speaks for the run it belongs to (#30)') do
+  head, body = wa_exchange(<<~RUBY_SRC)
+    class BlockSpeaks < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        r, w = IO.pipe
+        w.write('x')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
+          r.read(1)
+          response[:said] = 'kept in the block'
+          response.headers['X-From-Block'] = 'yes'
+          self_.abort
+          'etag-from-block'
+        end
+      end
+      def to_html
+        response[:said]
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], BlockSpeaks }
+      end
+    end
+  RUBY_SRC
+  assert_equal 'kept in the block', body
+  assert_true head.include?('ETag: "etag-from-block"')
+  assert_true head.include?('X-From-Block: yes')
+end

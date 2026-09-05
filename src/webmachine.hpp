@@ -2747,6 +2747,10 @@ struct Resource {
     // when the run ends. The run frame is its whole life - a value put
     // here in generate_etag is there in to_html, and it is gone before
     // the next request on this connection.
+    // #30: what the application itself carries from one callback to the
+    // next - `response[:key]`. A Hash, made when a callback first asks
+    // for it, and gone when the run ends. The server never reads a key
+    // of it.
     mrb_value kept = {};
     bool kept_held = false;
     mrb_value watch[kValueJobs] = {};
@@ -4430,6 +4434,14 @@ class Http1 {
     // IS its name - there is no slot table and no id to look it up by,
     // which is what the scaffolding this replaces was reaching for.
     Run parked;
+    // #30: the walk's own state while the run is parked. It used to be a
+    // local of the coroutine frame, which nothing outside that frame
+    // could reach - and a watcher block, which runs while the run
+    // waits, is outside it. The block is written in the resource, so
+    // `response` and `request` are in its scope; they answer for THIS
+    // run only if the state is to hand, so it waits here.
+    Resource::RunState parked_run;
+    bool parked_run_held = false;
     // #80: what the worker said, in THIS VM's values. The reactor puts
     // it here on the way in and the resumed walk reads it once. It is
     // rooted while it waits - nothing on the VM's stack names it.

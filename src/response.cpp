@@ -430,31 +430,6 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   return mrb_nil_value();
 }
 
-// RFC 9110: Resource#response - a FRESH Response handle on every call,
-// never memoised; whatever GC arena covers this callback's own call
-// frame is what keeps the handle alive, same as any other short-lived
-// value a cfunc returns.
-mrb_value resource_response(mrb_state* mrb, mrb_value) {
-  live(mrb);
-  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-  struct RClass* rc = mrb_class_get_under_id(mrb, wm, MRB_SYM(Response));
-  return mrb_obj_value(mrb_data_object_alloc(mrb, rc, const_cast<Resource*>(cur_), &resp_type));
-}
-
-}  // namespace
-
-// RFC 9110: point the response surface at THIS run's Resource, or at
-// nothing - exactly request_bind's pattern (request.cpp), so a stray
-// handle from an ended run reads as "outside a run frame" instead of
-// silently touching whatever run is live now.
-void response_bind(const Resource* res) { cur_ = res; }
-
-// #210: the error assets, bound once at setup the way response_bind
-// binds a resource per run. nullptr when this server found none, and
-// response.error_asset then refuses by name rather than answering
-// something it does not have.
-void response_bind_error_assets(Assets* a) { error_assets_ = a; }
-
 // #30: the run's own scratch. The application puts what it wants here
 // and takes it out in another callback - a value a compute task
 // answered, a handle a watcher opened, anything.
@@ -497,6 +472,31 @@ mrb_value resp_kept_key_p(mrb_state* mrb, mrb_value self) {
   if (!res->run.kept_held) return mrb_false_value();
   return mrb_bool_value(mrb_hash_key_p(mrb, res->run.kept, key));
 }
+
+// RFC 9110: Resource#response - a FRESH Response handle on every call,
+// never memoised; whatever GC arena covers this callback's own call
+// frame is what keeps the handle alive, same as any other short-lived
+// value a cfunc returns.
+mrb_value resource_response(mrb_state* mrb, mrb_value) {
+  live(mrb);
+  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+  struct RClass* rc = mrb_class_get_under_id(mrb, wm, MRB_SYM(Response));
+  return mrb_obj_value(mrb_data_object_alloc(mrb, rc, const_cast<Resource*>(cur_), &resp_type));
+}
+
+}  // namespace
+
+// RFC 9110: point the response surface at THIS run's Resource, or at
+// nothing - exactly request_bind's pattern (request.cpp), so a stray
+// handle from an ended run reads as "outside a run frame" instead of
+// silently touching whatever run is live now.
+void response_bind(const Resource* res) { cur_ = res; }
+
+// #210: the error assets, bound once at setup the way response_bind
+// binds a resource per run. nullptr when this server found none, and
+// response.error_asset then refuses by name rather than answering
+// something it does not have.
+void response_bind_error_assets(Assets* a) { error_assets_ = a; }
 
 // RFC 9110: Webmachine::Response and Webmachine::Response::Headers,
 // defined once at gem init. Neither is ever `new`'d by an app - the

@@ -351,6 +351,36 @@ double Http1::watcher_quiet_seconds(Conn& st, int slot) {
   return watcher_timeout(w);
 }
 
+// #30: the run this watcher belongs to, for as long as its block runs.
+// The block is written inside the resource, so `response` and `request`
+// are already in its scope - what they need is the walk's state, and
+// that waits on the connection while the run is parked.
+//
+// It is lent, not copied: the block writes a header or keeps a value,
+// and the run that resumes finds it. The reactor answers no other
+// connection in the middle of a block, so one run at a time holds it.
+struct RunLent {
+  const Resource* res = nullptr;
+  Http1::Conn* st = nullptr;
+  RunLent(Http1::Conn& conn, const Resource* r) {
+    if (r == nullptr || !conn.parked_run_held) return;
+    res = r;
+    st = &conn;
+    res->run = std::move(conn.parked_run);
+    request_bind(res->run.req);
+    response_bind(res);
+  }
+  ~RunLent() {
+    if (res == nullptr) return;
+    request_bind(nullptr);
+    response_bind(nullptr);
+    st->parked_run = std::move(res->run);
+    res->run = Resource::RunState{};
+  }
+  RunLent(const RunLent&) = delete;
+  RunLent& operator=(const RunLent&) = delete;
+};
+
 Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   const mrb_value w = st.watchers_at(slot);
   if (mrb_nil_p(w)) return WatchStep::kDone;
@@ -359,7 +389,14 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   const unsigned before = watcher_events_mask(w);
   const mrb_value block = watcher_block_of(mrb, w);
   const mrb_value argv[2] = {sym_of(mrb, revents), w};
-  const mrb_value said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
+  // #30: the block belongs to a run that is parked, and `response[:key]`
+  // is that run's scratch. It lives on the connection for this reason -
+  // the run's own state travelled with the frame.
+  mrb_value said;
+  {
+    const RunLent lent(st, st.job_res);
+    said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
+  }
   if (mrb->exc != nullptr) {
     // A raise inside the block ends the wait. The run reads nil and
     // answers 500 the way it answers any raise.
@@ -392,7 +429,11 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   // nothing - and that is a fact the application has to learn, not a
   // failure of its own (.DESIGN.md #promise-bound).
   mrb_value said = mrb_nil_value();
-  const bool again = watcher_deadline_passed(mrb, w, &said);
+  bool again;
+  {
+    const RunLent lent(st, st.job_res);
+    again = watcher_deadline_passed(mrb, w, &said);
+  }
   if (mrb->exc != nullptr) {
     mrb->exc = nullptr;
     said = mrb_nil_value();
