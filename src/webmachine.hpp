@@ -5653,7 +5653,20 @@ class Http1 {
   // The whole bound answer for a resource that declared a compute task, in a
   // frame that can stop. A resource that declared none never reaches
   // this and pays no frame.
-  Run bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan);
+  // #30: what a parkable run starts from. One coroutine serves both
+  // protocols, because there must be ONE place where a run stops: the
+  // frame that suspends holds everything about that run, and a second
+  // copy of this machinery would be a second answer to the same
+  // question. The tails differ - h1 spells a head and a body, h2 frames
+  // HEADERS and DATA - and the stop between them does not.
+  struct RunStart {
+    enum class Proto : uint8_t { kH1, kH2 };
+    Proto proto = Proto::kH1;
+    // proto == kH1. The bytes of the request, and everything the parse
+    // read out of them.
+    BoundStart h1{};
+  };
+  Run run_parkable(Conn& st, RunStart s, std::string* sink, Plan* plan);
   // What one such round leaves for the parse to do next.
   enum class ComputeRound : uint8_t {
     kNext,    // answered here; read the next request out of this buffer

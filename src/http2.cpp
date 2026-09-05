@@ -744,7 +744,7 @@ struct Http1::H2Produced {
 
 // #30: the walk. `can_park` says whether the caller holds a frame that
 // can keep a stopped run - the h2 dispatcher does not, the coroutine
-// does. It is the same question h1 answers in bound_run.
+// does. It is the same question run_parkable answers for h1.
 void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced& p) {
   const uint32_t stream_id = q.stream_id;
   const flow::ReqFacts& facts = q.facts;

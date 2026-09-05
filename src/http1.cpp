@@ -1205,7 +1205,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 // feed_parse is walked by every request that did not.
 Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, std::string* sink,
                                                Plan* plan, size_t& off) {
-  st.parked = bound_run(st, s, sink, plan);
+  st.parked = run_parkable(st, {RunStart::Proto::kH1, s}, sink, plan);
   // The bookkeeping is done HERE either way, because the bytes it moves
   // belong to the buffer the parse was handed, and a stopped run
   // outlives it. #decide-then-do. BoundStart::off is already past the
@@ -1236,7 +1236,8 @@ Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, st
   return ComputeRound::kNext;
 }
 
-Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* plan) {
+Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan* plan) {
+  BoundStart s = start.h1;
   const Bundle* const b = s.b;
   const Resource& res = *b->res;
 
