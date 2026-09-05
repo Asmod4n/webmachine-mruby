@@ -980,3 +980,34 @@ assert('response: the scratch is one run long (#30)') do
     end
   end
 end
+
+# #30: response.userdata crosses to the worker and comes back. CBOR
+# carries it both ways, and only a slot the worker changed is read.
+assert('compute: the worker reads response.userdata and leaves something else (#30)') do
+  src = <<~RUBY_SRC
+    class ComputeUser < Webmachine::Resource
+      compute :is_authorized?
+      def service_available?
+        response.userdata = 'from the run'
+        true
+      end
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) do
+          response.userdata = "worker saw \#{response.userdata}"
+          true
+        end
+      end
+      def to_html
+        response.userdata
+      end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeUser', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200')
+      assert_equal 'worker saw from the run', body
+    end
+  end
+end

@@ -1355,7 +1355,8 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
         // A watcher and a single task are one entry of it.
         const uint8_t owed = st.jobs_owed != 0 ? st.jobs_owed : 1;
         status = resource_resume(res, {&body, &have_body, &rhdrs},
-                                 {st.answer_value, st.job_what, owed});
+                                 {st.answer_value, st.job_what, st.user_value, st.user_have,
+                                  owed});
       }
       // The answers were rooted while they waited - nothing on the VM's
       // stack named them. The round is read, so they are let go.
@@ -1364,6 +1365,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
           mrb_gc_unregister(res.mrb, a);
           a = mrb_nil_value();
         }
+      }
+      for (int i = 0; i < Conn::kJobSlots; i++) {
+        if (!st.user_have[i]) continue;
+        mrb_gc_unregister(res.mrb, st.user_value[i]);
+        st.user_value[i] = mrb_nil_value();
+        st.user_have[i] = false;
       }
     }
 

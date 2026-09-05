@@ -1713,7 +1713,7 @@ class Ring {
       unsigned code = 0;
       double deadline = 0.0;
       if (!App::compute_task_take(c.app, slot, &code, arg, &deadline)) continue;
-      if (!compute_.submit(code, arg, deadline,
+      if (!compute_.submit(code, arg, App::compute_task_user(c.app, slot), deadline,
                            detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(slot)))) {
         // Every slot taken. Not a refusal this layer invents - the run
         // is told, and it answers 503 the way it would answer anything

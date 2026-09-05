@@ -1,5 +1,17 @@
 module Webmachine
   module Workers
+    # #30: the response a compute task speaks to. It has one thing, and
+    # it is the same one the run has at home: what the application
+    # carries from one callback to the next. The worker fills it before
+    # the block runs and reads it after.
+    class Response
+      attr_accessor :userdata
+    end
+
+    def self.response
+      @response ||= Response.new
+    end
+
     # The block of a compute task, and its arguments, made into a proc
     # that takes none.
     #

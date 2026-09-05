@@ -2431,6 +2431,16 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& rou
   // the answer the walk takes at that node, and a value goes straight
   // into the memo the walk reads.
   res.run.answered = false;
+  // #30: response.userdata a worker changed. The run reads its own slot
+  // after this, and a round of several jobs takes them in job order -
+  // the last worker that changed it is the one that speaks.
+  for (uint8_t i = 0; i < round.n; i++) {
+    if (round.user_have == nullptr || !round.user_have[i]) continue;
+    if (res.run.userdata_held) mrb_gc_unregister(mrb, res.run.userdata);
+    res.run.userdata = round.user[i];
+    mrb_gc_register(mrb, res.run.userdata);
+    res.run.userdata_held = true;
+  }
   for (uint8_t i = 0; i < round.n; i++) {
     if (round.what[i] == kJobNode) {
       res.run.answer = round.answers[i];

@@ -66,6 +66,12 @@ struct Slot {
   // out. Bytes both ways, because an mrb_value belongs to one VM.
   std::string arg;
   std::string out;
+  // #30: response.userdata, in and out. The worker reads what the run
+  // put there and can leave something else - the reactor only looks
+  // when the bytes came back different.
+  std::string user_in;
+  std::string user_out;
+  bool user_changed = false;
   // Seconds of EXECUTION. The worker ends a task that runs past it.
   double deadline = 0.0;
   bool raised = false;
@@ -291,8 +297,22 @@ void Http1::compute_task_answered(Conn& st, int slot, const ComputeAnswer& answe
   // the same one: 503 says come back, 500 says nothing will change.
   st.compute_task_raised = answered.raised && !answered.over_deadline;
   const Resource* const res = st.job_res;
-  if (res == nullptr || answered.raised || answered.bytes.empty()) return;
+  if (res == nullptr || answered.raised) return;
   mrb_state* const mrb = res->mrb;
+  // #30: response.userdata, when the worker left something else there.
+  st.user_have[slot] = false;
+  if (answered.user_changed && !answered.user_bytes.empty()) {
+    const mrb_value u = mrb_cbor_decode_fast(
+        mrb, mrb_str_new(mrb, answered.user_bytes.data(), answered.user_bytes.size()));
+    if (mrb->exc != nullptr) {
+      mrb->exc = nullptr;
+    } else {
+      st.user_value[slot] = u;
+      mrb_gc_register(mrb, u);
+      st.user_have[slot] = true;
+    }
+  }
+  if (answered.bytes.empty()) return;
   const mrb_value v =
       mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
   if (mrb->exc != nullptr) {
@@ -323,6 +343,23 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
   if (res.run.compute_task_count == 0) return false;
 
   mrb_state* const mrb = res.mrb;
+  // #30: response.userdata crosses with the job. Undef is "the run put
+  // nothing there", and then nothing is encoded and nothing is sent.
+  std::string user;
+  if (!mrb_undef_p(res.run.userdata) && !mrb_nil_p(res.run.userdata)) {
+    const int uai = mrb_gc_arena_save(mrb);
+    const mrb_value enc = mrb_cbor_encode_fast(mrb, res.run.userdata);
+    if (mrb->exc != nullptr || !mrb_string_p(enc)) {
+      mrb->exc = nullptr;
+      mrb_gc_arena_restore(mrb, uai);
+      mrb_raise(mrb, E_WM_ERROR(mrb),
+                "response.userdata cannot cross to a worker - CBOR carries what a compute task "
+                "takes with it, and this is not one of those");
+      __builtin_unreachable();
+    }
+    user.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
+    mrb_gc_arena_restore(mrb, uai);
+  }
   // Every task of the round crosses here, or none does. A round that
   // loses one job would wait for an answer nobody owes.
   for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
@@ -346,6 +383,7 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
     Conn::Job& j = st.job[i];
     j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
     mrb_gc_arena_restore(mrb, ai);
+    j.user_bytes = user;
     j.code = id;
     j.deadline = t.deadline;
     st.job_what[i] = t.what;
@@ -413,6 +451,16 @@ struct ComputePool::Impl {
 // worker, and nothing of a worker's VM ever leaves it. Only bytes
 // cross, both ways.
 
+// #30: `response` inside a worker. The block is written in a resource,
+// where `response` is a method of the run - so the worker VM answers
+// the same word with its own object, and the block needs no change.
+mrb_value worker_response(mrb_state* mrb, mrb_value self) {
+  (void)self;
+  mrb_value wm = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
+  wm = mrb_const_get(mrb, wm, MRB_SYM(Workers));
+  return mrb_funcall_argv(mrb, wm, MRB_SYM(response), 0, nullptr);
+}
+
 struct WorkerVm {
   mrb_state* mrb = nullptr;
   std::vector<mrb_value> procs;
@@ -437,6 +485,10 @@ struct WorkerVm {
       mrb->exc = nullptr;
       return false;
     }
+    // Every self in this VM answers `response` - the block's own self is
+    // whatever mruby gave the re-loaded proc, and it must not matter.
+    mrb_define_method_id(mrb, mrb->object_class, MRB_SYM(response), worker_response,
+                         MRB_ARGS_NONE());
     // The scheduler STAYS on. Every declared block runs as a Task, which
     // is what makes a deadline enforceable: mruby preempts Ruby at a
     // safe point, and mrb_terminate_task ends a run that is over its
@@ -535,6 +587,35 @@ void note_raise(mrb_state* mrb, Slot& s, const char* step) {
   mrb->exc = nullptr;
 }
 
+// #30: the worker's own response.userdata. mrblib carries the object -
+// Webmachine::Workers.response - so nothing is compiled here, and the
+// block reads and writes it the way it does at home.
+void worker_userdata_set(WorkerVm& vm, mrb_value v) {
+  mrb_state* const mrb = vm.mrb;
+  const mrb_value resp = mrb_funcall_argv(mrb, vm.workers, MRB_SYM(response), 0, nullptr);
+  if (mrb->exc != nullptr) {
+    mrb->exc = nullptr;
+    return;
+  }
+  mrb_funcall_argv(mrb, resp, MRB_SYM_E(userdata), 1, &v);
+  if (mrb->exc != nullptr) mrb->exc = nullptr;
+}
+
+mrb_value worker_userdata(WorkerVm& vm) {
+  mrb_state* const mrb = vm.mrb;
+  const mrb_value resp = mrb_funcall_argv(mrb, vm.workers, MRB_SYM(response), 0, nullptr);
+  if (mrb->exc != nullptr) {
+    mrb->exc = nullptr;
+    return mrb_nil_value();
+  }
+  const mrb_value v = mrb_funcall_argv(mrb, resp, MRB_SYM(userdata), 0, nullptr);
+  if (mrb->exc != nullptr) {
+    mrb->exc = nullptr;
+    return mrb_nil_value();
+  }
+  return v;
+}
+
 // What a worker does with one slot: decode the argument, run the
 // callback, encode the answer. Every step stays inside this VM.
 void run_job(WorkerVm& vm, Slot& s) {
@@ -578,6 +659,18 @@ void run_job(WorkerVm& vm, Slot& s) {
   // A task body has to be Ruby: task_init_context reads
   // proc->body.irep, so a proc built from a C function has nothing the
   // scheduler could run. The wrapper makes a Ruby one.
+  // #30: what the run put in response.userdata, into this VM's own
+  // response - the block reads and writes it the way it does at home.
+  mrb_value user_before = mrb_nil_value();
+  if (!s.user_in.empty()) {
+    user_before = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, s.user_in.data(), s.user_in.size()));
+    if (mrb->exc != nullptr) {
+      note_raise(mrb, s, "decoding response.userdata of a compute task");
+      mrb_gc_arena_restore(mrb, ai);
+      return;
+    }
+  }
+  worker_userdata_set(vm, user_before);
   const mrb_value wrapped[2] = {block, mrb_array_p(arg) ? arg : mrb_ary_new(mrb)};
   const mrb_value task_proc = mrb_funcall_argv(mrb, vm.workers, MRB_SYM(wrap), 2, wrapped);
   if (mrb->exc != nullptr || !mrb_proc_p(task_proc)) {
@@ -665,6 +758,25 @@ void run_job(WorkerVm& vm, Slot& s) {
     return;
   }
   s.out.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+  // #30: and response.userdata as the block left it. The reactor is
+  // told only when the bytes came back different - a job that never
+  // touched the slot costs the reactor nothing.
+  const mrb_value user_after = worker_userdata(vm);
+  if (!mrb_nil_p(user_after)) {
+    const mrb_value ub = mrb_cbor_encode_fast(mrb, user_after);
+    if (mrb->exc != nullptr || !mrb_string_p(ub)) {
+      mrb->exc = nullptr;
+    } else if (static_cast<size_t>(RSTRING_LEN(ub)) != s.user_in.size() ||
+               std::memcmp(RSTRING_PTR(ub), s.user_in.data(), s.user_in.size()) != 0) {
+      s.user_out.assign(RSTRING_PTR(ub), static_cast<size_t>(RSTRING_LEN(ub)));
+      s.user_changed = true;
+    }
+  } else if (!s.user_in.empty()) {
+    // The block cleared it. That is a change too.
+    s.user_changed = true;
+  }
+  // The next job on this worker starts with an empty slot.
+  worker_userdata_set(vm, mrb_nil_value());
   mrb_gc_arena_restore(mrb, ai);
 }
 
@@ -799,8 +911,8 @@ void ComputePool::stop() {
   impl_ = nullptr;
 }
 
-bool ComputePool::submit(unsigned code_id, std::string_view arg, double deadline,
-                         uint64_t answer) {
+bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_view user,
+                         double deadline, uint64_t answer) {
   if (impl_ == nullptr) return false;
   Impl* impl = impl_;
   // A free slot, or no. Full means every worker is busy with a full
@@ -819,6 +931,9 @@ bool ComputePool::submit(unsigned code_id, std::string_view arg, double deadline
   s.code_id = code_id;
   s.deadline = deadline;
   s.arg.assign(arg.data(), arg.size());
+  s.user_in.assign(user.data(), user.size());
+  s.user_out.clear();
+  s.user_changed = false;
   s.out.clear();
   s.raised = false;
   s.answer = answer;
@@ -845,6 +960,8 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
   for (Slot& s : impl_->slots) {
     if (s.busy && s.answer == answer) {
       out->bytes.swap(s.out);
+      out->user_bytes.swap(s.user_out);
+      out->user_changed = s.user_changed;
       out->raised = s.raised;
       out->over_deadline = s.over_deadline;
       out->exception_class.swap(s.exception_class);
@@ -854,6 +971,8 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
       s.busy = false;
       s.arg.clear();
       s.out.clear();
+      s.user_in.clear();
+      s.user_out.clear();
       s.exception_class.clear();
       s.message.clear();
       s.backtrace.clear();
