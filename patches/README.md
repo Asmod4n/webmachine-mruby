@@ -2,7 +2,7 @@
 
 ## mruby-task-scheduler-disable.patch
 
-Three commits against mruby `4e2bc5c`. They add
+Four commits against mruby `4e2bc5c`. They add
 `mrb_disable_task_scheduler()` and `mrb_task_scheduler_enabled_p()`, so
 an embedder can turn the scheduler off for ONE `mrb_state`.
 
@@ -18,11 +18,12 @@ and defines `WM_TASK_SCHEDULER_CAN_BE_DISABLED` when the name is there.
 So a plain checkout builds and answers requests - it keeps the check and
 is slower.
 
-`enabled` sits beside `switching` and not at the front of the struct.
-matz asked for that on the pull request, and it is measurably better
-here as well: at the front it opened a fresh hole and mrb_state was
-24768 bytes, beside `switching` it lands in padding that was already
-wasted and mrb_state is 24760. The check loads that word first anyway.
+The fourth commit puts `enabled` beside `switching` instead of at the
+front of the struct. matz asked for that on the pull request, and it is
+measurably better here as well: at the front it opened a fresh hole and
+`mrb_state` was 24768 bytes; beside `switching` it lands in padding that
+was already wasted and `mrb_state` is 24760. The check loads that word
+first anyway.
 
 Upstream: mruby/mruby#7491. matz reproduced the slowdown with `-O3
 -march=native` and would take the patch. The open question there is not
@@ -35,5 +36,5 @@ Apply it to a plain mruby checkout with:
 
     git -C mruby am -3 ../patches/mruby-task-scheduler-disable.patch
 
-The three commits sit on `4e2bc5c`. On a newer mruby `-3` lets git merge
+The four commits sit on `4e2bc5c`. On a newer mruby `-3` lets git merge
 them.

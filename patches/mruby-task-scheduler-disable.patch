@@ -1,7 +1,7 @@
 From b784de77d784a6542d8585ab93c5c10254c29a03 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 3 Sep 2026 12:11:22 +0000
-Subject: [PATCH 1/3] task: let an embedder disable the scheduler for one
+Subject: [PATCH 1/4] task: let an embedder disable the scheduler for one
  mrb_state
 
 mruby-task makes every VM in the process 30% slower. This function
@@ -21,19 +21,18 @@ diff --git a/include/mruby.h b/include/mruby.h
 index 6c5f660..e641529 100644
 --- a/include/mruby.h
 +++ b/include/mruby.h
-@@ -331,6 +331,12 @@ typedef struct mrb_task_state {
+@@ -327,6 +327,11 @@ enum mrb_idx_op_slot {
+ struct mrb_task;
+ 
+ typedef struct mrb_task_state {
++  /* Read once per dispatched instruction, so it is the first field: a VM
++     that will never run tasks says so with mrb_disable_task_scheduler() and the
++     dispatch loop's check costs one test of an already-hot word instead
++     of two dependent loads. */
++  mrb_bool enabled;
+   struct mrb_task *queues[4];      /* Task queues (dormant, ready, waiting, suspended) */
    volatile uint32_t tick;           /* Current tick count */
    volatile uint32_t wakeup_tick;    /* Next wakeup tick */
-   volatile mrb_bool switching;      /* Context switch pending flag */
-+  /* Read once per dispatched instruction: a VM that will never run tasks
-+     says so with mrb_disable_task_scheduler(), and the dispatch loop's
-+     check costs one test of an already-hot word instead of two dependent
-+     loads. It sits HERE, beside switching, because the check loads that
-+     word first anyway - and because padding already wasted this byte. */
-+  mrb_bool enabled;
-   struct mrb_task *main_task;       /* Main task wrapper for root context */
-   uint8_t scheduler_lock;           /* Lock counter for synchronous execution */
-   uint8_t irq_nesting;              /* Depth counter for scheduler-IRQ exclusion */
 diff --git a/mrbgems/mruby-task/include/task.h b/mrbgems/mruby-task/include/task.h
 index 5bab9d7..b15e8db 100644
 --- a/mrbgems/mruby-task/include/task.h
@@ -251,7 +250,7 @@ index af753bf..b7794e4 100644
 From 21c70acf389524cabf7445f20898ab1990952197 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 4 Sep 2026 06:03:49 +0000
-Subject: [PATCH 2/3] task: re-raise an exception from with_tasks_disabled
+Subject: [PATCH 2/4] task: re-raise an exception from with_tasks_disabled
 
 mrb_protect_error received NULL for error_p. An exception in the block
 came back as an ordinary value. A test that let one escape would pass.
@@ -287,7 +286,7 @@ index 9e158ca..3a4615a 100644
 From ec6890bdc0ad98d07241c0f6848c7471fd64063f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 4 Sep 2026 06:04:53 +0000
-Subject: [PATCH 3/3] task: document mrb_task_scheduler_enabled_p
+Subject: [PATCH 3/4] task: document mrb_task_scheduler_enabled_p
 
 The function shared a comment with mrb_disable_task_scheduler. It is
 public API, so it gets its own line.
@@ -310,6 +309,60 @@ index b15e8db..c5de785 100644
  MRB_API mrb_bool mrb_task_scheduler_enabled_p(mrb_state *mrb);
  MRB_API mrb_value mrb_task_run(mrb_state *mrb);
  MRB_API mrb_value mrb_task_run_once(mrb_state *mrb);
+-- 
+2.43.0
+
+
+From d3b36f300d5c23bd72f46700a96bd871ffe7137f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 5 Sep 2026 10:16:56 +0000
+Subject: [PATCH 4/4] task: put enabled beside switching, not at the front of
+ the struct
+
+At the front of mrb_task_state the flag opens a fresh 7-byte hole.
+Beside `switching` it lands in padding that is already wasted, and it
+is the word the check loads first anyway.
+
+Measured on a 4-vCPU x86-64 box, gcc 13.3, -O3 -march=native, default
+gembox plus mruby-task:
+
+  enabled first             sizeof(mrb_state) 24768, mrb_task_state 88
+  enabled after switching   sizeof(mrb_state) 24760, mrb_task_state 80
+
+Both layouts run the same. This one costs 8 bytes less rather than 8
+more.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ include/mruby.h | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/include/mruby.h b/include/mruby.h
+index e641529..d58ffb1 100644
+--- a/include/mruby.h
++++ b/include/mruby.h
+@@ -327,15 +327,16 @@ enum mrb_idx_op_slot {
+ struct mrb_task;
+ 
+ typedef struct mrb_task_state {
+-  /* Read once per dispatched instruction, so it is the first field: a VM
+-     that will never run tasks says so with mrb_disable_task_scheduler() and the
+-     dispatch loop's check costs one test of an already-hot word instead
+-     of two dependent loads. */
+-  mrb_bool enabled;
+   struct mrb_task *queues[4];      /* Task queues (dormant, ready, waiting, suspended) */
+   volatile uint32_t tick;           /* Current tick count */
+   volatile uint32_t wakeup_tick;    /* Next wakeup tick */
+   volatile mrb_bool switching;      /* Context switch pending flag */
++  /* Read once per dispatched instruction: a VM that will never run tasks
++     says so with mrb_disable_task_scheduler(), and the dispatch loop's
++     check costs one test of an already-hot word instead of two dependent
++     loads. It sits HERE, beside switching, because the check loads that
++     word first anyway - and because padding already wasted this byte. */
++  mrb_bool enabled;
+   struct mrb_task *main_task;       /* Main task wrapper for root context */
+   uint8_t scheduler_lock;           /* Lock counter for synchronous execution */
+   uint8_t irq_nesting;              /* Depth counter for scheduler-IRQ exclusion */
 -- 
 2.43.0
 
