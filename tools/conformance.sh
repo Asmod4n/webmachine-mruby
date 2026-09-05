@@ -5,6 +5,7 @@
 #
 #   tools/conformance.sh h2         h2spec, RFC 9113 + 7541 (146 cases)
 #   tools/conformance.sh ws         Autobahn fuzzingserver, RFC 6455
+#   tools/conformance.sh ws-h2      the same suite through the h2 bridge
 #
 # Both suites are containers (podman), both talk TCP to a server this
 # script starts and stops. The server is found and killed through its
@@ -120,8 +121,48 @@ JSON
     wstest -m fuzzingclient -s /fuzzingclient.json 2>&1 | tee "$OUT/autobahn.log"
   echo "report: $OUT/reports/index.html"
   ;;
+ws-h2)
+  # RFC 8441: the same WebSocket, reached through an h2 extended
+  # CONNECT. Autobahn has no h2 client and neither has nghttpx, so
+  # tools/ws_h2_bridge.rb sits between them: wstest speaks HTTP/1.1 to
+  # the bridge, the bridge speaks h2 to the server, and a WebSocket
+  # frame crosses both without being read.
+  [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
+  command -v ruby >/dev/null || { echo 'the bridge needs a ruby on PATH' >&2; exit 1; }
+  BRIDGE_PORT="${BRIDGE_PORT:-$((PORT + 1))}"
+  start_server test/conformance/ws_echo.rb
+  ruby tools/ws_h2_bridge.rb --listen "$BRIDGE_PORT" --server "127.0.0.1:$PORT" \
+    --path /echo > "$OUT/bridge.log" 2>&1 &
+  BRIDGE_PID=$!
+  stop_all() { kill "$BRIDGE_PID" 2>/dev/null || true; stop_server; }
+  trap stop_all EXIT INT TERM
+  i=0
+  while [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1
+    grep -q 'ws-h2 bridge' "$OUT/bridge.log" && break
+  done
+  echo "bridge pid $BRIDGE_PID on port $BRIDGE_PORT"
+  # 12.x and 13.x are permessage-deflate, and the bridge cannot carry
+  # them: it would have to name the extension the server took, and that
+  # answer is HPACK with Huffman-coded values. bintest/h2.rb proves
+  # deflate over h2 instead. The head of tools/ws_h2_bridge.rb says the
+  # same, longer.
+  cat > "$OUT/fuzzingclient-h2.json" <<JSON
+{ "servers": [{ "url": "ws://127.0.0.1:$BRIDGE_PORT/echo" }],
+  "outdir": "/reports",
+  "cases": [$CASES],
+  "exclude-cases": ["12.*", "13.*"],
+  "exclude-agent-cases": {} }
+JSON
+  mkdir -p "$OUT/reports-h2"
+  "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
+    -v "$PWD/$OUT/fuzzingclient-h2.json:/fuzzingclient.json:z" \
+    -v "$PWD/$OUT/reports-h2:/reports:z" \
+    crossbario/autobahn-testsuite \
+    wstest -m fuzzingclient -s /fuzzingclient.json 2>&1 | tee "$OUT/autobahn-h2.log"
+  echo "report: $OUT/reports-h2/index.html"
+  ;;
 *)
-  echo "usage: $0 h2|ws   (PORT=$PORT)" >&2
+  echo "usage: $0 h2|ws|ws-h2   (PORT=$PORT)" >&2
   exit 2
   ;;
 esac
