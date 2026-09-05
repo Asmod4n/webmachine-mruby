@@ -2744,6 +2744,9 @@ struct Resource {
     // is what roots it while the run waits.
     mrb_value watch = {};
     bool watch_held = false;
+    // #30: the value round started. It starts once per run, at the
+    // first node that needs any of its answers.
+    bool values_started = false;
     const flow::ReqFacts* facts = nullptr;
     std::string* body = nullptr;
     bool have_body = false;
@@ -2846,6 +2849,10 @@ struct Resource {
   // give - a class form that answered at setup, or a callback still to
   // ask. Decided once when the resource is baked, because the answer
   // cannot change afterwards, and o18 asks it on every GET.
+  // #30: which values a round asks a worker for, one bit per kJob*.
+  // The flow never lets one of them choose an edge, so all of them can
+  // be out at the same time.
+  uint8_t value_jobs = 0;
   bool has_caching = false;
 };
 
@@ -2882,7 +2889,14 @@ struct RunAnswer {
 uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
 // #80: the same walk, re-entered at the node it stopped before, with the
 // worker's answer standing in for that node's callback.
-uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer);
+// #30: what a round answered. One entry per job: the value, and which
+// answer it is (kJob*). A node's own callback is one entry of kJobNode.
+struct RunRound {
+  const mrb_value* answers;
+  const uint8_t* what;
+  uint8_t n;
+};
+uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round);
 bool run_stopped(const Resource& res);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);

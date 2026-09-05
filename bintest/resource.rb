@@ -203,16 +203,16 @@ assert('resource: i18n callbacks refuse the start by name') do
   assert_true resource_refused(wm_app('LangResource', src)).include?('languages_provided')
 end
 
-assert('compute: a name that is no flow callback is refused at the start (#80)') do
+assert('compute: a name a worker cannot answer is refused at the start (#80)') do
   src = <<~RUBY
     class ComputeNoNode < Webmachine::Resource
-      compute :generate_etag
+      compute :finish_request
       def to_html; 'x'; end
     end
   RUBY
   out = resource_refused(wm_app('ComputeNoNode', src))
+  assert_true out.include?('finish_request')
   assert_true out.include?('generate_etag')
-  assert_true out.include?('between')
 end
 
 assert('compute: a callback that is not defined is refused at the start (#80)') do
@@ -880,6 +880,55 @@ assert('resource: a baked body survives the resource becoming dynamic') do
       assert_true head.match?(/^ETag: "e-1"\r$/i), "no ETag: #{head.inspect}"
       assert_true head.match?(%r{^Content-Type: text/html}i), "no type: #{head.inspect}"
       assert_equal '<html>BAKED</html>', body
+    end
+  end
+end
+
+# #30: the flow says generate_etag, last_modified and expires choose no
+# edge. So a run starts every declared one at the same moment, waits
+# once, and the answers reach the headers.
+assert('compute: a round answers ETag and Last-Modified at one stop (#30)') do
+  src = <<~RUBY_SRC
+    class ComputeRound < Webmachine::Resource
+      compute :generate_etag, :last_modified
+      def self.generate_etag
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'from-a-worker' }
+      end
+      def self.last_modified
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { 1_000_000_000 }
+      end
+      def to_html; 'body'; end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeRound', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200')
+      assert_true head.include?('ETag: "from-a-worker"')
+      assert_true head.include?('Last-Modified: Sun, 09 Sep 2001 01:46:40 GMT')
+      assert_equal 'body', body
+    end
+  end
+end
+
+# The same round, and the conditional request it answers: If-None-Match
+# reads the ETag a worker spelled.
+assert('compute: a round answers a conditional request (#30)') do
+  src = <<~RUBY_SRC
+    class ComputeRoundCond < Webmachine::Resource
+      compute :generate_etag
+      def self.generate_etag
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'w-etag' }
+      end
+      def to_html; 'body'; end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeRoundCond', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"w-etag\"\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 304')
     end
   end
 end

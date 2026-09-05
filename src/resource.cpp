@@ -748,6 +748,11 @@ void marshal_ct(Run& r);
 int ensure_etag(Run& r);
 void epoch_memo(Run& r, const DateField& d);
 int add_caching(Run& r);
+// #30: the value round. generate_etag, last_modified and expires choose
+// no edge - the flow only reads what they answer - so a run starts every
+// declared one at the first node that needs any of them, and waits once.
+bool value_round_start(Run& r, Node n, uint16_t status);
+void value_answer(const Resource& res, uint8_t what, mrb_value v);
 // RFC 9110 5.6.6: one parameter of a field value - the value to search,
 // and the parameter's name.
 struct Param {
@@ -1055,6 +1060,9 @@ int ensure_etag(Run& r) {
       return -1;
     }
     if (!r.res.cb_generate_etag.has) return -1;
+    // #30: a worker answers this one. If the memo is empty here, no
+    // round ever started, and there is nothing to say.
+    if ((r.res.value_jobs & (1u << kJobEtag)) != 0) return -1;
     mrb_value v = cbv(r, r.res.cb_generate_etag);
     if (mrb_integer_p(v)) return halt_of(r, v, r.res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
@@ -1079,6 +1087,10 @@ void epoch_memo(Run& r, const DateField& d) {
     return;
   }
   if (!cb.has) return;
+  // #30: the same for the two dates - only a round answers one that a
+  // worker was declared for.
+  const uint8_t what = cb.sym == MRB_SYM(last_modified) ? kJobLastModified : kJobExpires;
+  if ((r.res.value_jobs & (1u << what)) != 0) return;
   mrb_value v = cbv(r, cb);
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
   // mruby owns this conversion already: Integer straight through, Time
@@ -1112,6 +1124,77 @@ int add_caching(Run& r) {
                    &r.res.run.last_modified_epoch});
     if (r.res.run.last_modified_present) date_line(r, "Last-Modified", r.res.run.last_modified_epoch);
     return -1;
+}
+
+// #30: one answer of a value round, into the memo the walk reads. The
+// walk then meets a value that is already asked, which is exactly what
+// it meets when the callback answered on this thread.
+void value_answer(const Resource& res, uint8_t what, mrb_value v) {
+  mrb_state* const mrb = res.mrb;
+  if (what == kJobEtag) {
+    res.run.etag_asked = true;
+    if (mrb_nil_p(v) || mrb_false_p(v)) return;
+    if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
+    http::etag_spell(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)), res.run.etag_value);
+    res.run.etag_present = true;
+    return;
+  }
+  const bool is_lm = what == kJobLastModified;
+  bool* const asked = is_lm ? &res.run.last_modified_asked : &res.run.expires_asked;
+  bool* const present = is_lm ? &res.run.last_modified_present : &res.run.expires_present;
+  int64_t* const epoch = is_lm ? &res.run.last_modified_epoch : &res.run.expires_epoch;
+  *asked = true;
+  if (mrb_nil_p(v) || mrb_false_p(v)) return;
+  const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
+  if (WM_RES_UNLIKELY(mrb_nil_p(n))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer, not %v",
+               is_lm ? "last_modified" : "expires", v);
+  }
+  *epoch = static_cast<int64_t>(mrb_integer(n));
+  *present = true;
+}
+
+// #30: the round starts here. Every declared value callback is asked
+// for its ComputeTask now, and all of them go to the pool together.
+// The walk stops ONCE, before the node that needed the first answer.
+bool value_round_start(Run& r, Node n, uint16_t status) {
+  const Resource& res = r.res;
+  res.run.values_started = true;
+  const struct Want {
+    uint8_t what;
+    const Resource::ValueCb* cb;
+  } wants[] = {{kJobEtag, &res.cb_generate_etag},
+               {kJobLastModified, &res.cb_last_modified},
+               {kJobExpires, &res.cb_expires}};
+  uint8_t count = 0;
+  for (const Want& w : wants) {
+    if ((res.value_jobs & (1u << w.what)) == 0) continue;
+    const mrb_value v = cbv(r, *w.cb);
+    ComputeTaskAsk ask;
+    if (WM_RES_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
+      mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                 "%n is declared `compute` and answered %v - it owes a Webmachine::ComputeTask",
+                 w.cb->sym, v);
+    }
+    // Nobody can park this run, so the block runs HERE - the same block
+    // with the same arguments, and only the waiting is lost.
+    if (WM_RES_UNLIKELY(!res.run.can_park)) {
+      const mrb_value said = mrb_funcall_argv(r.mrb, ask.block, MRB_SYM(call),
+                                              static_cast<mrb_int>(RARRAY_LEN(ask.args)),
+                                              RARRAY_PTR(ask.args));
+      value_answer(res, w.what, said);
+      continue;
+    }
+    res.run.compute_task[count] = {ask.block, ask.args, ask.max_runtime, w.what};
+    count++;
+  }
+  if (count == 0) return false;
+  res.run.compute_task_count = count;
+  res.run.stop_node = n;
+  res.run.stop_status = status;
+  res.run.chosen = r.chosen;
+  res.run.stopped = true;
+  return true;
 }
 
 bool param_find(Param p, std::string_view& value) {
@@ -1510,6 +1593,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         break;
       }
       case Node::kG11: {
+        // #30: the first node that needs a value a worker answers. The
+        // whole round starts here, and the walk stops once.
+        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+                            value_round_start(r, n, status))) {
+          return mrb_nil_value();
+        }
         const int h = ensure_etag(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
@@ -1522,6 +1611,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         continue;
       }
       case Node::kK13: {
+        // #30: the first node that needs a value a worker answers. The
+        // whole round starts here, and the walk stops once.
+        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+                            value_round_start(r, n, status))) {
+          return mrb_nil_value();
+        }
         const int h = ensure_etag(r);
         if (h >= 0) {
           status = static_cast<uint16_t>(h);
@@ -1534,6 +1629,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         continue;
       }
       case Node::kH12: {
+        // #30: the first node that needs a value a worker answers. The
+        // whole round starts here, and the walk stops once.
+        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+                            value_round_start(r, n, status))) {
+          return mrb_nil_value();
+        }
         epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.run.last_modified_asked,
                        &res.run.last_modified_present, &res.run.last_modified_epoch});
         take_edge({n, status, halted}, res.run.last_modified_present && vals != nullptr &&
@@ -1541,6 +1642,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         continue;
       }
       case Node::kL17: {
+        // #30: the first node that needs a value a worker answers. The
+        // whole round starts here, and the walk stops once.
+        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+                            value_round_start(r, n, status))) {
+          return mrb_nil_value();
+        }
         epoch_memo(r, {res.cb_last_modified, res.konst_last_modified, &res.run.last_modified_asked,
                        &res.run.last_modified_present, &res.run.last_modified_epoch});
         take_edge({n, status, halted}, !res.run.last_modified_present || vals == nullptr ||
@@ -1610,6 +1717,12 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       }
       case Node::kO18: {
         if (facts.method == flow::Method::kGet || facts.method == flow::Method::kHead) {
+          // #30: the first node that needs a value a worker answers. The
+          // whole round starts here, and the walk stops once.
+          if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+                              value_round_start(r, n, status))) {
+            return mrb_nil_value();
+          }
           const int h = add_caching(r);
           if (h >= 0) {
             status = static_cast<uint16_t>(h);
@@ -1819,53 +1932,6 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
-  // #80: `compute :is_authorized`. The names were only written down at
-  // class body time; here the fold knows what each one is, so here is
-  // where every refusal about one is spelled. A compute declaration is a bit beside
-  // `dynamic`, so a run reads both in one load and knows before its
-  // first VM entry whether this node can stop.
-  //
-  // A NATIVE callback is not refused. It is a function pointer, and both
-  // VMs are the same process, so the pointer is the same number on
-  // either side - there is no irep to dump and none to load, and only
-  // the arguments and the answer cross, as CBOR. It is the cheaper of
-  // the two crossings, not the impossible one.
-  {
-    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(computed));
-    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
-    for (mrb_int i = 0; i < n; i++) {
-      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
-      const size_t at = node_of_callback(want);
-      // Not a flow node at all. A value callback (generate_etag,
-      // process_post) is not refused here because it is one - it is
-      // refused because a compute task stops the graph BETWEEN nodes, and
-      // one of those is not a node.
-      if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "compute :%n names no flow callback - a compute task stops the graph between "
-                   "nodes, so only a node's own callback can be one",
-                   want);
-      }
-      // A declared callback answers on the CLASS. The block it hands
-      // over carries no environment - a dumped proc cannot - so it
-      // needs nothing of an instance, and an instance form would only
-      // promise state the worker can never see.
-      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "compute :%n, but %n is not defined - write it as def self.%n and answer "
-                   "with a Webmachine::ComputeTask",
-                   want, want, want);
-      }
-      if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) == 0)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "compute :%n, but %n is defined on the instance - a declared block carries "
-                   "no environment, so it can use nothing of an instance. Write def self.%n",
-                   want, want, want);
-      }
-      out.compute |= uint64_t{1} << at;
-    }
-  }
-
   // #30: the same fold for `watch`. A watcher's block is never dumped -
   // it runs in this VM, on this thread - so the callback may live on the
   // instance and keep whatever it closed over. Two things are asked: the
@@ -1903,10 +1969,93 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   out.cb_generate_etag = value_cb(mrb, klass, {MRB_SYM(generate_etag), true});
   out.cb_last_modified = value_cb(mrb, klass, {MRB_SYM(last_modified), true});
   out.cb_expires = value_cb(mrb, klass, {MRB_SYM(expires), true});
+  // #30: the compute fold reads those three, so it comes after them and
+  // before the bake below: a value a worker answers is never baked.
+  // #80: `compute :is_authorized`. The names were only written down at
+  // class body time; here the fold knows what each one is, so here is
+  // where every refusal about one is spelled. A compute declaration is a bit beside
+  // `dynamic`, so a run reads both in one load and knows before its
+  // first VM entry whether this node can stop.
+  //
+  // A NATIVE callback is not refused. It is a function pointer, and both
+  // VMs are the same process, so the pointer is the same number on
+  // either side - there is no irep to dump and none to load, and only
+  // the arguments and the answer cross, as CBOR. It is the cheaper of
+  // the two crossings, not the impossible one.
+  {
+    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(computed));
+    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
+      const size_t at = node_of_callback(want);
+      // #30: a VALUE callback. generate_etag, last_modified and expires
+      // choose no edge - the flow only reads what they answer - so a
+      // round starts all of them at the same time and stops once. They
+      // are named here like a node, and they are not one.
+      if (at == flow::kNodeCount) {
+        uint8_t what = 0;
+        const Resource::ValueCb* cb = nullptr;
+        if (want == MRB_SYM(generate_etag)) {
+          what = kJobEtag;
+          cb = &out.cb_generate_etag;
+        } else if (want == MRB_SYM(last_modified)) {
+          what = kJobLastModified;
+          cb = &out.cb_last_modified;
+        } else if (want == MRB_SYM(expires)) {
+          what = kJobExpires;
+          cb = &out.cb_expires;
+        }
+        if (WM_RES_UNLIKELY(cb == nullptr)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "compute :%n names no callback a worker can answer - a node's own callback, "
+                     "or generate_etag, last_modified or expires",
+                     want);
+        }
+        if (WM_RES_UNLIKELY(!cb->has)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "compute :%n, but %n is not defined - write it as def self.%n and answer "
+                     "with a Webmachine::ComputeTask",
+                     want, want, want);
+        }
+        if (WM_RES_UNLIKELY(!cb->on_class)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "compute :%n, but %n is defined on the instance - a declared block carries "
+                     "no environment, so it can use nothing of an instance. Write def self.%n",
+                     want, want, want);
+        }
+        out.value_jobs |= static_cast<uint8_t>(1u << what);
+        continue;
+      }
+      // A declared callback answers on the CLASS. The block it hands
+      // over carries no environment - a dumped proc cannot - so it
+      // needs nothing of an instance, and an instance form would only
+      // promise state the worker can never see.
+      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "compute :%n, but %n is not defined - write it as def self.%n and answer "
+                   "with a Webmachine::ComputeTask",
+                   want, want, want);
+      }
+      if (WM_RES_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) == 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "compute :%n, but %n is defined on the instance - a declared block carries "
+                   "no environment, so it can use nothing of an instance. Write def self.%n",
+                   want, want, want);
+      }
+      out.compute |= uint64_t{1} << at;
+    }
+  }
+
   // #202: the class forms of the three caching answers are asked once, now.
-  bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag});
-  bake_value(fold, {out.cb_last_modified, "last_modified", false, out.konst_last_modified});
-  bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires});
+  if ((out.value_jobs & (1u << kJobEtag)) == 0) {
+    bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag});
+  }
+  if ((out.value_jobs & (1u << kJobLastModified)) == 0) {
+    bake_value(fold, {out.cb_last_modified, "last_modified", false, out.konst_last_modified});
+  }
+  if ((out.value_jobs & (1u << kJobExpires)) == 0) {
+    bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires});
+  }
   // A konst that was asked and answered nothing is an answer: the
   // callback behind it is not asked again. So there is something to say
   // only where a konst holds a value, or where no konst was taken and a
@@ -2209,7 +2358,7 @@ bool run_stopped(const Resource& res) { return res.run.stopped; }
 //
 // A resumed run may stop again: a resource is free to declare two nodes,
 // and the second stop is answered exactly like the first.
-uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
+uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round) {
   mrb_state* mrb = res.mrb;
   // What the park took away, back: the bindings, and the roots.
   request_bind(res.run.req);
@@ -2226,8 +2375,18 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
     t.block = mrb_nil_value();
     t.args = mrb_nil_value();
   }
-  res.run.answer = answer;
-  res.run.answered = true;
+  // Each job of the round into its own place: a node's own callback is
+  // the answer the walk takes at that node, and a value goes straight
+  // into the memo the walk reads.
+  res.run.answered = false;
+  for (uint8_t i = 0; i < round.n; i++) {
+    if (round.what[i] == kJobNode) {
+      res.run.answer = round.answers[i];
+      res.run.answered = true;
+      continue;
+    }
+    value_answer(res, round.what[i], round.answers[i]);
+  }
   res.run.stopped = false;
 
   mrb_bool raised = FALSE;
