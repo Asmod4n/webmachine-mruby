@@ -1271,6 +1271,11 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
     const RunAnswer answer = {&body, &have_body, &rhdrs};
     uint16_t status = resource_run(res, asked, answer);
 
+    // #30: what this run waits on, in the frame that holds the run. The
+    // connection only learns its ADDRESS, under a park slot, because a
+    // completion carries a number and not a pointer.
+    Conn::Round mine_round;
+    int park = -1;
     while (WM_H1_UNLIKELY(run_stopped(res))) {
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
@@ -1289,17 +1294,21 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // and the arguments become CBOR while both the VM and the run's
       // own state are still to hand. One line later res.run is gone
       // from the resource, and neither could be read again.
-      compute_task_hand_over(st, res);
+      if (park < 0) {
+        park = st.park_take(&mine_round);
+        st.h1_park = park;
+      }
+      compute_task_hand_over(st, mine_round, park, res);
       // #30: the same moment for a watcher. It is a value of the
       // reactor's VM and it must reach the connection's hash before the
       // frame takes res.run away - a watcher nobody roots is collected
       // while its descriptor is still in the ring. A connection that can
       // hold no more says so, and the run is answered rather than left
       // waiting for a poll nobody armed.
-      if (res.run.watch_count != 0 && !watch_hand_over(st, res)) {
-        st.round.answer_value[0] = mrb_nil_value();
-        st.round.jobs_owed = 0;
-        st.round.answer_ready = true;
+      if (res.run.watch_count != 0 && !watch_hand_over(st, mine_round, park, res)) {
+        mine_round.answer_value[0] = mrb_nil_value();
+        mine_round.jobs_owed = 0;
+        mine_round.answer_ready = true;
       }
 
       // The walk's own state travels with the frame. res.run belongs to
@@ -1312,7 +1321,7 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // RUN rather than one per connection.
       Resource::RunState mine = std::move(res.run);
       res.run = Resource::RunState{};
-      watch_run_is(st, &mine);
+      watch_run_is(st, mine_round, &mine);
 
       Run::promise_type& pr = co_await Park{};
 
@@ -1333,12 +1342,12 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // Back in the resource. Nothing may point at this frame's copy
       // any more - a watcher that outlived its answer would lend a
       // state that has moved.
-      watch_run_is(st, nullptr);
+      watch_run_is(st, mine_round, nullptr);
       // Three refusals, and they must not be confused: a full pool is
       // load and passes, a deadline the author got wrong does not, and
       // a handle that died may come back (.DESIGN.md #promise-bound).
       // A refused run does not walk on - there is no answer to walk to.
-      const ComputeRefusal refused = compute_task_refusal(st);
+      const ComputeRefusal refused = compute_task_refusal(mine_round);
       if (WM_H1_UNLIKELY(refused.status != 0)) {
         // Nothing the run said still holds: it never reached an answer.
         // A content type, a file name, an error asset - all of them
@@ -1353,25 +1362,32 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       } else {
         // #30: the whole round, in the order the stop handed it over.
         // A watcher and a single task are one entry of it.
-        const uint8_t owed = st.round.jobs_owed != 0 ? st.round.jobs_owed : 1;
+        const uint8_t owed = mine_round.jobs_owed != 0 ? mine_round.jobs_owed : 1;
         status = resource_resume(res, {&body, &have_body, &rhdrs},
-                                 {st.round.answer_value, st.round.job_what, st.round.user_value, st.round.user_have,
-                                  owed});
+                                 {mine_round.answer_value, mine_round.job_what,
+                                  mine_round.user_value, mine_round.user_have, owed});
       }
       // The answers were rooted while they waited - nothing on the VM's
       // stack named them. The round is read, so they are let go.
-      for (mrb_value& a : st.round.answer_value) {
+      for (mrb_value& a : mine_round.answer_value) {
         if (!mrb_nil_p(a)) {
           mrb_gc_unregister(res.mrb, a);
           a = mrb_nil_value();
         }
       }
       for (int i = 0; i < Conn::kJobSlots; i++) {
-        if (!st.round.user_have[i]) continue;
-        mrb_gc_unregister(res.mrb, st.round.user_value[i]);
-        st.round.user_value[i] = mrb_nil_value();
-        st.round.user_have[i] = false;
+        if (!mine_round.user_have[i]) continue;
+        mrb_gc_unregister(res.mrb, mine_round.user_value[i]);
+        mine_round.user_value[i] = mrb_nil_value();
+        mine_round.user_have[i] = false;
       }
+    }
+
+    // The run is done stopping. The slot goes back, and nothing in the
+    // table names this frame any more.
+    if (park >= 0) {
+      st.park_drop(park);
+      st.h1_park = -1;
     }
 
     Round fr{st,          b,           s.view,      s.viewlen,    s.off,

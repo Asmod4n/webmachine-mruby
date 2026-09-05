@@ -1691,21 +1691,26 @@ class Ring {
       }
     }
     // #30: a value round hands over several jobs at one stop, and they
-    // go to the pool together. The tag carries the job's slot the same
-    // way a watcher's does, so each answer finds its own place.
-    for (int slot = 0; slot < App::Conn::kJobSlots; slot++) {
-      std::string arg;
-      unsigned code = 0;
-      double deadline = 0.0;
-      if (!App::compute_task_take(c.app, slot, &code, arg, &deadline)) continue;
-      if (!compute_.submit(code, arg, App::compute_task_user(c.app, slot), deadline,
-                           detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(slot)))) {
-        // Every slot taken. Not a refusal this layer invents - the run
-        // is told, and it answers 503 the way it would answer anything
-        // else.
-        App::compute_task_refused(c.app);
-        if (!c.sending) continue_conn(idx);
-        return;
+    // go to the pool together. The tag carries which stopped run and
+    // which job of it, so each answer finds its own place - a
+    // connection can hold several stopped runs, one per h2 stream.
+    int park = -1;
+    while (App::park_take_pending(c.app, &park)) {
+      for (int slot = 0; slot < App::Conn::kJobSlots; slot++) {
+        std::string arg;
+        unsigned code = 0;
+        double deadline = 0.0;
+        if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline)) continue;
+        if (!compute_.submit(code, arg, App::compute_task_user(c.app, park, slot), deadline,
+                             detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(park),
+                                                      static_cast<uint8_t>(slot)))) {
+          // Every slot taken. Not a refusal this layer invents - the run
+          // is told, and it answers 503 the way it would answer anything
+          // else.
+          App::compute_task_refused(c.app, park);
+          if (!c.sending) continue_conn(idx);
+          return;
+        }
       }
     }
   }
@@ -1733,11 +1738,13 @@ class Ring {
   // its answer into, and this is not a point where either exists; `spell_next_round`
   // is. So this only says the answer arrived, and takes the same door
   // response.file takes.
-  void on_compute_task(uint32_t idx, uint16_t gen, uint8_t slot, struct io_uring_cqe* cqe) {
+  void on_compute_task(uint32_t idx, uint16_t gen, uint8_t both, struct io_uring_cqe* cqe) {
     (void)cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    const uint64_t tag = detail::compute_task_tag(gen, idx, slot);
+    const uint8_t park = static_cast<uint8_t>(both >> 4);
+    const uint8_t slot = static_cast<uint8_t>(both & 0x0f);
+    const uint64_t tag = detail::compute_task_tag(gen, idx, park, slot);
     ComputeAnswer answered;
     const bool have = compute_.take(tag, &answered);
     if (!have) answered.raised = true;
@@ -1763,7 +1770,7 @@ class Ring {
     // died with it. The answer is still TAKEN, because the slot is the
     // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
-    App::compute_task_answered(c.app, static_cast<int>(slot), answered);
+    App::compute_task_answered(c.app, static_cast<int>(park), static_cast<int>(slot), answered);
     if (!c.sending) continue_conn(idx);
   }
 

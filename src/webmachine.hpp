@@ -4527,8 +4527,54 @@ class Http1 {
       // connection - so 503 with a Retry-After of a minute.
       bool compute_task_raised = false;
     };
-    // h1's own. An h2 stream that stops carries one of these too.
-    Round round;
+    // #30: where each stopped run of this connection keeps what it
+    // waits on. The Round itself lives in the COROUTINE FRAME of that
+    // run - the frame holds everything about it and stays alive while
+    // it waits - and this table is only what the reactor needs: an
+    // answer arrives as a completion, and a completion carries a
+    // number, not an address.
+    //
+    // Four bits of the tag name the park slot and four name the job, so
+    // one byte carries both and the layout is unchanged.
+    // h1 stops at most one run per connection - RFC 9112 9.3.2 puts the
+    // answers out in the order the requests came - so it remembers the
+    // one slot it took. An h2 stream remembers its own.
+    int h1_park = -1;
+    static constexpr int kParkSlots = 16;
+    Round* park[kParkSlots] = {};
+    // Which parked runs have a job the reactor has not armed yet. Asked
+    // on every round, so it is a list and not a search over the table.
+    std::vector<int> park_pending;
+    void park_wants_arming(int slot) {
+      for (const int at : park_pending) {
+        if (at == slot) return;
+      }
+      park_pending.push_back(slot);
+    }
+
+    // A slot for a run that is stopping, or -1 when this connection
+    // holds as many as a tag can name.
+    int park_take(Round* r) {
+      for (int i = 0; i < kParkSlots; i++) {
+        if (park[i] != nullptr) continue;
+        park[i] = r;
+        return i;
+      }
+      return -1;
+    }
+    void park_drop(int slot) {
+      if (slot < 0 || slot >= kParkSlots) return;
+      park[slot] = nullptr;
+      for (size_t i = 0; i < park_pending.size(); i++) {
+        if (park_pending[i] != slot) continue;
+        park_pending.erase(park_pending.begin() + static_cast<long>(i));
+        break;
+      }
+    }
+    Round* park_at(int slot) const {
+      if (slot < 0 || slot >= kParkSlots) return nullptr;
+      return park[slot];
+    }
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4831,16 +4877,18 @@ class Http1 {
   // here, which is the only thread that may build a value in it. A
   // worker that raised, or an answer CBOR cannot carry, is nil - the
   // run reads it like any other answer and decides for itself.
-  static void compute_task_answered(Conn& st, int slot, const ComputeAnswer& answered);
-  // #30: one job of the round answered, whatever answered it.
-  static void round_answered(Conn& st, int job, mrb_value v);
+  static void compute_task_answered(Conn& st, int park, int job, const ComputeAnswer& answered);
+  // #30: one job of a round answered, whatever answered it.
+  static void round_answered(Conn::Round& r, int job, mrb_value v);
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // Every worker slot is taken. The run is told rather than the layer
   // inventing a refusal - it answers this the way it answers anything.
-  static void compute_task_refused(Conn& st) {
-    st.round.answer_ready = true;
-    st.round.compute_task_full = true;
+  static void compute_task_refused(Conn& st, int park) {
+    Conn::Round* const r = st.park_at(park);
+    if (r == nullptr) return;
+    r->answer_ready = true;
+    r->compute_task_full = true;
   }
   // The three refusals a stopped run can meet, told apart here so no
   // call site has to (.DESIGN.md #promise-bound). Status 0 means the
@@ -4853,10 +4901,10 @@ class Http1 {
     uint16_t status = 0;
     std::string_view retry_after;
   };
-  static ComputeRefusal compute_task_refusal(Conn& st) {
+  static ComputeRefusal compute_task_refusal(Conn::Round& round) {
     // A full pool is load, and load passes. The seconds move over 3..5
     // so a burst that was refused together does not come back together.
-    if (st.round.compute_task_full) {
+    if (round.compute_task_full) {
       static const char* const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
                                            "Retry-After: 5\r\n"};
       static unsigned turn = 0;
@@ -4864,22 +4912,22 @@ class Http1 {
     }
     // The author's number was wrong. Coming back does not make the work
     // shorter, so nothing tells the client to.
-    if (st.round.compute_task_over_deadline) return {500, {}};
+    if (round.compute_task_over_deadline) return {500, {}};
     // A handle the worker needs is gone. A database that is restarted
     // comes back, and a minute is the size of that, not the seconds a
     // burst of load lives on.
-    if (st.round.compute_task_raised) return {503, "Retry-After: 60\r\n"};
+    if (round.compute_task_raised) return {503, "Retry-After: 60\r\n"};
     return {};
   }
   // #80: the crossing, done by the frame at the stop. The block becomes
   // an id and the arguments become CBOR. After this nothing of the VM is
   // named, which is what lets a worker touch the result at all.
-  static bool compute_task_hand_over(Conn& st, const Resource& res);
+  static bool compute_task_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res);
   // #30: the watcher a stopped run left, handed to the connection. The
   // connection files it under a slot and roots it; the reactor arms what
   // `w_pending` names. False when the connection can hold no more, and
   // the run is told the way a full pool tells it.
-  static bool watch_hand_over(Conn& st, const Resource& res);
+  static bool watch_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res);
   // What one event did to the wait.
   enum class WatchStep : uint8_t {
     kWait,    // the block wants the same thing again
@@ -4917,7 +4965,7 @@ class Http1 {
   // this connection is not waiting on it.
   // #30: where the run that owns these watchers is waiting. Told after
   // the park, because only then does the frame hold its own state.
-  static void watch_run_is(Conn& st, Resource::RunState* run);
+  static void watch_run_is(Conn& st, Conn::Round& round, Resource::RunState* run);
   // #30: every watcher of this connection that stayed quiet for as long
   // as IT allowed. The sweep asks once per connection, not once per
   // watcher, and this walks the ones that are armed.
@@ -4926,28 +4974,20 @@ class Http1 {
   // 0 when none does. The Ring keeps that one number.
   static int64_t watchers_soonest_deadline(Conn& st);
   static void watcher_armed_at(Conn& st, int slot, int64_t at);
-  static int watcher_job_of_slot(const Conn& st, int slot) {
-    for (int job = 0; job < kValueJobs; job++) {
-      if (st.round.w_slot[job] == slot) return job;
-    }
-    return -1;
-  }
-  static int watcher_slot_of_job(const Conn& st, int job) {
-    if (job < 0 || job >= kValueJobs) return -1;
-    return st.round.w_slot[job];
-  }
   static double watcher_quiet_seconds(Conn& st, int slot);
   // The work a stopped run left, or false. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // #30: response.userdata for this job, as the crossing left it.
-  static std::string_view compute_task_user(const Conn& st, int slot) {
-    if (slot < 0 || slot >= Conn::kJobSlots) return {};
-    return st.round.job[slot].user_bytes;
+  static std::string_view compute_task_user(const Conn& st, int park, int job) {
+    const Conn::Round* const r = st.park_at(park);
+    if (r == nullptr || job < 0 || job >= Conn::kJobSlots) return {};
+    return r->job[job].user_bytes;
   }
-  static bool compute_task_take(Conn& st, int slot, unsigned* code, std::string& bytes,
+  static bool compute_task_take(Conn& st, int park, int job, unsigned* code, std::string& bytes,
                                 double* deadline) {
-    if (slot < 0 || slot >= Conn::kJobSlots) return false;
-    Conn::Round::Job& j = st.round.job[slot];
+    Conn::Round* const r = st.park_at(park);
+    if (r == nullptr || job < 0 || job >= Conn::kJobSlots) return false;
+    Conn::Round::Job& j = r->job[job];
     if (!j.waiting) return false;
     *code = j.code;
     *deadline = j.deadline;
@@ -4958,7 +4998,11 @@ class Http1 {
   }
   // Is this connection waiting on one? The Ring asks before it lets
   // anything else speak for the connection.
-  static bool run_answer_pending(const Conn& st) { return st.run_parked() && !st.round.answer_ready; }
+  static bool run_answer_pending(const Conn& st) {
+    if (!st.run_parked()) return false;
+    const Conn::Round* const r = st.park_at(st.h1_park);
+    return r == nullptr || !r->answer_ready;
+  }
 
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside
@@ -4977,11 +5021,14 @@ class Http1 {
   }
   // The same, for the work a stopped run left. arm_compute_task built a
   // std::string before it asked. Measured at 0.45%.
-  static bool compute_task_waiting(const Conn& st) {
-    for (const Conn::Round::Job& j : st.round.job) {
-      if (j.waiting) return true;
-    }
-    return false;
+  static bool compute_task_waiting(const Conn& st) { return !st.park_pending.empty(); }
+  // The next parked run with a job to arm, or false. Taken, not read -
+  // the same shape as file_take and watch_take.
+  static bool park_take_pending(Conn& st, int* park) {
+    if (st.park_pending.empty()) return false;
+    *park = st.park_pending.back();
+    st.park_pending.pop_back();
+    return true;
   }
   void file_reject(Conn& st);
   void file_error(Conn& st, const char* why);
@@ -6283,8 +6330,12 @@ inline uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
 inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); }
 // #30: the same 8 bits for a compute job. A value round hands over
 // several at one stop, so an answer has to say which one it is.
-inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
-  return tag(kComputeTask, gen, idx) | (static_cast<uint64_t>(slot) << 48);
+// Four bits name the stopped run and four name its job, so one byte
+// carries both: a connection holds up to 16 stopped runs - one per h2
+// stream - and a run hands over up to four jobs at a stop.
+inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job) {
+  const uint8_t both = static_cast<uint8_t>((park << 4) | (job & 0x0f));
+  return tag(kComputeTask, gen, idx) | (static_cast<uint64_t>(both) << 48);
 }
 
 enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };

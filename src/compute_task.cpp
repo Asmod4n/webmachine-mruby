@@ -285,31 +285,32 @@ bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
 
 // #80: the way back. Only this thread may build a value in the
 // reactor's VM, so the decode happens here and nowhere else.
-void Http1::compute_task_answered(Conn& st, int slot, const ComputeAnswer& answered) {
-  if (slot < 0 || slot >= Conn::kJobSlots) return;
+void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAnswer& answered) {
+  Conn::Round* const round = st.park_at(park);
+  if (round == nullptr || slot < 0 || slot >= Conn::kJobSlots) return;
   // The round goes on when the LAST job of it answered. One job is the
   // ordinary case and ends the round at once.
-  if (st.round.jobs_answered < st.round.jobs_owed) st.round.jobs_answered++;
-  st.round.answer_ready = st.round.jobs_answered >= st.round.jobs_owed;
-  st.round.answer_value[slot] = mrb_nil_value();
-  st.round.compute_task_over_deadline = answered.over_deadline;
+  if (round->jobs_answered < round->jobs_owed) round->jobs_answered++;
+  round->answer_ready = round->jobs_answered >= round->jobs_owed;
+  round->answer_value[slot] = mrb_nil_value();
+  round->compute_task_over_deadline = answered.over_deadline;
   // A raise and a deadline are told apart, because the answers are not
   // the same one: 503 says come back, 500 says nothing will change.
-  st.round.compute_task_raised = answered.raised && !answered.over_deadline;
-  const Resource* const res = st.round.job_res;
+  round->compute_task_raised = answered.raised && !answered.over_deadline;
+  const Resource* const res = round->job_res;
   if (res == nullptr || answered.raised) return;
   mrb_state* const mrb = res->mrb;
   // #30: response.userdata, when the worker left something else there.
-  st.round.user_have[slot] = false;
+  round->user_have[slot] = false;
   if (answered.user_changed && !answered.user_bytes.empty()) {
     const mrb_value u = mrb_cbor_decode_fast(
         mrb, mrb_str_new(mrb, answered.user_bytes.data(), answered.user_bytes.size()));
     if (mrb->exc != nullptr) {
       mrb->exc = nullptr;
     } else {
-      st.round.user_value[slot] = u;
+      round->user_value[slot] = u;
       mrb_gc_register(mrb, u);
-      st.round.user_have[slot] = true;
+      round->user_have[slot] = true;
     }
   }
   if (answered.bytes.empty()) return;
@@ -319,7 +320,7 @@ void Http1::compute_task_answered(Conn& st, int slot, const ComputeAnswer& answe
     mrb->exc = nullptr;
     return;
   }
-  st.round.answer_value[slot] = v;
+  round->answer_value[slot] = v;
   mrb_gc_register(mrb, v);
 }
 
@@ -335,11 +336,11 @@ void Http1::compute_task_answered(Conn& st, int slot, const ComputeAnswer& answe
 // Both halves can refuse: a block mruby cannot dump, or a value CBOR
 // cannot carry. Either leaves the round with no job, and the run is
 // told the same thing a full pool tells it.
-bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
-  for (Conn::Round::Job& j : st.round.job) j.waiting = false;
-  st.round.jobs_owed = 0;
-  st.round.jobs_answered = 0;
-  st.round.job_res = &res;
+bool Http1::compute_task_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res) {
+  for (Conn::Round::Job& j : round.job) j.waiting = false;
+  round.jobs_owed = 0;
+  round.jobs_answered = 0;
+  round.job_res = &res;
   if (res.run.compute_task_count == 0) return false;
 
   mrb_state* const mrb = res.mrb;
@@ -368,33 +369,36 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
     const unsigned id = compute_task_intern(mrb, t.block, t.deadline);
     if (id == kComputeTaskNoCode) {
       mrb_gc_arena_restore(mrb, ai);
-      for (Conn::Round::Job& j : st.round.job) j.waiting = false;
-      st.round.jobs_owed = 0;
+      for (Conn::Round::Job& j : round.job) j.waiting = false;
+      round.jobs_owed = 0;
       return false;
     }
     const mrb_value enc = mrb_cbor_encode_fast(mrb, t.args);
     if (mrb->exc != nullptr || !mrb_string_p(enc)) {
       mrb->exc = nullptr;
       mrb_gc_arena_restore(mrb, ai);
-      for (Conn::Round::Job& j : st.round.job) j.waiting = false;
-      st.round.jobs_owed = 0;
+      for (Conn::Round::Job& j : round.job) j.waiting = false;
+      round.jobs_owed = 0;
       return false;
     }
-    Conn::Round::Job& j = st.round.job[i];
+    Conn::Round::Job& j = round.job[i];
     j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
     mrb_gc_arena_restore(mrb, ai);
     j.user_bytes = user;
     j.code = id;
     j.deadline = t.deadline;
-    st.round.job_what[i] = t.what;
+    round.job_what[i] = t.what;
     j.waiting = true;
-    st.round.jobs_owed = static_cast<uint8_t>(i + 1);
+    round.jobs_owed = static_cast<uint8_t>(i + 1);
   }
-  st.round.jobs_answered = 0;
+  round.jobs_answered = 0;
+  // The reactor arms what this stop handed over. It finds the run by
+  // its park slot, which is what the completion tag will carry back.
+  st.park_wants_arming(park);
   // A new round, so nothing of the last one speaks for it.
-  st.round.compute_task_full = false;
-  st.round.compute_task_over_deadline = false;
-  st.round.compute_task_raised = false;
+  round.compute_task_full = false;
+  round.compute_task_over_deadline = false;
+  round.compute_task_raised = false;
   return true;
 }
 

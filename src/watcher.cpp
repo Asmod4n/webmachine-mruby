@@ -31,6 +31,8 @@ struct WatcherData {
   // coroutine frame that parked, and the frame outlives every wait it
   // started.
   Resource::RunState* run = nullptr;
+  // #30: the round of that run - where this watcher leaves its answer.
+  Http1::Conn::Round* round = nullptr;
   // #30: the whole second this watcher may stay quiet until, or 0.
   int64_t deadline_at = 0;
   // POLLIN, POLLOUT or both.
@@ -244,6 +246,17 @@ void watcher_set_deadline_at(mrb_value v, int64_t at) {
   static_cast<WatcherData*>(DATA_PTR(v))->deadline_at = at;
 }
 
+// #30: the round this watcher answers into. Both stay in this file:
+// nothing outside it asks a watcher which round it belongs to.
+Http1::Conn::Round* watcher_round(mrb_value v) {
+  WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->round : nullptr;
+}
+
+void watcher_set_round(mrb_value v, Http1::Conn::Round* r) {
+  static_cast<WatcherData*>(DATA_PTR(v))->round = r;
+}
+
 Resource::RunState* watcher_run(mrb_value v) {
   WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
   return d != nullptr ? d->run : nullptr;
@@ -317,7 +330,8 @@ namespace webmachine {
 // The connection's hash is what roots it: the run's own frame is gone
 // one line later, and a watcher nobody holds is collected while the
 // descriptor is still in the ring.
-bool Http1::watch_hand_over(Conn& st, const Resource& res) {
+bool Http1::watch_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res) {
+  (void)park;
   if (res.run.watch_count == 0) return false;
   // Every watcher of the round takes a job of its own, after the tasks
   // a worker answers. A connection that can hold no more says so, and
@@ -325,29 +339,30 @@ bool Http1::watch_hand_over(Conn& st, const Resource& res) {
   for (uint8_t i = 0; i < res.run.watch_count; i++) {
     const int slot = st.watchers_add(res.mrb, res.run.watch[i]);
     if (slot < 0) return false;
-    const int job = static_cast<int>(st.round.jobs_owed);
+    const int job = static_cast<int>(round.jobs_owed);
     if (job >= Conn::kJobSlots) return false;
     watcher_set_job(res.run.watch[i], job);
-    st.round.w_slot[job] = slot;
-    st.round.job_what[job] = res.run.watch_what[i];
-    st.round.jobs_owed = static_cast<uint8_t>(job + 1);
+    watcher_set_round(res.run.watch[i], &round);
+    round.w_slot[job] = slot;
+    round.job_what[job] = res.run.watch_what[i];
+    round.jobs_owed = static_cast<uint8_t>(job + 1);
   }
   return true;
 }
 
 // #30: one job of the round answered. The run goes on when the last one
 // does - a single watcher ends its round at once.
-void Http1::round_answered(Conn& st, int job, mrb_value v) {
+void Http1::round_answered(Conn::Round& r, int job, mrb_value v) {
   if (job < 0 || job >= Conn::kJobSlots) return;
-  st.round.answer_value[job] = v;
-  if (st.round.jobs_answered < st.round.jobs_owed) st.round.jobs_answered++;
-  st.round.answer_ready = st.round.jobs_owed == 0 || st.round.jobs_answered >= st.round.jobs_owed;
+  r.answer_value[job] = v;
+  if (r.jobs_answered < r.jobs_owed) r.jobs_answered++;
+  r.answer_ready = r.jobs_owed == 0 || r.jobs_answered >= r.jobs_owed;
 }
 
 // #30: every watcher of this stop, told where its run waits. The frame
 // says so after the park, because only then does it hold its own state.
-void Http1::watch_run_is(Conn& st, Resource::RunState* run) {
-  for (const int slot : st.round.w_slot) {
+void Http1::watch_run_is(Conn& st, Conn::Round& round, Resource::RunState* run) {
+  for (const int slot : round.w_slot) {
     if (slot < 0) continue;
     const mrb_value w = st.watchers_at(slot);
     if (!mrb_nil_p(w)) watcher_set_run(w, run);
@@ -367,10 +382,16 @@ void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring) {
 // The wait is over, however it ended. The watcher goes, and with it the
 // descriptor's place in the ring.
 void Http1::watchers_drop_slot(Conn& st, int slot) {
-  st.watchers_drop(slot);
-  for (int& s : st.round.w_slot) {
-    if (s == slot) s = -1;
+  // The round this watcher answered stops naming it. Which round that
+  // is, the watcher itself says - a connection can hold several.
+  const mrb_value w = st.watchers_at(slot);
+  Conn::Round* const r = mrb_nil_p(w) ? nullptr : watcher_round(w);
+  if (r != nullptr) {
+    for (int& at : r->w_slot) {
+      if (at == slot) at = -1;
+    }
   }
+  st.watchers_drop(slot);
 }
 
 void Http1::watcher_armed_at(Conn& st, int slot, int64_t at) {
@@ -457,7 +478,8 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   // the run's own state travelled with the frame.
   mrb_value said;
   {
-    const RunLent lent(st.round.job_res, watcher_run(w));
+    const Conn::Round* const own = watcher_round(w);
+    const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
     said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
   }
   if (mrb->exc != nullptr) {
@@ -465,14 +487,16 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     // answers 500 the way it answers any raise.
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
-    round_answered(st, watcher_job(w), mrb_nil_value());
+    Conn::Round* const r = watcher_round(w);
+    if (r != nullptr) round_answered(*r, watcher_job(w), mrb_nil_value());
     return WatchStep::kDone;
   }
   if (watcher_aborted_p(w)) {
     // ROOT IT FIRST. The block's answer is held by the arena and by
     // nothing else; restoring the arena before registering it hands the
     // collector a value the run is about to read.
-    round_answered(st, watcher_job(w), said);
+    Conn::Round* const r = watcher_round(w);
+    if (r != nullptr) round_answered(*r, watcher_job(w), said);
     mrb_gc_register(mrb, said);
     mrb_gc_arena_restore(mrb, ai);
     return WatchStep::kDone;
@@ -494,7 +518,8 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   mrb_value said = mrb_nil_value();
   bool again;
   {
-    const RunLent lent(st.round.job_res, watcher_run(w));
+    const Conn::Round* const own = watcher_round(w);
+    const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
     again = watcher_deadline_passed(mrb, w, &said);
   }
   if (mrb->exc != nullptr) {
@@ -502,7 +527,8 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
     said = mrb_nil_value();
   }
   if (!again) {
-    round_answered(st, watcher_job(w), said);
+    Conn::Round* const r = watcher_round(w);
+    if (r != nullptr) round_answered(*r, watcher_job(w), said);
     mrb_gc_register(mrb, said);
     mrb_gc_arena_restore(mrb, ai);
     return WatchStep::kDone;
