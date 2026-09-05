@@ -932,3 +932,51 @@ assert('compute: a round answers a conditional request (#30)') do
     end
   end
 end
+
+# #30: the run's own scratch on the response. The server never looks at
+# it - it is storage, and the run is its whole life.
+assert('response: what one callback keeps, another one reads (#30)') do
+  src = <<~RUBY_SRC
+    class Kept < Webmachine::Resource
+      def is_authorized?(_h)
+        response[:who] = 'from is_authorized?'
+        response[:count] = 41
+        true
+      end
+      def to_html
+        "\#{response[:who]}/\#{response[:count] + 1}/\#{response.key?(:nothing)}"
+      end
+    end
+  RUBY_SRC
+  resource_server(wm_app('Kept', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200')
+      assert_equal 'from is_authorized?/42/false', body
+    end
+  end
+end
+
+# Two requests on ONE connection: what the first kept is gone.
+assert('response: the scratch is one run long (#30)') do
+  src = <<~RUBY_SRC
+    class KeptTwice < Webmachine::Resource
+      def to_html
+        was = response[:seen].nil? ? 'nothing' : response[:seen]
+        response[:seen] = 'first'
+        was
+      end
+    end
+  RUBY_SRC
+  resource_server(wm_app('KeptTwice', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, first = resource_read(s)
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, second = resource_read(s)
+      assert_equal 'nothing', first
+      assert_equal 'nothing', second
+    end
+  end
+end

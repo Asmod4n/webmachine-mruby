@@ -2742,6 +2742,13 @@ struct Resource {
     // #30: the Watcher this run stopped on. A value of THIS VM, held
     // until the frame hands it to the connection - the connection's hash
     // is what roots it while the run waits.
+    // #30: what the application itself carries from one callback to the
+    // next. A Hash, made when a callback first asks for it, and let go
+    // when the run ends. The run frame is its whole life - a value put
+    // here in generate_etag is there in to_html, and it is gone before
+    // the next request on this connection.
+    mrb_value kept = {};
+    bool kept_held = false;
     mrb_value watch[kValueJobs] = {};
     uint8_t watch_what[kValueJobs] = {};
     uint8_t watch_count = 0;
