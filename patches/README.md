@@ -18,8 +18,18 @@ and defines `WM_TASK_SCHEDULER_CAN_BE_DISABLED` when the name is there.
 So a plain checkout builds and answers requests - it keeps the check and
 is slower.
 
-Upstream: mruby/mruby#7491. When it is merged, delete this patch and the
-fork branch with it.
+`enabled` sits beside `switching` and not at the front of the struct.
+matz asked for that on the pull request, and it is measurably better
+here as well: at the front it opened a fresh hole and mrb_state was
+24768 bytes, beside `switching` it lands in padding that was already
+wasted and mrb_state is 24760. The check loads that word first anyway.
+
+Upstream: mruby/mruby#7491. matz reproduced the slowdown with `-O3
+-march=native` and would take the patch. The open question there is not
+this flag: the check reads `mrb->task.switching`, then `mrb->c`, then
+`mrb->c->status`, and folding those dependent loads would serve every
+build rather than the ones that call `mrb_disable_task_scheduler()`.
+When it is merged, delete this patch and the fork branch with it.
 
 Apply it to a plain mruby checkout with:
 
