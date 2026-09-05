@@ -1446,3 +1446,24 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.
 env: runnable=2/122 busy=0% (200ms sample)
 responses=407508 bad=0 seconds=2.000 rps=203751 bytes=63163740 MB/s=30.12 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=14263305 tx_MB/s=6.80
 server: 98% of one core (8u/90s)   client: 96% of one core (7u/89s)   other: 4% of one core
+==== 2026-09-05T17:43Z repo=92dc3f6 comparison=openlitespeed ====
+# litespeedtech/openlitespeed, built from git today (the mod_security
+# target does not link here - no YAJL - so only the openlitespeed target
+# was built; the module has no part in this arm). Same box, same htgen,
+# same minute as the two webmachine lines below.
+#
+# WHAT OPENLITESPEED GETS, its best foot on this box: httpdWorkers 1
+# (apples to our one thread), logLevel ERROR, access log to /dev/null,
+# gzip off, keepalive 10000 requests, eventDispatcher epoll, and the
+# cache module OFF. The last two are not cosmetic: with the shipped
+# "best" dispatcher and ls_enabled 1 the same run answers 30k instead
+# of 40k, and the cache module sits in front of every request.
+#
+# The two servers do not answer the same bytes: openlitespeed 244 per
+# response (a static file with ETag, Last-Modified and Accept-Ranges),
+# webmachine 155 (116 head + 39 body, from examples/hello.rb).
+harness: /home/user/asmod4n/htgen/htgen -c64/-c192 -d10s h1 (one ring, one thread) nice=-10 transport=tcp
+openlitespeed: rps=40271 (c64) / 41972 (c192)    server=99% of one core   MB/s=9.37 / 9.77
+webmachine:    rps=184491 (c64) / 231912 (c192)  server=95% / 99%         MB/s=27.27 / 34.28
+# Both are server-bound at one core, so the pair measures the servers.
+# 4.6x at c64 and 5.5x at c192.
