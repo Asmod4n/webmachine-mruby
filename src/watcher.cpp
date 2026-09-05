@@ -31,6 +31,8 @@ struct WatcherData {
   // coroutine frame that parked, and the frame outlives every wait it
   // started.
   Resource::RunState* run = nullptr;
+  // #30: the whole second this watcher may stay quiet until, or 0.
+  int64_t deadline_at = 0;
   // POLLIN, POLLOUT or both.
   unsigned events = POLLIN;
   // Set by watcher.abort, read after the block returns.
@@ -233,6 +235,15 @@ int watcher_slot(mrb_value v) {
   return d != nullptr ? d->slot : -1;
 }
 
+int64_t watcher_deadline_at(mrb_value v) {
+  const WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->deadline_at : 0;
+}
+
+void watcher_set_deadline_at(mrb_value v, int64_t at) {
+  static_cast<WatcherData*>(DATA_PTR(v))->deadline_at = at;
+}
+
 Resource::RunState* watcher_run(mrb_value v) {
   WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
   return d != nullptr ? d->run : nullptr;
@@ -360,6 +371,35 @@ void Http1::watchers_drop_slot(Conn& st, int slot) {
   for (int& s : st.round.w_slot) {
     if (s == slot) s = -1;
   }
+}
+
+void Http1::watcher_armed_at(Conn& st, int slot, int64_t at) {
+  const mrb_value w = st.watchers_at(slot);
+  if (!mrb_nil_p(w)) watcher_set_deadline_at(w, at);
+}
+
+int64_t Http1::watchers_soonest_deadline(Conn& st) {
+  int64_t soonest = 0;
+  for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
+    const mrb_value w = st.watchers_at(i);
+    if (mrb_nil_p(w)) continue;
+    const int64_t at = watcher_deadline_at(w);
+    if (at != 0 && (soonest == 0 || at < soonest)) soonest = at;
+  }
+  return soonest;
+}
+
+size_t Http1::watchers_over_deadline(Conn& st, int64_t now, int* slots, size_t max) {
+  size_t n = 0;
+  for (int i = 0; i < static_cast<int>(kMaxWatchers) && n < max; i++) {
+    const mrb_value w = st.watchers_at(i);
+    if (mrb_nil_p(w)) continue;
+    const int64_t at = watcher_deadline_at(w);
+    if (at == 0 || at >= now) continue;
+    watcher_set_deadline_at(w, 0);
+    slots[n++] = i;
+  }
+  return n;
 }
 
 unsigned Http1::watcher_mask(Conn& st, int slot) {

@@ -363,11 +363,10 @@ class Ring {
     // been quiet for as long as it allowed. 0 = nothing is armed. It is
     // NOT deadline_s: the peer on this socket is fine, some other
     // descriptor is the quiet one, and nothing here closes anything.
-    // #30: when each job's watcher may be asked why it is quiet. A round
-    // can wait on several, so there is one per job; w_deadline_s is the
-    // earliest of them, and the sweep only reads that one.
+    // #30: the earliest deadline any watcher of this connection owes.
+    // Each watcher keeps its own - the App has them, one per Ruby
+    // object - and this is only what the sweep has to read.
     int64_t w_deadline_s = 0;
-    int64_t w_job_deadline_s[kValueJobs] = {};
 
     static constexpr size_t kRoundFloor = 64u * 1024;
     size_t round_cap = kRoundFloor;
@@ -1635,22 +1634,11 @@ class Ring {
     // so a fraction becomes the next whole second up - a deadline that
     // fires early is a promise broken, one that fires late is not.
     const double quiet = App::watcher_quiet_seconds(c.app, slot);
-    const int job = App::watcher_job_of_slot(c.app, slot);
-    if (quiet > 0.0 && job >= 0) {
+    if (quiet > 0.0) {
       const int64_t secs = static_cast<int64_t>(quiet) + (quiet > static_cast<double>(static_cast<int64_t>(quiet)) ? 1 : 0);
-      c.w_job_deadline_s[job] = now_s_ + (secs > 0 ? secs : 1);
-      w_deadline_recompute(c);
+      App::watcher_armed_at(c.app, slot, now_s_ + (secs > 0 ? secs : 1));
     }
-  }
-
-  // The earliest deadline any watcher of the round has. Zero when none
-  // of them owes one.
-  static void w_deadline_recompute(Conn& c) {
-    int64_t soonest = 0;
-    for (const int64_t d : c.w_job_deadline_s) {
-      if (d != 0 && (soonest == 0 || d < soonest)) soonest = d;
-    }
-    c.w_deadline_s = soonest;
+    c.w_deadline_s = App::watchers_soonest_deadline(c.app);
   }
 
   // One readiness for one watcher. The block decides what happens next.
@@ -1673,14 +1661,11 @@ class Ring {
         // differ only in what the reader learns from the name.
         arm_watch(idx, c, slot);
         return;
-      case App::WatchStep::kDone: {
-        const int job = App::watcher_job_of_slot(c.app, slot);
-        if (job >= 0) c.w_job_deadline_s[job] = 0;
-        w_deadline_recompute(c);
+      case App::WatchStep::kDone:
         App::watchers_drop_slot(c.app, slot);
+        c.w_deadline_s = App::watchers_soonest_deadline(c.app);
         if (!c.sending) continue_conn(idx);
         return;
-      }
     }
   }
 
@@ -2221,15 +2206,14 @@ class Ring {
           // socket is fine, some other descriptor is quiet - so it is
           // asked first and it never closes anything.
           if (c.w_deadline_s != 0 && c.w_deadline_s < now_s_) {
-            // Every watcher of the round that stayed quiet for as long
-            // as IT allowed, not only the first one.
-            for (int job = 0; job < kValueJobs; job++) {
-              if (c.w_job_deadline_s[job] == 0 || c.w_job_deadline_s[job] >= now_s_) continue;
-              const int slot = App::watcher_slot_of_job(c.app, job);
-              c.w_job_deadline_s[job] = 0;
-              if (slot >= 0) step_watch(i, c, slot, App::watcher_deadline(c.app, slot));
+            // Every watcher that stayed quiet for as long as IT allowed,
+            // not only the first one.
+            int over[16];
+            const size_t n = App::watchers_over_deadline(c.app, now_s_, over, 16);
+            for (size_t k = 0; k < n; k++) {
+              step_watch(i, c, over[k], App::watcher_deadline(c.app, over[k]));
             }
-            w_deadline_recompute(c);
+            c.w_deadline_s = App::watchers_soonest_deadline(c.app);
             continue;
           }
           if (c.deadline_s >= now_s_) continue;

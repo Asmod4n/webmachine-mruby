@@ -3126,6 +3126,12 @@ double watcher_timeout(mrb_value v);
 bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said);
 int watcher_fd(mrb_value v);
 int watcher_slot(mrb_value v);
+// #30: when this watcher may be asked why it is quiet, as the whole
+// second the sweep reads, or 0 when it owes no deadline. It lives on
+// the watcher because a connection can wait on many at once and each
+// one allows its own time.
+int64_t watcher_deadline_at(mrb_value v);
+void watcher_set_deadline_at(mrb_value v, int64_t at);
 // #30: the state of the run this watcher belongs to, or nothing. It
 // points INTO the coroutine frame that parked - the one thing that
 // holds everything about that run - so each watcher finds its own,
@@ -4912,6 +4918,14 @@ class Http1 {
   // #30: where the run that owns these watchers is waiting. Told after
   // the park, because only then does the frame hold its own state.
   static void watch_run_is(Conn& st, Resource::RunState* run);
+  // #30: every watcher of this connection that stayed quiet for as long
+  // as IT allowed. The sweep asks once per connection, not once per
+  // watcher, and this walks the ones that are armed.
+  static size_t watchers_over_deadline(Conn& st, int64_t now, int* slots, size_t max);
+  // The earliest deadline any armed watcher of this connection owes, or
+  // 0 when none does. The Ring keeps that one number.
+  static int64_t watchers_soonest_deadline(Conn& st);
+  static void watcher_armed_at(Conn& st, int slot, int64_t at);
   static int watcher_job_of_slot(const Conn& st, int slot) {
     for (int job = 0; job < kValueJobs; job++) {
       if (st.round.w_slot[job] == slot) return job;
