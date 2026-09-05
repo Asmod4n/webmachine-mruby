@@ -310,6 +310,49 @@ constexpr bool all_reachable() {
   return true;
 }
 static_assert(all_reachable(), "every node is reachable from B13");
+
+// The nodes a node can reach.
+//
+// The flow table decides which callbacks CAN run at the same time: two
+// callbacks may run together only if the walk can meet both in one run,
+// which is what this set says.
+//
+// It cannot decide alone that they SHOULD. The set of nodes that every
+// path passes through holds one member, the node itself, for all 56
+// nodes - each node has an edge that halts, so no later node is sure.
+// A start is therefore always a guess, and the author owns it: the
+// author names the group, and this table refuses a group the walk can
+// never meet.
+static_assert(kNodeCount <= 64, "one node, one bit");
+
+struct Reaches {
+  uint64_t of[kNodeCount];
+};
+
+constexpr Reaches build_reaches() {
+  Reaches r = {};
+  for (size_t i = 0; i < kNodeCount; i++) {
+    bool seen[kNodeCount] = {};
+    mark(static_cast<Node>(i), seen);
+    for (size_t j = 0; j < kNodeCount; j++) {
+      if (seen[j]) r.of[i] |= uint64_t{1} << j;
+    }
+  }
+  return r;
+}
+inline constexpr Reaches kReaches = build_reaches();
+
+// Proof: a node reaches itself, and B13 reaches all of them.
+constexpr bool reaches_holds_itself() {
+  for (size_t i = 0; i < kNodeCount; i++) {
+    if ((kReaches.of[i] & (uint64_t{1} << i)) == 0) return false;
+  }
+  return true;
+}
+static_assert(reaches_holds_itself(), "a node reaches itself");
+static_assert(kReaches.of[static_cast<size_t>(Node::kB13)] ==
+                  (kNodeCount == 64 ? ~uint64_t{0} : ((uint64_t{1} << kNodeCount) - 1)),
+              "B13 reaches every node");
 }
 
 namespace webmachine::flow {
