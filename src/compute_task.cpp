@@ -320,33 +320,40 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
   st.jobs_owed = 0;
   st.jobs_answered = 0;
   st.job_res = &res;
-  if (!res.run.compute_task_held) return false;
+  if (res.run.compute_task_count == 0) return false;
 
   mrb_state* const mrb = res.mrb;
-  const int ai = mrb_gc_arena_save(mrb);
-  const unsigned id =
-      compute_task_intern(mrb, res.run.compute_task_block, res.run.compute_task_deadline);
-  if (id == kComputeTaskNoCode) {
+  // Every task of the round crosses here, or none does. A round that
+  // loses one job would wait for an answer nobody owes.
+  for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
+    const Resource::RunState::HeldTask& t = res.run.compute_task[i];
+    const int ai = mrb_gc_arena_save(mrb);
+    const unsigned id = compute_task_intern(mrb, t.block, t.deadline);
+    if (id == kComputeTaskNoCode) {
+      mrb_gc_arena_restore(mrb, ai);
+      for (Conn::Job& j : st.job) j.waiting = false;
+      st.jobs_owed = 0;
+      return false;
+    }
+    const mrb_value enc = mrb_cbor_encode_fast(mrb, t.args);
+    if (mrb->exc != nullptr || !mrb_string_p(enc)) {
+      mrb->exc = nullptr;
+      mrb_gc_arena_restore(mrb, ai);
+      for (Conn::Job& j : st.job) j.waiting = false;
+      st.jobs_owed = 0;
+      return false;
+    }
+    Conn::Job& j = st.job[i];
+    j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
     mrb_gc_arena_restore(mrb, ai);
-    return false;
+    j.code = id;
+    j.deadline = t.deadline;
+    j.what = t.what;
+    j.waiting = true;
+    st.jobs_owed = static_cast<uint8_t>(i + 1);
   }
-  const mrb_value enc = mrb_cbor_encode_fast(mrb, res.run.compute_task_args);
-  if (mrb->exc != nullptr || !mrb_string_p(enc)) {
-    mrb->exc = nullptr;
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-  Conn::Job& j = st.job[0];
-  j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
-  mrb_gc_arena_restore(mrb, ai);
-  j.code = id;
-  j.deadline = res.run.compute_task_deadline;
-  j.waiting = true;
-  j.what = 0;
-  // A node's own callback is the only job of its round.
-  st.jobs_owed = 1;
   st.jobs_answered = 0;
-  // A new job, so nothing of the last one speaks for it.
+  // A new round, so nothing of the last one speaks for it.
   st.compute_task_full = false;
   st.compute_task_over_deadline = false;
   st.compute_task_raised = false;

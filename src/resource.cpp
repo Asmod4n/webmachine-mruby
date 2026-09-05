@@ -866,10 +866,8 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.stop_node = nd;
       res.run.stop_status = status;
       res.run.chosen = r.chosen;
-      res.run.compute_task_block = ask.block;
-      res.run.compute_task_args = ask.args;
-      res.run.compute_task_deadline = ask.max_runtime;
-      res.run.compute_task_held = true;
+      res.run.compute_task[0] = {ask.block, ask.args, ask.max_runtime, kJobNode};
+      res.run.compute_task_count = 1;
       res.run.stopped = true;
       return false;
     }
@@ -2170,9 +2168,9 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   // unregister in resource_resume, once per park.
   if (WM_RES_UNLIKELY(res.run.stopped && raised == FALSE)) {
     mrb_gc_register(mrb, res.run.live);
-    if (res.run.compute_task_held) {
-      mrb_gc_register(mrb, res.run.compute_task_block);
-      mrb_gc_register(mrb, res.run.compute_task_args);
+    for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
+      mrb_gc_register(mrb, res.run.compute_task[i].block);
+      mrb_gc_register(mrb, res.run.compute_task[i].args);
     }
     // The two bindings are the PROCESS's "which request is speaking".
     // The reactor answers other connections while this one waits, so
@@ -2219,13 +2217,15 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, mrb_value answer) {
   res.run.headers = out.headers;
   res.run.body = out.body;
   mrb_gc_unregister(mrb, res.run.live);
-  if (res.run.compute_task_held) {
-    mrb_gc_unregister(mrb, res.run.compute_task_block);
-    mrb_gc_unregister(mrb, res.run.compute_task_args);
+  for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
+    mrb_gc_unregister(mrb, res.run.compute_task[i].block);
+    mrb_gc_unregister(mrb, res.run.compute_task[i].args);
   }
-  res.run.compute_task_held = false;
-  res.run.compute_task_block = mrb_nil_value();
-  res.run.compute_task_args = mrb_nil_value();
+  res.run.compute_task_count = 0;
+  for (Resource::RunState::HeldTask& t : res.run.compute_task) {
+    t.block = mrb_nil_value();
+    t.args = mrb_nil_value();
+  }
   res.run.answer = answer;
   res.run.answered = true;
   res.run.stopped = false;

@@ -2541,6 +2541,15 @@ struct AssetEntry;
 // to hold.
 inline constexpr unsigned kMaxWatchers = 256;
 
+// #30: how many jobs one stop can hand over. A node's own callback is
+// one. A value round asks for an ETag, a Last-Modified, an Expires and
+// a body, and the flow lets all four run at the same time - none of
+// them chooses an edge.
+inline constexpr int kValueJobs = 4;
+// What a job answers. kJobNode is a node's own callback, and it is
+// alone in its round.
+enum : uint8_t { kJobNode = 0, kJobEtag = 1, kJobLastModified = 2, kJobExpires = 3 };
+
 struct Resource {
 
   flow::KonstSet konst;
@@ -2719,10 +2728,17 @@ struct Resource {
     // The block itself, until the reactor interns it. It is a value of
     // THIS VM, so it never leaves this struct - what leaves is the id
     // the intern answers with.
-    mrb_value compute_task_block = {};
-    mrb_value compute_task_args = {};
-    double compute_task_deadline = 0.0;
-    bool compute_task_held = false;
+    struct HeldTask {
+      mrb_value block = {};
+      mrb_value args = {};
+      double deadline = 0.0;
+      // Which answer this task is: a node's own callback, or one of the
+      // values a round asks for at the same time.
+      uint8_t what = 0;
+    };
+    HeldTask compute_task[kValueJobs];
+    // How many tasks this stop holds. One for a node's own callback.
+    uint8_t compute_task_count = 0;
     // #30: the Watcher this run stopped on. A value of THIS VM, held
     // until the frame hands it to the connection - the connection's hash
     // is what roots it while the run waits.
@@ -4391,7 +4407,7 @@ class Http1 {
     // rooted while it waits - nothing on the VM's stack names it.
     // The width of one value round: an ETag, a Last-Modified, an
     // Expires and a body. Nothing in the flow asks for a fifth.
-    static constexpr int kJobSlots = 4;
+    static constexpr int kJobSlots = kValueJobs;
     // #30: one answer per job. A value round starts several jobs at
     // once - the flow says generate_etag, last_modified and the body
     // render do not decide anything for each other - so the channel is
