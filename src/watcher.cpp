@@ -314,12 +314,12 @@ bool Http1::watch_hand_over(Conn& st, const Resource& res) {
   for (uint8_t i = 0; i < res.run.watch_count; i++) {
     const int slot = st.watchers_add(res.mrb, res.run.watch[i]);
     if (slot < 0) return false;
-    const int job = static_cast<int>(st.jobs_owed);
+    const int job = static_cast<int>(st.round.jobs_owed);
     if (job >= Conn::kJobSlots) return false;
     watcher_set_job(res.run.watch[i], job);
-    st.w_slot[job] = slot;
-    st.job_what[job] = res.run.watch_what[i];
-    st.jobs_owed = static_cast<uint8_t>(job + 1);
+    st.round.w_slot[job] = slot;
+    st.round.job_what[job] = res.run.watch_what[i];
+    st.round.jobs_owed = static_cast<uint8_t>(job + 1);
   }
   return true;
 }
@@ -328,15 +328,15 @@ bool Http1::watch_hand_over(Conn& st, const Resource& res) {
 // does - a single watcher ends its round at once.
 void Http1::round_answered(Conn& st, int job, mrb_value v) {
   if (job < 0 || job >= Conn::kJobSlots) return;
-  st.answer_value[job] = v;
-  if (st.jobs_answered < st.jobs_owed) st.jobs_answered++;
-  st.answer_ready = st.jobs_owed == 0 || st.jobs_answered >= st.jobs_owed;
+  st.round.answer_value[job] = v;
+  if (st.round.jobs_answered < st.round.jobs_owed) st.round.jobs_answered++;
+  st.round.answer_ready = st.round.jobs_owed == 0 || st.round.jobs_answered >= st.round.jobs_owed;
 }
 
 // #30: every watcher of this stop, told where its run waits. The frame
 // says so after the park, because only then does it hold its own state.
 void Http1::watch_run_is(Conn& st, Resource::RunState* run) {
-  for (const int slot : st.w_slot) {
+  for (const int slot : st.round.w_slot) {
     if (slot < 0) continue;
     const mrb_value w = st.watchers_at(slot);
     if (!mrb_nil_p(w)) watcher_set_run(w, run);
@@ -357,7 +357,7 @@ void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring) {
 // descriptor's place in the ring.
 void Http1::watchers_drop_slot(Conn& st, int slot) {
   st.watchers_drop(slot);
-  for (int& s : st.w_slot) {
+  for (int& s : st.round.w_slot) {
     if (s == slot) s = -1;
   }
 }
@@ -417,7 +417,7 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   // the run's own state travelled with the frame.
   mrb_value said;
   {
-    const RunLent lent(st.job_res, watcher_run(w));
+    const RunLent lent(st.round.job_res, watcher_run(w));
     said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
   }
   if (mrb->exc != nullptr) {
@@ -454,7 +454,7 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   mrb_value said = mrb_nil_value();
   bool again;
   {
-    const RunLent lent(st.job_res, watcher_run(w));
+    const RunLent lent(st.round.job_res, watcher_run(w));
     again = watcher_deadline_passed(mrb, w, &said);
   }
   if (mrb->exc != nullptr) {

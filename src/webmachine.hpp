@@ -4449,77 +4449,80 @@ class Http1 {
     // which is what the scaffolding this replaces was reaching for.
     Run parked;
 
-    // #80: what the worker said, in THIS VM's values. The reactor puts
-    // it here on the way in and the resumed walk reads it once. It is
-    // rooted while it waits - nothing on the VM's stack names it.
     // The width of one value round: an ETag, a Last-Modified, an
     // Expires and a body. Nothing in the flow asks for a fifth.
     static constexpr int kJobSlots = kValueJobs;
-    // #30: one answer per job. A value round starts several jobs at
-    // once - the flow says generate_etag, last_modified and the body
-    // render do not decide anything for each other - so the channel is
-    // as wide as the round. Slot 0 is the single job's, and a watcher's.
-    mrb_value answer_value[kJobSlots] = {};
-    // The worker or the watcher answered; `spell_next_round` is where the run picks
-    // that up, because that is the one point at which a fresh sink and a
-    // fresh plan exist to write into.
-    bool answer_ready = false;
     // Is a run stopped on this connection? Nothing else may speak for it
     // while one is - not the carry behind it, and not a pipelined request
     // (RFC 9112 9.3.2: responses go out in the order the requests came).
     bool run_parked() const { return static_cast<bool>(parked.co) && !parked.done(); }
-    // The work the stopped run wants done, waiting for the reactor to
-    // hand it to a worker. Http1 has no ring - the same reason a watcher
-    // waits in w_pending and a file name waits for file_take.
-    // #80: the job a stopped run left. `job_code` says which promised
-    // callback, `job_bytes` is its argument as CBOR. Bytes, because an
-    // mrb_value belongs to one VM and the worker has its own.
-    // #80: the work a stopped run left, ALREADY across. The frame does
-    // the crossing itself, at the stop, because that is the last moment
-    // the reactor's VM and the run's own state are both to hand - the
-    // frame takes that state with it one line later.
-    struct Job {
-      unsigned code = 0;
-      std::string bytes;
-      double deadline = 0.0;
-      // #30: response.userdata as CBOR, or empty when the run put
-      // nothing there. Every job of a round gets the same bytes.
-      std::string user_bytes;
-      // The reactor has not armed this one yet.
-      bool waiting = false;
-      // Which value the answer is. kJobOne for a node's own callback,
-      // which is the only job of its round.
-      uint8_t what = 0;
+
+    // #30: everything ONE stopped run waits on.
+    //
+    // It is a struct of its own because a connection can hold more than
+    // one. h1 holds a single stopped run - RFC 9112 9.3.2 puts the
+    // answers out in the order the requests came - but an h2 connection
+    // multiplexes streams, and every stream that stops is a run with its
+    // own jobs, its own watchers and its own answers.
+    struct Round {
+      // #80: what the worker said, in THIS VM's values. The reactor puts
+      // it here on the way in and the resumed walk reads it once. It is
+      // rooted while it waits - nothing on the VM's stack names it.
+      //
+      // #30: one answer per job. A value round starts several jobs at
+      // once - the flow says generate_etag, last_modified and the body
+      // render do not decide anything for each other - so the channel is
+      // as wide as the round. Slot 0 is the single job's, and a
+      // watcher's.
+      mrb_value answer_value[kJobSlots] = {};
+      // Every job of the round answered; the resume is where the run
+      // picks that up, because that is the one point at which a fresh
+      // sink and a fresh plan exist to write into.
+      bool answer_ready = false;
+      // #80: the work a stopped run left, ALREADY across. The frame does
+      // the crossing itself, at the stop, because that is the last
+      // moment the reactor's VM and the run's own state are both to
+      // hand - the frame takes that state with it one line later.
+      struct Job {
+        unsigned code = 0;
+        std::string bytes;
+        double deadline = 0.0;
+        // #30: response.userdata as CBOR, or empty when the run put
+        // nothing there. Every job of a round gets the same bytes.
+        std::string user_bytes;
+        // The reactor has not armed this one yet.
+        bool waiting = false;
+      };
+      Job job[kJobSlots];
+      // Which value each job of the round answers - kJobNode for a
+      // node's own callback. A watcher fills its place here too, and it
+      // has no Job: nothing crosses to a worker for it.
+      uint8_t job_what[kJobSlots] = {};
+      // #30: response.userdata as the worker left it, per job, when the
+      // worker changed it. Rooted like an answer, read at the resume.
+      mrb_value user_value[kJobSlots] = {};
+      bool user_have[kJobSlots] = {};
+      // How many jobs this stop handed over, and how many answered. The
+      // run goes on when the two are equal.
+      uint8_t jobs_owed = 0;
+      uint8_t jobs_answered = 0;
+      // Whose VM the answer is decoded back into. It outlives the
+      // crossing, because the answer comes long after.
+      const Resource* job_res = nullptr;
+      // #30: the watcher slot each job of this round waits on, or -1.
+      int w_slot[kValueJobs] = {-1, -1, -1, -1};
+      // The pool had no slot: LOAD, and load passes. 429 with a
+      // Retry-After of a few seconds (.DESIGN.md #promise-bound).
+      bool compute_task_full = false;
+      // The worker ended the task at its max_runtime. NOT load: a second
+      // attempt costs the same, so 500 and no Retry-After.
+      bool compute_task_over_deadline = false;
+      // The worker raised. The registry holds what dies - a database, a
+      // connection - so 503 with a Retry-After of a minute.
+      bool compute_task_raised = false;
     };
-    Job job[kJobSlots];
-    // Which value each job of the round answers - kJobNode for a node's
-    // own callback. A watcher fills its place here too, and it has no
-    // Job: nothing crosses to a worker for it.
-    uint8_t job_what[kJobSlots] = {};
-    // #30: response.userdata as the worker left it, per job, when the
-    // worker changed it. Rooted like an answer, and read at the resume.
-    mrb_value user_value[kJobSlots] = {};
-    bool user_have[kJobSlots] = {};
-    // How many jobs this stop handed over, and how many answered. The
-    // run goes on when the two are equal.
-    uint8_t jobs_owed = 0;
-    uint8_t jobs_answered = 0;
-    // Whose VM the answer is decoded back into. It outlives the
-    // crossing, because the answer comes long after.
-    const Resource* job_res = nullptr;
-    // #30: the slot of the watcher this run waits on, or -1. A run
-    // stops on ONE watcher: the callback answered one, and the walk
-    // cannot go on to answer another before this one is done.
-    int w_slot[kValueJobs] = {-1, -1, -1, -1};
-    // The pool had no slot: LOAD, and load passes. 429 with a
-    // Retry-After of a few seconds (.DESIGN.md #promise-bound).
-    bool compute_task_full = false;
-    // The worker ended the task at its max_runtime. NOT load: a second
-    // attempt costs the same, so 500 and no Retry-After.
-    bool compute_task_over_deadline = false;
-    // The worker raised. The registry holds what dies - a database, a
-    // connection - so 503 with a Retry-After of a minute.
-    bool compute_task_raised = false;
+    // h1's own. An h2 stream that stops carries one of these too.
+    Round round;
     // #30: every watcher this connection is running, keyed by the
     // watcher's own mrb_obj_id - nothing is invented to name them with.
     //
@@ -4830,8 +4833,8 @@ class Http1 {
   // Every worker slot is taken. The run is told rather than the layer
   // inventing a refusal - it answers this the way it answers anything.
   static void compute_task_refused(Conn& st) {
-    st.answer_ready = true;
-    st.compute_task_full = true;
+    st.round.answer_ready = true;
+    st.round.compute_task_full = true;
   }
   // The three refusals a stopped run can meet, told apart here so no
   // call site has to (.DESIGN.md #promise-bound). Status 0 means the
@@ -4847,7 +4850,7 @@ class Http1 {
   static ComputeRefusal compute_task_refusal(Conn& st) {
     // A full pool is load, and load passes. The seconds move over 3..5
     // so a burst that was refused together does not come back together.
-    if (st.compute_task_full) {
+    if (st.round.compute_task_full) {
       static const char* const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
                                            "Retry-After: 5\r\n"};
       static unsigned turn = 0;
@@ -4855,11 +4858,11 @@ class Http1 {
     }
     // The author's number was wrong. Coming back does not make the work
     // shorter, so nothing tells the client to.
-    if (st.compute_task_over_deadline) return {500, {}};
+    if (st.round.compute_task_over_deadline) return {500, {}};
     // A handle the worker needs is gone. A database that is restarted
     // comes back, and a minute is the size of that, not the seconds a
     // burst of load lives on.
-    if (st.compute_task_raised) return {503, "Retry-After: 60\r\n"};
+    if (st.round.compute_task_raised) return {503, "Retry-After: 60\r\n"};
     return {};
   }
   // #80: the crossing, done by the frame at the stop. The block becomes
@@ -4911,13 +4914,13 @@ class Http1 {
   static void watch_run_is(Conn& st, Resource::RunState* run);
   static int watcher_job_of_slot(const Conn& st, int slot) {
     for (int job = 0; job < kValueJobs; job++) {
-      if (st.w_slot[job] == slot) return job;
+      if (st.round.w_slot[job] == slot) return job;
     }
     return -1;
   }
   static int watcher_slot_of_job(const Conn& st, int job) {
     if (job < 0 || job >= kValueJobs) return -1;
-    return st.w_slot[job];
+    return st.round.w_slot[job];
   }
   static double watcher_quiet_seconds(Conn& st, int slot);
   // The work a stopped run left, or false. Taken, not read: the reactor
@@ -4925,12 +4928,12 @@ class Http1 {
   // #30: response.userdata for this job, as the crossing left it.
   static std::string_view compute_task_user(const Conn& st, int slot) {
     if (slot < 0 || slot >= Conn::kJobSlots) return {};
-    return st.job[slot].user_bytes;
+    return st.round.job[slot].user_bytes;
   }
   static bool compute_task_take(Conn& st, int slot, unsigned* code, std::string& bytes,
                                 double* deadline) {
     if (slot < 0 || slot >= Conn::kJobSlots) return false;
-    Conn::Job& j = st.job[slot];
+    Conn::Round::Job& j = st.round.job[slot];
     if (!j.waiting) return false;
     *code = j.code;
     *deadline = j.deadline;
@@ -4941,7 +4944,7 @@ class Http1 {
   }
   // Is this connection waiting on one? The Ring asks before it lets
   // anything else speak for the connection.
-  static bool run_answer_pending(const Conn& st) { return st.run_parked() && !st.answer_ready; }
+  static bool run_answer_pending(const Conn& st) { return st.run_parked() && !st.round.answer_ready; }
 
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside
@@ -4961,7 +4964,7 @@ class Http1 {
   // The same, for the work a stopped run left. arm_compute_task built a
   // std::string before it asked. Measured at 0.45%.
   static bool compute_task_waiting(const Conn& st) {
-    for (const Conn::Job& j : st.job) {
+    for (const Conn::Round::Job& j : st.round.job) {
       if (j.waiting) return true;
     }
     return false;
