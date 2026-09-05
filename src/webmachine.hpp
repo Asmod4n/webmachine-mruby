@@ -5934,7 +5934,11 @@ class Http1 {
     uint16_t route;
     bool head_only;
   };
+  // #30: the walk, and the framing, are two functions - a run can STOP
+  // between them. One framer serves both paths.
+  struct H2Produced;
   bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
+  bool h2_frame(Conn& st, const H2Request& q, std::string& sink, H2Produced& p);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
   void h2_build_asset_shared();

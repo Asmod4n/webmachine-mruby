@@ -716,6 +716,32 @@ uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
   return 500;
 }
 
+// #30: the walk, and then the framing. They are two functions because a
+// run can STOP between them: a compute task or a watcher parks the run,
+// and the answer is framed when it comes back. One framer either way -
+// the parked path and the straight path must not spell two different
+// answers to the same request.
+struct Http1::H2Produced {
+  const Bundle* b = nullptr;
+  const std::array<uint16_t, 600>* idx = nullptr;
+  uint16_t status = 0;
+  bool have_body = false;
+  bool dynamic = false;
+  // What this run LENT instead of copying, if anything: not yet owned by
+  // a stream, so every path out of the framing still has to place or
+  // free it.
+  mrb_state* lent_mrb = nullptr;
+  mrb_value lent_v = {};
+  const char* lent = nullptr;
+  size_t lent_len = 0;
+  bool lent_have = false;
+  // The scratch this answer was spelled into. The straight path hands in
+  // the writer's own; a parked run hands in a pair of its own, because
+  // the writer's would be written over by the next request.
+  std::string* body = nullptr;
+  std::string* rhdrs = nullptr;
+};
+
 bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   const uint32_t stream_id = q.stream_id;
   const flow::ReqFacts& facts = q.facts;
@@ -725,23 +751,21 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   const bool head_only = q.head_only;
   H2State& h2 = *st0.h2;
 
+  H2Produced p;
+  p.idx = &index_;
+  p.body = &body_;
+  p.rhdrs = &rhdrs_;
   const Bundle* b = nullptr;
-  const std::array<uint16_t, 600>* idx = &index_;
   uint16_t status;
   bool have_body = false;
   bool dynamic = false;
   // What this run LENT instead of copying, if anything: not yet owned by a
   // stream, so every path out of here below still has to place or free it.
-  mrb_state* lent_mrb = nullptr;
-  mrb_value lent_v = {};
-  const char* lent = nullptr;
-  size_t lent_len = 0;
-  bool lent_have = false;
   if (route == kNoRoute) {
     status = 404;
   } else {
     b = &bundles_[apps_[st0.listener].base + route];
-    idx = &b->index;
+    p.idx = &b->index;
     if (b->bound) {
       // The Values die with the frame that carried them, so a run reached
       // from here - parked or not - gets none.
@@ -751,11 +775,11 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       const RunAnswer answer = {&body_, &have_body, &rhdrs_};
       status = resource_run(*b->res, asked, answer);
       LentBody lent_body;
-      lent_have = resource_body_lent(*b->res, lent_body);
-      lent_v = lent_body.value;
-      lent = lent_body.bytes.data();
-      lent_len = lent_body.bytes.size();
-      if (lent_have) lent_mrb = b->res->mrb;
+      p.lent_have = resource_body_lent(*b->res, lent_body);
+      p.lent_v = lent_body.value;
+      p.lent = lent_body.bytes.data();
+      p.lent_len = lent_body.bytes.size();
+      if (p.lent_have) p.lent_mrb = b->res->mrb;
       // response.file is h1-only for now: the deferred open lives on the
       // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
       // that would each need their own. The slot is taken either way - left
@@ -791,7 +815,23 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       status = flow::answer(cf, {b->konst.per_method[mi], b->konst.shortcut[mi]});
     }
   }
+  p.b = b;
+  p.status = status;
+  p.have_body = have_body;
+  p.dynamic = dynamic;
+  return h2_frame(st0, q, sink, p);
+}
 
+
+bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produced& p) {
+  const uint32_t stream_id = q.stream_id;
+  const http::ReqValues* vals = q.vals;
+  const ReqView* req = q.req;
+  const uint16_t route = q.route;
+  const bool head_only = q.head_only;
+  const flow::ReqFacts& facts = q.facts;
+  (void)facts;
+  H2State& h2 = *st0.h2;
   H2Answer wire;
   H2Block dynblk;
   // #210 / #146: an error carries the same page here that h1 spells. It
@@ -804,55 +844,55 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   // h2_flush_pending against the window. Nothing is rooted: the entry
   // lives in a mapping that outlives every stream that parks on it.
   const AssetEntry* run_asset =
-      (b != nullptr && b->res != nullptr) ? b->res->run.asset : nullptr;
+      (p.b != nullptr && p.b->res != nullptr) ? p.b->res->run.asset : nullptr;
   // Its wire length is the answer's length: what h2_build_block declares,
   // what the access log counts, and what END_STREAM is measured against.
   const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
-  if (dynamic) {
-    const bool bodyless = status == 204 || status == 304;
-    if (bodyless || !have_body) body_.clear();
+  if (p.dynamic) {
+    const bool bodyless = p.status == 204 || p.status == 304;
+    if (bodyless || !p.have_body) (*p.body).clear();
     // The same bake h1 names: a `def self.to_html` renders at setup, and the
     // block being built here is not the prebuilt one that carries it.
-    const bool baked = !bodyless && !have_body && !lent_have && status == 200 &&
-                       !b->dynamic_body && !b->konst.body.empty();
+    const bool baked = !bodyless && !p.have_body && !p.lent_have && p.status == 200 &&
+                       !p.b->dynamic_body && !p.b->konst.body.empty();
     std::string ctype;
     std::string epage;
     // The same debt h1 pays here: a 4xx or 5xx whose run wrote a field of
     // its own never reaches h2_error_page, and would go out as a bare
-    // status with the page missing.
-    if (status >= 400 && !bodyless && !have_body && !lent_have && run_asset == nullptr) {
-      const int em = err_pages_.media_for(status, vals != nullptr ? vals->accept : nullptr,
+    // p.status with the page missing.
+    if (p.status >= 400 && !bodyless && !p.have_body && !p.lent_have && run_asset == nullptr) {
+      const int em = err_pages_.media_for(p.status, vals != nullptr ? vals->accept : nullptr,
                                           vals != nullptr ? vals->accept_len : 0);
       size_t elen = 0;
       const ErrorPages::Fields none;
-      const char* ep = err_pages_.body_for({status, em, none}, epage, &elen);
+      const char* ep = err_pages_.body_for({p.status, em, none}, epage, &elen);
       if (ep != nullptr) {
-        body_.assign(ep, elen);
-        have_body = true;
+        (*p.body).assign(ep, elen);
+        p.have_body = true;
         ctype = err_pages_.media_type(em);
       }
     }
     if (!bodyless && ctype.empty()) {
-      if (!b->res->run.content_type.empty()) ctype = http::with_charset(b->res->run.content_type);
-      else if (have_body || baked) ctype = b->konst.content_type;
+      if (!p.b->res->run.content_type.empty()) ctype = http::with_charset(p.b->res->run.content_type);
+      else if (p.have_body || baked) ctype = p.b->konst.content_type;
     }
-    h2_build_block(dynblk, {status, ctype.empty() ? nullptr : &ctype});
-    // A status that sends no body cleared body_ above, and a lend it does
+    h2_build_block(dynblk, {p.status, ctype.empty() ? nullptr : &ctype});
+    // A p.status that sends no body cleared (*p.body) above, and a lend it does
     // not carry is handed back below - the same order h1 spells it in.
-    const bool use_lent = lent_have && !bodyless && have_body;
-    const bool use_asset = run_asset != nullptr && !bodyless && have_body;
+    const bool use_lent = p.lent_have && !bodyless && p.have_body;
+    const bool use_asset = run_asset != nullptr && !bodyless && p.have_body;
     // An asset's octets are never framed from `body` - h2_flush_pending
     // reads them out of the mapping - so only its length is set here.
     wire.body =
-        use_asset ? nullptr : (use_lent ? lent : (baked ? b->konst.body.data() : body_.data()));
+        use_asset ? nullptr : (use_lent ? p.lent : (baked ? p.b->konst.body.data() : (*p.body).data()));
     wire.blen = use_asset ? asset_len
-                          : (use_lent ? lent_len : (baked ? b->konst.body.size() : body_.size()));
+                          : (use_lent ? p.lent_len : (baked ? p.b->konst.body.size() : (*p.body).size()));
     wire.blk = &dynblk;
-  } else if (have_body && status == 200) {
-    wire.body = run_asset != nullptr ? nullptr : (lent_have ? lent : body_.data());
-    wire.blen = run_asset != nullptr ? asset_len : (lent_have ? lent_len : body_.size());
-    wire.blk = &h2_store_[(*idx)[200]];
-  } else if (status == 500 && b != nullptr && b->bound) {
+  } else if (p.have_body && p.status == 200) {
+    wire.body = run_asset != nullptr ? nullptr : (p.lent_have ? p.lent : (*p.body).data());
+    wire.blen = run_asset != nullptr ? asset_len : (p.lent_have ? p.lent_len : (*p.body).size());
+    wire.blk = &h2_store_[(*p.idx)[200]];
+  } else if (p.status == 500 && p.b != nullptr && p.b->bound) {
     // #210: what led here, gathered once - the record and the page carry
     // the same hash because they are taken over the same facts.
     ErrFacts ef;
@@ -872,14 +912,14 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     ef.body_len = req != nullptr ? req->content_len : 0;
     ef.body_full = ef.body_len;
     ef.status_code = 500;
-    exception_facts(b->res->mrb, {ef, ef_backtrace});
+    exception_facts(p.b->res->mrb, {ef, ef_backtrace});
     spell_fingerprint(ef_hash, fingerprint_of(ef));
     if (elog_.enabled) log_error(elog_, ef);
     // #210: handle_exception lives on the error resource and nowhere
     // else, so the exception object itself is what crosses over.
     std::string message;
     mrb_value exc = mrb_nil_value();
-    if (resource_exception_take(*b->res, &exc)) err_pages_.exception_text(exc, message);
+    if (resource_exception_take(*p.b->res, &exc)) err_pages_.exception_text(exc, message);
     ErrorPages::Fields f;
     f.message = message.data();
     f.message_len = message.size();
@@ -891,46 +931,46 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       f.backtrace = ef.backtrace;
       f.backtrace_len = ef.backtrace_len;
     }
-    const H2ErrorAsk ask = {500, f, vals, b};
+    const H2ErrorAsk ask = {500, f, vals, p.b};
     if (!h2_error_page(ask, err_page, wire)) {
-      wire.blk = &h2_store_[(*idx)[500]];
+      wire.blk = &h2_store_[(*p.idx)[500]];
     }
-  } else if (status == 200) {
-    wire.body = b->konst.body.data();
-    wire.blen = b->konst.body.size();
-    wire.blk = &h2_store_[(*idx)[200]];
+  } else if (p.status == 200) {
+    wire.body = p.b->konst.body.data();
+    wire.blen = p.b->konst.body.size();
+    wire.blk = &h2_store_[(*p.idx)[200]];
   } else {
     // RFC 9110 15: only a 4xx or 5xx has something to explain.
     bool spelled = false;
-    if (status >= 400) {
+    if (p.status >= 400) {
       ErrorPages::Fields f;
-      const H2ErrorAsk ask = {status, f, vals, b};
+      const H2ErrorAsk ask = {p.status, f, vals, p.b};
       spelled = h2_error_page(ask, err_page, wire);
     }
-    if (!spelled) wire.blk = &h2_store_[(*idx)[status]];
+    if (!spelled) wire.blk = &h2_store_[(*p.idx)[p.status]];
   }
 
   const bool no_data = head_only || wire.blen == 0;
 
-  // A lend the chain above did not adopt (a bodyless status, a 500 that
+  // A lend the chain above did not adopt (a bodyless p.status, a 500 that
   // spelled its own body) never reached a plan, so this IS its release.
-  if (lent_have && (no_data || wire.body != lent)) {
-    resource_body_unlend(lent_mrb, lent_v);
-    lent_have = false;
+  if (p.lent_have && (no_data || wire.body != p.lent)) {
+    resource_body_unlend(p.lent_mrb, p.lent_v);
+    p.lent_have = false;
   }
   // And one that WAS adopted becomes the stream's before anything below can
   // fail: from here on close_stream and ~H2State own it, so no error path
   // can strand a rooted body nobody comes back for.
-  if (lent_have) {
+  if (p.lent_have) {
     H2Stream& keep = h2.open(stream_id);
-    keep.response_content.take_lent(lent_mrb, lent_v, lent, lent_len);
+    keep.response_content.take_lent(p.lent_mrb, p.lent_v, p.lent, p.lent_len);
     keep.end_headers = true;
     keep.half_closed_remote = true;
   }
   // #210: and an asset parks the same way the asset TIER parks one, with
   // the same Src - so h2_flush_pending frames it out of the mapping and
   // the sweep there closes the stream once the window has let all of it
-  // through. A head-only answer, or a status that sends nothing, takes
+  // through. A head-only answer, or a p.status that sends nothing, takes
   // no stream: no_data covers both.
   const bool asset_data = run_asset != nullptr && !no_data;
   if (asset_data) {
@@ -940,7 +980,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     keep.half_closed_remote = true;
   }
 
-  alog_status_ = status;
+  alog_status_ = p.status;
   alog_bytes_ = no_data ? 0 : wire.blen;
 
   H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
@@ -951,8 +991,8 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   }
 
   bool merged = false;
-  if (dynamic) {
-    // RFC 7541: lane 1 spells :status and Content-Type, lane 2 the Date and
+  if (p.dynamic) {
+    // RFC 7541: lane 1 spells :p.status and Content-Type, lane 2 the Date and
     // every field line this run produced. A per-request head is never cached.
     unsigned char ebuf[2048];
     unsigned char* ep = ebuf;
@@ -967,18 +1007,18 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     h2.enc_ins++;
     std::string name;
     size_t at = 0;
-    while (at < rhdrs_.size()) {
-      const size_t eol = rhdrs_.find("\r\n", at);
+    while (at < (*p.rhdrs).size()) {
+      const size_t eol = (*p.rhdrs).find("\r\n", at);
       if (eol == std::string::npos) break;
-      const size_t colon = rhdrs_.find(':', at);
+      const size_t colon = (*p.rhdrs).find(':', at);
       if (colon != std::string::npos && colon < eol) {
         size_t vs = colon + 1;
-        while (vs < eol && (rhdrs_[vs] == ' ' || rhdrs_[vs] == '\t')) vs++;
-        name.assign(rhdrs_, at, colon - at);
+        while (vs < eol && ((*p.rhdrs)[vs] == ' ' || (*p.rhdrs)[vs] == '\t')) vs++;
+        name.assign((*p.rhdrs), at, colon - at);
         for (char& c : name) {
           if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
         }
-        if (!h2_enc_field({&h2.enc, ep, eend}, {name, {rhdrs_.data() + vs, eol - vs}})) {
+        if (!h2_enc_field({&h2.enc, ep, eend}, {name, {(*p.rhdrs).data() + vs, eol - vs}})) {
           return h2_error(st0, kH2InternalError, sink);
         }
         h2.enc_ins++;
@@ -994,19 +1034,19 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
     sink.append(wire.blk->bytes);
     sink.append(reinterpret_cast<const char*>(ebuf), elen);
   } else {
-    if (h2.head_cache.status != status || h2.head_cache.route != route ||
+    if (h2.head_cache.status != p.status || h2.head_cache.route != route ||
         h2.head_cache.sec != sec_ || h2.head_cache.enc_ins != h2.enc_ins) {
       // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
-      // answer this route ever gives, so it goes into the peer's dynamic
+      // answer this route ever gives, so it goes into the peer's p.dynamic
       // table ONCE and is a one-byte reference after that. Encoded
       // twice: ls-hpack answers the first call with the insert and the
       // second with the index it just made, which is exactly the two
-      // forms this cache needs. Only the 200 has one - the shared status
+      // forms this cache needs. Only the 200 has one - the shared p.status
       // blocks carry no content-type, and a bound route never reaches
       // this branch.
       const std::string* ct =
-          (status == 200 && b != nullptr && !b->konst.content_type.empty())
-              ? &b->konst.content_type
+          (p.status == 200 && p.b != nullptr && !p.b->konst.content_type.empty())
+              ? &p.b->konst.content_type
               : nullptr;
       unsigned char pbuf[256];
       unsigned char rbuf[256];
@@ -1023,7 +1063,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
         rlen = static_cast<size_t>(rp - rbuf);
         h2.enc_ins++;
         // The block that carried the literal is the wrong one now: the
-        // shared 200 spells :status and nothing else.
+        // shared 200 spells :p.status and nothing else.
         wire.blk = &h2_store_[index_[200]];
       }
       unsigned char dbuf[64];
@@ -1044,11 +1084,11 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       if (ct != nullptr) {
         cache_headers(h2.head_cache.prime, {*wire.blk, {pbuf, plen}, {dbuf, dlen}});
       }
-      h2.head_cache.has_data = b != nullptr && !b->bound && status == 200 &&
-                               !b->konst.body.empty() &&
-                               b->konst.body.size() <= kH2MergeBody;
-      if (h2.head_cache.has_data) h2.head_cache.bytes.append(b->h2_data200);
-      h2.head_cache.status = status;
+      h2.head_cache.has_data = p.b != nullptr && !p.b->bound && p.status == 200 &&
+                               !p.b->konst.body.empty() &&
+                               p.b->konst.body.size() <= kH2MergeBody;
+      if (h2.head_cache.has_data) h2.head_cache.bytes.append(p.b->h2_data200);
+      h2.head_cache.status = p.status;
       h2.head_cache.route = route;
       h2.head_cache.sec = sec_;
       // Taken AFTER the encodes above, so the reference this head holds
@@ -1081,7 +1121,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   // plan - gives it the window, the frames and the external segment, the
   // same way the asset tier's `src` is delivered.
   size_t give = 0;
-  if (!lent_have && !asset_data && !no_data) {
+  if (!p.lent_have && !asset_data && !no_data) {
     if (merged) {
       give = wire.blen;
     } else {
@@ -1115,9 +1155,9 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       if (!had_stream) keep.flow_window -= static_cast<int64_t>(give);
     }
   }
-  // A lent stream is never closed here: its bytes have not been framed yet,
+  // A p.lent stream is never closed here: its bytes have not been framed yet,
   // and the sweep at the end of h2_flush_pending closes it once they are.
-  if (!lent_have && !asset_data && (no_data || give == wire.blen)) h2.close_stream(stream_id);
+  if (!p.lent_have && !asset_data && (no_data || give == wire.blen)) h2.close_stream(stream_id);
   return true;
 }
 
