@@ -9,6 +9,12 @@ def wa_recv(s, maxlen = 1, deadline = 10)
 end
 
 def wa_body(app_source)
+  wa_exchange(app_source)[1]
+end
+
+# The same, and the head as well - a value round writes ETag and
+# Last-Modified, and only the head shows them.
+def wa_exchange(app_source)
   src = Tempfile.new(['wm-wa', '.rb'])
   src.write(app_source)
   src.close
@@ -31,7 +37,7 @@ def wa_body(app_source)
       len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
       body = +''
       body << wa_recv(c, len - body.bytesize) while body.bytesize < len
-      body
+      [head, body]
     end
   ensure
     Process.kill('TERM', pid) rescue nil
@@ -210,4 +216,44 @@ assert('watcher: the deadline reaches the block, and the block answers it') do
   # `:timeout` ARRIVES, and cannot be ordered - so revents and events do
   # not share a menu.
   assert_true out.include?('events:timeout,timeout'), out
+end
+
+# #30: a round waits on several descriptors at once. Two watchers, two
+# pipes, and the run stops once for both.
+assert('watcher: a round waits on two watchers at one stop (#30)') do
+  head, body = wa_exchange(<<~RUBY_SRC)
+    class TwoWatchers < Webmachine::Resource
+      watch :generate_etag, :last_modified
+      def generate_etag
+        r, w = IO.pipe
+        w.write('e')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
+          r.read(1)
+          self_.abort
+          'two-watchers'
+        end
+      end
+      def last_modified
+        r, w = IO.pipe
+        w.write('m')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
+          r.read(1)
+          self_.abort
+          1_000_000_000
+        end
+      end
+      def to_html
+        'body'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], TwoWatchers }
+      end
+    end
+  RUBY_SRC
+  assert_equal 'body', body
+  assert_true head.include?('ETag: "two-watchers"')
+  assert_true head.include?('Last-Modified: Sun, 09 Sep 2001 01:46:40 GMT')
 end

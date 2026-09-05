@@ -893,8 +893,9 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.stop_node = nd;
       res.run.stop_status = status;
       res.run.chosen = r.chosen;
-      res.run.watch = v;
-      res.run.watch_held = true;
+      res.run.watch[0] = v;
+      res.run.watch_what[0] = kJobNode;
+      res.run.watch_count = 1;
       res.run.stopped = true;
       return false;
     }
@@ -1062,7 +1063,7 @@ int ensure_etag(Run& r) {
     if (!r.res.cb_generate_etag.has) return -1;
     // #30: a worker answers this one. If the memo is empty here, no
     // round ever started, and there is nothing to say.
-    if ((r.res.value_jobs & (1u << kJobEtag)) != 0) return -1;
+    if (((r.res.value_jobs | r.res.value_watch) & (1u << kJobEtag)) != 0) return -1;
     mrb_value v = cbv(r, r.res.cb_generate_etag);
     if (mrb_integer_p(v)) return halt_of(r, v, r.res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
@@ -1090,7 +1091,7 @@ void epoch_memo(Run& r, const DateField& d) {
   // #30: the same for the two dates - only a round answers one that a
   // worker was declared for.
   const uint8_t what = cb.sym == MRB_SYM(last_modified) ? kJobLastModified : kJobExpires;
-  if ((r.res.value_jobs & (1u << what)) != 0) return;
+  if (((r.res.value_jobs | r.res.value_watch) & (1u << what)) != 0) return;
   mrb_value v = cbv(r, cb);
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
   // mruby owns this conversion already: Integer straight through, Time
@@ -1167,9 +1168,28 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
                {kJobLastModified, &res.cb_last_modified},
                {kJobExpires, &res.cb_expires}};
   uint8_t count = 0;
+  uint8_t watchers = 0;
   for (const Want& w : wants) {
-    if ((res.value_jobs & (1u << w.what)) == 0) continue;
+    const bool watched = (res.value_watch & (1u << w.what)) != 0;
+    if ((res.value_jobs & (1u << w.what)) == 0 && !watched) continue;
     const mrb_value v = cbv(r, *w.cb);
+    // #30: a watcher answers this one. It waits beside the tasks - a
+    // descriptor and a worker are two ways to the same round.
+    if (watched) {
+      if (WM_RES_UNLIKELY(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
+                   w.cb->sym, v);
+      }
+      if (WM_RES_UNLIKELY(!res.run.can_park)) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::Watcher, and this run cannot stop", w.cb->sym);
+      }
+      res.run.watch[watchers] = v;
+      res.run.watch_what[watchers] = w.what;
+      watchers++;
+      continue;
+    }
     ComputeTaskAsk ask;
     if (WM_RES_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
       mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
@@ -1188,7 +1208,8 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
     res.run.compute_task[count] = {ask.block, ask.args, ask.max_runtime, w.what};
     count++;
   }
-  if (count == 0) return false;
+  res.run.watch_count = watchers;
+  if (count == 0 && watchers == 0) return false;
   res.run.compute_task_count = count;
   res.run.stop_node = n;
   res.run.stop_status = status;
@@ -1595,7 +1616,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kG11: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+        if (WM_RES_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1613,7 +1634,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kK13: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+        if (WM_RES_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1631,7 +1652,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kH12: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+        if (WM_RES_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1644,7 +1665,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kL17: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+        if (WM_RES_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1719,7 +1740,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         if (facts.method == flow::Method::kGet || facts.method == flow::Method::kHead) {
           // #30: the first node that needs a value a worker answers. The
           // whole round starts here, and the walk stops once.
-          if (WM_RES_UNLIKELY(res.value_jobs != 0 && !res.run.values_started &&
+          if (WM_RES_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                               value_round_start(r, n, status))) {
             return mrb_nil_value();
           }
@@ -1932,31 +1953,6 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
-  // #30: the same fold for `watch`. A watcher's block is never dumped -
-  // it runs in this VM, on this thread - so the callback may live on the
-  // instance and keep whatever it closed over. Two things are asked: the
-  // name is a flow node, and something answers it.
-  {
-    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(watched));
-    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
-    for (mrb_int i = 0; i < n; i++) {
-      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
-      const size_t at = node_of_callback(want);
-      if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "watch :%n names no flow callback - a watcher stops the graph between nodes, "
-                   "so only a node's own callback can hold one",
-                   want);
-      }
-      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "watch :%n, but %n is not defined - write it and answer with a "
-                   "Webmachine::Watcher",
-                   want, want);
-      }
-      out.watch |= uint64_t{1} << at;
-    }
-  }
 
   // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
@@ -1969,8 +1965,9 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   out.cb_generate_etag = value_cb(mrb, klass, {MRB_SYM(generate_etag), true});
   out.cb_last_modified = value_cb(mrb, klass, {MRB_SYM(last_modified), true});
   out.cb_expires = value_cb(mrb, klass, {MRB_SYM(expires), true});
-  // #30: the compute fold reads those three, so it comes after them and
-  // before the bake below: a value a worker answers is never baked.
+  // #30: both folds read those three, so they come after them and
+  // before the bake below: a value a worker or a watcher answers is
+  // never baked.
   // #80: `compute :is_authorized`. The names were only written down at
   // class body time; here the fold knows what each one is, so here is
   // where every refusal about one is spelled. A compute declaration is a bit beside
@@ -2046,14 +2043,69 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+  // #30: the same fold for `watch`. A watcher's block is never dumped -
+  // it runs in this VM, on this thread - so the callback may live on the
+  // instance and keep whatever it closed over. Two things are asked: the
+  // name is a flow node, and something answers it.
+  {
+    const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(watched));
+    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
+    for (mrb_int i = 0; i < n; i++) {
+      const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
+      const size_t at = node_of_callback(want);
+      // #30: a VALUE a watcher answers. The same three the flow only
+      // reads - they choose no edge - so they wait together.
+      if (at == flow::kNodeCount) {
+        uint8_t what = 0;
+        const Resource::ValueCb* cb = nullptr;
+        if (want == MRB_SYM(generate_etag)) {
+          what = kJobEtag;
+          cb = &out.cb_generate_etag;
+        } else if (want == MRB_SYM(last_modified)) {
+          what = kJobLastModified;
+          cb = &out.cb_last_modified;
+        } else if (want == MRB_SYM(expires)) {
+          what = kJobExpires;
+          cb = &out.cb_expires;
+        }
+        if (WM_RES_UNLIKELY(cb == nullptr)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "watch :%n names no callback a watcher can hold - a node's own callback, "
+                     "or generate_etag, last_modified or expires",
+                     want);
+        }
+        if (WM_RES_UNLIKELY(!cb->has)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "watch :%n, but %n is not defined - write it and answer with a "
+                     "Webmachine::Watcher",
+                     want, want);
+        }
+        if (WM_RES_UNLIKELY((out.value_jobs & (1u << what)) != 0)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "%n is declared both `compute` and `watch` - it answers one way or the other",
+                     want);
+        }
+        out.value_watch |= static_cast<uint8_t>(1u << what);
+        continue;
+      }
+      if (WM_RES_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "watch :%n, but %n is not defined - write it and answer with a "
+                   "Webmachine::Watcher",
+                   want, want);
+      }
+      out.watch |= uint64_t{1} << at;
+    }
+  }
+
   // #202: the class forms of the three caching answers are asked once, now.
-  if ((out.value_jobs & (1u << kJobEtag)) == 0) {
+  if (((out.value_jobs | out.value_watch) & (1u << kJobEtag)) == 0) {
     bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag});
   }
-  if ((out.value_jobs & (1u << kJobLastModified)) == 0) {
+  if (((out.value_jobs | out.value_watch) & (1u << kJobLastModified)) == 0) {
     bake_value(fold, {out.cb_last_modified, "last_modified", false, out.konst_last_modified});
   }
-  if ((out.value_jobs & (1u << kJobExpires)) == 0) {
+  if (((out.value_jobs | out.value_watch) & (1u << kJobExpires)) == 0) {
     bake_value(fold, {out.cb_expires, "expires", false, out.konst_expires});
   }
   // A konst that was asked and answered nothing is an answer: the

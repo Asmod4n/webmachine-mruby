@@ -1296,8 +1296,9 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // while its descriptor is still in the ring. A connection that can
       // hold no more says so, and the run is answered rather than left
       // waiting for a poll nobody armed.
-      if (res.run.watch_held && !watch_hand_over(st, res)) {
+      if (res.run.watch_count != 0 && !watch_hand_over(st, res)) {
         st.answer_value[0] = mrb_nil_value();
+        st.jobs_owed = 0;
         st.answer_ready = true;
       }
 
@@ -1341,13 +1342,9 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       } else {
         // #30: the whole round, in the order the stop handed it over.
         // A watcher and a single task are one entry of it.
-        uint8_t what[Conn::kJobSlots] = {};
         const uint8_t owed = st.jobs_owed != 0 ? st.jobs_owed : 1;
-        for (uint8_t i = 0; i < owed; i++) {
-          what[i] = st.jobs_owed != 0 ? st.job[i].what : kJobNode;
-        }
         status = resource_resume(res, {&body, &have_body, &rhdrs},
-                                 {st.answer_value, what, owed});
+                                 {st.answer_value, st.job_what, owed});
       }
       // The answers were rooted while they waited - nothing on the VM's
       // stack named them. The round is read, so they are let go.
@@ -1631,7 +1628,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // the run owes and the frame finishes differently. So the gate
         // stays what a resource DECLARED, and a watcher needs a
         // declaration of its own before it can reach this path.
-        if (WM_H1_UNLIKELY(b->res->compute != 0 || b->res->watch != 0)) {
+        // #30: a value round stops the run as much as a node does, and
+        // a resource may declare only values.
+        if (WM_H1_UNLIKELY(b->res->compute != 0 || b->res->watch != 0 ||
+                           b->res->value_jobs != 0 || b->res->value_watch != 0)) {
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + head_len,       head_len,   method,
                                     method_len,           path,       path_len,

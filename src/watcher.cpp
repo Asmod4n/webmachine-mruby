@@ -24,6 +24,9 @@ struct WatcherData {
   int fd = -1;
   // #30: the key on Http1::Conn's hash, and bits 48..55 of the tag.
   int slot = -1;
+  // #30: which job of the round this watcher answers. A round waits on
+  // several at once, and each answer has its own place.
+  int job = 0;
   // POLLIN, POLLOUT or both.
   unsigned events = POLLIN;
   // Set by watcher.abort, read after the block returns.
@@ -226,6 +229,15 @@ int watcher_slot(mrb_value v) {
   return d != nullptr ? d->slot : -1;
 }
 
+int watcher_job(mrb_value v) {
+  const WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->job : 0;
+}
+
+void watcher_set_job(mrb_value v, int job) {
+  static_cast<WatcherData*>(DATA_PTR(v))->job = job;
+}
+
 void watcher_set_slot(mrb_value v, int slot) {
   static_cast<WatcherData*>(DATA_PTR(v))->slot = slot;
 }
@@ -282,11 +294,30 @@ namespace webmachine {
 // one line later, and a watcher nobody holds is collected while the
 // descriptor is still in the ring.
 bool Http1::watch_hand_over(Conn& st, const Resource& res) {
-  if (!res.run.watch_held) return false;
-  const int slot = st.watchers_add(res.mrb, res.run.watch);
-  if (slot < 0) return false;
-  st.w_slot = slot;
+  if (res.run.watch_count == 0) return false;
+  // Every watcher of the round takes a job of its own, after the tasks
+  // a worker answers. A connection that can hold no more says so, and
+  // the run is answered rather than left waiting.
+  for (uint8_t i = 0; i < res.run.watch_count; i++) {
+    const int slot = st.watchers_add(res.mrb, res.run.watch[i]);
+    if (slot < 0) return false;
+    const int job = static_cast<int>(st.jobs_owed);
+    if (job >= Conn::kJobSlots) return false;
+    watcher_set_job(res.run.watch[i], job);
+    st.w_slot[job] = slot;
+    st.job_what[job] = res.run.watch_what[i];
+    st.jobs_owed = static_cast<uint8_t>(job + 1);
+  }
   return true;
+}
+
+// #30: one job of the round answered. The run goes on when the last one
+// does - a single watcher ends its round at once.
+void Http1::round_answered(Conn& st, int job, mrb_value v) {
+  if (job < 0 || job >= Conn::kJobSlots) return;
+  st.answer_value[job] = v;
+  if (st.jobs_answered < st.jobs_owed) st.jobs_answered++;
+  st.answer_ready = st.jobs_owed == 0 || st.jobs_answered >= st.jobs_owed;
 }
 
 int Http1::watcher_descriptor(Conn& st, int slot) {
@@ -303,7 +334,9 @@ void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring) {
 // descriptor's place in the ring.
 void Http1::watchers_drop_slot(Conn& st, int slot) {
   st.watchers_drop(slot);
-  if (st.w_slot == slot) st.w_slot = -1;
+  for (int& s : st.w_slot) {
+    if (s == slot) s = -1;
+  }
 }
 
 unsigned Http1::watcher_mask(Conn& st, int slot) {
@@ -332,18 +365,16 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     // answers 500 the way it answers any raise.
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
-    st.answer_value[0] = mrb_nil_value();
-    st.answer_ready = true;
+    round_answered(st, watcher_job(w), mrb_nil_value());
     return WatchStep::kDone;
   }
   if (watcher_aborted_p(w)) {
     // ROOT IT FIRST. The block's answer is held by the arena and by
     // nothing else; restoring the arena before registering it hands the
     // collector a value the run is about to read.
-    st.answer_value[0] = said;
-    mrb_gc_register(mrb, st.answer_value[0]);
+    round_answered(st, watcher_job(w), said);
+    mrb_gc_register(mrb, said);
     mrb_gc_arena_restore(mrb, ai);
-    st.answer_ready = true;
     return WatchStep::kDone;
   }
   mrb_gc_arena_restore(mrb, ai);
@@ -367,10 +398,9 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
     said = mrb_nil_value();
   }
   if (!again) {
-    st.answer_value[0] = said;
-    mrb_gc_register(mrb, st.answer_value[0]);
+    round_answered(st, watcher_job(w), said);
+    mrb_gc_register(mrb, said);
     mrb_gc_arena_restore(mrb, ai);
-    st.answer_ready = true;
     return WatchStep::kDone;
   }
   mrb_gc_arena_restore(mrb, ai);

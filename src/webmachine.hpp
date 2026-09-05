@@ -2742,8 +2742,9 @@ struct Resource {
     // #30: the Watcher this run stopped on. A value of THIS VM, held
     // until the frame hands it to the connection - the connection's hash
     // is what roots it while the run waits.
-    mrb_value watch = {};
-    bool watch_held = false;
+    mrb_value watch[kValueJobs] = {};
+    uint8_t watch_what[kValueJobs] = {};
+    uint8_t watch_count = 0;
     // #30: the value round started. It starts once per run, at the
     // first node that needs any of its answers.
     bool values_started = false;
@@ -2853,6 +2854,9 @@ struct Resource {
   // The flow never lets one of them choose an edge, so all of them can
   // be out at the same time.
   uint8_t value_jobs = 0;
+  // #30: the same, for values a WATCHER answers. A descriptor says when
+  // the value is there; the flow reads it in the same places.
+  uint8_t value_watch = 0;
   bool has_caching = false;
 };
 
@@ -3103,6 +3107,9 @@ double watcher_timeout(mrb_value v);
 bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said);
 int watcher_fd(mrb_value v);
 int watcher_slot(mrb_value v);
+// #30: which job of the round this watcher answers.
+int watcher_job(mrb_value v);
+void watcher_set_job(mrb_value v, int job);
 void watcher_set_slot(mrb_value v, int slot);
 void watcher_armed(mrb_value v, struct io_uring* ring);
 void watcher_disarm(mrb_value v);
@@ -4456,6 +4463,10 @@ class Http1 {
       uint8_t what = 0;
     };
     Job job[kJobSlots];
+    // Which value each job of the round answers - kJobNode for a node's
+    // own callback. A watcher fills its place here too, and it has no
+    // Job: nothing crosses to a worker for it.
+    uint8_t job_what[kJobSlots] = {};
     // How many jobs this stop handed over, and how many answered. The
     // run goes on when the two are equal.
     uint8_t jobs_owed = 0;
@@ -4466,7 +4477,7 @@ class Http1 {
     // #30: the slot of the watcher this run waits on, or -1. A run
     // stops on ONE watcher: the callback answered one, and the walk
     // cannot go on to answer another before this one is done.
-    int w_slot = -1;
+    int w_slot[kValueJobs] = {-1, -1, -1, -1};
     // The pool had no slot: LOAD, and load passes. 429 with a
     // Retry-After of a few seconds (.DESIGN.md #promise-bound).
     bool compute_task_full = false;
@@ -4779,6 +4790,8 @@ class Http1 {
   // worker that raised, or an answer CBOR cannot carry, is nil - the
   // run reads it like any other answer and decides for itself.
   static void compute_task_answered(Conn& st, int slot, const ComputeAnswer& answered);
+  // #30: one job of the round answered, whatever answered it.
+  static void round_answered(Conn& st, int job, mrb_value v);
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // Every worker slot is taken. The run is told rather than the layer
@@ -4856,7 +4869,20 @@ class Http1 {
     return true;
   }
   // Which watcher this connection waits on, or -1.
-  static int watcher_waiting_slot(const Conn& st) { return st.w_slot; }
+  // #30: the watcher slot each job of the round waits on, or -1. A
+  // round can wait on several at once.
+  // The other way round: which job a watcher slot answers, or -1 when
+  // this connection is not waiting on it.
+  static int watcher_job_of_slot(const Conn& st, int slot) {
+    for (int job = 0; job < kValueJobs; job++) {
+      if (st.w_slot[job] == slot) return job;
+    }
+    return -1;
+  }
+  static int watcher_slot_of_job(const Conn& st, int job) {
+    if (job < 0 || job >= kValueJobs) return -1;
+    return st.w_slot[job];
+  }
   static double watcher_quiet_seconds(Conn& st, int slot);
   // The work a stopped run left, or false. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.

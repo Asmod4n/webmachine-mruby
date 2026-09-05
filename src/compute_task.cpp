@@ -348,7 +348,7 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
     mrb_gc_arena_restore(mrb, ai);
     j.code = id;
     j.deadline = t.deadline;
-    j.what = t.what;
+    st.job_what[i] = t.what;
     j.waiting = true;
     st.jobs_owed = static_cast<uint8_t>(i + 1);
   }
