@@ -1670,10 +1670,6 @@ class Ring {
     // Almost every round asks and almost none has a job. Ask first, and
     // build nothing until the answer is yes.
     if (WM_LIKELY(!App::compute_task_waiting(c.app))) return;
-    std::string arg;
-    unsigned code = 0;
-    double deadline = 0.0;
-    if (!App::compute_task_take(c.app, &code, arg, &deadline)) return;
     if (compute_.workers() == 0) {
       // One per core the process may use, less the reactor's own - and
       // never more VMs than the build allows. Every worker opens an
@@ -1690,12 +1686,23 @@ class Ring {
         conn_failed(why, -EAGAIN);
       }
     }
-    if (!compute_.submit(code, arg, deadline,
-                         detail::tag(detail::kComputeTask, c.gen, idx))) {
-      // Every slot taken. Not a refusal this layer invents - the run is
-      // told, and it answers 503 the way it would answer anything else.
-      App::compute_task_refused(c.app);
-      if (!c.sending) continue_conn(idx);
+    // #30: a value round hands over several jobs at one stop, and they
+    // go to the pool together. The tag carries the job's slot the same
+    // way a watcher's does, so each answer finds its own place.
+    for (int slot = 0; slot < App::Conn::kJobSlots; slot++) {
+      std::string arg;
+      unsigned code = 0;
+      double deadline = 0.0;
+      if (!App::compute_task_take(c.app, slot, &code, arg, &deadline)) continue;
+      if (!compute_.submit(code, arg, deadline,
+                           detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(slot)))) {
+        // Every slot taken. Not a refusal this layer invents - the run
+        // is told, and it answers 503 the way it would answer anything
+        // else.
+        App::compute_task_refused(c.app);
+        if (!c.sending) continue_conn(idx);
+        return;
+      }
     }
   }
 
@@ -1722,11 +1729,11 @@ class Ring {
   // its answer into, and this is not a point where either exists; `spell_next_round`
   // is. So this only says the answer arrived, and takes the same door
   // response.file takes.
-  void on_compute_task(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
+  void on_compute_task(uint32_t idx, uint16_t gen, uint8_t slot, struct io_uring_cqe* cqe) {
     (void)cqe;
     if (WM_UNLIKELY(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    const uint64_t tag = detail::tag(detail::kComputeTask, gen, idx);
+    const uint64_t tag = detail::compute_task_tag(gen, idx, slot);
     ComputeAnswer answered;
     const bool have = compute_.take(tag, &answered);
     if (!have) answered.raised = true;
@@ -1752,7 +1759,7 @@ class Ring {
     // died with it. The answer is still TAKEN, because the slot is the
     // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
-    App::compute_task_answered(c.app, answered);
+    App::compute_task_answered(c.app, static_cast<int>(slot), answered);
     if (!c.sending) continue_conn(idx);
   }
 
@@ -2096,7 +2103,9 @@ class Ring {
         case detail::kTlsBye: break;
         case detail::kTlsRx: on_tls_ready({idx, gen, cqe}); break;
         case detail::kTlsTxKey: on_tls_tx_key({idx, gen, cqe}); break;
-        case detail::kComputeTask: on_compute_task(idx, gen, cqe); break;
+        case detail::kComputeTask:
+          on_compute_task(idx, gen, detail::watch_slot(cqe->user_data), cqe);
+          break;
         case detail::kWatch: on_watch(idx, gen, detail::watch_slot(cqe->user_data), cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;

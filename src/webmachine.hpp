@@ -311,48 +311,6 @@ constexpr bool all_reachable() {
 }
 static_assert(all_reachable(), "every node is reachable from B13");
 
-// The nodes a node can reach.
-//
-// The flow table decides which callbacks CAN run at the same time: two
-// callbacks may run together only if the walk can meet both in one run,
-// which is what this set says.
-//
-// It cannot decide alone that they SHOULD. The set of nodes that every
-// path passes through holds one member, the node itself, for all 56
-// nodes - each node has an edge that halts, so no later node is sure.
-// A start is therefore always a guess, and the author owns it: the
-// author names the group, and this table refuses a group the walk can
-// never meet.
-static_assert(kNodeCount <= 64, "one node, one bit");
-
-struct Reaches {
-  uint64_t of[kNodeCount];
-};
-
-constexpr Reaches build_reaches() {
-  Reaches r = {};
-  for (size_t i = 0; i < kNodeCount; i++) {
-    bool seen[kNodeCount] = {};
-    mark(static_cast<Node>(i), seen);
-    for (size_t j = 0; j < kNodeCount; j++) {
-      if (seen[j]) r.of[i] |= uint64_t{1} << j;
-    }
-  }
-  return r;
-}
-inline constexpr Reaches kReaches = build_reaches();
-
-// Proof: a node reaches itself, and B13 reaches all of them.
-constexpr bool reaches_holds_itself() {
-  for (size_t i = 0; i < kNodeCount; i++) {
-    if ((kReaches.of[i] & (uint64_t{1} << i)) == 0) return false;
-  }
-  return true;
-}
-static_assert(reaches_holds_itself(), "a node reaches itself");
-static_assert(kReaches.of[static_cast<size_t>(Node::kB13)] ==
-                  (kNodeCount == 64 ? ~uint64_t{0} : ((uint64_t{1} << kNodeCount) - 1)),
-              "B13 reaches every node");
 }
 
 namespace webmachine::flow {
@@ -4431,7 +4389,14 @@ class Http1 {
     // #80: what the worker said, in THIS VM's values. The reactor puts
     // it here on the way in and the resumed walk reads it once. It is
     // rooted while it waits - nothing on the VM's stack names it.
-    mrb_value answer_value = {};
+    // The width of one value round: an ETag, a Last-Modified, an
+    // Expires and a body. Nothing in the flow asks for a fifth.
+    static constexpr int kJobSlots = 4;
+    // #30: one answer per job. A value round starts several jobs at
+    // once - the flow says generate_etag, last_modified and the body
+    // render do not decide anything for each other - so the channel is
+    // as wide as the round. Slot 0 is the single job's, and a watcher's.
+    mrb_value answer_value[kJobSlots] = {};
     // The worker or the watcher answered; `spell_next_round` is where the run picks
     // that up, because that is the one point at which a fresh sink and a
     // fresh plan exist to write into.
@@ -4450,10 +4415,21 @@ class Http1 {
     // the crossing itself, at the stop, because that is the last moment
     // the reactor's VM and the run's own state are both to hand - the
     // frame takes that state with it one line later.
-    unsigned job_code = 0;
-    std::string job_bytes;
-    double job_deadline = 0.0;
-    bool job_waiting = false;
+    struct Job {
+      unsigned code = 0;
+      std::string bytes;
+      double deadline = 0.0;
+      // The reactor has not armed this one yet.
+      bool waiting = false;
+      // Which value the answer is. kJobOne for a node's own callback,
+      // which is the only job of its round.
+      uint8_t what = 0;
+    };
+    Job job[kJobSlots];
+    // How many jobs this stop handed over, and how many answered. The
+    // run goes on when the two are equal.
+    uint8_t jobs_owed = 0;
+    uint8_t jobs_answered = 0;
     // Whose VM the answer is decoded back into. It outlives the
     // crossing, because the answer comes long after.
     const Resource* job_res = nullptr;
@@ -4772,7 +4748,7 @@ class Http1 {
   // here, which is the only thread that may build a value in it. A
   // worker that raised, or an answer CBOR cannot carry, is nil - the
   // run reads it like any other answer and decides for itself.
-  static void compute_task_answered(Conn& st, const ComputeAnswer& answered);
+  static void compute_task_answered(Conn& st, int slot, const ComputeAnswer& answered);
   // The job a stopped run left, or nullptr. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
   // Every worker slot is taken. The run is told rather than the layer
@@ -4854,14 +4830,16 @@ class Http1 {
   static double watcher_quiet_seconds(Conn& st, int slot);
   // The work a stopped run left, or false. Taken, not read: the reactor
   // arms it once and the connection stops naming it - exactly file_take.
-  static bool compute_task_take(Conn& st, unsigned* code, std::string& bytes,
+  static bool compute_task_take(Conn& st, int slot, unsigned* code, std::string& bytes,
                                 double* deadline) {
-    if (!st.job_waiting) return false;
-    *code = st.job_code;
-    *deadline = st.job_deadline;
-    bytes.swap(st.job_bytes);
-    st.job_bytes.clear();
-    st.job_waiting = false;
+    if (slot < 0 || slot >= Conn::kJobSlots) return false;
+    Conn::Job& j = st.job[slot];
+    if (!j.waiting) return false;
+    *code = j.code;
+    *deadline = j.deadline;
+    bytes.swap(j.bytes);
+    j.bytes.clear();
+    j.waiting = false;
     return true;
   }
   // Is this connection waiting on one? The Ring asks before it lets
@@ -4885,7 +4863,12 @@ class Http1 {
   }
   // The same, for the work a stopped run left. arm_compute_task built a
   // std::string before it asked. Measured at 0.45%.
-  static bool compute_task_waiting(const Conn& st) { return st.job_waiting; }
+  static bool compute_task_waiting(const Conn& st) {
+    for (const Conn::Job& j : st.job) {
+      if (j.waiting) return true;
+    }
+    return false;
+  }
   void file_reject(Conn& st);
   void file_error(Conn& st, const char* why);
   bool file_stat(Conn& st, const struct statx& stx, size_t* want);
@@ -6184,6 +6167,11 @@ inline uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
   return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
 }
 inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); }
+// #30: the same 8 bits for a compute job. A value round hands over
+// several at one stop, so an answer has to say which one it is.
+inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
+  return tag(kComputeTask, gen, idx) | (static_cast<uint64_t>(slot) << 48);
+}
 
 enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
 

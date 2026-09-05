@@ -432,6 +432,19 @@ const NodeValueCb kNodeValues[] = {
     {Node::kB8, MRB_SYM_Q(is_authorized), 1},
 };
 
+// The node whose own callback carries this name, or flow::kNodeCount for
+// a name that is no node's callback. `compute`, `watch` and
+// `run_together` all ask the same question, and this is the one answer.
+size_t node_of_callback(mrb_sym want) {
+  for (const BoolCb& cb : kBools) {
+    if (cb.sym == want) return static_cast<size_t>(cb.node);
+  }
+  for (const NodeValueCb& cb : kNodeValues) {
+    if (cb.sym == want) return static_cast<size_t>(cb.node);
+  }
+  return flow::kNodeCount;
+}
+
 struct NamedSym {
   mrb_sym sym;
   const char* name;
@@ -1824,21 +1837,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
     for (mrb_int i = 0; i < n; i++) {
       const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
-      size_t at = flow::kNodeCount;
-      for (const BoolCb& cb : kBools) {
-        if (cb.sym == want) {
-          at = static_cast<size_t>(cb.node);
-          break;
-        }
-      }
-      if (at == flow::kNodeCount) {
-        for (const NodeValueCb& cb : kNodeValues) {
-          if (cb.sym == want) {
-            at = static_cast<size_t>(cb.node);
-            break;
-          }
-        }
-      }
+      const size_t at = node_of_callback(want);
       // Not a flow node at all. A value callback (generate_etag,
       // process_post) is not refused here because it is one - it is
       // refused because a compute task stops the graph BETWEEN nodes, and
@@ -1878,21 +1877,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
     for (mrb_int i = 0; i < n; i++) {
       const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
-      size_t at = flow::kNodeCount;
-      for (const BoolCb& cb : kBools) {
-        if (cb.sym == want) {
-          at = static_cast<size_t>(cb.node);
-          break;
-        }
-      }
-      if (at == flow::kNodeCount) {
-        for (const NodeValueCb& cb : kNodeValues) {
-          if (cb.sym == want) {
-            at = static_cast<size_t>(cb.node);
-            break;
-          }
-        }
-      }
+      const size_t at = node_of_callback(want);
       if (WM_RES_UNLIKELY(at == flow::kNodeCount)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "watch :%n names no flow callback - a watcher stops the graph between nodes, "

@@ -279,9 +279,13 @@ bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
 
 // #80: the way back. Only this thread may build a value in the
 // reactor's VM, so the decode happens here and nowhere else.
-void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
-  st.answer_ready = true;
-  st.answer_value = mrb_nil_value();
+void Http1::compute_task_answered(Conn& st, int slot, const ComputeAnswer& answered) {
+  if (slot < 0 || slot >= Conn::kJobSlots) return;
+  // The round goes on when the LAST job of it answered. One job is the
+  // ordinary case and ends the round at once.
+  if (st.jobs_answered < st.jobs_owed) st.jobs_answered++;
+  st.answer_ready = st.jobs_answered >= st.jobs_owed;
+  st.answer_value[slot] = mrb_nil_value();
   st.compute_task_over_deadline = answered.over_deadline;
   // A raise and a deadline are told apart, because the answers are not
   // the same one: 503 says come back, 500 says nothing will change.
@@ -295,7 +299,7 @@ void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
     mrb->exc = nullptr;
     return;
   }
-  st.answer_value = v;
+  st.answer_value[slot] = v;
   mrb_gc_register(mrb, v);
 }
 
@@ -309,10 +313,12 @@ void Http1::compute_task_answered(Conn& st, const ComputeAnswer& answered) {
 // to the route, and a second request would write over it.
 //
 // Both halves can refuse: a block mruby cannot dump, or a value CBOR
-// cannot carry. Either leaves job_waiting false, and the run is told
-// the same thing a full pool tells it.
+// cannot carry. Either leaves the round with no job, and the run is
+// told the same thing a full pool tells it.
 bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
-  st.job_waiting = false;
+  for (Conn::Job& j : st.job) j.waiting = false;
+  st.jobs_owed = 0;
+  st.jobs_answered = 0;
   st.job_res = &res;
   if (!res.run.compute_task_held) return false;
 
@@ -330,11 +336,16 @@ bool Http1::compute_task_hand_over(Conn& st, const Resource& res) {
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }
-  st.job_bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
+  Conn::Job& j = st.job[0];
+  j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
   mrb_gc_arena_restore(mrb, ai);
-  st.job_code = id;
-  st.job_deadline = res.run.compute_task_deadline;
-  st.job_waiting = true;
+  j.code = id;
+  j.deadline = res.run.compute_task_deadline;
+  j.waiting = true;
+  j.what = 0;
+  // A node's own callback is the only job of its round.
+  st.jobs_owed = 1;
+  st.jobs_answered = 0;
   // A new job, so nothing of the last one speaks for it.
   st.compute_task_full = false;
   st.compute_task_over_deadline = false;

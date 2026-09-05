@@ -1350,6 +1350,9 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
     // 9.3.2 puts the responses out in the order the requests came.
     if (!st.answer_ready) return true;
     st.answer_ready = false;
+    // The round is spent. What the next stop hands over starts at zero.
+    st.jobs_owed = 0;
+    st.jobs_answered = 0;
     auto& p = st.parked.co.promise();
     p.sink = &sink;
     p.plan = &plan;

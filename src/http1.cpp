@@ -1297,7 +1297,7 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       // hold no more says so, and the run is answered rather than left
       // waiting for a poll nobody armed.
       if (res.run.watch_held && !watch_hand_over(st, res)) {
-        st.answer_value = mrb_nil_value();
+        st.answer_value[0] = mrb_nil_value();
         st.answer_ready = true;
       }
 
@@ -1339,7 +1339,7 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
         body.clear();
         rhdrs.assign(refused.retry_after);
       } else {
-        status = resource_resume(res, {&body, &have_body, &rhdrs}, st.answer_value);
+        status = resource_resume(res, {&body, &have_body, &rhdrs}, st.answer_value[0]);
       }
     }
 

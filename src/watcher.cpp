@@ -332,7 +332,7 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     // answers 500 the way it answers any raise.
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
-    st.answer_value = mrb_nil_value();
+    st.answer_value[0] = mrb_nil_value();
     st.answer_ready = true;
     return WatchStep::kDone;
   }
@@ -340,8 +340,8 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     // ROOT IT FIRST. The block's answer is held by the arena and by
     // nothing else; restoring the arena before registering it hands the
     // collector a value the run is about to read.
-    st.answer_value = said;
-    mrb_gc_register(mrb, st.answer_value);
+    st.answer_value[0] = said;
+    mrb_gc_register(mrb, st.answer_value[0]);
     mrb_gc_arena_restore(mrb, ai);
     st.answer_ready = true;
     return WatchStep::kDone;
@@ -367,8 +367,8 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
     said = mrb_nil_value();
   }
   if (!again) {
-    st.answer_value = said;
-    mrb_gc_register(mrb, st.answer_value);
+    st.answer_value[0] = said;
+    mrb_gc_register(mrb, st.answer_value[0]);
     mrb_gc_arena_restore(mrb, ai);
     st.answer_ready = true;
     return WatchStep::kDone;
