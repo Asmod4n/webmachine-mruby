@@ -742,7 +742,10 @@ struct Http1::H2Produced {
   std::string* rhdrs = nullptr;
 };
 
-bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
+// #30: the walk. `can_park` says whether the caller holds a frame that
+// can keep a stopped run - the h2 dispatcher does not, the coroutine
+// does. It is the same question h1 answers in bound_run.
+void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced& p) {
   const uint32_t stream_id = q.stream_id;
   const flow::ReqFacts& facts = q.facts;
   const http::ReqValues* vals = q.vals;
@@ -751,10 +754,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   const bool head_only = q.head_only;
   H2State& h2 = *st0.h2;
 
-  H2Produced p;
   p.idx = &index_;
-  p.body = &body_;
-  p.rhdrs = &rhdrs_;
   const Bundle* b = nullptr;
   uint16_t status;
   bool have_body = false;
@@ -771,7 +771,7 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
       // from here - parked or not - gets none.
       // The SAME [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
       // to lend, and h2 has no gzip path for a dynamic body to collide with.
-      const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_};
+      const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_, can_park};
       const RunAnswer answer = {&body_, &have_body, &rhdrs_};
       status = resource_run(*b->res, asked, answer);
       LentBody lent_body;
@@ -819,6 +819,13 @@ bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   p.status = status;
   p.have_body = have_body;
   p.dynamic = dynamic;
+}
+
+bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
+  H2Produced p;
+  p.body = &body_;
+  p.rhdrs = &rhdrs_;
+  h2_produce(st0, q, false, p);
   return h2_frame(st0, q, sink, p);
 }
 
