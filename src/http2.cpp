@@ -742,6 +742,36 @@ struct Http1::H2Produced {
   std::string* rhdrs = nullptr;
 };
 
+// #30: what the run LEFT, read after it answered. A run that parked
+// answers long after h2_produce returned, so this is its own step - the
+// straight path calls it at once, and the coroutine calls it when the
+// round is done.
+void Http1::h2_after_run(Conn& st0, const H2Request& q, H2Produced& p, uint16_t status) {
+  const Bundle* const b = p.b;
+  if (b == nullptr || !b->bound) return;
+  LentBody lent_body;
+  p.lent_have = resource_body_lent(*b->res, lent_body);
+  p.lent_v = lent_body.value;
+  p.lent = lent_body.bytes.data();
+  p.lent_len = lent_body.bytes.size();
+  if (p.lent_have) p.lent_mrb = b->res->mrb;
+  // response.file is h1-only for now: the deferred open lives on the
+  // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
+  // that would each need their own. The slot is taken either way - left
+  // set it would answer the next request through this Resource - and a
+  // run that named a file is REFUSED here rather than quietly served the
+  // empty body it never meant to send.
+  {
+    WantedFile wanted;
+    if (resource_file_wanted(*b->res, wanted)) {
+      p.have_body = false;
+      status = h2_refuse_file(st0, q.req);
+    }
+  }
+  p.status = status;
+  p.dynamic = (!b->res->run.content_type.empty() || !p.rhdrs->empty()) && status != 500;
+}
+
 // #30: the walk. `can_park` says whether the caller holds a frame that
 // can keep a stopped run - the h2 dispatcher does not, the coroutine
 // does. It is the same question run_parkable answers for h1.
@@ -772,28 +802,17 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
       // The SAME [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
       // to lend, and h2 has no gzip path for a dynamic body to collide with.
       const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_, can_park};
-      const RunAnswer answer = {&body_, &have_body, &rhdrs_};
+      const RunAnswer answer = {p.body, &have_body, p.rhdrs};
       status = resource_run(*b->res, asked, answer);
-      LentBody lent_body;
-      p.lent_have = resource_body_lent(*b->res, lent_body);
-      p.lent_v = lent_body.value;
-      p.lent = lent_body.bytes.data();
-      p.lent_len = lent_body.bytes.size();
-      if (p.lent_have) p.lent_mrb = b->res->mrb;
-      // response.file is h1-only for now: the deferred open lives on the
-      // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
-      // that would each need their own. The slot is taken either way - left
-      // set it would answer the next request through this Resource - and a
-      // run that named a file is REFUSED here rather than quietly served the
-      // empty body it never meant to send.
-      {
-        WantedFile wanted;
-        if (resource_file_wanted(*b->res, wanted)) {
-          have_body = false;
-          status = h2_refuse_file(st0, req);
-        }
-      }
-      dynamic = (!b->res->run.content_type.empty() || !rhdrs_.empty()) && status != 500;
+      p.b = b;
+      p.status = status;
+      p.have_body = have_body;
+      // #30: the walk stopped. What it left cannot be read yet - it has
+      // not answered - so the caller parks and calls h2_after_run when
+      // the answer is back. Only a caller that CAN park ever sees this.
+      if (WM_H1_UNLIKELY(run_stopped(*b->res))) return;
+      h2_after_run(st0, q, p, status);
+      return;
     } else {
       // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
       // they belong to the stream - so the one negotiated bit is answered on

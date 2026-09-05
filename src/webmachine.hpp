@@ -5951,6 +5951,7 @@ class Http1 {
   // between them. One framer serves both paths.
   struct H2Produced;
   void h2_produce(Conn& st, const H2Request& q, bool can_park, H2Produced& p);
+  void h2_after_run(Conn& st, const H2Request& q, H2Produced& p, uint16_t status);
   bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
   bool h2_frame(Conn& st, const H2Request& q, std::string& sink, H2Produced& p);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
