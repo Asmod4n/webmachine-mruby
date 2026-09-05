@@ -2457,11 +2457,13 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   res.run.can_park = ask.can_park;
   // #30: what the LAST run kept is not this run's. It goes before the
   // walk starts, so nothing of one request can be read by another.
-  if (res.run.kept_held) {
-    mrb_gc_unregister(mrb, res.run.kept);
-    res.run.kept_held = false;
+  // #30: what the LAST run put in userdata is not this run's. It goes
+  // before the walk starts, so no request can read another's.
+  if (res.run.userdata_held) {
+    mrb_gc_unregister(mrb, res.run.userdata);
+    res.run.userdata_held = false;
   }
-  res.run.kept = mrb_nil_value();
+  res.run.userdata = mrb_undef_value();
   res.run.stopped = false;
   res.run.answered = false;
   res.run.headers = out.headers;

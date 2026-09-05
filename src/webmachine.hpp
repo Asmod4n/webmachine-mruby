@@ -2747,12 +2747,12 @@ struct Resource {
     // when the run ends. The run frame is its whole life - a value put
     // here in generate_etag is there in to_html, and it is gone before
     // the next request on this connection.
-    // #30: what the application itself carries from one callback to the
-    // next - `response[:key]`. A Hash, made when a callback first asks
-    // for it, and gone when the run ends. The server never reads a key
-    // of it.
-    mrb_value kept = {};
-    bool kept_held = false;
+    // #30: `response.userdata` - one slot the application carries from
+    // one callback of this run to the next. Undef until something is
+    // put there, so a run that never uses it allocates nothing and
+    // Ruby never sees the undef. The server never reads what is in it.
+    mrb_value userdata = {};
+    bool userdata_held = false;
     mrb_value watch[kValueJobs] = {};
     uint8_t watch_what[kValueJobs] = {};
     uint8_t watch_count = 0;
@@ -3118,6 +3118,12 @@ double watcher_timeout(mrb_value v);
 bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said);
 int watcher_fd(mrb_value v);
 int watcher_slot(mrb_value v);
+// #30: the state of the run this watcher belongs to, or nothing. It
+// points INTO the coroutine frame that parked - the one thing that
+// holds everything about that run - so each watcher finds its own,
+// and a connection carrying many runs keeps them apart.
+Resource::RunState* watcher_run(mrb_value v);
+void watcher_set_run(mrb_value v, Resource::RunState* run);
 // #30: which job of the round this watcher answers.
 int watcher_job(mrb_value v);
 void watcher_set_job(mrb_value v, int job);
@@ -4434,14 +4440,7 @@ class Http1 {
     // IS its name - there is no slot table and no id to look it up by,
     // which is what the scaffolding this replaces was reaching for.
     Run parked;
-    // #30: the walk's own state while the run is parked. It used to be a
-    // local of the coroutine frame, which nothing outside that frame
-    // could reach - and a watcher block, which runs while the run
-    // waits, is outside it. The block is written in the resource, so
-    // `response` and `request` are in its scope; they answer for THIS
-    // run only if the state is to hand, so it waits here.
-    Resource::RunState parked_run;
-    bool parked_run_held = false;
+
     // #80: what the worker said, in THIS VM's values. The reactor puts
     // it here on the way in and the resumed walk reads it once. It is
     // rooted while it waits - nothing on the VM's stack names it.
@@ -4892,6 +4891,9 @@ class Http1 {
   // round can wait on several at once.
   // The other way round: which job a watcher slot answers, or -1 when
   // this connection is not waiting on it.
+  // #30: where the run that owns these watchers is waiting. Told after
+  // the park, because only then does the frame hold its own state.
+  static void watch_run_is(Conn& st, Resource::RunState* run);
   static int watcher_job_of_slot(const Conn& st, int slot) {
     for (int job = 0; job < kValueJobs; job++) {
       if (st.w_slot[job] == slot) return job;

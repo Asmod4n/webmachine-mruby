@@ -1302,13 +1302,17 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
         st.answer_ready = true;
       }
 
-      // The walk's own state leaves the resource: res.run belongs to the
-      // ROUTE, and the next request on it would write over this. It
-      // waits on the CONNECTION, so a watcher block of this run can be
-      // given it back for as long as the block runs.
-      st.parked_run = std::move(res.run);
-      st.parked_run_held = true;
+      // The walk's own state travels with the frame. res.run belongs to
+      // the ROUTE, and the next request on it would write over this.
+      //
+      // #30: THIS frame holds everything about the run it left, and a
+      // watcher block of that run needs it back for as long as it
+      // speaks. So each watcher is told where it is - a pointer into
+      // this frame, which outlives every wait it started, and one per
+      // RUN rather than one per connection.
+      Resource::RunState mine = std::move(res.run);
       res.run = Resource::RunState{};
+      watch_run_is(st, &mine);
 
       Run::promise_type& pr = co_await Park{};
 
@@ -1325,9 +1329,11 @@ Http1::Run Http1::bound_run(Conn& st, BoundStart s, std::string* sink, Plan* pla
       sink = pr.sink;
       plan = pr.plan;
       pr.persist = s.persist;
-      res.run = std::move(st.parked_run);
-      st.parked_run_held = false;
-      st.parked_run = Resource::RunState{};
+      res.run = std::move(mine);
+      // Back in the resource. Nothing may point at this frame's copy
+      // any more - a watcher that outlived its answer would lend a
+      // state that has moved.
+      watch_run_is(st, nullptr);
       // Three refusals, and they must not be confused: a full pool is
       // load and passes, a deadline the author got wrong does not, and
       // a handle that died may come back (.DESIGN.md #promise-bound).

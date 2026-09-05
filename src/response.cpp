@@ -430,47 +430,31 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   return mrb_nil_value();
 }
 
-// #30: the run's own scratch. The application puts what it wants here
-// and takes it out in another callback - a value a compute task
-// answered, a handle a watcher opened, anything.
+// #30: the run's own slot. The application puts what it wants there
+// and takes it out in another callback of the same run.
 //
-// THIS SERVER NEVER LOOKS AT IT. No key means anything to the flow,
-// nothing here reaches a header, and nothing is folded at setup. It is
-// storage with a lifetime, and the lifetime is one run.
-mrb_value kept_hash(mrb_state* mrb, const Resource* res) {
-  if (!res->run.kept_held) {
-    res->run.kept = mrb_hash_new(mrb);
-    mrb_gc_register(mrb, res->run.kept);
-    res->run.kept_held = true;
-  }
-  return res->run.kept;
-}
-
-mrb_value resp_kept_get(mrb_state* mrb, mrb_value self) {
+// THIS SERVER NEVER LOOKS AT IT. Nothing in it means anything to the
+// flow, nothing reaches a header, and nothing is folded at setup. It is
+// one value with a lifetime, and the lifetime is one run.
+mrb_value resp_userdata(mrb_state* mrb, mrb_value self) {
   (void)self;
-  mrb_value key;
-  mrb_get_args(mrb, "o", &key);
   const Resource* const res = live(mrb);
-  if (!res->run.kept_held) return mrb_nil_value();
-  return mrb_hash_get(mrb, res->run.kept, key);
+  // Undef is "nothing was put there". Ruby never sees it.
+  if (mrb_undef_p(res->run.userdata)) return mrb_nil_value();
+  return res->run.userdata;
 }
 
-mrb_value resp_kept_set(mrb_state* mrb, mrb_value self) {
+mrb_value resp_userdata_set(mrb_state* mrb, mrb_value self) {
   (void)self;
-  mrb_value key;
-  mrb_value val;
-  mrb_get_args(mrb, "oo", &key, &val);
-  mrb_hash_set(mrb, kept_hash(mrb, live(mrb)), key, val);
-  return val;
-}
-
-mrb_value resp_kept_key_p(mrb_state* mrb, mrb_value self) {
-  (void)self;
-  mrb_value key;
-  mrb_get_args(mrb, "o", &key);
+  mrb_value v;
+  mrb_get_args(mrb, "o", &v);
   const Resource* const res = live(mrb);
-  if (!res->run.kept_held) return mrb_false_value();
-  return mrb_bool_value(mrb_hash_key_p(mrb, res->run.kept, key));
+  if (res->run.userdata_held) mrb_gc_unregister(mrb, res->run.userdata);
+  res->run.userdata = v;
+  // Rooted: the run parks, and nothing on the VM's stack names this.
+  mrb_gc_register(mrb, v);
+  res->run.userdata_held = true;
+  return v;
 }
 
 // RFC 9110: Resource#response - a FRESH Response handle on every call,
@@ -519,9 +503,8 @@ void response_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, c, MRB_SYM(error), resp_error, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, c, MRB_SYM_E(error), resp_error_set, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, c, MRB_SYM(set_cookie), resp_set_cookie, MRB_ARGS_ARG(2, 1));
-  mrb_define_method_id(mrb, c, MRB_OPSYM(aref), resp_kept_get, MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, c, MRB_OPSYM(aset), resp_kept_set, MRB_ARGS_REQ(2));
-  mrb_define_method_id(mrb, c, MRB_SYM_Q(key), resp_kept_key_p, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, c, MRB_SYM(userdata), resp_userdata, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, c, MRB_SYM_E(userdata), resp_userdata_set, MRB_ARGS_REQ(1));
 
   struct RClass* h = mrb_define_class_under_id(mrb, c, MRB_SYM(Headers), mrb->object_class);
   MRB_SET_INSTANCE_TT(h, MRB_TT_CDATA);

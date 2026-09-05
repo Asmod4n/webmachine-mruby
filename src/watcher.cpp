@@ -27,6 +27,10 @@ struct WatcherData {
   // #30: which job of the round this watcher answers. A round waits on
   // several at once, and each answer has its own place.
   int job = 0;
+  // #30: the state of the run this watcher belongs to. It lives in the
+  // coroutine frame that parked, and the frame outlives every wait it
+  // started.
+  Resource::RunState* run = nullptr;
   // POLLIN, POLLOUT or both.
   unsigned events = POLLIN;
   // Set by watcher.abort, read after the block returns.
@@ -229,6 +233,15 @@ int watcher_slot(mrb_value v) {
   return d != nullptr ? d->slot : -1;
 }
 
+Resource::RunState* watcher_run(mrb_value v) {
+  WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
+  return d != nullptr ? d->run : nullptr;
+}
+
+void watcher_set_run(mrb_value v, Resource::RunState* run) {
+  static_cast<WatcherData*>(DATA_PTR(v))->run = run;
+}
+
 int watcher_job(mrb_value v) {
   const WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
   return d != nullptr ? d->job : 0;
@@ -320,6 +333,16 @@ void Http1::round_answered(Conn& st, int job, mrb_value v) {
   st.answer_ready = st.jobs_owed == 0 || st.jobs_answered >= st.jobs_owed;
 }
 
+// #30: every watcher of this stop, told where its run waits. The frame
+// says so after the park, because only then does it hold its own state.
+void Http1::watch_run_is(Conn& st, Resource::RunState* run) {
+  for (const int slot : st.w_slot) {
+    if (slot < 0) continue;
+    const mrb_value w = st.watchers_at(slot);
+    if (!mrb_nil_p(w)) watcher_set_run(w, run);
+  }
+}
+
 int Http1::watcher_descriptor(Conn& st, int slot) {
   const mrb_value w = st.watchers_at(slot);
   return mrb_nil_p(w) ? -1 : watcher_fd(w);
@@ -361,12 +384,12 @@ double Http1::watcher_quiet_seconds(Conn& st, int slot) {
 // connection in the middle of a block, so one run at a time holds it.
 struct RunLent {
   const Resource* res = nullptr;
-  Http1::Conn* st = nullptr;
-  RunLent(Http1::Conn& conn, const Resource* r) {
-    if (r == nullptr || !conn.parked_run_held) return;
+  Resource::RunState* from = nullptr;
+  RunLent(const Resource* r, Resource::RunState* parked) {
+    if (r == nullptr || parked == nullptr) return;
     res = r;
-    st = &conn;
-    res->run = std::move(conn.parked_run);
+    from = parked;
+    res->run = std::move(*from);
     request_bind(res->run.req);
     response_bind(res);
   }
@@ -374,7 +397,7 @@ struct RunLent {
     if (res == nullptr) return;
     request_bind(nullptr);
     response_bind(nullptr);
-    st->parked_run = std::move(res->run);
+    *from = std::move(res->run);
     res->run = Resource::RunState{};
   }
   RunLent(const RunLent&) = delete;
@@ -394,7 +417,7 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   // the run's own state travelled with the frame.
   mrb_value said;
   {
-    const RunLent lent(st, st.job_res);
+    const RunLent lent(st.job_res, watcher_run(w));
     said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
   }
   if (mrb->exc != nullptr) {
@@ -431,7 +454,7 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   mrb_value said = mrb_nil_value();
   bool again;
   {
-    const RunLent lent(st, st.job_res);
+    const RunLent lent(st.job_res, watcher_run(w));
     again = watcher_deadline_passed(mrb, w, &said);
   }
   if (mrb->exc != nullptr) {

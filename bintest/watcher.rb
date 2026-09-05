@@ -270,14 +270,14 @@ assert('watcher: the block speaks for the run it belongs to (#30)') do
         w.write('x')
         Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
           r.read(1)
-          response[:said] = 'kept in the block'
+          response.userdata = 'kept in the block'
           response.headers['X-From-Block'] = 'yes'
           self_.abort
           'etag-from-block'
         end
       end
       def to_html
-        response[:said]
+        response.userdata
       end
     end
 

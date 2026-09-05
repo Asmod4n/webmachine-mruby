@@ -939,12 +939,12 @@ assert('response: what one callback keeps, another one reads (#30)') do
   src = <<~RUBY_SRC
     class Kept < Webmachine::Resource
       def is_authorized?(_h)
-        response[:who] = 'from is_authorized?'
-        response[:count] = 41
+        response.userdata = { who: 'from is_authorized?', count: 41 }
         true
       end
       def to_html
-        "\#{response[:who]}/\#{response[:count] + 1}/\#{response.key?(:nothing)}"
+        u = response.userdata
+        "\#{u[:who]}/\#{u[:count] + 1}"
       end
     end
   RUBY_SRC
@@ -953,7 +953,7 @@ assert('response: what one callback keeps, another one reads (#30)') do
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
-      assert_equal 'from is_authorized?/42/false', body
+      assert_equal 'from is_authorized?/42', body
     end
   end
 end
@@ -963,8 +963,8 @@ assert('response: the scratch is one run long (#30)') do
   src = <<~RUBY_SRC
     class KeptTwice < Webmachine::Resource
       def to_html
-        was = response[:seen].nil? ? 'nothing' : response[:seen]
-        response[:seen] = 'first'
+        was = response.userdata.nil? ? 'nothing' : response.userdata
+        response.userdata = 'first'
         was
       end
     end
