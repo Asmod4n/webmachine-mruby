@@ -1052,11 +1052,19 @@ def h2_connect_block(path)
   b
 end
 
-# RFC 6455 5.2: a client frame is masked; this builds one.
-def ws_client_frame(payload, opcode = 0x1)
+# RFC 6455 5.2: a client frame is masked; this builds one. RSV1 says the
+# payload is compressed (RFC 7692 7.2.3.1).
+def ws_client_frame_raw(opcode, payload, rsv1: false)
   mask = [1, 2, 3, 4]
   masked = payload.bytes.each_with_index.map { |b, i| b ^ mask[i % 4] }
-  ([0x80 | opcode, 0x80 | payload.bytesize] + mask + masked).pack('C*')
+  first = 0x80 | opcode | (rsv1 ? 0x40 : 0)
+  n = payload.bytesize
+  head = n < 126 ? [first, 0x80 | n] : [first, 0x80 | 126, (n >> 8) & 0xff, n & 0xff]
+  (head + mask + masked).pack('C*')
+end
+
+def ws_client_frame(payload, opcode = 0x1)
+  ws_client_frame_raw(opcode, payload)
 end
 
 assert('h2: the server says it takes the extended CONNECT (RFC 8441)') do
@@ -1092,6 +1100,74 @@ assert('h2: a websocket opens with CONNECT and echoes through DATA (RFC 8441)') 
       assert_true (flags & 0x01) == 0, 'an echo must not end the stream'
       # RFC 6455 5.1: a server frame is not masked.
       assert_equal [0x81, 0x02, 0x68, 0x69], data.bytes
+    end
+  end
+end
+
+# RFC 7692 over RFC 8441: permessage-deflate is the WebSocket's own, so
+# it is offered in the CONNECT's fields and answered in the response's.
+# Nothing about it is h2's business.
+require 'zlib'
+
+H2_WS_DEFLATE_APP = <<~RUBY_SRC unless defined?(H2_WS_DEFLATE_APP)
+  class H2DeflateEcho < Webmachine::WebsocketResource
+    def self.permessage_deflate?
+      true
+    end
+
+    def on_data(data, binary)
+      data
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.websocket ['ws'], H2DeflateEcho }
+    end
+  end
+RUBY_SRC
+
+# The same CONNECT block, plus one offer. A literal field with no
+# indexing (0x00), then the name and the value, both without Huffman.
+def h2_connect_deflate_block(path)
+  b = h2_connect_block(path)
+  name = 'sec-websocket-extensions'
+  value = 'permessage-deflate'
+  b << "\x00".b << name.bytesize.chr << name << value.bytesize.chr << value
+  b
+end
+
+def h2_ws_deflate(z, str)
+  out = z.deflate(str, Zlib::SYNC_FLUSH)
+  out[0, out.bytesize - 4]
+end
+
+assert('h2: permessage-deflate is negotiated on the CONNECT (RFC 7692)') do
+  h2_server(H2_WS_DEFLATE_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_connect_deflate_block('/ws')))
+      type, _flags, _stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0x88, block.getbyte(0), 'RFC 8441 answers 200'
+      # The answer names the extension, but the block is HPACK and
+      # ls-hpack Huffman-codes the value, so the bytes are not readable
+      # here. What proves the negotiation is the exchange below: the
+      # server sets RSV1 only on a connection where deflate is on.
+
+      # RFC 7692 7.2.1: a compressed message carries RSV1 and no tail.
+      z = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -15)
+      zi = Zlib::Inflate.new(-15)
+      body = 'the quick brown fox ' * 40
+      frame = ws_client_frame_raw(0x1, h2_ws_deflate(z, body), rsv1: true)
+      s.write(h2_frame(0, 0x00, 1, frame))
+      type, _flags, _stream, data = h2_next(s)
+      assert_equal 0, type, 'the answer is DATA'
+      assert_true (data.getbyte(0) & 0x40) != 0, 'the answer must carry RSV1'
+      len = data.getbyte(1) & 0x7f
+      payload = len == 126 ? data[4, data.bytesize - 4] : data[2, data.bytesize - 2]
+      assert_equal body, zi.inflate(payload + "\x00\x00\xff\xff".b)
+      assert_true payload.bytesize < body.bytesize, "#{payload.bytesize} vs #{body.bytesize}"
     end
   end
 end

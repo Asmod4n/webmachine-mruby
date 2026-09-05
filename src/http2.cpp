@@ -879,9 +879,10 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
 // The answer is 200 and not 101: there is nothing to switch, the stream
 // itself is the transport, and its DATA frames carry RFC 6455 frames.
 //
-// permessage-deflate is not negotiated here. h1 answers the extension
-// header; over h2 this opens the connection without it rather than
-// pretend a negotiation happened.
+// RFC 7692 travels unchanged: the offer arrives as an ordinary
+// `sec-websocket-extensions` field of the CONNECT, and the answer goes
+// back as one of the response. The compression is the WebSocket's, not
+// the transport's, so nothing about it is h2's business.
 bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   H2State& h2 = *st0.h2;
   const AppSlot& slot = apps_[st0.listener];
@@ -918,6 +919,17 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
     return true;
   }
 
+  // RFC 7692 5.1: the first offer this endpoint can accept, or none.
+  wsdeflate::Params dparams;
+  std::string ext_answer;
+  if (ws_wants_deflate(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)])) {
+    const struct phr_header* const hs = static_cast<const struct phr_header*>(ask.fields);
+    for (size_t i = 0; i < ask.nfields && !dparams.on; i++) {
+      if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions")) continue;
+      wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
+    }
+  }
+
   H2Block blk;
   h2_build_block(blk, {200, nullptr});
   unsigned char ebuf[256];
@@ -927,6 +939,11 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   h2.enc_ins++;
   if (enc_ok && !proto.empty()) {
     enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
+    h2.enc_ins++;
+  }
+  if (enc_ok && dparams.on) {
+    // RFC 9113 8.2: a field name on the wire is lower case, always.
+    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-extensions", ext_answer});
     h2.enc_ins++;
   }
   if (!enc_ok) {
@@ -941,8 +958,7 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   sink.append(blk.bytes);
   sink.append(reinterpret_cast<const char*>(ebuf), elen);
 
-  const wsdeflate::Params none;
-  ws_open(c, none);
+  ws_open(c, dparams);
   H2Stream& stp = h2.open(ask.stream_id);
   stp.ws = c;
   stp.streaming = true;
