@@ -902,3 +902,70 @@ assert('h2: response.error_asset parks in the mapping and the window drips it ou
     end
   end
 end
+
+# #30: a stream that stops. The resource declares `watch`, so its run
+# parks on a descriptor and the stream is framed when the answer comes
+# back. Before this the same resource answered 500 on h2 and 200 on h1.
+assert('h2: a watcher parks the stream and the answer comes back (#30)') do
+  src = <<~RUBY_SRC
+    class H2Watch < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        r, w = IO.pipe
+        w.write('x')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
+          r.read(1)
+          self_.abort
+          'from-a-watcher'
+        end
+      end
+      def to_html
+        'parked and back'
+      end
+    end
+  RUBY_SRC
+  h2_server(h2_app('H2Watch', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_get_block))
+      type, flags, stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 1, stream
+      assert_true (flags & 0x04) != 0, 'END_HEADERS missing'
+      assert_equal 0x88, block.getbyte(0), 'the run must answer 200, not 500'
+      type, flags, stream, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 1, stream
+      assert_equal 'parked and back', data
+    end
+  end
+end
+
+# #30: the same for a compute task. It crosses to a worker, and the
+# stream waits instead of running the block on the reactor's thread.
+assert('h2: a compute task parks the stream (#30)') do
+  src = <<~RUBY_SRC
+    class H2Compute < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
+      def to_html
+        'answered by a worker'
+      end
+    end
+  RUBY_SRC
+  h2_server(h2_app('H2Compute', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_get_block))
+      type, _flags, stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 1, stream
+      assert_equal 0x88, block.getbyte(0)
+      type, _flags, stream, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 'answered by a worker', data
+    end
+  end
+end

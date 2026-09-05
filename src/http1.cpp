@@ -1302,16 +1302,22 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       const Resource& res = *ran;
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
-      held.hold(s.head_at, s.head_len, prep.rv);
-      s.view = held.head.data();
-      s.viewlen = held.head.size();
-      s.off = held.head.size();
-      s.method = held.rv.method_token;
-      s.path = held.rv.request_target;
-      s.fields = held.fields.get();
-      s.nfields = held.nfields;
-      s.spans = held.spans;
-      s.vals = held.vals;
+      //
+      // #30: h1 only. An h2 run started from COPIES - RunStart::H2Start
+      // carries the facts and the target - because the dispatch buffers
+      // die with the round that read them.
+      if (h1) {
+        held.hold(s.head_at, s.head_len, prep.rv);
+        s.view = held.head.data();
+        s.viewlen = held.head.size();
+        s.off = held.head.size();
+        s.method = held.rv.method_token;
+        s.path = held.rv.request_target;
+        s.fields = held.fields.get();
+        s.nfields = held.nfields;
+        s.spans = held.spans;
+        s.vals = held.vals;
+      }
 
       // The crossing, BEFORE the state travels: the block becomes an id
       // and the arguments become CBOR while both the VM and the run's
@@ -1319,7 +1325,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // from the resource, and neither could be read again.
       if (park < 0) {
         park = st.park_take(&mine_round);
-        st.h1_park = park;
+        me.park = park;
       }
       compute_task_hand_over(st, mine_round, park, res);
       // #30: the same moment for a watcher. It is a value of the
@@ -1410,13 +1416,16 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // table names this frame any more.
     if (park >= 0) {
       st.park_drop(park);
-      st.h1_park = -1;
+      me.park = -1;
     }
 
     // #30: the h2 tail. The walk is over, so what it left can be read
     // now, and the frames go out through the SAME framer the straight
     // path uses.
     if (!h1) {
+      // What the resumed walk answered is in THIS frame's locals, not in
+      // what the walk said before it stopped.
+      hp.have_body = have_body;
       h2_after_run(st, hq, hp, status);
       co_return h2_frame(st, hq, *sink, hp) ? 1 : 0;
     }

@@ -372,7 +372,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.values = &pvals;
     const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
     const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
-    if (!h2_answer(st0, q, sink)) {
+    if (!h2_serve(st0, q, sink)) {
       return false;
     }
     h2_log(st0, {facts, target});
@@ -519,7 +519,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.values = &vals;
     const H2Request q{stream_id, facts, &vals, r < 0 ? nullptr : &rv,
                       {path_val, path_vlen}, route, head_only};
-    if (!h2_answer(st0, q, sink)) {
+    if (!h2_serve(st0, q, sink)) {
       return false;
     }
     h2_log(st0, {facts, {path_val, path_vlen}});
@@ -812,6 +812,39 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
   p.status = status;
   p.have_body = have_body;
   p.dynamic = dynamic;
+}
+
+// #30: a stream whose resource can stop takes the coroutine; every
+// other one takes the straight answer. The frame costs an allocation,
+// so only a resource that declared `compute` or `watch` pays for it -
+// the same rule h1 follows in feed_parse.
+bool Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
+  const Bundle* b = nullptr;
+  if (q.route != kNoRoute) b = &bundles_[apps_[st0.listener].base + q.route];
+  const bool can_stop = b != nullptr && b->bound && b->res != nullptr &&
+                        ((b->res->compute | b->res->watch) != 0 ||
+                         (b->res->value_jobs | b->res->value_watch) != 0);
+  if (!can_stop) return h2_answer(st0, q, sink);
+  // A connection holds as many stopped runs as a tag can name. Past
+  // that the request is answered the straight way: it cannot stop, so a
+  // compute task runs here and a watcher is refused by name.
+  if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
+    return h2_answer(st0, q, sink);
+  }
+  RunStart start;
+  start.proto = RunStart::Proto::kH2;
+  start.h2.stream_id = q.stream_id;
+  start.h2.route = q.route;
+  start.h2.head_only = q.head_only;
+  start.h2.facts = q.facts;
+  start.h2.target.assign(q.target);
+  Run r = run_parkable(st0, std::move(start), &sink, nullptr);
+  if (r.done()) {
+    // It never stopped. The answer is already in the sink.
+    return r.status() != 0;
+  }
+  st0.h2_parked.push_back({q.stream_id, std::move(r)});
+  return true;
 }
 
 bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
@@ -1390,7 +1423,7 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
     // 9.3.2 puts the responses out in the order the requests came.
     // #30: the round of the run that stopped here. The frame holds it;
     // the connection knows which park slot it took.
-    Conn::Round* const parked_round = st.park_at(st.h1_park);
+    Conn::Round* const parked_round = st.park_at(st.parked.co.promise().park);
     if (parked_round == nullptr || !parked_round->answer_ready) return true;
     parked_round->answer_ready = false;
     // What the round holds is NOT cleared here. The run reads it after
@@ -1436,6 +1469,28 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   if (st.file != nullptr && st.file->stage != FileStage::kNone) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
+    // #30: every run this connection stopped whose round is done. Each
+    // one frames its own stream, so several may go out in one round.
+    for (size_t i = 0; i < st.h2_parked.size();) {
+      Conn::H2Parked& p = st.h2_parked[i];
+      Conn::Round* const r = st.park_at(p.run.co.promise().park);
+      if (r == nullptr || !r->answer_ready) {
+        i++;
+        continue;
+      }
+      r->answer_ready = false;
+      auto& pr = p.run.co.promise();
+      pr.sink = &sink;
+      pr.plan = &plan;
+      p.run.co.resume();
+      if (!p.run.done()) {
+        i++;
+        continue;
+      }
+      const bool lives = pr.status != 0;
+      st.h2_parked.erase(st.h2_parked.begin() + static_cast<long>(i));
+      if (!lives) return false;
+    }
     h2_flush_pending(st, sink, &plan);
     return true;
   }
@@ -1580,7 +1635,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           rv.field_count = nh;
           const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
-          if (!h2_answer(st0, q, sink)) {            return false;
+          if (!h2_serve(st0, q, sink)) {            return false;
           }
           h2_log(st0, {facts, target});
         }

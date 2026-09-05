@@ -4334,6 +4334,10 @@ class Http1 {
       // RFC 9112 9.3: whether the connection lives past this answer. The
       // round decided it before the run started; `spell_next_round` returns it.
       bool persist = true;
+      // #30: which park slot this run took, or -1. The promise is the
+      // run's own header, and the resumer reads it there - a connection
+      // holds many parked runs and none of them is "the" one.
+      int park = -1;
 
       Run get_return_object() { return Run{handle::from_promise(*this)}; }
       // Runs eagerly: a run that never stops must reach its answer inside
@@ -4454,6 +4458,13 @@ class Http1 {
     // IS its name - there is no slot table and no id to look it up by,
     // which is what the scaffolding this replaces was reaching for.
     Run parked;
+    // #30: the runs an h2 connection stopped, one per stream. h1 has the
+    // one above, because RFC 9112 9.3.2 lets it stop only one.
+    struct H2Parked {
+      uint32_t stream_id = 0;
+      Run run;
+    };
+    std::vector<H2Parked> h2_parked;
 
     // The width of one value round: an ETag, a Last-Modified, an
     // Expires and a body. Nothing in the flow asks for a fifth.
@@ -4536,10 +4547,6 @@ class Http1 {
     //
     // Four bits of the tag name the park slot and four name the job, so
     // one byte carries both and the layout is unchanged.
-    // h1 stops at most one run per connection - RFC 9112 9.3.2 puts the
-    // answers out in the order the requests came - so it remembers the
-    // one slot it took. An h2 stream remembers its own.
-    int h1_park = -1;
     static constexpr int kParkSlots = 16;
     Round* park[kParkSlots] = {};
     // Which parked runs have a job the reactor has not armed yet. Asked
@@ -5000,7 +5007,7 @@ class Http1 {
   // anything else speak for the connection.
   static bool run_answer_pending(const Conn& st) {
     if (!st.run_parked()) return false;
-    const Conn::Round* const r = st.park_at(st.h1_park);
+    const Conn::Round* const r = st.park_at(st.parked.co.promise().park);
     return r == nullptr || !r->answer_ready;
   }
 
@@ -5964,6 +5971,10 @@ class Http1 {
   void h2_produce(Conn& st, const H2Request& q, bool can_park, H2Produced& p);
   void h2_after_run(Conn& st, const H2Request& q, H2Produced& p, uint16_t status);
   bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
+  // #30: which of the two an h2 request takes - the straight answer, or
+  // a run that may stop. The resource decides: only one that declared
+  // `compute` or `watch` can stop, and only that one pays for a frame.
+  bool h2_serve(Conn& st, const H2Request& q, std::string& sink);
   bool h2_frame(Conn& st, const H2Request& q, std::string& sink, H2Produced& p);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);
