@@ -1052,6 +1052,16 @@ def h2_connect_block(path)
   b
 end
 
+# The next frame that is not flow-control bookkeeping. A server that
+# returns its window (RFC 9113 6.9) sends WINDOW_UPDATE whenever it likes.
+def h2_next_payload(s)
+  loop do
+    type, flags, stream, payload = h2_next(s)
+    next if type == 8 || type == 4
+    return [type, flags, stream, payload]
+  end
+end
+
 # RFC 6455 5.2: a client frame is masked; this builds one. RSV1 says the
 # payload is compressed (RFC 7692 7.2.3.1).
 def ws_client_frame_raw(opcode, payload, rsv1: false)
@@ -1094,7 +1104,7 @@ assert('h2: a websocket opens with CONNECT and echoes through DATA (RFC 8441)') 
       assert_equal 0x88, block.getbyte(0), 'RFC 8441 answers 200, not 101'
 
       s.write(h2_frame(0, 0x00, 1, ws_client_frame('hi')))
-      type, flags, stream, data = h2_next(s)
+      type, flags, stream, data = h2_next_payload(s)
       assert_equal 0, type, 'the answer is DATA'
       assert_equal 1, stream
       assert_true (flags & 0x01) == 0, 'an echo must not end the stream'
@@ -1161,13 +1171,46 @@ assert('h2: permessage-deflate is negotiated on the CONNECT (RFC 7692)') do
       body = 'the quick brown fox ' * 40
       frame = ws_client_frame_raw(0x1, h2_ws_deflate(z, body), rsv1: true)
       s.write(h2_frame(0, 0x00, 1, frame))
-      type, _flags, _stream, data = h2_next(s)
+      type, _flags, _stream, data = h2_next_payload(s)
       assert_equal 0, type, 'the answer is DATA'
       assert_true (data.getbyte(0) & 0x40) != 0, 'the answer must carry RSV1'
       len = data.getbyte(1) & 0x7f
       payload = len == 126 ? data[4, data.bytesize - 4] : data[2, data.bytesize - 2]
       assert_equal body, zi.inflate(payload + "\x00\x00\xff\xff".b)
       assert_true payload.bytesize < body.bytesize, "#{payload.bytesize} vs #{body.bytesize}"
+    end
+  end
+end
+
+# RFC 9113 6.9: a websocket that never returns its window stalls as soon
+# as the peer has sent 65535 bytes. This pushes past that in messages of
+# 8 KiB and expects every one of them back.
+assert('h2: a websocket keeps taking bytes past the initial window (#30)') do
+  h2_server(H2_WS_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_connect_block('/ws')))
+      type, _flags, _stream, block = h2_next(s)
+      assert_equal 1, type
+      assert_equal 0x88, block.getbyte(0)
+
+      chunk = 'x' * 8192
+      total = 0
+      12.times do |i|
+        s.write(h2_frame(0, 0x00, 1, ws_client_frame(chunk)))
+        type, _flags, _stream, data = h2_next_payload(s)
+        assert_equal 0, type, "echo #{i} is DATA"
+        # RFC 9113 6.9: and the client returns its own credit, or the
+        # server stops sending after 65535 bytes - as it should.
+        inc = [data.bytesize].pack('N')
+        s.write(h2_frame(8, 0, 0, inc))
+        s.write(h2_frame(8, 0, 1, inc))
+        # 8192 needs the 16-bit length form: 0x81, 126, then two bytes.
+        assert_equal 0x81, data.getbyte(0)
+        assert_equal 126, data.getbyte(1) & 0x7f
+        total += (data.getbyte(2) << 8) | data.getbyte(3)
+      end
+      assert_equal 12 * 8192, total, 'every message must come back whole'
     end
   end
 end

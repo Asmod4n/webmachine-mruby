@@ -1833,6 +1833,16 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // WebSocket. What the handler answers goes back on the same
         // stream, against its window, like an event stream's ticks.
         if (WM_H1_UNLIKELY(stp->ws != nullptr)) {
+          // RFC 9113 6.9: the credit goes back FIRST. These bytes are
+          // consumed the moment ws_feed reads them, and a websocket that
+          // never returns its window stalls the moment the peer has sent
+          // 65535 of them - which is one Autobahn case, not an edge.
+          if (flen != 0) {
+            unsigned char inc[4];
+            put_u32(inc, flen);
+            emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+            emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
+          }
           std::string out;
           const bool go_on = ws_feed(stp->ws, {reinterpret_cast<const char*>(dp), dlen}, out);
           if (!out.empty()) stp->response_content.append_owned(out.data(), out.size());
