@@ -490,6 +490,18 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   }
 
   RouteSpans spans;
+  // WHATWG HTML: an event stream route answers before the ordinary
+  // table, the same order h1 asks in (feed_parse).
+  if (WM_H1_UNLIKELY(apps_[st0.listener].sse_table != nullptr)) {
+    RouteSpans sspans;
+    const int sr = apps_[st0.listener].sse_table->match(path_val, path_vlen, sspans);
+    if (sr >= 0) {
+      const H2SseAsk ask = {stream_id, static_cast<uint16_t>(sr), {path_val, path_vlen},
+                            &sspans,   hv,                       nh,
+                            &vals};
+      return h2_sse_begin(st0, ask, sink);
+    }
+  }
   const int r = apps_[st0.listener].table->match(path_val, path_vlen, spans);
   const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
 
@@ -818,6 +830,101 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
 // other one takes the straight answer. The frame costs an allocation,
 // so only a resource that declared `compute` or `watch` pays for it -
 // the same rule h1 follows in feed_parse.
+// WHATWG HTML over RFC 9113: an event stream on ONE h2 stream.
+//
+// The head goes out as HEADERS without END_STREAM, and every later tick
+// is DATA against that stream's window - the same bytes h1 wraps in a
+// chunk (RFC 9112 7.1). No Transfer-Encoding: h2 has none, and the
+// stream itself is the framing.
+//
+// It is per STREAM, not per connection. An h2 connection multiplexes,
+// so one client can hold several event streams at once, and each one
+// keeps its own resource object.
+bool Http1::h2_sse_begin(Conn& st0, const H2SseAsk& ask, std::string& sink) {
+  H2State& h2 = *st0.h2;
+  const AppSlot& slot = apps_[st0.listener];
+
+  ReqView rv;
+  rv.request_target = ask.target.data();
+  rv.request_target_len = ask.target.size();
+  rv.path_len = http::path_only(ask.target.data(), ask.target.size());
+  rv.method = flow::Method::kGet;
+  rv.table = slot.sse_table;
+  rv.route = ask.route;
+  rv.spans = ask.spans;
+  rv.fields = ask.fields;
+  rv.field_count = ask.nfields;
+  rv.values = ask.vals;
+  request_bind(&rv);
+  uint16_t refused = 0;
+  SseStream* const s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(ask.route)],
+                                elog_.enabled ? &elog_ : nullptr, refused);
+  request_bind(nullptr);
+  if (s == nullptr) {
+    // RFC 9110 15.5.4: a stream the app would not open is a 403 unless
+    // the app named a status of its own.
+    const uint16_t status = refused == 0 ? 403 : refused;
+    alog_status_ = status;
+    alog_bytes_ = 0;
+    H2Block blk;
+    h2_build_block(blk, {status, nullptr});
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()),
+                             kH2Headers, static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
+                             ask.stream_id});
+    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+    sink.append(blk.bytes);
+    return true;
+  }
+
+  static const std::string kEventStream = "text/event-stream";
+  H2Block blk;
+  h2_build_block(blk, {200, &kEventStream});
+  unsigned char ebuf[256];
+  unsigned char* ep = ebuf;
+  unsigned char* const eend = ebuf + sizeof(ebuf);
+  if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}}) ||
+      !h2_enc_field({&h2.enc, ep, eend}, {"cache-control", "no-store"})) {
+    sse_free(s);
+    return h2_error(st0, kH2InternalError, sink);
+  }
+  h2.enc_ins += 2;
+  const size_t elen = static_cast<size_t>(ep - ebuf);
+  unsigned char fh[kH2FrameHeaderLen];
+  h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
+                           kH2FlagEndHeaders, ask.stream_id});
+  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+  sink.append(blk.bytes);
+  sink.append(reinterpret_cast<const char*>(ebuf), elen);
+
+  H2Stream& stp = h2.open(ask.stream_id);
+  stp.sse = s;
+  stp.streaming = true;
+  stp.end_headers = true;
+  stp.half_closed_remote = true;
+  alog_status_ = 200;
+  alog_bytes_ = 0;
+  return true;
+}
+
+// WHATWG HTML: one second has passed. Every event stream this connection
+// carries is asked, and what it says goes on its own stream.
+void Http1::h2_sse_second(Conn& st0) {
+  H2State& h2 = *st0.h2;
+  for (H2Stream& stp : h2.streams) {
+    if (stp.sse == nullptr) continue;
+    std::string body;
+    const bool go_on = sse_tick(stp.sse, sec_, body);
+    if (!body.empty()) stp.response_content.append_owned(body.data(), body.size());
+    if (go_on) continue;
+    // The resource said :close. The stream ends when what it already
+    // handed over has left, so END_STREAM rides the last DATA frame.
+    sse_free(stp.sse);
+    stp.sse = nullptr;
+    stp.streaming = false;
+  }
+}
+
 bool Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
   const Bundle* b = nullptr;
   if (q.route != kNoRoute) b = &bundles_[apps_[st0.listener].base + q.route];
@@ -1332,7 +1439,8 @@ static size_t h2_emit(RoundOut& out, const H2Sending& sending) {
     if (!out.room_for_frame()) break;
     size_t n = step.give - off;
     if (n > max_frame) n = max_frame;
-    const bool last = step.start + off + n == step.total;
+    // WHATWG HTML: an event stream drains between ticks and is not over.
+    const bool last = !s.streaming && step.start + off + n == step.total;
     unsigned char fh[kH2FrameHeaderLen];
     const uint8_t end_flag = last ? kH2FlagEndStream : 0;
     h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, s.id});
@@ -1379,7 +1487,8 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
   for (size_t i = 0; i < h2.streams.size();) {
     H2Stream& stp = h2.streams[i];
-    if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes()) {
+    if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes() &&
+        !stp.streaming) {
       // close_stream RETIRES the lend rather than freeing it: its last
       // frames are in the round being built, not yet on the wire.
       h2.close_stream(stp.id);
@@ -1469,6 +1578,9 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   if (st.file != nullptr && st.file->stage != FileStage::kNone) return true;
   if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
   if (st.h2 != nullptr) {
+    // WHATWG HTML: every event stream this connection carries, asked
+    // once per second, before the frames go out.
+    h2_sse_second(st);
     // #30: every run this connection stopped whose round is done. Each
     // one frames its own stream, so several may go out in one round.
     for (size_t i = 0; i < st.h2_parked.size();) {

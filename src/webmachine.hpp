@@ -3491,6 +3491,9 @@ struct AssetEntry;
 // must remember between frames is exactly what the state machine there
 // names - what it has received, what it still owes, and whether either
 // half is closed - so the fields are that list and nothing else.
+struct SseStream;
+void sse_free(SseStream* s);
+
 struct H2Stream {
   // RFC 9113 5.1.1: the Stream Identifier every frame carries.
   uint32_t id = 0;
@@ -3566,6 +3569,23 @@ struct H2Stream {
       sent = 0;
       length = n;
     }
+    // WHATWG HTML: an event stream hands over its next tick while the
+    // stream is still sending the last one. What has left already is
+    // dropped from the front, so a stream that runs for hours holds only
+    // what the window has not taken yet.
+    void append_owned(const char* p, size_t n) {
+      if (src != Src::kOwned) {
+        take_owned(p, n);
+        return;
+      }
+      if (sent != 0) {
+        owned.erase(0, sent);
+        length -= sent;
+        sent = 0;
+      }
+      owned.append(p, n);
+      length += n;
+    }
     void clear() {
       src = Src::kNone;
       asset = nullptr;
@@ -3586,6 +3606,14 @@ struct H2Stream {
   bool end_headers = false;
   // RFC 9113 5.1: the peer will send no more DATA on this stream.
   bool half_closed_remote = false;
+  // WHATWG HTML: the event stream this h2 stream carries, or nothing.
+  // One per STREAM, because an h2 connection multiplexes them - h1 keeps
+  // its one on the connection.
+  SseStream* sse = nullptr;
+  // RFC 9113 6.1: this stream stays open when its content drains. An
+  // event stream sends its next tick later, so the last DATA frame of a
+  // tick must not carry END_STREAM.
+  bool streaming = false;
 };
 
 struct H2State {
@@ -3736,6 +3764,12 @@ struct H2State {
         // still holds has to leave first, or its root leaks silently on
         // every close - RST_STREAM, END_STREAM and error paths alike.
         content_retire(streams[i]);
+        // WHATWG HTML: the resource hears that its stream ended, once,
+        // however it ended.
+        if (streams[i].sse != nullptr) {
+          sse_free(streams[i].sse);
+          streams[i].sse = nullptr;
+        }
         streams[i] = std::move(streams.back());
         streams.pop_back();
         return;
@@ -4842,7 +4876,17 @@ class Http1 {
   bool pending(const Conn& st) const;
 
   // WHATWG HTML: does this connection carry a source with its own schedule?
-  bool timed(const Conn& st) const { return st.sse != nullptr; }
+  // WHATWG HTML: which connections want a wake every second. h1 carries
+  // one event stream on the connection; an h2 connection carries one per
+  // STREAM, so it is asked as soon as any stream has one.
+  bool timed(const Conn& st) const {
+    if (st.sse != nullptr) return true;
+    if (st.h2 == nullptr) return false;
+    for (const H2Stream& s : st.h2->streams) {
+      if (s.sse != nullptr) return true;
+    }
+    return false;
+  }
 
   // NO RFC - this becomes a struct msghdr, so it carries that struct's
   // names: the segments are its msg_iov, their count its msg_iovlen, and
@@ -5981,6 +6025,20 @@ class Http1 {
   // a run that may stop. The resource decides: only one that declared
   // `compute` or `watch` can stop, and only that one pays for a frame.
   bool h2_serve(Conn& st, const H2Request& q, std::string& sink);
+  // WHATWG HTML over RFC 9113: what an event stream needs to open on one
+  // h2 stream. The request's own bytes, because sse_open runs the
+  // resource's initialize and that reads `request`.
+  struct H2SseAsk {
+    uint32_t stream_id;
+    uint16_t route;
+    std::string_view target;
+    RouteSpans* spans;
+    const void* fields;
+    size_t nfields;
+    const http::ReqValues* vals;
+  };
+  bool h2_sse_begin(Conn& st, const H2SseAsk& ask, std::string& sink);
+  void h2_sse_second(Conn& st);
   bool h2_frame(Conn& st, const H2Request& q, std::string& sink, H2Produced& p);
   void h2_flush_pending(Conn& st, std::string& sink, Plan* plan);
   void h2_build_asset_blocks(AssetEntry& e);

@@ -969,3 +969,58 @@ assert('h2: a compute task parks the stream (#30)') do
     end
   end
 end
+
+# WHATWG HTML over RFC 9113: an event stream on one h2 stream. The head
+# is HEADERS without END_STREAM, and every tick is DATA on that stream.
+# On h1 the same resource answers with chunks (bintest/sse.rb).
+H2_SSE_APP = <<~RUBY_SRC unless defined?(H2_SSE_APP)
+  class H2Clock < Webmachine::SseResource
+    def initialize
+      @n = 0
+    end
+
+    def on_tick
+      @n += 1
+      { event: 'tick', id: @n.to_s, data: "n=\#{@n}" }
+    end
+  end
+
+  class H2SsePage < Webmachine::Resource
+    def self.to_html
+      'not a stream'
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.add_sse ['events'], H2Clock
+      app.add_route [:*], H2SsePage
+    end
+  end
+RUBY_SRC
+
+assert('h2: an event stream is HEADERS without END_STREAM, then DATA (#30)') do
+  h2_server(H2_SSE_APP) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_path_block('/events')))
+      type, flags, stream, _block = h2_next(s)
+      assert_equal 1, type, 'HEADERS first'
+      assert_equal 1, stream
+      assert_true (flags & 0x04) != 0, 'END_HEADERS missing'
+      assert_true (flags & 0x01) == 0, 'END_STREAM must NOT be set on a live stream'
+      # The ticks arrive as DATA on the same stream, one per second.
+      seen = ''.b
+      3.times do
+        type, flags, stream, data = h2_next(s)
+        break unless type == 0
+        assert_equal 1, stream
+        assert_true (flags & 0x01) == 0, 'a tick must not end the stream'
+        seen << data
+        break if seen.include?('id: 2')
+      end
+      assert_true seen.include?("event: tick\n"), seen
+      assert_true seen.include?("data: n=1\n"), seen
+    end
+  end
+end
