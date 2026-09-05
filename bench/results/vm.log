@@ -1401,3 +1401,32 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.
 env: runnable=1/120 busy=0% (200ms sample)
 responses=1928313 bad=0 seconds=4.000 rps=482078 bytes=298888515 MB/s=71.26 conns=100 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=67493790 tx_MB/s=16.09
 server: 99% of one core (11u/87s)   client: 92% of one core (7u/85s)   other: 4% of one core
+==== 2026-09-05T07:06Z repo=29b9742 mruby=ec6890b ====
+harness: /home/user/asmod4n/htgen/htgen(2026-09-05T07:04) -c64 -d10s h1 (one ring, one thread) impl=uring transport=tcp app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/127 busy=0% (200ms sample)
+responses=2196666 bad=0 seconds=10.000 rps=219666 bytes=340483230 MB/s=32.47 conns=64 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=76884570 tx_MB/s=7.33
+server: 99% of one core (5u/93s)   client: 99% of one core (4u/95s)   other: 6% of one core
+==== 2026-09-05T07:08Z repo=29b9742 mruby=ec6890b ====
+harness: /home/user/asmod4n/htgen/htgen(2026-09-05T07:04) -c192 -d10s h1 (one ring, one thread) impl=uring transport=tcp app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/124 busy=0% (200ms sample)
+responses=1401925 bad=0 seconds=10.000 rps=140192 bytes=217298375 MB/s=20.72 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=49072695 tx_MB/s=4.68
+server: 98% of one core (6u/92s)   client: 98% of one core (3u/94s)   other: 5% of one core
+==== 2026-09-05T07:08Z repo=29b9742 comparison=lithium ====
+# matt-42/lithium, single_headers @ 2026-09-05, one thread (s::nthreads = 1,
+# s::ip = "127.0.0.1"), route "/" answering "OK". Same box, same htgen, same
+# minute as the two webmachine lines above.
+#
+# Two corrections were needed to run it here, neither of them about speed:
+# without s::ip it binds AF_INET6 and this host has no IPv6, and the s::ip
+# path binds `addr.sin_port = port` with no htons - an upstream bug, fixed
+# in the local checkout only.
+#
+# The two servers do not answer the same bytes: lithium 94 per response
+# (92 head + 2 body), webmachine 155 (116 head + 39 body).
+harness: /home/user/asmod4n/htgen/htgen -c64 -d10s h1 (one ring, one thread) transport=tcp
+lithium:    rps=157592 / 147845   server=99.7% of one core   MB/s=14.13 / 13.25
+webmachine: rps=219666 / 193397   server=98% of one core     MB/s=32.47 / 28.59
+# Both are server-bound, so the numbers measure the servers. At -c192 on
+# this 4-vCPU container the order turns: lithium 153104, webmachine 140192.
