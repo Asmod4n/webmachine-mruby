@@ -94,6 +94,15 @@ ws)
   [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
   start_server test/conformance/ws_echo.rb
   trap stop_server EXIT INT TERM
+  # HOW LONG IT TAKES, measured, because it looks like a stall twice
+  # otherwise: 517 cases in 735 s, of which 12.x and 13.x are 713 s.
+  # Every other case together is 13 s. wstest writes its report at the
+  # END, and a deflate case takes up to 14 s, so a screen that shows
+  # 13.3.9 for a quarter of a minute is a suite that is working. The
+  # cost is the suite's, not this server's: during the run wstest holds
+  # 66% of a core and the server 33%, and a 1 MiB deflate echo measures
+  # 96 MiB/s here against 112 MiB/s without the extension.
+  #
   # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
   # answers in seconds where the full suite answers in minutes, which is
   # the difference between finding a stall and waiting one out.
