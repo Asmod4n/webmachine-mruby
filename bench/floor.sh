@@ -173,12 +173,17 @@ fi
 # tree at all - flow::answer returns the konst status on its first
 # branch. A bare generator request carries none of them, so a number
 # taken without BROWSER=1 measures the path a browser never takes.
-# PIN="0 2": the server on the first cpu, the client on the second, and
-# nice -10 on both. Not a default - #120 refused pinning the SERVER's ring
+# PIN="0 2": the server on the first cpu, the client on the second. The
+# priority is not this knob's - bench/priority.sh takes -10 for the whole
+# run, and the children inherit it. Not a default - #120 refused pinning the SERVER's ring
 # workers, and this is not that: it pins the two PROCESSES apart so they
 # stop trading one core, which is what a machine with few cores does to a
 # number. Whether it helps is a property of the machine, so the harness
 # line records it and bench/ratchet.sh decides from the spread.
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
+
 PIN="${PIN:-}"
 SRV_PIN=()
 CLI_PIN=()
@@ -186,8 +191,8 @@ if [ -n "$PIN" ]; then
   read -r SRV_CPU CLI_CPU <<<"$PIN"
   [ -n "${CLI_CPU:-}" ] || { echo "PIN wants two cpus, like PIN='0 2'" >&2; exit 2; }
   command -v taskset >/dev/null || { echo "PIN needs taskset (util-linux)" >&2; exit 2; }
-  SRV_PIN=(taskset -c "$SRV_CPU" nice -n -10)
-  CLI_PIN=(taskset -c "$CLI_CPU" nice -n -10)
+  SRV_PIN=(taskset -c "$SRV_CPU")
+  CLI_PIN=(taskset -c "$CLI_CPU")
 fi
 
 BROWSER="${BROWSER:-0}"
@@ -306,7 +311,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"} transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"} nice=-10 transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the CONFIG asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.

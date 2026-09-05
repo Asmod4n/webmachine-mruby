@@ -1440,3 +1440,9 @@ lithium 1 thread:  rps=157592 (c64) / 153104 (c192)   server=100% of one core
 # the client holds one of them, so the second server thread competes with
 # the client for what is left. This number says what happens on THIS box.
 # It does not say how lithium scales on a machine with cores to spare.
+==== 2026-09-05T08:29Z repo=f7fc6b3 mruby=ec6890b ====
+harness: /home/user/asmod4n/htgen/htgen(2026-09-05T07:04) -c16 -d2s h1 (one ring, one thread) impl=uring nice=-10 transport=tcp app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/122 busy=0% (200ms sample)
+responses=407508 bad=0 seconds=2.000 rps=203751 bytes=63163740 MB/s=30.12 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=14263305 tx_MB/s=6.80
+server: 98% of one core (8u/90s)   client: 96% of one core (7u/89s)   other: 4% of one core

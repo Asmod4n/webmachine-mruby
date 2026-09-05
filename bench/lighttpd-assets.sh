@@ -102,18 +102,7 @@ chmod -R a+rX "$WORK/root"
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
 # get it without being able to ask for it themselves.
-bench_priority() {
-  local self=$$ p
-  for p in $(ps -eo pid= 2>/dev/null); do
-    [ "$p" = "$self" ] && continue
-    renice -n 10 -p "$p" >/dev/null 2>&1
-  done
-  renice -n -10 -p "$self" >/dev/null 2>&1 || {
-    echo "REFUSED: cannot renice (need root). A number taken beside whatever else" >&2
-    echo "  this machine was doing is not a number - see bench_priority." >&2
-    exit 1
-  }
-}
+. "$(dirname "$0")/priority.sh"
 bench_priority
 
 # h2c is prior knowledge; lighttpd answers it on a plain listener with

@@ -70,6 +70,10 @@ TRANSPORT="${TRANSPORT:-unix}"
 SOCK=/tmp/wm-h2bench.sock
 APP="${APP-examples/hello.rb}"
 BIN=mruby/build/host/bin/webmachine-server
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
+
 HTGEN="${HTGEN:-$HOME/htgen/htgen}"
 [ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
 [ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
