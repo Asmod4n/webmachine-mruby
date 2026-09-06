@@ -42,8 +42,8 @@ void usage(const char* me) {
   std::fprintf(stderr,
                "usage: %s [OPTIONS]\n"
                "\n"
-               "  Every option is --key=value. At least one of --app and --assets;\n"
-               "  with nothing to serve, no start.\n"
+               "  Every option is --key=value. At least one of --app, --assets and\n"
+               "  --docroot; with nothing to serve, no start.\n"
                "\n"
                "LISTENER\n"
                "  --unix=PATH              answer on a unix socket; beats the app's conf\n"
@@ -53,7 +53,7 @@ void usage(const char* me) {
                "  --app=FILE.mrb           the application, as bytecode\n"
                "  --assets=FILE.zip        assets from one mapping; alone, 404s the rest\n"
                "  --error-assets=FILE.zip  what an error answer may hand over\n"
-               "  --docroot=DIR            the only directory response.file may reach\n"
+               "  --docroot=DIR            files from here; the only directory response.file reaches\n"
                "  --mime-types=FILE        this media-type database, not the machine's\n"
                "\n"
                "LOG\n"
@@ -270,14 +270,16 @@ int serve(mrb_state* mrb, Invocation& in) {
 
   if (opts.app_path != nullptr) {
     webmachine::app_load(mrb, opts.app_path);
-  } else if (opts.assets_path != nullptr) {
-    // A pack alone is something to serve. Everything it does not name is
-    // a 404, because no resource stands behind it.
+  } else if (opts.assets_path != nullptr || opts.docroot_path != nullptr) {
+    // STANDALONE: a pack, a docroot, or both, and no app. There is no
+    // resource to enter, so the folded graph answers on its own - the
+    // pack from its mapping, the docroot from disk, everything else 404.
     webmachine::app_assets_only();
   } else {
     std::fprintf(stderr,
                  "webmachine: nothing to serve - name an application with --app=FILE.mrb "
-                 "(or app = in the config), or a pack with --assets=FILE.zip\n");
+                 "(or app = in the config), a pack with --assets=FILE.zip, or a directory "
+                 "with --docroot=DIR\n");
     return 1;
   }
 

@@ -73,9 +73,22 @@ are served from a ZIP (`--assets`), gzip synthesized from the archive's
 own deflate stream. `rake pack[DIR,OUT.zip]` writes such a pack from a
 directory: it stores what does not compress and deflates the rest.
 
-**One of `--app` and `--assets` is required** - a server with nothing to
-serve says so and exits. A pack on its own is a valid server: it answers
-what it holds and 404s everything else.
+**One of `--app`, `--assets` and `--docroot` is required** - a server
+with nothing to serve says so and exits.
+
+A pack, a directory, or both, with no `--app`, is the **standalone**
+server: nobody wrote a resource, so the folded graph answers on its own.
+The pack answers from its mapping, the docroot answers from disk, and
+everything else is a 404. GET and HEAD answer, a directory takes its own
+`index.html`, and the media type comes from the machine's database. No
+request enters the VM.
+
+    webmachine-server --port=8080 --docroot=/srv/site
+
+A file under 256 KiB is read and sent; from there up it is mapped and
+handed to one send, because that is the size where a mapping starts
+replacing reads rather than only costing an mmap/munmap pair.
+`[tune] file_map_threshold` moves the line, and 0 means never map.
 
 Both logs are opt-in and separate — separate files, separate writers,
 no field in common. `--log` is the access log and anonymizes addresses

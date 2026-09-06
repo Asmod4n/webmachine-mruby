@@ -330,7 +330,9 @@ void build(mrb_state* mrb) {
   }
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
-  if (opts_.assets_path != nullptr || !error_assets_file.empty()) {
+  const bool standalone = specs_.empty() || (specs_.size() == 1 && specs_[0]->table.empty());
+  if (opts_.assets_path != nullptr || !error_assets_file.empty() ||
+      (standalone && docroot_fd() >= 0)) {
     mime_.load(mrb, opts_.mime_types_path);
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
@@ -425,6 +427,12 @@ void build(mrb_state* mrb) {
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.
+  // The standalone tier: nobody wrote a resource, so the docroot answers
+  // through the folded graph and the VM is never entered for a request.
+  if (standalone && docroot_fd() >= 0) {
+    http_->serve_docroot(&mime_);
+    std::fprintf(stderr, "webmachine: standalone - the docroot answers, no app\n");
+  }
   http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
   // #210: and the same assets under response.error_asset("404.jpg"),
   // so an app can answer with one of these pictures wherever it likes,

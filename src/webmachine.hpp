@@ -4300,7 +4300,12 @@ inline constexpr size_t kResponseFileWindow = 256u * 1024;
 // pair - two syscalls the ring cannot carry - costs more than the reads it
 // saves. The crossover is a property of the machine, so it is a [tune] knob:
 // 0 is the operator saying "never map", which is a real answer.
-inline constexpr size_t kFileMapDefault = 1u * 1024 * 1024;
+//
+// The default is ONE WINDOW, and that is the line itself: a file this size
+// or smaller is a single read and a single send, so a mapping would replace
+// nothing and still cost the pair. From one window up, every further window
+// is a read the mapping does not do.
+inline constexpr size_t kFileMapDefault = kResponseFileWindow;
 // The same ceiling kZeroCopyMax carries, for the same reason: it has to fit
 // an mrb_int on a 32-bit-integer build or the range check refuses everything.
 inline constexpr size_t kFileMapMax = 1u << 30;
@@ -4902,6 +4907,12 @@ class Http1 {
   // changes. The old pack is not freed here - a response that is on the
   // wire is still lending its bytes, and the caller owns that decision.
   void swap_assets(Assets* assets);
+
+  // The standalone tier: no app, and the docroot answers what the pack
+  // does not. The media-type database is the server's, lent here for the
+  // one thing this tier decides that the file machine does not - what a
+  // name's Content-Type is.
+  void serve_docroot(const MimeDb* mime) { mime_ = mime; }
 
   void on_tick();
 
@@ -5972,6 +5983,8 @@ class Http1 {
   // and body, without the flow or the VM. /error_assets/ resolves against
   // the error archive, everything else against --assets.
   Took answer_from_assets(Round& r, std::string& sink, Plan* plan);
+  Took answer_from_docroot(Round& r);
+  void file_named_tail(Round& r);
 
   bool fail(Conn& st, uint16_t code, std::string& out, uint8_t log = 0);
   // response.file's answer, head only - the bytes ride after it as a lent
@@ -6129,6 +6142,8 @@ class Http1 {
   H2Block h2_asset405_;
   H2Block h2_asset406_;
   Assets* assets_ = nullptr;
+  // Set only in the standalone tier; null means no docroot answers here.
+  const MimeDb* mime_ = nullptr;
   size_t zc_min_ = kZeroCopyDefault;
   size_t map_min_ = kFileMapDefault;
   size_t send_chunk_ = file_send_chunk(60);

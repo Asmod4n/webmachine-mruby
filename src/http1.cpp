@@ -684,7 +684,15 @@ bool Http1::answer_from_file(Round& r, uint16_t status, const std::string& rhdrs
   st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
   st.file->stage = FileStage::kNamed;
   if (wanted.bad) file_reject(st);
+  file_named_tail(r);
+  return true;
+}
 
+// What every named file owes the connection once the answer is the ring's:
+// the request body this round will never read is skipped, and what the
+// parse read past this request is carried to the next one.
+void Http1::file_named_tail(Round& r) {
+  Conn& st = r.st;
   size_t off = r.off;
   if (r.content_length != 0) {
     const size_t avail = r.viewlen - off;
@@ -700,7 +708,69 @@ bool Http1::answer_from_file(Round& r, uint16_t status, const std::string& rhdrs
   } else {
     st.carry.erase(0, off);
   }
-  return true;
+}
+
+// RFC 9110 4.2.1: the target names a file under the docroot, and this is
+// the tier that answers it - with no app, no route and no VM. The
+// decision is the graph's, folded: GET and HEAD answer, anything else is
+// 405, a directory takes its index.html, and what is not there is 404.
+//
+// It is the file machine underneath, the same one response.file drives:
+// openat2 beneath the docroot fd, statx, If-Modified-Since, the head
+// spelled per file. What this adds is the name and the media type.
+Http1::Took Http1::answer_from_docroot(Round& r) {
+  if (docroot_fd() < 0 || mime_ == nullptr) return Took::kNo;
+
+  Conn& st = r.st;
+  const bool readable =
+      r.facts.method == flow::Method::kGet || r.facts.method == flow::Method::kHead;
+
+  // The path a client wrote, without its leading slash and without a
+  // query. A directory takes its own index.html, as the asset tier does.
+  size_t len = r.path_len;
+  for (size_t i = 0; i < len; i++) {
+    if (r.path[i] == '?') {
+      len = i;
+      break;
+    }
+  }
+  std::string name;
+  if (len > 1) name.assign(r.path + 1, len - 1);
+  if (name.empty() || name.back() == '/') name.append("index.html");
+
+  // A name this process can refuse without asking the kernel. openat2
+  // with RESOLVE_BENEATH would refuse the same ones, and a ring trip
+  // that can only end in 404 is a ring trip nobody owes.
+  bool bad = name.find('\0') != std::string::npos;
+  for (size_t at = 0; !bad && at < name.size();) {
+    const size_t end = name.find('/', at);
+    const std::string_view seg(name.data() + at,
+                               (end == std::string::npos ? name.size() : end) - at);
+    if (seg.empty() || seg == "." || seg == "..") bad = true;
+    if (end == std::string::npos) break;
+    at = end + 1;
+  }
+
+  if (st.file == nullptr) st.file = new Conn::FileXfer();
+  st.file->pathname.assign(name);
+  st.file->field_lines.clear();
+  st.file->content_type = http::with_charset(mime_->type_of(name));
+  st.file->minor = r.minor;
+  st.file->persist = r.persist;
+  st.file->head_only = r.head_only;
+  st.file->if_modified_since_valid =
+      r.facts.has_if_modified_since && r.facts.if_modified_since_valid;
+  st.file->if_modified_since = r.vals.if_modified_since_epoch;
+  st.file->log_flags = r.lflags;
+  st.file->method_token.assign(r.method, r.method_len);
+  st.file->request_target.assign(r.path, r.path_len);
+  st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
+  st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
+  st.file->stage = FileStage::kNamed;
+  if (!readable) file_prebuilt(st, r.facts.method == flow::Method::kOther ? 501 : 405);
+  else if (bad) file_reject(st);
+  file_named_tail(r);
+  return Took::kOwed;
 }
 
 bool Http1::fail(Conn& st, uint16_t code, std::string& out, uint8_t log) {
@@ -1674,6 +1744,15 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         if (took == Took::kClose) return false;
         if (took == Took::kOwed) return true;
         continue;
+      }
+      // The standalone tier: a docroot answers what the pack does not,
+      // and there is no route table behind it to fall through to.
+      if (mime_ != nullptr) {
+        const Took from_disk = answer_from_docroot(r);
+        if (from_disk != Took::kNo) {
+          off = r.off;
+          return from_disk != Took::kClose;
+        }
       }
     }
 
