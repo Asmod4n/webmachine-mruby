@@ -39,3 +39,10 @@ build/conformance/
 # build output of `rake site`
 /examples/site.zip
 /examples/site.mrb
+
+# libFuzzer drops these where it ran; a reproducer that matters belongs
+# in tools/fuzz-seeds or a test, not loose in the tree.
+/crash-*
+/leak-*
+/timeout-*
+/oom-*
