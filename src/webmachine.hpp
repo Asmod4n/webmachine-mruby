@@ -690,6 +690,11 @@ namespace webmachine {
 [[noreturn]] inline void reraise(mrb_state* mrb, mrb_value pending) {
   if (mrb_exception_p(pending)) mrb_exc_raise(mrb, pending);
   mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
+  // mrb_noreturn resolves to NOTHING under -std=c++20 (common.h asks for
+  // __GNUC__ && !__STRICT_ANSI__), so the compiler cannot see that the
+  // two raises above end this function, and it warns that a [[noreturn]]
+  // one returns. Ring::fatal says the same at its own raise.
+  __builtin_unreachable();
 }
 
 [[noreturn]] inline void rethrow(mrb_state* mrb) {

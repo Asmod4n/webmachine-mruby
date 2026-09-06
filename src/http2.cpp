@@ -803,13 +803,11 @@ void Http1::h2_after_run(Conn& st0, const H2Request& q, H2Produced& p, uint16_t 
 // can keep a stopped run - the h2 dispatcher does not, the coroutine
 // does. It is the same question run_parkable answers for h1.
 void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced& p) {
-  const uint32_t stream_id = q.stream_id;
   const flow::ReqFacts& facts = q.facts;
   const http::ReqValues* vals = q.vals;
   const ReqView* req = q.req;
   const uint16_t route = q.route;
   const bool head_only = q.head_only;
-  H2State& h2 = *st0.h2;
 
   p.idx = &index_;
   const Bundle* b = nullptr;
