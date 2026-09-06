@@ -156,14 +156,24 @@ bool config_write_default(const char* path) {
                "# is written; this is the one number that also decides RETENTION.\n"
                "max_age = %lld\n"
                "\n"
-               "# WHAT THE PACK KEEPS is twice that number, and it is not a setting.\n"
-               "# A page may be used for max_age seconds, and the files it names may\n"
-               "# be asked for as long as that page lives - so nothing older than\n"
-               "# 2 x max_age can still be named by any page in any cache, and an\n"
-               "# entry older than that is pruned when the pack is written.\n"
+               "# WHAT THE PACK KEEPS: everything, and there is no setting here on\n"
+               "# purpose.\n"
                "#\n"
-               "# Raise max_age and readers ask less often, and the pack keeps more.\n"
-               "# Lower it and the pack stays small, and a reader comes back sooner.\n",
+               "# A pack is appended to and never rewritten, so every name a build\n"
+               "# ever handed out still answers with the bytes it meant. That is not\n"
+               "# tidiness - a page from an older build needs THAT build's stylesheet,\n"
+               "# and today's would break it as thoroughly as none.\n"
+               "#\n"
+               "# The window is not ours to guess. A television app, a kiosk, a phone\n"
+               "# nobody has opened since spring: each asks for the files its own\n"
+               "# build named, whenever it wakes up. So dropping old entries is a\n"
+               "# decision about YOUR clients, and it is made by hand:\n"
+               "#\n"
+               "#   rake pack[DIR,OUT.zip,compact]   keep only what this build makes\n"
+               "#\n"
+               "# Never below 2 x max_age, whatever else you decide: a page may be\n"
+               "# used for max_age, and the files it names may be asked for that long\n"
+               "# again.\n",
                kAssetsMaxAgeDefault);
   std::fclose(f);
   return true;
