@@ -1361,6 +1361,9 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // h2 answers from COPIES: the dispatch buffers die with the round
     // that read them, and a parked run answers after that. No Values
     // either - the bytes went with them.
+    // Did this run stop? A stopped one logs its own answer from the
+    // tail, because the caller logged nothing for it.
+    bool stopped = false;
     const H2Request hq = {start.h2.stream_id, start.h2.facts, nullptr,
                           nullptr,            start.h2.target, start.h2.route,
                           start.h2.head_only};
@@ -1477,6 +1480,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
 
       Run::promise_type& pr = co_await Park{};
       parked_roots.res = nullptr;
+      stopped = true;
 
       // Back, into a round that is not the one that left. Only the WIRE
       // is the resumer's: the sink to write into and the plan a lend
@@ -1553,8 +1557,15 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // What the resumed walk answered is in THIS frame's locals, not in
       // what the walk said before it stopped.
       hp.have_body = have_body;
+      // RFC 9113 5.1: the peer reset the stream while the run was
+      // parked. Its entry is gone, and the answer goes to nobody.
+      H2Stream* const entry = st.h2->find(hq.stream_id);
+      if (stopped && entry == nullptr) co_return 1;
+      if (entry != nullptr) entry->parked = false;
       h2_after_run(st, hq, hp, status);
-      co_return h2_frame(st, hq, *sink, hp) ? 1 : 0;
+      const bool sent = h2_frame(st, hq, *sink, hp);
+      if (stopped) h2_log(st, {hq.facts, hq.target});
+      co_return sent ? 1 : 0;
     }
 
     Round fr{st,          b,           s.view,      s.viewlen,    s.off,

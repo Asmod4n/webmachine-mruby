@@ -3533,6 +3533,9 @@ struct H2Stream {
   // and its verdict wait here; the byte range is [first, end).
   const AssetEntry* parked_asset = nullptr;
   uint16_t parked_status = 0;
+  // RFC 9113 5.1: a run is parked on this stream. The entry stays until
+  // the run answers, so a RST_STREAM or a WINDOW_UPDATE for it finds it.
+  bool parked = false;
   size_t parked_first = 0;
   size_t parked_end = 0;
   // RFC 9110 6.4: the response content, in ONE form whatever it is made
@@ -6063,7 +6066,10 @@ class Http1 {
   // #30: which of the two an h2 request takes - the straight answer, or
   // a run that may stop. The resource decides: only one that declared
   // `compute` or `watch` can stop, and only that one pays for a frame.
-  bool h2_serve(Conn& st, const H2Request& q, std::string& sink);
+  // What h2_serve did with the request: answered it into the sink,
+  // parked a run for it, or closed the connection.
+  enum class H2Served : uint8_t { kAnswered, kParked, kClosed };
+  H2Served h2_serve(Conn& st, const H2Request& q, std::string& sink);
   // WHATWG HTML over RFC 9113: what an event stream needs to open on one
   // h2 stream. The request's own bytes, because sse_open runs the
   // resource's initialize and that reads `request`.

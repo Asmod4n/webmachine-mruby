@@ -386,10 +386,10 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.values = &pvals;
     const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
     const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
-    if (!h2_serve(st0, q, sink)) {
-      return false;
-    }
-    h2_log(st0, {facts, target});
+    const H2Served served = h2_serve(st0, q, sink);
+    if (served == H2Served::kClosed) return false;
+    // A parked run logs from its own tail, with its own status.
+    if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
     return true;
   }
 
@@ -581,10 +581,9 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.values = &vals;
     const H2Request q{stream_id, facts, &vals, r < 0 ? nullptr : &rv,
                       {path_val, path_vlen}, route, head_only};
-    if (!h2_serve(st0, q, sink)) {
-      return false;
-    }
-    h2_log(st0, {facts, {path_val, path_vlen}});
+    const H2Served served = h2_serve(st0, q, sink);
+    if (served == H2Served::kClosed) return false;
+    if (served == H2Served::kAnswered) h2_log(st0, {facts, {path_val, path_vlen}});
     return true;
   }
   H2Stream& stx = h2.open(stream_id);
@@ -1086,18 +1085,18 @@ void Http1::h2_sse_second(Conn& st0, std::string& sink) {
   }
 }
 
-bool Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
+Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
   const Bundle* b = nullptr;
   if (q.route != kNoRoute) b = &bundles_[apps_[st0.listener].base + q.route];
   const bool can_stop = b != nullptr && b->bound && b->res != nullptr &&
                         ((b->res->compute | b->res->watch) != 0 ||
                          (b->res->value_jobs | b->res->value_watch) != 0);
-  if (!can_stop) return h2_answer(st0, q, sink);
+  if (!can_stop) return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
   // A connection holds as many stopped runs as a tag can name. Past
   // that the request is answered the straight way: it cannot stop, so a
   // compute task runs here and a watcher is refused by name.
   if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
-    return h2_answer(st0, q, sink);
+    return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
   }
   RunStart start;
   start.proto = RunStart::Proto::kH2;
@@ -1109,10 +1108,17 @@ bool Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
   Run r = run_parkable(st0, std::move(start), &sink, nullptr);
   if (r.done()) {
     // It never stopped. The answer is already in the sink.
-    return r.status() != 0;
+    return r.status() != 0 ? H2Served::kAnswered : H2Served::kClosed;
   }
+  // The stream keeps an entry while the run is parked, so a RST_STREAM
+  // closes it and a WINDOW_UPDATE credits it. The sweep leaves a parked
+  // entry alone, and the run's tail clears the mark before it answers.
+  H2Stream& keep = st0.h2->open(q.stream_id);
+  keep.parked = true;
+  keep.end_headers = true;
+  keep.half_closed_remote = true;
   st0.h2_parked.push_back({q.stream_id, std::move(r)});
-  return true;
+  return H2Served::kParked;
 }
 
 bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
@@ -1650,7 +1656,7 @@ void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
   for (size_t i = 0; i < h2.streams.size();) {
     H2Stream& stp = h2.streams[i];
     if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes() &&
-        !stp.streaming) {
+        !stp.streaming && !stp.parked) {
       // close_stream RETIRES the lend rather than freeing it: its last
       // frames are in the round being built, not yet on the wire.
       h2.close_stream(stp.id);
@@ -1946,9 +1952,9 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           rv.values = &pvals;
           const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
-          if (!h2_serve(st0, q, sink)) {            return false;
-          }
-          h2_log(st0, {facts, target});
+          const H2Served served = h2_serve(st0, q, sink);
+          if (served == H2Served::kClosed) return false;
+          if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
         }
         break;
       }
