@@ -25,9 +25,10 @@ end
     mruby/bin/mrbc -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb --port=8080
 
-That is a whole server. On one core it answers **232 000 requests a
-second** over TCP, where openlitespeed on the same box, in the same
-minute, answers 42 000.
+That is a whole server. On one core it answers **a million requests a
+second** over a unix socket — and where it has been measured against
+openlitespeed on one box, one worker each, it answers **5.5×** what
+openlitespeed does.
 
 ## Why it is that fast
 
@@ -48,20 +49,30 @@ the whole performance model.
 
 ## What that costs, measured
 
-One core, one thread, one ring. `bench/results/` holds every run with
-its harness line, its kernel, its compiler and its CPU split.
+`bench/results/` holds every run with its harness line, its host, its
+kernel, its compiler and its CPU split. Two machines answer below, and
+their numbers are not mixed.
 
-| | transport | requests per second |
-|---|---|---|
-| HTTP/2, 16 connections × 128 streams | unix socket | **8.2–10.1 M** |
-| HTTP/1.1, 192 connections | unix socket | **1.0 M** |
-| HTTP/1.1, 192 connections | TCP | **232 k** |
-| openlitespeed, same box, same minute, same client | TCP | 42 k |
+**A desktop, openSUSE, one core, one thread, over a unix socket**
+(`bench/results/forgecore.log`, 2026-09-06)
 
-The last pair is the honest comparison: both servers pinned to one
-worker, both server-bound, openlitespeed with its own best settings and
-its cache module off. **4.6× at 64 connections, 5.5× at 192.** The two
-do not answer identical bytes — 244 against 155 — and the log says so.
+| | requests per second |
+|---|---|
+| HTTP/2, 16 connections × 128 streams | **8.2–10.1 M** |
+| HTTP/1.1, 192 connections | **1.0 M** |
+
+**A container VM, one core, over TCP** — the openlitespeed comparison
+(`bench/results/vm.log`, 2026-09-05)
+
+| | requests per second |
+|---|---|
+| webmachine-mruby, 192 connections | **232 k** |
+| openlitespeed, same box, same minute, same client | 42 k |
+
+That pair is the honest one: both servers pinned to one worker, both
+server-bound, openlitespeed with its own best settings and its cache
+module off. **4.6× at 64 connections, 5.5× at 192.** The two do not
+answer identical bytes — 244 against 155 — and the log says so.
 
 A VM entry costs 95–191 ns. The point of the fold is not that mruby is
 fast; it is that a folded resource never pays that at all.
