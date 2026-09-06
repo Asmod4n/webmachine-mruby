@@ -40,8 +40,9 @@ end
 `self.to_html` is the whole trick. The server calls it once at start
 and keeps the answer, with its status line, its head, its ETag and its
 HTTP/2 header block, as bytes. A request against this resource never
-enters the VM. It is a lookup and a write. Write `def to_html` instead,
-and the method runs per request.
+enters the VM. It is a lookup and a write. Write `def to_html` only when
+the answer changes from request to request. Then the method runs per
+request.
 
 Any callback can be `def self.`, when its answer is the same for every
 request. Four do work and must stay `def`: `process_post`,
