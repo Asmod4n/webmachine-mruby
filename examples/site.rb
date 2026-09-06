@@ -6,12 +6,17 @@
 
 # --- GET /fragment/time -----------------------------------------------
 # The smallest htmx answer there is: an element, not a page.
-# RFC 9111 4.2.2: a response that says nothing about how long it may be
-# used lets a cache GUESS one. That is right for a document and wrong
-# for these three, so they say no-store: the clock is a clock, the
-# search answers what was typed a moment ago, and a counter that comes
-# from a cache is a wrong number.
-NEVER_STORE = 'no-store'
+# How long an answer may be used is one of the decision graph's own
+# questions - o18 asks `expires`, and the writer puts the date on the
+# wire. That is webmachine's whole caching story, with generate_etag and
+# last_modified beside it, and it needs no header written by hand.
+#
+# A date in the PAST is how a resource says "never keep this": RFC 9111
+# 4.2.1 makes such an answer stale the moment it arrives, so a cache has
+# to ask again. The clock, the search and the counter answer that way.
+def stale_at_once
+  Time.now - 1
+end
 
 class TimeFragment < Webmachine::Resource
   MONTHS = %w[January February March April May June July August September
@@ -22,8 +27,11 @@ class TimeFragment < Webmachine::Resource
     format('%02d:%02d:%02d', t.hour, t.min, t.sec)
   end
 
+  def expires
+    stale_at_once
+  end
+
   def to_html
-    response.headers['cache-control'] = NEVER_STORE
     now = Time.now
     "<span class=\"state up\">#{TimeFragment.clock(now)} on the server, " \
       "#{now.day} #{MONTHS[now.month - 1]} #{now.year}</span>"
@@ -45,8 +53,11 @@ class SearchFragment < Webmachine::Resource
     'a bridge over water'
   ].freeze
 
+  def expires
+    stale_at_once
+  end
+
   def to_html
-    response.headers['cache-control'] = NEVER_STORE
     q = request.query['q'].to_s.downcase
     return '' if q.empty?
 
@@ -91,8 +102,11 @@ class CountFragment < Webmachine::Resource
     true
   end
 
+  def expires
+    stale_at_once
+  end
+
   def to_html
-    response.headers['cache-control'] = NEVER_STORE
     "<strong>#{COUNT[0]}</strong> so far"
   end
 end
@@ -112,15 +126,13 @@ class PhotoFragment < Webmachine::Resource
   ].freeze
   PER_PAGE = 2
 
+  # These rows change when the photographs change, which is never while
+  # the server runs, so they may be kept for ten minutes.
+  def expires
+    Time.now + 600
+  end
+
   def to_html
-    # A fragment carries no lifetime by itself: Cache-Control in the pack
-    # is a property of a FILE, and this is an answer. So the resource
-    # says it, and only where it is true - these rows change when the
-    # photographs change, which is never while the server runs.
-    #
-    # The clock, the search and the counter say nothing, so htmx asks
-    # every time, which is what they are for.
-    response.headers['cache-control'] = 'public, max-age=600'
     page = request.query['page'].to_i
     page = 1 if page < 1
     first = (page - 1) * PER_PAGE
