@@ -377,6 +377,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     http::ReqValues pvals;
     values_of_copied_fields({hv, nh}, pvals);
     ReqView rv;
+    rv.tls = apps_[st0.listener].tls;
     RouteSpans pspans;
     rv.method = facts.method;
     rv.content = body.empty() ? nullptr : body.data();
@@ -567,6 +568,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       return true;
     }
     ReqView rv;
+    rv.tls = apps_[st0.listener].tls;
     rv.request_target = path_val;
     rv.request_target_len = path_vlen;
     rv.path_len = http::path_only(path_val, path_vlen);
@@ -897,6 +899,7 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   const AppSlot& slot = apps_[st0.listener];
 
   ReqView rv;
+  rv.tls = apps_[st0.listener].tls;
   rv.request_target = ask.target.data();
   rv.request_target_len = ask.target.size();
   rv.path_len = http::path_only(ask.target.data(), ask.target.size());
@@ -995,6 +998,7 @@ bool Http1::h2_sse_begin(Conn& st0, const H2SseAsk& ask, std::string& sink) {
   const AppSlot& slot = apps_[st0.listener];
 
   ReqView rv;
+  rv.tls = apps_[st0.listener].tls;
   rv.request_target = ask.target.data();
   rv.request_target_len = ask.target.size();
   rv.path_len = http::path_only(ask.target.data(), ask.target.size());
@@ -1941,6 +1945,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           http::ReqValues pvals;
           values_of_copied_fields({hv, nh}, pvals);
           ReqView rv;
+          rv.tls = apps_[st0.listener].tls;
           RouteSpans pspans;
           // h2_parked_view only knows the target - the method and the DATA
           // bytes come from the stream that carried them.

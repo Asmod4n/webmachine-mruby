@@ -1598,3 +1598,28 @@ assert('h2: a parked request logs its own status and bytes') do
     File.unlink(logf) rescue nil
   end
 end
+
+# RFC 9113 8.2.3: an h2 client may split Cookie into several fields.
+# They reach request.cookies as one cookie string.
+assert('h2: split cookie fields reach request.cookies as one (RFC 9113 8.2.3)') do
+  src = <<~'APP'
+    class H2Cookies < Webmachine::Resource
+      def to_html
+        c = request.cookies
+        "#{c['a']}|#{c['b']}"
+      end
+    end
+  APP
+  h2_server(h2_app('H2Cookies', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      block = h2_get_block + h2_lit('cookie', 'a=1') + h2_lit('cookie', 'b=2')
+      s.write(h2_frame(1, 0x05, 1, block))
+      type, _, _, _ = h2_next(s)
+      assert_equal 1, type
+      type, _, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal '1|2', data
+    end
+  end
+end

@@ -1269,6 +1269,70 @@ assert('compute: a request received behind a parked run is answered after it (#8
   end
 end
 
+# RFC 9110 5.5: a Location with CR or LF would splice a field into the
+# head. response.redirect_to refuses it by name, and the run answers 500.
+assert('response.redirect_to refuses a location with CRLF; response.code= refuses a number out of range') do
+  src = <<~'APP'
+    class Refuser < Webmachine::Resource
+      def to_html
+        case request.headers['x-mode']
+        when 'crlf' then response.redirect_to("http://x/\r\nX-Injected: yes")
+        when 'high' then response.code = 1000
+        when 'low' then response.code = 99
+        when 'ok' then response.code = 202   # in range: taken, and the graph still decides
+        end
+        '<html><body>hi</body></html>'
+      end
+    end
+  APP
+  resource_server(wm_app('Refuser', src)) do |sock|
+    [['crlf', '500'], ['high', '500'], ['low', '500'], ['ok', '200'], ['none', '200']].each do |mode, want|
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\nX-Mode: #{mode}\r\nConnection: close\r\n\r\n")
+        head, body = resource_read(s)
+        assert_false head.include?('X-Injected'), "#{mode} spliced a field in:\n#{head}"
+        assert_true head.start_with?("HTTP/1.1 #{want}"), "#{mode}: expected #{want}, got #{head[0, 60]}"
+        if mode == 'crlf'
+          assert_true body.include?('CR, LF or NUL'), body
+        elsif want == '500'
+          assert_true body.include?('100 through 599'), body
+        end
+      end
+    end
+  end
+end
+
+# RFC 9110 5.3: a field that came on several lines is one list. Two
+# Cookie lines reach request.cookies as one cookie string, two
+# If-None-Match lines are one list for the conditional, and the named
+# accessor spells the joined list.
+assert('request: repeated Cookie and If-None-Match lines are joined') do
+  src = <<~'APP'
+    class Joined < Webmachine::Resource
+      def generate_etag
+        'b'
+      end
+      def to_html
+        c = request.cookies
+        "#{c['a']}|#{c['b']}|#{request.if_none_match}|#{request.base_uri}"
+      end
+    end
+  APP
+  resource_server(wm_app('Joined', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nCookie: a=1\r\nCookie: b=2\r\n" \
+              "If-None-Match: \"z\"\r\nIf-None-Match: \"y\"\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal '1|2|"z", "y"|http://x/', body
+      # The ETag is on the second line: still a match, still 304.
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"z\"\r\nIf-None-Match: \"b\"\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 304'), head.lines.first.to_s
+    end
+  end
+end
+
 # The class app.routes yields is named, so a worker's VM running this
 # gem's init leaves the reactor's class alone (#80). A compute route
 # still answers after the workers opened.

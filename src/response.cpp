@@ -199,6 +199,12 @@ mrb_value resp_code_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_int v;
   mrb_get_args(mrb, "i", &v);
+  // RFC 9110 15: a status code is three digits, 100 through 599.
+  if (v < 100 || v > 599) {
+    mrb_raisef(mrb, E_ARGUMENT_ERROR,
+               "response.code=: %i is not a status code, which is 100 through 599 (RFC 9110 15)",
+               v);
+  }
   r->run.resp_code = static_cast<uint16_t>(v);
   return mrb_fixnum_value(v);
 }
@@ -333,6 +339,11 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
                 "response.do_redirect: no header buffer is bound for this run");
     }
     const mrb_value s = mrb_obj_as_string(mrb, loc);
+    // RFC 9110 5.5: a value with CR, LF or NUL would splice a field in.
+    if (!http::field_value_ok(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)))) {
+      mrb_raise(mrb, E_ARGUMENT_ERROR,
+                "response.redirect_to: the location must carry no CR, LF or NUL (RFC 9110 5.5)");
+    }
     std::string& buf = *r->run.headers;
     Line h;
     if (find_line(buf, "Location", h)) buf.erase(h.start, h.end - h.start);

@@ -205,6 +205,27 @@ mrb_value req_has_body(mrb_state* mrb, mrb_value) {
 // RFC 9110 5.1: the value of one of the ten fields Resource#request names,
 // or nil when the request did not carry it. Where it sits was noted by the
 // one pass over the field array (http::NamedFieldIndex); this reads it.
+}  // namespace
+
+void join_repeated_fields(const ReqView* v, std::string_view name, std::string_view sep,
+                          std::string& out) {
+  out.clear();
+  const auto* h = static_cast<const struct phr_header*>(v->fields);
+  for (size_t i = 0; i < v->field_count; i++) {
+    if (h[i].name_len != name.size()) continue;
+    bool same = true;
+    for (size_t k = 0; k < name.size() && same; k++) {
+      char c = h[i].name[k];
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+      same = c == name[k];
+    }
+    if (!same) continue;
+    if (!out.empty()) out.append(sep);
+    out.append(h[i].value, h[i].value_len);
+  }
+}
+
+namespace {
 mrb_value req_named(mrb_state* mrb, http::NamedField f) {
   const ReqView* v = request_being_answered(mrb);
   if (v->values == nullptr || !v->values->named.carries(f)) return mrb_nil_value();
@@ -245,6 +266,12 @@ mrb_value req_if_match(mrb_state* mrb, mrb_value) {
 }
 // RFC 9110 13.1.2: its negation.
 mrb_value req_if_none_match(mrb_state* mrb, mrb_value) {
+  const ReqView* v = request_being_answered(mrb);
+  if (v->values != nullptr && v->values->if_none_match_repeats) {
+    std::string joined;
+    join_repeated_fields(v, "if-none-match", ", ", joined);
+    return mrb_str_new(mrb, joined.data(), joined.size());
+  }
   return req_named(mrb, http::NamedField::kIfNoneMatch);
 }
 // RFC 9110 13.1.3: the date form of the same question.
@@ -268,8 +295,12 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
   // RFC 6265 4.2: the one pass kept the span; the field array is not
   // walked again to find it.
   if (v->values == nullptr || v->values->cookie == nullptr) return h;
-  const char* p = v->values->cookie;
-  const size_t n = v->values->cookie_len;
+  // RFC 6265 5.4 / RFC 9113 8.2.3: several Cookie lines are one cookie
+  // string, joined with "; ".
+  std::string joined;
+  if (v->values->cookie_repeats) join_repeated_fields(v, "cookie", "; ", joined);
+  const char* p = v->values->cookie_repeats ? joined.data() : v->values->cookie;
+  const size_t n = v->values->cookie_repeats ? joined.size() : v->values->cookie_len;
   size_t at = 0;
   // As in req_query: the cookie count is the client's, so each pair's
   // Strings are dropped once the hash holds them.
@@ -297,7 +328,8 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
 // Host only, no port/query normalization, no URI object.
 mrb_value req_base_uri(mrb_state* mrb, mrb_value) {
   const mrb_value host = req_named(mrb, http::NamedField::kHost);
-  mrb_value s = mrb_str_new_lit(mrb, "http://");
+  const ReqView* v = request_being_answered(mrb);
+  mrb_value s = v->tls ? mrb_str_new_lit(mrb, "https://") : mrb_str_new_lit(mrb, "http://");
   if (!mrb_nil_p(host)) {
     mrb_str_cat(mrb, s, RSTRING_PTR(host), static_cast<size_t>(RSTRING_LEN(host)));
   }

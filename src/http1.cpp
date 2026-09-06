@@ -398,6 +398,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
     ws_at += apps[a].ws_nroutes;
     apps_[a].sse_table = apps[a].sse_nroutes != 0 ? apps[a].sse_table : nullptr;
     apps_[a].sse_base = static_cast<uint16_t>(sse_at);
+    apps_[a].tls = apps[a].tls;
     for (size_t i = 0; i < apps[a].sse_nroutes; i++) {
       sse_res_.push_back(apps[a].sse_resources[i]);
     }
@@ -1966,6 +1967,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   const WsResource* res = ws_res_[slot.ws_base + static_cast<size_t>(route)];
 
   ReqView rv;
+  rv.tls = apps_[st.listener].tls;
   rv.request_target = path.data();
   rv.request_target_len = path.size();
   rv.path_len = http::path_only(path.data(), path.size());
@@ -2058,6 +2060,7 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
   }
 
   ReqView rv;
+  rv.tls = apps_[st.listener].tls;
   rv.request_target = path.data();
   rv.request_target_len = path.size();
   rv.path_len = http::path_only(path.data(), path.size());

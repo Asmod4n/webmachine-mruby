@@ -1698,6 +1698,12 @@ struct ReqValues {
   int64_t if_unmodified_since_epoch = 0;
   int64_t if_modified_since_epoch = 0;
   NamedFieldIndex named;
+  // RFC 9110 5.3: the field came more than once. The span above is the
+  // first line's; a reader that wants all of them joins the field array
+  // (join_repeated_fields). RFC 9113 8.2.3 lets an h2 client split
+  // Cookie, and a list field may come split on either protocol.
+  bool cookie_repeats = false;
+  bool if_none_match_repeats = false;
 };
 
 // #80: every pointer in ReqValues, in ONE place. A parked run rebases
@@ -2339,6 +2345,10 @@ static inline bool header_switch(Field f, FactSink into) {
         return false;
       }
       if (tok_eq({name, nlen}, "cookie")) {
+        if (vals.cookie != nullptr) {
+          vals.cookie_repeats = true;
+          return false;
+        }
         vals.cookie = value;
         vals.cookie_len = vlen;
         return false;
@@ -2386,6 +2396,12 @@ static inline bool header_switch(Field f, FactSink into) {
       if (tok_eq({name, nlen}, "if-none-match")) {
         facts.has_if_none_match = true;
         facts.plain = false;
+        if (vals.if_none_match != nullptr) {
+          // A star on any line is a star; the lines are joined by the reader.
+          if (star_value(value, vlen)) facts.if_none_match_star = true;
+          vals.if_none_match_repeats = true;
+          return false;
+        }
         facts.if_none_match_star = star_value(value, vlen);
         vals.if_none_match = value;
         vals.if_none_match_len = vlen;
@@ -2479,12 +2495,21 @@ struct ReqView {
   // field array is walked once; answering request.accept by walking it
   // again would be that same work a second time.
   const http::ReqValues* values = nullptr;
+  // RFC 9110 4.2.2: the listener this came in on serves TLS, so
+  // request.base_uri says https.
+  bool tls = false;
   // RFC 9110 6.4: the request's content, LENT for the frame like
   // everything else here - the framer collected it (bounded by its own
   // 413) and it dies with the dispatch. Null = no content arrived.
   const char* content = nullptr;
   size_t content_len = 0;
 };
+
+// RFC 9110 5.3: every line of one field, joined with `sep`, in the
+// order they came. Written for the rare request whose field came more
+// than once; the one-pass span in ReqValues is the first line only.
+void join_repeated_fields(const ReqView* v, std::string_view name, std::string_view sep,
+                          std::string& out);
 
 void request_init(mrb_state* mrb, struct RClass* wm);
 
@@ -4845,7 +4870,6 @@ class Http1 {
       park_taken = 0;
       park_owes = 0;
       map_release();
-      watchers_forget();
       delete file;
       file = nullptr;
       peer_len = 0;
@@ -4885,6 +4909,7 @@ class Http1 {
     ~Conn() {
       zc_release();
       map_release();
+      watchers_forget();
       delete file;
       h2_free(h2);
       ws_free(ws);
@@ -4902,6 +4927,7 @@ class Http1 {
     const RouteTable* sse_table = nullptr;
     const SseResource* const* sse_resources = nullptr;
     size_t sse_nroutes = 0;
+    bool tls = false;
   };
 
   Http1(const AppInput* apps, size_t napps, Assets* assets = nullptr);
@@ -6136,6 +6162,8 @@ class Http1 {
     uint16_t ws_base = 0;
     const RouteTable* sse_table = nullptr;
     uint16_t sse_base = 0;
+    // The listener serves TLS: request.base_uri says https.
+    bool tls = false;
   };
 
   time_t sec_ = 0;

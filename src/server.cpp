@@ -417,7 +417,8 @@ void build(mrb_state* mrb) {
                                 ws_resources_[i].size(),
                                 &specs_[i]->sse_table,
                                 sse_resources_[i].data(),
-                                sse_resources_[i].size()};
+                                sse_resources_[i].size(),
+                                specs_[i]->tls};
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         opts_.assets_path != nullptr ? &assets_ : nullptr));

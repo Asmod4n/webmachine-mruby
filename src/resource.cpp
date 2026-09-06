@@ -1314,7 +1314,7 @@ int run_n11(Run& r) {
       if (mrb_string_p(base)) {
         b.assign(RSTRING_PTR(base), static_cast<size_t>(RSTRING_LEN(base)));
       } else {
-        b.assign("http://");
+        b.assign(r.res.run.req != nullptr && r.res.run.req->tls ? "https://" : "http://");
         if (r.vals != nullptr && r.vals->host != nullptr) {
           b.append(r.vals->host, r.vals->host_len);
         } else {
@@ -1640,9 +1640,23 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
           halted = true;
           continue;
         }
-        take_edge({n, status, halted}, res.run.etag_present && vals != nullptr && vals->if_none_match != nullptr &&
-             http::etag_list_match({{vals->if_none_match, vals->if_none_match_len},
-                                    res.run.etag_value, true}));
+        {
+          // RFC 9110 5.3: If-None-Match that came on several lines is
+          // one list. Joined only then; the one-pass span serves the rest.
+          std::string_view inm;
+          std::string joined;
+          if (vals != nullptr && vals->if_none_match != nullptr) {
+            if (vals->if_none_match_repeats) {
+              join_repeated_fields(res.run.req, "if-none-match", ", ", joined);
+              inm = joined;
+            } else {
+              inm = {vals->if_none_match, vals->if_none_match_len};
+            }
+          }
+          take_edge({n, status, halted},
+                    res.run.etag_present && !inm.empty() &&
+                        http::etag_list_match({inm, res.run.etag_value, true}));
+        }
         continue;
       }
       case Node::kH12: {
