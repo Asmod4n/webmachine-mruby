@@ -53,7 +53,7 @@ def a_server(zip_bytes, extra = [])
   # machine's timezone. Pinned here so the assertion tests the header,
   # not the test host - the server's own zone dependency is its own
   # question, and a separate one.
-  pid = spawn({ 'WM_BUNDLE' => '0', 'TZ' => 'UTC' }, A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}", *extra,
+  pid = spawn({ 'TZ' => 'UTC' }, A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}", *extra,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

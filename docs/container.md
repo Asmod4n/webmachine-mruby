@@ -40,7 +40,6 @@ Runtime: `libz1 libssl3 libstdc++6`.
 ## Knobs
 
     --build-arg WM_MARCH=x86-64-v2   CPU baseline (default x86-64-v3)
-    -e WM_BUNDLE=0                   one buffer per completion
     --ulimit nofile=N                sets capacity and startup memory
 
 ## App

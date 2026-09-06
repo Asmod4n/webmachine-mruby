@@ -37,12 +37,12 @@ def floor_app
   $floor_app = mrb
 end
 
-def floor_server(bundles: false)
-  sock = "/tmp/wm-floor-#{$$}-#{bundles ? 'b' : 'r'}.sock"
+def floor_server
+  sock = "/tmp/wm-floor-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   args = [SERVER_BIN, "--unix=#{sock}", "--app=#{floor_app}"]
   err = "/tmp/wm-floor-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => bundles ? '1' : '0' }, *args, out: File::NULL, err: err)
+  pid = spawn(*args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   unless File.socket?(sock)
     Process.kill('TERM', pid) rescue nil
