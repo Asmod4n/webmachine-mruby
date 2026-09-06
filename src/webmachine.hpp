@@ -711,7 +711,8 @@ namespace webmachine {
 // submitted once, and a queue still full after that is raised.
 inline struct io_uring_sqe* sqe_or_raise(mrb_state* mrb, struct io_uring* ring) {
   struct io_uring_sqe* s = io_uring_get_sqe(ring);
-  if (s == nullptr) io_uring_submit(ring);
+  if (s != nullptr) return s;
+  io_uring_submit(ring);
   s = io_uring_get_sqe(ring);
   if (s == nullptr) mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
   return s;
