@@ -102,6 +102,68 @@ so its documentation applies here.
 `examples/` has one file per kind. `examples/site/` is a four-page
 htmx site served from an asset pack.
 
+## Work that must not block
+
+The server is one thread. Two declarations keep a callback from
+stopping it.
+
+**`compute`** sends a block to a worker thread with a deadline. The
+flow waits at that node and goes on with the block's answer. Password
+hashing is the typical case:
+
+```ruby
+Webmachine::Workers::Registry[:passwords] = proc do
+  { 'ada' => Argon2.hash('secret')[:encoded] }   # built once per worker
+end
+
+class Login < Webmachine::Resource
+  compute :is_authorized?
+
+  def self.is_authorized?(header)
+    Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
+      user, pass = h.to_s.split(':', 2)
+      stored = Webmachine::Workers::Registry[:passwords][user]
+      stored ? Argon2.verify(stored, pass.to_s) : false
+    end
+  end
+end
+```
+
+A worker has its own VM, so the block sees nothing of your app. What
+it needs is built in every worker through the registry. A task over
+its deadline answers 500. A worker that raises answers 503 with
+`Retry-After`.
+
+**`watch`** waits on a descriptor. The block runs each time the
+descriptor is ready, until it says `abort`, and its last value is the
+callback's answer. A database query, with the connection reused:
+
+```ruby
+DB_IDLE = []   # one thread, so an Array is a pool
+
+class Article < Webmachine::Resource
+  watch :generate_etag
+
+  def self.generate_etag
+    conn = DB_IDLE.pop || Pq.new(DB_URL).tap { |c| c.nonblocking = true }
+    conn.send_query('select etag from articles where id = 7')
+    Webmachine::Watcher.new(conn.socket, :r, timeout: 2.s) do |ready, w|
+      next w.abort if ready == :timeout   # mid-query: not returned
+      conn.consume_input
+      next if conn.busy?                  # not whole yet: wait again
+      w.abort
+      etag = conn.get_result.to_ary[0][0]
+      conn.get_result                     # the nil that ends the set
+      DB_IDLE << conn
+      etag
+    end
+  end
+end
+```
+
+Nothing else on the server waits while this does. Every other
+connection is served in between.
+
 ## Running it
 
     webmachine-server [--config=FILE.toml] [--unix=PATH | --port=N]

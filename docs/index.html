@@ -197,6 +197,48 @@ end</code></pre>
   names are <a href="https://github.com/webmachine/webmachine-ruby">webmachine-ruby</a>'s,
   so its documentation applies here.</p>
 
+  <h2>Work that must not block</h2>
+  <p>The server is one thread. Two declarations keep a callback from stopping it.</p>
+  <p><strong><code>compute</code></strong> sends a block to a worker thread with a deadline. The flow waits at that node and goes on with the block&#x27;s answer. Password hashing is the typical case:</p>
+<pre><code>Webmachine::Workers::Registry[:passwords] = proc do
+  { &#x27;ada&#x27; =&gt; Argon2.hash(&#x27;secret&#x27;)[:encoded] }   # built once per worker
+end
+
+class Login &lt; Webmachine::Resource
+  compute :is_authorized?
+
+  def self.is_authorized?(header)
+    Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
+      user, pass = h.to_s.split(&#x27;:&#x27;, 2)
+      stored = Webmachine::Workers::Registry[:passwords][user]
+      stored ? Argon2.verify(stored, pass.to_s) : false
+    end
+  end
+end</code></pre>
+  <p>A worker has its own VM, so the block sees nothing of your app. What it needs is built in every worker through the registry. A task over its deadline answers 500. A worker that raises answers 503 with <code>Retry-After</code>.</p>
+  <p><strong><code>watch</code></strong> waits on a descriptor. The block runs each time the descriptor is ready, until it says <code>abort</code>, and its last value is the callback&#x27;s answer. A database query, with the connection reused:</p>
+<pre><code>DB_IDLE = []   # one thread, so an Array is a pool
+
+class Article &lt; Webmachine::Resource
+  watch :generate_etag
+
+  def self.generate_etag
+    conn = DB_IDLE.pop || Pq.new(DB_URL).tap { |c| c.nonblocking = true }
+    conn.send_query(&#x27;select etag from articles where id = 7&#x27;)
+    Webmachine::Watcher.new(conn.socket, :r, timeout: 2.s) do |ready, w|
+      next w.abort if ready == :timeout   # mid-query: not returned
+      conn.consume_input
+      next if conn.busy?                  # not whole yet: wait again
+      w.abort
+      etag = conn.get_result.to_ary[0][0]
+      conn.get_result                     # the nil that ends the set
+      DB_IDLE &lt;&lt; conn
+      etag
+    end
+  end
+end</code></pre>
+  <p>Nothing else on the server waits while this does. Every other connection is served in between.</p>
+
   <h2>What the build makes</h2>
   <table>
     <tr><td><code>webmachine-server</code></td><td>runs your app, one process, one thread</td></tr>
