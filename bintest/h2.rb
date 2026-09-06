@@ -678,7 +678,8 @@ H2_FIELDS_APP = <<~RUBY unless defined?(H2_FIELDS_APP)
     end
 
     def process_post
-      response.body = request.headers.keys.sort.join(',') + '|' + request.body.to_s
+      response.body = request.headers.keys.sort.join(',') + '|' + request.body.to_s +
+                      '|type=' + request.content_type.to_s
       true
     end
   end
@@ -716,6 +717,27 @@ assert('h2: a PARKED request keeps its fields - headers and body both answer') d
       end
       assert_true body.include?('x-probe'), "parked headers missing: #{body.inspect}"
       assert_true body.include?('hello=1'), "parked body missing: #{body.inspect}"
+    end
+  end
+end
+
+assert('h2: a parked request answers its named fields too (RFC 9113 8.3)') do
+  h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      blk = "\x83\x86\x84\x41\x0bexample.com".b +
+            h2_lit('content-type', 'application/x-www-form-urlencoded')
+      s.write(h2_frame(1, 0x04, 1, blk))
+      s.write(h2_frame(0, 0x01, 1, 'a=1'))
+      h2_until(s, 1)
+      body = +''.b
+      20.times do
+        ty, fl, _, pay = h2_next(s)
+        next unless ty == 0
+        body << pay
+        break if (fl & 0x01) != 0
+      end
+      assert_true body.include?('type=application/x-www-form-urlencoded'), body.inspect
     end
   end
 end

@@ -372,7 +372,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.method = facts.method;
     rv.content = body.empty() ? nullptr : body.data();
     rv.content_len = body.size();
-    rv.fields = nh != 0 ? hv : nullptr;
+    rv.fields = hv;
     rv.field_count = nh;
     rv.values = &pvals;
     const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
@@ -1916,8 +1916,9 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           rv.method = facts.method;
           rv.content = body.empty() ? nullptr : body.data();
           rv.content_len = body.size();
-          rv.fields = nh != 0 ? hv : nullptr;
+          rv.fields = hv;
           rv.field_count = nh;
+          rv.values = &pvals;
           const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
           const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
           if (!h2_serve(st0, q, sink)) {            return false;

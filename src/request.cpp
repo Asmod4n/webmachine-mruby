@@ -159,25 +159,13 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// RFC 9110 5.1/5.3, RFC 9113 8.2: the parsed header array, or a named
-// refusal when this request's head is gone (a parked HTTP/2 body) -
-// every field-by-name accessor below shares this one refusal.
-const struct phr_header* live_hdrs(mrb_state* mrb, const ReqView* v) {
-  if (v->fields == nullptr) {
-    mrb_raise(mrb, E_RUNTIME_ERROR,
-              "request.headers: this request's head is gone - an HTTP/2 request that "
-              "parked on its body answers after its decode buffer was reused, so its "
-              "fields cannot be lent. They are there on HTTP/1.1 and at a websocket "
-              "handshake");
-  }
-  return static_cast<const struct phr_header*>(v->fields);
-}
-
 // RFC 9110 5.1/5.3, RFC 9113 8.2: the head's fields, names lowercased,
-// repeats joined with ", ".
+// repeats joined with ", ". A request that sent none answers an empty
+// Hash. The fields live as long as the request: a parked HTTP/2 stream
+// copies them (H2Stream::field_blob), so they are never gone.
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
-  const struct phr_header* hs = live_hdrs(mrb, v);
+  const struct phr_header* hs = static_cast<const struct phr_header*>(v->fields);
   mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->field_count));
   for (size_t i = 0; i < v->field_count; i++) {
     mrb_value name = mrb_str_new(mrb, hs[i].name, hs[i].name_len);
@@ -219,19 +207,13 @@ mrb_value req_has_body(mrb_state* mrb, mrb_value) {
 // one pass over the field array (http::NamedFieldIndex); this reads it.
 mrb_value req_named(mrb_state* mrb, http::NamedField f) {
   const ReqView* v = request_being_answered(mrb);
-  if (v->values == nullptr) {
-    mrb_raise(mrb, E_RUNTIME_ERROR,
-              "request: this request's head is gone - an HTTP/2 request that parked on "
-              "its body answers after its decode buffer was reused, so its fields cannot "
-              "be lent. They are there on HTTP/1.1 and at a websocket handshake");
-  }
-  if (!v->values->named.carries(f)) return mrb_nil_value();
+  if (v->values == nullptr || !v->values->named.carries(f)) return mrb_nil_value();
   // The index is applied by the thing that stored it, against the array
   // it is being applied TO - see http::NamedFieldIndex. A position this
   // request's array cannot reach reads as "no such field" instead of
   // reading past the end.
-  const struct phr_header* h =
-      v->values->named.find(f, {live_hdrs(mrb, v), v->field_count});
+  const struct phr_header* h = v->values->named.find(
+      f, {static_cast<const struct phr_header*>(v->fields), v->field_count});
   if (h == nullptr) return mrb_nil_value();
   return mrb_str_new(mrb, h->value, h->value_len);
 }
