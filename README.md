@@ -9,8 +9,9 @@ resources, and it runs them from one binary.
   for every route, as you do on every other server.
 - **Everything on board.** HTTP/1.1, HTTP/2, WebSocket, server-sent
   events, static files, TLS.
-- **Fast by design.** Answers are built when the server starts, not
-  when a request arrives.
+- **Fast by design.** `def self.x` runs once, when the server starts,
+  and its answer is kept as bytes. `def x` runs per request. You choose
+  per method.
 - **Runs everywhere.** io_uring where the kernel allows it. slipstreamIO
   carries the same rings to Linux without io_uring, to macOS, the BSDs,
   and Windows.
@@ -35,6 +36,16 @@ end
     rake
     mruby/bin/mrbc -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb --port=8080
+
+`self.to_html` is the whole trick. The server calls it once at start
+and keeps the answer, with its status line, its head, its ETag and its
+HTTP/2 header block, as bytes. A request against this resource never
+enters the VM. It is a lookup and a write. Write `def to_html` instead,
+and the method runs per request.
+
+On one core, over a unix socket, the server answers about one million
+HTTP/1.1 requests a second. Every run is in `bench/results/` with the
+command that made it.
 
 The build makes four programs:
 
@@ -97,20 +108,6 @@ it does. `webmachine.toml.example` is that file.
 Both logs are off until you name a file. The access log anonymizes
 addresses by default. Every error record carries a fingerprint, and the
 500 page shows the same fingerprint, so `grep` finds the record.
-
-## Why it is fast
-
-`def self.x` is answered once, at start. `def x` is answered per
-request. That one rule is the whole performance model.
-
-The flow graph is a constant. Everything a resource can answer at start
-is answered then and kept as bytes: the status line, the head, the
-ETag, the HTTP/2 header block. The Hello World above never enters the VM
-after start. A request against it is a lookup and a write.
-
-On one core, over a unix socket, the server answers about one million
-HTTP/1.1 requests a second. Every run is in `bench/results/` with the
-command that made it.
 
 ## TLS
 

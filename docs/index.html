@@ -134,9 +134,9 @@ footer .bar { display: block; }
     </div>
     <div class="card">
       <h3>Fast by design</h3>
-      <p>Answers are built when the server starts, not when a request
-      arrives. About one million HTTP/1.1 requests a second on one
-      core.</p>
+      <p><code>def self.x</code> runs once, when the server starts, and
+      its answer is kept as bytes. <code>def x</code> runs per request.
+      You choose per method.</p>
     </div>
     <div class="card">
       <h3>Runs everywhere</h3>
@@ -162,6 +162,14 @@ end</code></pre>
 <pre><code>rake
 mruby/bin/mrbc -o hello.mrb hello.rb
 mruby/bin/webmachine-server --app=hello.mrb --port=8080</code></pre>
+  <p><code>self.to_html</code> is the whole trick. The server calls it
+  once at start and keeps the answer, with its status line, its head,
+  its ETag and its HTTP/2 header block, as bytes. A request against this
+  resource never enters the VM. It is a lookup and a write. Write
+  <code>def to_html</code> instead, and the method runs per request.</p>
+  <p>On one core, over a unix socket, the server answers about one
+  million HTTP/1.1 requests a second. Every run is in
+  <code>bench/results/</code> with the command that made it.</p>
 
   <h2>A resource declares, the flow answers</h2>
 <pre><code>class Article &lt; Webmachine::Resource
@@ -182,13 +190,6 @@ end</code></pre>
   <code>OPTIONS</code> correctly, and you wrote none of it. The callback
   names are <a href="https://github.com/webmachine/webmachine-ruby">webmachine-ruby</a>'s,
   so its documentation applies here.</p>
-
-  <h2>Why it is fast</h2>
-  <p><code>def self.x</code> is answered once, at start.
-  <code>def x</code> is answered per request. That one rule is the
-  whole performance model. Everything a resource can answer at start is
-  kept as bytes: the status line, the head, the ETag, the HTTP/2 header
-  block. The Hello World above never enters the VM after start.</p>
 
   <h2>What the build makes</h2>
   <table>
