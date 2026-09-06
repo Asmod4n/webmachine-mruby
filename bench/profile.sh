@@ -244,6 +244,9 @@ case "$PROTO" in
   h1|h2) ;;
   *) echo "PROTO=$PROTO is neither h1 nor h2" >&2; exit 1 ;;
 esac
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 [ -z "${THREADS:-}" ] || {

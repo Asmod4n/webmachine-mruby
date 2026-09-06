@@ -87,6 +87,9 @@ PIPELINE="${PIPELINE:-1}"
 # generator was "not found" with the binary right beside the checkout.
 # Look there too - a clone next to this one is the ordinary layout - and
 # then on PATH.
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 [ -z "${CLIENT:-}" ] || {
@@ -174,9 +177,6 @@ fi
 # stop trading one core, which is what a machine with few cores does to a
 # number. Whether it helps is a property of the machine, so the harness
 # line records it and bench/ratchet.sh decides from the spread.
-# The bench owns the machine while it runs; see bench/priority.sh.
-. "$(dirname "$0")/priority.sh"
-bench_priority
 
 PIN="${PIN:-}"
 SRV_PIN=()
@@ -301,11 +301,16 @@ OUT=$(mktemp)
   # WHICH htgen - not just "htgen". A stale binary earlier in PATH than
   # the one just built is invisible otherwise, and the number it produces
   # looks exactly like the number the new one would have produced.
-  CLI_LINE="$HTGEN($(date -r "$HTGEN" +%Y-%m-%dT%H:%M 2>/dev/null || echo '?')) -c$CONNS -d${DURATION}s $PROTO"
+  CLI_LINE="$HTGEN($(bench_htgen_version "$HTGEN")) -c$CONNS -d${DURATION}s $PROTO"
+  # Said only when it is true: bench/priority.sh is a no-op on a machine
+  # whose user may not take -10, and a row must not claim a priority it
+  # did not have.
+  NICE_LINE=""
+  [ "${BENCH_NICE:-0}" = 1 ] && NICE_LINE=" nice=-10"
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"} nice=-10 transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the CONFIG asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.

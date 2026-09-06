@@ -169,8 +169,6 @@ done
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
 # get it without being able to ask for it themselves.
-. "$(dirname "$0")/priority.sh"
-bench_priority
 
 RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results

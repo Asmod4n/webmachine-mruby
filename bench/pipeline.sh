@@ -47,10 +47,10 @@ cd "$(dirname "$0")/.." || exit 1
 BIN=mruby/build/host/bin/webmachine-server
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
+
 # The bench owns the machine while it runs; see bench/priority.sh.
 . "$(dirname "$0")/priority.sh"
 bench_priority
-
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 

@@ -51,6 +51,9 @@ command -v "$H2O" >/dev/null || { echo "h2o not found (set H2O=)" >&2; exit 1; }
   echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
@@ -91,8 +94,6 @@ chmod -R a+rX "$WORK/root"
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
 # get it without being able to ask for it themselves.
-. "$(dirname "$0")/priority.sh"
-bench_priority
 
 # h2c is prior knowledge on a plain listener; h2o answers both on the
 # same port, so there is no listener flag to switch. The curl proofs

@@ -74,10 +74,10 @@ WORK=$(mktemp -d)
 SOCK="$WORK/bench.sock"
 APP="${APP-examples/hello.rb}"
 BIN=mruby/build/host/bin/webmachine-server
+
 # The bench owns the machine while it runs; see bench/priority.sh.
 . "$(dirname "$0")/priority.sh"
 bench_priority
-
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }

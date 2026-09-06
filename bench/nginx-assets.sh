@@ -52,6 +52,9 @@ command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exi
   echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
+# The bench owns the machine while it runs; see bench/priority.sh.
+. "$(dirname "$0")/priority.sh"
+bench_priority
 . "$(dirname "$0")/htgen.sh"
 HTGEN=$(bench_htgen) || exit 1
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
@@ -94,8 +97,6 @@ done
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
 # get it without being able to ask for it themselves.
-. "$(dirname "$0")/priority.sh"
-bench_priority
 
 # The listener must MATCH the proto: a plain listener with the http2
 # flag is h2c-only on 1.24 (an h1 request gets silence, measured), and
