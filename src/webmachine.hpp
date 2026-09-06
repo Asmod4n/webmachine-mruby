@@ -4610,34 +4610,34 @@ class Http1 {
     // one byte carries both and the layout is unchanged.
     static constexpr int kParkSlots = 16;
     Round* park[kParkSlots] = {};
-    // Which parked runs have a job the reactor has not armed yet. Asked
-    // on every round, so it is a list and not a search over the table.
-    std::vector<int> park_pending;
+    // Sixteen slots is sixteen bits, so both questions the reactor asks
+    // are one instruction: which slots are taken, and which of them owe
+    // the reactor an arming. A free slot is the first zero of `taken`,
+    // and the next round to arm is the first one of `owes` - both
+    // through ctz. The list this replaced was walked to add a slot, to
+    // find one and to erase one, and it allocated.
+    uint16_t park_taken = 0;
+    uint16_t park_owes = 0;
     void park_wants_arming(int slot) {
-      for (const int at : park_pending) {
-        if (at == slot) return;
-      }
-      park_pending.push_back(slot);
+      if (slot < 0 || slot >= kParkSlots) return;
+      park_owes |= static_cast<uint16_t>(1u << slot);
     }
 
     // A slot for a run that is stopping, or -1 when this connection
     // holds as many as a tag can name.
     int park_take(Round* r) {
-      for (int i = 0; i < kParkSlots; i++) {
-        if (park[i] != nullptr) continue;
-        park[i] = r;
-        return i;
-      }
-      return -1;
+      if (park_taken == 0xffffu) return -1;
+      const int i = __builtin_ctz(static_cast<unsigned>(~park_taken) & 0xffffu);
+      park_taken |= static_cast<uint16_t>(1u << i);
+      park[i] = r;
+      return i;
     }
     void park_drop(int slot) {
       if (slot < 0 || slot >= kParkSlots) return;
       park[slot] = nullptr;
-      for (size_t i = 0; i < park_pending.size(); i++) {
-        if (park_pending[i] != slot) continue;
-        park_pending.erase(park_pending.begin() + static_cast<long>(i));
-        break;
-      }
+      const uint16_t bit = static_cast<uint16_t>(1u << slot);
+      park_taken &= static_cast<uint16_t>(~bit);
+      park_owes &= static_cast<uint16_t>(~bit);
     }
     Round* park_at(int slot) const {
       if (slot < 0 || slot >= kParkSlots) return nullptr;
@@ -5099,13 +5099,14 @@ class Http1 {
   }
   // The same, for the work a stopped run left. arm_compute_task built a
   // std::string before it asked. Measured at 0.45%.
-  static bool compute_task_waiting(const Conn& st) { return !st.park_pending.empty(); }
+  static bool compute_task_waiting(const Conn& st) { return st.park_owes != 0; }
   // The next parked run with a job to arm, or false. Taken, not read -
   // the same shape as file_take and watch_take.
   static bool park_take_pending(Conn& st, int* park) {
-    if (st.park_pending.empty()) return false;
-    *park = st.park_pending.back();
-    st.park_pending.pop_back();
+    if (st.park_owes == 0) return false;
+    const int slot = __builtin_ctz(st.park_owes);
+    st.park_owes &= static_cast<uint16_t>(~(1u << slot));
+    *park = slot;
     return true;
   }
   void file_reject(Conn& st);
