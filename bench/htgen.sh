@@ -20,11 +20,29 @@ bench_htgen() {
     return 0
   fi
 
-  local found=() seen=() c real
-  for c in "$HOME/htgen/htgen" "$PWD/../htgen/htgen" "$(command -v htgen 2>/dev/null)"; do
+  # Where to look, in order. The last two matter under sudo, which the
+  # bench needs for renice: sudo sets HOME to /root, so $HOME/htgen is
+  # not the operator's, and it replaces PATH with secure_path, which on
+  # openSUSE has no /usr/local/bin - so an installed htgen is invisible
+  # to `command -v`. SUDO_USER names who asked.
+  local home_of_caller=""
+  if [ -n "${SUDO_USER:-}" ]; then
+    home_of_caller=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  fi
+
+  local found=() seen=() c real dup
+  for c in "$HOME/htgen/htgen" "${home_of_caller:+$home_of_caller/htgen/htgen}" \
+           "$PWD/../htgen/htgen" "$(command -v htgen 2>/dev/null)" /usr/local/bin/htgen; do
     [ -n "$c" ] && [ -x "$c" ] || continue
     real=$(readlink -f "$c")
     case " ${seen[*]} " in *" $real "*) continue ;; esac
+    # The same bytes under two names is one candidate, not two: an
+    # installed copy beside the build it came from must not refuse.
+    dup=0
+    for other in "${found[@]}"; do
+      cmp -s "$c" "$other" && { dup=1; break; }
+    done
+    [ "$dup" = 1 ] && continue
     seen+=("$real")
     found+=("$c")
   done
