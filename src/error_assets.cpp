@@ -174,7 +174,8 @@ ErrorPages::~ErrorPages() {
 // #210: one instance of Webmachine::ErrorResource, and the handlers it
 // answers to. Rooted with mrb_gc_register, not the arena: it outlives
 // every arena mark the setup path takes and every one a request takes.
-void ErrorPages::open(mrb_state* mrb, Assets* assets) {
+void ErrorPages::open(mrb_state* mrb, Assets* assets, Logger* elog) {
+  elog_ = elog;
   mrb_ = mrb;
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
   if (wm == nullptr) {
@@ -507,10 +508,10 @@ bool ErrorPages::render(const Page& p, std::string& out) {
   if (raised || !mrb_string_p(body)) {
     // A handler that raises has no page to offer, and the caller still
     // owes the client an answer - it falls back to the bodyless status.
-    // The raise is printed, so the handler can be fixed.
+    // The raise is reported, so the handler can be fixed.
     if (raised && mrb_exception_p(body)) {
       mrb->exc = mrb_obj_ptr(body);
-      mrb_print_error(mrb);
+      report_raise(elog_, mrb, 500);
     }
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);

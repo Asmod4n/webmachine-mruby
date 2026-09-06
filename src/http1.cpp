@@ -481,7 +481,7 @@ void Http1::assemble_dynamic(const DynamicBody& d, std::string& sink) {
 // bodyless statuses (#173: bytes in, bytes out, no VM required).
 void Http1::open_error_assets(mrb_state* mrb, Assets* error_assets) {
   error_assets_ = error_assets;
-  err_pages_.open(mrb, error_assets);
+  err_pages_.open(mrb, error_assets, &elog_);
 }
 
 // RFC 9110 15: the error answer - the prebuilt status line and Date, then

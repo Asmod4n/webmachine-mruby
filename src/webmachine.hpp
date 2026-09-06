@@ -1401,6 +1401,16 @@ inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status) {
   if (f.exception_class == nullptr) return;
   log_error(lg, f);
 }
+
+// Every exception the VM raised and the server does not hand back to a
+// client goes through here: into the error log when there is one, and
+// on screen in a debug build, as the VM made it. Then it is cleared.
+inline void report_raise(Logger* lg, mrb_state* mrb, uint16_t status) {
+  if (mrb->exc == nullptr) return;
+  if (lg != nullptr) log_raise(*lg, mrb, status);
+  if (kDebugBuild) mrb_print_error(mrb);
+  mrb->exc = nullptr;
+}
 }
 
 namespace webmachine::http {
@@ -3403,7 +3413,7 @@ class ErrorPages {
   // One instance of the class, and the handlers it answers to. A class
   // that answers to none, or that raises being built, is a startup
   // refusal with a name.
-  void open(mrb_state* mrb, Assets* assets);
+  void open(mrb_state* mrb, Assets* assets, Logger* elog);
   bool ready() const { return ready_; }
 
   // RFC 9110 12.5.1: which form this client can read, as an index into
@@ -3498,6 +3508,8 @@ class ErrorPages {
   std::vector<std::string> prepared_;
   std::array<int16_t, kPastLastError - kFirstError> prep_index_ {};
   bool ready_ = false;
+  // Where a handler's raise is reported. Set at open, may be null.
+  Logger* elog_ = nullptr;
 };
 }
 

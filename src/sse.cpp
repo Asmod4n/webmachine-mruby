@@ -103,9 +103,7 @@ void report_close(SseStream* s) {
   const int ai = mrb_gc_arena_save(mrb);
   mrb_funcall_argv(mrb, s->self, MRB_SYM(on_close), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (s->elog != nullptr) log_raise(*s->elog, mrb, 0);
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
+    report_raise(s->elog, mrb, 0);
   }
   mrb_gc_arena_restore(mrb, ai);
 }
@@ -190,9 +188,7 @@ SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
   mrb_gc_register(mrb, obj);
   const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (log != nullptr) log_raise(*log, mrb, 500);
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
+    report_raise(log, mrb, 500);
     mrb_gc_unregister(mrb, obj);
     mrb_gc_arena_restore(mrb, ai);
     status = 500;
@@ -231,9 +227,7 @@ bool sse_tick(SseStream* s, int64_t now_s, std::string& body) {
   const int ai = mrb_gc_arena_save(mrb);
   const mrb_value out = mrb_funcall_argv(mrb, s->self, MRB_SYM(on_tick), 0, nullptr);
   if (mrb->exc != nullptr) {
-    if (s->elog != nullptr) log_raise(*s->elog, mrb, 0);
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
+    report_raise(s->elog, mrb, 0);
     mrb_gc_arena_restore(mrb, ai);
     return false;
   }

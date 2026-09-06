@@ -302,9 +302,12 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
     const mrb_value u = mrb_cbor_decode_fast(
         mrb, mrb_str_new(mrb, answered.user_bytes.data(), answered.user_bytes.size()));
     if (mrb->exc != nullptr) {
-      std::fprintf(stderr, "webmachine: a worker's response.userdata could not be decoded\n");
-      mrb_print_error(mrb);
+      // The exception is the round's answer: the run raises it as its
+      // own, and nothing here rewrites what the VM said.
+      round->answer_value[slot] = mrb_obj_value(mrb->exc);
+      mrb_gc_register(mrb, round->answer_value[slot]);
       mrb->exc = nullptr;
+      return;
     } else {
       round->user_value[slot] = u;
       mrb_gc_register(mrb, u);
@@ -315,8 +318,8 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
   const mrb_value v =
       mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
   if (mrb->exc != nullptr) {
-    std::fprintf(stderr, "webmachine: a worker's answer could not be decoded\n");
-    mrb_print_error(mrb);
+    round->answer_value[slot] = mrb_obj_value(mrb->exc);
+    mrb_gc_register(mrb, round->answer_value[slot]);
     mrb->exc = nullptr;
     return;
   }
@@ -351,8 +354,8 @@ bool Http1::compute_task_hand_over(Conn& st, Conn::Round& round, int park, const
     const int uai = mrb_gc_arena_save(mrb);
     const mrb_value enc = mrb_cbor_encode_fast(mrb, res.run.userdata);
     if (mrb->exc != nullptr || !mrb_string_p(enc)) {
-      mrb->exc = nullptr;
       mrb_gc_arena_restore(mrb, uai);
+      if (mrb->exc != nullptr) rethrow(mrb);
       mrb_raise(mrb, E_WM_ERROR(mrb),
                 "response.userdata cannot cross to a worker - CBOR carries what a compute task "
                 "takes with it, and this is not one of those");
@@ -734,14 +737,14 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
     // The reactor asked for the stop, so the raise is the deadline and
     // not the application's. It is read AFTER the call: the reactor
     // sets it before it interrupts.
+    // The VM's own exception is kept either way. When the reactor asked
+    // for the stop, the step says so beside it.
+    if (mrb_exception_p(thrown)) mrb->exc = mrb_obj_ptr(thrown);
     if (asked_stop.load(std::memory_order_acquire)) {
       mrb->vm_interrupt = FALSE;
       s.over_deadline = true;
-      s.raised = true;
-      s.exception_class = "Webmachine::Error";
-      s.message = "the compute task ran past its max_runtime and the reactor stopped it";
+      note_raise(mrb, s, "the compute task ran past its max_runtime and the reactor stopped it");
     } else {
-      if (mrb_exception_p(thrown)) mrb->exc = mrb_obj_ptr(thrown);
       note_raise(mrb, s, body.step);
     }
   }
