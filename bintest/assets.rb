@@ -218,7 +218,7 @@ assert('assets: an archive this tier cannot serve refuses the start by name') do
   zf.write(a_build_zip([['weird.dat', 'x' * 32, 12]]))
   zf.close
   err = "/tmp/wm-assets-refuse-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=/tmp/wm-assets-refuse-#{$$}.sock",
+  pid = spawn(A_BIN, "--unix=/tmp/wm-assets-refuse-#{$$}.sock",
               "--standalone", "--assets=#{zf.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0
@@ -399,7 +399,7 @@ def a_tcp_server(zip_bytes)
     # INSIDE that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
+    pid = spawn(A_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
                 out: File::NULL, err: err)
     up = false
     50.times do
@@ -558,7 +558,7 @@ def a_refusal(zip_bytes)
   sock = "/tmp/wm-assets-bad-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-bad-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
               out: File::NULL, err: err)
   Process.wait(pid)
   raise 'the server came up on an asset file it should have refused' if File.socket?(sock)
@@ -606,7 +606,7 @@ assert('access log: --log writes combined lines through the record daemon') do
   File.unlink(logf) if File.exist?(logf)
   sock = "/tmp/wm-log-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
               "--log=#{logf}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   begin
@@ -683,7 +683,7 @@ assert('assets: a --mime-types file that cannot be read refuses the start, by na
   err = "/tmp/wm-mime-refuse-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
   begin
-    pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+    pid = spawn(A_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
                 '--mime-types=/nonexistent/mime.types', out: File::NULL, err: err)
     Process.wait(pid)
     assert_false $?.success?, 'a missing media-type database started the server anyway'
@@ -737,7 +737,7 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   # can only ever show 127.0.0.0 and could not tell an address that
   # arrived from one that did not. This test is about arrival, so it
   # asks for the full address; the masking has its own ground.
-  pid = spawn({ 'WM_BUNDLE' => '0' }, A_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(A_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
               "--log=#{logf}", '--log-privacy=none', out: File::NULL, err: errf)
   begin
     up = false

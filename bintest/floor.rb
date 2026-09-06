@@ -77,7 +77,7 @@ end
 assert('floor: the ring-built TCP listener answers like the unix one') do
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, "--port=#{port.to_s}",
+  pid = spawn(SERVER_BIN, "--port=#{port.to_s}",
               "--app=#{floor_app}", out: File::NULL, err: err)
   begin
     s = nil
@@ -104,7 +104,7 @@ end
 assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SERVER_BIN, "--unix=#{sock}",
+  pid = spawn(SERVER_BIN, "--unix=#{sock}",
               "--app=#{floor_app}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   assert_true File.socket?(sock)

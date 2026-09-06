@@ -37,7 +37,7 @@ def wpq_head(app_source)
   sock = "/tmp/wm-wpq-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-wpq-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WPQ_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
+  pid = spawn(WPQ_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

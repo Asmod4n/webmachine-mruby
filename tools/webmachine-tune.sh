@@ -80,7 +80,7 @@ if [ "$NPROC" -lt 4 ]; then
   echo "  wherever they are not there (that fallback is the design, not a bug)."
 fi
 
-# ---- io_uring / WM_BUNDLE --------------------------------------------
+# ---- io_uring ---------------------------------------------------------
 echo ""
 echo "-- io_uring"
 KREL=$(uname -r)
@@ -92,19 +92,7 @@ else
   echo "kernel $KREL: BELOW 6.11 - the server will refuse to start, by name (needs IORING_OP_BIND/LISTEN)"
 fi
 
-# The one KNOWN-broken build (src/ring.hpp: recv-bundle dense-fill
-# contract violated). Anything else is not asserted safe - bundles are
-# verified on real hardware with a byte comparison, or not at all.
-WM_BUNDLE_REC=""
-case "$KREL" in
-  6.18.5-fc*)
-    WM_BUNDLE_REC="WM_BUNDLE=0 "
-    echo "recommend: WM_BUNDLE=0 - this exact kernel build violates the recv-bundle dense-fill contract (documented in src/ring.hpp)"
-    ;;
-  *)
-    echo "recv bundles: kernel default stands, but is NOT verified against this kernel - before trusting it under load, byte-compare responses once with WM_BUNDLE=0 vs default"
-    ;;
-esac
+echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the server reads the feature bit at init"
 
 # ---- resource limits -------------------------------------------------
 # Since #169 the server derives its capacity itself: at init it raises
@@ -166,7 +154,5 @@ fi
 # ---- summary ---------------------------------------------------------
 echo ""
 echo "-- run it like this"
-ENVP=""
-[ -n "$WM_BUNDLE_REC" ] && ENVP="env $WM_BUNDLE_REC"
-echo "  $ENVP$BIN --port=8080 --app=your_app.mrb"
+echo "  $BIN --port=8080 --app=your_app.mrb"
 echo "  (no taskset on purpose - see the cpu placement section)"

@@ -5,6 +5,7 @@
 
 #include <mruby/class.h>
 #include <mruby/data.h>
+#include <mruby/error.h>
 #include <mruby/presym.h>
 #include <mruby/proc.h>
 #include <mruby/variable.h>
@@ -223,13 +224,36 @@ double watcher_timeout(mrb_value v) {
   return d != nullptr ? d->timeout : 0.0;
 }
 
+// The block, run under mrb_protect_error: a raise inside it comes back
+// as a value and never unwinds through the reactor. A block that raised
+// has given up, so the watcher is aborted and the exception is its
+// answer. The run that resumes raises it again, and the 500 page and
+// the error log carry the message.
+namespace {
+struct BlockRun {
+  mrb_value block;
+  mrb_value argv[2];
+};
+
+mrb_value block_run_body(mrb_state* mrb, void* ud) {
+  const BlockRun* b = static_cast<const BlockRun*>(ud);
+  return mrb_yield_argv(mrb, b->block, 2, b->argv);
+}
+
+mrb_value run_block(mrb_state* mrb, mrb_value watcher, mrb_value event) {
+  BlockRun b{mrb_iv_get(mrb, watcher, MRB_IVSYM(block)), {event, watcher}};
+  mrb_bool raised = FALSE;
+  const mrb_value answer = mrb_protect_error(mrb, block_run_body, &b, &raised);
+  if (raised) live(mrb, watcher)->aborted = true;
+  return answer;
+}
+}  // namespace
+
 // The deadline, delivered. The answer says whether the wait goes on, and
 // `said` takes the block's own value - a watcher that gives up still has
 // something to say, and dropping it would make every timeout answer nil.
 bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said) {
-  const mrb_value blk = mrb_iv_get(mrb, v, MRB_IVSYM(block));
-  const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), v};
-  const mrb_value answer = mrb_yield_argv(mrb, blk, 2, argv);
+  const mrb_value answer = run_block(mrb, v, mrb_symbol_value(MRB_SYM(timeout)));
   if (said != nullptr) *said = answer;
   // The block can abort, and abort frees nothing - the CDATA is still
   // here, so it is read after the call and not before.
@@ -480,8 +504,6 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   mrb_state* const mrb = st.w_mrb;
   const int ai = mrb_gc_arena_save(mrb);
   const unsigned before = watcher_events_mask(w);
-  const mrb_value block = watcher_block_of(mrb, w);
-  const mrb_value argv[2] = {sym_of(mrb, revents), w};
   // #30: the block belongs to a run that is parked, and `response[:key]`
   // is that run's scratch. It lives on the connection for this reason -
   // the run's own state travelled with the frame.
@@ -489,18 +511,7 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   {
     const Conn::Round* const own = watcher_round(w);
     const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
-    said = mrb_yield_argv(mrb, block, 2, argv);
-  }
-  if (mrb->exc != nullptr) {
-    // A raise inside the block ends the wait. The run reads nil and
-    // answers 500. The exception is printed here, because the run
-    // never sees it.
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    mrb_gc_arena_restore(mrb, ai);
-    Conn::Round* const r = watcher_round(w);
-    if (r != nullptr) round_answered(*r, watcher_job(w), mrb_nil_value());
-    return WatchStep::kDone;
+    said = run_block(mrb, w, sym_of(mrb, revents));
   }
   if (watcher_aborted_p(w)) {
     // ROOT IT FIRST. The block's answer is held by the arena and by
@@ -532,11 +543,6 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
     const Conn::Round* const own = watcher_round(w);
     const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
     again = watcher_deadline_passed(mrb, w, &said);
-  }
-  if (mrb->exc != nullptr) {
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    said = mrb_nil_value();
   }
   if (!again) {
     Conn::Round* const r = watcher_round(w);

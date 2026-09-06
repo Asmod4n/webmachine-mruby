@@ -22,7 +22,7 @@ def ws_server(app_src)
   sock = "/tmp/wm-ws-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-ws-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WS_BIN, "--unix=#{sock}", "--app=#{app.path}",
+  pid = spawn(WS_BIN, "--unix=#{sock}", "--app=#{app.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "ws server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -424,7 +424,7 @@ assert('ws: route.websocket refuses a class that is not a WebsocketResource') do
   RUBY
   app = ws_compile(src)
   err = "/tmp/wm-ws-refuse-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WS_BIN, "--unix=/tmp/wm-ws-refuse-#{$$}.sock",
+  pid = spawn(WS_BIN, "--unix=/tmp/wm-ws-refuse-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0
@@ -446,7 +446,7 @@ assert('ws: a resource without on_data is refused at route.websocket') do
   RUBY
   app = ws_compile(src)
   err = "/tmp/wm-ws-mute-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WS_BIN, "--unix=/tmp/wm-ws-mute-#{$$}.sock",
+  pid = spawn(WS_BIN, "--unix=/tmp/wm-ws-mute-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0

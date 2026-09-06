@@ -27,7 +27,7 @@ def wa_exchange(app_source, times: 1)
   sock = "/tmp/wm-wa-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-wa-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, WA_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
+  pid = spawn(WA_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -223,6 +223,34 @@ assert('watcher: the deadline reaches the block, and the block answers it') do
   # `:timeout` ARRIVES, and cannot be ordered - so revents and events do
   # not share a menu.
   assert_true out.include?('events:timeout,timeout'), out
+end
+
+# A raise inside the block is the run's raise: a 500 that names it, and
+# the server goes on. It never unwinds through the reactor.
+assert('watcher: a block that raises answers 500 with its message, and the server lives') do
+  src = <<~RUBY_SRC
+    class BlockRaises < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        r, w = IO.pipe
+        w.write('x')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) { |_ev, _w| raise 'inside the block' }
+      end
+      def to_html
+        'never'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], BlockRaises }
+      end
+    end
+  RUBY_SRC
+  wa_exchange(src, times: 2) do |head, body|
+    assert_true head.start_with?('HTTP/1.1 500'), head
+    assert_true body.include?('inside the block'), body
+  end
 end
 
 # #30: the second request on a route is asked its watched value too.

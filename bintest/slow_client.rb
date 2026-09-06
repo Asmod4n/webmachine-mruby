@@ -54,7 +54,7 @@ end
 def slow_server
   sock = "/tmp/wm-slow-#{$$}-#{rand(1 << 30)}.sock"
   err = Tempfile.new(['wm-slow-err', '.log'])
-  pid = spawn({ 'WM_BUNDLE' => '0' }, SLOW_BIN, "--unix=#{sock}", "--app=#{slow_app}",
+  pid = spawn(SLOW_BIN, "--unix=#{sock}", "--app=#{slow_app}",
               out: File::NULL, err: err.path)
   200.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up: #{File.read(err.path)}" unless File.socket?(sock)

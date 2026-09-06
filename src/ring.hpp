@@ -131,9 +131,6 @@ class Ring {
     io_uring_buf_ring_advance(buf_ring_, kBufCount);
 
     bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
-    if (const char* e = std::getenv("WM_BUNDLE")) {
-      if (e[0] == '0') bundles_ = false;
-    }
 
     if (cfg.nlisteners == 0 || cfg.nlisteners > kMaxListeners) {
       mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener count %d out of range (1..%d)",

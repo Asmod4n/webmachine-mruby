@@ -41,7 +41,7 @@ def elog_server(extra_args)
   log = "/tmp/wm-elog-#{$$}.log"
   err = "/tmp/wm-elog-stderr-#{$$}.log"
   [sock, log].each { |f| File.unlink(f) rescue nil }
-  pid = spawn({ 'WM_BUNDLE' => '0' }, ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
+  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
               "--error-log=#{log}", *extra_args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -158,7 +158,7 @@ assert('access log: --log-max-bytes is a ceiling, and the NEWEST lines survive')
   alog = "/tmp/wm-alog-#{$$}.log"
   err = "/tmp/wm-alog-stderr-#{$$}.log"
   [sock, alog].each { |f| File.unlink(f) rescue nil }
-  pid = spawn({ 'WM_BUNDLE' => '0' }, ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
+  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
               "--log=#{alog}", "--log-max-bytes=#{cap.to_s}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
@@ -196,7 +196,7 @@ assert('access log: --log-max-bytes is a ceiling, and the NEWEST lines survive')
   alog = "/tmp/wm-alog-#{$$}.log"
   err = "/tmp/wm-alog-stderr-#{$$}.log"
   [sock, alog].each { |f| File.unlink(f) rescue nil }
-  pid = spawn({ 'WM_BUNDLE' => '0' }, ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
+  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
               "--log=#{alog}", "--log-max-bytes=#{cap.to_s}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }

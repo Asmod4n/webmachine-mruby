@@ -2437,6 +2437,14 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& rou
     mrb_gc_register(mrb, res.run.userdata);
     res.run.userdata_held = true;
   }
+  // A watcher whose block raised answers with the exception. The run
+  // raises it as its own, which is what a raise in a callback is.
+  for (uint8_t i = 0; i < round.n; i++) {
+    if (mrb_exception_p(round.answers[i])) {
+      res.run.stopped = false;
+      return run_settle(res, out, {round.answers[i], TRUE});
+    }
+  }
   for (uint8_t i = 0; i < round.n; i++) {
     if (round.what[i] == kJobNode) {
       res.run.answer = round.answers[i];

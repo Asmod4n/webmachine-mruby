@@ -39,7 +39,7 @@ def ap_server(app_source, sock: nil, args: nil)
   args ||= ["--unix=#{sock}"]
   out = "/tmp/wm-ap-stdout-#{$$}.log"
   err = "/tmp/wm-ap-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, *args, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(AP_BIN, *args, "--app=#{app.path}", out: out, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
@@ -55,7 +55,7 @@ end
 def ap_refused(app_source)
   app = ap_compile(app_source)
   err = "/tmp/wm-ap-refuse-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
+  pid = spawn(AP_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
@@ -69,7 +69,7 @@ end
 def ap_refused_unaided(app_source)
   app = ap_compile(app_source)
   err = "/tmp/wm-ap-unaided-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
   File.read(err)
@@ -371,7 +371,7 @@ assert('application: conf.url names the listener when nothing overrides it') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-url-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     up = false
     50.times do
@@ -591,7 +591,7 @@ assert('application: two applications, two listeners, one ring - each answers it
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-two-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(a) && File.socket?(b); sleep 0.05 }
     assert_true File.socket?(a) && File.socket?(b), (File.read(err) rescue '')
@@ -690,7 +690,7 @@ assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-tick-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -734,7 +734,7 @@ assert('application: Webmachine.fd is pollable - idle costs nothing, a request w
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-fd-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -772,7 +772,7 @@ assert('application: Webmachine.run inside main serves like the tool loop') do
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-run-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -947,7 +947,7 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
   RUBY
   app = ap_compile(src)
   err = "/tmp/wm-ap-stop-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
@@ -1003,7 +1003,7 @@ assert('application: conf.url is a URL, and ada parses it as one') do
   app = ap_compile(src)
   out = "/tmp/wm-ap-v6-out-#{$$}.log"
   err = "/tmp/wm-ap-v6-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1097,7 +1097,7 @@ assert('application: a conf.url query names settings, and only settings') do
   app = ap_compile(src)
   out = "/tmp/wm-ap-q-out-#{$$}.log"
   err = "/tmp/wm-ap-q-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1175,7 +1175,7 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
   app = ap_compile(src)
   out = "/tmp/wm-ap-eph-out-#{$$}.log"
   err = "/tmp/wm-ap-eph-err-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
   port = nil
   refused = false
   100.times do
@@ -1285,7 +1285,7 @@ assert('application: a server with nothing to serve refuses to start') do
   # behind any answer - and it is exactly the shape #201 was about.
   err = "/tmp/wm-ap-nothing-#{$$}.log"
   sock = "/tmp/wm-ap-nothing-#{$$}.sock"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, AP_BIN, "--unix=#{sock}", out: File::NULL, err: err)
+  pid = spawn(AP_BIN, "--unix=#{sock}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0, 'server came up with nothing to serve'
   text = File.read(err) rescue ''

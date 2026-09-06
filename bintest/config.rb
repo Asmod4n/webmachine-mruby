@@ -41,7 +41,7 @@ end
 
 def cfg_spawn(args, err)
   args = ["--app=#{cfg_app}"] + args unless args.any? { |a| a.start_with?('--app=') }
-  spawn({ 'WM_BUNDLE' => '0' }, CFG_BIN, *args, out: File::NULL, err: err)
+  spawn(CFG_BIN, *args, out: File::NULL, err: err)
 end
 
 def cfg_await(sock, err)

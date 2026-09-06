@@ -60,7 +60,7 @@ def h2_server(app_source = nil)
   sock = "/tmp/wm-h2-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, "--unix=#{sock}", *args, out: File::NULL, err: err)
+  pid = spawn(H2_BIN, "--unix=#{sock}", *args, out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "h2 server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
@@ -543,7 +543,7 @@ def h2_asset_server(zip_bytes)
   sock = "/tmp/wm-h2a-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2a-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(H2_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "h2 asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
@@ -861,7 +861,7 @@ def h2_error_assets_server(pack)
   sock = "/tmp/wm-h2-ea-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2-ea-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, "--unix=#{sock}", "--app=#{app.path}",
+  pid = spawn(H2_BIN, "--unix=#{sock}", "--app=#{app.path}",
               "--error-assets=#{pack}", out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "h2 server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
