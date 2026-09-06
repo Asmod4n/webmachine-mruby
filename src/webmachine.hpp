@@ -4353,11 +4353,6 @@ inline constexpr uint16_t kNoRoute = 0xffff;
 #define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
 
-// Webmachine.reload's own work, so the reactor can ask for it too: a
-// debug build answers SIGHUP with this. False when there was nothing to
-// open, or when what it opened could not be read.
-bool server_reload();
-
 class Http1 {
  public:
   // ONE of these per connection, so the order is by alignment and not by
@@ -4915,10 +4910,6 @@ class Http1 {
   // changes. The old pack is not freed here - a response that is on the
   // wire is still lending its bytes, and the caller owns that decision.
   void swap_assets(Assets* assets);
-
-  // What the reactor calls when a debug build hears SIGHUP. The work is
-  // the server's, because the pack's path and the retired mappings are.
-  void reload_assets() { server_reload(); }
 
   // The standalone tier: no app, and the docroot answers what the pack
   // does not. The media-type database is the server's, lent here for the

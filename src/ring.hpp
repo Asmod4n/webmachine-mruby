@@ -9,10 +9,6 @@
 
 #include "webmachine.hpp"
 
-#include <signal.h>
-#include <sys/signalfd.h>
-#include <unistd.h>
-
 namespace webmachine {
 
 template <class App>
@@ -152,7 +148,6 @@ class Ring {
     live_bits_.assign((static_cast<size_t>(max_conns_) + 63) / 64, 0);
     rearm_.reserve(64);
 
-    stop_fd_ = cfg.stop_fd;
     if (cfg.stop_fd >= 0) {
       struct io_uring_sqe* s = setup_sqe();
       io_uring_prep_poll_add(s, cfg.stop_fd, POLLIN);
@@ -2159,34 +2154,7 @@ class Ring {
           }
           break;
         case detail::kWatch: on_watch(idx, gen, detail::watch_slot(cqe->user_data), cqe); break;
-        // The signalfd said something, and in a SHIPPED build there is
-        // only one thing it can say: stop.
-        //
-        // MRB_DEBUG builds also hear SIGHUP, and answer it by opening the
-        // pack again while the server keeps serving. That is a tool for
-        // whoever is editing a site, not a feature of the server: a
-        // running process that rereads its own inputs is one more state
-        // an operator has to reason about, and nothing outside a
-        // development loop asks for it.
-        case detail::kStop: {
-#ifdef MRB_DEBUG
-          struct signalfd_siginfo si;
-          const ssize_t got = stop_fd_ >= 0 ? ::read(stop_fd_, &si, sizeof(si)) : -1;
-          if (got == static_cast<ssize_t>(sizeof(si)) && si.ssi_signo == SIGHUP) {
-            app_.reload_assets();
-            // A HUP is not a stop, so the poll is armed again and the
-            // loop goes on serving while the new pack is read.
-            struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-            if (s != nullptr) {
-              io_uring_prep_poll_add(s, stop_fd_, POLLIN);
-              io_uring_sqe_set_data64(s, detail::tag(detail::kStop, 0, 0));
-            }
-            break;
-          }
-#endif
-          stop_ = true;
-          break;
-        }
+        case detail::kStop: stop_ = true; break;
         default: break;
       }
     } catch (const ConnFailed& f) {
@@ -2351,7 +2319,6 @@ class Ring {
   bool listeners_closed_ = false;
   bool draining_ = false;
   int64_t drain_deadline_ = 0;
-  int stop_fd_ = -1;
   uint32_t live_ = 0;
   std::vector<uint64_t> live_bits_;
   // One timespec per job in flight, for the deadline SQEs above.

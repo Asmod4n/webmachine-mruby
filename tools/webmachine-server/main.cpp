@@ -280,12 +280,6 @@ int serve(mrb_state* mrb, Invocation& in) {
   sigemptyset(&mask);
   sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGINT);
-#ifdef MRB_DEBUG
-  // A debug build also hears SIGHUP, and opens the pack again on one.
-  // The shipped binary does not: it never has the file open twice, and
-  // a HUP ends it the way the system says it should.
-  sigaddset(&mask, SIGHUP);
-#endif
   opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
 
   opts.log_path = log_path;
@@ -361,13 +355,6 @@ int main(int argc, char** argv) {
   sigemptyset(&stop_signals);
   sigaddset(&stop_signals, SIGTERM);
   sigaddset(&stop_signals, SIGINT);
-#ifdef MRB_DEBUG
-  // A debug build hears SIGHUP as "open the pack again", so it has to be
-  // blocked here too - blocking is what makes a signal the descriptor's
-  // to read. Unblocked, its default action ends the process, which is
-  // what a HUP does everywhere else and what a shipped build keeps.
-  sigaddset(&stop_signals, SIGHUP);
-#endif
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
   mrb_state* mrb = mrb_open();
