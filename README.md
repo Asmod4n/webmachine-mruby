@@ -1,10 +1,21 @@
 # webmachine-mruby
 
-**An HTTP server you write in Ruby and ship as one binary.**
+webmachine-mruby is a small, fast HTTP server for Ruby. You write
+resources, and it runs them from one binary.
 
-It speaks HTTP/1.1, HTTP/2, WebSocket and server-sent events, serves
-files and static packs, and terminates TLS through the kernel. One
-thread, one core, no runtime to install beside it.
+- **The HTTP model comes with it.** Conditional requests, content
+  negotiation, `Allow`, 304, 406, 412: webmachine's flow answers them
+  from what your resource declares. You do not write that logic again
+  for every route, as you do on every other server.
+- **Everything on board.** HTTP/1.1, HTTP/2, WebSocket, server-sent
+  events, static files, TLS.
+- **Fast by design.** Answers are built when the server starts, not
+  when a request arrives.
+- **Runs everywhere.** io_uring where the kernel allows it. slipstreamIO
+  carries the same rings to Linux without io_uring, to macOS, the BSDs,
+  and Windows.
+
+## Hello, World
 
 ```ruby
 class HelloWorld < Webmachine::Resource
@@ -25,86 +36,14 @@ end
     mruby/bin/mrbc -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb --port=8080
 
-That is a whole server. On one core it answers **a million requests a
-second** over a unix socket — and where it has been measured against
-openlitespeed on one box, one worker each, it answers **5.5×** what
-openlitespeed does.
+The build makes four programs:
 
-## Why it is that fast
-
-**The decision is made before the request arrives.**
-
-Webmachine's flow graph — the one from
-[webmachine-ruby](https://github.com/webmachine/webmachine-ruby) — is a
-constant here. Everything a resource can answer at setup is answered
-once, folded into that graph, and baked into the bytes that go on the
-wire.
-
-So the resource above never enters the VM again. Its 200, its head, its
-ETag, its `Allow`, its h2 header block: all of it exists before the
-first accept. A request against it is a table lookup and a write.
-
-**`def self.x` is a constant; `def x` is per request.** That one line is
-the whole performance model.
-
-## What that costs, measured
-
-`bench/results/` holds every run with its harness line, its host, its
-kernel, its compiler and its CPU split. Two machines answer below, and
-their numbers are not mixed.
-
-**A desktop, openSUSE, one core, one thread, over a unix socket**
-(`bench/results/forgecore.log`, 2026-09-06)
-
-| | requests per second |
+| | |
 |---|---|
-| HTTP/2, 16 connections × 128 streams | **8.2–10.1 M** |
-| HTTP/1.1, 192 connections | **1.0 M** |
-
-**A container VM, one core, over TCP** — the openlitespeed comparison
-(`bench/results/vm.log`, 2026-09-05)
-
-| | requests per second |
-|---|---|
-| webmachine-mruby, 192 connections | **232 k** |
-| openlitespeed, same box, same minute, same client | 42 k |
-
-That pair is the honest one: both servers pinned to one worker, both
-server-bound, openlitespeed with its own best settings and its cache
-module off. **4.6× at 64 connections, 5.5× at 192.** The two do not
-answer identical bytes — 244 against 155 — and the log says so.
-
-A VM entry costs 95–191 ns. The point of the fold is not that mruby is
-fast; it is that a folded resource never pays that at all.
-
-## What it is
-
-- **The whole graph, ported and tested against its source.** 74 cases
-  from webmachine-ruby's own `flow_spec` run here. Callback names,
-  defaults and terminals are theirs.
-- **HTTP/1.1 and HTTP/2**, h2c and prior knowledge, with the h2 header
-  blocks prebuilt per route. h2spec reads 145 of 146, and the one it
-  refuses is a refusal, not a gap: the same listener also speaks
-  HTTP/1.1, so a preface that is already wrong at byte 0 gets HTTP/1.1's
-  400 instead of a frame.
-- **WebSocket** (RFC 6455, permessage-deflate) and **server-sent
-  events**, each a route kind of its own. The Autobahn suite passes
-  through both an h1 and an RFC 8441 h2 upgrade.
-- **A static tier that never touches the VM.** A ZIP is mapped once;
-  gzip is synthesized from the archive's own deflate stream, so a
-  compressed file is never compressed twice. Conditional requests,
-  ranges and refusals are answered from prebuilt heads.
-- **A standalone server.** `--standalone` with a pack or a directory
-  and no app at all: the folded graph serves files, and no request
-  enters a VM that was never opened.
-- **TLS through the kernel.** kTLS: this process does the handshake,
-  the kernel does the record layer. From `setsockopt` onwards a plain
-  `send` is a TLS record, so iovecs still point straight into asset
-  mappings and lent strings - a userspace record layer would have to
-  copy every one of those through an encryption buffer.
-- **io_uring, or not.** One binary asks the kernel at startup. Where
-  io_uring is forbidden or absent, slipstreamIO's engine answers the
-  same rings — correctly, and slower — and the server says so on stderr.
+| `webmachine-server` | runs your app, one process, one thread |
+| `mrbc` | compiles your Ruby to bytecode, the only form the server runs |
+| `webmachine-logd` | writes the access log and the error log, as its own process |
+| `webmachine-passwd` | keeps the password database, argon2id in LMDB |
 
 ## Writing an app
 
@@ -116,11 +55,34 @@ app.add_websocket ['ws'],              Echo         # RFC 6455
 app.add_sse       ['events'],          Clock        # text/event-stream
 ```
 
-A String is a literal segment, a Symbol binds one, `:*` is the tail.
-`examples/` has a file per kind, and `examples/site/` is a four-page
-htmx site served from a pack.
+A String is a literal segment, a Symbol binds one, and `:*` takes the
+rest of the path.
 
-The server runs bytecode, never source: `mrbc` first, always.
+A resource declares what it knows, and the flow does the rest:
+
+```ruby
+class Article < Webmachine::Resource
+  def content_types_provided
+    [['text/html', :to_html], ['application/json', :to_json]]
+  end
+
+  def generate_etag
+    'article-7'
+  end
+
+  def last_modified
+    1_756_000_000   # seconds since the epoch
+  end
+end
+```
+
+That resource answers `Accept`, `If-None-Match`, `If-Modified-Since`
+and `OPTIONS` correctly, and you wrote none of it. The callback names
+are [webmachine-ruby](https://github.com/webmachine/webmachine-ruby)'s,
+so its documentation applies here.
+
+`examples/` has one file per kind. `examples/site/` is a four-page
+htmx site served from an asset pack.
 
 ## Running it
 
@@ -128,44 +90,53 @@ The server runs bytecode, never source: `mrbc` first, always.
                       [--app=FILE.mrb] [--assets=FILE.zip] [--docroot=DIR]
                       [--standalone] [--log=FILE] [--error-log=FILE]
 
-`--write-config` writes `webmachine.toml` with every setting the file
-form carries and what each one does. `webmachine.toml.example` in this
-tree is that file, generated by the server itself so it cannot go stale.
+`--standalone` serves a pack or a directory with no app at all.
+`--write-config` writes a `webmachine.toml` with every setting and what
+it does. `webmachine.toml.example` is that file.
 
-Both logs are opt-in and separate. The access log anonymizes addresses
-by default. The error log holds what a callback **raised** — class,
-message, backtrace, the request that led there — and every record
-carries a 16-hex-digit fingerprint that a 500 page shows as its
-reference, so a user can read the number out and `grep` finds the
-record. No database in between.
+Both logs are off until you name a file. The access log anonymizes
+addresses by default. Every error record carries a fingerprint, and the
+500 page shows the same fingerprint, so `grep` finds the record.
 
-## What it asks of you
+## Why it is fast
 
-Linux, a C/C++ toolchain, zlib and OpenSSL headers. No kernel floor:
-where io_uring is missing, the engine answers.
+`def self.x` is answered once, at start. `def x` is answered per
+request. That one rule is the whole performance model.
 
-It is one process and one thread by design. Work that must not block
-the reactor goes to a compute pool with a deadline; everything else is
-a state machine.
+The flow graph is a constant. Everything a resource can answer at start
+is answered then and kept as bytes: the status line, the head, the
+ETag, the HTTP/2 header block. The Hello World above never enters the VM
+after start. A request against it is a lookup and a write.
+
+On one core, over a unix socket, the server answers about one million
+HTTP/1.1 requests a second. Every run is in `bench/results/` with the
+command that made it.
+
+## TLS
+
+TLS is kTLS. The server does the TLS 1.3 handshake through OpenSSL and
+gives the keys to the kernel. After that, a plain `send` is a TLS
+record. Linux and FreeBSD offer this. On a kernel without kTLS the
+server speaks plain HTTP, and a proxy in front of it does TLS.
+
+## What you need
+
+- To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers.
+- To run: OpenSSL 3, and for TLS a kernel with the tls module loaded.
 
 ## Where the reasoning is
 
-Every file says it in its first line:
-
-```cpp
-// Design decisions live in .DESIGN.md, filed under what each comment names.
-```
-
-[`.DESIGN.md`](.DESIGN.md) holds every measurement this tree acted on,
-with its harness line — including the ones that buried an idea.
+Every source file starts with the same line, and it points at
+[`.DESIGN.md`](.DESIGN.md). That file holds every decision this tree
+made, with the measurement behind it.
 
 ## Credit
 
-A port, and it says so. [Webmachine](https://github.com/webmachine/webmachine)
-is Justin Sheehy, Andy Gross and Bryan Fink's, written in Erlang at
-Basho Technologies; [webmachine-ruby](https://github.com/webmachine/webmachine-ruby)
-is Sean Cribbs'. The graph, the callback names and their defaults are
-theirs, and the name is used with their permission. `NOTICE` says which
-parts are whose.
+This is a port. [Webmachine](https://github.com/webmachine/webmachine)
+is Justin Sheehy, Andy Gross and Bryan Fink's, written at Basho.
+[webmachine-ruby](https://github.com/webmachine/webmachine-ruby) is Sean
+Cribbs'. The flow, the callback names and their defaults are theirs.
+The name is used with their permission. `NOTICE` says which parts are
+whose.
 
 Apache-2.0.
