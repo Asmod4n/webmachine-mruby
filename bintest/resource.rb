@@ -935,6 +935,27 @@ end
 
 # The same round, and the conditional request it answers: If-None-Match
 # reads the ETag a worker spelled.
+assert('compute: a value round starts on every request, not on the first only (#30)') do
+  src = <<~RUBY
+    class EtagEveryTime < Webmachine::Resource
+      compute :generate_etag
+      def self.generate_etag
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'every-time' }
+      end
+      def to_html; 'x'; end
+    end
+  RUBY
+  resource_server(wm_app('EtagEveryTime', src)) do |sock|
+    3.times do
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, _ = resource_read(s)
+        assert_true head.match?(/^ETag: "every-time"\r$/i), head
+      end
+    end
+  end
+end
+
 assert('compute: a round answers a conditional request (#30)') do
   src = <<~RUBY_SRC
     class ComputeRoundCond < Webmachine::Resource

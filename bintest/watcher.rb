@@ -14,7 +14,9 @@ end
 
 # The same, and the head as well - a value round writes ETag and
 # Last-Modified, and only the head shows them.
-def wa_exchange(app_source)
+# One server, `times` requests on it, each on its own connection. The
+# answer is the last one, and a block sees every one.
+def wa_exchange(app_source, times: 1)
   src = Tempfile.new(['wm-wa', '.rb'])
   src.write(app_source)
   src.close
@@ -30,15 +32,20 @@ def wa_exchange(app_source)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
   begin
-    UNIXSocket.open(sock) do |c|
-      c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head = +''
-      head << wa_recv(c) until head.end_with?("\r\n\r\n")
-      len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-      body = +''
-      body << wa_recv(c, len - body.bytesize) while body.bytesize < len
-      [head, body]
+    last = nil
+    times.times do
+      UNIXSocket.open(sock) do |c|
+        c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head = +''
+        head << wa_recv(c) until head.end_with?("\r\n\r\n")
+        len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
+        body = +''
+        body << wa_recv(c, len - body.bytesize) while body.bytesize < len
+        last = [head, body]
+        yield head, body if block_given?
+      end
     end
+    last
   ensure
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
@@ -216,6 +223,37 @@ assert('watcher: the deadline reaches the block, and the block answers it') do
   # `:timeout` ARRIVES, and cannot be ordered - so revents and events do
   # not share a menu.
   assert_true out.include?('events:timeout,timeout'), out
+end
+
+# #30: the second request on a route is asked its watched value too.
+assert('watcher: a watched value is asked on every request (#30)') do
+  src = <<~RUBY_SRC
+    class WatchEveryTime < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        r, w = IO.pipe
+        w.write('e')
+        Webmachine::Watcher.new(r, :r, timeout: 2.s) do |_ev, self_|
+          r.read(1)
+          self_.abort
+          'watched-every-time'
+        end
+      end
+      def to_html
+        'body'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], WatchEveryTime }
+      end
+    end
+  RUBY_SRC
+  wa_exchange(src, times: 3) do |head, body|
+    assert_equal 'body', body
+    assert_true head.include?('ETag: "watched-every-time"'), head
+  end
 end
 
 # #30: a round waits on several descriptors at once. Two watchers, two

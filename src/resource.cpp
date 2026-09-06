@@ -2503,6 +2503,10 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   res.run.content_types_marshalled = false;
   res.run.methods.clear();
   res.run.variances.clear();
+  // #30: the value round is this run's to start. Left set by the last
+  // run, no later request would ask a watched or computed value.
+  res.run.values_started = false;
+  res.run.watch_count = 0;
   mrb_bool raised = FALSE;
   const mrb_value thrown =
       mrb_protect_error(mrb, run_engine_body, const_cast<Resource*>(&res), &raised);
