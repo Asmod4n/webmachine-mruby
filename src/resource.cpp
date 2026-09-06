@@ -230,7 +230,7 @@ mrb_value native_call_body(mrb_state* mrb, void* ud) {
 // object at all. Checked once, here, for every protected call.
 //
 // No branch hint: both callers reach this from inside their own
-// WM_UNLIKELY(raised), so every path through here is already cold,
+// mrb_unlikely(raised), so every path through here is already cold,
 // and a hint here only bought a second negation to read past.
 void take_pending(mrb_state* mrb, mrb_value v) {
   if (!mrb_exception_p(v)) {
@@ -244,7 +244,7 @@ void take_pending(mrb_state* mrb, mrb_value v) {
 mrb_value call_native(mrb_state* mrb, NativeCall call) {
   mrb_bool raised = FALSE;
   mrb_value v = mrb_protect_error(mrb, native_call_body, &call, &raised);
-  if (WM_UNLIKELY(raised)) {
+  if (mrb_unlikely(raised)) {
     take_pending(mrb, v);
     return mrb_nil_value();
   }
@@ -258,7 +258,7 @@ mrb_value call_resolved(mrb_state* mrb, const Resolved& r, On on) {
   SetupCall ctx{MRB_METHOD_PROC(r.m), r.sym, on.self, on.c};
   mrb_bool raised = FALSE;
   mrb_value v = mrb_protect_error(mrb, setup_call_body, &ctx, &raised);
-  if (WM_UNLIKELY(raised)) {
+  if (mrb_unlikely(raised)) {
     take_pending(mrb, v);
     return mrb_nil_value();
   }
@@ -288,7 +288,7 @@ void ask(const Folding& f, Asked a, bool defv, bool* out) {
     return;
   }
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+  if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
   *out = mrb_test(v);
 }
 
@@ -320,7 +320,7 @@ void bake_value(const Folding& f, const BakedValue& bake) {
   r.native = cb.native;
   r.defined = true;
   mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+  if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
   if (bake.spell) {
     if (!mrb_string_p(v)) v = mrb_obj_as_string(mrb, v);
@@ -332,7 +332,7 @@ void bake_value(const Folding& f, const BakedValue& bake) {
   // form: mruby's own TypeError names the value and #to_i, never the
   // callback whose class form has to be fixed.
   const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
-  if (WM_UNLIKELY(mrb_nil_p(n))) {
+  if (mrb_unlikely(mrb_nil_p(n))) {
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s must answer a Time or an epoch Integer, not %v",
                bake.name, v);
   }
@@ -358,7 +358,7 @@ void mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
         break;
       }
     }
-    if (WM_UNLIKELY(!known)) {
+    if (mrb_unlikely(!known)) {
       mrb_raisef(f.mrb, E_WM_ROUTE_ERROR(f.mrb),
                  "%s names '%l' - outside the compiled method set", a.name, tok,
                  static_cast<size_t>(p - tok));
@@ -373,20 +373,20 @@ void ask_methods(const Folding& f, Asked a, bool seen[7]) {
   const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) return;
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
-  if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
+  if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
   for (uint8_t m = 0; m < 7; m++) seen[m] = false;
   if (mrb_string_p(v)) {
     mark_tokens(f, a, v, seen);
     return;
   }
-  if (WM_UNLIKELY(!mrb_array_p(v))) {
+  if (mrb_unlikely(!mrb_array_p(v))) {
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                "%s must return an Array of Strings or a String like 'GET HEAD', not %v", a.name,
                v);
   }
   for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
     const mrb_value one = RARRAY_PTR(v)[j];
-    if (WM_UNLIKELY(!mrb_string_p(one))) {
+    if (mrb_unlikely(!mrb_string_p(one))) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s must return method Strings, and %v is not one",
                  a.name, one);
     }
@@ -589,7 +589,7 @@ struct Run {
 uint16_t halt_of(Run& r, mrb_value v, mrb_sym sym) {
   mrb_state* mrb = r.mrb;
   const mrb_int code = mrb_integer(v);
-  if (WM_LIKELY(code >= 100 && code <= 599)) {
+  if (mrb_likely(code >= 100 && code <= 599)) {
     return static_cast<uint16_t>(code);
   } else {
     mrb_raisef(mrb, E_RANGE_ERROR, "%s answered %i, which is not an HTTP status",
@@ -601,7 +601,7 @@ uint16_t halt_of(Run& r, mrb_value v, mrb_sym sym) {
 // RFC 9110 9.1: the method token as the request spelled it, or the name
 // of the one the parse settled on.
 void method_name(Run& r, const char** p, size_t* len) {
-  if (WM_LIKELY(r.res.run.req != nullptr && r.res.run.req->method_token != nullptr)) {
+  if (mrb_likely(r.res.run.req != nullptr && r.res.run.req->method_token != nullptr)) {
     *p = r.res.run.req->method_token;
     *len = r.res.run.req->method_token_len;
   } else {
@@ -640,7 +640,7 @@ void field(Run& r, http::Field f) {
   const size_t nlen = f.name.size();
   const char* const value = f.value.data();
   const size_t vlen = f.value.size();
-  if (WM_LIKELY(http::field_name_ok(name, nlen) && http::field_value_ok(value, vlen))) {
+  if (mrb_likely(http::field_name_ok(name, nlen) && http::field_value_ok(value, vlen))) {
     r.hdrs.append(name, nlen);
     r.hdrs.append(": ", 2);
     r.hdrs.append(value, vlen);
@@ -772,7 +772,7 @@ mrb_value call_direct(Run& r, Bound b, Args args) {
     // arguments in hand. It never reads the callinfo, so there is nothing
     // to build for it.
     if (native != nullptr) return call_native(r.mrb, {native, r.res.run.live, argc, argv});
-    if (WM_UNLIKELY(!b.irep || mrb_obj_ptr(r.res.run.live)->c != r.res.klass)) {
+    if (mrb_unlikely(!b.irep || mrb_obj_ptr(r.res.run.live)->c != r.res.klass)) {
       return mrb_funcall_argv(r.mrb, r.res.run.live, sym, argc, argv);
     }
     mrb_callinfo* ci = r.mrb->c->ci;
@@ -797,7 +797,7 @@ mrb_value call_on_class(Run& r, Bound b, Args args) {
     // out-of-line call into another translation unit, and this build has no
     // LTO - a call to read one pointer, on the path whose whole point is
     // not calling anything.
-    if (WM_UNLIKELY(!b.irep || mrb_obj_ptr(self)->c != r.res.meta_klass)) {
+    if (mrb_unlikely(!b.irep || mrb_obj_ptr(self)->c != r.res.meta_klass)) {
       return mrb_funcall_argv(r.mrb, self, sym, argc, argv);
     }
     mrb_callinfo* ci = r.mrb->c->ci;
@@ -839,7 +839,7 @@ mrb_value nodecall(Run& r, Node nd, Args args) {
 bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
     const Resource& res = r.res;
     const size_t i = static_cast<size_t>(nd);
-    if (WM_UNLIKELY(res.run.answered)) {
+    if (mrb_unlikely(res.run.answered)) {
       res.run.answered = false;
       *out = res.run.answer;
       res.run.answer = mrb_nil_value();
@@ -850,9 +850,9 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
     // has to hand. What it answers must be a Webmachine::ComputeTask
     // - a callback that declared one owes one.
     const mrb_value v = nodecall(r, nd, args);
-    if (WM_UNLIKELY(((res.compute >> i) & 1) != 0)) {
+    if (mrb_unlikely(((res.compute >> i) & 1) != 0)) {
       ComputeTaskAsk ask;
-      if (WM_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
+      if (mrb_unlikely(!compute_task_of(r.mrb, v, &ask))) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n is declared `compute` and answered %v - it owes a "
                    "Webmachine::ComputeTask",
@@ -862,7 +862,7 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       // keep a stopped one. So the block runs HERE, on this thread. It
       // is the same block with the same arguments, and the only thing
       // lost is that the reactor waits for it.
-      if (WM_UNLIKELY(!res.run.can_park)) {
+      if (mrb_unlikely(!res.run.can_park)) {
         *out = mrb_yield_argv(r.mrb, ask.block, static_cast<mrb_int>(RARRAY_LEN(ask.args)),
                               RARRAY_PTR(ask.args));
         return true;
@@ -878,13 +878,13 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
     // #30: a node the resource declared with `watch` answers with a
     // Webmachine::Watcher. The run then stops until the descriptor says
     // something and the block says the wait is over.
-    if (WM_UNLIKELY(((res.watch >> i) & 1) != 0)) {
-      if (WM_UNLIKELY(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+    if (mrb_unlikely(((res.watch >> i) & 1) != 0)) {
+      if (mrb_unlikely(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
                    res.node_sym[i], v);
       }
-      if (WM_UNLIKELY(!res.run.can_park)) {
+      if (mrb_unlikely(!res.run.can_park)) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n answered a Webmachine::Watcher, and this run cannot stop",
                    res.node_sym[i]);
@@ -946,7 +946,7 @@ void marshal_methods(Run& r, const Resource::ValueCb& cb) {
   if (mrb_array_p(v)) {
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
       const mrb_value s = RARRAY_PTR(v)[j];
-      if (WM_UNLIKELY(!mrb_string_p(s))) {
+      if (mrb_unlikely(!mrb_string_p(s))) {
         mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer method Strings",
                    mrb_sym_name(mrb, cb.sym));
       }
@@ -954,7 +954,7 @@ void marshal_methods(Run& r, const Resource::ValueCb& cb) {
     }
     return;
   }
-  if (WM_UNLIKELY(!mrb_string_p(v))) {
+  if (mrb_unlikely(!mrb_string_p(v))) {
     mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
                mrb_sym_name(mrb, cb.sym));
   }
@@ -980,7 +980,7 @@ void field_list(Run& r, const FieldList& f) {
   for (const std::string& s : f.tail) {
     // Same gate, one member at a time: Allow's members come from
     // allowed_methods and Vary's from variances, both app Strings.
-    if (WM_UNLIKELY(!http::field_value_ok(s.data(), s.size()))) {
+    if (mrb_unlikely(!http::field_value_ok(s.data(), s.size()))) {
       mrb_raise(mrb, E_WM_ERROR(mrb),
                 "a list field this resource produced carries CR, LF or NUL (RFC 9110 5.5)");
     }
@@ -1004,7 +1004,7 @@ void marshal_ct(Run& r) {
   if (!r.ct_dyn || r.res.run.content_types_marshalled) return;
   r.res.run.content_types_marshalled = true;
   const mrb_value v = call_value_cb(r, r.res.cb_content_types_provided);
-  if (WM_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
+  if (mrb_unlikely(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "content_types_provided must answer [[type, handler]] pairs");
   }
@@ -1030,7 +1030,7 @@ void marshal_ct(Run& r) {
   cur.clear();
   for (mrb_int j = 0; j < count; j++) {
     const mrb_value pair = RARRAY_PTR(v)[j];
-    if (WM_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
+    if (mrb_unlikely(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                         !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                         !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided pairs are [String, Symbol]");
@@ -1099,7 +1099,7 @@ void epoch_memo(Run& r, const DateField& d) {
   // taken for the message - mruby's own would name the value and #to_i,
   // and never the callback the author has to go and fix.
   const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
-  if (WM_UNLIKELY(mrb_nil_p(n))) {
+  if (mrb_unlikely(mrb_nil_p(n))) {
     mrb_raisef(mrb, E_TYPE_ERROR, "%n must answer a Time or an epoch Integer, not %v", cb.sym, v);
   }
   *d.epoch = static_cast<int64_t>(mrb_integer(n));
@@ -1146,7 +1146,7 @@ void value_answer(const Resource& res, uint8_t what, mrb_value v) {
   *asked = true;
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
   const mrb_value n = mrb_type_convert_check(mrb, v, MRB_TT_INTEGER, MRB_SYM(to_i));
-  if (WM_UNLIKELY(mrb_nil_p(n))) {
+  if (mrb_unlikely(mrb_nil_p(n))) {
     mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer a Time or an epoch Integer, not %v",
                is_lm ? "last_modified" : "expires", v);
   }
@@ -1175,12 +1175,12 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
     // #30: a watcher answers this one. It waits beside the tasks - a
     // descriptor and a worker are two ways to the same round.
     if (watched) {
-      if (WM_UNLIKELY(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+      if (mrb_unlikely(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
                    w.cb->sym, v);
       }
-      if (WM_UNLIKELY(!res.run.can_park)) {
+      if (mrb_unlikely(!res.run.can_park)) {
         mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                    "%n answered a Webmachine::Watcher, and this run cannot stop", w.cb->sym);
       }
@@ -1190,14 +1190,14 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
       continue;
     }
     ComputeTaskAsk ask;
-    if (WM_UNLIKELY(!compute_task_of(r.mrb, v, &ask))) {
+    if (mrb_unlikely(!compute_task_of(r.mrb, v, &ask))) {
       mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                  "%n is declared `compute` and answered %v - it owes a Webmachine::ComputeTask",
                  w.cb->sym, v);
     }
     // Nobody can park this run, so the block runs HERE - the same block
     // with the same arguments, and only the waiting is lost.
-    if (WM_UNLIKELY(!res.run.can_park)) {
+    if (mrb_unlikely(!res.run.can_park)) {
       const mrb_value said = mrb_yield_argv(
           r.mrb, ask.block, static_cast<mrb_int>(RARRAY_LEN(ask.args)), RARRAY_PTR(ask.args));
       value_answer(res, w.what, said);
@@ -1267,13 +1267,13 @@ int accept_helper(Run& r) {
   const std::string_view arrived_base = media_base(arrived);
   if (!r.res.cb_content_types_accepted.has) return 415;
   const mrb_value v = call_value_cb(r, r.res.cb_content_types_accepted);
-  if (WM_UNLIKELY(!mrb_array_p(v))) {
+  if (mrb_unlikely(!mrb_array_p(v))) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "content_types_accepted must answer [[type, Symbol]] pairs");
   }
   for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
     const mrb_value pair = RARRAY_PTR(v)[j];
-    if (WM_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
+    if (mrb_unlikely(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                         !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                         !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_accepted pairs are [String, Symbol]");
@@ -1296,15 +1296,15 @@ int run_n11(Run& r) {
   mrb_value pic = mrb_false_value();
   if (r.res.cb_post_is_create.has) pic = call_value_cb(r, r.res.cb_post_is_create);
   if (mrb_test(pic)) {
-    if (WM_UNLIKELY(!r.res.cb_create_path.has)) {
+    if (mrb_unlikely(!r.res.cb_create_path.has)) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
     }
     const mrb_value cp = call_value_cb(r, r.res.cb_create_path);
     if (mrb_integer_p(cp)) return halt_of(r, cp, r.res.cb_create_path.sym);
-    if (WM_UNLIKELY(mrb_nil_p(cp))) {
+    if (mrb_unlikely(mrb_nil_p(cp))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
     }
-    if (WM_UNLIKELY(!mrb_string_p(cp))) {
+    if (mrb_unlikely(!mrb_string_p(cp))) {
       mrb_raise(mrb, E_TYPE_ERROR, "create_path must answer a String path");
     }
     mrb_value base = mrb_nil_value();
@@ -1341,12 +1341,12 @@ int run_n11(Run& r) {
     const int h = accept_helper(r);
     if (h >= 0) return h;
   } else {
-    if (WM_UNLIKELY(!r.res.cb_process_post.has)) {
+    if (mrb_unlikely(!r.res.cb_process_post.has)) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "process_post answered false, which is invalid");
     }
     const mrb_value pp = call_value_cb(r, r.res.cb_process_post);
     if (mrb_integer_p(pp)) return halt_of(r, pp, r.res.cb_process_post.sym);
-    if (WM_UNLIKELY(!mrb_true_p(pp))) {
+    if (mrb_unlikely(!mrb_true_p(pp))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "process_post must answer true or a response code");
     }
   }
@@ -1386,7 +1386,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // second one would throw away everything the first half of the walk
   // wrote on it.
   res.run.stopped = false;
-  if (WM_LIKELY(!resuming)) {
+  if (mrb_likely(!resuming)) {
     res.run.live = mrb_obj_value(mrb_obj_alloc(mrb, res.live_tt, res.klass));
   }
   Run r{mrb,
@@ -1410,7 +1410,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // rather than looked up again. init_needed is false for every resource
   // that did not override Object's - the implicit one is not a reason to
   // run anything.
-  if (WM_UNLIKELY(res.init_needed && !resuming)) {
+  if (mrb_unlikely(res.init_needed && !resuming)) {
     call_direct(r, {res.init_m, res.init_irep, nullptr, MRB_SYM(initialize)});
   }
 
@@ -1474,7 +1474,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // node the worker's answer instead of calling its callback.
   Node n = Node::kB13;
   uint16_t status = 0;
-  if (WM_UNLIKELY(resuming)) {
+  if (mrb_unlikely(resuming)) {
     n = res.run.stop_node;
     status = res.run.stop_status;
     r.chosen = res.run.chosen;
@@ -1529,7 +1529,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         }
         if (res.cb_options.has) {
           const mrb_value v = call_value_cb(r, res.cb_options);
-          if (WM_UNLIKELY(!mrb_hash_p(v))) {
+          if (mrb_unlikely(!mrb_hash_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "options must answer a Hash of header fields");
           }
           const mrb_value keys = mrb_hash_keys(mrb, v);
@@ -1549,7 +1549,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       }
       case Node::kC3: {
         marshal_ct(r);
-        if (WM_UNLIKELY(active_ct(r).empty())) {
+        if (mrb_unlikely(active_ct(r).empty())) {
           mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided answered no pairs");
         }
         if (!facts.has_accept) {
@@ -1590,7 +1590,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kG7: {
         if (res.cb_variances.has) {
           const mrb_value v = call_value_cb(r, res.cb_variances);
-          if (WM_UNLIKELY(!mrb_array_p(v))) {
+          if (mrb_unlikely(!mrb_array_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "variances must answer an Array of Strings");
           }
           res.run.variances.clear();
@@ -1612,7 +1612,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kG11: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
+        if (mrb_unlikely((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1630,7 +1630,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kK13: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
+        if (mrb_unlikely((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1648,7 +1648,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kH12: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
+        if (mrb_unlikely((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1661,7 +1661,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       case Node::kL17: {
         // #30: the first node that needs a value a worker answers. The
         // whole round starts here, and the walk stops once.
-        if (WM_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
+        if (mrb_unlikely((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                             value_round_start(r, n, status))) {
           return mrb_nil_value();
         }
@@ -1736,7 +1736,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         if (facts.method == flow::Method::kGet || facts.method == flow::Method::kHead) {
           // #30: the first node that needs a value a worker answers. The
           // whole round starts here, and the walk stops once.
-          if (WM_UNLIKELY((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
+          if (mrb_unlikely((res.value_jobs | res.value_watch) != 0 && !res.run.values_started &&
                               value_round_start(r, n, status))) {
             return mrb_nil_value();
           }
@@ -1774,7 +1774,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
               halted = true;
               continue;
             }
-            if (WM_UNLIKELY(!mrb_string_p(v))) {
+            if (mrb_unlikely(!mrb_string_p(v))) {
               mrb_raise(mrb, E_TYPE_ERROR, "the body handler must return a String");
             }
             // response.file= and response.error_asset already named the
@@ -1847,7 +1847,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       }
       // ANY callback may answer with an Integer, and then that integer
       // IS the response status - webmachine-ruby's own convention.
-      if (WM_UNLIKELY(mrb_integer_p(v))) {
+      if (mrb_unlikely(mrb_integer_p(v))) {
         status = halt_of(r, v, res.node_sym[i]);
         halted = true;
         continue;
@@ -1883,7 +1883,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   out.mrb = mrb;
 
   for (const NamedSym& cb : kUnhonored) {
-    if (WM_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
+    if (mrb_unlikely(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
                         instance_defined(mrb, klass, cb.sym))) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                  "%s is defined but i18n/charset conversion does not exist in this tree",
@@ -1891,14 +1891,14 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
   for (const NamedSym& cb : kKonstOnly) {
-    if (WM_UNLIKELY(instance_defined(mrb, klass, cb.sym))) {
+    if (mrb_unlikely(instance_defined(mrb, klass, cb.sym))) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                  "%s shapes the compiled vectors - declare it konst (def self.%s)", cb.name,
                  cb.name);
     }
   }
   for (const NamedSym& cb : kWorkOnly) {
-    if (WM_UNLIKELY(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined)) {
+    if (mrb_unlikely(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined)) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                  "%s does work, so it runs per request - declare it on the instance (def %s), "
                  "not on the class: def self.%s would be asked once at setup and never again",
@@ -1998,19 +1998,19 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
           what = kJobExpires;
           cb = &out.cb_expires;
         }
-        if (WM_UNLIKELY(cb == nullptr)) {
+        if (mrb_unlikely(cb == nullptr)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "compute :%n names no callback a worker can answer - a node's own callback, "
                      "or generate_etag, last_modified or expires",
                      want);
         }
-        if (WM_UNLIKELY(!cb->has)) {
+        if (mrb_unlikely(!cb->has)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "compute :%n, but %n is not defined - write it as def self.%n and answer "
                      "with a Webmachine::ComputeTask",
                      want, want, want);
         }
-        if (WM_UNLIKELY(!cb->on_class)) {
+        if (mrb_unlikely(!cb->on_class)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "compute :%n, but %n is defined on the instance - a declared block carries "
                      "no environment, so it can use nothing of an instance. Write def self.%n",
@@ -2023,13 +2023,13 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
       // over carries no environment - a dumped proc cannot - so it
       // needs nothing of an instance, and an instance form would only
       // promise state the worker can never see.
-      if (WM_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+      if (mrb_unlikely((out.dynamic & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "compute :%n, but %n is not defined - write it as def self.%n and answer "
                    "with a Webmachine::ComputeTask",
                    want, want, want);
       }
-      if (WM_UNLIKELY((out.node_on_class & (uint64_t{1} << at)) == 0)) {
+      if (mrb_unlikely((out.node_on_class & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "compute :%n, but %n is defined on the instance - a declared block carries "
                    "no environment, so it can use nothing of an instance. Write def self.%n",
@@ -2064,19 +2064,19 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
           what = kJobExpires;
           cb = &out.cb_expires;
         }
-        if (WM_UNLIKELY(cb == nullptr)) {
+        if (mrb_unlikely(cb == nullptr)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "watch :%n names no callback a watcher can hold - a node's own callback, "
                      "or generate_etag, last_modified or expires",
                      want);
         }
-        if (WM_UNLIKELY(!cb->has)) {
+        if (mrb_unlikely(!cb->has)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "watch :%n, but %n is not defined - write it and answer with a "
                      "Webmachine::Watcher",
                      want, want);
         }
-        if (WM_UNLIKELY((out.value_jobs & (1u << what)) != 0)) {
+        if (mrb_unlikely((out.value_jobs & (1u << what)) != 0)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                      "%n is declared both `compute` and `watch` - it answers one way or the other",
                      want);
@@ -2084,7 +2084,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
         out.value_watch |= static_cast<uint8_t>(1u << what);
         continue;
       }
-      if (WM_UNLIKELY((out.dynamic & (uint64_t{1} << at)) == 0)) {
+      if (mrb_unlikely((out.dynamic & (uint64_t{1} << at)) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "watch :%n, but %n is not defined - write it and answer with a "
                    "Webmachine::Watcher",
@@ -2148,15 +2148,15 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
     if (ct.defined) {
       const mrb_value v = call_resolved(mrb, ct, {klass, mrb_class(mrb, klass)});
-      if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
-      if (WM_UNLIKELY(!mrb_string_p(v))) {
+      if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
+      if (mrb_unlikely(!mrb_string_p(v))) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "content_type must return a String, not %v", v);
       }
       content_type.assign(RSTRING_PTR(v), RSTRING_LEN(v));
       // RFC 9110 8.3 / 12.5.1: a resource that names no media type cannot
       // be negotiated with, and c4 would have nothing to weigh an Accept
       // against. Said here, once, instead of guarded on every request.
-      if (WM_UNLIKELY(content_type.empty())) {
+      if (mrb_unlikely(content_type.empty())) {
         mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
                   "content_type must name a media type, not an empty String");
       }
@@ -2169,14 +2169,14 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     const Resolved ctp = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_types_provided));
     if (ctp.defined) {
       const mrb_value v = call_resolved(mrb, ctp, {klass, mrb_class(mrb, klass)});
-      if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
-      if (WM_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
+      if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
+      if (mrb_unlikely(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "content_types_provided must return [[type, handler]] pairs, not %v", v);
       }
       for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
         const mrb_value pair = RARRAY_PTR(v)[j];
-        if (WM_UNLIKELY(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
+        if (mrb_unlikely(!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 ||
                             !mrb_string_p(RARRAY_PTR(pair)[0]) ||
                             !mrb_symbol_p(RARRAY_PTR(pair)[1]))) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
@@ -2199,8 +2199,8 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
         const Resolved hk = resolve(mrb, mrb_class(mrb, klass), th.handler);
         if (hk.defined) {
           const mrb_value rendered = call_resolved(mrb, hk, {klass, mrb_class(mrb, klass)});
-          if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
-          if (WM_UNLIKELY(!mrb_string_p(rendered))) {
+          if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
+          if (mrb_unlikely(!mrb_string_p(rendered))) {
             mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v", th.handler,
                        rendered);
           }
@@ -2227,8 +2227,8 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     const Resolved enc = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(encodings_provided));
     if (enc.defined) {
       const mrb_value v = call_resolved(mrb, enc, {klass, mrb_class(mrb, klass)});
-      if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
-      if (WM_UNLIKELY(!mrb_hash_p(v))) {
+      if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
+      if (mrb_unlikely(!mrb_hash_p(v))) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "encodings_provided must return a Hash, not %v", v);
       }
       out.gzip_offered = mrb_hash_key_p(mrb, v, mrb_str_new_lit(mrb, "gzip"));
@@ -2244,8 +2244,8 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     if (body_k.defined) {
       const mrb_value rendered =
           call_resolved(mrb, body_k, {klass, mrb_class(mrb, klass)});
-      if (WM_UNLIKELY(mrb->exc != nullptr)) rethrow(mrb);
-      if (WM_UNLIKELY(!mrb_string_p(rendered))) {
+      if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
+      if (mrb_unlikely(!mrb_string_p(rendered))) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v", first.handler,
                    rendered);
       }
@@ -2334,11 +2334,11 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   uint16_t status = res.run.resp_code;
   // A raise voids whatever the run lent: the rescue path spells its own
   // body, and a root nobody comes back for outlives the process.
-  if (WM_UNLIKELY(res.run.zc_have && raised != FALSE)) {
+  if (mrb_unlikely(res.run.zc_have && raised != FALSE)) {
     resource_body_unlend(mrb, res.run.zc);
     res.run.zc_have = false;
   }
-  if (WM_UNLIKELY(raised != FALSE)) {
+  if (mrb_unlikely(raised != FALSE)) {
     // fsm.rb: finish_request still runs on the raise path, and it may
     // raise again, so it gets its own guarded frame - the rare path pays
     // for a second one.
@@ -2363,7 +2363,7 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   // stack names the instance or the argument, and a GC between now and
   // the answer would collect both. The register is paired with the
   // unregister in resource_resume, once per park.
-  if (WM_UNLIKELY(res.run.stopped && raised == FALSE)) {
+  if (mrb_unlikely(res.run.stopped && raised == FALSE)) {
     mrb_gc_register(mrb, res.run.live);
     for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
       mrb_gc_register(mrb, res.run.compute_task[i].block);
@@ -2382,7 +2382,7 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   res.run.vals = nullptr;
   res.run.req = nullptr;
   res.run.headers = nullptr;
-  if (WM_UNLIKELY(mrb->exc != nullptr)) {
+  if (mrb_unlikely(mrb->exc != nullptr)) {
     if (res.run.zc_have) {
       resource_body_unlend(mrb, res.run.zc);
       res.run.zc_have = false;
@@ -2612,7 +2612,7 @@ mrb_value resource_compute(mrb_state* mrb, mrb_value self) {
     mrb_iv_set(mrb, self, MRB_IVSYM(computed), list);
   }
   for (mrb_int i = 0; i < n; i++) {
-    if (WM_UNLIKELY(!mrb_symbol_p(names[i]))) {
+    if (mrb_unlikely(!mrb_symbol_p(names[i]))) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "compute wants a symbol, and got %v", names[i]);
     }
     mrb_ary_push(mrb, list, names[i]);
@@ -2637,7 +2637,7 @@ mrb_value resource_watch(mrb_state* mrb, mrb_value self) {
     mrb_iv_set(mrb, self, MRB_IVSYM(watched), list);
   }
   for (mrb_int i = 0; i < n; i++) {
-    if (WM_UNLIKELY(!mrb_symbol_p(names[i]))) {
+    if (mrb_unlikely(!mrb_symbol_p(names[i]))) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "watch wants a symbol, and got %v", names[i]);
     }
     mrb_ary_push(mrb, list, names[i]);

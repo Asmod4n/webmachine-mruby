@@ -598,7 +598,7 @@ class Ring {
   // Never null on return, or a raise: see sqe_or_raise.
   struct io_uring_sqe* sqe() {
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-    if (WM_LIKELY(s != nullptr)) return s;
+    if (mrb_likely(s != nullptr)) return s;
     return sqe_or_raise(mrb_, &ring_);
   }
 
@@ -659,7 +659,7 @@ class Ring {
   void on_log(uint16_t gen, uint32_t stream, struct io_uring_cqe* cqe) {
     Logger* lg = stream == kStreamError ? app_.error_log() : app_.access_log();
     if (lg == nullptr) return;
-    if (WM_UNLIKELY(cqe->res < 0)) {
+    if (mrb_unlikely(cqe->res < 0)) {
       if (stream == kStreamError && cqe->res == -ECANCELED) return;
       fatalf("%s log write failed: %s - refusing to drop lines",
              stream == kStreamError ? "error" : "access", std::strerror(-cqe->res));
@@ -671,7 +671,7 @@ class Ring {
       return;
     }
     const size_t took = static_cast<size_t>(cqe->res);
-    if (WM_UNLIKELY(took < lg->flight.size())) {
+    if (mrb_unlikely(took < lg->flight.size())) {
       lg->flight.erase(0, took);
       arm_access_write(lg);
       return;
@@ -776,7 +776,7 @@ class Ring {
   void arm_recv(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
-    if (WM_UNLIKELY(c.tls != nullptr)) {
+    if (mrb_unlikely(c.tls != nullptr)) {
       if (!c.tls->offloaded) {
         // ONE completion at a time while the exchange runs. The moment it
         // is done this process must stop reading: bytes it takes off the
@@ -817,7 +817,7 @@ class Ring {
   void tls_advance(uint32_t idx) {
     Conn& c = conns_[idx];
     ktls_step step = KTLS_READING;
-    if (WM_UNLIKELY(ktls_exchange_step(c.tls->x, &step) != 0)) {
+    if (mrb_unlikely(ktls_exchange_step(c.tls->x, &step) != 0)) {
       conn_failed("tls: the key exchange failed");
     }
     // Unconditional and after the step, because ktls.h says a step that
@@ -855,7 +855,7 @@ class Ring {
     for (int dir = 0; dir < 2; dir++) {
       size_t len = 0;
       const void* info = ktls_crypto_info(c.tls->x, static_cast<ktls_direction>(dir), &len);
-      if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[dir])) {
+      if (mrb_unlikely(info == nullptr || len > sizeof c.tls->info[dir])) {
         conn_failed("tls: the agreed keys are not a shape the kernel takes");
       }
       std::memcpy(c.tls->info[dir], info, len);
@@ -910,12 +910,12 @@ class Ring {
   // read is armed again only once the kernel has the key.
   void tls_next_receive_key(uint32_t idx) {
     Conn& c = conns_[idx];
-    if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
+    if (mrb_unlikely(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
       conn_failed("tls: the key update could not be answered");
     }
     size_t len = 0;
     const void* info = ktls_crypto_info(c.tls->x, KTLS_RX, &len);
-    if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[KTLS_RX])) {
+    if (mrb_unlikely(info == nullptr || len > sizeof c.tls->info[KTLS_RX])) {
       begin_close(idx);
       return;
     }
@@ -954,10 +954,10 @@ class Ring {
     const uint32_t idx = done.idx;
     const uint16_t gen = done.gen;
     struct io_uring_cqe* const cqe = done.cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen || c.tls == nullptr) return;
-    if (WM_UNLIKELY(cqe->res < 0)) {
+    if (mrb_unlikely(cqe->res < 0)) {
       conn_failed(c.tls->offloaded ? "tls: setsockopt(TLS_RX) for a key update"
                                    : "tls: setsockopt(TLS_RX)",
                   cqe->res);
@@ -1007,12 +1007,12 @@ class Ring {
     Conn& c = conns_[idx];
     if (c.tls == nullptr || !c.tls->offloaded) return false;
     if (c.tls->tx_limit == 0 || c.tls->tx_records < c.tls->tx_limit) return false;
-    if (WM_UNLIKELY(ktls_next_key(c.tls->x, KTLS_TX) != 0)) {
+    if (mrb_unlikely(ktls_next_key(c.tls->x, KTLS_TX) != 0)) {
       conn_failed("tls: the send key could not be turned before its record limit");
     }
     size_t len = 0;
     const void* info = ktls_crypto_info(c.tls->x, KTLS_TX, &len);
-    if (WM_UNLIKELY(info == nullptr || len > sizeof c.tls->info[KTLS_TX])) {
+    if (mrb_unlikely(info == nullptr || len > sizeof c.tls->info[KTLS_TX])) {
       conn_failed("tls: the turned send key is not a shape the kernel takes");
     }
     std::memcpy(c.tls->info[KTLS_TX], info, len);
@@ -1032,10 +1032,10 @@ class Ring {
     const uint32_t idx = done.idx;
     const uint16_t gen = done.gen;
     struct io_uring_cqe* const cqe = done.cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;
-    if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX) for a record limit", cqe->res);
+    if (mrb_unlikely(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX) for a record limit", cqe->res);
     send_done(idx);
   }
 
@@ -1122,7 +1122,7 @@ class Ring {
     Conn& c = conns_[idx];
     if (c.tls == nullptr || !c.tls->offloaded) return;
     const int cmsg_type = ktls_record_type_set_cmsg();
-    if (WM_UNLIKELY(cmsg_type < 0)) return;
+    if (mrb_unlikely(cmsg_type < 0)) return;
 
     typename Conn::Tls& t = *c.tls;
     t.bye_iov.iov_base = t.bye;
@@ -1136,7 +1136,7 @@ class Ring {
     cm->cmsg_level = ktls_sol_tls();
     cm->cmsg_type = cmsg_type;
     cm->cmsg_len = CMSG_LEN(1);
-    if (WM_UNLIKELY(ktls_record_type_encode(KTLS_RECORD_ALERT, CMSG_DATA(cm), 1) != 1)) return;
+    if (mrb_unlikely(ktls_record_type_encode(KTLS_RECORD_ALERT, CMSG_DATA(cm), 1) != 1)) return;
     t.bye_msg.msg_controllen = CMSG_SPACE(1);
 
     struct io_uring_sqe* s = sqe();
@@ -1186,7 +1186,7 @@ class Ring {
     if (!(cqe->flags & IORING_CQE_F_MORE)) arm_accept(li);
     if (cqe->res < 0) return;
     const uint32_t idx = static_cast<uint32_t>(cqe->res);
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     c.gen++;
     c.live = true;
@@ -1213,10 +1213,10 @@ class Ring {
     // hands it anything else; arm_recv reads this to know which shape it
     // is submitting, so it is set before the first read is armed.
     c.tls.reset();
-    if (WM_UNLIKELY(tls_keys_[li] != nullptr)) {
+    if (mrb_unlikely(tls_keys_[li] != nullptr)) {
       c.tls.reset(new typename Conn::Tls());
       c.tls->x = ktls_exchange_open(tls_keys_[li], KTLS_SERVER);
-      if (WM_UNLIKELY(c.tls->x == nullptr)) {
+      if (mrb_unlikely(c.tls->x == nullptr)) {
         begin_close(idx);
         return;
       }
@@ -1268,33 +1268,33 @@ class Ring {
   }
 
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    if (WM_UNLIKELY(!c.live || c.gen != gen)) return;
+    if (mrb_unlikely(!c.live || c.gen != gen)) return;
 
-    if (WM_UNLIKELY(cqe->res <= 0)) {
+    if (mrb_unlikely(cqe->res <= 0)) {
       on_recv_nothing_to_parse({idx, c}, cqe);
       return;
     }
-    if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_BUFFER))) {
+    if (mrb_unlikely(!(cqe->flags & IORING_CQE_F_BUFFER))) {
       begin_close(idx);
       return;
     }
     const uint32_t bid0 = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
     const size_t total = static_cast<size_t>(cqe->res);
-    if (WM_UNLIKELY(bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize)) {
+    if (mrb_unlikely(bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize)) {
       begin_close(idx);
       return;
     }
-    if (WM_UNLIKELY(c.close_after_send)) {
+    if (mrb_unlikely(c.close_after_send)) {
       on_recv_after_close(idx, total);
       return;
     }
-    if (WM_UNLIKELY(c.tls != nullptr)) {
+    if (mrb_unlikely(c.tls != nullptr)) {
       on_recv_tls(idx, {bid0, total, cqe->flags});
       return;
     }
-    if (WM_UNLIKELY(c.idle)) {
+    if (mrb_unlikely(c.idle)) {
       c.idle = false;
       c.deadline_s = now_s_ + header_timeout_;
     }
@@ -1308,7 +1308,7 @@ class Ring {
     while (left > 0) {
       const size_t n = left < kBufSize ? left : kBufSize;
       size_t off = 0;
-      if (WM_UNLIKELY(__builtin_mul_overflow(static_cast<size_t>(bid),
+      if (mrb_unlikely(__builtin_mul_overflow(static_cast<size_t>(bid),
                                              static_cast<size_t>(kBufSize), &off))) {
         begin_close(idx);
         return;
@@ -1337,12 +1337,12 @@ class Ring {
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would
     // ever come back to collect it.
-    if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
-    if (WM_UNLIKELY(closing)) {
+    if (mrb_unlikely(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
+    if (mrb_unlikely(closing)) {
       round_closed(idx, c);
       if (!c.live) return;
     }
-    if (WM_UNLIKELY(!(cqe->flags & IORING_CQE_F_MORE))) rearm_.push_back(idx);
+    if (mrb_unlikely(!(cqe->flags & IORING_CQE_F_MORE))) rearm_.push_back(idx);
   }
 
   // The App will take nothing more on this connection.
@@ -1375,8 +1375,8 @@ class Ring {
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would ever
     // come back to collect it.
-    if (WM_UNLIKELY(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
-    if (WM_UNLIKELY(closing)) round_closed(idx, c);
+    if (mrb_unlikely(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
+    if (mrb_unlikely(closing)) round_closed(idx, c);
   }
 
   // ONE contiguous stretch of plaintext to the App, and the round it
@@ -1413,7 +1413,7 @@ class Ring {
     replenish_++;
 
     if (c.tls->handshaking) {
-      if (WM_UNLIKELY(total > kBufSize || ktls_exchange_feed(c.tls->x, pool_ + off, total) != 0)) {
+      if (mrb_unlikely(total > kBufSize || ktls_exchange_feed(c.tls->x, pool_ + off, total) != 0)) {
         conn_failed("tls: the peer's handshake bytes were refused");
       }
       tls_advance(idx);
@@ -1425,13 +1425,13 @@ class Ring {
     // completion here belongs to a socket that is already the kernel's.
     struct io_uring_recvmsg_out* o =
         io_uring_recvmsg_validate(pool_ + off, static_cast<int>(total), &c.tls->recv_msg);
-    if (WM_UNLIKELY(o == nullptr)) {
+    if (mrb_unlikely(o == nullptr)) {
       conn_failed("tls: a recvmsg header that does not fit its own buffer");
     }
     // A record whose plaintext did not fit, or a control message that did
     // not. Either would hand the parser a piece of something and call it
     // the whole thing, so neither is read.
-    if (WM_UNLIKELY((o->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0)) {
+    if (mrb_unlikely((o->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0)) {
       conn_failed("tls: a record too large for one buffer");
     }
     // An alert or a post-handshake record reaches a plain recv as EIO and
@@ -1444,7 +1444,7 @@ class Ring {
         record = ktls_record_type(CMSG_DATA(cm), cm->cmsg_len - CMSG_LEN(0));
       }
     }
-    if (WM_UNLIKELY(record != KTLS_RECORD_DATA)) {
+    if (mrb_unlikely(record != KTLS_RECORD_DATA)) {
       // An alert ends the connection because that is what one is for -
       // close_notify included, which is the ordinary way a peer leaves.
       if (record != KTLS_RECORD_HANDSHAKE) {
@@ -1469,12 +1469,12 @@ class Ring {
 
   // What the kernel took, and what is still owed.
   void on_send(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
     c.sending = false;
 
-    if (WM_UNLIKELY(cqe->res < 0)) {
+    if (mrb_unlikely(cqe->res < 0)) {
       send_refused(idx, c, cqe->res);
       return;
     }
@@ -1484,11 +1484,11 @@ class Ring {
     // connection's framing. So the only answer is to drop it.
     const size_t took = static_cast<size_t>(cqe->res);
     const size_t offered = c.msg_iovlen != 0 ? c.plan_byte_total : c.out.size() - c.out_sent;
-    if (WM_UNLIKELY(took != offered)) {
+    if (mrb_unlikely(took != offered)) {
       // Nobody retried this one, so what is left is still owed and the
       // stream carries on where it stopped. That is the one thing a
       // half-written response CAN do; what it cannot do is start again.
-      if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) {
+      if (mrb_unlikely(c.tls != nullptr) && c.tls->offloaded) {
         send_resume(idx, c, took);
         return;
       }
@@ -1496,7 +1496,7 @@ class Ring {
       return;
     }
     c.deadline_s = now_s_ + send_timeout_;
-    if (WM_UNLIKELY(c.tls != nullptr) && c.tls->offloaded) tls_charge_records(c, took);
+    if (mrb_unlikely(c.tls != nullptr) && c.tls->offloaded) tls_charge_records(c, took);
     c.out.clear();
     c.out_sent = 0;
     c.msg_iovlen = 0;
@@ -1505,7 +1505,7 @@ class Ring {
     // flight; what the round owes next waits for that completion. The
     // null test is at THIS side of the call so a cleartext send does not
     // make one.
-    if (WM_UNLIKELY(c.tls != nullptr) && tls_turn_send_key(idx)) return;
+    if (mrb_unlikely(c.tls != nullptr) && tls_turn_send_key(idx)) return;
     send_done(idx);
   }
 
@@ -1541,7 +1541,7 @@ class Ring {
     Conn& c = conns_[idx];
     // The handshake's own bytes, now on the wire as themselves. Only once
     // nothing is left may the kernel be given the write key.
-    if (WM_UNLIKELY(c.tls != nullptr) && !c.tls->offloaded) {
+    if (mrb_unlikely(c.tls != nullptr) && !c.tls->offloaded) {
       if (c.next.empty()) {
         if (c.tls->handshaking) arm_recv(idx);
         else tls_handover(idx);
@@ -1571,7 +1571,7 @@ class Ring {
     // The same shape as arm_compute_task: the answer is no on every
     // round that does not name a file, and file_take is a call into
     // another translation unit to hear it.
-    if (WM_LIKELY(!App::file_waiting(c.app))) return;
+    if (mrb_likely(!App::file_waiting(c.app))) return;
     if (c.file_io != nullptr && c.file_io->reading) return;  // its buffer is still under a live read
     const char* path = app_.file_take(c.app);
     if (path == nullptr) return;
@@ -1621,7 +1621,7 @@ class Ring {
 
   // One readiness for one watcher. The block decides what happens next.
   void on_watch(uint32_t idx, uint16_t gen, uint8_t slot, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;
     // A poll that failed says the descriptor is gone. The block hears
@@ -1651,7 +1651,7 @@ class Ring {
     Conn& c = conns_[idx];
     // Almost every round asks and almost none has a job. Ask first, and
     // build nothing until the answer is yes.
-    if (WM_LIKELY(!App::compute_task_waiting(c.app))) return;
+    if (mrb_likely(!App::compute_task_waiting(c.app))) return;
     if (compute_.workers() == 0) {
       // One per core the process may use, less the reactor's own. Every
       // worker opens an mrb_state of its own, and nothing counts those
@@ -1745,7 +1745,7 @@ class Ring {
   // response.file takes.
   void on_compute_task(uint32_t idx, uint16_t gen, uint8_t both, struct io_uring_cqe* cqe) {
     (void)cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     const uint8_t park = static_cast<uint8_t>(both >> 4);
     const uint8_t slot = static_cast<uint8_t>(both & 0x0f);
@@ -1786,7 +1786,7 @@ class Ring {
     const uint32_t idx = done.idx;
     const uint16_t gen = done.gen;
     struct io_uring_cqe* const cqe = done.cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) {
       arm_file_close(idx, cqe->res >= 0 ? cqe->res : -1, gen);
@@ -1811,7 +1811,7 @@ class Ring {
     const uint32_t idx = done.idx;
     const uint16_t gen = done.gen;
     struct io_uring_cqe* const cqe = done.cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     const int fd = c.file_io->fd;
     c.file_io->fd = -1;
@@ -1873,7 +1873,7 @@ class Ring {
     const uint32_t idx = done.idx;
     const uint16_t gen = done.gen;
     struct io_uring_cqe* const cqe = done.cqe;
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     c.file_io->reading = false;
     const int fd = c.file_io->fd;
@@ -1943,10 +1943,10 @@ class Ring {
   // The peer's RAW sockaddr for the log; "-" and one line if the kernel
   // has no such cmd.
   void on_peer(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
-    if (WM_UNLIKELY(cqe->res < 0)) {
+    if (mrb_unlikely(cqe->res < 0)) {
       static bool warned = false;
       if (!warned) {
         warned = true;
@@ -1965,11 +1965,11 @@ class Ring {
 
   // The round's byte bound, from the socket's own books.
   void on_meminfo(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
     size_t cap = Conn::kRoundFloor;
-    if (WM_LIKELY(cqe->res >= 0)) {
+    if (mrb_likely(cqe->res >= 0)) {
       const uint32_t used = c.meminfo[SK_MEMINFO_WMEM_QUEUED] > c.meminfo[SK_MEMINFO_WMEM_ALLOC]
                                 ? c.meminfo[SK_MEMINFO_WMEM_QUEUED]
                                 : c.meminfo[SK_MEMINFO_WMEM_ALLOC];
@@ -1989,7 +1989,7 @@ class Ring {
     // kMsgIovMax was 1024 entries, 16 KB, on every connection that ever
     // lent - and a slow reader holds it for as long as it stalls.
     const unsigned want = req.iovlen + 1;  // + the sink head, when it prepends
-    if (WM_UNLIKELY(c.msg_iov_cap < want)) {
+    if (mrb_unlikely(c.msg_iov_cap < want)) {
       c.msg_iov_heap = std::make_unique<struct iovec[]>(want);
       c.msg_iov_cap = want;
     }
@@ -2088,7 +2088,7 @@ class Ring {
         case detail::kLog: on_log(gen, idx, cqe); break;
         case detail::kPeer: on_peer(idx, gen, cqe); break;
         case detail::kClose:
-          if (WM_UNLIKELY(cqe->res == -ECANCELED)) {
+          if (mrb_unlikely(cqe->res == -ECANCELED)) {
             struct io_uring_sqe* s = sqe();
             io_uring_prep_close_direct(s, idx);
             io_uring_sqe_set_data64(s, detail::tag(detail::kClose, gen, idx));
@@ -2101,7 +2101,7 @@ class Ring {
         case detail::kTlsUlp:
           // ENOTCONN is the peer having left between the accept and this
           // option: a race no arrangement avoids and nobody's fault.
-          if (WM_UNLIKELY(cqe->res < 0)) {
+          if (mrb_unlikely(cqe->res < 0)) {
             if (cqe->res == -ENOTCONN) {
               begin_close(idx);
               break;
@@ -2110,7 +2110,7 @@ class Ring {
           }
           break;
         case detail::kTlsTx:
-          if (WM_UNLIKELY(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
+          if (mrb_unlikely(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX)", cqe->res);
           break;
         // The connection is already going; a peer that will not take the
         // alert is not a thing this end can do anything about.
@@ -2140,7 +2140,7 @@ class Ring {
 
   // The one place a ConnFailed lands, whoever threw it.
   void connection_failed(uint32_t idx, const ConnFailed& f) {
-    if (WM_UNLIKELY(idx >= max_conns_)) return;
+    if (mrb_unlikely(idx >= max_conns_)) return;
     say_connection_failed(f, conns_[idx]);
     begin_close(idx);
   }
@@ -2244,7 +2244,7 @@ class Ring {
               s->flags |= IOSQE_FIXED_FILE;
               io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, c.gen, i));
             }
-          } else if (WM_UNLIKELY(c.tls != nullptr) && !c.tls->offloaded) {
+          } else if (mrb_unlikely(c.tls != nullptr) && !c.tls->offloaded) {
             // A TLS connection that ran out of time before the kernel
             // ever got its keys did not just go idle.
             connection_failed(i, ConnFailed{"tls: a handshake that never finished", -ETIMEDOUT});

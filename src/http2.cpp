@@ -510,7 +510,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
 
   // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
   // Anything else that carries :protocol is malformed.
-  if (WM_UNLIKELY(protocol_val != nullptr)) {
+  if (mrb_unlikely(protocol_val != nullptr)) {
     const bool is_connect = method_vlen == 7 && std::memcmp(method_val, "CONNECT", 7) == 0;
     const bool is_ws = protocol_vlen == 9 && http::tok_eq({protocol_val, protocol_vlen},
                                                           "websocket");
@@ -533,7 +533,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   RouteSpans spans;
   // WHATWG HTML: an event stream route answers before the ordinary
   // table, the same order h1 asks in (feed_parse).
-  if (WM_UNLIKELY(apps_[st0.listener].sse_table != nullptr)) {
+  if (mrb_unlikely(apps_[st0.listener].sse_table != nullptr)) {
     RouteSpans sspans;
     const int sr = apps_[st0.listener].sse_table->match(path_val, path_vlen, sspans);
     if (sr >= 0) {
@@ -835,7 +835,7 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
       // #30: the walk stopped. What it left cannot be read yet - it has
       // not answered - so the caller parks and calls h2_after_run when
       // the answer is back. Only a caller that CAN park ever sees this.
-      if (WM_UNLIKELY(run_stopped(*b->res))) return;
+      if (mrb_unlikely(run_stopped(*b->res))) return;
       h2_after_run(st0, q, p, status);
       return;
     } else {
@@ -1666,7 +1666,7 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   // #80: a run stopped on this connection. THIS is where it may go on and
   // nowhere else - the sink and the plan it writes into exist here, and
   // did not exist at the completion that said its answer had arrived.
-  if (WM_UNLIKELY(st.run_parked())) {
+  if (mrb_unlikely(st.run_parked())) {
     // Still owed. Nothing else may speak for this connection while a run
     // is stopped, least of all a pipelined request behind it: RFC 9112
     // 9.3.2 puts the responses out in the order the requests came.
@@ -1830,7 +1830,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // RFC 8441: on a WebSocket stream the DATA frames ARE the
         // WebSocket. What the handler answers goes back on the same
         // stream, against its window, like an event stream's ticks.
-        if (WM_UNLIKELY(stp->ws != nullptr)) {
+        if (mrb_unlikely(stp->ws != nullptr)) {
           // RFC 9113 6.9: the credit goes back FIRST. These bytes are
           // consumed the moment ws_feed reads them, and a websocket that
           // never returns its window stalls the moment the peer has sent

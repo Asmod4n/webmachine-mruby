@@ -50,16 +50,12 @@
 // A raise here is a C++ throw, and mrb_noreturn resolves to nothing
 // under -std=c++20. A function that ends in a raise says so with
 // WM_UNREACHABLE, so the compiler does not warn that a [[noreturn]]
-// function returns. The two branch hints beside it are for the cold
-// paths (.DESIGN.md #cold-paths), and MSVC has no form of them.
+// function returns. The branch hints are mruby's own, mrb_likely and
+// mrb_unlikely from mruby/common.h.
 #if defined(_MSC_VER) && !defined(__clang__)
 #define WM_UNREACHABLE() __assume(0)
-#define WM_LIKELY(x) (x)
-#define WM_UNLIKELY(x) (x)
 #else
 #define WM_UNREACHABLE() __builtin_unreachable()
-#define WM_LIKELY(x) __builtin_expect(!!(x), 1)
-#define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
 
 #if __has_include(<linux/openat2.h>)
@@ -5843,7 +5839,7 @@ class Http1 {
     std::string ef_backtrace;
     std::string ef_steering;
     char ef_hash[kFingerprintLen] = {};
-    if (WM_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
+    if (mrb_unlikely(astep.shape == AnswerStep::Shape::kException)) {
       ef.peer = st.peer;
       ef.peer_len = st.peer_len;
       ef.request_target = path;
