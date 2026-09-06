@@ -43,6 +43,12 @@ HTTP/2 header block, as bytes. A request against this resource never
 enters the VM. It is a lookup and a write. Write `def to_html` instead,
 and the method runs per request.
 
+Any callback can be `def self.`, when its answer is the same for every
+request. Four do work and must stay `def`: `process_post`,
+`create_path`, `delete_resource` and `finish_request`. The server
+refuses a class-level one of those at start, by name, because it would
+run once at setup and never again.
+
 On one core, over a unix socket, the server answers about one million
 HTTP/1.1 requests a second. Every run is in `bench/results/` with the
 command that made it.

@@ -167,6 +167,11 @@ mruby/bin/webmachine-server --app=hello.mrb --port=8080</code></pre>
   its ETag and its HTTP/2 header block, as bytes. A request against this
   resource never enters the VM. It is a lookup and a write. Write
   <code>def to_html</code> instead, and the method runs per request.</p>
+  <p>Any callback can be <code>def self.</code>, when its answer is the
+  same for every request. Four do work and must stay <code>def</code>:
+  <code>process_post</code>, <code>create_path</code>,
+  <code>delete_resource</code> and <code>finish_request</code>. The
+  server refuses a class-level one of those at start, by name.</p>
   <p>On one core, over a unix socket, the server answers about one
   million HTTP/1.1 requests a second. Every run is in
   <code>bench/results/</code> with the command that made it.</p>

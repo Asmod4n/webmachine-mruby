@@ -461,7 +461,7 @@ const NamedSym kKonstOnly[] = {
 
 // The mirror of kKonstOnly. `def self.x` means, everywhere in this tree,
 // "asked ONCE while the app is being set up, and the answer is frozen with
-// the class". That is right for a QUESTION and wrong for these five: they
+// the class". That is right for a QUESTION and wrong for these four: they
 // do WORK, and work asked once at setup is work that never happens again -
 // a class-level process_post would handle exactly zero POSTs, silently.
 // So the fold refuses them by name instead of folding them.
