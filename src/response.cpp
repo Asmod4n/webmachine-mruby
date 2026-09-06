@@ -470,9 +470,9 @@ mrb_value resource_response(mrb_state* mrb, mrb_value) {
 }  // namespace
 
 // RFC 9110: point the response surface at THIS run's Resource, or at
-// nothing - exactly request_bind's pattern (request.cpp), so a stray
-// handle from an ended run reads as "outside a run frame" instead of
-// silently touching whatever run is live now.
+// nothing. Same pattern as request_bind, so a stray handle from an
+// ended run reads as "outside a run frame" rather than touching
+// whichever run is live now.
 void response_bind(const Resource* res) { cur_ = res; }
 
 // #210: the error assets, bound once at setup the way response_bind

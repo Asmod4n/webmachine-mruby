@@ -2438,11 +2438,9 @@ struct ReqView {
   // No RFC: this server's route table and what the match captured.
   const RouteTable* table = nullptr;
   int route = -1;
-  // LENT, not carried: the match loop's own RouteSpans lives in the
-  // frame that matched, which is the frame this view is read from - so
-  // pointing at it costs one store where a copy cost 280 bytes, most of
-  // them past nbind and unreadable by contract. nullptr where nothing
-  // matched, and the accessors say so.
+  // LENT, not carried. The match loop's RouteSpans lives in the frame
+  // this view is read from, so pointing at it costs one store where a
+  // copy costs 280 bytes. nullptr where nothing matched.
   const RouteSpans* spans = nullptr;
   // RFC 9110 6.3: the header field section, in the parser's own layout.
   // Only request.headers reads it - it is the one caller that asked for
@@ -2564,10 +2562,11 @@ struct Resource {
   // hidden class, no proc, no per-resource object for the GC to mark.
   bool init_needed = false;
   // mruby: the initialize the fold RESOLVED, entered directly by the run.
-  // Object's is undef'd on Webmachine::Resource, so init_needed is simply
-  // "the author wrote one" - and mrb_obj_new is never used, because it
-  // would search for this same method twice per request (mrb_func_basic_p,
-  // then mrb_funcall_argv) to arrive where the fold already stands.
+  // Object's is undef'd on Webmachine::Resource, so init_needed means
+  // "the author wrote one".
+  //
+  // mrb_obj_new is never used: it would search for this same method
+  // twice per request to arrive where the fold already stands.
   mrb_method_t init_m = {};
   bool init_irep = false;
   enum mrb_vtype live_tt = MRB_TT_OBJECT;
@@ -2622,13 +2621,13 @@ struct Resource {
   ValueCb cb_process_post;
   ValueCb cb_finish_request;  // after the walk, ALWAYS (fsm.rb ensure)
 
-  // The old fast part, back: `dynamic` above answers "is this flow NODE
-  // decided by the VM" in one load; `cb_mask` is the same idea for "does
-  // this value callback exist", one bit per ValueCb above, so a node
-  // handler that only needs the yes/no (most calls, most of the time)
-  // never has to load the ValueCb struct itself - the payload (sym/m/
-  // irep/argc) is only touched once the bit says the answer is yes. Set
-  // once at fold, read every run.
+  // `dynamic` above answers "is this flow NODE decided by the VM" in one
+  // load. `cb_mask` answers "does this value callback exist" the same
+  // way, one bit per ValueCb.
+  //
+  // So a node handler that only needs the yes or no never loads the
+  // ValueCb itself; its payload is touched once the bit says yes. Set at
+  // the fold, read every run.
   enum CbBit : uint32_t {
     kCbKnownMethods = 1u << 0,
     kCbAllowedMethods = 1u << 1,
@@ -2735,12 +2734,12 @@ struct Resource {
     const flow::ReqFacts* facts = nullptr;
     std::string* body = nullptr;
     bool have_body = false;
-    // #210 response.error_asset: THE ENTRY, not its bytes. The error assets
-    // are mmap'd for the life of the process, and both writers already know
-    // how to put a mapped entry on the wire - Assets::wire_len/wire_iov/
-    // copy_wire on h1, Content::Src::kAsset on h2 - so this run hands over
-    // the same handle the asset tier hands over, and nothing is rooted,
-    // copied or released for it.
+    // #210 response.error_asset: THE ENTRY, not its bytes. The error
+    // assets are mapped for the life of the process, and both writers
+    // already know how to put a mapped entry on the wire.
+    //
+    // So this run hands over the same handle the asset tier does, and
+    // nothing is rooted, copied or released for it.
     const AssetEntry* asset = nullptr;
     uint16_t status = 0;
     // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
@@ -2842,9 +2841,9 @@ struct Resource {
 void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out);
 
 // One request as a bound run receives it: what the parse settled, the
-// header values the calling frame still holds (none where that frame is
-// already gone), the bytes themselves, and the smallest body worth LENDING
-// rather than copying - 0 where nothing downstream could hold a lend.
+// header values the calling frame still holds, the bytes themselves, and
+// the smallest body worth LENDING rather than copying. That last one is
+// 0 where nothing downstream could hold a lend.
 struct RunAsk {
   const flow::ReqFacts& facts;
   const http::ReqValues* vals;

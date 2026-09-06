@@ -1975,10 +1975,10 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   // first VM entry whether this node can stop.
   //
   // A NATIVE callback is not refused. It is a function pointer, and both
-  // VMs are the same process, so the pointer is the same number on
-  // either side - there is no irep to dump and none to load, and only
-  // the arguments and the answer cross, as CBOR. It is the cheaper of
-  // the two crossings, not the impossible one.
+  // VMs are the same process, so it is the same number on either side.
+  // Nothing is dumped or loaded; only the arguments and the answer
+  // cross, as CBOR. That is the cheaper crossing, not the impossible
+  // one.
   {
     const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(computed));
     const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;

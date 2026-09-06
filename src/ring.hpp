@@ -399,13 +399,10 @@ class Ring {
     // down connection by one completion (see file_reading below), so
     // freeing it on close would race that completion.
     //
-    // unique_ptr, not a raw pointer, and for the same reason iov below
-    // already is one: conns_ is a std::vector, and a raw pointer
-    // plus a hand-written destructor would delete the implicit move
-    // constructor a vector resize needs, falling back to a copy - which a
-    // unique_ptr member refuses to compile, exactly like iov already
-    // refuses it. unique_ptr keeps the move and needs no
-    // destructor of its own.
+    // unique_ptr, not a raw pointer, for the reason iov below already is
+    // one: conns_ is a vector, and a raw pointer with a destructor of its
+    // own would delete the move constructor a resize needs. unique_ptr
+    // keeps the move and needs no destructor.
     // NO RFC - this is the kernel's ABI, so the fields carry the names of
     // the ARGUMENTS they become:
     //
