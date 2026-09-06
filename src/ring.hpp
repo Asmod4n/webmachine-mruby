@@ -375,14 +375,13 @@ class Ring {
     // connection to save 36 bytes.
     uint32_t meminfo[SK_MEMINFO_VARS] = {};
 
-    // The peer's address, materialised only where it is going to be
-    // read. arm_peer runs for a logged TCP connection and nothing else,
-    // so a unix listener - and every server started without --log -
-    // carries a null pointer here instead of a sockaddr_storage, which
-    // is 128 bytes of which __ss_padding is 118. Kept for the slot's
-    // life once made, like FileIo below and for the same reason:
-    // Http1::Conn::peer points into it, and reset() clears peer_len
-    // rather than the pointer.
+    // The peer's address, made only where it will be read: a logged TCP
+    // connection. A unix listener, and every server started without
+    // --log, carries a null pointer instead of 128 bytes.
+    //
+    // Kept for the slot's life once made, like FileIo below:
+    // Http1::Conn::peer points into it, so reset() clears peer_len and
+    // not the pointer.
     struct PeerAddr {
       socklen_t addrlen = 0;
       struct sockaddr_storage addr {};
@@ -392,14 +391,13 @@ class Ring {
     std::string out;
     std::string next;
 
-    // response.file's one in-flight open. Lazy like everything else here -
-    // most connections never open a file, and `struct statx` alone is ~256
-    // bytes that used to sit inline on every slot regardless. Allocated on
-    // first use (arm_file_open, right after app_.file_take() says a file is
-    // actually wanted) and kept for the slot's life rather than freed on
-    // every close: it "outlives a torn-down connection by one completion"
-    // (see file_reading below), so tearing it down on close would race that
-    // in-flight completion.
+    // response.file's one in-flight open. Lazy like everything else
+    // here: most connections never open a file, and `struct statx` alone
+    // is about 256 bytes.
+    //
+    // Made on first use and kept for the slot's life. It outlives a torn
+    // down connection by one completion (see file_reading below), so
+    // freeing it on close would race that completion.
     //
     // unique_ptr, not a raw pointer, and for the same reason iov below
     // already is one: conns_ is a std::vector, and a raw pointer
@@ -417,11 +415,10 @@ class Ring {
     //
     // Two of them are not arguments and say so.
     struct FileIo {
-      // A PLAIN fd, not a direct descriptor: statx is the only op in this
-      // chain the kernel does not accept a fixed file for, and statting the
-      // OPENED fd (AT_EMPTY_PATH) is what keeps size and mtime describing
-      // the bytes that were actually confined - a statx by path would
-      // resolve a second time, unguarded.
+      // A PLAIN fd, not a direct descriptor: statx is the one op here the
+      // kernel takes no fixed file for. Statting the OPENED fd keeps size
+      // and mtime describing the bytes openat2 confined; a statx by path
+      // would resolve a second time, unguarded.
       int fd = -1;
       // Not an argument: how much of `nbytes` has arrived. A read may come
       // back short, so the next one resumes at buf + filled.
