@@ -103,6 +103,14 @@ class PhotoFragment < Webmachine::Resource
   PER_PAGE = 2
 
   def to_html
+    # A fragment carries no lifetime by itself: Cache-Control in the pack
+    # is a property of a FILE, and this is an answer. So the resource
+    # says it, and only where it is true - these rows change when the
+    # photographs change, which is never while the server runs.
+    #
+    # The clock, the search and the counter say nothing, so htmx asks
+    # every time, which is what they are for.
+    response.headers['cache-control'] = 'public, max-age=600'
     page = request.query['page'].to_i
     page = 1 if page < 1
     first = (page - 1) * PER_PAGE
