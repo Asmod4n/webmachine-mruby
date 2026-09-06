@@ -1,12 +1,10 @@
 # webmachine-mruby
 
-An HTTP server where the decision is made **before** the request arrives.
+**An HTTP server you write in Ruby and ship as one binary.**
 
-Webmachine's flow graph — the one from
-[webmachine-ruby](https://github.com/webmachine/webmachine-ruby) — is a
-constant here. Everything a resource can answer at setup is answered
-once, folded into that graph, and baked into the bytes that go on the
-wire. What is left for a request is what genuinely depends on it.
+It speaks HTTP/1.1, HTTP/2, WebSocket and server-sent events, serves
+files and static packs, and terminates TLS through the kernel. One
+thread, one core, no runtime to install beside it.
 
 ```ruby
 class HelloWorld < Webmachine::Resource
@@ -23,13 +21,30 @@ def main
 end
 ```
 
-That resource never enters the VM again. Its 200, its head, its ETag,
-its `Allow`, its h2 header block: all of it exists before the first
-accept. A request against it is a table lookup and a write.
-
     rake
     mruby/bin/mrbc -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb --port=8080
+
+That is a whole server. On one core it answers **232 000 requests a
+second** over TCP, where openlitespeed on the same box, in the same
+minute, answers 42 000.
+
+## Why it is that fast
+
+**The decision is made before the request arrives.**
+
+Webmachine's flow graph — the one from
+[webmachine-ruby](https://github.com/webmachine/webmachine-ruby) — is a
+constant here. Everything a resource can answer at setup is answered
+once, folded into that graph, and baked into the bytes that go on the
+wire.
+
+So the resource above never enters the VM again. Its 200, its head, its
+ETag, its `Allow`, its h2 header block: all of it exists before the
+first accept. A request against it is a table lookup and a write.
+
+**`def self.x` is a constant; `def x` is per request.** That one line is
+the whole performance model.
 
 ## What that costs, measured
 
@@ -91,10 +106,8 @@ app.add_sse       ['events'],          Clock        # text/event-stream
 ```
 
 A String is a literal segment, a Symbol binds one, `:*` is the tail.
-
-**`def self.x` is a constant; `def x` is per request.** That one line is
-the whole performance model. `examples/` has a file per kind, and
-`examples/site/` is a four-page htmx site served from a pack.
+`examples/` has a file per kind, and `examples/site/` is a four-page
+htmx site served from a pack.
 
 The server runs bytecode, never source: `mrbc` first, always.
 

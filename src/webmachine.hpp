@@ -709,17 +709,13 @@ class ArenaGuard {
 };
 
 // How many segments of a path one route may bind. It is mruby's own
-// number: vm.c holds a mrb_funcall's arguments in mrb_value
-// argv[MRB_FUNCALL_ARGC_MAX] and raises above it rather than growing a
-// buffer, which is this array's shape exactly. mrbconf.h declares the
-// knob but nothing defines it unless a build does, so the fallback here
-// is vm.c's own - and a build that lowers the VM's number lowers this
-// one with it, because the two are the same decision.
+// number: a mrb_funcall holds its arguments in an array of this size and
+// raises above it. A build that lowers the VM's number lowers this one,
+// because the two are one decision.
 //
-// The refusal moves EARLIER than mruby can move it: a mrb_funcall is
-// only known when it happens, while a route is known when the app
-// registers it, so binding() refuses the one Symbol past the limit at
-// add_route and the match loop never tests anything.
+// The refusal comes EARLIER than mruby can make it. A route is known
+// when the app registers it, so add_route refuses the Symbol past the
+// limit and the match loop tests nothing.
 #ifdef MRB_FUNCALL_ARGC_MAX
 inline constexpr size_t kMaxRouteBindings = MRB_FUNCALL_ARGC_MAX;
 #else
@@ -2014,17 +2010,13 @@ struct Conneg {
 };
 
 // RFC 9110 12.5.1: an exact type/subtype is the most specific match a
-// range can be, so a first range that IS the offered type answers the
-// whole question - no q ordering to do, nothing later that can outrank
-// it. One memcmp of the type's own length, whatever the client sent
-// after it: htmx 4's `text/html` and a browser's
-// `text/html,application/xhtml+xml,...,*/*;q=0.8` cost the same here.
+// range can be. So a first range that IS the offered type answers the
+// whole question - nothing later can outrank it, and one memcmp
+// settles it whatever follows.
 //
-// Deliberately narrow. A parameter (`;q=`, `;charset=`) on that first
-// range, or a case that does not match byte for byte, falls back to
-// choose_media_type, which is case-insensitive and weighs q properly.
-// This answers the common shape in constant time and refuses to guess
-// about any other.
+// Deliberately narrow: a parameter on that first range, or a case that
+// does not match byte for byte, falls back to choose_media_type, which
+// is case-insensitive and weighs q properly.
 inline bool accept_is_exact(std::string_view accept, std::string_view type) {
   const char* const a = accept.data();
   const size_t n = accept.size();
@@ -2202,14 +2194,14 @@ inline void uri_join(UriRef r, std::string& out) {
   out.append(path, payload_length);
 }
 
-// RFC 9110 5.1 / 5.6.2: a field name is a token. Every byte an app can
-// put into an answer's head passes one of the two writers that call this
-// - response.cpp's Headers#[]= and resource.cpp's `field` - so this is
-// where the shape is decided and nowhere after. Without it an app that
-// answers `generate_etag` with "v1\r\nSet-Cookie: a=b", or names an
-// options() key with a CRLF in it, splices whole fields into the answer
-// - and an app that echoes a request header into a response one hands
-// that splice to whoever sent the request.
+// RFC 9110 5.1 / 5.6.2: a field name is a token. Both writers that put
+// a field in an answer call this, so the shape is decided here and
+// nowhere after.
+//
+// Without it, an app that answers `generate_etag` with
+// "v1\r\nSet-Cookie: a=b" splices a whole field into the answer - and
+// an app that echoes a request header hands that splice to whoever
+// sent the request.
 inline bool field_name_ok(const char* p, size_t n) {
   if (n == 0) return false;
   for (size_t i = 0; i < n; i++) {
@@ -2488,15 +2480,14 @@ void request_disp_override(const char* p, size_t n);
 namespace webmachine {
 // WEBMACHINE'S NAMES, AND THEY STAY. Every cb_* below is a callback of
 // webmachine-ruby's Webmachine::Resource::Callbacks, spelled exactly as
-// an app spells it - content_types_provided, generate_etag,
-// moved_permanently?, post_is_create?. That IS the contract; RFC 9110
-// names none of them, it only says what each one decides (the clause
-// sits in kFlow, one per node). Which is why the abbreviations went:
-// cb_ct_provided was not a name an app could grep for.
+// an app spells it: content_types_provided, generate_etag,
+// moved_permanently?, post_is_create?. That is the contract, and it is
+// why no name here is abbreviated - an app has to be able to grep for
+// it. RFC 9110 names none of them; it says what each one decides, and
+// that clause sits in kFlow.
 //
-// The run_* slots below are ours and no source names them: they hold what
-// ONE request's callbacks produced, are reset at frame entry, and keep
-// their capacity across requests on purpose.
+// The run_* slots are ours. They hold what ONE request's callbacks
+// produced, are reset at frame entry, and keep their capacity.
 // A C++ resource callback. Arguments arrive as ARGUMENTS, never through
 // mrb_get_args, so the function never reads the callinfo and may be
 // entered straight from C++ - which is what makes it cheaper than the
