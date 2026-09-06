@@ -140,10 +140,10 @@ void read_wire_header(WireSink into, http::Field f) {
   }
 }
 
-// RFC 9112 3/9.3: the head ONE bound run spelled for itself - the status
-// it carries, the Date line for this second, its own Content-Type and
-// field lines, the framing this connection asked for, and the length it
-// declares where it declares one. No prebuilt head can take this shape.
+// RFC 9112 3/9.3: the head ONE bound run spelled for itself. Its status,
+// the Date line for this second, its own Content-Type and field lines,
+// this connection's framing, and a length where it declares one. No
+// prebuilt head can take that shape.
 struct SpelledHead {
   uint16_t status;
   const char* date;

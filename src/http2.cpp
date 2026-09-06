@@ -1246,11 +1246,12 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
     keep.end_headers = true;
     keep.half_closed_remote = true;
   }
-  // #210: and an asset parks the same way the asset TIER parks one, with
-  // the same Src - so h2_flush_pending frames it out of the mapping and
-  // the sweep there closes the stream once the window has let all of it
-  // through. A head-only answer, or a p.status that sends nothing, takes
-  // no stream: no_data covers both.
+  // #210: an asset parks the way the asset TIER parks one, with the same
+  // Src. h2_flush_pending frames it out of the mapping, and the sweep
+  // there closes the stream once the window has let all of it through.
+  //
+  // A head-only answer, or a status that sends nothing, takes no stream:
+  // no_data covers both.
   const bool asset_data = run_asset != nullptr && !no_data;
   if (asset_data) {
     H2Stream& keep = h2.open(stream_id);

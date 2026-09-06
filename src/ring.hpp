@@ -535,10 +535,10 @@ class Ring {
   // process belongs to somebody else. So it raises, and the embedder's
   // Ruby sees Webmachine::Error and chooses. There is no second branch:
   // init() refuses a RingConfig without a VM, so this always has one.
-  // A failure that belongs to ONE connection. It throws, and the
-  // completion handler below catches it, says what happened and closes
-  // that connection - the process belongs to somebody else, so one
-  // peer's bad day is not its end (fatal, below, is for when it is).
+  // A failure that belongs to ONE connection. It throws, the completion
+  // handler below catches it, says what happened and closes that
+  // connection. One peer's bad day is not the process's end; `fatal`
+  // below is for when it is.
   //
   // `what` is always a string literal: the once-only reporting keys on
   // the pointer, so two calls with the same literal are the same fault.

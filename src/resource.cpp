@@ -2580,9 +2580,9 @@ void exception_facts(mrb_state* mrb, Raised out) {
 }
 
 // The public door for a C++ resource callback (#207). The wrapper keeps
-// the method callable from Ruby - an app may still subclass and call
-// super, and a bintest may poke it - while the fold records the raw
-// pointer so the engine never goes through the wrapper at all.
+// the method callable from Ruby, so an app may subclass and call super.
+// The fold records the raw pointer, so the engine never goes through the
+// wrapper at all.
 void define_native(mrb_state* mrb, struct RClass* c, Native n) {
   native_table().push_back(NativeEntry{c, n.sym, n.fn});
   mrb_define_method_id(mrb, c, n.sym, native_shim, n.aspec);

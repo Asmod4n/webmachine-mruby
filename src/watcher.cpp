@@ -213,10 +213,9 @@ double watcher_timeout(mrb_value v) {
   return d != nullptr ? d->timeout : 0.0;
 }
 
-// The deadline, delivered. The answer says whether the wait goes on;
-// `said` takes the block's own value, which is the run's answer when the
-// block ends the wait here - a watcher that gives up still has something
-// to say, and dropping it would make a timeout answer nil forever.
+// The deadline, delivered. The answer says whether the wait goes on, and
+// `said` takes the block's own value - a watcher that gives up still has
+// something to say, and dropping it would make every timeout answer nil.
 bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said) {
   const mrb_value blk = mrb_iv_get(mrb, v, MRB_IVSYM(block));
   const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), v};

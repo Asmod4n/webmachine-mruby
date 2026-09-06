@@ -52,9 +52,8 @@ constexpr char kTagOpen[] = "{{asset:";
 constexpr size_t kTagOpenLen = sizeof(kTagOpen) - 1;
 
 // What a page may weigh before this stops filling it. A file this big is
-// not a page, and answering it from memory would cost more than the tag
-// is worth - it is served as it lies, tag and all, which is visible on
-// the page and therefore says so.
+// not a page, so it is served as it lies. The tag stays visible on the
+// page, which is how a reader hears about it.
 constexpr size_t kFillMax = 4u * 1024 * 1024;
 
 // The whole file, or empty when it cannot be read.
