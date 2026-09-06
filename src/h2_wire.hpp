@@ -2,12 +2,14 @@
 #define WEBMACHINE_H2_WIRE_HPP
 
 // RFC 9113 4/6 and RFC 7541: the h2 wire layer, and nothing above it.
-// What a frame IS - the type and flag and error and settings numbers, the
-// preface, the nine header bytes, the big-endian reads, and one HPACK
-// field encode - is the same whether the bytes are being written by a
-// server answering or a client asking. It lives here so the two ends
-// cannot drift: src/http2.cpp and bench/load/load.cpp both include this,
-// and a misread length is a bug in ONE place.
+//
+// What a frame IS - its type, flag, error and settings numbers, the
+// preface, the nine header bytes, the big-endian reads, one HPACK field
+// encode - is the same for a server answering and a client asking.
+//
+// It lives here so the two ends cannot drift: src/http2.cpp and
+// bench/load/load.cpp both include it, and a misread length is a bug in
+// ONE place.
 //
 // Header-only and free of everything else in this tree: no mruby, no
 // io_uring, no Conn, no state. Only <cstddef>/<cstdint> and ls-hpack.

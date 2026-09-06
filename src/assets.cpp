@@ -56,11 +56,11 @@ void spell_hex8(char* out, uint32_t v) {
 // so nothing here has a URL to join or a number to spell.
 constexpr uint16_t kExtraImgTag = 0x574d;
 
-// 0x574E is the second, written by the pack task: the Cache-Control field
-// value for THIS entry. A freshness lifetime is a property of the file,
-// not of the server - a hashed bundle may be kept for a year, an
-// index.html for a minute - so the pack says it, once, and the head is
-// built with it at open. No request reads this.
+// 0x574E is the second, written by the pack task: the Cache-Control
+// value for THIS entry. A lifetime belongs to the file rather than to
+// the server - a hashed bundle may be kept for a year, an index.html
+// for a minute. The pack says it once, the head is built with it at
+// open, and no request reads it.
 constexpr uint16_t kExtraCacheControl = 0x574e;
 
 // 0x574F is the table the pack task writes. An entry there is NAMED by a

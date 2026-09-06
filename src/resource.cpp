@@ -663,10 +663,11 @@ void date_line(Run& r, std::string_view name, int64_t epoch) {
   field(r, {name, {buf, http::kDateLen}});
 }
 
-// RFC 9110 12.5.2/12.5.3/12.5.4: what follows the Accept nodes. d4, e5 and
-// f6 each ask whether the request named their field, and the conneg node
-// behind each is reachable only through it, so a request naming none of the
-// three walks d4 -> e5 -> f6 -> g7 and cannot say a word on the way.
+// RFC 9110 12.5.2/12.5.3/12.5.4: what follows the Accept nodes.
+//
+// d4, e5 and f6 each ask whether the request named their field, and the
+// conneg node behind each is reachable only through it. A request that
+// names none of the three walks straight to g7.
 Node after_accept(const flow::ReqFacts& facts) {
   return facts.has_accept_language || facts.has_accept_charset || facts.has_accept_encoding
              ? Node::kD4

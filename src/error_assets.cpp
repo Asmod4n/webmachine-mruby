@@ -154,13 +154,14 @@ std::string error_assets_path(const char* configured) {
     if (end == std::string::npos) break;
     at = end + 1;
   }
-  // Nothing installed. A server started out of its own build tree is the
-  // ordinary case while a thing is being written, and it should find the
-  // file lying right there rather than answer every error in plain text
-  // because nobody ran `make install` yet. So: walk UP from the binary
-  // and take the first ancestor that carries the shipped layout. That is
-  // one stat per level at startup, and it covers both shapes with the
-  // same walk - /usr/bin -> /usr/share/webmachine-mruby/, and a build
+  // Nothing installed. A server started out of its own build tree is
+  // ordinary while something is being written, and it should find the
+  // file lying right there.
+  //
+  // So walk UP from the binary and take the first ancestor that carries
+  // the shipped layout. One stat per level at startup, and the same walk
+  // covers both shapes - /usr/bin -> /usr/share/webmachine-mruby/, and a
+  // build
   // directory somewhere under the checkout -> the checkout's share/.
   char exe[4096];
   const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof exe - 1);

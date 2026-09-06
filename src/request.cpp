@@ -435,10 +435,10 @@ namespace http {
 const struct phr_header* NamedFieldIndex::find(NamedField f, HeaderList hs) const {
   if (hs.items == nullptr || !carries(f)) return nullptr;
   const uint8_t i = at[static_cast<uint8_t>(f)];
-  // A position this array cannot reach is no field. The producers all
-  // build this beside the array they derived it from, so this branch
-  // should never be taken - and it is here precisely so that "should"
-  // is not what stands between a bad index and a read past the end.
+  // A position this array cannot reach is no field. Every producer
+  // builds the index beside the array it came from, so this branch
+  // should never be taken - and "should" is not what may stand between
+  // a bad index and a read past the end.
   return i < hs.count ? &hs.items[i] : nullptr;
 }
 }  // namespace http

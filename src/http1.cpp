@@ -445,11 +445,8 @@ void Http1::on_tick() {
   for (Bundle& b : bundles_) {
     patch_date(b.ok_head, core);
     // RFC 9110 6.6.1: the Date is the time the message was made, so
-    // every head that goes on the wire needs the stamp. ok_prefix used
-    // to serve a DYNAMIC body only, and the test stayed behind when
-    // 39b8c1a gave it the konst body as well - so a konst answer went
-    // out with the placeholder, "Sun, 00 Jan 1970 00:00:00 GMT", on the
-    // fastest path this server has.
+    // EVERY head that goes on the wire is stamped - ok_prefix included,
+    // which serves the konst body as well as a dynamic one.
     patch_date(b.ok_prefix, core);
     if (b.gzip_ok) {
       patch_date(b.ok_prefix_vary, core);

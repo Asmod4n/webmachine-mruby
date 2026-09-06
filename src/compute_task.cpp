@@ -792,11 +792,10 @@ void ComputePool::worker(Impl* impl, unsigned me) {
     s.worker_name = thread_name;
     run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
 
-    // The answer goes home as a completion. The reactor reads the slot
-    // only after this arrives, and wrote it only before the job was
-    // sent, so the ring's own ordering is the whole synchronisation -
-    // there is no lock here because there is nothing two threads touch
-    // at the same time.
+    // The answer goes home as a completion. The reactor wrote the slot
+    // before the job was sent and reads it after this arrives, so the
+    // ring's ordering is the whole synchronisation. There is no lock
+    // because no two threads touch anything at the same time.
     struct io_uring_sqe* sqe = nullptr;
     while ((sqe = io_uring_get_sqe(ring)) == nullptr) io_uring_submit(ring);
     io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, s.answer, 0);

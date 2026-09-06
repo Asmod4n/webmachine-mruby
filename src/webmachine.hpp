@@ -1671,16 +1671,13 @@ struct ReqValues {
   NamedFieldIndex named;
 };
 
-// #80: every pointer in ReqValues, in ONE place. A parked run has to
-// rebase all of them onto bytes it owns, and rebasing eleven of twelve
-// is a dangling pointer that only bites the run that stopped - which is
-// the rarest path there is, so it would be found in production and not
-// here. Written as member pointers rather than as twelve assignments so
-// there is one list to be right about.
+// #80: every pointer in ReqValues, in ONE place. A parked run rebases
+// all of them onto bytes it owns, and rebasing eleven of twelve leaves
+// a dangling pointer on the rarest path there is. One list is one thing
+// to be right about.
 //
-// The size assert is the whole guard: a field added to the struct above
-// changes it, and the build stops until the field is listed here too. It
-// fixes nothing else - what a byte MEANS is not this list's business.
+// The size assert is the guard: add a field to the struct above and the
+// build stops until it is listed here too.
 inline constexpr const char* ReqValues::*kReqValueSpans[] = {
     &ReqValues::log_ref,       &ReqValues::log_ua,        &ReqValues::accept_encoding,
     &ReqValues::if_match,      &ReqValues::if_none_match, &ReqValues::range,
@@ -2767,18 +2764,13 @@ struct Resource {
     uint16_t resp_code = 0;
     bool redirect = false;
     // The conneg choice when the head cannot stay prebuilt: non-empty
-    // means the writer spells THIS Content-Type in a dynamic head
-    // instead of using the baked prefix. Empty = prebuilt path,
-    // byte-identical to today.
+    // means the writer spells THIS Content-Type in a dynamic head.
+    // Empty means the prebuilt path.
     //
-    // There is no second flag saying "the head went dynamic", because there
-    // is nothing a flag could say that these two buffers do not: a run needs
-    // its own head exactly when it negotiated a Content-Type (this) or
-    // produced a field line (run_headers). It used to be a bool as well, set
-    // at eight places, and BOTH writers had to OR it with run_headers being
-    // non-empty - which is the proof that it never carried the second half
-    // by itself. One of the eight places forgot to set it, and nothing
-    // broke, for the same reason.
+    // There is no flag saying "the head went dynamic", because these two
+    // buffers already say it: a run needs its own head exactly when it
+    // negotiated a Content-Type (this) or produced a field line
+    // (run_headers).
     std::string content_type;
     // n11: create_path's override of request.disp_path.
     std::string disp_path;

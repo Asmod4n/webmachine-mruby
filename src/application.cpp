@@ -649,11 +649,12 @@ mrb_value app_ready(mrb_state* mrb, mrb_value self) {
 
 // Webmachine::Application and its two hidden facade classes.
 void application_init(mrb_state* mrb, struct RClass* wm) {
-  // The ceilings, named once. mrblib's Config refuses a value against
-  // these at the moment it is assigned - which is what makes a refusal
-  // catchable where it was caused - and read_config checks them again on
-  // the way out, because Struct#[]= reaches a member without a writer.
-  // One source, two readers; the numbers are not written down in Ruby.
+  // The ceilings, named once, and never written down in Ruby.
+  //
+  // mrblib's Config refuses a value against these as it is assigned, so
+  // a refusal is catchable where it was caused. read_config checks them
+  // again on the way out, because Struct#[]= reaches a member without a
+  // writer.
   mrb_define_const_id(mrb, wm, MRB_SYM(PORT_MAX), mrb_fixnum_value(65535));
   mrb_define_const_id(mrb, wm, MRB_SYM(FILE_MAP_MAX),
                       mrb_fixnum_value(static_cast<mrb_int>(kFileMapMax)));

@@ -597,12 +597,12 @@ class Ring {
   }
 
   // Never null on return: a full SQ is drained by submitting it, and the
-  // retry then has room. io_uring_enter(2) can refuse that submit, and
-  // its ANSWER is the thing worth reading - EINTR and EAGAIN are ordinary
-  // and retried, EBUSY means the CQ is full and completions must be
-  // reaped before anything else can go in, which this call cannot do
-  // re-entrantly. Ignoring the answer, as this did, turned a recoverable
-  // ring into "broken" and then killed the process over it.
+  // retry then has room.
+  //
+  // io_uring_enter(2) can refuse that submit, and its answer decides
+  // what happens. EINTR and EAGAIN are ordinary and retried. EBUSY means
+  // the CQ is full and completions must be reaped first, which this call
+  // cannot do re-entrantly.
   struct io_uring_sqe* sqe() {
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (WM_LIKELY(s != nullptr)) return s;
@@ -828,10 +828,9 @@ class Ring {
   }
 
   // The handshake, and the only thing this connection does until it is
-  // over. mruby-ktls names no descriptor: bytes that arrived go in through
-  // feed, bytes that must go out come back through take, and the socket
-  // stays the reactor's - so what comes out of here is an ordinary send on
-  // the same slot, through the same ring, as everything else.
+  // over. mruby-ktls names no descriptor: bytes in through feed, bytes
+  // out through take, and the socket stays the reactor's. What comes out
+  // of here is an ordinary send on the same slot.
   void tls_advance(uint32_t idx) {
     Conn& c = conns_[idx];
     ktls_step step = KTLS_READING;
@@ -948,9 +947,9 @@ class Ring {
   }
 
   // The last of the three. From here the socket is the kernel's record
-  // layer and this connection is an ordinary one again - except that its
-  // recv is a recvmsg, and that anything the peer pipelined behind its
-  // Finished has been waiting and goes first.
+  // layer and this connection is ordinary again - except that its recv
+  // is a recvmsg, and whatever the peer pipelined behind its Finished
+  // has been waiting and goes first.
   // One connection, and the slot it lives in - the reactor knows a
   // connection by both and needs both.
   struct Slot {
@@ -2090,11 +2089,9 @@ class Ring {
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
     const uint16_t gen = static_cast<uint16_t>(ud >> 32);
     const uint32_t idx = static_cast<uint32_t>(ud);
-    // The try is HERE and not around a dispatch() of its own: a separate
-    // function took on_send and its tail back out of line, and this is
-    // the hottest path in the reactor - measured, 4678 bytes of fused
-    // handle became 3796 of dispatch plus 2145 of on_send plus 1598 of
-    // its tail, and a bench lost 5%.
+    // The try is HERE and not around a dispatch() of its own. This is
+    // the hottest path in the reactor, and a separate function takes
+    // on_send back out of line: measured, that cost 5%.
     try {
       switch (kind) {
         case detail::kAccept: on_accept(idx, cqe); break;
@@ -2196,13 +2193,13 @@ class Ring {
       now_s_ = static_cast<int64_t>(now.tv_sec);
     }
     app_.on_tick();
-    // #shed: how much work arrived that we have not answered yet. It is
-    // a load of a u32 out of the shared ring - no syscall, and current
-    // as of this instant - and it is the only number that says whether
-    // this core is keeping up, because it is the queue this core is
-    // behind on. Taken HERE: after the wait, before the drain, so it is
-    // the depth of what this pass is about to do rather than what is
-    // left over from it.
+    // #shed: how much work arrived that we have not answered yet. One
+    // load of a u32 out of the shared ring - no syscall, current as of
+    // this instant - and the only number that says whether this core is
+    // keeping up.
+    //
+    // Taken after the wait and before the drain, so it is the depth of
+    // what this pass is about to do.
     bool worked = false;
     struct io_uring_cqe* cqe = nullptr;
     while (io_uring_peek_cqe(&ring_, &cqe) == 0) {

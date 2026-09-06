@@ -783,11 +783,11 @@ void Http1::h2_after_run(Conn& st0, const H2Request& q, H2Produced& p, uint16_t 
   p.lent_len = lent_body.bytes.size();
   if (p.lent_have) p.lent_mrb = b->res->mrb;
   // response.file is h1-only for now: the deferred open lives on the
-  // CONNECTION (Http1::Conn), and an h2 connection multiplexes streams
-  // that would each need their own. The slot is taken either way - left
-  // set it would answer the next request through this Resource - and a
-  // run that named a file is REFUSED here rather than quietly served the
-  // empty body it never meant to send.
+  // CONNECTION, and h2 multiplexes streams that would each need one.
+  //
+  // The slot is taken either way, because left set it would answer the
+  // NEXT request through this Resource. A run that named a file is
+  // refused here rather than served an empty body it never meant.
   {
     WantedFile wanted;
     if (resource_file_wanted(*b->res, wanted)) {
