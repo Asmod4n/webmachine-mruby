@@ -705,23 +705,6 @@ int run_guarded(mrb_state* mrb, Guarded step) {
   // this one passes through right after mrb_open. The HAL header says
   // why the queue can only be taken away here.
   mrb_hal_task_drop_queue(mrb);
-  // This VM answers requests. It runs no task - only a worker does, in
-  // a VM of its own - and a scheduler nobody uses is not free: with it
-  // on, mrb_vm_exec evaluates RETURN_IF_TASK_STOPPED at EVERY opcode
-  // (mruby/src/vm.c:2267 and :2336). The build has MRB_USE_TASK_SCHEDULER
-  // because the workers need it, so the check is compiled in and only
-  // `task.enabled` can turn it off.
-  //
-  // mrbgem.rake said this was already done. It was not: nothing called
-  // it, in any binary, so every request walked Ruby with the check on.
-  //
-  // The function is not in upstream mruby yet (mruby/mruby#7491), so
-  // mrbgem.rake reads mruby-task's header and defines this only when the
-  // checkout has it. A checkout without it builds and answers requests -
-  // slower, with the check on. patches/ carries the three commits.
-#ifdef WM_TASK_SCHEDULER_CAN_BE_DISABLED
-  mrb_disable_task_scheduler(mrb);
-#endif
   GuardedRun g{step, 0};
   mrb_bool raised = FALSE;
   const mrb_value e = mrb_protect_error(mrb, guarded_body, &g, &raised);

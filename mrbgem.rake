@@ -144,25 +144,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # is undefined in a threaded process. The build system finds our HAL by
   # name: a gem called hal-<short>-<conf> replaces the ports of the gem
   # whose name ends in <short>.
-  #
-  # The main VM does not want the scheduler. It has no tasks, and the
-  # per-opcode check costs it 30% on dynamic Ruby. run_guarded disables it
-  # with mrb_disable_task_scheduler (mruby/mruby#7491), which is why the
-  # mruby checkout is on task-scheduler-disable. Until that PR is merged,
-  # patches/mruby-task-scheduler-disable.patch carries the three commits
-  # for a plain checkout.
   spec.add_dependency 'hal-task-webmachine', gemdir: "#{dir}/hal-task-webmachine"
-
-  # mrb_disable_task_scheduler is not in upstream mruby yet
-  # (mruby/mruby#7491). A checkout without it still has to build, so the
-  # call is asked for by name and not assumed: the header decides.
-  # Without it every VM keeps the per-opcode check and answers requests
-  # slower - patches/ carries the three commits that fix that.
-  task_header = "#{build.root}/mrbgems/mruby-task/include/task.h"
-  if File.exist?(task_header) && File.read(task_header).include?('mrb_disable_task_scheduler')
-    spec.cc.defines  << 'WM_TASK_SCHEDULER_CAN_BE_DISABLED'
-    spec.cxx.defines << 'WM_TASK_SCHEDULER_CAN_BE_DISABLED'
-  end
 
   # A promised callback crosses as a dumped irep, once per worker. Its
   # arguments and its answer cross as CBOR, once per request. Nothing else
