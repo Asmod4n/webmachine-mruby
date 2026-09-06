@@ -3007,10 +3007,11 @@ inline constexpr unsigned kComputeTaskNoCode = ~0u;
 // The id of this block, dumping it the first time it is seen.
 //
 // NOT at fold: the class method that answers the Promise builds its
-// arguments out of the request, and add_route has no request. So the
-// first request through the node pays one dump (0.63 us, measured) and
-// every request after it pays a lookup - the same code at the same
-// place carries the same irep, whatever RProc is built around it.
+// arguments out of the request, and add_route has no request.
+//
+// So the first request through the node pays one dump - 0.63 us,
+// measured - and every request after it pays a lookup. The same code at
+// the same place carries the same irep, whatever RProc is around it.
 unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime);
 // The bytes and the deadline of one entry, copied out under the lock.
 // A worker calls this the first time it meets an id, and never again
@@ -3487,11 +3488,11 @@ struct H2Stream {
   size_t content_length = 0;
   bool content_length_given = false;
   // RFC 9113 8.3: a parked request is answered after hdrbuf has been
-  // reused by the next dispatch, so its fields cannot be lent the way
-  // the immediate path lends them - they are COPIED here instead, names
-  // and values end to end in `field_blob` with four offsets each in
-  // `field_spans`. Paid only by a request that carries a body, which is
-  // already doing more work than a GET.
+  // reused by the next dispatch, so its fields cannot be lent.
+  //
+  // They are COPIED here instead: names and values end to end in
+  // `field_blob`, four offsets each in `field_spans`. Only a request
+  // that carries a body pays it.
   std::string field_blob;
   std::vector<uint32_t> field_spans;
   flow::ReqFacts facts;
@@ -3715,10 +3716,11 @@ struct H2State {
     st.flow_window = peer_initial_window;
     return st;
   }
-  // RFC 9113 5.1: content leaves the stream when the stream does. Clearing
-  // `mrb` HERE is what makes a second call a no-op, so no value is ever
-  // unrooted twice - and the content is cleared whole, so an asset or an
-  // owned buffer cannot outlive the stream that framed it either.
+  // RFC 9113 5.1: content leaves the stream when the stream does.
+  //
+  // Clearing `mrb` here makes a second call a no-op, so no value is
+  // unrooted twice. The content is cleared whole, so an asset or an
+  // owned buffer cannot outlive the stream that framed it.
   void content_retire(H2Stream& s) {
     if (s.response_content.mrb != nullptr) {
       retired.push_back(Lend{s.response_content.mrb, s.response_content.value});
@@ -4041,10 +4043,11 @@ inline uint8_t header_need(const unsigned char* h, uint8_t have) {
 }
 
 // RFC 6455 5.3: transformed-octet-i = original-octet-i XOR
-// masking-key-octet-(i MOD 4). Copying, not in place, because every caller
-// is already moving the octets somewhere - into the control buffer, into
-// the inflate window, into a test's own buffer - and doing both in one
-// pass is what the reader did before this was a function.
+// masking-key-octet-(i MOD 4).
+//
+// It copies rather than unmasking in place, because every caller is
+// already moving the octets somewhere - the control buffer, the inflate
+// window, a test's own buffer - so both happen in one pass.
 // `key_at` is i's offset within the frame, so a payload delivered in
 // pieces keeps the key aligned across recvs.
 struct Mask {
@@ -4293,12 +4296,12 @@ inline constexpr size_t kSlowClientRate = 2000;
 inline constexpr size_t kFileSendChunkMin = 4096;
 inline constexpr size_t kFileSendChunkMax = 64u * 1024 * 1024;
 
-// What one send may carry, from the send timeout and the slowest client we
-// serve. DERIVED, not chosen: the same number bounds the kernel call and
-// decides who gets dropped mid-download, so picking it for one of those
-// reasons silently sets the other - which is exactly what happened when it
-// was 64 MiB for MAX_RW_COUNT's sake and quietly demanded 1.12 MB/s of every
-// client. At the default 60 s this is 120,000 bytes.
+// What one send may carry, from the send timeout and the slowest client
+// we serve. At the default 60 s this is 120,000 bytes.
+//
+// DERIVED, not chosen. The same number bounds the kernel call and
+// decides who is dropped mid-download, so choosing it for one of those
+// reasons sets the other in silence.
 inline constexpr size_t file_send_chunk(int send_timeout_s) {
   const size_t want =
       static_cast<size_t>(send_timeout_s > 0 ? send_timeout_s : 60) * kSlowClientRate;
@@ -5101,10 +5104,9 @@ class Http1 {
   static size_t file_map_len(const Conn& st) {
     return (st.file != nullptr && st.file->map_wanted) ? st.file->content_length : 0;
   }
-  // Which shape a resource's answer takes. The five were four `if`s that
-  // each decided AND wrote, with `answered` as a shadow flag set in three
-  // places - and an access line below that recomputed the byte count for
-  // itself, so it could disagree with what actually went out.
+  // Which shape a resource's answer takes. One value, decided once, so
+  // the writer and the access line below cannot disagree about what went
+  // out.
   struct AnswerStep {
     enum class Shape : uint8_t {
       kAlready,    // the dynamic-head branch already spelled it
@@ -5735,11 +5737,10 @@ class Http1 {
     kParked,  // stopped; what is left waits in the carry
     kClosed,  // the answer was the connection's last
   };
-  // The whole compute round, OUT of feed_parse. It is cold - a resource
-  // that never said `compute` does not reach it - and feed_parse is the
-  // hottest function in the server, 20764 bytes against a 32 KiB L1i
-  // (.DESIGN.md #cold-paths, which measured ~14 KB before this branch
-  // existed). Inlined here it was paid for by every request that never
+  // The whole compute round, OUT of feed_parse. It is cold: a resource
+  // that never said `compute` does not reach it, and feed_parse is the
+  // hottest function in the server (.DESIGN.md #cold-paths). Inlined
+  // here it was paid for by every request that never
   // ran a compute task.
   __attribute__((noinline)) ComputeRound start_compute_round(Conn& st, const BoundStart& s,
                                                              std::string* sink, Plan* plan,
@@ -5900,11 +5901,11 @@ class Http1 {
                       sink);
         } else if (status == 200 && !head_only && plan != nullptr &&
                    b->konst.body.size() >= kLendFloor) {
-          // The konst body is a std::string built at SETUP and immortal for
-          // the life of the process - no mrb_value, nothing for the GC to
-          // move or collect, so it is LENT as a pointer rather than copied
-          // into this connection's sink. Copying it cost every stalled
-          // reader a private duplicate of the same answer.
+          // The konst body is a std::string built at SETUP and immortal.
+          // Nothing for the GC to move or collect, so it is LENT as a
+          // pointer rather than copied into this connection's sink - a
+          // copy gives every stalled reader a private duplicate of the
+          // same answer.
           //
           // From kLendFloor up. Below it the whole prebuilt 200 goes into
           // the sink - head, Content-Length and body in one piece - and
@@ -6137,13 +6138,16 @@ struct Http1::H2Produced {
 }
 
 namespace webmachine {
-// NO SPECIFICATION, and that is the entry. Nothing below is HTTP and
-// nothing is the kernel's - these are OPERATING decisions, and the only
-// source that names them is the surface an operator types at: the TOML
-// keys, the CLI flags, and the conf.* setters an app writes. So those are
-// the names, verbatim, all the way down - a knob spelled header_timeout
-// in the file is header_timeout here too, and where a field says -1 it
-// means "nobody said", because 0 is an answer an operator can give.
+// NO SPECIFICATION, and that is the entry. Nothing below is HTTP or the
+// kernel's; these are OPERATING decisions.
+//
+// The only source that names them is the surface an operator types at -
+// the TOML keys, the CLI flags, the conf.* setters - so those are the
+// names here, verbatim. A knob spelled header_timeout in the file is
+// header_timeout here too.
+//
+// A field of -1 means "nobody said", because 0 is an answer an operator
+// can give.
 struct AppSpec {
   enum class Form : uint8_t { kNone, kPort, kUnix, kUrl };
   Form form = Form::kNone;
