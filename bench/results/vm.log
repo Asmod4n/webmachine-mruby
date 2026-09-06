@@ -1545,3 +1545,13 @@ server: 69% of one core (9u/59s)   client: 59% of one core (4u/54s)   other: 0% 
 harness: htgen -c16 -d5s PIPELINED depth=16 transport=unix app=examples/hello.rb 6.18.44-fc-v24 x86_64
 responses=13001328 bad=0 seconds=5.000 rps=2600263 bytes=2015205840 MB/s=384.37 conns=16 streams=1 pipeline=16 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=455054880 tx_MB/s=86.79
   bytes/response: 155.0 (must equal the response size - a batch that lost answers still reports throughput)
+==== 2026-09-06T08:05Z repo=5ded3fc mruby=a9151d7 ====
+harness: htgen -c16 -d3s PIPELINED depth=16 transport=unix app=examples/hello.rb 6.18.44-fc-v24 x86_64
+responses=7171664 bad=0 seconds=3.000 rps=2390554 bytes=1111607920 MB/s=353.37 conns=16 streams=1 pipeline=16 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=251016640 tx_MB/s=79.80
+  server: 71% of one core (25u/46s)   client: 0% of one core (0u/0s)
+  bytes/response: 155.0 (must equal the response size - a batch that lost answers still reports throughput)
+==== 2026-09-06T08:06Z repo=5ded3fc mruby=a9151d7 ====
+harness: htgen -c16 -d3s PIPELINED depth=16 transport=unix app=examples/hello.rb 6.18.44-fc-v24 x86_64
+responses=7024800 bad=0 seconds=3.000 rps=2341561 bytes=1088844000 MB/s=346.13 conns=16 streams=1 pipeline=16 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=245868000 tx_MB/s=78.16
+  server: 80% of one core (24u/56s)   client: 84% of one core (24u/61s)
+  bytes/response: 155.0 (must equal the response size - a batch that lost answers still reports throughput)

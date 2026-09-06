@@ -96,7 +96,19 @@ RESULTS="bench/results/$(hostname).log"
 mkdir -p bench/results
 REPO_REV=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
 MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
+# Which side was the bound. floor.sh reports it and this one did not,
+# so a pipelined row said nothing about whether the SERVER or the
+# one-threaded client ran out of core. utime and stime separately: on
+# AF_UNIX the kernel bills a copy to whoever called send, so a client
+# that "does almost nothing" still pays for the response bytes.
+cpu_ticks() {
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12], f[13] }' \
+    "/proc/$1/stat" 2>/dev/null || echo "0 0"
+}
+HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+
 RAW=$(mktemp)
+read -r SU0 SS0 <<<"$(cpu_ticks "$SRV")"
 if [ "$TRANSPORT" = unix ]; then
   "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
     --pipeline "$DEPTH" > "$RAW" 2>&1
@@ -104,6 +116,13 @@ else
   "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" --seconds "$DURATION" \
     --pipeline "$DEPTH" > "$RAW" 2>&1
 fi
+read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
+# times line 2 is THIS shell's reaped children, and the client is one.
+# It must be written by the shell that ran the client: a $( ) subshell
+# is not its parent and reports zeros - which is what this printed
+# first. floor.sh carries the same note.
+times > "$WORK/.times"
+CLI_TIMES=$(sed -n 2p "$WORK/.times")
 
 # htgen counts what a load generator must never quietly absorb in `bad`:
 # a non-2xx answer, an unparseable response, a decoder out of sync. Its
@@ -123,6 +142,16 @@ OUT=$(mktemp)
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
   echo "harness: htgen -c$CONNS -d${DURATION}s PIPELINED depth=$DEPTH transport=$TRANSPORT app=${APP:-none} $(uname -mr)"
   echo "$LINE"
+  # What each side spent, as a share of one core over the run.
+  awk -v su="$((SU1 - SU0))" -v ss="$((SS1 - SS0))" -v hz="$HZ" -v d="$DURATION" \
+      -v cli="$CLI_TIMES" 'BEGIN {
+    split(cli, c, " ");
+    split(c[1], u, "m"); split(c[2], sy, "m");
+    cu = u[1] * 60 + u[2]; cs = sy[1] * 60 + sy[2];
+    printf "  server: %d%% of one core (%du/%ds)   client: %d%% of one core (%.0fu/%.0fs)\n",
+           (su + ss) * 100 / hz / d, su * 100 / hz / d, ss * 100 / hz / d,
+           (cu + cs) * 100 / d, cu * 100 / d, cs * 100 / d;
+  }'
   # The bytes must account for every request. A batch that silently lost
   # answers would still report a throughput, which is why the division
   # is printed rather than trusted.
