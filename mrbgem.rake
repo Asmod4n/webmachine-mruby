@@ -129,9 +129,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # TLS: the handshake is this process's, the record layer is the
   # kernel's (.DESIGN.md "TLS"). The gem brings include/ktls.h - mruby
   # puts a dependency's include/ on this one's compiler path - and the
-  # vendored OpenSSL >= 3.0 it links, which is also where SHA1() for the
+  # machine's OpenSSL >= 3.0, which is also where SHA1() for the
   # websocket handshake comes from once this is in the build.
-  spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'claude/c-api'
+  spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'master'
 
   # #80: the compute pool, and what crosses into it.
   #
@@ -238,8 +238,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.cxx.include_paths << mime_gen
 
   # SHA1() for the websocket handshake (#175) comes out of the SAME
-  # libcrypto the key exchange uses - mruby-ktls vendors it and exports
-  # its headers, and this gem no longer names the machine's. The
-  # distribution's may be LibreSSL, or an OpenSSL without kTLS; two
-  # libcryptos in one address space is a bug waiting for a link order.
+  # libcrypto the key exchange uses. mruby-ktls picks it - the machine's
+  # OpenSSL >= 3.0 with kTLS, never a bare `pkg-config libssl`, which on
+  # openSUSE answers LibreSSL - and exports its include path, so this
+  # gem names no crypto library of its own. Two libcryptos in one
+  # address space is a bug waiting for a link order.
 end
