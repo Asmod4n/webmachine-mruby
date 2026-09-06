@@ -564,7 +564,11 @@ int server_run(mrb_state* mrb) {
   build(mrb);
   entered_ = true;
   ring_->run();
+  // Both die here, while the VM lives: the error pages hold a root in
+  // it, and a connection's watchers do, and mrb_close comes after this
+  // returns. A file-scope object dies at exit, which is too late.
   ring_.reset();
+  http_.reset();
   return 0;
 }
 }

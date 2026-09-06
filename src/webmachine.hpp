@@ -4819,6 +4819,18 @@ class Http1 {
       w_mrb = nullptr;
       w_hash = mrb_nil_value();
     }
+    // The connection itself is ending, and the ring may go before the
+    // VM collects the watchers. Each one is emptied here, so its
+    // destructor has no ring to cancel on, and then all are let go.
+    void watchers_forget() {
+      if (w_mrb != nullptr) {
+        for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
+          const mrb_value w = watchers_at(i);
+          if (!mrb_nil_p(w)) watcher_disarm(w);
+        }
+      }
+      watchers_release();
+    }
     // The Ring resets this; `li` is the App's key to "whose connection is
     // this", `pkt` says whether that listener is TCP.
     void reset(uint8_t li, bool pkt) {
@@ -4833,6 +4845,7 @@ class Http1 {
       park_taken = 0;
       park_owes = 0;
       map_release();
+      watchers_forget();
       delete file;
       file = nullptr;
       peer_len = 0;

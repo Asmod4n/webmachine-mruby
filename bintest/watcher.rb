@@ -438,3 +438,59 @@ assert('watcher: a timed-out watcher leaves no poll for its successor (#80)') do
     assert_true head.include?(want), head
   end
 end
+
+# The server ends while a watcher is armed. The connection lets its
+# watchers go before the ring is gone and the VM closes after both, so
+# the exit is clean: status 0, nothing freed twice, nothing freed late.
+assert('watcher: the server exits clean with a watcher still armed') do
+  src = Tempfile.new(['wm-wa', '.rb'])
+  src.write(<<~RUBY_SRC)
+    class LongWait < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        r, _w = IO.pipe
+        Webmachine::Watcher.new(r, :r, timeout: 30.s) do |_ev, self_|
+          self_.abort
+          'never'
+        end
+      end
+      def to_html
+        'body'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], LongWait }
+      end
+    end
+  RUBY_SRC
+  src.close
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  mrb = Tempfile.new(['wm-wa', '.mrb'])
+  mrb.close
+  raise 'mrbc failed' unless system(mrbc, '-g', '-o', mrb.path, src.path)
+  sock = "/tmp/wm-wa-exit-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-wa-exit-err-#{$$}.log"
+  pid = spawn(WA_BIN, "--unix=#{sock}", "--app=#{mrb.path}", out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    c = UNIXSocket.open(sock)
+    c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    sleep 0.2
+    Process.kill('TERM', pid)
+    _, status = Process.wait2(pid)
+    assert_true status.exited?, "the server did not exit: #{status.inspect}\n#{File.read(err) rescue ''}"
+    assert_equal 0, status.exitstatus, "exit status #{status.exitstatus}:\n#{File.read(err) rescue ''}"
+    c.close
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    File.unlink(err) rescue nil
+    src.unlink
+    mrb.unlink
+  end
+end
