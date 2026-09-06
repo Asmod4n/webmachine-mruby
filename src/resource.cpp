@@ -1920,13 +1920,26 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+  // #80: a node callback named in `compute` or `watch` is asked per
+  // request, on the class, and never folded: its answer is what a
+  // worker or a watcher says, and that changes from request to request.
+  uint64_t declared = 0;
+  for (const mrb_sym list_name : {MRB_IVSYM(computed), MRB_IVSYM(watched)}) {
+    const mrb_value list = mrb_iv_get(mrb, klass, list_name);
+    const mrb_int n = mrb_array_p(list) ? RARRAY_LEN(list) : 0;
+    for (mrb_int i = 0; i < n; i++) {
+      const size_t at = node_of_callback(mrb_symbol(RARRAY_PTR(list)[i]));
+      if (at < flow::kNodeCount) declared |= uint64_t{1} << at;
+    }
+  }
+
   bool ans[sizeof(kBools) / sizeof(kBools[0])];
   for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
     const BoolCb& cb = kBools[i];
     ans[i] = cb.defv;
+    const size_t at = static_cast<size_t>(cb.node);
     const Resolved inst = resolve(mrb, mrb_class_ptr(klass), cb.sym);
     if (inst.defined) {
-      const size_t at = static_cast<size_t>(cb.node);
       out.dynamic |= uint64_t{1} << at;
       out.node_sym[at] = cb.sym;
       out.node_m[at] = inst.m;
@@ -1934,6 +1947,18 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
       out.node_native[at] = inst.native;
       out.node_argc[at] = argc_of(inst.m, cb.maxargs);
       continue;
+    }
+    if ((declared >> at) & 1) {
+      const Resolved meta = resolve(mrb, mrb_class(mrb, klass), cb.sym);
+      if (meta.defined) {
+        out.dynamic |= uint64_t{1} << at;
+        out.node_sym[at] = cb.sym;
+        out.node_m[at] = meta.m;
+        out.node_irep[at] = meta.irep;
+        out.node_on_class |= uint64_t{1} << at;
+        out.node_argc[at] = argc_of(meta.m, cb.maxargs);
+        continue;
+      }
     }
     ask(fold, {cb.sym, cb.name}, cb.defv, &ans[i]);
   }

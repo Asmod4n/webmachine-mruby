@@ -1359,3 +1359,27 @@ assert('application: the routes object is a Webmachine::Routes, and compute keep
     end
   end
 end
+
+# #80: a node callback named in `compute` and written on the class is
+# asked per request, through a worker, and never folded at start.
+assert('compute: a class-level node callback is not folded, and answers per request') do
+  src = <<~RUBY_SRC
+    class ComputeNode < Webmachine::Resource
+      compute :service_available?
+      def self.service_available?
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
+      def to_html; 'up'; end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeNode', src)) do |sock|
+    2.times do
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+        assert_equal 'up', body
+      end
+    end
+  end
+end
