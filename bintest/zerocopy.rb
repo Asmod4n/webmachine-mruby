@@ -25,7 +25,7 @@ def zc_app
         'S4K' + ('zyxwvutsrq' * 399) + 'E4K4'
       end
     end
-    # A body the app KEPT: already frozen, so it may be shared, so it is
+    # A body the app kept: already frozen, so it may be shared, so it is
     # copied however high the threshold says to lend.
     ZC_KEPT = ('START' + ('abcdefghij' * 19_999) + 'ENDEND').freeze
     class ZcFrozen < Webmachine::Resource

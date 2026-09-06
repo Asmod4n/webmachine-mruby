@@ -1,11 +1,11 @@
 #!/bin/bash
-# The SAME asset sweep as bench/assets.sh, served by nginx with
+# The same asset sweep as bench/assets.sh, served by nginx with
 # gzip_static - the closest production equivalent of this tree's asset
 # tier (pre-compressed siblings served as-is, no runtime deflate). One
 # log, same columns, same refusals, so the rows sit next to ours and
 # mean the same thing.
 #
-# WHAT NGINX GETS, deliberately its best foot:
+# What nginx gets, deliberately its best foot:
 #   worker_processes WORKERS (default 1 - apples to our one thread;
 #     raise it to measure nginx's scaling, the harness line records it),
 #   sendfile + tcp_nopush + tcp_nodelay, access_log off, gzip off +
@@ -15,12 +15,12 @@
 #   recycle the connection every 1000 requests - our server never does,
 #   and the reconnect would be the harness measuring itself).
 #
-# ARM MAPPING: stored = the plain file, identity. gzip = t*.txt with
+# Arm mapping: stored = the plain file, identity. gzip = t*.txt with
 # Accept-Encoding and a .gz sibling (gzip -9, same corpus as
 # bench/assets.sh: this tree's sources repeated). 304 = If-None-Match
 # with nginx's own ETag. 206 = first-half Range on the stored file.
 #
-# ONE nginx instance serves the whole sweep (its own architecture; a
+# One nginx instance serves the whole sweep (its own architecture; a
 # restart per size would penalize a server that is built to stay up).
 #
 # Knobs as in assets.sh: CONNS mandatory, SIZES, ARMS, PROTO
@@ -67,7 +67,7 @@ NGV=$("$NGINX" -v 2>&1 | grep -o '[0-9]*\.[0-9]*' | head -1)
 NGMAJ=${NGV%%.*}; NGMIN=${NGV##*.}
 
 WORK=$(mktemp -d)
-# mktemp gives 700; the nginx WORKER drops privileges (user www-data)
+# mktemp gives 700; the nginx worker drops privileges (user www-data)
 # and must traverse into the docroot - 403 on every file otherwise.
 chmod 755 "$WORK"
 NGPID=""
@@ -85,20 +85,20 @@ for sz in $SIZES; do
 done
 
 # ---- priority: the measurement owns the machine ----------------------
-# Everything that is NOT part of the run steps back to nice 10, and the
+# Everything that is not part of the run steps back to nice 10, and the
 # measured processes run at -10. A stray build, an agent thread or a
 # leftover daemon landing inside a 5s window moves the median - and it
-# moves it for ONE of the servers, which is worse than moving it for
+# moves it for one of the servers, which is worse than moving it for
 # all three.
 #
-# The harness shell renices ITSELF to -10 and everything else to 10, so
-# the server and the client simply INHERIT -10 as its children: there
+# The harness shell renices itself to -10 and everything else to 10, so
+# the server and the client simply inherit -10 as its children: there
 # is no window between fork and renice in which a measured process runs
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
 # get it without being able to ask for it themselves.
 
-# The listener must MATCH the proto: a plain listener with the http2
+# The listener must match the proto: a plain listener with the http2
 # flag is h2c-only on 1.24 (an h1 request gets silence, measured), and
 # 1.25 renamed the switch. The curl proofs speak the same proto as the
 # measurement, for the same reason.
@@ -145,7 +145,7 @@ http {
   }
 }
 CONF
-# -e: without it nginx opens its COMPILED-IN error log path before
+# -e: without it nginx opens its compiled-in error log path before
 # reading the config - a permission alert on any system nginx. env -u:
 # see the NGINX_BIN note above.
 env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >/dev/null 2>&1 || {
@@ -155,8 +155,8 @@ env -u NGINX "$NGINX" -e "$WORK/error.log" -t -c "$WORK/nginx.conf" >/dev/null 2
 }
 env -u NGINX "$NGINX" -e "$WORK/error.log" -c "$WORK/nginx.conf" &
 NGPID=$!
-  # WAIT for it to answer, never a fixed sleep: on this container the
-# first curl raced the listener, the stored arm compared an EMPTY
+  # Wait for it to answer, never a fixed sleep: on this container the
+# first curl raced the listener, the stored arm compared an empty
 # body against the asset, and the run died claiming the bytes
 # differed. A connection refused is the only thing this loop retries -
 # a 404 is already an answer.
@@ -187,16 +187,16 @@ srv_ticks() {
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
 # --- requests per syscall -------------------------------------------
-# The point of a ring server is syscall AMORTIZATION - one enter
-# carries a whole batch of rounds - and this makes it a NUMBER: the
+# The point of a ring server is syscall amortization - one enter
+# carries a whole batch of rounds - and this makes it a number: the
 # server's syscalls over the run (raw_syscalls:sys_enter, a counting
 # tracepoint: no sampling, negligible overhead), divided into the
 # requests the client completed. The window is the client's run plus
-# edges; an idle server sits BLOCKED in one enter, so edges add
+# edges; an idle server sits blocked in one enter, so edges add
 # ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
 # perf_event_paranoid low enough for tracepoints); without one the
 # column prints '-' rather than a guess.
-# OPT-IN via SYSCALLS=1: counting needs perf, tracefs access and a
+# Opt-in via SYSCALLS=1: counting needs perf, tracefs access and a
 # paranoid setting most machines don't have lying around - a default
 # that probes and warns on every run is noise for anyone not asking
 # the question. Off, the column prints '-' and nothing is touched.
@@ -214,7 +214,7 @@ if [ -n "$SYSC_PERF" ]; then
   # open only the cpu side, which is why perf record works while this
   # counter stays empty). A column of silent '-' hides that; say it.
   # perf stat's -x CSV goes to STDERR; the probe must read that side.
-  # On failure, RELAY perf's own words - there are two separate locks
+  # On failure, relay perf's own words - there are two separate locks
   # (perf_event_paranoid gates the syscall, tracefs permissions gate
   # resolving the event name) and guessing which one bit cost a round
   # of head-scratching already.
@@ -235,7 +235,7 @@ sysc_begin() {  # <pid[,pid...]> <seconds>
     -- sleep "$2" >/dev/null 2>&1 &
   SYSC_PID=$!
 }
-# Split like snap_times, for the same reason: the WAIT must run in the
+# Split like snap_times, for the same reason: the wait must run in the
 # shell that backgrounded perf (a $() subshell is not its parent, its
 # wait returns at once while the output file is still being written);
 # only the read may fork.
@@ -251,11 +251,11 @@ nginx_pids() {
   for w in $(pgrep -P "$NGPID" 2>/dev/null); do pids="$pids,$w"; done
   echo "$pids"
 }
-# The client's cpu comes from the shell's CHILD times, credited at
+# The client's cpu comes from the shell's child times, credited at
 # reap - reading the client's /proc after `wait` read a reaped pid as
 # 0 ticks, and the client-bound refusal never fired (found when a
 # 1-thread client at 100% produced a row at server cpu 47%). Two
-# rules keep it honest: `times` must run in THIS shell (bash resets
+# rules keep it honest: `times` must run in this shell (bash resets
 # the counters inside a command substitution - measured, a reaped 1s
 # child read back as 0.00 through $()), so the snapshot writes a file
 # and only the parse forks; and the grep/ps helpers inside the window
@@ -319,7 +319,7 @@ arm_setup() {
              "${ARM_HDRS[@]}" "$ARM_URL")
 }
 
-# One whitespace-separated field out of htgen's summary line, by EXACT
+# One whitespace-separated field out of htgen's summary line, by exact
 # name. Not a substring match: htgen prints both MB/s and tx_MB/s, and
 # `grep -o 'MB/s=...'` matches inside the second one too - two lines in
 # one variable, a newline riding into vals[], and the median then picks
@@ -363,7 +363,7 @@ measure() {
     local scpu=$((su * 100 / HZ / DURATION))
     local ccpu
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    # Client-bound = the server had headroom against its BUDGET
+    # Client-bound = the server had headroom against its budget
     # (WORKERS cores) while the client was pegged - see bench/assets.sh
     # for why comparing totals was wrong.
     if [ "$su" -gt 0 ] && [ "$scpu" -lt $((WORKERS * 90)) ] && [ "$ccpu" -ge 90 ]; then
@@ -390,7 +390,7 @@ fi
   echo "==== $(date -u +%FT%RZ) nginx/$("$NGINX" -v 2>&1 | grep -o '[0-9][0-9.]*' | head -1) gzip_static ===="
   echo "harness: nginx-assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS workers=$WORKERS sendfile=on $(uname -mr)"
   s0=$(steal_ticks)
-  # cpu% = server CPU over the run, in percent of ONE core - the
+  # cpu% = server CPU over the run, in percent of one core - the
   # column that lets a workers=16 row sit honestly next to a
   # one-thread row: req/s per core is req/s * 100 / cpu%.
   printf '%10s %8s %14s %12s %12s %8s %12s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "req/syscall"

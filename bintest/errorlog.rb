@@ -102,7 +102,7 @@ assert('error log: a raise lands with class, message and trace') do
   end
 end
 
-assert('error log: a request that does NOT raise writes nothing') do
+assert('error log: a request that does not raise writes nothing') do
   elog_server([]) do |sock, log|
     s = UNIXSocket.new(sock)
     s.write "DELETE / HTTP/1.1\r\nHost: e\r\nConnection: close\r\n\r\n"
@@ -118,13 +118,13 @@ assert('error log: a request that does NOT raise writes nothing') do
   end
 end
 
-# The error log has NO ceiling and ignores --log-max-bytes on purpose.
+# The error log has no ceiling and ignores --log-max-bytes on purpose.
 # It is not a window: only 500s and exceptions land here, never ordinary
-# traffic, so it grows in a fault storm - and there the FIRST entry names
+# traffic, so it grows in a fault storm - and there the first entry names
 # the cause while everything after it is consequence. Keeping the newest
 # half, which is what the access log's cap does, would drop exactly the
 # line worth having. Driven with an absurd cap so the difference shows.
-assert('error log: --log-max-bytes does not apply, and the OLDEST entry survives') do
+assert('error log: --log-max-bytes does not apply, and the oldest entry survives') do
   cap = 4096
   elog_server(["--log-max-bytes=#{cap.to_s}"]) do |sock, log|
     60.times { |i| elog_get(sock, "/boom#{i}") }
@@ -142,16 +142,16 @@ assert('error log: --log-max-bytes does not apply, and the OLDEST entry survives
 end
 
 # The other half of the same switch, and the only stream it still governs.
-# The access log IS a window - it answers what happened recently - so the
+# The access log is a window - it answers what happened recently - so the
 # cap keeps the newest and drops the oldest. Until this test the ceiling
 # was pinned on the error stream, which is the one place it never applied.
 #
-# Read AFTER the server is gone, not by polling: the access stream buffers
+# Read after the server is gone, not by polling: the access stream buffers
 # a whole MiB before it writes (webmachine-logd, `out.size() >= (1u << 20)`)
 # while the error stream flushes per block. A few hundred requests are ~20 KB
 # and sit in the daemon's memory until it exits, so a poll here would read an
 # empty file and prove nothing. The exit flush is also what runs the cap.
-assert('access log: --log-max-bytes is a ceiling, and the NEWEST lines survive') do
+assert('access log: --log-max-bytes is a ceiling, and the newest lines survive') do
   cap = 8192
   app = elog_compile(ELOG_APP)
   sock = "/tmp/wm-alog-#{$$}.sock"
@@ -186,10 +186,10 @@ assert('access log: --log-max-bytes is a ceiling, and the NEWEST lines survive')
 end
 
 # The other half of the same switch, and the only stream it still governs.
-# The access log IS a window - it answers what happened recently - so the
+# The access log is a window - it answers what happened recently - so the
 # cap keeps the newest and drops the oldest. Until this test the ceiling
 # was pinned on the error stream, the one place it never applied.
-assert('access log: --log-max-bytes is a ceiling, and the NEWEST lines survive') do
+assert('access log: --log-max-bytes is a ceiling, and the newest lines survive') do
   cap = 8192
   app = elog_compile(ELOG_APP)
   sock = "/tmp/wm-alog-#{$$}.sock"

@@ -1,4 +1,4 @@
-// The copy floor (Gebot 10): the naive shape - copy the request INTO
+// The copy floor (Gebot 10): the naive shape - copy the request into
 // the VM as a fresh String, call a Ruby handler, copy the response OUT.
 // Whatever cleverness later touches the VM boundary must beat these
 // numbers measurably, or the naive shape stays. GC pauses triggered by
@@ -174,10 +174,10 @@ void BM_flow_tier0_304_compiled(benchmark::State& state) {
 BENCHMARK(BM_flow_tier0_304_compiled)->Unit(benchmark::kNanosecond);
 
 // The runtime tier on real bound resources: the whole run inside one
-// VM frame (naked yields under the wrapper's TRY). One and four
+// VM frame (naked yields under the wrapper's try). One and four
 // callbacks. A per-node-entry variant was 26ns faster at one callback
 // (forgecore 230 vs 256ns) and died anyway: it cannot host
-// cross-callback arena lifetimes without ivars - the frame IS the
+// cross-callback arena lifetimes without ivars - the frame is the
 // memory model.
 webmachine::Resource g_res1;
 webmachine::Resource g_res4;
@@ -236,7 +236,7 @@ bool bind_bench_resource(const char* cls, const char* mrb_path, webmachine::Reso
 // The copy-out question (post-#188): a handler's String result has to
 // leave the VM before the next request can collect it (Gebot: nothing
 // mruby survives across a run untouched) - but "leave" could mean a
-// memcpy into std::string NOW (today's shape, resource.cpp's
+// memcpy into std::string now (today's shape, resource.cpp's
 // run_body->assign) or mrb_gc_register holding the mruby String alive
 // until the writer is done with it, deferring the copy to wherever the
 // bytes actually get consumed. This measures the three pieces
@@ -313,7 +313,7 @@ BENCHMARK(BM_body_register_hold)->Unit(benchmark::kMicrosecond)->Arg(kBodySizes[
 
 // Several bodies in flight at once (h2's actual shape: several parked
 // streams, several registered Strings) - unregister on a khash root
-// keyed by pointer should not care how many OTHER entries are live,
+// keyed by pointer should not care how many other entries are live,
 // but "should" is exactly what this file exists to stop assuming.
 void BM_body_register_hold_multi(benchmark::State& state) {
   const size_t n = static_cast<size_t>(state.range(0));

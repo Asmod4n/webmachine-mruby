@@ -12,7 +12,7 @@
 
 namespace webmachine {
 namespace {
-// RFC 9110 7.6.1: Connection is a token LIST - a substring match would
+// RFC 9110 7.6.1: Connection is a token list - a substring match would
 // accept "not-close".
 bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
   size_t i = 0;
@@ -28,7 +28,7 @@ bool conn_has(const char* v, size_t n, const char* lit, size_t litn) {
 using http::kDateLen;
 using http::kDatePlaceholder;
 
-// RFC 9112: what the FRAMER reads out of the head - the fields 9110's
+// RFC 9112: what the framer reads out of the head - the fields 9110's
 // header_switch hands back because their meaning is the connection's,
 // not the resource's.
 struct WireFacts {
@@ -53,7 +53,7 @@ constexpr size_t kWireLengths[] = {4, 7, 10, 14, 17, 21};
 constexpr uint32_t kWireLengthMask =
     http::lengths_mask(kWireLengths, sizeof(kWireLengths) / sizeof(kWireLengths[0]));
 
-// Where one request's FRAMING facts are being filled: the facts, the
+// Where one request's framing facts are being filled: the facts, the
 // values that point back into the head, and the index of the field being
 // read - the same shape http::FactSink has for the 9110 facts.
 struct WireSink {
@@ -136,7 +136,7 @@ void read_wire_header(WireSink into, http::Field f) {
   }
 }
 
-// RFC 9112 3/9.3: the head ONE bound run spelled for itself. Its status,
+// RFC 9112 3/9.3: the head that one bound run spelled for itself. Its status,
 // the Date line for this second, its own Content-Type and field lines,
 // this connection's framing, and a length where it declares one. No
 // prebuilt head can take that shape.
@@ -224,7 +224,7 @@ void Http1::build_open_prefixes(Variants& v, OpenPrefix p) {
 }
 
 // RFC 9110 15: one status into the shared store, date offset kept - and
-// beside it the same answer WITHOUT `body`, which is where an error that
+// beside it the same answer without `body`, which is where an error that
 // has a page to show puts its own Content-Type and Content-Length (#210).
 void Http1::build_status(uint16_t status, StatusText t) {
   Variants v;
@@ -243,7 +243,7 @@ void Http1::patch_date(Variants& v, const char* core) {
   std::memcpy(v.close.bytes.data() + v.close.date_off, core, kDateLen);
 }
 
-// RFC 9110: ONE route's whole voice - its 200 in every shape, its Allow
+// RFC 9110: one route's whole voice - its 200 in every shape, its Allow
 // (10.2.1), its negotiated type (8.3), its gzip decision, its h2 blocks.
 void Http1::build_bundle(Bundle& b, const Resource* res) {
   b.res = res;
@@ -278,8 +278,8 @@ void Http1::build_bundle(Bundle& b, const Resource* res) {
   copy_without_tail(ok.keep, b.ok_head.keep, blen);
   copy_without_tail(ok.close, b.ok_head.close, blen);
   // The 200 without its tail - no Content-Length, no body. A dynamic body
-  // needs it because its length is not known until the run returns; a KONST
-  // body needs it because the prebuilt 200 carries the body INSIDE the
+  // needs it because its length is not known until the run returns; a konst
+  // body needs it because the prebuilt 200 carries the body inside the
   // buffer whose Date stamp_variants patches every second, and a body that
   // is lent rather than copied must not sit in bytes that move.
   {
@@ -442,7 +442,7 @@ void Http1::on_tick() {
   for (Bundle& b : bundles_) {
     patch_date(b.ok_head, core);
     // RFC 9110 6.6.1: the Date is the time the message was made, so
-    // EVERY head that goes on the wire is stamped - ok_prefix included,
+    // Every head that goes on the wire is stamped - ok_prefix included,
     // which serves the konst body as well as a dynamic one.
     patch_date(b.ok_prefix, core);
     if (b.gzip_ok) {
@@ -486,7 +486,7 @@ void Http1::open_error_assets(mrb_state* mrb, Assets* error_assets) {
 }
 
 // RFC 9110 15: the error answer - the prebuilt status line and Date, then
-// the page rendered for THIS request. RFC 9110 9.3.2: a HEAD carries the
+// the page rendered for this request. RFC 9110 9.3.2: a HEAD carries the
 // Content-Length a GET would have sent, and no body.
 void Http1::spell_error(const ErrorAnswer& e, std::string& sink) {
   std::string body;
@@ -803,7 +803,7 @@ void Http1::claim_sink(Conn& st, const std::string& sink, Plan& plan) {
 
 // A lent body splits the sink, so whatever the parse appended after it
 // still has to be claimed - and it returns down a dozen paths, so the plan
-// is closed HERE, once, on all of them.
+// is closed here, once, on all of them.
 bool Http1::feed(Conn& st, std::string_view data, Sink out) {
   std::string& sink = out.bytes;
   Plan* const plan = out.plan;
@@ -812,7 +812,7 @@ bool Http1::feed(Conn& st, std::string_view data, Sink out) {
   return ok;
 }
 
-// RFC 9110 8.6: the body the run LENT, delivered as an external segment
+// RFC 9110 8.6: the body the run lent, delivered as an external segment
 // over its own frozen String - the door http1's mmap'd assets already use.
 // The sink bytes it splits are claimed on either side of it by offset.
 void Http1::lend_body(Conn& st, std::string& sink, Lending lend) {
@@ -826,7 +826,7 @@ void Http1::lend_body(Conn& st, std::string& sink, Lending lend) {
 // RFC 9112 9.3: a file answer of its own status, in this connection's
 // spelling - and with the page that status has.
 //
-// EVERY REFUSAL WEARS ITS PAGE, whatever served it. The graph has one
+// Every refusal wears its page, whatever served it. The graph has one
 // 404, and a file that is not there is that 404: the same body a
 // resource answering g7 with false would send. This used to take the
 // bodyless status out of the shared store, so a docroot miss answered
@@ -882,7 +882,7 @@ const char* Http1::file_take(Conn& st) {
   return st.file->pathname.c_str();
 }
 
-// ONE answer for every refusal: a name that was never there, a directory, a
+// One answer for every refusal: a name that was never there, a directory, a
 // "..", a symlink out of the docroot, a /proc magic-link. Same status, same
 // bytes, same shape - so an attacker cannot tell a caught escape from a
 // miss and probe the filesystem through the difference.
@@ -896,7 +896,7 @@ void Http1::file_error(Conn& st, const char* why) {
                              500});
   // Once a window has gone out the answer is committed: the head named a
   // Content-Length this body can no longer reach, so a 500 spelled here
-  // would land BEHIND those bytes and the client would wait forever for the
+  // would land behind those bytes and the client would wait forever for the
   // rest. RFC 9112 6.3: the only way left to say "this is not the whole
   // representation" is to close the connection under it.
   if (st.file->content_sent != 0) {
@@ -914,7 +914,7 @@ void Http1::file_error(Conn& st, const char* why) {
 // True = the bytes are still owed.
 bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
   if (!S_ISREG(stx.stx_mode)) {
-    // A directory, a fifo, a device: not a representation, and saying WHICH
+    // A directory, a fifo, a device: not a representation, and saying which
     // would be the distinguishable answer this whole path avoids.
     file_reject(st);
     return false;
@@ -949,7 +949,7 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
   st.file->content_sent = 0;
   // [tune] file_map_threshold: 0 is "never map", so it is not a plain >=.
   st.file->map_wanted = map_min_ != 0 && len >= map_min_;
-  // ONE meaning: what a READ may take. How long the mapping is has its
+  // One meaning: what one read may take. How long the mapping is has its
   // own answer, in file_map_len.
   *want = len < kResponseFileWindow ? len : kResponseFileWindow;
   return true;
@@ -975,7 +975,7 @@ void Http1::file_mapped(Conn& st, const char* p, size_t n) {
   st.file->stage = FileStage::kDeliver;
 }
 
-// The ONE place a transfer's state changes as a round goes out. Everything
+// The one place a transfer's state changes as a round goes out. Everything
 // it does was decided by file_step over a snapshot; nothing is decided here.
 void Http1::file_apply(Conn& st, const FileStep& step) {
   if (st.file == nullptr) return;
@@ -987,7 +987,7 @@ void Http1::file_apply(Conn& st, const FileStep& step) {
   if (step.clear) st.file_clear();
 }
 
-// RFC 9110: ONE access line per request, with the bytes that really left.
+// RFC 9110: one access line per request, with the bytes that really left.
 // A transfer that ends in sixteen windows is one request, not sixteen.
 void Http1::file_log(Conn& st) {
   if (!alog_.enabled || st.file == nullptr) return;
@@ -1012,7 +1012,7 @@ void Http1::file_ready_now(Conn& st, size_t n) {
   st.file->stage = FileStage::kDeliver;
 }
 
-// RFC 9112: THE framer. phr on the wire bytes, the carry only when a head
+// RFC 9112: the framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
 // #80: Held's out-of-line half. It is out of line because phr_header is
@@ -1073,7 +1073,7 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
   // The check the member table cannot do for itself. kReqValueSpans is a
   // list, and a list can be short by one - and the member it is short by
   // is a pointer still aimed at a buffer the kernel already has back. So
-  // look at ReqValues as WORDS and refuse any that still lands in the
+  // look at ReqValues as words and refuse any that still lands in the
   // source: a forgotten member is found here, on the first parked run in
   // a debug build, instead of in production on the rarest path there is.
   //
@@ -1101,11 +1101,11 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
 
 
 // #80: the bound answer, out of feed_parse's loop body. It is a function
-// because a run that PARKS has to return out of it and re-enter later,
+// because a run that parks has to return out of it and re-enter later,
 // and an inline block inside a loop body cannot be re-entered. What the
 // loop held is in the Round and the BoundAsk beside it.
 
-// #80: what happens to a bound run's answer AFTER the walk - the lend,
+// #80: what happens to a bound run's answer after the walk - the lend,
 // the error asset, response.file, and the head a run spells for itself.
 // It is its own function because two callers reach it: the straight one
 // above, and the coroutine that a promising resource is run through.
@@ -1150,7 +1150,7 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   }
   prep.accept_gzip = !facts.has_accept_encoding ||
                 http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
-  // A run may LEND its body only where nothing downstream touches the
+  // A run may lend its body only where nothing downstream touches the
   // bytes anyway: HEAD sends none, gzip copies them, one connection
   // holds one lend, and an external segment fits through a plan only.
   const bool gz_now = prep.accept_gzip && b->gzip_ok && st.packetized;
@@ -1207,7 +1207,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   }
   // response.file: the run named a file instead of spelling a body,
   // and opening one is disk work that does not belong in a reactor
-  // step. NOTHING is answered here - the framing this answer will need
+  // step. Nothing is answered here - the framing this answer will need
   // is copied onto the connection, the reactor drives openat2/statx/
   // read through the ring, and `spell_next_round` puts the result on the wire. A
   // name this process already refused takes the same 404 the kernel's
@@ -1237,7 +1237,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
       lent = nullptr;
       lent_len = 0;
     }
-    // helpers.rb encode_body: a `def self.to_html` renders at SETUP, so
+    // helpers.rb encode_body: a `def self.to_html` renders at setup, so
     // a run that reaches o18 with one produces no body - the bundle's
     // prebuilt 200 carries it. That head is not the one being spelled
     // here, so the bake has to be named, or this answer goes out empty.
@@ -1290,9 +1290,9 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 
 
 // #80: the bound answer for a resource that declared a compute task, in a
-// frame that can STOP. The whole reason this is a coroutine and not a
+// frame that can stop. The whole reason this is a coroutine and not a
 // stage on the connection: at the stop, `view`, `method`, `path` and
-// every span in ReqValues point into a PROVIDED BUFFER, and on_recv
+// every span in ReqValues point into a provided buffer, and on_recv
 // hands that buffer back to the kernel before anything could resume.
 // The bytes have to be copied either way; a frame the compiler manages
 // is the copy that cannot be short by one member.
@@ -1306,7 +1306,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, std::string* sink,
                                                Plan* plan, size_t& off) {
   st.parked = run_parkable(st, {RunStart::Proto::kH1, s}, sink, plan);
-  // The bookkeeping is done HERE either way, because the bytes it moves
+  // The bookkeeping is done here either way, because the bytes it moves
   // belong to the buffer the parse was handed, and a stopped run
   // outlives it. #decide-then-do. BoundStart::off is already past the
   // head, which is what the parse has to carry on from.
@@ -1359,7 +1359,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
   {
     BoundPrep prep;
     H2Produced hp;
-    // h2 answers from COPIES: the dispatch buffers die with the round
+    // h2 answers from copies: the dispatch buffers die with the round
     // that read them, and a parked run answers after that. No Values
     // either - the bytes went with them.
     // Did this run stop? A stopped one logs its own answer from the
@@ -1378,7 +1378,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
                             plan,     *sink,     body,    rhdrs};
       bound_prepare(r, ask, prep);
 
-      // can_park: this frame IS the thing that can hold a stopped run, so
+      // can_park: this frame is the thing that can hold a stopped run, so
       // the walk may stop in it. What answers the stop is a worker, and
       // the crossing to one is complete.
       const RunAsk asked = {s.facts, &s.vals, &prep.rv, prep.zc_min, true};
@@ -1397,7 +1397,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     const Resource* const ran = (rb != nullptr && rb->bound) ? rb->res : nullptr;
 
     // #30: what this run waits on, in the frame that holds the run. The
-    // connection only learns its ADDRESS, under a park slot, because a
+    // connection only learns its address, under a park slot, because a
     // completion carries a number and not a pointer.
     Conn::Round mine_round;
     int park = -1;
@@ -1406,7 +1406,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
       //
-      // #30: h1 only. An h2 run started from COPIES - RunStart::H2Start
+      // #30: h1 only. An h2 run started from copies - RunStart::H2Start
       // carries the facts and the target - because the dispatch buffers
       // die with the round that read them.
       if (h1) {
@@ -1425,7 +1425,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         s.vals = held.vals;
       }
 
-      // The crossing, BEFORE the state travels: the block becomes an id
+      // The crossing, before the state travels: the block becomes an id
       // and the arguments become CBOR while both the VM and the run's
       // own state are still to hand. One line later res.run is gone
       // from the resource, and neither could be read again.
@@ -1447,13 +1447,13 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       }
 
       // The walk's own state travels with the frame. res.run belongs to
-      // the ROUTE, and the next request on it would write over this.
+      // the route, and the next request on it would write over this.
       //
-      // #30: THIS frame holds everything about the run it left, and a
+      // #30: this frame holds everything about the run it left, and a
       // watcher block of that run needs it back for as long as it
       // speaks. So each watcher is told where it is - a pointer into
       // this frame, which outlives every wait it started, and one per
-      // RUN rather than one per connection.
+      // run rather than one per connection.
       Resource::RunState mine = std::move(res.run);
       res.run = Resource::RunState{};
       watch_run_is(st, mine_round, &mine);
@@ -1483,12 +1483,12 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       parked_roots.res = nullptr;
       stopped = true;
 
-      // Back, into a round that is not the one that left. Only the WIRE
+      // Back, into a round that is not the one that left. Only the wire
       // is the resumer's: the sink to write into and the plan a lend
       // rides out on, because the ones this run started with were
       // locals of a parse that has returned.
       //
-      // RFC 9112 9.3: `persist` is NOT the resumer's. Whether the
+      // RFC 9112 9.3: `persist` is not the resumer's. Whether the
       // connection lives past this answer was decided by the request
       // itself - its version and its Connection field - before the run
       // began. It travels in this frame, and `spell_next_round` reads it back out of
@@ -1552,10 +1552,10 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     }
 
     // #30: the h2 tail. The walk is over, so what it left can be read
-    // now, and the frames go out through the SAME framer the straight
+    // now, and the frames go out through the same framer the straight
     // path uses.
     if (!h1) {
-      // What the resumed walk answered is in THIS frame's locals, not in
+      // What the resumed walk answered is in this frame's locals, not in
       // what the walk said before it stopped.
       hp.have_body = have_body;
       // RFC 9113 5.1: the peer reset the stream while the run was
@@ -1587,7 +1587,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     const AnswerStep astep = spell_answer(
         fr, {*sink, plan, out.status, out.lent, out.lent_len, out.answered, out.have_body,
              out.accept_gzip, &b->index, body});
-    // The access line is written HERE and not by the caller: a stopped
+    // The access line is written here and not by the caller: a stopped
     // run answers long after the caller returned, and the line belongs
     // to the answer, not to the parse that started it.
     if (alog_.enabled) {
@@ -1669,7 +1669,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   }
 
   // RFC 9110 6.4: a bound route's head waits in the carry until the whole
-  // body is here - the run READS the body, so it cannot answer before the
+  // body is here - the run reads the body, so it cannot answer before the
   // last byte. Nothing is parsed again until body_need is paid off.
   if (mrb_unlikely(st.content_need != 0)) {
     if (len < st.content_need) {
@@ -1854,10 +1854,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // #80: a resource that declared a compute task is answered inside a
         // frame that can stop. The frame spells the whole answer,
         // including the access line, so nothing below is owed for it.
-        // MEASURED, not chosen: giving this frame to every bound resource
+        // Measured, not chosen: giving this frame to every bound resource
         // breaks response.file - thirteen bintests, all of them a file
         // the run owes and the frame finishes differently. So the gate
-        // stays what a resource DECLARED, and a watcher needs a
+        // stays what a resource declared, and a watcher needs a
         // declaration of its own before it can reach this path.
         // #30: a value round stops the run as much as a node does, and
         // a resource may declare only values.

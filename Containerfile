@@ -1,7 +1,7 @@
 # webmachine-mruby in a container, in two stages: one that has a
 # toolchain, one that has four shared libraries and the binary.
 #
-# TESTED, not guessed: built and run with podman on Debian trixie; the
+# Tested, not guessed: built and run with podman on Debian trixie; the
 # numbers and package names in docs/container.md come out of this file
 # actually running. `docker build` reads it the same way (name it
 # Dockerfile or pass -f).
@@ -11,7 +11,7 @@ FROM debian:trixie AS build
 
 # What a build needs, and why each one is here:
 #   build-essential  gcc/g++ (C++20) and make - liburing builds with make
-#   ruby             mruby's build system IS rake
+#   ruby             mruby's build system is rake
 #   git              the tree's submodule (ls-hpack) and every mrbgem
 #   pkg-config       mruby-io-uring asks it for liburing's cflags
 #   zlib1g-dev       the system zlib this tree links (#147 gzip)
@@ -24,13 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY . .
 
-# NOT -march=native: this binary leaves the machine that built it. See
+# Not -march=native: this binary leaves the machine that built it. See
 # build_config.rb - x86-64-v3 is AVX2 and later, the usual fleet floor.
 # Override at build time for a different baseline.
 ARG WM_MARCH=x86-64-v3
 ENV WM_MARCH=${WM_MARCH}
 # The context carries no .git (see .containerignore), so the submodule
-# has to be checked out BEFORE the build. Said by name here rather than
+# has to be checked out before the build. Said by name here rather than
 # discovered forty lines into a compile.
 RUN test -f deps/ls-hpack/lshpack.c || { \
       echo 'deps/ls-hpack is empty - run: git submodule update --init --recursive' >&2; \
@@ -38,7 +38,7 @@ RUN test -f deps/ls-hpack/lshpack.c || { \
     }
 RUN rake compile
 
-# The app is BYTECODE (#100): the server never compiles Ruby. mrbc
+# The app is bytecode (#100): the server never compiles Ruby. mrbc
 # comes out of the same build, so an image can carry it and compile the
 # app right here.
 RUN mruby/build/host/mrbc/bin/mrbc -g -o /src/app.mrb examples/hello.rb

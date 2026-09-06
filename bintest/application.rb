@@ -64,7 +64,7 @@ ensure
   app.unlink
 end
 
-# Like ap_refused, but WITHOUT --unix: some refusals are about the
+# Like ap_refused, but without --unix: some refusals are about the
 # listener the app named, and an override would answer before them.
 def ap_refused_unaided(app_source)
   app = ap_compile(app_source)
@@ -122,7 +122,7 @@ assert('application: literal, binding and splat match on the wire; a miss is 404
   end
 end
 
-assert('application: a router miss is 404 BEFORE B13 - POST on an unknown path is not 405') do
+assert('application: a router miss is 404 before B13 - POST on an unknown path is not 405') do
   ap_server(AP_FIZZ) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST /nowhere HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
@@ -137,7 +137,7 @@ assert('application: a router miss is 404 BEFORE B13 - POST on an unknown path i
   end
 end
 
-assert('application: the FIRST matching route wins, in registration order') do
+assert('application: the first matching route wins, in registration order') do
   src = <<~RUBY
     class First < Webmachine::Resource
       def self.to_html
@@ -254,7 +254,7 @@ assert('application: the empty token list is the root route') do
   end
 end
 
-assert('application: ready runs exactly once, AFTER the bind, and reads back the real url') do
+assert('application: ready runs exactly once, after the bind, and reads back the real url') do
   sock = "/tmp/wm-ap-ready-#{$$}.sock"
   src = <<~RUBY
     class R < Webmachine::Resource
@@ -274,7 +274,7 @@ assert('application: ready runs exactly once, AFTER the bind, and reads back the
           route.add [:*], R
         end
         app.ready do
-          # conf.url reads BOTH ways: this runs after the bind, so it
+          # conf.url reads both ways: this runs after the bind, so it
           # spells where the listener really is - which is --unix here,
           # not the port the app asked for.
           puts "ready \#{seen.url}"
@@ -348,7 +348,7 @@ end
 
 assert('application: conf.url names the listener when nothing overrides it') do
   # Below ip_local_port_range (32768 up here): a fixed port picked
-  # INSIDE that window collides with an ephemeral port the machine
+  # inside that window collides with an ephemeral port the machine
   # already handed out, which is how this suite once died on 44468.
   port = 20000 + rand(11000)
   src = <<~RUBY
@@ -644,7 +644,7 @@ assert('application: --unix cannot speak for a file with several apps') do
   assert_true out.include?('names one listener'), out
 end
 
-assert('application: new WITHOUT a block builds nothing anybody serves') do
+assert('application: new without a block builds nothing anybody serves') do
   out = ap_refused("def main\n  Webmachine::Application.new\nend\n")
   assert_true out.include?('registered no application'), out
 end
@@ -683,7 +683,7 @@ assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
         app.configure { |conf| conf.unix_path = '#{sock}' }
         app.add_route [:*], R
       end
-      # The embedder's own loop: the DURATION crosses the boundary as
+      # The embedder's own loop: the duration crosses the boundary as
       # mruby-chrono spells it, and nothing else in here knows seconds.
       Webmachine.tick(3.ms) until Webmachine.stopped?
     end
@@ -837,7 +837,7 @@ assert('application: request names what the route captured, per request') do
 
     # application/x-www-form-urlencoded, WHATWG URL Standard: '&' is the
     # only separator, '+' is a space, and a broken escape stays as it was
-    # written. ';' is NOT a separator - it was a note to CGI authors in
+    # written. ';' is not a separator - it was a note to CGI authors in
     # HTML 4.01 B.2.2 and left the web platform in 2020 - so 'b=2;c=3' is
     # one value, semicolons and all. Cookies are the other decision and
     # keep their ';' (RFC 6265 4.2).
@@ -899,7 +899,7 @@ assert('application: request.headers are the head, lowercased; request.body is t
 end
 
 # #181: there is no way for Ruby to hold a resource instance outside the
-# request it belongs to, because there is no way for Ruby to MAKE one - the
+# request it belongs to, because there is no way for Ruby to make one - the
 # server allocates from the class, per request. Resource.new used to reach
 # Object's initialize and hand out an instance whose request view was dead;
 # now it refuses by name. The dead-view guard in request.cpp stays as the
@@ -930,7 +930,7 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
   src = <<~RUBY
     class Bye < Webmachine::Resource
       def to_html
-        # The answer still goes out: the drain closes the LISTENERS,
+        # The answer still goes out: the drain closes the listeners,
         # what is already accepted finishes.
         Webmachine.stop(200.ms)
         'bye'
@@ -1048,8 +1048,8 @@ assert('application: conf.url is a URL, and ada parses it as one') do
 end
 
 assert('application: a threshold above its ceiling is refused, not a crash') do
-  # This SEGFAULTED. mruby's mrb_raisef is not printf: src/error.c reads
-  # %l as a char* AND a size_t, so the "%lld" these two messages used
+  # This segfaulted. mruby's mrb_raisef is not printf: src/error.c reads
+  # %l as a char* and a size_t, so the "%lld" these two messages used
   # consumed the number as a pointer. A config typo took the server down
   # instead of naming itself.
   out = ap_refused_unaided(ap_one_route(<<~BODY))
@@ -1073,7 +1073,7 @@ end
 
 assert('application: a conf.url query names settings, and only settings') do
   # The query carries the rest of the conf object under the setters' own
-  # names. What may appear there is a fixed table in C++ - NOT a method
+  # names. What may appear there is a fixed table in C++ - not a method
   # sent by name, which is what would turn a URL into remote code
   # execution. Routes name classes and stay in Ruby.
   port = 20000 + rand(11000)
@@ -1108,7 +1108,7 @@ assert('application: a conf.url query names settings, and only settings') do
       sleep 0.05
     end
     assert_true !line.nil?, "no ready line; stderr: #{begin File.read(err) rescue '' end}"
-    # conf.url reads back the LISTENER, not the settings it also carried.
+    # conf.url reads back the listener, not the settings it also carried.
     assert_equal "http://127.0.0.1:#{port}", line
     # The percent-encoded docroot arrived decoded.
     assert_true File.read(err).include?('docroot /tmp'), File.read(err)
@@ -1120,7 +1120,7 @@ assert('application: a conf.url query names settings, and only settings') do
     app.unlink
   end
 
-  # A name that is not a setting is refused - including one that IS a
+  # A name that is not a setting is refused - including one that is a
   # method on the app. This is the line between a config URL and RCE.
   out = ap_refused_unaided(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'http://127.0.0.1:20002?add_route=Evil' }
@@ -1219,7 +1219,7 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
   end
 end
 
-assert('application: app.conf is ONE object, not a fresh one per read') do
+assert('application: app.conf is one object, not a fresh one per read') do
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html
@@ -1239,7 +1239,7 @@ assert('application: app.conf is ONE object, not a fresh one per read') do
   RUBY
   ap_server(src) do |_sock, out|
     # The socket exists once bind/listen answered; app.ready runs and
-    # flushes AFTER that, so reading stdout right away is a race the
+    # flushes after that, so reading stdout right away is a race the
     # helper cannot close for every caller. Wait for the line this test
     # is about.
     20.times { break if (File.read(out) rescue '').include?('same=true'); sleep 0.1 }
@@ -1247,7 +1247,7 @@ assert('application: app.conf is ONE object, not a fresh one per read') do
   end
 end
 
-assert('application: a refusal is catchable BY CLASS, not by luck') do
+assert('application: a refusal is catchable by class, not by luck') do
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html
@@ -1297,7 +1297,7 @@ ensure
 end
 
 # #210 response.error_asset: an app names an entry of the error assets and
-# THOSE bytes are the answer. Not response.file - nothing is opened and
+# Those bytes are the answer. Not response.file - nothing is opened and
 # nothing goes through the ring, because the archive is mmap'd for as long
 # as the server runs, so what the answer carries is a pointer into that map.
 AP_EASSET = <<~RUBY unless defined?(AP_EASSET)
@@ -1364,7 +1364,7 @@ assert('application: response.error_asset answers with the mapped entry, byte fo
   ap_server(AP_EASSET, sock: sock,
             args: ["--unix=#{sock}", "--error-assets=#{pack}"]) do |s|
     UNIXSocket.open(s) do |c|
-      # Twice on ONE connection: a lend that was not handed back, or a
+      # Twice on one connection: a lend that was not handed back, or a
       # pointer the run frame owned, shows up on the second answer.
       2.times do |i|
         c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
@@ -1375,7 +1375,7 @@ assert('application: response.error_asset answers with the mapped entry, byte fo
         assert_equal want, body.b
       end
       # RFC 9110 9.3.2: HEAD carries the length it would have sent - and
-      # sends none of it, so this reads the head ALONE. ap_read would sit
+      # sends none of it, so this reads the head alone. ap_read would sit
       # here waiting for a body that is never coming.
       c.write("HEAD /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
       head = +''
@@ -1403,7 +1403,7 @@ assert('application: an error_asset the archive does not carry is refused by nam
     end
     20.times { break if File.exist?(log) && !File.read(log).empty?; sleep 0.1 }
     text = File.read(log)
-    # The name the APP wrote, so a typo reads as a typo and not as a
+    # The name the app wrote, so a typo reads as a typo and not as a
     # request that went astray.
     assert_true text.include?('no-such-cat.jpg'), text
     assert_true text.include?('the error assets hold no'), text
@@ -1469,7 +1469,7 @@ assert('application: without a flag, only the installed archive is looked for') 
   end
 end
 
-# RFC 9110 12.5.1: the SAME path answers html or a picture depending on
+# RFC 9110 12.5.1: the same path answers html or a picture depending on
 # what the client asked for, and a browser asks two different things.
 # Typing the URL is a navigation: text/html is named with no q, so q=1.0,
 # and image/jpeg is named by nothing but */*;q=0.8 - html wins, and must.

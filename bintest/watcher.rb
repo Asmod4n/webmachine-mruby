@@ -93,7 +93,7 @@ def wa_same_connection(app_source, times: 1)
   end
 end
 
-# #30: a Watcher is a DESCRIPTION - a source, what to wait for, and what
+# #30: a Watcher is a description - a source, what to wait for, and what
 # to do when that happens. Building one arms nothing, so all of this can
 # be asked without a reactor being involved at all.
 assert('watcher: it describes, and it says no to what it cannot describe') do
@@ -105,7 +105,7 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
         begin
           watcher = Webmachine::Watcher.new(r, :r, timeout: 5.0) { |revents, self_| }
           lines << "source:\#{watcher.source.fileno == r.fileno}"
-          # events is what was ORDERED. :r is the default.
+          # events is what was ordered. :r is the default.
           lines << "events:\#{watcher.events}"
           watcher.events = :rw
           lines << "changed:\#{watcher.events}"
@@ -118,7 +118,7 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
           rescue ArgumentError => e
             lines << "order:\#{e.message}"
           end
-          # A bare Integer IS a source - hiredis hands its event
+          # A bare Integer is a source - hiredis hands its event
           # callbacks an int and has no object to offer.
           bare = Webmachine::Watcher.new(r.fileno, :r, timeout: 50.ms) { }
           lines << "bare:\#{bare.source}"
@@ -152,7 +152,7 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
   assert_true out.include?('changed:rw'), out
   assert_true out.include?('aborted:false'), out
   assert_true out.include?('then:true'), out
-  # The order menu is :r, :w, :rw and nothing else - what ARRIVES is a
+  # The order menu is :r, :w, :rw and nothing else - what arrives is a
   # wider set, which is why the two do not share a name.
   assert_true out.include?('order:a watcher waits for :r (:in), :w (:out) or :rw (:inout)'), out
   # A source is something with a descriptor, refused where the mistake
@@ -258,7 +258,7 @@ assert('watcher: the deadline reaches the block, and the block answers it') do
   # carries it back to the reactor.
   assert_true out.include?('over:false'), out
   assert_true out.include?('aborted:true'), out
-  # `:timeout` ARRIVES, and cannot be ordered - so revents and events do
+  # `:timeout` arrives, and cannot be ordered - so revents and events do
   # not share a menu.
   assert_true out.include?('events:timeout,timeout'), out
 end

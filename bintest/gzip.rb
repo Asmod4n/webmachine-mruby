@@ -73,7 +73,7 @@ def gz_tcp_server(app_source)
   pid = nil
   10.times do
     # Below ip_local_port_range (32768 up here): a fixed port picked
-    # INSIDE that window collides with an ephemeral port the machine
+    # inside that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
     pid = spawn(GZ_BIN, "--port=#{port.to_s}", "--app=#{app.path}",

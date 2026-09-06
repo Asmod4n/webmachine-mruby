@@ -265,7 +265,7 @@ wm_case('flow c4: an acceptable Accept does not answer 406 and types the respons
   assert_equal 'text/html; charset=utf-8', res.headers['Content-Type']
 end
 
-# The O(1) shortcut: an Accept whose first range IS the type offered
+# The O(1) shortcut: an Accept whose first range is the type offered
 # answers c3/c4 with one memcmp, and everything it does not recognise
 # falls back to the full weighing rather than guessing.
 wm_case('flow c4: an Accept that is exactly the offered type is served') do
@@ -1021,7 +1021,7 @@ end
 # does not (#210): the hook lives on Webmachine::ErrorResource and
 # nowhere else, because what an exception says on the wire is one
 # decision for the server rather than a per-route one. A resource that
-# defines one is IGNORED - the raise stays pending and the error resource
+# defines one is ignored - the raise stays pending and the error resource
 # spells the answer.
 def wm_res_handling
   Class.new(WmSpecResource) do

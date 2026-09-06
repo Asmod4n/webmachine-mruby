@@ -62,7 +62,7 @@ bool built_ = false;
 bool entered_ = false;
 
 // One webmachine-logd over a socketpair, before the ring exists. Two
-// streams take this road, and they do NOT share a ceiling - see the
+// streams take this road, and they do not share a ceiling - see the
 // two call sites for why an access log is a window and an error log
 // is not.
 // One log process: which log it is (the word a refusal names), the file it
@@ -117,7 +117,7 @@ int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
 }
 
 // The listener table, straight out of the registry: registration order
-// IS listener order.
+// is listener order.
 // The PEM bytes a TLS listener answers with. Read at boot and kept
 // here because ListenerSpec only points at them and the ring outlives
 // the call that filled it in. Two per listener, indexed by listener.
@@ -269,14 +269,14 @@ void server_backend_say() {
                  "webmachine: ================================================================\n"
                  "webmachine: == IO: slipstream's engine answers this process's rings\n"
                  "webmachine: == why: %s\n"
-                 "webmachine: == cost: CORRECT, NOT FAST - every socket op is readiness plus\n"
+                 "webmachine: == cost: correct, not fast - every socket op is readiness plus\n"
                  "webmachine: ==   a classic syscall, files ride a worker thread\n"
                  "webmachine: == fast: the same binary, on a host that allows io_uring\n"
                  "webmachine: ================================================================\n",
                  why);
   }
   // There is no runtime "is liburing here" question. mrbgem.rake aborts
-  // the BUILD when liburing cannot be built, which is the moment an
+  // the build when liburing cannot be built, which is the moment an
   // operator can still act on. The only open question is which side
   // answers the rings, and the banner above has just said it.
 }
@@ -302,7 +302,7 @@ void build(mrb_state* mrb) {
 
   // server.docroot: a typed flag beats [server], and both beat the app's
   // conf - the same order --unix and --port already follow. The canonical
-  // path is settled ONCE, here, before the first accept: no request may race
+  // path is settled once, here, before the first accept: no request may race
   // the anchor RESOLVE_BENEATH is measured against. A configured docroot
   // that is missing or is not a directory refuses startup by name, because
   // an operator who asked for one and silently got a server without it would
@@ -319,7 +319,7 @@ void build(mrb_state* mrb) {
   }
 
   // conf.disable_http_cats: the first app with an opinion decides, the way
-  // every other conf answer is taken. Asked BEFORE the pack is looked for,
+  // every other conf answer is taken. Asked before the pack is looked for,
   // because "off" means it is never opened, not opened and ignored.
   int8_t no_cats = -1;
   for (size_t i = 0; no_cats < 0 && i < specs_.size(); i++) {
@@ -338,7 +338,7 @@ void build(mrb_state* mrb) {
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
-    // Caught ON PURPOSE, and the only startup refusal that is not one: a
+    // Caught on purpose, and the only startup refusal that is not one: a
     // picture is no reason not to serve. What it refused with is said in
     // the error log, and the pages render without it.
     OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
@@ -371,14 +371,14 @@ void build(mrb_state* mrb) {
   if (opts_.log_path != nullptr) {
     if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
       std::fprintf(stderr,
-                   "webmachine: --log-privacy=none writes FULL client addresses to the log.\n"
+                   "webmachine: --log-privacy=none writes full client addresses to the log.\n"
                    "webmachine: an IP address is personal data (GDPR art. 4(1)); logging it\n"
                    "webmachine: needs a legal basis (art. 6). Security logging with short\n"
                    "webmachine: retention usually rides legitimate interest plus a privacy\n"
                    "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
                    "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
     }
-    // The access log is a WINDOW - it answers what happened in the last
+    // The access log is a window - it answers what happened in the last
     // so-many bytes. Dropping the oldest is its semantics, not a loss.
     const LogdSpawn access = {
         "access", opts_.log_path,
@@ -387,11 +387,11 @@ void build(mrb_state* mrb) {
     cfg.log_fd = log_fd_;
   }
   if (opts_.error_log_path != nullptr) {
-    // NO CEILING (0 disables the cap in webmachine-logd). An error log is
+    // No ceiling (0 disables the cap in webmachine-logd). An error log is
     // not a window: what lands here is a 500 or a Ruby exception with its
     // backtrace, never ordinary traffic, so it does not grow on its own.
     // It grows in a fault storm - and that is the one moment where the
-    // FIRST entry is the one that names the cause and everything after it
+    // first entry is the one that names the cause and everything after it
     // is consequence. A ceiling that keeps the newest half would throw
     // away exactly the line worth having.
     err_fd_ = spawn_logd(mrb, {"error", opts_.error_log_path, nullptr, 0});
@@ -494,7 +494,7 @@ mrb_value wm_run(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-// Webmachine.tick(budget): ONE bounded step - the budget bounds the WORK.
+// Webmachine.tick(budget): one bounded step - the budget bounds the work.
 mrb_value wm_tick(mrb_state* mrb, mrb_value) {
   mrb_value budget = mrb_nil_value();
   mrb_get_args(mrb, "|o", &budget);
@@ -543,7 +543,7 @@ mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
 }
 }
 
-// What the INVOCATION decides; not reachable from Ruby, deliberately.
+// What the invocation decides; not reachable from Ruby, deliberately.
 void server_options(const ServerOptions& opts) { opts_ = opts; }
 
 // Did `main` serve already through run or tick?

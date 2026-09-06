@@ -1,13 +1,13 @@
-# What a number was made ON and WITH, for the log line beside it.
+# What a number was made on and with, for the log line beside it.
 #
 # The harness line already names the client, the transport and the flags a
-# config ASKED for. This names what the binary actually carries and what
+# config asked for. This names what the binary actually carries and what
 # it will load, because a host that updated its packages between two runs
 # is otherwise invisible: same kernel string, same cflags, a different
 # compiler and a different libstdc++, and two numbers that cannot be
 # compared look identically labelled.
 #
-# Read off the BINARY, never off PATH. BIN= points a run at another build
+# Read off the binary, never off PATH. BIN= points a run at another build
 # on purpose, and `gcc --version` would then describe a compiler that
 # never touched it. GCC and clang both write themselves into .comment,
 # the loader names the shared objects the run will actually use, and
@@ -18,7 +18,7 @@ wm_build_line() {
              grep -oE '(GCC:|clang version).*' | head -1 | sed 's/^GCC: /gcc /' | tr -s ' ')
   wm_bl_cxx=$(ldd "$wm_bl_bin" 2>/dev/null | grep -oE '/[^ ]*libstdc\+\+\.so[^ ]*' | head -1)
   [ -n "$wm_bl_cxx" ] && wm_bl_cxx=$(basename "$(readlink -f "$wm_bl_cxx")")
-  # WHICH libc, and whether there is one at all. The path answers the
+  # Which libc, and whether there is one at all. The path answers the
   # second question and the library itself answers the first.
   #
   # It used to look for the word GLIBC in `libc.so --version`. Ubuntu

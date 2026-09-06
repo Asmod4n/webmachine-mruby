@@ -18,7 +18,7 @@ const ReqView* view_ = nullptr;
 
 const struct mrb_data_type request_type = {"webmachine.request", nullptr};
 
-// RFC 9110 9.3.3: n11's create_path names a new disp_path for THIS run
+// RFC 9110 9.3.3: n11's create_path names a new disp_path for this run
 // only; request_bind clears it again on the way in and on the way out.
 std::string disp_override_;
 bool disp_override_set_ = false;
@@ -125,14 +125,14 @@ mrb_value req_query_string(mrb_state* mrb, mrb_value) {
 // application/x-www-form-urlencoded, WHATWG URL Standard: the pairs of
 // a query string, percent-decoded, '+' read as a space.
 //
-// NOT RFC 9110. That specification defines the http URI scheme, where
+// Not RFC 9110. That specification defines the http URI scheme, where
 // the query is an opaque string, as it is in RFC 3986 3.4. Key-value
 // pairs are not an HTTP concept at all; they are the
 // form encoding's, and its living definition is the URL Standard. That
 // standard splits on '&' (0x26) and nothing else. The ';' this used to
 // accept came from a note to CGI authors in HTML 4.01 B.2.2 and was
 // removed from the web platform in 2020, so it goes here too. Cookies
-// keep their ';' - that one IS specified, in RFC 6265 4.2.
+// keep their ';' - that one is specified, in RFC 6265 4.2.
 //
 // ada owns the decoded pairs for the length of the call and hands out
 // views into them, so every String below is made while they are alive.
@@ -230,7 +230,7 @@ mrb_value req_named(mrb_state* mrb, http::NamedField f) {
   const ReqView* v = request_being_answered(mrb);
   if (v->values == nullptr || !v->values->named.carries(f)) return mrb_nil_value();
   // The index is applied by the thing that stored it, against the array
-  // it is being applied TO - see http::NamedFieldIndex. A position this
+  // it is being applied to - see http::NamedFieldIndex. A position this
   // request's array cannot reach reads as "no such field" instead of
   // reading past the end.
   const struct phr_header* h = v->values->named.find(
@@ -362,7 +362,7 @@ mrb_value req_is_options(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kOptions);
 }
 
-// RFC 9110: Resource#request - a FRESH handle on every call, never one the
+// RFC 9110: Resource#request - a fresh handle on every call, never one the
 // process keeps and hands back. What the caller does with it afterwards is
 // the caller's; the callback's own GC arena roots it, the same way Response
 // is rooted.
@@ -383,7 +383,7 @@ void request_bind(const ReqView* view) {
   disp_override_set_ = false;
 }
 
-// RFC 9110 9.3.3: n11's create_path names a new disp_path for THIS run;
+// RFC 9110 9.3.3: n11's create_path names a new disp_path for this run;
 // the next request_bind (in or out) clears it again.
 void request_disp_override(const char* p, size_t n) {
   disp_override_.assign(p, n);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# The dynamic-body A/B through the REAL Ring<App> reactor.
+# The dynamic-body A/B through the real Ring<App> reactor.
 #
 # vm_floor.cpp answered "copy out of the VM, or freeze+register and send
 # the VM's own buffer?" against blocking send()/sendmsg(). This answers
@@ -10,20 +10,20 @@
 #   bench/vm/ring_body.sh              # full matrix, appended to bench/results/
 #   REPS=5 SIZES="65536" bench/vm/ring_body.sh
 #
-# MEASUREMENT DISCIPLINE, and why it is not optional here:
+# Measurement discipline, and why it is not optional here:
 #
-#   * PINNED. Unpinned on this shared 4-vCPU box the same configuration
+#   * Pinned. Unpinned on this shared 4-vCPU box the same configuration
 #     spread over 3x run to run - enough to "prove" either variant. Ring
 #     thread and client thread each get their own cpu; the spread drops
 #     to roughly +/-10%. Every number below is pinned, and an unpinned
 #     number from this harness is not evidence of anything.
-#   * FRESH PROCESS per measurement. One process is one (variant, size)
+#   * Fresh process per measurement. One process is one (variant, size)
 #     data point - no allocator or GC state carried between them.
-#   * PAIRED and INTERLEAVED. copy and zero run back to back inside one
+#   * Paired and interleaved. copy and zero run back to back inside one
 #     rep, so a neighbour's burst lands on both. The headline is the
-#     MEDIAN OF PER-REP RATIOS plus a sign count, not two independent
+#     median of per-rep ratios plus a sign count, not two independent
 #     medians subtracted - that survives drift the medians do not.
-#   * MEDIAN AND RANGE, never a single point number.
+#   * Median and range, never a single point number.
 set -eu
 cd "$(dirname "$0")/.."
 cd ..
@@ -59,7 +59,7 @@ CONNS="${CONNS:-8}"
 PIN_RING="${PIN_RING:-0}"
 PIN_CLIENT="${PIN_CLIENT:-1}"
 # variant:hold. copy:0 is today's shape, zero:1 is the proposal, and
-# copy:1 is the CONTROL - it copies like today but keeps the String
+# copy:1 is the control - it copies like today but keeps the String
 # frozen+registered for the same in-flight window as the proposal. It is
 # in the default set because without it the harness cannot tell a copy
 # saved from an allocator artifact of the hold, and at 8KB those two
@@ -156,8 +156,8 @@ awk '
                s, var, median(k,cn), lo(k,cn), hi(k,cn), cmed(k,cn), RPE[k]/cnt[k]
       }
       # Paired against copy, per rep: median ratio plus a sign count.
-      # copyhold vs copy isolates the HOLD; zero vs copyhold isolates the
-      # COPY; zero vs copy is the two together, which is the decision.
+      # copyhold vs copy isolates the hold; zero vs copyhold isolates the
+      # copy; zero vs copy is the two together, which is the decision.
       for (vi=2; vi<=nv; vi++) {
         var=vlist[vi]; if (n[s" "var]==0) continue
         m=0; wins=0

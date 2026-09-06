@@ -1,6 +1,6 @@
 #!/bin/bash
 # The coverage-guided campaign (#206): libFuzzer, the real listener, the
-# real reactor. What is fuzzed is the SERVER through a socket - the same
+# real reactor. What is fuzzed is the server through a socket - the same
 # door an attacker has - and not one of its functions.
 #
 #   tools/fuzz-run.sh                 # until you stop it
@@ -8,7 +8,7 @@
 #   JOBS=8 tools/fuzz-run.sh          # -fork, one corpus, N children
 #
 # The corpus and the dictionary live beside the harness and are
-# COMMITTED: a fuzzer starting from nothing spends its first thousands of
+# Committed: a fuzzer starting from nothing spends its first thousands of
 # runs arriving at "GET / ", which is not a discovery. New inputs land in
 # the same directory - that is libFuzzer's own doing - so run
 # tools/fuzz-merge.sh before committing what a campaign found.

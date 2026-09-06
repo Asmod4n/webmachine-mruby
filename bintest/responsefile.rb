@@ -26,7 +26,7 @@ end
 
 def rf_app
   <<~RUBY
-    # The name comes off the query string on purpose: a path a REQUEST chose
+    # The name comes off the query string on purpose: a path a request chose
     # is the only interesting case, and the one every traversal test needs.
     class RfFile < Webmachine::Resource
       def to_html
@@ -189,7 +189,7 @@ assert('response.file refuses every escape as the same 404') do
       head, body = rf_get(sock, name)
       assert_include head, 'HTTP/1.1 404 Not Found'
       assert_false head.include?(RF_SECRET)
-      # The SAME bytes as a plain miss, so an attacker cannot tell a
+      # The same bytes as a plain miss, so an attacker cannot tell a
       # caught escape from a name that was never there.
       assert_equal missb, body, "#{what} answered a different body"
       assert_equal baseline, rf_undated(head), "#{what} answered differently"
@@ -333,9 +333,9 @@ end
 
 # The head named a Content-Length before the last window was read. If the
 # file shrinks under it the promise cannot be kept, and a 500 spelled after
-# those bytes would sit BEHIND them - the client would wait for a remainder
+# those bytes would sit behind them - the client would wait for a remainder
 # that never comes. RFC 9112 6.3: close instead. The property asserted here
-# is the deterministic one - the request ENDS - because whether the truncate
+# is the deterministic one - the request ends - because whether the truncate
 # wins the race against the send does not change what must not happen.
 assert('response.file that shrinks mid-flight ends the request, never hangs') do
   base, root = rf_tree
@@ -408,7 +408,7 @@ def rf_stream(sock, name)
   [head, len, got, last]
 end
 
-# ONE sendmsg moves at most MAX_RW_COUNT (INT_MAX rounded down to a page,
+# One sendmsg moves at most MAX_RW_COUNT (INT_MAX rounded down to a page,
 # 2,147,479,552 here). A body offered past that comes back short, which is
 # indistinguishable from a dead peer - the connection used to be dropped
 # with the client holding a prefix and a Content-Length it would never
@@ -440,7 +440,7 @@ assert('response.file serves a file larger than one send can move') do
 end
 
 # A mapping that cannot be made is not an error: the read path serves the
-# same bytes, a window at a time. What must NOT happen is the fallback
+# same bytes, a window at a time. What must not happen is the fallback
 # asking for the whole file - that allocation threw std::bad_alloc and took
 # the process down, every connection on it with one request.
 assert('response.file survives an mmap it cannot make, and still serves') do
@@ -473,7 +473,7 @@ assert('response.file survives an mmap it cannot make, and still serves') do
   end
 end
 
-# RFC 9110: one access line per REQUEST. A 4 MB file over the window path
+# RFC 9110: one access line per request. A 4 MB file over the window path
 # takes sixteen rounds, and the line used to be written from inside the
 # round - sixteen lines for one request, each with a window's byte count.
 assert('response.file writes one access line per request, not one per window') do
@@ -574,10 +574,10 @@ def rf_throttled(sock, name, rate)
   [head, len, got]
 end
 
-# A deadline is refreshed per COMPLETED send, so what ONE send carries decides
+# A deadline is refreshed per completed send, so what one send carries decides
 # which clients survive: offer the whole body at once and the client must
 # drain all of it before the clock that is running - the header clock, until
-# the first send completes - runs out. That is why the chunk is DERIVED from
+# the first send completes - runs out. That is why the chunk is derived from
 # send_timeout and the slowest rate we serve (16 kbit/s) instead of chosen: a
 # 64 MiB chunk picked for MAX_RW_COUNT's sake silently demanded 1.12 MB/s of
 # every client, and a phone on a spent monthly allowance gets 32 kbit/s.

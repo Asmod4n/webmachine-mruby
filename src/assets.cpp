@@ -57,13 +57,13 @@ void spell_hex8(char* out, uint32_t v) {
 constexpr uint16_t kExtraImgTag = 0x574d;
 
 // 0x574E is the second, written by the pack task: the Cache-Control
-// value for THIS entry. A lifetime belongs to the file rather than to
+// value for this entry. A lifetime belongs to the file rather than to
 // the server - a hashed bundle may be kept for a year, an index.html
 // for a minute. The pack says it once, the head is built with it at
 // open, and no request reads it.
 constexpr uint16_t kExtraCacheControl = 0x574e;
 
-// 0x574F is the table the pack task writes. An entry there is NAMED by a
+// 0x574F is the table the pack task writes. An entry there is named by a
 // hash of its content - index.4f3a1c9d2b70.html - and this field holds
 // the name a client actually asks for: index.html. The pack therefore
 // holds one copy of the bytes under two names, and the two names get
@@ -459,9 +459,9 @@ void Assets::answer_416_head(const HeadAsk& ask, std::string& sink) {
   sink.append("Content-Length: ").append(std::to_string(ask.body_len)).append("\r\n\r\n");
 }
 
-// RFC 1952 2.2: [off, off+n) of the wire body as POINTERS - the gzip
+// RFC 1952 2.2: [off, off+n) of the wire body as pointers - the gzip
 // header, the deflate stream where it lies in the mapping, the trailer.
-// Up to THREE iovecs for ONE logical window, and only the middle one is
+// Up to three iovecs for one logical window, and only the middle one is
 // the file: that is why this returns a count and not a pointer.
 unsigned Assets::wire_iov(const AssetEntry& e, Window w, struct iovec* iov) {
   size_t off = w.off;

@@ -48,7 +48,7 @@ def a_server(zip_bytes, extra = [])
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-stderr-#{$$}.log"
   # TZ=UTC, because a ZIP's DOS timestamp carries no zone: miniz reads it
-  # with mktime (LOCAL time, miniz_zip.c) and assets.cpp renders it with
+  # with mktime (local time, miniz_zip.c) and assets.cpp renders it with
   # gmtime_r, so the Last-Modified this suite pins moves with the
   # machine's timezone. Pinned here so the assertion tests the header,
   # not the test host - the server's own zone dependency is its own
@@ -111,7 +111,7 @@ assert('assets: a method-8 entry ships as gzip synthesized from the archive itse
   end
 end
 
-assert('assets: a stored entry is identity - the method IS the decision') do
+assert('assets: a stored entry is identity - the method is the decision') do
   a_server(a_the_zip) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /img.bin HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n")
@@ -396,7 +396,7 @@ def a_tcp_server(zip_bytes)
   pid = nil
   10.times do
     # Below ip_local_port_range (32768 up here): a fixed port picked
-    # INSIDE that window collides with an ephemeral port the machine
+    # inside that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
     pid = spawn(A_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
@@ -455,7 +455,7 @@ def a_wire_gzip(data)
   "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff".b + c + [Zlib.crc32(data), data.bytesize].pack('VV')
 end
 
-assert('ranges: 206 slices the wire body - stored AND the gzip stream alike') do
+assert('ranges: 206 slices the wire body - stored and the gzip stream alike') do
   a_server(a_big_zip) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /big.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-9\r\n\r\n")
@@ -492,7 +492,7 @@ assert('ranges: 416, ignored forms, If-Range, HEAD') do
       head, body = a_read(s)
       assert_true head.start_with?('HTTP/1.1 416 Range Not Satisfiable')
       assert_true head.match?(%r{^Content-Range: bytes \*/#{A_BIG.bytesize}\r$}i)
-      # #210: the complete length AND the page - the field the status owes
+      # #210: the complete length and the page - the field the status owes
       # is spelled around the body, not instead of it.
       assert_true head.match?(%r{^Content-Type: text/html}i)
       assert_include body, 'Range Not Satisfiable'
@@ -728,11 +728,11 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   logf = "/tmp/wm-peer-access-#{$$}.log"
   File.unlink(logf) if File.exist?(logf)
   # Below ip_local_port_range (32768 up here): a fixed port picked
-  # INSIDE that window collides with an ephemeral port the machine
+  # inside that window collides with an ephemeral port the machine
   # already handed out, which is how this suite once died on 44468.
   port = 20000 + rand(11000)
   errf = "/tmp/wm-peer-err-#{$$}.log"
-  # --log-privacy none: the access log ANONYMISES by default (the server
+  # --log-privacy none: the access log anonymises by default (the server
   # hands logd 'anon', which masks the last octet), so the default run
   # can only ever show 127.0.0.0 and could not tell an address that
   # arrived from one that did not. This test is about arrival, so it
@@ -766,7 +766,7 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   assert_true lines[0].include?('"GET /img.bin HTTP/1.1" 200'), lines[0]
   # SOCKET_URING_OP_GETSOCKNAME is not in every kernel. Where it is
   # missing the server says so once and %h is '-' by contract; where it
-  # is there, the address has to arrive. Both are checked - what is NOT
+  # is there, the address has to arrive. Both are checked - what is not
   # allowed is a '-' on a kernel that could have answered.
   errtext = begin File.read(errf) rescue '' end
   if errtext.include?('peer address unavailable')
@@ -803,7 +803,7 @@ assert('assets: an asset file alone serves, and everything it does not name is 4
   end
 end
 
-# The error assets is a SOURCE, not something to serve: the server renders its two
+# The error assets is a source, not something to serve: the server renders its two
 # templates once at startup and emits the result as the body of whatever
 # failed. So this reads the archive rather than asking a server for it -
 # every entry is stored, which makes a local header all it takes.
@@ -864,7 +864,7 @@ assert('assets: the shipped error assets are pictures, named by their status') d
   skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
   e = a_pack_entries(pack)
 
-  # NOTHING BUT PICTURES, and nothing nested. The name in the archive is
+  # Nothing but pictures, and nothing nested. The name in the archive is
   # the name response.error_asset takes and the name /error_assets/
   # serves, so a replaced file needs no directory anyone had to be told
   # about. The templates live in Webmachine::ErrorResource.

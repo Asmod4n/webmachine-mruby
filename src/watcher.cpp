@@ -116,7 +116,7 @@ mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   mrb_value source;
   mrb_value events = mrb_symbol_value(MRB_SYM(r));
   mrb_value blk = mrb_nil_value();
-  // mruby checks keywords against a DECLARED table. timeout is declared
+  // mruby checks keywords against a declared table. timeout is declared
   // optional, so the refusal below is ours and says why a deadline is
   // owed. The slot starts as undef, because mrb_get_args leaves a key
   // that was not given untouched.
@@ -196,7 +196,7 @@ mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
 // #30: the peer said nothing for `timeout` seconds. That is the world
 // and not a fault of the application, so it arrives at the block as an
 // event, exactly as a readable descriptor does. `:timeout` is a value
-// that ARRIVES and cannot be ordered, which is why revents and events
+// that arrives and cannot be ordered, which is why revents and events
 // do not share a menu.
 //
 // The block answers with what it does: it calls abort to give up, or it
@@ -542,7 +542,7 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
     said = run_block(mrb, w, sym_of(mrb, revents));
   }
   if (watcher_aborted_p(w)) {
-    // ROOT IT FIRST. The block's answer is held by the arena and by
+    // Root it first. The block's answer is held by the arena and by
     // nothing else; restoring the arena before registering it hands the
     // collector a value the run is about to read.
     Conn::Round* const r = watcher_round(w);
@@ -562,7 +562,7 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   const int ai = mrb_gc_arena_save(mrb);
   const unsigned before = watcher_events_mask(w);
   // The block hears :timeout and answers whether the wait goes on. A
-  // watcher over its deadline is usually the WORLD - the peer said
+  // watcher over its deadline is usually the world - the peer said
   // nothing - and that is a fact the application has to learn, not a
   // failure of its own (.DESIGN.md #compute-task-bound).
   mrb_value said = mrb_nil_value();

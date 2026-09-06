@@ -23,7 +23,7 @@ if [ ! -f "$GB_DIR/build/src/libbenchmark.a" ]; then
   cmake --build "$GB_DIR/build" -j"$(nproc)" >/dev/null
 fi
 
-# The Ruby half is BYTECODE (#100), compiled with the mrbc this build
+# The Ruby half is bytecode (#100), compiled with the mrbc this build
 # produced - the same rule the server follows for its apps.
 MRBC="${MRBC:-mruby/bin/mrbc}"
 [ -x "$MRBC" ] || { echo "$MRBC missing - run: rake compile" >&2; exit 1; }

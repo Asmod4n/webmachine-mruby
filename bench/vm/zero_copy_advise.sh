@@ -1,8 +1,8 @@
 #!/bin/bash
-# What [tune] zero_copy_threshold should be ON THIS MACHINE.
+# What [tune] zero_copy_threshold should be on this machine.
 #
 # The crossover between copying a dynamic body into the send buffer and
-# LENDING the handler's own String to the kernel is a property of the box:
+# lending the handler's own String to the kernel is a property of the box:
 # its memory bandwidth, its allocator, how busy its neighbours are. The
 # default baked into src/webmachine.hpp (kZeroCopyDefault, 128 KiB) was
 # measured on one shared 4-vCPU container and errs high on purpose. This
@@ -12,19 +12,19 @@
 #   REPS=13 bench/vm/zero_copy_advise.sh        # slower, steadier
 #   MARGIN=15 bench/vm/zero_copy_advise.sh      # demand a bigger win
 #
-# It REUSES bench/vm/ring_body.sh - the same driver, the same real
+# It reuses bench/vm/ring_body.sh - the same driver, the same real
 # Ring<App>, the same pinned/paired/interleaved discipline, the same
 # median-of-per-rep-ratios. Nothing about the measurement is respelled
-# here; this file only READS its verdict and turns it into a number.
+# here; this file only reads its verdict and turns it into a number.
 #
 # This is bench/, not tools/: it measures, it costs a minute of CPU, and
 # it appends to bench/results/. tools/webmachine-tune.sh stays read-only
 # by charter and gets no benchmark bolted onto it.
 #
-# THE RULE it applies, and why it is not just "smallest winning size":
-# a size qualifies when zero-copy beat copy by at least MARGIN percent AND
+# The rule it applies, and why it is not just "smallest winning size":
+# a size qualifies when zero-copy beat copy by at least MARGIN percent and
 # won at least three quarters of its reps. The recommendation is the
-# smallest qualifying size whose LARGER sizes all qualify too. That tail
+# smallest qualifying size whose larger sizes all qualify too. That tail
 # test is not decoration - an earlier run of this very harness showed a
 # 40-47% "win" at 4-16KB that a control experiment traced to glibc
 # allocator behaviour tied to object lifetime, with nothing to do with

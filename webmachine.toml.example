@@ -1,18 +1,18 @@
 # webmachine.toml - written by --write-config.
 #
-# EVERY KNOB THIS SERVER READS FROM A FILE IS HERE, with what it does
+# Every knob this server reads from a file is here, with what it does
 # and what it does without you. Nothing in this file changes anything
-# until you change a line: these ARE the answers.
+# until you change a line: these are the answers.
 #
 # A flag beats this file; this file beats the app's own conf.
 
 [server]
-# WHERE it answers. At most one of the two - a unix socket, or a TCP
+# Where it answers. At most one of the two - a unix socket, or a TCP
 # port. Without either, the app's conf decides.
 # unix = "/run/webmachine.sock"
 # port = 8080
 
-# WHAT it serves. One of app and assets, or a docroot with
+# What it serves. One of app and assets, or a docroot with
 # --standalone; with nothing to serve there is no start.
 # app = "site.mrb"           # the application, as bytecode (mrbc)
 # assets = "site.zip"        # a pack, answered from one mapping
@@ -43,7 +43,7 @@
 # address; none writes no address at all.
 # privacy = "anon"
 
-# What a callback RAISED, with its class, message, backtrace, the
+# What a callback raised, with its class, message, backtrace, the
 # request that led there and up to 4 KB of its body. That last part
 # is whatever the app was sent - a form login puts a password in it -
 # so give the file the permissions that says so.
@@ -53,7 +53,7 @@
 # max_bytes = 524288000        # 500 MB, the default
 
 [tune]
-# EVERY VALUE HERE IS A PROPERTY OF THE MACHINE, not of the site.
+# Every value here is a property of the machine, not of the site.
 # Measure before you change one: bench/ has the harnesses.
 
 # listen(2)'s backlog. Without it, SOMAXCONN.
@@ -63,13 +63,13 @@
 # until the kernel agrees, so this is a wish and not a promise.
 # sq_entries = 32768
 
-# From this size up a body is LENT to the kernel instead of copied
+# From this size up a body is lent to the kernel instead of copied
 # into the send buffer. 0 is "never lend", which is a real answer.
 # zero_copy_threshold = 131072     # 128 KiB, the default
 
-# From this size up a file is MAPPED and handed to one send instead
+# From this size up a file is mapped and handed to one send instead
 # of being read window by window. The default is one window: a file
-# that small IS one read, so a mapping would replace nothing and
+# that small is one read, so a mapping would replace nothing and
 # still cost the mmap/munmap pair. 0 is "never map".
 # file_map_threshold = 262144      # 256 KiB, the default
 

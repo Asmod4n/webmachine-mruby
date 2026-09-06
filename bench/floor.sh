@@ -4,13 +4,13 @@
 # CONNS is mandatory, never a silent default (three separate debugging
 # days in the old tree came from silently differing harnesses).
 #
-# EVERYTHING IS SINGLE-THREADED, both ends. The server is one thread and
+# Everything is single-threaded, both ends. The server is one thread and
 # one ring by measurement (#120), and since #196 the client is too: htgen
-# saturates it from ONE ring. A -t knob only invited the question "how
+# saturates it from one ring. A -t knob only invited the question "how
 # many threads did that number cost", which is not a property of
 # webmachine.
 #
-# ONE generator, htgen. wrk and h2load are gone from this tree - the
+# One generator, htgen. wrk and h2load are gone from this tree - the
 # machine that measures does not have them installed any more, and a
 # script that names a tool nobody can run is a script that lies about
 # how its numbers were made.
@@ -35,7 +35,7 @@ set -u
 # Refused rather than ignored: a silently dropped harness knob is how a
 # number ends up describing a run nobody performed.
 [ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone from this script: server and client are ONE thread each (#120, #196)." >&2
+  echo "THREADS= is gone from this script: server and client are one thread each (#120, #196)." >&2
   echo "Drop it - no bench script in this tree takes it any more." >&2
   exit 2
 }
@@ -44,7 +44,7 @@ TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
 IMPL="${IMPL:-uring}"
 # BIN=path names the binary directly, for an A/B between two builds of the
-# SAME impl: keep both, alternate them, and the harness line records which
+# same impl: keep both, alternate them, and the harness line records which
 # one ran. Without it the only way to compare two builds was to copy one
 # over the other between runs, which leaves no trace in the log.
 BIN="${BIN:-}"
@@ -111,14 +111,14 @@ if [ "$PROTO" = h2 ] && [ "$PIPELINE" != 1 ]; then
   exit 2
 fi
 
-# THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
+# The client must not be the bottleneck - the same refusal bench/assets.sh
 # already has, ported here: a number where the client burned as much CPU
-# as the server describes the client, not webmachine. cpu_ticks reads the SERVER's own
+# as the server describes the client, not webmachine. cpu_ticks reads the server's own
 # /proc/pid/stat (utime+stime), never system-wide - see snap_times below
 # for the client's side.
-# utime and stime SEPARATELY, because their ratio is the question this
+# utime and stime separately, because their ratio is the question this
 # harness could not answer: on AF_UNIX the kernel bills a copy to the
-# process that CALLED send, so a client that "does almost nothing" still
+# process that called send, so a client that "does almost nothing" still
 # pays for moving every response byte. A client that is mostly sys is
 # the socket; a client that is mostly user is its own loop.
 cpu_ticks() {
@@ -127,17 +127,17 @@ cpu_ticks() {
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # The whole machine's busy ticks, all cores, from /proc/stat's first line.
-# The env: line above samples 200ms BEFORE the run; this one is read
+# The env: line above samples 200ms before the run; this one is read
 # across the run itself, because what a ten-second run competed with is
 # not what the 200ms before it looked like.
 machine_busy() {
   awk 'NR==1 { print $2+$3+$4+$7+$8+$9 }' /proc/stat
 }
 WORK=$(mktemp -d)
-# Split like sysc_wait: the WAIT must run in the shell that backgrounded
+# Split like sysc_wait: the wait must run in the shell that backgrounded
 # the client (a $() subshell is not its parent), only the read below may fork.
 snap_times() { times > "$WORK/.times"; }
-# times(1) line 2 is the CHILDREN's user and sys - the same split as
+# times(1) line 2 is the children's user and sys - the same split as
 # above, from the other side.
 parse_child_cpu() {
   awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
@@ -172,8 +172,8 @@ fi
 # taken without BROWSER=1 measures the path a browser never takes.
 # PIN="0 2": the server on the first cpu, the client on the second. The
 # priority is not this knob's - bench/priority.sh takes -10 for the whole
-# run, and the children inherit it. Not a default - #120 refused pinning the SERVER's ring
-# workers, and this is not that: it pins the two PROCESSES apart so they
+# run, and the children inherit it. Not a default - #120 refused pinning the server's ring
+# workers, and this is not that: it pins the two processes apart so they
 # stop trading one core, which is what a machine with few cores does to a
 # number. Whether it helps is a property of the machine, so the harness
 # line records it and bench/ratchet.sh decides from the spread.
@@ -208,16 +208,16 @@ fi
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- requests per syscall -------------------------------------------
-# The point of a ring server is syscall AMORTIZATION - one enter
-# carries a whole batch of rounds - and this makes it a NUMBER: the
+# The point of a ring server is syscall amortization - one enter
+# carries a whole batch of rounds - and this makes it a number: the
 # server's syscalls over the run (raw_syscalls:sys_enter, a counting
 # tracepoint: no sampling, negligible overhead), divided into the
 # requests the client completed. The window is the client's run plus
-# edges; an idle server sits BLOCKED in one enter, so edges add
+# edges; an idle server sits blocked in one enter, so edges add
 # ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
 # perf_event_paranoid low enough for tracepoints); without one the
 # column prints '-' rather than a guess.
-# OPT-IN via SYSCALLS=1: counting needs perf, tracefs access and a
+# Opt-in via SYSCALLS=1: counting needs perf, tracefs access and a
 # paranoid setting most machines don't have lying around - a default
 # that probes and warns on every run is noise for anyone not asking
 # the question. Off, the column prints '-' and nothing is touched.
@@ -235,7 +235,7 @@ if [ -n "$SYSC_PERF" ]; then
   # open only the cpu side, which is why perf record works while this
   # counter stays empty). A column of silent '-' hides that; say it.
   # perf stat's -x CSV goes to STDERR; the probe must read that side.
-  # On failure, RELAY perf's own words - there are two separate locks
+  # On failure, relay perf's own words - there are two separate locks
   # (perf_event_paranoid gates the syscall, tracefs permissions gate
   # resolving the event name) and guessing which one bit cost a round
   # of head-scratching already.
@@ -256,7 +256,7 @@ sysc_begin() {  # <pid[,pid...]> <seconds>
     -- sleep "$2" >/dev/null 2>&1 &
   SYSC_PID=$!
 }
-# Split like snap_times, for the same reason: the WAIT must run in the
+# Split like snap_times, for the same reason: the wait must run in the
 # shell that backgrounded perf (a $() subshell is not its parent, its
 # wait returns at once while the output file is still being written);
 # only the read may fork.
@@ -269,7 +269,7 @@ sysc_read() {
 }
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
-grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
+grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }
@@ -287,7 +287,7 @@ OUT=$(mktemp)
   echo "==== $(date -u +%Y-%m-%dT%H:%MZ) repo=$REPO_REV mruby=$MRUBY_REV ===="
   # The compiler flags are part of every number since they became a
   # variable (O2 -> O3+native landed mid-archive).
-  # Read from the config that built THIS binary. pgo's -O and -march are
+  # Read from the config that built this binary. pgo's -O and -march are
   # host's; what it adds is -fprofile-use, which the IMPL field already
   # says.
   CFLAGS_SRC=build_config_host.rb
@@ -298,7 +298,7 @@ OUT=$(mktemp)
   # that are not the same.
   CFLAGS_LINE=${CFLAGS_LINE//\$\{march\}/${WM_MARCH:-native}}
   CFLAGS_LINE=${CFLAGS_LINE//#\{march\}/${WM_MARCH:-native}}
-  # WHICH htgen - not just "htgen". A stale binary earlier in PATH than
+  # Which htgen - not just "htgen". A stale binary earlier in PATH than
   # the one just built is invisible otherwise, and the number it produces
   # looks exactly like the number the new one would have produced.
   CLI_LINE="$HTGEN($(bench_htgen_version "$HTGEN")) -c$CONNS -d${DURATION}s $PROTO"
@@ -311,12 +311,12 @@ OUT=$(mktemp)
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
   echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
-  # cflags above is what the CONFIG asks for; this is what the binary was
+  # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
   . bench/buildline.sh
   wm_build_line "$BIN"
-  # The measuring condition, sampled NOW - loadavg would smear a whole
+  # The measuring condition, sampled now - loadavg would smear a whole
   # minute of history over it (a browser closed 40s ago still shows).
   # runnable/total is /proc/loadavg field 4: the scheduler's own
   # instantaneous count, no averaging. busy% is a 200ms /proc/stat
@@ -325,7 +325,7 @@ OUT=$(mktemp)
   # sampler can (ENV_NOTE="plasma 4k120" ...); the desktop the numbers
   # are measured beside is part of every number.
   #
-  # Read runnable=N/M against THIS machine's own quiet floor, never
+  # Read runnable=N/M against this machine's own quiet floor, never
   # against zero. M is every thread that exists, and a desktop keeps
   # far more of them than the desktop shows: forgecore idles at ~865
   # with nothing running but a Plasma session, part of which is a
@@ -376,16 +376,16 @@ OUT=$(mktemp)
   if [ -n "$NSYSC" ] && [ "$NSYSC" -gt 0 ] && [ -n "$NDONE" ]; then
     awk -v d="$NDONE" -v n="$NSYSC" 'BEGIN { printf "req/syscall: %.1f (%d requests / %d server syscalls)\n", d / n, d, n }'
   fi
-  # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
+  # The client must not be the bottleneck - a conjunction, not a
   # comparison (bench/assets.sh already learned this the hard way): the
-  # server had headroom AND the client was pegged. Both ends are one
+  # server had headroom and the client was pegged. Both ends are one
   # thread now, so "pegged" is one core.
-  # HEADROOM IS A GAP, not "below 90". The rule refused a run where the
+  # Headroom is a gap, not "below 90". The rule refused a run where the
   # server sat at 89 and the client at 90 - one point apart, inside the
   # noise of a percentage derived from /proc over the run, and with no
   # headroom to speak of. What it must catch is the case the number
-  # LIES about: the client at its limit while the server has real room
-  # left. So the client must be pegged AND the server at least
+  # lies about: the client at its limit while the server has real room
+  # left. So the client must be pegged and the server at least
   # kHeadroom points below it.
   SU=$(( (SU1 - SU0) + (SS1 - SS0) ))
   SCPU=$((SU * 100 / HZ / DURATION))
@@ -400,11 +400,11 @@ OUT=$(mktemp)
     echo "REFUSED: the server had headroom (${SCPU}% of its core (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CCPU}% (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
-    # What ELSE ran. Same unit as the two numbers beside it, so a run
+    # What else ran. Same unit as the two numbers beside it, so a run
     # that came out low can be read at a glance: the machine was busy
     # with something, or it was not and the answer is elsewhere.
     #
-    # A hint, and deliberately NOT a gate. Most of what lands here on a
+    # A hint, and deliberately not a gate. Most of what lands here on a
     # loaded run is the bench's own doing: ~9M AF_UNIX messages a
     # second is softirq that neither process pays for out of its utime,
     # so a perfectly healthy -c16 run reports other: 12-14%. A
@@ -424,15 +424,15 @@ OUT=$(mktemp)
 # with it.
 CLIENT_BOUND=$(cat "$WORK/client_bound" 2>/dev/null || echo 0)
 if [ "$CLIENT_BOUND" = 1 ]; then
-  echo "run was client-bound - NOT recorded in $RESULTS" >&2
+  echo "run was client-bound - not recorded in $RESULTS" >&2
 elif grep -q "^responses=" "$OUT" && grep -q "bad=[1-9]" "$OUT"; then
   # bad counts refused streams, non-2xx answers and HPACK desync. A run
   # that hit any of those measured a server in trouble, not its floor.
-  echo "run had errors (bad != 0) - NOT recorded in $RESULTS" >&2
+  echo "run had errors (bad != 0) - not recorded in $RESULTS" >&2
 elif { grep -q "Requests/sec" "$OUT" && ! grep -q "Requests/sec: *0\.00" "$OUT"; } ||
      { grep -q "^responses=" "$OUT" && ! grep -q "rps=0 " "$OUT"; }; then
   cat "$OUT" >> "$RESULTS"
 else
-  echo "run measured nothing - NOT recorded in $RESULTS" >&2
+  echo "run measured nothing - not recorded in $RESULTS" >&2
 fi
 rm -f "$OUT"

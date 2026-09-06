@@ -7,7 +7,7 @@
 #
 #   REQPATH=/forbidden CONNS=192 APP=examples/every_path.rb bench/floor.sh
 #
-# Routes whose answer depends on what the CLIENT sends are marked; they
+# Routes whose answer depends on what the client sends are marked; they
 # need the header named beside them, and bench/floor.sh's BROWSER=1 or an
 # explicit --header is how it gets there.
 #
@@ -371,7 +371,7 @@ end
 
 # --- the request API, without changing the terminal -------------------
 # Every accessor Resource#request offers, read once. The answer stays a
-# 200, so the DIFFERENCE against /ok is what reading the request costs.
+# 200, so the difference against /ok is what reading the request costs.
 class ReadsRequest < Webmachine::Resource
   def to_html
     r = request

@@ -648,7 +648,7 @@ assert('ws: a compressed message may be fragmented, with RSV1 only on the first 
   end
 end
 
-assert('ws: max_message bounds what a message BECOMES, not what it arrived as') do
+assert('ws: max_message bounds what a message becomes, not what it arrived as') do
   src = <<~RUBY
     class Small < Webmachine::WebsocketResource
       def self.permessage_deflate?
@@ -752,7 +752,7 @@ assert('ws: an uncompressed message on a compressed connection is still a messag
   end
 end
 
-assert('ws: the resource is THE PEER\'S - two connections keep separate state') do
+assert('ws: the resource is the peer\'s - two connections keep separate state') do
   src = <<~RUBY
     class Counted < Webmachine::WebsocketResource
       def initialize

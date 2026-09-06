@@ -1,6 +1,6 @@
 MRUBY_DIR = File.expand_path('mruby', __dir__)
 CONFIG = File.expand_path(ENV['MRUBY_CONFIG'] || 'build_config_host.rb', __dir__)
-# WHERE each thing lives, named here rather than left to whatever
+# Where each thing lives, named here rather than left to whatever
 # MRUBY_CONFIG happened to say: every test in this tree is in the debug
 # build - the host build carries none - and the shipped binary is the
 # host build's, which is why its smoke is a host task.
@@ -92,9 +92,9 @@ def wm_smoke(build_name, label)
   end
 end
 
-desc 'the SHIP binary starts and answers - what the suite (debug) never checks'
+desc 'the ship binary starts and answers - what the suite (debug) never checks'
 task ship_smoke: MRUBY_DIR do
-  # The shipped binary is the host build's, so this builds THAT one and
+  # The shipped binary is the host build's, so this builds that one and
   # smokes it. It is not part of `rake test`: the suite is the debug
   # build's, and a debug run cannot answer for a binary it never made.
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{HOST_CONFIG} rake"
@@ -104,7 +104,7 @@ end
 
 ERROR_ASSETS = File.expand_path('share/error-assets.zip', __dir__)
 
-# WHICH pictures the pack carries, and only that. A page's <h1> and the
+# Which pictures the pack carries, and only that. A page's <h1> and the
 # alt text on its picture have to say the same thing, so both names come
 # from the server's own table in src/error_assets.cpp.
 #
@@ -211,11 +211,11 @@ TEXT
 # What a previous run wrote, per entry: the bytes, and the three things
 # beside them. The ETag is the comment, because ZIP has no field for an
 # opaque validator that has to go back exactly as it came. The time and
-# the picture's size are NOT in the comment - ZIP has places for both,
+# the picture's size are not in the comment - ZIP has places for both,
 # and they are used: the entry's own timestamp, and an extra field.
 # APPNOTE 4.5.2: extra field header ids are PKWARE's to hand out. This one
-# is NOT registered - "WM" as two bytes, picked to sit clear of the ids
-# the format's own extensions use. It carries THE FINISHED <img> for the
+# is not registered - "WM" as two bytes, picked to sit clear of the ids
+# the format's own extensions use. It carries the finished <img> for the
 # picture - src, size and alt, the bytes a page emits - so the server
 # appends what it read and spells nothing.
 WM_EXTRA_ID = 0x574d
@@ -320,7 +320,7 @@ def entry_extra(mtime, tag)
 end
 
 # The error assets format the asset tier reads: stored or deflate, nothing else
-# (#170/#177). Everything here is STORED - measured on the cats, a deflate
+# (#170/#177). Everything here is stored - measured on the cats, a deflate
 # entry always leaves as gzip, even to a client that sent no
 # Accept-Encoding, and `curl -o` then saves a gzip file instead of a JPEG.
 # PKWARE APPNOTE 4.4.18: the central directory carries a comment per
@@ -363,7 +363,7 @@ task :error_assets do
   require 'time'
   require 'tempfile'
   require 'shellwords'
-  # What the last build recorded, so a rebuild can ASK instead of fetch:
+  # What the last build recorded, so a rebuild can ask instead of fetch:
   # http.cat serves an etag, and an image that has not changed upstream
   # answers 304 and costs nothing.
   have = {}
@@ -427,7 +427,7 @@ task :error_assets do
   raise 'http.cat answered with no images at all' if cats.empty?
   puts "  #{fetched} fetched, #{cats.size - fetched} unchanged upstream"
 
-  # PICTURES AND NOTHING ELSE, named by the status they illustrate, at
+  # Pictures and nothing else, named by the status they illustrate, at
   # the root - so the name in the archive is the name a caller writes,
   # with no directory anyone had to be told about. The templates live in
   # Webmachine::ErrorResource (mrblib/webmachine.rb); the licence lives
@@ -445,14 +445,14 @@ end
 #
 # The server serves static files from a ZIP, and this writes one. It is
 # here rather than in a shell line because the two decisions a pack makes
-# are decisions, not switches: WHAT is compressed, and what the entry is
-# NAMED.
+# are decisions, not switches: what is compressed, and what the entry is
+# named.
 #
 # A deflate entry leaves the server as gzip - always, to every client,
 # because the tier hands out the archive's own stream. That is right for
 # text and wrong for a JPEG, which does not compress and would then reach
 # `curl -o` as a gzip file. So a suffix that names an already compressed
-# format is STORED, and everything else is deflated at level 9.
+# format is stored, and everything else is deflated at level 9.
 #
 # The name in the archive is the path a client writes, without a leading
 # slash: examples/site/img/p1015.jpg goes in as img/p1015.jpg and answers
@@ -466,10 +466,10 @@ PACK_STORED = %w[
 ].freeze
 
 # 0x574E, the pack's second extra field: what Cache-Control this entry
-# answers with. It is decided HERE, once, and the server bakes it into the
+# answers with. It is decided here, once, and the server bakes it into the
 # prebuilt head when it opens the pack - no request ever reads it.
 #
-# Every file goes into the pack TWICE, under two names for the same
+# Every file goes into the pack twice, under two names for the same
 # bytes: the name it has, and the name plus a hash of its content -
 # site.css and site.a1b2c3d4e5f6.css. Both central directory entries
 # point at one local record, so the pack does not grow.
@@ -536,7 +536,7 @@ def read_cache_rules(path)
 end
 
 def write_cache_rules(path, rules)
-  body = +"# How long a browser may use a file under its PLAIN name without\n" \
+  body = +"# How long a browser may use a file under its plain name without\n" \
           "# asking again, in seconds. 0 means ask every time (no-cache).\n" \
           "# The hashed name of the same file always says one year.\n" \
           "# rake pack asks for an extension that is not here yet.\n"
@@ -593,10 +593,10 @@ end
 # The path stays readable in the source, and there is no second name for
 # anything to learn.
 #
-# A LINK TO A PAGE IS NOT AN ASSET. It stays plain - href="/gallery.html".
+# A link to a page is not an asset. It stays plain - href="/gallery.html".
 # A page is what somebody calls, bookmarks and links to from outside, and
 # a hashed page address would change with every word on the page. So only
-# what a page EMBEDS is hashed: a stylesheet, a script, a picture, a font.
+# what a page embeds is hashed: a stylesheet, a script, a picture, a font.
 #
 # That is also why there is no hen and egg here. Hashed references point
 # from a page to a leaf and never back, so nothing waits for a hash that
@@ -704,9 +704,9 @@ def pack_read(path)
   [raw[0, cd_off], old]
 end
 
-# What decides that an entry already in the pack IS this entry: its
+# What decides that an entry already in the pack is this entry: its
 # name, which is a hash of the bytes, its CRC, and what the pack says
-# ABOUT it - the lifetime and the plain name. The modification time is
+# about it - the lifetime and the plain name. The modification time is
 # none of that: touch(1) on an unchanged file must not write it again.
 def pack_same(old, crc, extra)
   old[:crc] == crc && pack_extra_without_time(old[:extra]) == pack_extra_without_time(extra)
@@ -734,7 +734,7 @@ def pack_central(e)
     .pack('VvvvvvvVVVvvvvvVV') << e[:name].b << e[:extra].b
 end
 
-# APPEND ONLY. A pack that is written a second time keeps every byte it
+# Append only. A pack that is written a second time keeps every byte it
 # already has where it already is: the local records stay at their
 # offsets, and this writes the new records after them and one fresh
 # central directory over both. ZIP is built for that - the directory is
@@ -742,7 +742,7 @@ end
 #
 # Two things follow, and both are what a running server wants:
 #
-#   an entry the build makes again, byte for byte, is ALREADY THERE. Its
+#   an entry the build makes again, byte for byte, is already there. Its
 #   hashed name is the same, so nothing is appended and nothing is
 #   deflated a second time;
 #
@@ -809,7 +809,7 @@ def pack_write(path, entries, compact: false)
   out << cd
   out << [0x06054b50, 0, 0, all.size, all.size, cd.bytesize, cd_off, 0].pack('VvvvvVVv')
 
-  # NEVER IN PLACE. A running server has this file MAPPED, and a mapping
+  # Never in place. A running server has this file mapped, and a mapping
   # follows the inode, not the name. Writing over it would show the
   # server a half-written pack, and File.binwrite truncates first.
   #
@@ -941,7 +941,7 @@ task :install, %i[prefix] do |_t, args|
   end
 end
 
-# The reference config in this tree is GENERATED, and by the server
+# The reference config in this tree is generated, and by the server
 # itself: --write-config states every knob it reads, and a second copy
 # written by hand is a second answer that goes stale on the first change.
 desc 'regenerate webmachine.toml.example from the server itself'

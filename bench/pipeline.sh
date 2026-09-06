@@ -2,11 +2,11 @@
 # The pipelined h1 floor: what the framer costs when the per-round-trip
 # price is amortized away. This is TechEmpower's "Plaintext" shape -
 # DEPTH requests in one write, one batch of answers back - and it is
-# explicitly NOT a shape any real user agent sends (RFC 9112 9.3 allows
+# explicitly not a shape any real user agent sends (RFC 9112 9.3 allows
 # pipelining; browsers abandoned it over head-of-line blocking). It
-# exists here for ONE reason: the -m1 numbers are round-trip bound
+# exists here for one reason: the -m1 numbers are round-trip bound
 # (perf showed 25-34% of the profile in kernel scheduling/TCP), so this
-# is the counter-measurement that shows what the SERVER costs per
+# is the counter-measurement that shows what the server costs per
 # request once syscall and scheduling overhead are divided across
 # DEPTH requests instead of paid per request.
 #
@@ -19,10 +19,10 @@
 #   CONNS=400 bench/pipeline.sh                    # AF_UNIX (default)
 #   CONNS=400 DEPTH=32 bench/pipeline.sh
 #   CONNS=400 TRANSPORT=tcp bench/pipeline.sh
-# NO PINNING - measured twice, lost twice. The previous tree removed
+# No pinning - measured twice, lost twice. The previous tree removed
 # every taskset it had ("handing the scheduler one core was slower than
-# letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
-# throughput monotonically in the MEDIAN). And io-wq workers inherit the
+# letting it choose"; widening the client mask 2 -> 15 -> 30 cpus raised
+# throughput monotonically in the median). And io-wq workers inherit the
 # issuing thread's affinity, so pinning the server pins the pool that
 # carries splice: a 32 KiB asset measured 0.07x its unspliced twin under
 # `taskset -c 0`. The knobs are gone rather than defaulted off - they
@@ -86,7 +86,7 @@ fi
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
-grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
+grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }
@@ -97,7 +97,7 @@ mkdir -p bench/results
 REPO_REV=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
 MRUBY_REV=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?')
 # Which side was the bound. floor.sh reports it and this one did not,
-# so a pipelined row said nothing about whether the SERVER or the
+# so a pipelined row said nothing about whether the server or the
 # one-threaded client ran out of core. utime and stime separately: on
 # AF_UNIX the kernel bills a copy to whoever called send, so a client
 # that "does almost nothing" still pays for the response bytes.
@@ -117,7 +117,7 @@ else
     --pipeline "$DEPTH" > "$RAW" 2>&1
 fi
 read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
-# times line 2 is THIS shell's reaped children, and the client is one.
+# times line 2 is this shell's reaped children, and the client is one.
 # It must be written by the shell that ran the client: a $( ) subshell
 # is not its parent and reports zeros - which is what this printed
 # first. floor.sh carries the same note.

@@ -1,8 +1,8 @@
 #!/bin/sh
-# webmachine-tune: read the machine, print how to run THIS server on it.
+# webmachine-tune: read the machine, print how to run this server on it.
 #
 # Operator tool, not a benchmark (bench/ owns measuring). It reads
-# /proc, /sys, uname and ulimit - and WRITES NOTHING: no sysctl -w, no
+# /proc, /sys, uname and ulimit - and writes nothing: no sysctl -w, no
 # governor file, no bench/results/. Where a change would help, it
 # prints the command for the operator to copy; it never runs it.
 #
@@ -29,22 +29,22 @@ read_or() {  # read_or <file> <fallback-text>
 echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 
 # ---- CPU placement ---------------------------------------------------
-# NO PINNING. This is a measured verdict, not a preference, and it has
+# No pinning. This is a measured verdict, not a preference, and it has
 # been reached twice:
 #
 #   1. The previous tree removed every --cpu/--fast-core/taskset it had
 #      ("it was measured and it lost - handing the scheduler one core
-#      was slower than letting it choose"). Widening the CLIENT's mask
+#      was slower than letting it choose"). Widening the client's mask
 #      from 2 to 15 to 30 cpus raised throughput monotonically,
-#      332k -> 341k -> 352k req/s, and moved the MEDIAN, not the tail.
+#      332k -> 341k -> 352k req/s, and moved the median, not the tail.
 #
-#   2. Splice makes it worse than merely useless. io-wq workers INHERIT
+#   2. Splice makes it worse than merely useless. io-wq workers inherit
 #      the issuing thread's affinity, so pinning the server pins the
-#      pool that exists to move bytes on ANOTHER core. Measured here on
+#      pool that exists to move bytes on another core. Measured here on
 #      4 cpus: a 32 KiB asset served at 0.07x its unspliced twin under
 #      `taskset -c 0` (2,903 vs 42,688 req/s).
 #
-# So this section reports what the machine looks like and does NOT
+# So this section reports what the machine looks like and does not
 # hand out a taskset line.
 echo ""
 echo "-- cpu placement"
@@ -66,12 +66,12 @@ else
   echo "cgroup cpu quota: unreadable here"
 fi
 
-# Live steal over one second - contention is a property of NOW.
+# Live steal over one second - contention is a property of now.
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 S0=$(steal_ticks); sleep 1; S1=$(steal_ticks)
 echo "steal: +$((S1 - S0)) ticks over 1s (0 = quiet; sustained >0 = a neighbor is eating this host)"
 
-echo "recommend: do NOT pin - no taskset, no cpu mask, no isolated core."
+echo "recommend: do not pin - no taskset, no cpu mask, no isolated core."
 echo "  the scheduler beat every placement this project measured, and the"
 echo "  io-wq pool that carries splice inherits whatever affinity it is given."
 if [ "$NPROC" -lt 4 ]; then
@@ -89,7 +89,7 @@ KMIN=$(echo "$KREL" | cut -d. -f2 | sed 's/[^0-9].*//')
 if [ "$KMAJ" -gt 6 ] 2>/dev/null || { [ "$KMAJ" -eq 6 ] && [ "${KMIN:-0}" -ge 11 ]; } 2>/dev/null; then
   echo "kernel $KREL: >= 6.11, has IORING_OP_BIND/LISTEN (the server probes this itself at init)"
 else
-  echo "kernel $KREL: BELOW 6.11 - the server will refuse to start, by name (needs IORING_OP_BIND/LISTEN)"
+  echo "kernel $KREL: below 6.11 - the server will refuse to start, by name (needs IORING_OP_BIND/LISTEN)"
 fi
 
 echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the server reads the feature bit at init"
@@ -97,7 +97,7 @@ echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the
 # ---- resource limits -------------------------------------------------
 # Since #169 the server derives its capacity itself: at init it raises
 # soft to hard (ceiling fs.nr_open) and takes everything the final
-# limit allows minus the reserve. This section PRINTS that arithmetic -
+# limit allows minus the reserve. This section prints that arithmetic -
 # the server does not need help, but the operator deserves the number.
 echo ""
 echo "-- capacity (the server derives this itself at init)"
@@ -119,7 +119,7 @@ else
   echo "RLIMIT_NOFILE hard: $HARD   fs.nr_open: ${NR_OPEN:-unreadable}"
   echo "max connections: $LIMIT - $FD_RESERVE (fd reserve) - $MAX_LISTENERS (listeners) = $MAXC"
   if [ "$MAXC" -le 0 ]; then
-    echo "the limit leaves NO room - the server will refuse to start; raise it: systemd LimitNOFILE=$((FD_RESERVE + MAX_LISTENERS + 1024)) or higher"
+    echo "the limit leaves no room - the server will refuse to start; raise it: systemd LimitNOFILE=$((FD_RESERVE + MAX_LISTENERS + 1024)) or higher"
   elif [ "$HARD" != "unlimited" ] && [ "$HARD" -lt 65536 ]; then
     echo "hard limit is low; more connections need a raised hard limit, e.g. systemd LimitNOFILE=524288"
   fi

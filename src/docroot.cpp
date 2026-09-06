@@ -18,7 +18,7 @@ int fd_ = -1;
 struct open_how how_ {};
 }
 
-// The canonical path and the dirfd, ONCE, before the first accept. Canonical
+// The canonical path and the dirfd, once, before the first accept. Canonical
 // matters: a relative or symlink-carrying docroot would make "beneath" mean
 // whatever the cwd or the link says today, and the confinement is only worth
 // as much as the thing it is anchored to.

@@ -4,16 +4,16 @@
 // htpasswd's job, with LMDB where htpasswd has a text file, and argon2id
 // where it has crypt().
 //
-// What a record IS: the key is the user name, the value is a PasswdRec
+// What a record is: the key is the user name, the value is a PasswdRec
 // (src/webmachine.hpp) followed by its salt and its hash. The cost is a
-// property of the RECORD, so raising it later re-hashes a user at their
+// property of the record, so raising it later re-hashes a user at their
 // next password change and leaves everyone else verifiable meanwhile.
 //
 // Not argon2's encoded string, though it would have been the smaller
 // thing to keep in step: that form cannot carry ad, and ad is what binds
 // a record to the sub-database it lives in.
 //
-// What separates one set of users from another is a NAMED sub-database,
+// What separates one set of users from another is a named sub-database,
 // not a prefix inside the key. LMDB gives each name its own B-tree, so
 // two sets cannot collide and neither is scanned to reach the other.
 #include <lmdb.h>
@@ -37,7 +37,7 @@
 namespace {
 
 // OWASP's Password Storage Cheat Sheet, the Argon2id section: five
-// settings it calls an EQUAL level of defence, differing only in the
+// settings it calls an equal level of defence, differing only in the
 // trade between memory and time. They are listed rather than computed
 // because the equal-defence claim is theirs, and a pair between two rows
 // would be this tool's own assertion with nobody behind it.
@@ -59,7 +59,7 @@ constexpr size_t kDefaultCost = 1;
 constexpr size_t kSaltLen = 16;
 constexpr size_t kHashLen = 32;
 // A password longer than this is not a password. The server's own head
-// ceiling is 8 KiB for EVERY field together, so anything near it would
+// ceiling is 8 KiB for every field together, so anything near it would
 // be an attack on the worker pool rather than a login.
 constexpr size_t kMaxPassword = 512;
 
@@ -198,7 +198,7 @@ double seconds_for(Cost c) {
          static_cast<double>(b.tv_nsec - a.tv_nsec) / 1e9;
 }
 
-// What a row costs HERE. The operator names a time budget; the row with
+// What a row costs here. The operator names a time budget; the row with
 // the most memory that fits it wins, because memory is what argon2
 // spends against an attacker's hardware and iterations are the cheaper
 // half of the same defence.
@@ -418,7 +418,7 @@ int main(int argc, char** argv) {
     }
     wipe(again.data(), again.size());
     const int64_t now = static_cast<int64_t>(std::time(nullptr));
-    // set REPLACES a password and keeps the day the user was created;
+    // set replaces a password and keeps the day the user was created;
     // only add starts one. An operator asking "who is new here" wants
     // the answer not to move every time somebody changes a password.
     int64_t created = now;

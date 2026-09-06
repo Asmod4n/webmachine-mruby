@@ -1,4 +1,4 @@
-# STANDALONE: --docroot and/or --assets, and no app at all. Nobody wrote a
+# Standalone: --docroot and/or --assets, and no app at all. Nobody wrote a
 # resource, so the folded graph answers on its own - the pack from its
 # mapping, the docroot from disk, everything else a 404.
 require 'socket'
@@ -29,7 +29,7 @@ def s_ask(sock_path, request)
 end
 
 # One directory, the files this suite serves out of it, and a server with
-# NO --app. The window is 256 KiB, so big.bin is mapped and small.bin is read.
+# no --app. The window is 256 KiB, so big.bin is mapped and small.bin is read.
 S_SMALL = "small\n" * 4 unless defined?(S_SMALL)
 S_BIG = ('x' * 1024) * 300 unless defined?(S_BIG)
 

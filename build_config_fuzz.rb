@@ -1,5 +1,5 @@
-# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
-# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# No lockfile. mruby writes build_config_*.rb.lock beside this file and
+# then prefers it: load_gems.rb takes the locked commit over the branch a
 # dependency names, so a gem pinned here to a branch quietly keeps
 # whatever commit the lock first saw. This tree names branches on
 # purpose - the seam lives in mruby-slipstreamio and moves - and a lock
@@ -8,12 +8,12 @@
 # been in the branch for hours.
 MRuby::Lockfile.disable
 
-# The binary under the fuzzer: the SHIPPED server, unchanged in what it
+# The binary under the fuzzer: the shipped server, unchanged in what it
 # does, only compiled so that memory errors speak. Nothing here links a
 # fuzzer into the process and nothing calls a function directly - the
 # payload arrives the way an attacker's does, on the socket (#206).
 #
-# -fno-sanitize-recover=undefined: an UB report must END the run, not be
+# -fno-sanitize-recover=undefined: an UB report must end the run, not be
 # logged and walked past, or the campaign records "no crash" for a bug.
 # -fno-omit-frame-pointer: without it the ASan stack is a guess.
 MRuby::Build.new('fuzz') do |conf|
@@ -27,7 +27,7 @@ MRuby::Build.new('fuzz') do |conf|
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
 
-  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # mrbc is a tool of this build, not an artifact of another one: the
   # gem builds it here. Naming an external mrbc under mruby/bin
   # instead made a cold tree unbuildable - nothing in this config
   # produces that path, so rake had no rule for it.
@@ -35,7 +35,7 @@ MRuby::Build.new('fuzz') do |conf|
 
   conf.enable_debug
 
-  # The toolchain's own: it puts ONE -fsanitize= string into cc, cxx and
+  # The toolchain's own: it puts one -fsanitize= string into cc, cxx and
   # the linker, which is what mruby-slipstreamio's mrbgem.rake looks for
   # before it hands liburing's configure --enable-sanitizer. Hand-pushed
   # flags used to have to be one String per entry for the same reason.

@@ -3,7 +3,7 @@
 #
 # Not $HOME, not a clone beside this tree, not a fixed /usr path. The
 # reason is a measurement that went wrong: a machine had two builds of
-# the SAME commit in two places, the scripts took whichever they found
+# the same commit in two places, the scripts took whichever they found
 # first, the h2 rows dropped 13%, and the server was blamed for a
 # client. One name on PATH is one answer.
 #

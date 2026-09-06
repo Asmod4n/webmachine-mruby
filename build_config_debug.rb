@@ -1,5 +1,5 @@
-# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
-# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# No lockfile. mruby writes build_config_*.rb.lock beside this file and
+# then prefers it: load_gems.rb takes the locked commit over the branch a
 # dependency names, so a gem pinned here to a branch quietly keeps
 # whatever commit the lock first saw. This tree names branches on
 # purpose - the seam lives in mruby-slipstreamio and moves - and a lock
@@ -19,8 +19,8 @@ MRuby::Build.new('debug') do |conf|
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
 
-  # mrbc is a TOOL of this build, not an artifact of another one.
-  # `conf.mrbcfile = mruby/bin/mrbc` named a path only a HOST build
+  # mrbc is a tool of this build, not an artifact of another one.
+  # `conf.mrbcfile = mruby/bin/mrbc` named a path only a host build
   # installs, and this build is named 'debug' - mruby runs its mrbc
   # bootstrap only for a build called 'host' (lib/mruby/build.rb,
   # host? and create_mrbc_build) - so a tree without a prior host
@@ -47,13 +47,13 @@ MRuby::Build.new('debug') do |conf|
 
 
 
-  # #30: the watcher is a promise about FOREIGN descriptors, and the only
+  # #30: the watcher is a promise about foreign descriptors, and the only
   # honest test of one drives a real database. libpq is the case the
   # design was written against: it says what to wait for, and it changes
   # its mind in the middle of a wait - writable while it flushes,
   # readable while it reads.
   #
-  # The TEST build only, and WITHOUT the gem's own tests: they need a
+  # The test build only, and without the gem's own tests: they need a
   # server on the default port and they are that repository's to run, not
   # this one's - 59 of them crashed here. bintest/watcher_pq.rb asks for
   # a database itself and skips when there is none.

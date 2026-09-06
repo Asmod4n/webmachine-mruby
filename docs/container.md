@@ -16,7 +16,7 @@ Docker: same `Containerfile`, and derive the profile from moby's
 `profiles/seccomp/default.json`. Kubernetes: `seccompProfile: {type:
 Localhost, localhostProfile: webmachine-seccomp.json}`.
 
-The profile is a PERFORMANCE choice, not a requirement. Without those
+The profile is a performance choice, not a requirement. Without those
 three syscalls the server still serves: slipstreamIO's engine answers
 the rings instead of the kernel, and the server prints which reason
 applied - seccomp, `io_uring_disabled=1` with this process outside

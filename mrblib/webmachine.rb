@@ -47,7 +47,7 @@ module Webmachine
   # There is no writer here, no validation and no parsing. Every ceiling
   # (kZeroCopyMax, kFileMapMax), every refusal and the whole grammar of
   # conf.url live in application.cpp, where they lived before - one rule
-  # per knob, in one place. What this file decides is the ORDER, because
+  # per knob, in one place. What this file decides is the order, because
   # the array is read by index: ConfIdx in application.cpp mirrors this
   # list and the two are checked against each other at registration.
   #
@@ -59,19 +59,19 @@ module Webmachine
                             :private_key, :file_map_threshold, :zero_copy_threshold,
                             :disable_http_cats)
     # A refusal belongs where it was caused. bintest calls this "catchable
-    # BY CLASS, not by luck": an app may write
+    # by class, not by luck": an app may write
     #
     #   begin
     #     conf.port = 99999
     #   rescue Webmachine::ConfigError => e
     #
-    # and that only works if the refusal happens on THAT line, not when
+    # and that only works if the refusal happens on that line, not when
     # the block ends. So the writers refuse here, in the words they had
     # when they were C setters, and read_config checks the same bounds
     # again on the way out - Struct#[]= reaches a member without passing
     # a writer, so this is not the last word on any of it.
     #
-    # The numbers are NOT written down here: PORT_MAX, FILE_MAP_MAX and
+    # The numbers are not written down here: PORT_MAX, FILE_MAP_MAX and
     # ZERO_COPY_MAX come from application.cpp, which is where the code
     # that honours them lives.
     def port=(v)
@@ -165,20 +165,20 @@ module Webmachine
        # A browser fetching an <img> sends image/* and nothing this list
        # otherwise has, so it would get a page it cannot render. It can
        # have the picture instead - the same cat the HTML page links to,
-       # as the whole body. This form has NO method: the picture is not
-       # rendered, it IS the asset, and the server lends it straight out
+       # as the whole body. This form has no method: the picture is not
+       # rendered, it is the asset, and the server lends it straight out
        # of the error assets's mapping. It is offered only while the error assets holds a
        # cat for the status.
        ['image/jpeg', :from_the_pack],
        # RFC 6839 3.1: +json is its own media type, so a client that
-       # asked for application/json has NOT asked for problem+json. It
+       # asked for application/json has not asked for problem+json. It
        # meant the same thing, though, so the same handler answers both -
        # and the wire gets whichever of the two it named.
        ['application/json', :to_json_error],
        ['text/plain; charset=utf-8', :to_text_error]]
     end
 
-    # ONE template for every status. What differs between a 404 and a 503
+    # One template for every status. What differs between a 404 and a 503
     # is three strings and a picture, and a template is the shape that
     # says so. {{ }} escapes, which is the whole reason the target and the
     # exception message go through here at all.
@@ -224,7 +224,7 @@ module Webmachine
 
     # RFC 9457 problem details: type, title, status, and nothing invented.
     # No cat - whatever reads JSON wants the status, not a picture.
-    # {{{ }}} is raw ON PURPOSE: mustache escapes for HTML, and &amp;
+    # {{{ }}} is raw on purpose: mustache escapes for HTML, and &amp;
     # inside a JSON string would be wrong. json_escape below does the job
     # this format actually needs.
     JSON = Mustache::Template.compile(<<~'WM_JSON')
@@ -248,7 +248,7 @@ module Webmachine
       {{/id}}
     WM_TEXT
 
-    # fsm.rb's own name for the hook, and the ONE place it exists. A
+    # fsm.rb's own name for the hook, and the one place it exists. A
     # handle_exception on an ordinary resource is ignored: how an
     # exception becomes text is one decision for the whole server, not a
     # per-route one, and this is where it is made.
@@ -257,9 +257,9 @@ module Webmachine
     # handled it - a bug, not a controlled refusal, which is what
     # response.code is for.
     #
-    # The ONE thing the server fixes is the shape of the answer: a String,
+    # The one thing the server fixes is the shape of the answer: a String,
     # or an Array, which it joins with CRLF. Everything else is yours -
-    # whether the backtrace goes into the PAGE is your call, not the
+    # whether the backtrace goes into the page is your call, not the
     # server's (--error-log carries it either way):
     #
     #   def handle_exception(e)

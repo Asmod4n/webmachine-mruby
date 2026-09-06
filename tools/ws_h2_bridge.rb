@@ -8,14 +8,14 @@
 # has no HTTP/2 client, and neither has nghttpx, so the 500 cases that
 # say whether a WebSocket is correct cannot reach our h2 path on their
 # own. This bridge carries them: wstest connects here, this program
-# opens ONE h2 connection per client, sends the extended CONNECT, and
+# opens one h2 connection per client, sends the extended CONNECT, and
 # then moves bytes both ways without reading them. A WebSocket frame is
 # opaque to the bridge, so every case that Autobahn can ask over h1 it
 # asks over h2 as well.
 #
 #   tools/ws_h2_bridge.rb --listen 9978 --server 127.0.0.1:9977 --path /echo
 #
-# TWO LIMITS, and they are limits of the bridge, not of the server:
+# Two limits, and they are limits of the bridge, not of the server:
 #
 #  - permessage-deflate (cases 12.x and 13.x) is out. The bridge would
 #    have to tell the client which extension the server took, and the

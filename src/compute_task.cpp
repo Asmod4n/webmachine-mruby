@@ -60,10 +60,10 @@ struct Slot {
   std::string user_in;
   std::string user_out;
   bool user_changed = false;
-  // Seconds of EXECUTION. The reactor arms a timeout for this and
+  // Seconds of execution. The reactor arms a timeout for this and
   // interrupts the worker's VM when it passes.
   double deadline = 0.0;
-  // Whether the reactor asked THIS job to stop is one atomic per slot,
+  // Whether the reactor asked this job to stop is one atomic per slot,
   // and it lives beside the slots rather than inside one: an atomic
   // cannot be copied, and a vector of Slot has to be able to grow.
   bool raised = false;
@@ -90,11 +90,11 @@ struct Slot {
   bool busy = false;
 };
 
-// user_data on the WORKER's ring. Not a webmachine tag - this side is
+// user_data on the worker's ring. Not a webmachine tag - this side is
 // the pool's own, and the only two things it says are "here is slot i"
 // and "stop".
 constexpr uint64_t kStopJob = ~static_cast<uint64_t>(0);
-// MSG_RING answers TWICE: the target ring gets the message, and the
+// MSG_RING answers twice: the target ring gets the message, and the
 // sender's own ring gets a completion for having sent it. A worker
 // therefore sees its own answer come back, and anything that is not a
 // job index has to be stepped over rather than used as one.
@@ -102,7 +102,7 @@ constexpr uint64_t kSent = ~static_cast<uint64_t>(1);
 
 // The declared blocks of this process. The reactor appends to it - once
 // per block, the first time one is seen - and workers read it. Both
-// under one mutex, which is only ever taken on a COLD path: the
+// under one mutex, which is only ever taken on a cold path: the
 // reactor takes it once per block for the life of the process, and a
 // worker takes it once per block it has not loaded yet.
 struct Registry {
@@ -125,14 +125,14 @@ Registry& registry() {
 // with, and how long it may take. It is built on the reactor by a
 // callback, and read by the reactor right after.
 //
-// It is deliberately NOT a thing that runs. A ComputeTask that could start
+// It is deliberately not a thing that runs. A ComputeTask that could start
 // its own work would be a second way to reach a worker, and there is
 // one way: a flow node the resource declared.
 namespace {
 
 
 mrb_value compute_task_initialize(mrb_state* mrb, mrb_value self) {
-  // mruby checks keywords against a DECLARED table, and a null table
+  // mruby checks keywords against a declared table, and a null table
   // means "this call takes none". max_runtime is declared here, and
   // declared optional so the refusal below is ours: mruby's own would
   // say the keyword is missing, and not why a deadline is owed.
@@ -220,7 +220,7 @@ mrb_value registry_set(mrb_state* mrb, mrb_value self) {
   mrb_get_args(mrb, "oo", &key, &block);
   if (!mrb_proc_p(block)) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
-              "Webmachine::Workers::Registry takes a proc that BUILDS the value, not the "
+              "Webmachine::Workers::Registry takes a proc that builds the value, not the "
               "value - an object cannot cross into a worker, and how to build one can");
   }
   const mrb_value name = mrb_obj_as_string(mrb, key);
@@ -286,7 +286,7 @@ bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
 void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAnswer& answered) {
   Conn::Round* const round = st.park_at(park);
   if (round == nullptr || slot < 0 || slot >= Conn::kJobSlots) return;
-  // The round goes on when the LAST job of it answered. One job is the
+  // The round goes on when the last job of it answered. One job is the
   // ordinary case and ends the round at once.
   if (round->jobs_answered < round->jobs_owed) round->jobs_answered++;
   round->answer_ready = round->jobs_answered >= round->jobs_owed;
@@ -334,7 +334,7 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
 // either half is possible: the block is interned to an id, and the
 // arguments are encoded to CBOR.
 //
-// It happens HERE and not when the reactor arms the work, because the
+// It happens here and not when the reactor arms the work, because the
 // frame takes the run's state with it one line later - res.run belongs
 // to the route, and a second request would write over it.
 //
@@ -501,7 +501,7 @@ struct WorkerVm {
   bool open() {
     mrb = open_vm_or_say("webmachine compute worker");
     if (mrb == nullptr) return false;
-    // Webmachine::Workers, looked up ONCE. A module is rooted by the
+    // Webmachine::Workers, looked up once. A module is rooted by the
     // constant that names it, so nothing else has to hold it.
     workers = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
     if (mrb->exc == nullptr) workers = mrb_const_get(mrb, workers, MRB_SYM(Workers));
@@ -526,7 +526,7 @@ struct WorkerVm {
     return build_registry();
   }
 
-  // What the application registered, built HERE, once, in this VM. A
+  // What the application registered, built here, once, in this VM. A
   // handle belongs to the VM that opened it, so every worker opens its
   // own - and reads it back without a lock, because nothing is shared.
   //
@@ -763,7 +763,7 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
   const mrb_value thrown = mrb_protect_error(mrb, job_body, &body, &raised);
   if (raised) {
     // The reactor asked for the stop, so the raise is the deadline and
-    // not the application's. It is read AFTER the call: the reactor
+    // not the application's. It is read after the call: the reactor
     // sets it before it interrupts.
     // The VM's own exception is kept either way. When the reactor asked
     // for the stop, the step says so beside it.
@@ -789,14 +789,14 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // that.
   char thread_name[16];
   std::snprintf(thread_name, sizeof(thread_name), "wm-compute%u", me);
-  // The VM this worker answers in, built ONCE. A worker that cannot
+  // The VM this worker answers in, built once. A worker that cannot
   // open one answers nothing: it goes, and the pool is short one
   // thread rather than quietly running a job on the wrong VM.
   // No key may be added once a worker has read the list: it would
   // exist in this worker and in no other.
   worker_builds_close();
 
-  // ONE VM at a time, whatever the pool's size. mrb_open is safe per VM,
+  // One VM at a time, whatever the pool's size. mrb_open is safe per VM,
   // but the gems in this build are not all safe against each other:
   // some keep file-scope statics and take a process-wide lock while
   // they initialise, so two VMs opening at once can abort.

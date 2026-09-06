@@ -34,7 +34,7 @@ mrb_value toml_load_body(mrb_state* mrb, void* ud) {
 }
 
 // TOML: the parser's own words, under this file's name. Caught on purpose
-// - the parser says what is wrong with the syntax and nothing about WHICH
+// - the parser says what is wrong with the syntax and nothing about which
 // file, and the operator needs both in one sentence.
 mrb_value toml_load(const ConfigFile& f) {
   mrb_state* const mrb = f.mrb;
@@ -120,7 +120,7 @@ void take_int(Setting s, Bounds b, mrb_int* out, const ConfigFile& f) {
   *out = mrb_integer(v);
 }
 
-// TOML: a DURATION, through mruby-chrono and nothing else; rounded up.
+// TOML: a duration, through mruby-chrono and nothing else; rounded up.
 void take_seconds(Setting s, int* out, const ConfigFile& f) {
   const mrb_value v = mrb_hash_get(f.mrb, s.table, mrb_str_new_cstr(f.mrb, s.key));
   if (mrb_nil_p(v)) return;
@@ -150,19 +150,19 @@ bool config_write_default(const char* path, const char* error_assets) {
       f,
       "# webmachine.toml - written by --write-config.\n"
       "#\n"
-      "# EVERY KNOB THIS SERVER READS FROM A FILE IS HERE, with what it does\n"
+      "# Every knob this server reads from a file is here, with what it does\n"
       "# and what it does without you. Nothing in this file changes anything\n"
-      "# until you change a line: these ARE the answers.\n"
+      "# until you change a line: these are the answers.\n"
       "#\n"
       "# A flag beats this file; this file beats the app's own conf.\n"
       "\n"
       "[server]\n"
-      "# WHERE it answers. At most one of the two - a unix socket, or a TCP\n"
+      "# Where it answers. At most one of the two - a unix socket, or a TCP\n"
       "# port. Without either, the app's conf decides.\n"
       "# unix = \"/run/webmachine.sock\"\n"
       "# port = 8080\n"
       "\n"
-      "# WHAT it serves. One of app and assets, or a docroot with\n"
+      "# What it serves. One of app and assets, or a docroot with\n"
       "# --standalone; with nothing to serve there is no start.\n"
       "# app = \"site.mrb\"           # the application, as bytecode (mrbc)\n"
       "# assets = \"site.zip\"        # a pack, answered from one mapping\n"
@@ -193,7 +193,7 @@ bool config_write_default(const char* path, const char* error_assets) {
       "# address; none writes no address at all.\n"
       "# privacy = \"anon\"\n"
       "\n"
-      "# What a callback RAISED, with its class, message, backtrace, the\n"
+      "# What a callback raised, with its class, message, backtrace, the\n"
       "# request that led there and up to 4 KB of its body. That last part\n"
       "# is whatever the app was sent - a form login puts a password in it -\n"
       "# so give the file the permissions that says so.\n"
@@ -203,7 +203,7 @@ bool config_write_default(const char* path, const char* error_assets) {
       "# max_bytes = 524288000        # 500 MB, the default\n"
       "\n"
       "[tune]\n"
-      "# EVERY VALUE HERE IS A PROPERTY OF THE MACHINE, not of the site.\n"
+      "# Every value here is a property of the machine, not of the site.\n"
       "# Measure before you change one: bench/ has the harnesses.\n"
       "\n"
       "# listen(2)'s backlog. Without it, SOMAXCONN.\n"
@@ -213,13 +213,13 @@ bool config_write_default(const char* path, const char* error_assets) {
       "# until the kernel agrees, so this is a wish and not a promise.\n"
       "# sq_entries = %u\n"
       "\n"
-      "# From this size up a body is LENT to the kernel instead of copied\n"
+      "# From this size up a body is lent to the kernel instead of copied\n"
       "# into the send buffer. 0 is \"never lend\", which is a real answer.\n"
       "# zero_copy_threshold = %zu     # %zu KiB, the default\n"
       "\n"
-      "# From this size up a file is MAPPED and handed to one send instead\n"
+      "# From this size up a file is mapped and handed to one send instead\n"
       "# of being read window by window. The default is one window: a file\n"
-      "# that small IS one read, so a mapping would replace nothing and\n"
+      "# that small is one read, so a mapping would replace nothing and\n"
       "# still cost the mmap/munmap pair. 0 is \"never map\".\n"
       "# file_map_threshold = %zu      # %zu KiB, the default\n"
       "\n"

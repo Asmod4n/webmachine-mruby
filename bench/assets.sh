@@ -1,13 +1,13 @@
 #!/bin/bash
 # Asset delivery (#168): how fast does a body that already exists in
-# a mapping reach the wire, per size and per DELIVERY SHAPE.
+# a mapping reach the wire, per size and per delivery shape.
 #
-# WHAT WAS TRIED AND LOST, so nobody re-runs it:
+# What was tried and lost, so nobody re-runs it:
 #   - splice through a pipe (pool N against pool 0): 0.99x / 1.01x /
 #     0.63x / 0.79x at 4 KiB / 32 KiB / 256 KiB / 1 MiB once the iovec
 #     arm stopped copying into the sink first. Every earlier number
 #     that favoured splice had compared it against a path that copied
-#     TWICE. IORING_OP_SPLICE also has no non-blocking fast path: it
+#     twice. IORING_OP_SPLICE also has no non-blocking fast path: it
 #     is always dispatched to an io-wq worker, so it pays a hop that
 #     sendmsg does not.
 #   - MSG_SPLICE_PAGES on the sendmsg: no effect at all. 2 GiB in
@@ -17,29 +17,29 @@
 #     callers whose iterators are already bvec/kvec; a userspace iovec
 #     does not qualify.
 #   - IORING_OP_SEND_ZC: not measured, refused on shape - it buys the
-#     copy back with a ubuf_info and a SECOND completion per send, and
+#     copy back with a ubuf_info and a second completion per send, and
 #     caps in-flight bytes at the RLIMIT_MEMLOCK account (~8 MB).
 # So: one kernel copy per body, out of the mapping, in one sendmsg.
 #
-# THE ARMS are the four shapes the tier actually serves, and they are
+# The arms are the four shapes the tier actually serves, and they are
 # different code, not the same code at different sizes:
-#   stored  method 0, identity - ONE span, the mapping straight out.
-#   gzip    method 8 - THREE segments (constant gzip header, the
+#   stored  method 0, identity - one span, the mapping straight out.
+#   gzip    method 8 - three segments (constant gzip header, the
 #           deflate bytes where they lie, the trailer). Its wire is
 #           the compressed size, so its MB/s is not comparable to
 #           stored's at the same nominal size: read the wire column.
 #   304     If-None-Match hit - header section only, no body at all.
 #           The upper bound of the tier: everything past the head is
 #           gone, so what is left is parse + verdict + one send.
-#   206     Range over the stored entry - the only per-request BUILT
+#   206     Range over the stored entry - the only per-request built
 #           head in the tier (three request-dependent numbers no
 #           prebuild can hold), against a prebuilt one at the same
 #           size in the stored row.
 # ARMS picks them ("stored gzip 304 206"); ARMS=stored reproduces the
 # single-arm sweep this file used to be.
 #
-# SETUP is the other half, and nothing else measures it: Assets::open
-# runs ONCE per process over the whole Central Directory. Timed as a
+# Setup is the other half, and nothing else measures it: Assets::open
+# runs once per process over the whole Central Directory. Timed as a
 # difference of two boots (many entries against one), so mruby boot
 # and ring init cancel out and what remains is per-entry setup.
 #
@@ -54,7 +54,7 @@
 # (39 B: 0.995 over 9 pairs; 64 KB: 1.35 for lending).
 # Appends to bench/results/$(hostname).log; failed runs write nothing.
 #
-# SPREAD, measured with foreign benchmarks under bench_priority, so the
+# Spread, measured with foreign benchmarks under bench_priority, so the
 # floor is the machine's and not this harness's. What it can resolve
 # depends on what is being measured, which is why one number would have
 # been misleading:
@@ -76,16 +76,16 @@
 # machine as it is configured now and led to real differences being
 # dismissed as noise.
 #
-# NO PINNING - and here the reason is structural, not statistical: the
-# moment a server touches a FILE, io_uring spawns an io-wq pool, and
+# No pinning - and here the reason is structural, not statistical: the
+# moment a server touches a file, io_uring spawns an io-wq pool, and
 # those workers inherit the issuing thread's affinity. Pinning locks
-# the pool that exists to use OTHER cores onto the loop's core. A
+# the pool that exists to use other cores onto the loop's core. A
 # server that never touches a file could be pinned - and would not be
 # a web server. It was also measured twice, and lost twice: the
 # previous tree removed every taskset it had ("handing the scheduler
-# one core was slower than letting it choose"; widening the CLIENT
+# one core was slower than letting it choose"; widening the client
 # mask 2 -> 15 -> 30 cpus raised throughput monotonically in the
-# MEDIAN), and back when bodies went through splice a 32 KiB asset
+# median), and back when bodies went through splice a 32 KiB asset
 # measured 0.07x its unspliced twin under `taskset -c 0`. The knobs
 # are gone rather than defaulted off - they are not something anyone
 # should turn on.
@@ -139,7 +139,7 @@ SRV=
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # Two entries per size, because the two delivery shapes need two
-# different bodies and the ZIP METHOD is what selects the shape:
+# different bodies and the ZIP method is what selects the shape:
 #   a$sz.bin  urandom, forced stored (-0) - the whole body is the
 #             file-backed span, nothing deflate-shaped in the middle.
 #   t$sz.txt  this tree's own sources, repeated to length, deflated
@@ -157,14 +157,14 @@ done
 (cd "$WORK" && zip -q -0 -X assets.zip a*.bin && zip -q -9 -X assets.zip t*.txt)
 
 # ---- priority: the measurement owns the machine ----------------------
-# Everything that is NOT part of the run steps back to nice 10, and the
+# Everything that is not part of the run steps back to nice 10, and the
 # measured processes run at -10. A stray build, an agent thread or a
 # leftover daemon landing inside a 5s window moves the median - and it
-# moves it for ONE of the servers, which is worse than moving it for
+# moves it for one of the servers, which is worse than moving it for
 # all three.
 #
-# The harness shell renices ITSELF to -10 and everything else to 10, so
-# the server and the client simply INHERIT -10 as its children: there
+# The harness shell renices itself to -10 and everything else to 10, so
+# the server and the client simply inherit -10 as its children: there
 # is no window between fork and renice in which a measured process runs
 # at the wrong priority. Inherited niceness survives the privilege drop
 # too, which is how nginx's www-data workers and h2o's nobody threads
@@ -183,16 +183,16 @@ cpu_ticks() {
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
 # --- requests per syscall -------------------------------------------
-# The point of a ring server is syscall AMORTIZATION - one enter
-# carries a whole batch of rounds - and this makes it a NUMBER: the
+# The point of a ring server is syscall amortization - one enter
+# carries a whole batch of rounds - and this makes it a number: the
 # server's syscalls over the run (raw_syscalls:sys_enter, a counting
 # tracepoint: no sampling, negligible overhead), divided into the
 # requests the client completed. The window is the client's run plus
-# edges; an idle server sits BLOCKED in one enter, so edges add
+# edges; an idle server sits blocked in one enter, so edges add
 # ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
 # perf_event_paranoid low enough for tracepoints); without one the
 # column prints '-' rather than a guess.
-# OPT-IN via SYSCALLS=1: counting needs perf, tracefs access and a
+# Opt-in via SYSCALLS=1: counting needs perf, tracefs access and a
 # paranoid setting most machines don't have lying around - a default
 # that probes and warns on every run is noise for anyone not asking
 # the question. Off, the column prints '-' and nothing is touched.
@@ -210,7 +210,7 @@ if [ -n "$SYSC_PERF" ]; then
   # open only the cpu side, which is why perf record works while this
   # counter stays empty). A column of silent '-' hides that; say it.
   # perf stat's -x CSV goes to STDERR; the probe must read that side.
-  # On failure, RELAY perf's own words - there are two separate locks
+  # On failure, relay perf's own words - there are two separate locks
   # (perf_event_paranoid gates the syscall, tracefs permissions gate
   # resolving the event name) and guessing which one bit cost a round
   # of head-scratching already.
@@ -231,7 +231,7 @@ sysc_begin() {  # <pid[,pid...]> <seconds>
     -- sleep "$2" >/dev/null 2>&1 &
   SYSC_PID=$!
 }
-# Split like snap_times, for the same reason: the WAIT must run in the
+# Split like snap_times, for the same reason: the wait must run in the
 # shell that backgrounded perf (a $() subshell is not its parent, its
 # wait returns at once while the output file is still being written);
 # only the read may fork.
@@ -242,11 +242,11 @@ sysc_wait() {
 sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
-# The client's cpu comes from the shell's CHILD times, credited at
+# The client's cpu comes from the shell's child times, credited at
 # reap - reading the client's /proc after `wait` read a reaped pid as
 # 0 ticks, and the client-bound refusal never fired (found when a
 # 1-thread client at 100% produced a row at server cpu 47%). Two
-# rules keep it honest: `times` must run in THIS shell (bash resets
+# rules keep it honest: `times` must run in this shell (bash resets
 # the counters inside a command substitution - measured, a reaped 1s
 # child read back as 0.00 through $()), so the snapshot writes a file
 # and only the parse forks; and the grep/ps helpers inside the window
@@ -263,8 +263,8 @@ start_srv() {  # start_srv <port> [zip]
   [ "$LOG" = 1 ] && args+=(--log="$WORK/access.log")
   "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
   SRV=$!
-  # WAIT for it to answer, never a fixed sleep: on this container the
-  # first curl raced the listener, the stored arm compared an EMPTY
+  # Wait for it to answer, never a fixed sleep: on this container the
+  # first curl raced the listener, the stored arm compared an empty
   # body against the asset, and the run died claiming the bytes
   # differed. A connection refused is the only thing this loop retries -
   # a 404 is already an answer.
@@ -275,7 +275,7 @@ start_srv() {  # start_srv <port> [zip]
     waited=$((waited + 1))
     [ "$waited" -lt 200 ] || { echo "server did not answer within 10s" >&2; cat "$WORK/srv.log" >&2; exit 1; }
   done
-  grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
+  grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
     echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
     exit 1
   }
@@ -284,9 +284,9 @@ start_srv() {  # start_srv <port> [zip]
 stop_srv() { kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; SRV=; }
 
 # arm_setup <port> <arm> <size> - fills ARM_URL / ARM_HDRS / ARM_WIRE
-# and PROVES the shape before any number is taken. Every arm proves
-# something the next arm cannot: identity bytes, gzip bytes AND the
-# coding, the 304 status, the 206 status AND the slice.
+# and proves the shape before any number is taken. Every arm proves
+# something the next arm cannot: identity bytes, gzip bytes and the
+# coding, the 304 status, the 206 status and the slice.
 ARM_URL= ARM_WIRE=0 ARM_PATH=
 # The same fields twice, because two tools ask for them: curl proves the
 # arm's shape, htgen drives its load.
@@ -352,13 +352,13 @@ arm_setup() {
   esac
   ARM_PATH="${ARM_URL#"$base"}"
   # The wire body, asked of the server instead of derived: curl without
-  # --compressed does not decode, so size_download IS what crossed the
+  # --compressed does not decode, so size_download is what crossed the
   # socket. 304 answers 0 and that is the point of the row.
   ARM_WIRE=$(curl -s --max-time 30 -o /dev/null -w '%{size_download}' \
              "${ARM_HDRS[@]}" "$ARM_URL")
 }
 
-# One whitespace-separated field out of htgen's summary line, by EXACT
+# One whitespace-separated field out of htgen's summary line, by exact
 # name. Not a substring match: htgen prints both MB/s and tx_MB/s, and
 # `grep -o 'MB/s=...'` matches inside the second one too - two lines in
 # one variable, a newline riding into vals[], and the median then picks
@@ -401,7 +401,7 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     grep -q 'bad=0 ' "$WORK/cli.out" || {
       echo "the client counted bad answers:" >&2; cat "$WORK/cli.out" >&2; exit 1
     }
-    # THE CLIENT MUST NOT BE THE BOTTLENECK. If the client burned as
+    # The client must not be the bottleneck. If the client burned as
     # much cpu as the server, the figure describes the client. Named refusal,
     # because a client-bound number in bench/results/ is worse than no
     # number - it looks like a verdict forever after. The bodyless arms
@@ -411,17 +411,17 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
     local scpu=$((su * 100 / HZ / DURATION))
     local ccpu
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    # Client-bound is a CONJUNCTION, not a comparison: the server had
-    # headroom AND the client was pegged. Comparing totals was wrong
+    # Client-bound is a conjunction, not a comparison: the server had
+    # headroom and the client was pegged. Comparing totals was wrong
     # twice over - first it read a reaped pid (always 0), then, fixed,
-    # it refused every SERVER-SATURATED run, because a client that
+    # it refused every server-saturated run, because a client that
     # needs three cores to fill our one lawfully spends more total CPU
     # than we do. A server at >=90% of its one core is the thing being
     # measured, whatever the client burned to get it there.
-    # Headroom is a GAP, not "below 90" - see bench/floor.sh: 89 against 90
+    # Headroom is a gap, not "below 90" - see bench/floor.sh: 89 against 90
     # is not headroom, it is two saturated ends.
     if [ "$su" -gt 0 ] && [ "$ccpu" -ge 90 ] && [ "$scpu" -le $((${ccpu%.*} - 15)) ]; then
-      # The ARM is refused, the SWEEP continues: killing everything
+      # The arm is refused, the sweep continues: killing everything
       # after it once cost the whole large-size half of a run for a
       # marginal 304 arm. The guarantee is unchanged - no client-bound
       # figure is ever written, the row says REFUSED - but the arms
@@ -440,7 +440,7 @@ measure() {  # measure <arm> <size> -> "rps MB/s"
 }
 
 # boot_ns <zip> <port> - "min max" nanoseconds from exec to the first
-# accepted connection, over five tries. Both ends, because the SPREAD
+# accepted connection, over five tries. Both ends, because the spread
 # is what says whether a difference of two boots means anything.
 boot_ns() {
   local zip=$1 port=$2 lo= hi= t0 t1 d
@@ -476,13 +476,13 @@ fi
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) mruby=$(git -C mruby rev-parse --short HEAD 2>/dev/null || echo '?') ===="
   echo "harness: assets htgen $PROTO_SPELL -c$CONNS -d${DURATION}s reps=$REPS log=${LOG} $(uname -mr)"
   s0=$(steal_ticks)
-  # cpu% = server CPU over the run, percent of ONE core - what lets a
+  # cpu% = server CPU over the run, percent of one core - what lets a
   # row here sit honestly next to a multi-worker row in the nginx
   # sweep: req/s per core is req/s * 100 / cpu%.
-  # req/syscall = completed requests per SERVER syscall over the run - the
+  # req/syscall = completed requests per server syscall over the run - the
   # batching the ring buys, as a number. '-' = no perf to count with.
   printf '%10s %8s %14s %12s %12s %8s %12s\n' "size" "arm" "req/s" "MB/s" "wire" "cpu%" "req/syscall"
-  # A FRESH PORT PER SIZE. stop_srv reaps the process, but the listening
+  # A fresh port per size. stop_srv reaps the process, but the listening
   # socket is not guaranteed gone by the time the next one binds, and
   # the server refuses a taken port by name (it does not fall back to
   # anything) - so reusing one port turns the sweep into a coin flip.
@@ -530,7 +530,7 @@ fi
     # Divide only when the difference outruns the floor's own spread.
     # At a few hundred entries it does not, and a per-entry figure
     # computed there is jitter with a unit attached - it came out
-    # NEGATIVE at 200 entries on this container, which is the whole
+    # negative at 200 entries on this container, which is the whole
     # reason this refusal exists.
     if [ "$delta" -gt "$jitter" ]; then
       echo "setup: => $((delta / (SETUP_ENTRIES - 1)))ns per entry"

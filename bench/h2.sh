@@ -1,6 +1,6 @@
 #!/bin/bash
 # h1 against h2: same server, same route, same client budget, and the
-# SAME CLIENT - htgen speaks both, so the client machinery cancels out
+# same client - htgen speaks both, so the client machinery cancels out
 # of the comparison entirely.
 #
 # Four legs against /, over AF_UNIX by default (htgen speaks it; set
@@ -9,20 +9,20 @@
 #   h1                  the anchor: 1 outstanding request per
 #                       connection, which is what real h1 clients do
 #   h2 --streams 1      h2 under the identical load shape - what the
-#                       protocol costs per response. EXPECTATION:
+#                       protocol costs per response. Expectation:
 #                       within noise of the anchor; a real gap is a
 #                       finding.
 #   h2 --streams 32/64  multiplexing, the thing h1 cannot have
 #
 # Methodology, learned on the shared-vCPU container (2026-08-20):
 # oversubscribed shapes (c100, t2 client + server on 4 vCPUs) swing
-# +-40% with the host's neighbor bursts and resolve nothing. What DOES
+# +-40% with the host's neighbor bursts and resolve nothing. What does
 # resolve: small shapes (THREADS=1 CONNS=1 = the echo-probe form),
-# REPS>=5 with the median, and a STEAL guard per leg - host steal is
+# REPS>=5 with the median, and a steal guard per leg - host steal is
 # visible in
 # /proc/stat and a contaminated leg says so instead of lying.
 #
-# WITHDRAWN from this note (2026-08-22): it used to prescribe pinning
+# Withdrawn from this note (2026-08-22): it used to prescribe pinning
 # both processes to separate cpus, on an interleaved A/B that measured
 # +3% and tighter. That reading did not survive. It was taken on a
 # path that never touched a FILE - and touching a file is what makes
@@ -34,15 +34,15 @@
 #
 # Knobs: CONNS mandatory (the harness is part of the number). A rep with
 # nothing to show is refused rather than logged as a blank row.
-# THREADS is GONE: both ends are one thread (#120, #196), and the knob
+# THREADS is gone: both ends are one thread (#120, #196), and the knob
 # only ever described h2load.
 # DURATION (default 10), REPS (default 1), PORT (default 8123), APP (default
 # bench/apps/hello.rb; empty = the bare floor). Appends to
 # bench/results/$(hostname).log; failed runs write nothing.
-# NO PINNING - measured twice, lost twice. The previous tree removed
+# No pinning - measured twice, lost twice. The previous tree removed
 # every taskset it had ("handing the scheduler one core was slower than
-# letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
-# throughput monotonically in the MEDIAN). And io-wq workers inherit the
+# letting it choose"; widening the client mask 2 -> 15 -> 30 cpus raised
+# throughput monotonically in the median). And io-wq workers inherit the
 # issuing thread's affinity, so pinning the server pins the pool that
 # carries splice: a 32 KiB asset measured 0.07x its unspliced twin under
 # `taskset -c 0`. The knobs are gone rather than defaulted off - they
@@ -102,11 +102,11 @@ fi
 LOG="${LOG:-0}"
 LOG_ARGS=()
 [ "$LOG" = 1 ] && LOG_ARGS=(--log="$WORK/access.log")
-# THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
+# The client must not be the bottleneck - the same refusal bench/assets.sh
 # already has (and bench/floor.sh now too), ported here: a number where
 # the client burned as much CPU as the server describes the client, not
-# webmachine. cpu_ticks reads the SERVER's own /proc/pid/stat
-# (utime+stime); snap_times/parse_child_cpu read the CLIENT's, via
+# webmachine. cpu_ticks reads the server's own /proc/pid/stat
+# (utime+stime); snap_times/parse_child_cpu read the client's, via
 # bash's own `times` for its reaped children. Defined before the trap
 # below, which references WORK on every exit path.
 cpu_ticks() {
@@ -130,7 +130,7 @@ SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"; rm -f "$SOCK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat "$WORK/srv.log" >&2; exit 1; }
-grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
+grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }
@@ -147,16 +147,16 @@ mkdir -p bench/results
 steal_ticks() { awk '/^cpu /{print $9}' /proc/stat; }
 
 # --- requests per syscall -------------------------------------------
-# The point of a ring server is syscall AMORTIZATION - one enter
-# carries a whole batch of rounds - and this makes it a NUMBER: the
+# The point of a ring server is syscall amortization - one enter
+# carries a whole batch of rounds - and this makes it a number: the
 # server's syscalls over the run (raw_syscalls:sys_enter, a counting
 # tracepoint: no sampling, negligible overhead), divided into the
 # requests the client completed. The window is the client's run plus
-# edges; an idle server sits BLOCKED in one enter, so edges add
+# edges; an idle server sits blocked in one enter, so edges add
 # ~nothing. Needs a perf that may attach (root, or CAP_PERFMON /
 # perf_event_paranoid low enough for tracepoints); without one the
 # column prints '-' rather than a guess.
-# OPT-IN via SYSCALLS=1: counting needs perf, tracefs access and a
+# Opt-in via SYSCALLS=1: counting needs perf, tracefs access and a
 # paranoid setting most machines don't have lying around - a default
 # that probes and warns on every run is noise for anyone not asking
 # the question. Off, the column prints '-' and nothing is touched.
@@ -174,7 +174,7 @@ if [ -n "$SYSC_PERF" ]; then
   # open only the cpu side, which is why perf record works while this
   # counter stays empty). A column of silent '-' hides that; say it.
   # perf stat's -x CSV goes to STDERR; the probe must read that side.
-  # On failure, RELAY perf's own words - there are two separate locks
+  # On failure, relay perf's own words - there are two separate locks
   # (perf_event_paranoid gates the syscall, tracefs permissions gate
   # resolving the event name) and guessing which one bit cost a round
   # of head-scratching already.
@@ -195,7 +195,7 @@ sysc_begin() {  # <pid[,pid...]> <seconds>
     -- sleep "$2" >/dev/null 2>&1 &
   SYSC_PID=$!
 }
-# Split like snap_times, for the same reason: the WAIT must run in the
+# Split like snap_times, for the same reason: the wait must run in the
 # shell that backgrounded perf (a $() subshell is not its parent, its
 # wait returns at once while the output file is still being written);
 # only the read may fork.
@@ -237,13 +237,13 @@ run() {  # run <label> <htgen flags...>
       echo "REFUSED: a rep with nothing to show must not be recorded as a blank row" >&2
       exit 1
     fi
-    # THE CLIENT MUST NOT BE THE BOTTLENECK - a conjunction, not a
-    # comparison: the server had headroom AND the client was pegged.
+    # The client must not be the bottleneck - a conjunction, not a
+    # comparison: the server had headroom and the client was pegged.
     # Both ends are one thread, so "pegged" is one core.
     su=$((srv1 - srv0))
     scpu=$((su * 100 / HZ / DURATION))
     ccpu=$(awk -v a="$c1" -v b="$c0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
-    # Headroom is a GAP, not "below 90" - see bench/floor.sh: 89 against 90
+    # Headroom is a gap, not "below 90" - see bench/floor.sh: 89 against 90
     # is not headroom, it is two saturated ends.
     if [ "$su" -gt 0 ] && [ "$ccpu" -ge 90 ] && [ "$scpu" -le $((${ccpu%.*} - 15)) ]; then
       echo "  REFUSED: the server had headroom (${scpu}% of its core) while the client was pegged (${ccpu}% of its core). This measures htgen, not webmachine." >&2

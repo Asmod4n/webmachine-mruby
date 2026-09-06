@@ -55,7 +55,7 @@ void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
 }
 
 // The whole set of settings a URL or a config file may reach, and the
-// reason it is a TABLE and not a name lookup.
+// reason it is a table and not a name lookup.
 //
 // The parameters are spelled like the conf setters on purpose - a knob
 // is called the same thing everywhere it can be named (AppSpec's own
@@ -64,7 +64,7 @@ void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
 // whoever writes the URL or the config file would be calling methods on
 // the conf object by name, and every method conf ever gains would join
 // the attack surface by existing. Routes are Ruby because a route names
-// a CLASS; nothing here may name one.
+// a class; nothing here may name one.
 //
 // So the names are a convention for people, and the dispatch is this
 // switch. What a URL can set is countable by reading it, an unknown key
@@ -196,7 +196,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
 // test used the same happy shape:
 //
 //   http://[::1]              refused with "has no usable port" -
-//                             rfind(':') landed INSIDE the literal, so
+//                             rfind(':') landed inside the literal, so
 //                             the port read as "1]". A valid absolute
 //                             URL whose port is the scheme's 80.
 //   http://user@127.0.0.1:80  accepted, and url_host became
@@ -205,7 +205,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
 //
 // The scheme names the listener - http, https, or unix for a socket
 // path - and the query carries the rest of the conf object, under the
-// setters' own names. It is an ADDITION: every setter stays, and a knob
+// setters' own names. It is an addition: every setter stays, and a knob
 // named twice is a ConfigError rather than a precedence rule, the same
 // answer claim_form gives a listener named twice.
 //
@@ -215,7 +215,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
 // Credentials are refused rather than carried - they name nothing a
 // listener can serve. A path is ignored under http and https, as it was
 // before: webmachine-ruby's conf.url may carry one and it names no
-// listener. Under unix the path IS the listener.
+// listener. Under unix the path is the listener.
 void apply_url(mrb_state* mrb, AppSpec* s, const std::string& u) {
 
   auto parsed = ada::parse<ada::url_aggregator>(u);
@@ -238,7 +238,7 @@ void apply_url(mrb_state* mrb, AppSpec* s, const std::string& u) {
                "conf.url = %s carries credentials, which name no listener", u.c_str());
   }
 
-  // The FORM is the URL's, not the setter's: everything downstream reads
+  // The form is the URL's, not the setter's: everything downstream reads
   // it to decide what to bind (server.cpp), which listener collides with
   // which (app_register), and what conf.url reads back. A unix:// URL
   // that claimed kUrl would be bound as a port - port 0, since it never
@@ -261,7 +261,7 @@ void apply_url(mrb_state* mrb, AppSpec* s, const std::string& u) {
   } else {
     const std::string_view host = parsed->get_hostname();
     if (host.empty()) mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no host", u.c_str());
-    // An absent port IS the scheme's default; ada leaves get_port() empty
+    // An absent port is the scheme's default; ada leaves get_port() empty
     // for it rather than writing 80 or 443 back out.
     int port = tls ? 443 : 80;
     const std::string_view ps = parsed->get_port();
@@ -282,12 +282,12 @@ void apply_url(mrb_state* mrb, AppSpec* s, const std::string& u) {
   }
 }
 
-// The configuration arrives as ONE value: the Webmachine::Config struct
-// mrblib defines. A Struct in mruby IS an array (MRB_TT_STRUCT is struct
+// The configuration arrives as one value: the Webmachine::Config struct
+// mrblib defines. A Struct in mruby is an array (MRB_TT_STRUCT is struct
 // RArray in value.h), so this walks it - through mrb_ary_entry, never by
 // reaching into the object - and decides what each slot means.
 //
-// The ORDER is the contract, and it is written down twice on purpose:
+// The order is the contract, and it is written down twice on purpose:
 // once as the member list in mrblib/webmachine.rb and once here. The
 // length check below is what notices if the two ever drift, at the first
 // Application.new rather than in whichever knob happened to move.
@@ -342,7 +342,7 @@ bool conf_int(mrb_state* mrb, mrb_value conf, ConfIdx at, const char* name, mrb_
 
 void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
   // MRB_TT_STRUCT, not MRB_TT_ARRAY: a Struct is struct RArray in memory
-  // and mrb_ary_entry reads it, but it carries its OWN type tag, so
+  // and mrb_ary_entry reads it, but it carries its own type tag, so
   // mrb_array_p says no. Checked before the first mrb_ary_entry, because
   // that one trusts the tag it was handed.
   if (mrb_type(conf) != MRB_TT_STRUCT || RARRAY_LEN(conf) != kConfMax) {
@@ -422,7 +422,7 @@ void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
   }
 }
 
-// The token array crosses the boundary ONCE, here, for all three route kinds.
+// The token array crosses the boundary once, here, for all three route kinds.
 // The route tokens an app handed over, and the call that handed them -
 // which is the word a refusal names.
 struct Tokens {
@@ -441,12 +441,12 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
                  "%s: :* is the tail of a route - nothing may follow it", who);
     }
     if (mrb_string_p(t)) {
-      // RFC 3986 3.3: a path is segments SEPARATED by "/", so a segment
+      // RFC 3986 3.3: a path is segments separated by "/", so a segment
       // can never contain one - match() splits on them before a literal
       // is ever compared. A route carrying one therefore matches nothing
       // at all, and the way that showed up was every request 404ing with
       // the routes looking right. ['/'] is the near-universal way to
-      // write it wrong: the root is the EMPTY list, because the root has
+      // write it wrong: the root is the empty list, because the root has
       // no segments.
       const char* lit = RSTRING_PTR(t);
       const size_t litlen = static_cast<size_t>(RSTRING_LEN(t));
@@ -457,7 +457,7 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
                      "can have - the root is the empty list, add [], YourResource", who);
         }
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "%s: a route token is ONE path segment, and %v carries a \"/\" - split it "
+                   "%s: a route token is one path segment, and %v carries a \"/\" - split it "
                    "into one token per segment", who, t);
       }
       if (litlen == 0) {
@@ -486,7 +486,7 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
   }
 }
 
-// route.add / app.add_route: the flow's table. Folds and FREEZES the class.
+// route.add / app.add_route: the flow's table. Folds and freezes the class.
 mrb_value route_add(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -561,7 +561,7 @@ mrb_value route_assets(mrb_state* mrb, mrb_value) {
   return mrb_nil_value();
 }
 
-// Two applications may not name the same listener - compared on the SOCKET.
+// Two applications may not name the same listener - compared on the socket.
 void register_app(mrb_state* mrb, AppSpec* s) {
   if (s->form == AppSpec::Form::kNone) {
     s->registered = true;
@@ -596,7 +596,7 @@ mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
   mrb_data_init(self, s, &app_type);
-  // Looked up here and not at gem init: mrblib runs AFTER the C side, so
+  // Looked up here and not at gem init: mrblib runs after the C side, so
   // Webmachine::Config does not exist yet when this file's init does.
   // Looked up in the VM that asks, every time: a pointer kept across
   // VMs would name the class of whichever VM ran this gem's init last.
@@ -714,7 +714,7 @@ int run_guarded(mrb_state* mrb, Guarded step) {
     mrb->exc = mrb_obj_ptr(e);
     mrb_print_error(mrb);
     mrb->exc = nullptr;
-    // The exit code is the exception's CLASS. A config the operator wrote
+    // The exit code is the exception's class. A config the operator wrote
     // wrong is 2 - the shell's "what you asked for cannot be done" - and
     // every other refusal is 1. Nothing else has to agree on a number.
     return mrb_obj_is_kind_of(mrb, e, E_WM_CONFIG_ERROR(mrb)) ? 2 : 1;
@@ -782,7 +782,7 @@ void app_load(mrb_state* mrb, const char* path) {
   if (mrb->exc != nullptr) rethrow(mrb);
 }
 
-// Every application `main` registered - registration order IS listener order.
+// Every application `main` registered - registration order is listener order.
 void app_registered_all(mrb_state* mrb, Registered out_) {
   std::vector<AppSpec*>& out = out_.specs;
   const size_t max_listeners = out_.max_listeners;
@@ -800,14 +800,14 @@ void app_registered_all(mrb_state* mrb, Registered out_) {
 }
 
 // A pack and no app: the asset tier answers before routing, so this app
-// exists only to BE a listener's app - no routes, no resources, and every
+// exists only to be a listener's app - no routes, no resources, and every
 // path the pack does not name is a 404. There is deliberately no resource
 // here: an unfolded one answers out of nowhere, with no media type and no
 // callback behind any of it (#201).
 AppSpec* app_assets_only() {
   specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
   AppSpec* s = specs_.back().get();
-  // No open()/commit() here: that pair IS a route - the one with an empty
+  // No open()/commit() here: that pair is a route - the one with an empty
   // token list, which is the root path. An empty table matches nothing, and
   // that is the point.
   s->registered = true;
@@ -815,7 +815,7 @@ AppSpec* app_assets_only() {
   return s;
 }
 
-// What the listener REALLY became; this is what conf.url reads back.
+// What the listener really became; this is what conf.url reads back.
 void app_mark_bound(mrb_state* mrb, AppSpec& spec, const char* unix_path, int port) {
   if (unix_path != nullptr) {
     spec.bound_url = std::string("unix://") + unix_path;
@@ -831,7 +831,7 @@ void app_mark_bound(mrb_state* mrb, AppSpec& spec, const char* unix_path, int po
   }
 }
 
-// Run the ready hook from the TOOL, outside any VM frame - so, funcall.
+// Run the ready hook from the tool, outside any VM frame - so, funcall.
 void app_ready_run(mrb_state* mrb, AppSpec& spec) {
   if (!spec.have_ready) return;
   const ArenaGuard arena(mrb);

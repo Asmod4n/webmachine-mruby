@@ -5,17 +5,17 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.author  = 'Hendrik Beskow'
   spec.summary = 'Webmachine: the HTTP state model, executed'
 
-  # The fuzz binary is the SAME sources with libFuzzer's entry instead of
-  # the CLI's, and it exists ONLY in the build that asked for it - the
+  # The fuzz binary is the same sources with libFuzzer's entry instead of
+  # the CLI's, and it exists only in the build that asked for it - the
   # shipped server never carries it (#206).
-  # ONE binary in that build, and it is the fuzz one: the server has no
+  # One binary in that build, and it is the fuzz one: the server has no
   # LLVMFuzzerTestOneInput to offer, and libFuzzer's main would collide
   # with the server's.
   fuzzing = build.cc.defines.include?('WM_FUZZ_BUILD')
   spec.bins = fuzzing ? ['webmachine-fuzz']
                      : ['webmachine-server', 'webmachine-logd', 'webmachine-passwd']
 
-  # -fsanitize=fuzzer belongs to THIS GEM and not to the build: a flag in
+  # -fsanitize=fuzzer belongs to this gem and not to the build: a flag in
   # a build's linker reaches every binary the build produces, and mrbc -
   # mruby-bin-mrbc's tool, built in the same tree - has a main of its own
   # for libFuzzer's to collide with. The build carries the sanitizers
@@ -27,7 +27,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     spec.linker.flags << fuzz_flags
   end
 
-  # The C++ resource example (#207) is a BINARY, because that is what a
+  # The C++ resource example (#207) is a binary, because that is what a
   # C++ resource is: an embedder's own main, linking this library and
   # defining resource classes before the app file routes them. It is
   # built where it can be exercised - build_config_debug.rb, so bintest
@@ -37,11 +37,11 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.bins += ['webmachine-example'] if build.cc.defines.include?('WM_EXAMPLES')
 
 
-  # ONE binary, every host: mruby-slipstreamio carries liburing and
-  # builds it WITH the seam, so whether the kernel or slipstream's
-  # engine answers is decided at RUNTIME, per process, by asking the
+  # One binary, every host: mruby-slipstreamio carries liburing and
+  # builds it with the seam, so whether the kernel or slipstream's
+  # engine answers is decided at runtime, per process, by asking the
   # kernel. There is no build-time fallback to reach for, because the one
-  # binary IS the fallback.
+  # binary is the fallback.
   spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'main'
 
   uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-slipstreamio/build/lib/liburing.a")
@@ -175,7 +175,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.cxx.include_paths << mnz << mnz_gen
   # MINIZ_NO_ZLIB_COMPATIBLE_NAMES: miniz otherwise claims zlib's own
   # names (voidpc, alloc_func, inflateInit_ ...), and since src/ speaks
-  # through ONE header both libraries now meet in every translation
+  # through one header both libraries now meet in every translation
   # unit. Nothing here uses the compat layer - the ZIP reader is called
   # by its mz_ names, and zlib itself serves gzip and permessage-deflate.
   %w[MINIZ_NO_STDIO MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_COMPATIBLE_NAMES].each do |d|
@@ -188,7 +188,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   # The media-type list compiled in (src/mime.cpp), generated from
   # share/mime.types - Apache httpd's own, public domain by its
-  # authors' own words (share/README.md). It is the LAST source the
+  # authors' own words (share/README.md). It is the last source the
   # server tries; the machine's own database wins whenever it has one.
   # A server that is one binary cannot depend on a data file being
   # installed beside it, so the bytes ride along.
@@ -197,7 +197,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # lists hundreds of registered types with none, to guide
   # configuration, and a type without an extension cannot answer a
   # lookup. Whitespace collapses to one space - same grammar, fewer
-  # bytes, and the runtime parser is the SAME one that reads
+  # bytes, and the runtime parser is the same one that reads
   # /etc/mime.types, so there is no second format to keep in step.
   mime_src = "#{dir}/share/mime.types"
   abort "webmachine-mruby: #{mime_src} is missing" unless File.exist?(mime_src)

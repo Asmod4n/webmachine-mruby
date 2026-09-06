@@ -1,4 +1,4 @@
-# How long a browser may use a file under its PLAIN name without
+# How long a browser may use a file under its plain name without
 # asking again, in seconds. 0 means ask every time (no-cache).
 # The hashed name of the same file always says one year.
 # rake pack asks for an extension that is not here yet.

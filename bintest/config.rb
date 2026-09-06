@@ -12,7 +12,7 @@ def cfg_write(toml)
 end
 
 # The server refuses to start with nothing to serve, and these tests are
-# about the LISTENER, not about what answers on it - so they all carry the
+# about the listener, not about what answers on it - so they all carry the
 # same one-route app.
 CFG_APP = <<~RUBY unless defined?(CFG_APP)
   class CfgFloor < Webmachine::Resource

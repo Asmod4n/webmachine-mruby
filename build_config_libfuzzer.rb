@@ -1,5 +1,5 @@
-# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
-# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# No lockfile. mruby writes build_config_*.rb.lock beside this file and
+# then prefers it: load_gems.rb takes the locked commit over the branch a
 # dependency names, so a gem pinned here to a branch quietly keeps
 # whatever commit the lock first saw. This tree names branches on
 # purpose - the seam lives in mruby-slipstreamio and moves - and a lock
@@ -8,7 +8,7 @@
 # been in the branch for hours.
 MRuby::Lockfile.disable
 
-# The SECOND binary: the same server sources, with the fuzzer's entry
+# The second binary: the same server sources, with the fuzzer's entry
 # point instead of the CLI's (#206). Nothing here changes what the
 # server does - it changes who calls it, and the shipped binary never
 # carries a byte of this.
@@ -17,7 +17,7 @@ MRuby::Lockfile.disable
 # built without -fPIE and clang defaults to PIE. -fno-sanitize=alignment
 # because ls-hpack and phr read unaligned on purpose.
 #
-# -fsanitize=fuzzer is NOT here, and that is the whole point: a flag in a
+# -fsanitize=fuzzer is not here, and that is the whole point: a flag in a
 # build's linker reaches every binary the build produces, and mrbc - a
 # tool of this build, from a core gem - has a main of its own for
 # libFuzzer's to collide with. So the fuzzer flag lives with the fuzz
@@ -33,7 +33,7 @@ MRuby::Build.new('libfuzzer') do |conf|
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
 
-  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # mrbc is a tool of this build, not an artifact of another one: the
   # gem builds it here. Naming an external mrbc under mruby/bin
   # instead made a cold tree unbuildable - nothing in this config
   # produces that path, so rake had no rule for it.
@@ -41,7 +41,7 @@ MRuby::Build.new('libfuzzer') do |conf|
 
   conf.enable_debug
 
-  # The toolchain's own: it puts ONE -fsanitize= string into cc, cxx and
+  # The toolchain's own: it puts one -fsanitize= string into cc, cxx and
   # the linker, which is what mruby-slipstreamio's mrbgem.rake looks for
   # before it hands liburing's configure --enable-sanitizer. Hand-pushed
   # flags used to have to be one String per entry for the same reason.

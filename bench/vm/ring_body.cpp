@@ -1,8 +1,8 @@
-// The dynamic-body A/B, driven through the REAL reactor.
+// The dynamic-body A/B, driven through the real reactor.
 //
 // vm_floor.cpp's BM_wire_copy_send / BM_wire_register_sendmsg answered
 // "copy out of the VM, or freeze+register and hand the VM's own buffer
-// to the kernel?" against BLOCKING send()/sendmsg(). That is not the
+// to the kernel?" against blocking send()/sendmsg(). That is not the
 // shape the server has: everything goes through webmachine::Ring<App>,
 // whose io_uring_submit_and_wait carries several SQEs per enter and
 // reaps several CQEs per return. Batching amortises exactly the fixed
@@ -23,7 +23,7 @@
 //                     exactly mirroring the mmap'd-asset precedent in
 //                     http1.cpp (Assets::wire_iov -> plan->seg[...]).
 //
-// Both shapes emit TWO segments (header from the sink, body), so both
+// Both shapes emit two segments (header from the sink, body), so both
 // end up in one sendmsg with two iovecs: the only variable left between
 // them is the body memcpy against freeze/register/unregister.
 //
@@ -62,7 +62,7 @@ namespace {
 
 bool g_zero_copy = false;   // (b) when set, (a) otherwise
 // Two knobs, not one - because the first profiled reading showed the
-// difference between the variants was NOT the memcpy (144ns at 8KB, as
+// difference between the variants was not the memcpy (144ns at 8KB, as
 // an 8KB memcpy should be) but mrb_str_new running several times slower
 // in the copy variant. Delivery and lifetime therefore have to be
 // separable, or the benchmark cannot say which of the two it measured.
@@ -87,7 +87,7 @@ int64_t g_cpu_ns = 0;
 
 // Reactor steps inside the measured window. One step is one
 // io_uring_submit_and_wait, i.e. one io_uring_enter - so requests/steps
-// IS the batching depth this run actually achieved, which is the whole
+// is the batching depth this run actually achieved, which is the whole
 // reason the blocking-syscall answer was suspect.
 int64_t g_steps = 0;
 int64_t g_steps_start = 0;
@@ -152,7 +152,7 @@ std::string make_header(size_t n) {
 // ------------------------------------------------------------------ App
 
 // The smallest thing that satisfies what Ring<App> asks for. The
-// protocol is deliberately not HTTP on the way IN: one request byte,
+// protocol is deliberately not HTTP on the way in: one request byte,
 // one response. Parsing is not what is being weighed here.
 class BodyApp {
  public:
@@ -228,12 +228,12 @@ class BodyApp {
     return true;
   }
 
-  // THE RELEASE POINT. more() is reached only through continue_conn(),
+  // The release point. more() is reached only through continue_conn(),
   // which on_send() calls exactly when the whole round has drained
   // (c.sent >= offered, sink cleared, niov cleared). That is the
   // granularity the plan was built at - header seg plus body seg, one
   // completion - so releasing here releases neither too early nor too
-  // late. Released BEFORE the next body is built, so a connection never
+  // late. Released before the next body is built, so a connection never
   // holds two.
   bool more(Conn& st, std::string& sink, Plan& plan) {
     st.release();
@@ -403,8 +403,8 @@ struct Client {
     const size_t want = g_header.size() + g_body;
     std::vector<char> buf(want);
 
-    // The warm rounds are also the CHECK: a wrong external pointer in
-    // variant (b) would still be the right LENGTH, so a benchmark that
+    // The warm rounds are also the check: a wrong external pointer in
+    // variant (b) would still be the right length, so a benchmark that
     // only counted bytes would happily time garbage. Verified outside
     // the timed window so it costs the measurement nothing.
     for (int64_t r = 0; r < warm; r++) {

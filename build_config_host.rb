@@ -1,5 +1,5 @@
-# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
-# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# No lockfile. mruby writes build_config_*.rb.lock beside this file and
+# then prefers it: load_gems.rb takes the locked commit over the branch a
 # dependency names, so a gem pinned here to a branch quietly keeps
 # whatever commit the lock first saw. This tree names branches on
 # purpose - the seam lives in mruby-slipstreamio and moves - and a lock
@@ -22,7 +22,7 @@ MRuby::Build.new do |conf|
   # -march: forgecore builds native and always has, and every number in
   # bench/results/forgecore.log was taken that way - changing that here
   # would make the next A/B measure the ISA as well as the change. A box
-  # that MIGRATES between hosts cannot use native: gcc resolves it to
+  # that migrates between hosts cannot use native: gcc resolves it to
   # whatever the machine booted on (cascadelake, on the container this
   # was written on), and that binary meets an illegal instruction on the
   # next host - and under valgrind. WM_MARCH= is how such a box asks for
@@ -33,7 +33,7 @@ MRuby::Build.new do |conf|
 
   # One section per function and per object, and a link that drops the
   # ones nothing reaches. Without this the linker's unit is the object
-  # file, so ONE referenced symbol drags in the whole translation unit -
+  # file, so one referenced symbol drags in the whole translation unit -
   # and an amalgamated dependency is one translation unit. Measured on
   # ada 3.4.4 (mruby-uri-parser vendors it that way): the object is
   # 103 KB .text and 256 KB .rodata whole, while a program that calls
@@ -49,7 +49,7 @@ MRuby::Build.new do |conf|
 
   # LTO is asked for, never assumed: the optimizer's unit becomes the
   # program instead of the file, and the bill is paid at link time by
-  # ONE process. gcc's whole-program stage (lto1-wpa) is not what
+  # one process. gcc's whole-program stage (lto1-wpa) is not what
   # -flto=auto parallelizes - that is the ltrans phase after it - and on
   # this tree it was killed by the OOM killer at 13.8 GB RSS in a 14 GB
   # cgroup. A machine with the memory can have it; a container that

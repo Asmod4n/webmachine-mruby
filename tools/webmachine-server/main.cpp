@@ -21,7 +21,7 @@
 
 
 // What this invocation decided. The flags fill it, the config file fills
-// what the flags left, and from there it is ONE thing travelling from the
+// what the flags left, and from there it is one thing travelling from the
 // first argument to the last accept - see #std-first.
 struct Invocation {
   webmachine::ServerOptions opts;
@@ -45,7 +45,7 @@ void usage(const char* me) {
                "usage: %s [OPTIONS]\n"
                "\n"
                "  Every option is --key=value. There are two ways to serve:\n"
-               "  an APPLICATION (--app), or STANDALONE (--standalone), which\n"
+               "  an application (--app), or standalone (--standalone), which\n"
                "  serves files and enters no VM. One of the two, or no start.\n"
                "\n"
                "LISTENER\n"
@@ -127,7 +127,7 @@ mrb_int number_of(mrb_state* mrb, mrb_value h, const char* key, mrb_int missing)
   return mrb_integer(v);
 }
 
-// The CLI states what this INVOCATION decides, and TypedArgs states what
+// The CLI states what this invocation decides, and TypedArgs states what
 // the CLI is: `--key=value`, parsed by the gem in Ruby, refused by the
 // gem with a caret under the byte it choked on. False is a usage refusal,
 // already spelled to the operator who typed it.
@@ -334,7 +334,7 @@ int serve(mrb_state* mrb, Invocation& in) {
   if (opts.app_path != nullptr) {
     webmachine::app_load(mrb, opts.app_path);
   } else if (opts.standalone) {
-    // STANDALONE: a pack, a docroot, or both, and no app. There is no
+    // Standalone: a pack, a docroot, or both, and no app. There is no
     // resource to enter, so the folded graph answers on its own - the
     // pack from its mapping, the docroot from disk, everything else 404.
     if (opts.assets_path == nullptr && opts.docroot_path == nullptr) {
@@ -379,7 +379,7 @@ int main(int argc, char** argv) {
   // A signalfd reads TERM and INT. Nothing else does, and this process
   // installs no signal handler.
   //
-  // The block belongs HERE, before the first thread. A thread inherits
+  // The block belongs here, before the first thread. A thread inherits
   // the mask of the thread that makes it, and mrb_open() below makes one:
   // the task HAL's ticker. The kernel gives a signal to any thread that
   // does not block it. With the block set later, the ticker was that

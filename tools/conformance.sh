@@ -9,11 +9,11 @@
 #
 # Both suites are containers (podman), both talk TCP to a server this
 # script starts and stops. The server is found and killed through its
-# --pidfile and NOTHING else: `pkill -f webmachine-server` also matches
+# --pidfile and nothing else: `pkill -f webmachine-server` also matches
 # the shell that typed the command, which cost an afternoon of measuring
 # a binary that was never restarted.
 #
-# Known result, and it is a REFUSAL, not a gap: h2spec 3.5/2 ("Sends
+# Known result, and it is a refusal, not a gap: h2spec 3.5/2 ("Sends
 # invalid connection preface") fails, 145/146. h2spec measures an
 # h2-only endpoint; this listener also speaks HTTP/1.1, so a preface
 # that is wrong at byte 0 - the peer never said "PRI" - gets HTTP/1.1's
@@ -38,7 +38,7 @@ PIDFILE="$OUT/server.pid"
 [ -x "$MRBC" ] || { echo "$MRBC missing - run: rake" >&2; exit 1; }
 # Both suites ship as containers, and which runtime a machine has is not
 # something either suite cares about: podman where there is one, docker
-# where there is not. Named in ONE variable so the two call sites cannot
+# where there is not. Named in one variable so the two call sites cannot
 # drift apart.
 #
 # H2SPEC=path is the way out where there is no runtime at all: h2spec is
@@ -98,10 +98,10 @@ ws)
   [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
   start_server test/conformance/ws_echo.rb
   trap stop_server EXIT INT TERM
-  # HOW LONG IT TAKES, measured, because it looks like a stall twice
+  # How long it takes, measured, because it looks like a stall twice
   # otherwise: 517 cases in 735 s, of which 12.x and 13.x are 713 s.
   # Every other case together is 13 s. wstest writes its report at the
-  # END, and a deflate case takes up to 14 s, so a screen that shows
+  # end, and a deflate case takes up to 14 s, so a screen that shows
   # 13.3.9 for a quarter of a minute is a suite that is working. The
   # cost is the suite's, not this server's: during the run wstest holds
   # 66% of a core and the server 33%, and a 1 MiB deflate echo measures
@@ -122,9 +122,9 @@ JSON
   # fixture (test/conformance/ws_echo.rb) is what turns it on - the
   # tree's default is off, and wsconn.hpp says why in bytes.
   mkdir -p "$OUT/reports"
-  # PYTHONUNBUFFERED, and it is not cosmetic: wstest is Python, Python
+  # PYTHONUNBUFFERED is not cosmetic: wstest is Python, Python
   # block-buffers stdout when it is a pipe, and a suite whose progress
-  # only appears at the END is indistinguishable from a suite that
+  # only appears at the end is indistinguishable from a suite that
   # hung. That mistake cost half an hour of waiting on a run that was
   # working the whole time. With this, the case it is on is on screen.
   "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \

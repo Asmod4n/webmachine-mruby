@@ -3,13 +3,13 @@
 
 // RFC 9113 4/6 and RFC 7541: the h2 wire layer, and nothing above it.
 //
-// What a frame IS - its type, flag, error and settings numbers, the
+// What a frame is - its type, flag, error and settings numbers, the
 // preface, the nine header bytes, the big-endian reads, one HPACK field
 // encode - is the same for a server answering and a client asking.
 //
 // It lives here so the two ends cannot drift: src/http2.cpp and
 // bench/load/load.cpp both include it, and a misread length is a bug in
-// ONE place.
+// one place.
 //
 // Header-only and free of everything else in this tree: no mruby, no
 // io_uring, no Conn, no state. Only <cstddef>/<cstdint> and ls-hpack.
@@ -74,18 +74,18 @@ inline constexpr uint32_t kH2MaxFrameSize = 16384;
 inline constexpr int64_t kH2DefaultWindow = 65535;
 inline constexpr uint32_t kH2MaxConcurrentStreams = 256;
 // RFC 7541 4.2 / RFC 9113 6.5.2: SETTINGS_HEADER_TABLE_SIZE arrives as a
-// 32-bit number with NO upper bound in either RFC - the peer is telling
+// 32-bit number with no upper bound in either RFC - the peer is telling
 // us how large a dynamic table its decoder will keep, and how large a
 // one our encoder may therefore build. A peer may name 4294967295. Using
-// LESS than the peer allows is always legal (RFC 7541 4.2: the encoder
-// decides), so the number is CLAMPED here rather than handed to the
+// less than the peer allows is always legal (RFC 7541 4.2: the encoder
+// decides), so the number is clamped here rather than handed to the
 // encoder as it arrived. Without this the peer sizes our allocation.
 inline constexpr uint32_t kH2EncTableMax = 65536;
-// RFC 7541 4.2: the DECODER's table size is whatever this side announced
+// RFC 7541 4.2: the decoder's table size is whatever this side announced
 // in SETTINGS_HEADER_TABLE_SIZE. We announce nothing, so RFC 9113 6.5.2's
 // default stands - and it is stated to the decoder here rather than left
 // to agree with ls-hpack's own default by luck. One number, one place;
-// if the SETTINGS frame ever names a size, it names THIS.
+// if the SETTINGS frame ever names a size, it names this.
 inline constexpr uint32_t kH2DecTableSize = 4096;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
 
@@ -138,7 +138,7 @@ inline uint16_t h2_u16(const unsigned char* p) {
 
 // One HPACK block under construction: the encoder whose dynamic table it
 // moves, the cursor the next field lands at, and the end it may not pass.
-// The cursor is a REFERENCE - encoding a field advances it, and what the
+// The cursor is a reference - encoding a field advances it, and what the
 // caller wrote is `at` minus where it started.
 struct H2BlockOut {
   struct lshpack_enc* enc;
@@ -148,7 +148,7 @@ struct H2BlockOut {
 
 // RFC 7541 6.2: one field line to encode. `index` says whether ls-hpack
 // may put it in the dynamic table (6.2.1) or must spell it without one
-// (6.2.2). It matters for any block that is CACHED AND REPLAYED: HPACK is
+// (6.2.2). It matters for any block that is cached and replayed: HPACK is
 // stateful, so replaying an insert makes the peer insert - and evict -
 // once per replay, which on a busy connection is one allocation per answer
 // in every client that talks to us. A block we send more than once must
@@ -160,7 +160,7 @@ struct H2Field {
 };
 
 // Lane 2 - one per-request field through ls-hpack's encoder. ls-hpack
-// wants name and value in ONE buffer with the offsets named, so the pair
+// wants name and value in one buffer with the offsets named, so the pair
 // is spelled out here first. Returns false when the field would not fit -
 // the caller then has an error to name, not a truncated block. Shared: the
 // server encodes its response fields with this, the load generator its
@@ -168,8 +168,8 @@ struct H2Field {
 inline bool h2_enc_field(H2BlockOut out, const H2Field& f) {
   const size_t nlen = f.name.size();
   const size_t vlen = f.value.size();
-  // NOTHING is checked here, and that is deliberate: what an app can
-  // shape is checked where it ENTERS the header buffer - http::
+  // Nothing is checked here, and that is deliberate: what an app can
+  // shape is checked where it enters the header buffer - http::
   // field_name_ok / field_value_ok, at response.cpp's Headers#[]= and at
   // resource.cpp's `field`. By the time a line reaches this encoder it
   // has already passed that gate, so a second check would guard against

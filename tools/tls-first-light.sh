@@ -25,7 +25,7 @@ ok()  { printf '   %-56s %s\n' "$2" "$1"; [ "$1" = ok ] || fails=$((fails + 1));
 [ -x "$bin" ]  || { echo "no debug binary at $bin - rake compile first"; exit 1; }
 [ -x "$mrbc" ] || { echo "no mrbc at $mrbc - rake compile first"; exit 1; }
 
-# The tls module is NOT checked here on purpose. setsockopt(TCP_ULP,
+# The tls module is not checked here on purpose. setsockopt(TCP_ULP,
 # "tls") makes the kernel autoload it, and the server does exactly that
 # at startup - so a check here would refuse a machine the server can
 # serve on. The kernel drops the module again when nothing is using it,
@@ -80,7 +80,7 @@ grep -q ', tls' "$work/err.log" && ok ok "it says the listener is tls" \
 sed -n 's/^webmachine: \(listener 0 offers.*\)$/   \1/p' "$work/err.log"
 
 say "3. does the handshake finish, and on which suite?"
-# A request rather than Q, and -ign_eof, so this connection does NOT hang
+# A request rather than Q, and -ign_eof, so this connection does not hang
 # up the moment the handshake finishes: a peer leaving right then is a
 # race the server can only lose, and it was this script provoking it and
 # then reporting it as the server's fault.
@@ -94,7 +94,7 @@ suite=$(echo "$hs" | sed -n 's/^.*Cipher is \(TLS_[A-Z0-9_]*\).*$/\1/p' | head -
 echo "$hs" | grep -q 'ALPN protocol: h2' \
   && ok ok "ALPN settled on h2" || ok FAILED "ALPN did not settle on h2"
 
-say "4. does ONE plain request come back, in HTTP/1.1?"
+say "4. does one plain request come back, in HTTP/1.1?"
 # Before h2, because h2 failing tells you nothing about which half broke:
 # this is the smallest thing the kernel's record layer has to carry.
 raw=$(printf 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
@@ -123,7 +123,7 @@ many=$(curl -sS --http2 --cacert "$work/cert.pem" --resolve "localhost:$port:127
   && ok ok "four requests, one connection" || ok FAILED "got: $many"
 
 # The one question a failure above cannot answer by itself: were those
-# bytes wrong, or were they the wrong PROTOCOL? An h2 client that is
+# bytes wrong, or were they the wrong protocol? An h2 client that is
 # answered in HTTP/1.1 reports a framing error and shows nothing.
 if [ $fails -ne 0 ]; then
   say "what the server actually sent, after ALPN chose h2"

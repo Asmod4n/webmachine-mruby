@@ -48,7 +48,7 @@ The rules that matter most:
   are shouting. An acronym (RFC, HTTP) and the name of a constant are
   not emphasis.
 
-A NAME follows the same rule, and it is the rule that is broken most
+A name follows the same rule, and it is the rule that is broken most
 often. A function is named for what it does. A file is named for what
 is in it. A reader who has never seen this tree must know from the name
 alone. `more` was a name that said nothing, and it is now
@@ -73,7 +73,7 @@ commit, and the sections under them carry the reasoning:
   of machine code each and one h1 request walks two of them, against a
   32 KiB L1i.
 - `#mruby-raises` - mruby here is built with `MRB_USE_CXX_EXCEPTION`,
-  always. A raise IS a C++ throw, destructors run, and a failure is
+  always. A raise is a C++ throw, destructors run, and a failure is
   raised rather than reported through `char* err` and `return false`.
 - `#decide-then-do` - compute the round as a value, perform it in one
   place.
@@ -83,7 +83,7 @@ many, which is itself one of them.
 
 ## What is only true of the build
 
-One `.cpp` anywhere makes mruby compile the WHOLE tree with the C++
+One `.cpp` anywhere makes mruby compile the whole tree with the C++
 compiler. There is one in this gem, so every `.c` here is C++ too, and
 `MRB_USE_CXX_EXCEPTION` follows from that rather than from a choice
 made per file.
@@ -125,7 +125,7 @@ Use a language server. clangd as an MCP server is the best form,
 because it answers inside the session; the command line is the fallback
 when no such server is attached.
 
-READ THE DIFF EITHER WAY. These tools are beta, and they say so. Here,
+Read the diff either way. These tools are beta, and they say so. Here,
 `clang-refactor local-rename` of one struct rewrote an unrelated line
 of the flow table: `to(Node::kG9)` became `ComputeJobAsk:kG9)`. The
 compiler would have caught that one, but a rename that stays

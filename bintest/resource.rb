@@ -116,10 +116,10 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
   end
 end
 
-# NOTE (#201, fixed): these are the answers of BOTH tiers. They used to be
+# Note (#201, fixed): these are the answers of both tiers. They used to be
 # the engine's alone - the konst tier answered 200 to a POST with no
 # process_post and to a PUT with no content_types_accepted, because n11 and
-# o14/p3 are ACTION nodes and a fold performs no action. A resource that
+# o14/p3 are action nodes and a fold performs no action. A resource that
 # allows POST or PUT with not one callback defined now runs, so the engine
 # gives the only answer either of them has.
 assert('resource: allowed_methods widens and the flow obeys, Allow speaks the list') do
@@ -612,7 +612,7 @@ assert('resource: a main that registers no application is refused by name (#116)
   assert_true out.include?('registered no application'), out
 end
 
-assert('resource: a class NOT on a route never answers - the route is the door') do
+assert('resource: a class not on a route never answers - the route is the door') do
   src = <<~RUBY
     class Served < Webmachine::Resource
       def self.to_html
@@ -734,7 +734,7 @@ assert('run frame: RSS stays flat across 8000 runtime requests') do
   end
 end
 
-assert('resource: the instance is the REQUEST\'s - ivars never cross, always carry') do
+assert('resource: the instance is the request\'s - ivars never cross, always carry') do
   src = <<~RUBY
     class Scope < Webmachine::Resource
       def resource_exists?
@@ -759,9 +759,9 @@ assert('resource: the instance is the REQUEST\'s - ivars never cross, always car
   end
 end
 
-# RFC 9110 8.3 / 12.5.1: an INSTANCE-level content_types_provided is a value
+# RFC 9110 8.3 / 12.5.1: an instance-level content_types_provided is a value
 # the fold cannot know, so the prebuilt head cannot carry its Content-Type
-# and the run has to spell its own head. With ONE pair and no Accept there
+# and the run has to spell its own head. With one pair and no Accept there
 # is no Vary and no other field line either, so the run's field buffer stays
 # empty - which makes this the only case where the negotiated type is the
 # whole reason the head goes dynamic. Nothing pinned it before, and dropping
@@ -831,7 +831,7 @@ assert('resource: the conditional example spells its caching fields, then answer
   end
 end
 
-# cb.rb: a value callback written as `def self.x` answers on the CLASS. The
+# cb.rb: a value callback written as `def self.x` answers on the class. The
 # fold resolves it there and the run enters it directly - it used to be the
 # one dispatch that searched for its method again on every request. Nothing
 # covered that path: allowed_methods and the boolean nodes fold to konst
@@ -887,7 +887,7 @@ end
 
 # RFC 9110 5.1 / 5.5: no app string becomes a field line unchecked. Every
 # byte an app can put into an answer's head passes http::field_name_ok /
-# field_value_ok, and this asks for that AT THE WIRE - a spliced field
+# field_value_ok, and this asks for that at the wire - a spliced field
 # would show up as a second status line's worth of head, or as a header
 # the resource never named.
 assert('a resource cannot splice a field into its own answer') do
@@ -942,7 +942,7 @@ assert('response.headers[]= refuses a name that is not a token, and a value with
 end
 
 assert('resource: an Accept that names no offered type is 406 on both tiers') do
-  # RFC 9110 12.5.1 / 15.5.7, and #201: c4 is the CLIENT's question. The
+  # RFC 9110 12.5.1 / 15.5.7, and #201: c4 is the client's question. The
   # konst tier bakes one media type and used to answer 200 to any Accept at
   # all - a resource that offers text/html handed HTML to a client that
   # asked for image/png. Both spellings of the same resource are pinned here
@@ -994,7 +994,7 @@ end
 assert('resource: a class-form resource with two types negotiates like an instance one') do
   # #201: `def self.content_types_provided` defines no callback, so the fold
   # used to leave the resource konst - and the konst tier knows only the
-  # FIRST type. A client asking for the second got the first one's bytes
+  # first type. A client asking for the second got the first one's bytes
   # under the first one's Content-Type.
   src = <<~RUBY
     class ClassConneg < Webmachine::Resource
@@ -1150,7 +1150,7 @@ assert('response: what one callback keeps, another one reads (#30)') do
   end
 end
 
-# Two requests on ONE connection: what the first kept is gone.
+# Two requests on one connection: what the first kept is gone.
 assert('response: the scratch is one run long (#30)') do
   src = <<~RUBY_SRC
     class KeptTwice < Webmachine::Resource

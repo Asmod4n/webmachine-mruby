@@ -1,7 +1,7 @@
 require 'socket'
 require 'tempfile'
 
-# #30: the watcher against a REAL foreign descriptor.
+# #30: the watcher against a real foreign descriptor.
 #
 # libpq is the case the design was written against. It says what to wait
 # for and it changes its mind in the middle of one wait: the handshake
@@ -70,7 +70,7 @@ assert('watcher: libpq drives a stopped run, and changes what it waits for mid-w
 
       def self.is_authorized?(_header)
         conn = Pq.connect_start(#{WPQ_URL.inspect})
-        # The loop libpq documents asks FIRST and waits second. A watcher
+        # The loop libpq documents asks first and waits second. A watcher
         # waits first, so the first answer is taken here and it decides
         # what the watcher starts out waiting for.
         first = conn.connect_poll
@@ -115,7 +115,7 @@ assert('watcher: libpq drives a stopped run, and changes what it waits for mid-w
                 rows = res.to_ary
               end
               w.abort
-              # RFC 9110 11.6.1: a String from is_authorized? IS the
+              # RFC 9110 11.6.1: a String from is_authorized? is the
               # challenge, so the row reaches the wire in a header. That
               # is what makes this test read the value the run answered.
               "rows=\#{rows.inspect} states=\#{seen.join(',')}"

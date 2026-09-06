@@ -371,7 +371,7 @@ if `curl --version 2>/dev/null`.include?('HTTP2')
   end
 end
 
-assert('h2: the router is the SAME table - each route keeps its own body, a miss is 404') do
+assert('h2: the router is the same table - each route keeps its own body, a miss is 404') do
   src = <<~RUBY
     class Alpha < Webmachine::Resource
       def self.to_html
@@ -607,7 +607,7 @@ assert('h2: a header block split across CONTINUATION answers, split at any byte'
   end
 end
 
-assert('h2: a block split across TWO CONTINUATION frames answers') do
+assert('h2: a block split across two CONTINUATION frames answers') do
   h2_server do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
@@ -700,7 +700,7 @@ assert('h2: request.headers answers on an immediate request (RFC 9113 8.3)') do
   end
 end
 
-assert('h2: a PARKED request keeps its fields - headers and body both answer') do
+assert('h2: a parked request keeps its fields - headers and body both answer') do
   h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
@@ -764,7 +764,7 @@ assert('h2: a parked request negotiates on the Accept it actually sent') do
 end
 
 # RFC 7541 2.3.3: a dynamic-table insert shifts the index of every older
-# entry by one. The head cache freezes an INDEX for content-type and
+# entry by one. The head cache freezes an index for content-type and
 # replays it for the rest of the second, so anything that inserts in
 # between moves what that index points at - and the dynamic path inserts
 # freely, for its own date and for every field line an app sets.
@@ -815,11 +815,11 @@ assert('h2: an insert between two cache hits does not move what the head points 
       # index shows up as a different byte string here, and as a
       # different header at any real client.
       # RFC 7541 6.2.1: 0x5f is "literal with incremental indexing, name
-      # index 31" - content-type being INSERTED. The value beside it is
+      # index 31" - content-type being inserted. The value beside it is
       # Huffman-coded, so this is checked by shape and not by looking for
       # "text/html" in the bytes.
       assert_true seen[0].bytes.include?(0x5f),
-                  "the first konst head must INSERT content-type: #{seen[0].inspect}"
+                  "the first konst head must insert content-type: #{seen[0].inspect}"
       assert_false seen[2].bytes.include?(0x5f),
                    "the later ones must reference it, not insert again: #{seen[2].inspect}"
       assert_equal seen[2], seen[3],
@@ -832,7 +832,7 @@ assert('h2: an insert between two cache hits does not move what the head points 
 end
 
 # #210 response.error_asset over h2: the entry is parked as Src::kAsset -
-# the SAME source the asset tier parks a mounted file under - so its octets
+# the same source the asset tier parks a mounted file under - so its octets
 # are framed out of the mapping by h2_flush_pending, against the window,
 # and never copied into an answer buffer.
 H2_EASSET_APP = <<~RUBY unless defined?(H2_EASSET_APP)
@@ -897,7 +897,7 @@ assert('h2: response.error_asset parks in the mapping and the window drips it ou
   h2_error_assets_server(pack) do |sock|
     UNIXSocket.open(sock) do |s|
       # SETTINGS_INITIAL_WINDOW_SIZE = 1000: the picture cannot leave in one
-      # round, so it HAS to survive parking - which is the whole claim.
+      # round, so it has to survive parking - which is the whole claim.
       h2_handshake(s, [4, 1000].pack('nN'))
       s.write(h2_frame(1, 0x05, 1, h2_path_block('/teapot') + h2_lit('accept', 'image/jpeg')))
       t, f, = h2_until(s, 1)
@@ -1030,7 +1030,7 @@ assert('h2: an event stream is HEADERS without END_STREAM, then DATA (#30)') do
       assert_equal 1, type, 'HEADERS first'
       assert_equal 1, stream
       assert_true (flags & 0x04) != 0, 'END_HEADERS missing'
-      assert_true (flags & 0x01) == 0, 'END_STREAM must NOT be set on a live stream'
+      assert_true (flags & 0x01) == 0, 'END_STREAM must not be set on a live stream'
       # The ticks arrive as DATA on the same stream, one per second.
       seen = ''.b
       3.times do

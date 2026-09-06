@@ -21,11 +21,11 @@
 #include <vector>
 
 
-// mrb_exc_backtrace and mrb_proc_arity live in mruby's INTERNAL header,
+// mrb_exc_backtrace and mrb_proc_arity live in mruby's internal header,
 // which a gem may use - a gem is compiled together with mruby, so there
 // is no ABI boundary here of the kind an outside consumer would face.
 //
-// What a gem may NOT do is copy the declarations out. A hand-written
+// What a gem may not do is copy the declarations out. A hand-written
 // `extern "C" mrb_int mrb_proc_arity(const struct RProc*)` is a private
 // second opinion about a signature nobody promised to keep: mruby is
 // cloned fresh from master by the Rakefile, and if one of these changes
@@ -78,7 +78,7 @@ struct On {
 };
 
 // Which (class, name) pairs were registered as C++ callbacks. Consulted
-// at FOLD time only - the answer is copied into the slot, so a request
+// at fold time only - the answer is copied into the slot, so a request
 // never looks anything up. A vector because an app has a handful of
 // these and a hash would cost more to build than it ever saves.
 struct NativeEntry {
@@ -138,7 +138,7 @@ bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
   return resolve(mrb, mrb_class_ptr(klass), sym).defined;
 }
 
-// mruby: how many arguments the method DECLARED, capped at what its node offers.
+// mruby: how many arguments the method declared, capped at what its node offers.
 uint8_t argc_of(mrb_method_t m, uint8_t most) {
   int a = most;
   if (!MRB_METHOD_FUNC_P(m)) {
@@ -206,7 +206,7 @@ mrb_value setup_call_body(mrb_state* mrb, void* ud) {
   return r;
 }
 
-// mruby: invoke a resolved method at SETUP time; a raise stays pending.
+// mruby: invoke a resolved method at setup time; a raise stays pending.
 struct NativeCall {
   NativeCb fn;
   mrb_value self;
@@ -222,7 +222,7 @@ mrb_value native_call_body(mrb_state* mrb, void* ud) {
   return c->fn(mrb, c->self, c->argc, c->argv);
 }
 
-// mruby: mrb_protect_error hands back WHATEVER was pending (vm.c: it
+// mruby: mrb_protect_error hands back whatever was pending (vm.c: it
 // returns mrb_obj_value(mrb->exc) and clears it), and mrb->exc is a
 // struct RObject* - so only an exception object may be stored there.
 // mrb_obj_ptr on anything else reads a Fixnum's bits as a pointer, and
@@ -292,7 +292,7 @@ void ask(const Folding& f, Asked a, bool defv, bool* out) {
   *out = mrb_test(v);
 }
 
-// #202: a `def self.x` is asked HERE, once, and its answer is kept for the
+// #202: a `def self.x` is asked here, once, and its answer is kept for the
 // life of the process - that is the whole reason the class form exists.
 // The class is frozen right after, so the answer cannot go stale.
 // `spell` turns a String answer into an ETag (RFC 9110 8.8.3); without it
@@ -458,9 +458,9 @@ const NamedSym kKonstOnly[] = {
 };
 
 // The mirror of kKonstOnly. `def self.x` means, everywhere in this tree,
-// "asked ONCE while the app is being set up, and the answer is frozen with
-// the class". That is right for a QUESTION and wrong for these four: they
-// do WORK, and work asked once at setup is work that never happens again -
+// "asked once while the app is being set up, and the answer is frozen with
+// the class". That is right for a question and wrong for these four: they
+// do work, and work asked once at setup is work that never happens again -
 // a class-level process_post would handle exactly zero POSTs, silently.
 // So the fold refuses them by name instead of folding them.
 const NamedSym kWorkOnly[] = {
@@ -508,7 +508,7 @@ std::string_view media_params(std::string_view value) {
 }
 
 // RFC 9110 5.6.6: one parameter taken off the front of a list, and the
-// list that is left. A parameter with no '=' has an EMPTY value, which is
+// list that is left. A parameter with no '=' has an empty value, which is
 // not the same as one that is not there; a nameless one is a stray ';'.
 struct NextParam {
   http::Field param;
@@ -537,7 +537,7 @@ bool headers_has_location(const std::string& h) {
   return false;
 }
 
-// RFC 9110: THE runtime tier - webmachine-ruby's value semantics for the
+// RFC 9110: the runtime tier - webmachine-ruby's value semantics for the
 // whole flow (flow.rb + helpers.rb, 1:1) inside one VM frame.
 // RFC 9110: one request's walk through the flow. Entered as a C++ call
 // from resource_run - a Ruby frame around it would cost a method lookup
@@ -548,7 +548,7 @@ struct RescueCtx {
 };
 
 // fsm.rb: the raise path - finish_request, inside its own guarded frame.
-// handle_exception is NOT here: it lives on Webmachine::ErrorResource and
+// handle_exception is not here: it lives on Webmachine::ErrorResource and
 // nowhere else (#210), because what an exception says on the wire is one
 // decision for the server rather than a per-route one. A resource that
 // defines its own is ignored.
@@ -585,7 +585,7 @@ struct Run {
   bool ct_dyn;
 };
 
-// flow.rb decision_test: ANY callback may halt with an Integer status.
+// flow.rb decision_test: any callback may halt with an Integer status.
 uint16_t halt_of(Run& r, mrb_value v, mrb_sym sym) {
   mrb_state* mrb = r.mrb;
   const mrb_int code = mrb_integer(v);
@@ -631,7 +631,7 @@ const std::vector<Resource::TypedHandler>& active_ct(Run& r) {
 
 // RFC 9110 5.6.2 / 5.5: the gate for everything an app puts into the head -
 // an ETag, a Location, a WWW-Authenticate, a Vary member, and with
-// options() the field NAME too. Here because here is the only place that
+// options() the field name too. Here because here is the only place that
 // spells a field; a raise inside the run frame is a 500, which is the
 // honest answer to a resource that made an unspellable one.
 void field(Run& r, http::Field f) {
@@ -831,7 +831,7 @@ mrb_value nodecall(Run& r, Node nd, Args args) {
 //     back and the memo is cleared, so the node cannot read it twice;
 //   - the node is declared `compute` and this run may park - the walk's place is
 //     written down, the argument is kept for the reactor, and the walk
-//     RETURNS. Nothing of a Ruby stack needs saving, because the stop is
+//     returns. Nothing of a Ruby stack needs saving, because the stop is
 //     between callbacks;
 //   - neither - the callback is called here, on this thread, exactly as
 //     it always was. That is every node of every resource that never
@@ -845,7 +845,7 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.answer = mrb_nil_value();
       return true;
     }
-    // A declared node is CALLED like any other, and its class method is
+    // A declared node is called like any other, and its class method is
     // cheap by construction: it only builds the arguments this request
     // has to hand. What it answers must be a Webmachine::ComputeTask
     // - a callback that declared one owes one.
@@ -859,7 +859,7 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
                    res.node_sym[i], v);
       }
       // Nobody can park this run: the caller holds no frame that could
-      // keep a stopped one. So the block runs HERE, on this thread. It
+      // keep a stopped one. So the block runs here, on this thread. It
       // is the same block with the same arguments, and the only thing
       // lost is that the reactor waits for it.
       if (mrb_unlikely(!res.run.can_park)) {
@@ -1039,7 +1039,7 @@ void marshal_ct(Run& r) {
     th.type.assign(RSTRING_PTR(RARRAY_PTR(pair)[0]),
                    static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0])));
     th.handler = mrb_symbol(RARRAY_PTR(pair)[1]);
-    // Resolved HERE, once, not searched for at every render.
+    // Resolved here, once, not searched for at every render.
     const Resolved hr = resolve(mrb, r.res.klass, th.handler);
     th.m = hr.m;
     th.irep = hr.irep;
@@ -1156,7 +1156,7 @@ void value_answer(const Resource& res, uint8_t what, mrb_value v) {
 
 // #30: the round starts here. Every declared value callback is asked
 // for its ComputeTask now, and all of them go to the pool together.
-// The walk stops ONCE, before the node that needed the first answer.
+// The walk stops once, before the node that needed the first answer.
 bool value_round_start(Run& r, Node n, uint16_t status) {
   const Resource& res = r.res;
   res.run.values_started = true;
@@ -1195,7 +1195,7 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
                  "%n is declared `compute` and answered %v - it owes a Webmachine::ComputeTask",
                  w.cb->sym, v);
     }
-    // Nobody can park this run, so the block runs HERE - the same block
+    // Nobody can park this run, so the block runs here - the same block
     // with the same arguments, and only the waiting is lost.
     if (mrb_unlikely(!res.run.can_park)) {
       const mrb_value said = mrb_yield_argv(
@@ -1229,7 +1229,7 @@ bool param_find(Param p, std::string_view& value) {
   return false;
 }
 
-// RFC 9110 12.5.1: a type PATTERN against the type that arrived - */*,
+// RFC 9110 12.5.1: a type pattern against the type that arrived - */*,
 // type/*, or the two tokens themselves. Parameters are not part of this
 // question; params_agree is.
 bool type_matches(std::string_view pattern, std::string_view arrived) {
@@ -1359,7 +1359,7 @@ int run_n11(Run& r) {
 
 mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming);
 
-// mruby: the ONE guarded entry per request. Without a jmpbuf on the
+// mruby: the one guarded entry per request. Without a jmpbuf on the
 // state a raise reaches mrb_exc_raise with mrb->jmp NULL, which prints
 // and calls abort() - so the frame is not optional. mrb_protect_error
 // buys it for a C function pointer, with no method lookup and no
@@ -1370,13 +1370,13 @@ mrb_value run_engine_body(mrb_state* mrb, void* ud) {
 
 // #80: the same walk, re-entered where it stopped. The instance is
 // still here and initialize has already run, so both are skipped - a
-// resumed run is the SAME run, not a second one.
+// resumed run is the same run, not a second one.
 mrb_value run_resume_body(mrb_state* mrb, void* ud) {
   return run_engine(mrb, *static_cast<const Resource*>(ud), true);
 }
 
 mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
-  // #181: the resource instance belongs to ONE request. Allocate it and
+  // #181: the resource instance belongs to one request. Allocate it and
   // nothing else - mrb_obj_new would search for initialize twice per
   // request (mrb_func_basic_p, then mrb_funcall_argv) to arrive where the
   // fold already stands. The call itself, when one is owed, is below,
@@ -1424,9 +1424,9 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
 
   // flow.rb: one node's callback out of the node tables, either receiver.
 
-  // flow.rb decision_test: ANY callback may halt with an Integer status.
+  // flow.rb decision_test: any callback may halt with an Integer status.
 
-  // RFC 9110: what ONE node's callback is handed. webmachine-ruby's
+  // RFC 9110: what one node's callback is handed. webmachine-ruby's
   // signatures decide this, and a method that declared the parameter must
   // not be called with nothing; one that declared none gets nothing.
 
@@ -1438,7 +1438,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // flow.rb b10/b12: include?(request.method) over the marshalled list.
 
   // RFC 9112 5: field-line = field-name ":" OWS field-value OWS CRLF. A
-  // node decides WHICH field it produces; this is the only place that
+  // node decides which field it produces; this is the only place that
   // knows how one is spelled, so no node below spells its own.
 
   // RFC 9110 5.6.1: a field whose value is a #rule - a comma-separated
@@ -1470,7 +1470,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // 303 answer needs a Location the run already set.
 
   // #80: where the walk starts. A fresh run starts at the top; a resumed
-  // one starts at the node it stopped BEFORE, and node_answer hands that
+  // one starts at the node it stopped before, and node_answer hands that
   // node the worker's answer instead of calling its callback.
   Node n = Node::kB13;
   uint16_t status = 0;
@@ -1859,8 +1859,8 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       if (!node_answer(r, n, {&a, static_cast<size_t>(res.node_argc[i])}, status, &v)) {
         return mrb_nil_value();
       }
-      // ANY callback may answer with an Integer, and then that integer
-      // IS the response status - webmachine-ruby's own convention.
+      // Any callback may answer with an Integer, and then that integer
+      // is the response status - webmachine-ruby's own convention.
       if (mrb_unlikely(mrb_integer_p(v))) {
         status = halt_of(r, v, res.node_sym[i]);
         halted = true;
@@ -1874,7 +1874,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   }
 
   // fsm.rb respond: a 304 sheds Content-Type at the writer and carries the
-  // caching headers; finish_request runs LAST and may rename the status
+  // caching headers; finish_request runs last and may rename the status
   // through response.code=.
   if (status == 304) {
     const int h = add_caching(r);
@@ -2009,7 +2009,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   // `dynamic`, so a run reads both in one load and knows before its
   // first VM entry whether this node can stop.
   //
-  // A NATIVE callback is not refused. It is a function pointer, and both
+  // A native callback is not refused. It is a function pointer, and both
   // VMs are the same process, so it is the same number on either side.
   // Nothing is dumped or loaded; only the arguments and the answer
   // cross, as CBOR. That is the cheaper crossing, not the impossible
@@ -2020,7 +2020,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     for (mrb_int i = 0; i < n; i++) {
       const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
       const size_t at = node_of_callback(want);
-      // #30: a VALUE callback. generate_etag, last_modified and expires
+      // #30: a value callback. generate_etag, last_modified and expires
       // choose no edge - the flow only reads what they answer - so a
       // round starts all of them at the same time and stops once. They
       // are named here like a node, and they are not one.
@@ -2058,7 +2058,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
         out.value_jobs |= static_cast<uint8_t>(1u << what);
         continue;
       }
-      // A declared callback answers on the CLASS. The block it hands
+      // A declared callback answers on the class. The block it hands
       // over carries no environment - a dumped proc cannot - so it
       // needs nothing of an instance, and an instance form would only
       // promise state the worker can never see.
@@ -2088,7 +2088,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     for (mrb_int i = 0; i < n; i++) {
       const mrb_sym want = mrb_symbol(RARRAY_PTR(list)[i]);
       const size_t at = node_of_callback(want);
-      // #30: a VALUE a watcher answers. The same three the flow only
+      // #30: a value a watcher answers. The same three the flow only
       // reads - they choose no edge - so they wait together.
       if (at == flow::kNodeCount) {
         uint8_t what = 0;
@@ -2232,7 +2232,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
           th.irep = hr.irep;
           th.native = hr.native;
         }
-        // cb.rb: the class form is answered once, here - for EVERY pair, not
+        // cb.rb: the class form is answered once, here - for every pair, not
         // just the first. Asked per request it would be looked up on the
         // instance, where the name may belong to somebody else entirely.
         const Resolved hk = resolve(mrb, mrb_class(mrb, klass), th.handler);
@@ -2294,7 +2294,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
   out.konst.content_type = out.content_types_provided[0].type;
-  // RFC 9110 12.5.1: the fold bakes ONE body, from content_types_provided[0].
+  // RFC 9110 12.5.1: the fold bakes one body, from content_types_provided[0].
   // A resource offering a second type can be asked for it, and the answer to
   // that is a body the fold never rendered - so it runs.
   if (out.content_types_provided.size() > 1) {
@@ -2357,7 +2357,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
 // RFC 9110: decision + render for one request inside one bound frame; the
 // respond order is fsm.rb's - halt seeds the code, finish_request may rename
 // it, and a raise leaves the exception pending for the error resource.
-// #80: what BOTH entries do once the guarded walk has returned - the
+// #80: what both entries do once the guarded walk has returned - the
 // first one and every resumption after it. It was the tail of
 // resource_run, and a second caller is exactly the reason it is a
 // function now rather than a block of lines copied twice.
@@ -2398,7 +2398,7 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
   // caller takes that struct with it - so nothing here is cleared and
   // the instance is not let go.
   //
-  // It IS rooted, though: while the run is parked nothing on the VM's
+  // It is rooted, though: while the run is parked nothing on the VM's
   // stack names the instance or the argument, and a GC between now and
   // the answer would collect both. The register is paired with the
   // unregister in resource_resume, once per park.
@@ -2408,7 +2408,7 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
       mrb_gc_register(mrb, res.run.compute_task[i].block);
       mrb_gc_register(mrb, res.run.compute_task[i].args);
     }
-    // The two bindings are the PROCESS's "which request is speaking".
+    // The two bindings are the process's "which request is speaking".
     // The reactor answers other connections while this one waits, so
     // they go now and come back in resource_resume.
     request_bind(nullptr);
@@ -2438,7 +2438,7 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
 // before it does anything else with the connection.
 bool run_stopped(const Resource& res) { return res.run.stopped; }
 
-// #80: the walk, re-entered. `answer` is what the worker said, in THIS
+// #80: the walk, re-entered. `answer` is what the worker said, in this
 // VM's values - the crossing back happened before this is called. It
 // stands in for the declared node's callback, and the graph carries on
 // from that node.
@@ -2575,7 +2575,7 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   return run_settle(res, out, {thrown, raised});
 }
 
-// The lend window OPENS here for the caller: the run is over, so the value
+// The lend window opens here for the caller: the run is over, so the value
 // has to leave the Resource - the next request through it resets the slot.
 bool resource_body_lent(const Resource& res, LentBody& out) {
   if (!res.run.zc_have) return false;
@@ -2595,14 +2595,14 @@ bool resource_file_wanted(const Resource& res, WantedFile& out) {
   return true;
 }
 
-// And it CLOSES here: unrooted so the GC may take it, and the freeze lifted
+// And it closes here: unrooted so the GC may take it, and the freeze lifted
 // - it was ours for the in-flight window, and Ruby has no #unfreeze.
 void resource_body_unlend(mrb_state* mrb, mrb_value v) {
   mrb_gc_unregister(mrb, v);
   mrb_basic_ptr(v)->frozen = 0;
 }
 
-// RFC 9110 15.6.1: the pending exception ITSELF, for the error resource's
+// RFC 9110 15.6.1: the pending exception itself, for the error resource's
 // handle_exception (#210) - what an exception says is one decision for
 // the server, made in Ruby, not a message some resource already made.
 // Rooted in the arena on the way out: clearing mrb->exc unroots it, and
@@ -2657,7 +2657,7 @@ void define_native(mrb_state* mrb, struct RClass* c, Native n) {
 
 
 // #80: `compute :is_authorized` - the resource naming the callbacks a
-// worker answers. It only WRITES the names here; the fold reads them,
+// worker answers. It only writes the names here; the fold reads them,
 // because only the fold knows whether the name is a flow node and
 // whether the author defined it on the instance. Refusing here would
 // mean resolving the method before the class is finished, and a
@@ -2687,7 +2687,7 @@ mrb_value resource_compute(mrb_state* mrb, mrb_value self) {
 }
 
 // #30: `watch :is_authorized?` - the resource naming the callbacks that
-// answer with a Webmachine::Watcher. It only WRITES the names here; the
+// answer with a Webmachine::Watcher. It only writes the names here; the
 // fold reads them, for the same reason `compute` does: refusing here
 // would mean resolving the method before the class is finished.
 mrb_value resource_watch(mrb_state* mrb, mrb_value self) {
@@ -2711,8 +2711,8 @@ mrb_value resource_watch(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-// #181: a resource instance belongs to ONE request and the server makes it.
-// Ruby may not - a route names the CLASS, and C++ allocates from it with
+// #181: a resource instance belongs to one request and the server makes it.
+// Ruby may not - a route names the class, and C++ allocates from it with
 // mrb_obj_alloc. Without this, Resource.new would fail on the undef'd
 // initialize with "undefined method", which says nothing about why.
 mrb_value resource_new_refused(mrb_state* mrb, mrb_value self) {
@@ -2730,7 +2730,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
       mrb_define_class_under_id(mrb, wm, MRB_SYM(Error), mrb->eStandardError_class);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(ConfigError), err);
   mrb_define_class_under_id(mrb, wm, MRB_SYM(RouteError), err);
-  // mruby: EVERY object carries initialize on the instance, inherited from
+  // mruby: every object carries initialize on the instance, inherited from
   // Object, unless it is undef'd - so "does this resource define one" could
   // never be asked, only "does it differ from Object's". Undef it here and
   // the question becomes the honest one: an initialize on a resource exists

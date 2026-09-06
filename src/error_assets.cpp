@@ -152,7 +152,7 @@ std::string error_assets_path(const char* configured) {
 }
 
 // RFC 9110 15: what this status is called, from the same list the error assets is
-// built from - reason() covers what the status LINE needs, which is not
+// built from - reason() covers what the status line needs, which is not
 // the same set.
 const char* status_title(uint16_t status) {
   const Face* f = face_for(status);
@@ -284,7 +284,7 @@ void ErrorPages::open(mrb_state* mrb, Assets* assets, Logger* elog) {
 // has to be weighed with its q-values instead.
 int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const {
   if (have_.empty()) return -1;
-  // A form the error assets cannot answer for THIS status is not on offer for
+  // A form the error assets cannot answer for this status is not on offer for
   // it: the picture exists per status, not per server.
   const bool have_cat = status >= kFirstError && status < kPastLastError &&
                         cat_index_[status - kFirstError] > 0;
@@ -310,20 +310,20 @@ int ErrorPages::media_for(uint16_t status, const char* accept, size_t len) const
   if (at < 0) return plain_;
   const int pick = slot[static_cast<size_t>(at)];
   // RFC 9110 12.5.1 leaves the tie to the server, and a tie is what a
-  // wildcard makes of every form we have. A client that NAMED types and
+  // wildcard makes of every form we have. A client that named types and
   // named none of ours has an opinion, and the honest reading of "*/*;
   // q=0.5" behind it is "anything, at half preference" - not "your
   // styled page". A browser fetching an image sends exactly that, and a
   // 1.6 KB page it cannot render is bytes it throws away.
   //
-  // So: named nothing of ours, but named SOMETHING - the cheapest form.
+  // So: named nothing of ours, but named something - the cheapest form.
   // Named one of ours, or named nothing at all (curl's bare */*), the
   // negotiation above stands.
   if (named_ours(accept, len) || !names_anything(accept, len)) return pick;
   return plain_;
 }
 
-// The picture IS the answer: the error assets's bytes, lent where they lie.
+// The picture is the answer: the error assets's bytes, lent where they lie.
 const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const {
   if (slot < 0 || static_cast<size_t>(slot) >= have_.size()) return nullptr;
   if (!have_[static_cast<size_t>(slot)].from_pack) return nullptr;

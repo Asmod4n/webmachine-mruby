@@ -1,6 +1,6 @@
 # The app half of the C++ resource example (#207).
 #
-# CppKonst and CppRun are NOT defined here - they come from C++, out of
+# CppKonst and CppRun are not defined here - they come from C++, out of
 # tools/webmachine-example/main.cpp, and are ordinary mruby classes by
 # the time this file runs. RbKonst and RbRun are their twins, written
 # the usual way, declaring exactly the same things.

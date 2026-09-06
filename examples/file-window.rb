@@ -1,4 +1,4 @@
-# response.file over the WINDOW path: statx, then read into a 256 KiB
+# response.file over the window path: statx, then read into a 256 KiB
 # buffer that is lent to one send, window by window. Pair it with
 # file-mapped.rb, which serves the same bytes out of a mapping, and the
 # difference between the two log lines is what the second copy costs.
@@ -6,7 +6,7 @@
 #   THREADS=3 CONNS=16 APP=examples/file-mapped.rb bench/floor.sh
 #   THREADS=3 CONNS=16 APP=examples/file-window.rb bench/floor.sh
 #
-# Start LOW on CONNS: every request moves 4 MiB, so this arm goes
+# Start low on CONNS: every request moves 4 MiB, so this arm goes
 # bandwidth-bound long before hello.rb does, and floor.sh refuses a
 # client-bound run rather than recording it. Raise CONNS until the
 # server owns its core.

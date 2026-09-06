@@ -138,7 +138,7 @@ void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out) {
   if (!ok) {
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                "route.sse: %v does not inherit Webmachine::SseResource - an event stream is "
-               "NOT a Webmachine::Resource: no status to negotiate, no representation to "
+               "not a Webmachine::Resource: no status to negotiate, no representation to "
                "compare, no end to declare",
                klass);
   }
@@ -150,7 +150,7 @@ void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out) {
     if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_tick)))) {
       mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
                 "route.sse: the resource defines no on_tick - that is the one method an SSE "
-                "resource IS, asked once a second for what it has to say");
+                "resource is, asked once a second for what it has to say");
     }
   }
   {
@@ -177,7 +177,7 @@ void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out) {
   mrb_obj_freeze(mrb, klass);
 }
 
-// WHATWG HTML: build THIS stream's resource; its initialize is the open hook.
+// WHATWG HTML: build this stream's resource; its initialize is the open hook.
 SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
   uint16_t& status = code;
   status = 0;
@@ -214,7 +214,7 @@ SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
 // WHATWG HTML: one second has passed - ask the resource, and hand back
 // what it said as the event-stream bytes themselves.
 //
-// The framing is NOT here, because the two protocols frame it
+// The framing is not here, because the two protocols frame it
 // differently: h1 wraps each tick in a chunk (RFC 9112 7.1) and h2 puts
 // the same bytes in DATA frames against the stream window (RFC 9113
 // 6.1). What the resource said is the same either way.

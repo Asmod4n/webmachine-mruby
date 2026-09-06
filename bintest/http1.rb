@@ -81,7 +81,7 @@ def h1_expect_eof(s)
   end
 end
 
-assert('h1: 200 with Date, keep-alive carries NO Connection header') do
+assert('h1: 200 with Date, keep-alive carries no Connection header') do
   h1_server do |sock, _|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")

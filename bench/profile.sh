@@ -1,29 +1,29 @@
 #!/bin/bash
 # Two questions, two modes - and they are not interchangeable.
 #
-# DIFF (default): where does the h2-vs-h1 gap go? Records ONE matched
+# Diff mode (default): where does the h2-vs-h1 gap go? Records one matched
 # pair - the h1 anchor and h2 -m1, same duration, same pinning, same
 # run - and diffs them, so the delta is read off relative sample share
 # per symbol instead of guessed at from req/s.
 #
-# LOAD (MULTI=32): where does h2 spend its time under load? Records
+# Load mode (MULTI=32): where does h2 spend its time under load? Records
 # the h2 leg alone at that multiplexing depth and reports it. There is
 # no h1 anchor here - h1 has no multiplexing to answer with.
 #
 # Which one to reach for, learned the hard way on forgecore: at -m1 a
 # connection sits idle for a whole round trip between requests, and
 # the kernel's own path (netfilter alone ~5%) evicts its working set
-# meanwhile. So a -m1 profile shows COLD-CACHE cost as much as work -
+# meanwhile. So a -m1 profile shows cold-cache cost as much as work -
 # a 296-byte H2State, whose hot fields already share three cache
-# lines, still took a visible miss per request there. Use DIFF to
-# compare the protocols, LOAD to find work worth removing.
+# lines, still took a visible miss per request there. Use diff mode to
+# compare the protocols, load mode to find work worth removing.
 #
 # Profiles BUILD_DIR=build/debug by default - see the BUILD_DIR knob
 # below for why that binary's samples are trustworthy despite being a
 # test build. Its req/s numbers are still not the ones bench/results/
 # archives (enable_test/enable_bintest add test-only gems the ship
 # build never links, per #176) - trust floor.sh/h2.sh's build/host
-# numbers for throughput, this script's own numbers only for WHERE
+# numbers for throughput, this script's own numbers only for where
 # time goes.
 #
 # Knobs: MULTI (1 = diff mode, >1 = load mode at that depth), DURATION
@@ -31,11 +31,11 @@
 # FREQ (perf -F, default 999), CALLGRAPH (fp|dwarf, default dwarf -
 # works on any binary with debug info; fp needs -fno-omit-frame-pointer,
 # which only WM_PROFILE=1 adds and BUILD_DIR's default, build/debug,
-# does not carry unless that was ALSO set for it),
+# does not carry unless that was also set for it),
 # PROTO (h2 default, or h1 - both drive htgen over a UNIX socket, see
 # below), (load mode's -cN connections
 # split across them; the server is one thread regardless, so this is
-# entirely about whether ONE client thread can generate enough load to
+# entirely about whether one client thread can generate enough load to
 # saturate it - it silently could not at deep multiplexing on forgecore,
 # reading as a server-side cost that was actually client starvation),
 # CONNS (load mode, default 32), PORT, APP (default bench/apps/hello.rb),
@@ -45,11 +45,11 @@
 # own default (cycles, or the software clock it falls back to where no
 # PMU is exposed - any VM); set, `perf record -e $EVENT` runs with the
 # same -F, call graph, -m and -o. branch-misses, L1-dcache-load-misses,
-# LLC-load-misses are MISS maps: the same load re-recorded, attributing
+# LLC-load-misses are miss maps: the same load re-recorded, attributing
 # that event per symbol instead of time - the layer under "why is this
 # function hot" that cycles alone does not carry. The report headers and
 # the flamegraph file name the event, so an event map is neither read as
-# a cycle map nor written over one. In DIFF mode both legs record the
+# a cycle map nor written over one. In diff mode both legs record the
 # same event and the diff still subtracts like for like, but what it
 # then reads off is share of that EVENT, not share of time: a symbol can
 # take more of the branch misses and less of the cycles, and both are
@@ -69,8 +69,8 @@
 # BUILD_DIR=build/host plus WM_PROFILE=1 gives (see the BUILD_DIR knob
 # below).
 #
-# STAT=1 answers a DIFFERENT question than everything above: not WHERE
-# time goes on one binary, but HOW MUCH work one binary does per request
+# STAT=1 answers a different question than everything above: not where
+# time goes on one binary, but how much work one binary does per request
 # against another - the number that tells "real extra work" apart from
 # "cache/layout noise" between two commits, without touching perf report's
 # per-symbol percentages (which are exactly the quantity layout shifts
@@ -87,21 +87,21 @@
 # hand - this script measures one binary per invocation, on purpose,
 # so a build never straddles the numbers it produces.
 #
-# ASSETS profiles the ASSET TIER instead of an app. Give it a byte
+# ASSETS profiles the asset tier instead of an app. Give it a byte
 # count and a one-entry pack of that size is built here and hammered;
 # give it a path to a .zip and it is served as-is, with REQPATH naming
 # the entry. ASSET_CODING (stored|gzip, default stored) picks which
 # shape the built pack has, and they are different code: stored is one
 # span straight out of the mapping, gzip is three segments around it
 # (constant header, the deflate bytes where they lie, the trailer).
-# With ASSETS set and no APP given, NO app is loaded - so the profile
-# is the tier and the reactor and nothing else. Both modes work: DIFF
-# answers "what does h2 pay for the same asset", LOAD answers "where
+# With ASSETS set and no APP given, no app is loaded - so the profile
+# is the tier and the reactor and nothing else. Both modes work: diff mode
+# answers "what does h2 pay for the same asset", load mode answers "where
 # does the tier spend its time".
-# NO PINNING - measured twice, lost twice. The previous tree removed
+# No pinning - measured twice, lost twice. The previous tree removed
 # every taskset it had ("handing the scheduler one core was slower than
-# letting it choose"; widening the CLIENT mask 2 -> 15 -> 30 cpus raised
-# throughput monotonically in the MEDIAN). And io-wq workers inherit the
+# letting it choose"; widening the client mask 2 -> 15 -> 30 cpus raised
+# throughput monotonically in the median). And io-wq workers inherit the
 # issuing thread's affinity, so pinning the server pins the pool that
 # carries splice: a 32 KiB asset measured 0.07x its unspliced twin under
 # `taskset -c 0`. The knobs are gone rather than defaulted off - they
@@ -112,7 +112,7 @@ set -u
 # STREAMS is floor.sh's name for h2 multiplexing depth; here it is MULTI,
 # which also picks the mode (1 = diff, >1 = load). Passing the other name
 # used to be accepted and dropped, so a run asked for at c16 --streams 128
-# quietly measured ONE connection and ONE stream - the number then
+# quietly measured one connection and one stream - the number then
 # described a latency probe while its caller believed it was load.
 [ -z "${STREAMS:-}" ] || {
   echo "STREAMS= is floor.sh's knob. Here it is MULTI= - and MULTI also picks" >&2
@@ -123,7 +123,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 
 # Debian/Ubuntu's /usr/bin/perf is a wrapper that refuses to run
-# unless a linux-tools package matching the EXACT running kernel
+# unless a linux-tools package matching the exact running kernel
 # string is installed - a version-string check, not a real
 # incompatibility (perf's recording ABI tolerates a build/run skew).
 # PERF= overrides; otherwise probe the wrapper for real, then fall
@@ -145,19 +145,19 @@ echo "perf: $PERF ($("$PERF" --version))"
 
 # BUILD_DIR (bintest's own convention, see bintest/responsefile.rb),
 # default build/debug: it carries -g3 unconditionally, which is what
-# perf needs to name a symbol. It is -Og, NOT the ship build's -O3 -
+# perf needs to name a symbol. It is -Og, not the ship build's -O3 -
 # build_config_debug.rb since the four-file split - so its per-symbol
 # shares describe this binary, and instructions/request runs about 15%
 # above what build/host does for the same work (measured). Read it for
-# WHERE time goes, never as the ship build's cost.
+# where time goes, never as the ship build's cost.
 #
 # MRB_DEBUG (enable_debug) only turns mrb_assert into a real assert()
 # and adds one trivial local in mrb_vm_run - no structural change to
 # the VM/GC. BUILD_DIR=build/host profiles the literal shipped binary,
 # but #184 strips -g from it, so its symbols are gone and nothing in
 # the tree adds them back - WM_PROFILE is named in this file only.
-# build/debug does NOT get -fno-omit-frame-pointer unless WM_PROFILE=1
-# was ALSO set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
+# build/debug does not get -fno-omit-frame-pointer unless WM_PROFILE=1
+# was also set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
 # is unconditional either way.
 BUILD_DIR="${BUILD_DIR:-build/debug}"
 BIN="mruby/$BUILD_DIR/bin/webmachine-server"
@@ -177,14 +177,14 @@ fi
 DURATION="${DURATION:-20}"
 FREQ="${FREQ:-999}"
 CALLGRAPH="${CALLGRAPH:-dwarf}"
-# perf maps one ring buffer PER CPU - 129 pages each by default, which
+# perf maps one ring buffer per CPU - 129 pages each by default, which
 # on a 32-thread host is 16 MB. Those pages land in the kernel's
 # per-USER locked_vm, and io_uring's accounting compares that same
 # user-wide counter against RLIMIT_MEMLOCK: once perf has pushed it
-# over, io_uring_setup returns ENOMEM for ANY ring - measured here, a
+# over, io_uring_setup returns ENOMEM for any ring - measured here, a
 # 2-entry probe ring failed too. (ENOMEM, not the EPERM/EAGAIN mlock(2)
 # gives, which is why it does not look like a limit at first.)
-# The server is ONE thread, so those 32 buffers were never needed:
+# The server is one thread, so those 32 buffers were never needed:
 # 8 pages each is 0.5 MB total and still ample at -F 999 for a
 # single-threaded target. --per-thread would sidestep the per-CPU
 # multiplication entirely; -m stays the smaller, less surprising knob.
@@ -231,7 +231,7 @@ ANNOTATE_WINDOW=60
 # h1 has no -m to vary, which is why the load branch below is h2-only.
 #
 # It drives the load the way bench/floor.sh does - htgen over a UNIX
-# socket - and NOT over TCP, which was the first attempt and measured
+# socket - and not over TCP, which was the first attempt and measured
 # the wrong machine: the profile that came back was nftables, conntrack
 # and the TCP stack with no webmachine symbol above 0.8%, because the
 # client could not feed the server fast enough over the port. A UNIX
@@ -294,7 +294,7 @@ if [ -n "$ASSETS" ]; then
       [ "$REQPATH" = / ] || { echo "REQPATH= only applies when ASSETS names a pack - the built one has one entry" >&2; exit 1; }
       case "$ASSET_CODING" in
         stored)
-          # urandom, forced stored: the body IS the file-backed span.
+          # urandom, forced stored: the body is the file-backed span.
           head -c "$ASSETS" /dev/urandom > "$WORK/a.bin"
           (cd "$WORK" && zip -q -0 -X pack.zip a.bin) || exit 1
           REQPATH=/a.bin
@@ -335,7 +335,7 @@ else
 fi
 [ -z "$EVENT" ] || echo "event: $EVENT (every share below is a share of it, not of time)"
 
-# An io_uring ring is locked memory, so a LEAKED server costs more than
+# An io_uring ring is locked memory, so a leaked server costs more than
 # a pid: enough orphans and the next ring init fails with ENOMEM
 # ("io_uring_queue_init: Cannot allocate memory"), which reads like a
 # code fault and is not one. Every other bench script traps EXIT; this
@@ -363,7 +363,7 @@ leg() {
   local name=$1 data=$2
   shift 2
   echo "== recording $name -> $data =="
-  # ONE bind for both protocols: the client speaks h2 over AF_UNIX, so
+  # One bind for both protocols: the client speaks h2 over AF_UNIX, so
   # there is no reason left to put the TCP stack in the profile.
   rm -f "$WM_SOCK"
   local bindargs=(--unix="$WM_SOCK")
@@ -372,7 +372,7 @@ leg() {
     >"$WORK/srv.log" 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid
-  # $! is perf's own pid (it execs the server as ITS child, so
+  # $! is perf's own pid (it execs the server as its child, so
   # pinned execs again in place, same pid throughout) - pgrep -P finds
   # that direct child unambiguously, no full-line matching to race.
   local srvpid="" perfstate=""
@@ -380,7 +380,7 @@ leg() {
     srvpid=$(pgrep -P "$perfpid" | head -1)
     if [ -n "$srvpid" ] && [ -S "$WM_SOCK" ]; then break; fi
     srvpid=""
-    # perf record parses -e and opens the event BEFORE it execs the
+    # perf record parses -e and opens the event before it execs the
     # server, so an event it cannot spell or cannot open leaves no
     # child to wait for. An exited perf is a zombie until it is waited
     # for and kill -0 answers yes to one; the state field of
@@ -404,9 +404,9 @@ leg() {
   if [ -z "$srvpid" ]; then
     echo "server did not start (or never became reachable on $WM_SOCK):" >&2
     cat "$WORK/srv.log" >&2
-    # perf's own mmap buffers and io_uring's ring draw on the SAME
+    # perf's own mmap buffers and io_uring's ring draw on the same
     # locked-memory budget, and the server only ever fails this way
-    # UNDER perf - so say so instead of leaving it to be rediscovered.
+    # under perf - so say so instead of leaving it to be rediscovered.
     if grep -q "Cannot allocate memory" "$WORK/srv.log" 2>/dev/null; then
       # Traced on forgecore: perf's 32 per-CPU buffers pushed the
       # per-user locked_vm over RLIMIT_MEMLOCK, and io_uring_setup then
@@ -421,7 +421,7 @@ leg() {
     exit 1
   fi
   SRVPID=$srvpid
-  # PROVE THE PATH, and not with the status code: a server started
+  # Prove the path, and not with the status code: a server started
   # with --assets and no app answers 200 with a two-byte body for any
   # name the pack does not hold, so a typo profiles the default
   # resource and looks exactly like a hit. The ETag is the tell - only
@@ -440,7 +440,7 @@ leg() {
       }
     fi
   fi
-  # STAT: a second, independent perf session on the SAME pid, alongside
+  # STAT: a second, independent perf session on the same pid, alongside
   # the recording above - `perf stat -p PID -- sleep N` is the same
   # attach-for-N-seconds idiom bench/floor.sh's sysc_begin already uses,
   # here measuring cycles/instructions/cache instead of syscall count.
@@ -490,7 +490,7 @@ leg() {
   PERFPID=""
 }
 
-# WHOSE cycles - or whose EVENT, when one is set: one line per object,
+# Whose cycles - or whose EVENT, when one is set: one line per object,
 # nothing hidden, under a header that names which of the two it is. A
 # top-30 symbol list with a 0.5% floor showed 63% of the samples and
 # made this tree look like 3% of its own profile - our code is spread

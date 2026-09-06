@@ -13,11 +13,11 @@
 namespace webmachine {
 namespace {
 
-// RFC 9110: THIS run's Resource, or nothing between runs - exactly
+// RFC 9110: this run's Resource, or nothing between runs - exactly
 // request.cpp's view_, and set the same way by response_bind below.
 const Resource* cur_ = nullptr;
 
-// #210: the error assets of THIS server, or nothing when it found
+// #210: the error assets of this server, or nothing when it found
 // none. Bound once at setup by response_bind_error_assets, never per
 // run - the zip is open for the server's whole life.
 Assets* error_assets_ = nullptr;
@@ -101,7 +101,7 @@ bool find_line(std::string_view buf, std::string_view name, Line& out) {
   return false;
 }
 
-// RFC 9110 6.3: append one field line - the ONLY place a line is spelled,
+// RFC 9110 6.3: append one field line - the only place a line is spelled,
 // so every writer below goes through it.
 void append_field(std::string& buf, http::Field f) {
   buf.append(f.name);
@@ -179,7 +179,7 @@ mrb_value hdrs_delete(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110: Response#headers - the Headers handle is built fresh on
-// EVERY call, never memoised: there is no Ruby Hash behind it, only
+// Every call, never memoised: there is no Ruby Hash behind it, only
 // this view over the run's own line buffer.
 mrb_value resp_headers(mrb_state* mrb, mrb_value self) {
   live(mrb);
@@ -244,12 +244,12 @@ mrb_value resp_file(mrb_state* mrb, mrb_value) {
   return mrb_str_new(mrb, r->run.file.data(), r->run.file.size());
 }
 
-// response.file = "rel/path": the NAME of a file under the configured
+// response.file = "rel/path": the name of a file under the configured
 // docroot, which the reactor opens and streams through the ring. A callback
 // hands over a name and nothing more - no fd, no bytes, no disk syscall
 // inside a run.
 //
-// The missing-docroot refusal fires HERE, not at config load. Nothing at
+// The missing-docroot refusal fires here, not at config load. Nothing at
 // load time can see it coming - response.file= is a runtime call, so "this
 // application uses it" is not a static fact worth guessing at. This is the
 // earliest honest point and the cheapest one to act on: the raise carries
@@ -276,7 +276,7 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   }
   // RESOLVE_BENEATH is the guard, not this. These two are the C-string API's
   // own limits: an embedded NUL would truncate the name openat2 actually
-  // sees, and an empty name asks for nothing. Both answer the SAME 404 a
+  // sees, and an empty name asks for nothing. Both answer the same 404 a
   // rejected resolve does, so neither is a signal to probe with.
   r->run.file.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
   r->run.file_bad = r->run.file.empty() || r->run.file.find('\0') != std::string::npos;
@@ -289,8 +289,8 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
 // it. Not response.file: nothing is opened and nothing goes through the
 // ring, because these bytes are already mapped.
 //
-// Nothing is copied and nothing new is written: the run records THE
-// ENTRY, and the writers put it on the wire through the very accessors
+// Nothing is copied and nothing new is written: the run records the
+// entry, and the writers put it on the wire through the very accessors
 // the asset tier uses for a mounted file - Assets::wire_iov/copy_wire
 // on h1, Content::Src::kAsset on h2. The zip is mmap'd for as long as
 // the server lives, so the handle outlives every stream that parks on
@@ -378,7 +378,7 @@ mrb_value resp_error_set(mrb_state* mrb, mrb_value self) {
 
 // RFC 6265 4.1: one Set-Cookie line, spelled by hand from name/value
 // plus the optional attributes webmachine-ruby's Cookie#to_s emits.
-// Several cookies mean several lines - this always APPENDS, never
+// Several cookies mean several lines - this always appends, never
 // replaces, unlike every other header write in this file.
 // RFC 6265 4.1.1: one cookie-av, if the app named it at all.
 // RFC 6265 4.1.1: one cookie-av the app may have named - the hash it
@@ -431,7 +431,7 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
     }
   }
   // Same gate: the cookie's name, value and every attribute came from the
-  // app, and they end up in ONE field value.
+  // app, and they end up in one field value.
   if (!http::field_value_ok(line.data(), line.size())) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "response.set_cookie wants no CR, LF or NUL in name, value or attributes");
@@ -443,7 +443,7 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
 // #30: the run's own slot. The application puts what it wants there
 // and takes it out in another callback of the same run.
 //
-// THIS SERVER NEVER LOOKS AT IT. Nothing in it means anything to the
+// This server never looks at it. Nothing in it means anything to the
 // flow, nothing reaches a header, and nothing is folded at setup. It is
 // one value with a lifetime, and the lifetime is one run.
 mrb_value resp_userdata(mrb_state* mrb, mrb_value self) {
@@ -467,7 +467,7 @@ mrb_value resp_userdata_set(mrb_state* mrb, mrb_value self) {
   return v;
 }
 
-// RFC 9110: Resource#response - a FRESH Response handle on every call,
+// RFC 9110: Resource#response - a fresh Response handle on every call,
 // never memoised; whatever GC arena covers this callback's own call
 // frame is what keeps the handle alive, same as any other short-lived
 // value a cfunc returns.
@@ -480,7 +480,7 @@ mrb_value resource_response(mrb_state* mrb, mrb_value) {
 
 }  // namespace
 
-// RFC 9110: point the response surface at THIS run's Resource, or at
+// RFC 9110: point the response surface at this run's Resource, or at
 // nothing. Same pattern as request_bind, so a stray handle from an
 // ended run reads as "outside a run frame" rather than touching
 // whichever run is live now.

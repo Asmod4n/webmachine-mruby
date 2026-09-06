@@ -1,5 +1,5 @@
-# NO LOCKFILE. mruby writes build_config_*.rb.lock beside this file and
-# then PREFERS it: load_gems.rb takes the locked commit over the branch a
+# No lockfile. mruby writes build_config_*.rb.lock beside this file and
+# then prefers it: load_gems.rb takes the locked commit over the branch a
 # dependency names, so a gem pinned here to a branch quietly keeps
 # whatever commit the lock first saw. This tree names branches on
 # purpose - the seam lives in mruby-slipstreamio and moves - and a lock
@@ -19,7 +19,7 @@ MRuby::Build.new('pgo') do |conf|
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
 
-  # mrbc is a TOOL of this build, not an artifact of another one: the
+  # mrbc is a tool of this build, not an artifact of another one: the
   # gem builds it here. Naming an external mrbc under mruby/bin
   # instead made a cold tree unbuildable - nothing in this config
   # produces that path, so rake had no rule for it.

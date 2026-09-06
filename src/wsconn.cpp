@@ -42,7 +42,7 @@ class Codec {
   // RFC 7692: what this connection agreed to.
   const Params& params() const { return p_; }
 
-  // RFC 7692 7.2.2: payload bytes as they arrive; the SINK is the only
+  // RFC 7692 7.2.2: payload bytes as they arrive; the sink is the only
   // bound, which is the whole decompression-bomb answer.
   int inflate_some(const char* in, size_t n, InflateSink sink, void* ud) {
     if (!inflate_ready()) return -1;
@@ -192,7 +192,7 @@ struct WsConn {
 };
 
 namespace {
-// RFC 6455 7.4.1: a Symbol answer by name. This IS the vocabulary.
+// RFC 6455 7.4.1: a Symbol answer by name. This is the vocabulary.
 bool symbol_code(mrb_sym s, uint16_t& code) {
   if (s == MRB_SYM(close) || s == MRB_SYM(normal)) code = ws::kCloseNormal;
   else if (s == MRB_SYM(going_away)) code = ws::kCloseGoingAway;
@@ -280,7 +280,7 @@ void emit_close(WsConn* c, std::string& sink, ws::Close close) {
   emit(sink, {ws::kClose, {payload, n}});
 }
 
-// RFC 3629: can these 1-3 bytes still BECOME a valid sequence?
+// RFC 3629: can these 1-3 bytes still become a valid sequence?
 bool valid_prefix(const unsigned char* p, size_t n) {
   if (n == 0) return true;
   const unsigned char b0 = p[0];
@@ -458,7 +458,7 @@ bool finish_frame(WsConn* c, std::string& sink) {
 
 // RFC 6455 5.2/5.5, RFC 7692 6: everything the header must satisfy.
 bool begin_frame(WsConn* c, std::string& sink) {
-  // RFC 6455 5.2 / 5.4: the header is READ and judged first, whole. It used
+  // RFC 6455 5.2 / 5.4: the header is read and judged first, whole. It used
   // to be judged one rule at a time with the refusal written from inside
   // the check that failed.
   const ws::Head h = ws::read_head(c->hbuf, c->codec != nullptr);
@@ -615,7 +615,7 @@ void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   if (!ok) {
     mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                "route.websocket: %v does not inherit Webmachine::WebsocketResource - a "
-               "websocket resource is NOT a Webmachine::Resource: no response, no status, no "
+               "websocket resource is not a Webmachine::Resource: no response, no status, no "
                "flow survives the upgrade, only the handshake's head",
                klass);
   }
@@ -625,7 +625,7 @@ void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   if (!method_argc(mrb, {out.klass, MRB_SYM(on_data)}, 2, &out.data_argc)) {
     mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
               "route.websocket: the resource defines no on_data - that is the one method a "
-              "websocket resource IS (on_data(data) or on_data(data, binary))");
+              "websocket resource is (on_data(data) or on_data(data, binary))");
   }
   out.have_close =
       method_argc(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.close_argc);
@@ -670,7 +670,7 @@ void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   mrb_obj_freeze(mrb, klass);
 }
 
-// RFC 6455 4.2.2: build THIS peer's resource; its initialize is the
+// RFC 6455 4.2.2: build this peer's resource; its initialize is the
 // connect hook and its return value is the answer.
 WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit answered) {
   std::string& proto = answered.proto;

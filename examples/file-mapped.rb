@@ -1,4 +1,4 @@
-# response.file over the MAPPED path: statx, mmap, and chunks of the
+# response.file over the mapped path: statx, mmap, and chunks of the
 # mapping lent to sends. Pair it with file-window.rb, which serves the
 # same bytes through the read path, and the difference between the two
 # log lines is what the second copy costs.
@@ -6,7 +6,7 @@
 #   THREADS=3 CONNS=16 APP=examples/file-mapped.rb bench/floor.sh
 #   THREADS=3 CONNS=16 APP=examples/file-window.rb bench/floor.sh
 #
-# Start LOW on CONNS: every request moves 4 MiB, so this arm goes
+# Start low on CONNS: every request moves 4 MiB, so this arm goes
 # bandwidth-bound long before hello.rb does, and floor.sh refuses a
 # client-bound run rather than recording it. Raise CONNS until the
 # server owns its core.

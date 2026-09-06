@@ -1,5 +1,5 @@
 /*
- * The ONE unit-test surface this tree has, compiled into mrbtest and
+ * The one unit-test surface this tree has, compiled into mrbtest and
  * nothing else (mruby builds test/ * of a gem only for its test binary).
  * src/ never carries test code; this drives the real machinery from
  * outside.
@@ -7,27 +7,27 @@
  * Everything else is a bintest against the running server, because the
  * running server is the authority on whether something works. This file
  * is the exception, and the reason is below: webmachine-ruby's specs are
- * an ORACLE we did not write and cannot reach through a socket - they
+ * an oracle we did not write and cannot reach through a socket - they
  * construct a resource, a request and a response in Ruby and read the
  * answer back out of objects.
  *
- * WHAT IT IS FOR: webmachine-ruby's own resource specs are the oracle
+ * What it is for: webmachine-ruby's own resource specs are the oracle
  * for this tree (spec/webmachine/decision/flow_spec.rb and
  * helpers_spec.rb). Those specs drive
  *
  *     Webmachine::Decision::FSM.new(resource, request, response).run
  *
  * and then read response.code, response.headers and response.body.
- * This tree has no FSM object and no request/response the CALLER
+ * This tree has no FSM object and no request/response the caller
  * builds - the flow is C++, the resource is folded once at add_route,
  * and the per-request objects are handles the run frame binds. So the
- * three objects the specs need are provided HERE, in test/, and they
- * drive the REAL resource_fold and resource_run. What the specs then
+ * three objects the specs need are provided here, in test/, and they
+ * drive the real resource_fold and resource_run. What the specs then
  * exercise is src/, not this file: this file only builds the arguments
  * and reads the answer back out.
  *
  * Webmachine::Headers, ::SpecRequest and ::SpecResponse are plain Ruby
- * and live in test/wm_ruby.rb (they are NOT Webmachine::Request /
+ * and live in test/wm_ruby.rb (they are not Webmachine::Request /
  * ::Response - those names are the product's, defined in C by
  * src/request.cpp and src/response.cpp). Only the FSM needs C, because
  * only it touches the flow.
@@ -66,9 +66,9 @@ const mrb_data_type fsm_type = {"Webmachine::Decision::FSM", fsm_free};
 
 // RFC 9110 5.1: one request's fields, from the spec's Headers hash into
 // the two shapes the run frame reads - the 9110 facts/values through the
-// SAME http::header_switch h1 and h2 use, and the raw name/value pairs
+// same http::header_switch h1 and h2 use, and the raw name/value pairs
 // request.headers / request.content_type lend back to Ruby. Both point
-// into `store`, which is filled COMPLETELY before either is built: a
+// into `store`, which is filled completely before either is built: a
 // reallocation after that would dangle every pointer handed out.
 void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& facts,
                  webmachine::http::ReqValues& vals, std::string& store,
@@ -96,7 +96,7 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
     store.append(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
     // Lowercased in place: h1 arrives case-insensitive and h2 demands
     // lowercase (RFC 9113 8.2), and header_switch matches against
-    // lowercase literals. The VALUE is left alone: a header this
+    // lowercase literals. The value is left alone: a header this
     // rewrites is a header the flow would then read wrong.
     for (size_t j = koff; j < voff; j++) {
       char& c = store[j];
@@ -124,7 +124,7 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
   }
 }
 
-// RFC 9110 8.3/15: does a response with THIS status carry a
+// RFC 9110 8.3/15: does a response with this status carry a
 // representation whose media type the head must spell? f6 sets
 // Content-Type for everything that reaches it; 204/205 carry no
 // representation and 304 must not restate one.
@@ -155,7 +155,7 @@ void headers_into(mrb_state* mrb, mrb_value hash, const std::string& block) {
 }
 
 // Webmachine::Decision::FSM.new(resource_class, request, response) - the
-// class is folded HERE, once, exactly as add_route folds it.
+// class is folded here, once, exactly as add_route folds it.
 mrb_value fsm_init(mrb_state* mrb, mrb_value self) {
   mrb_value klass, req, resp;
   mrb_get_args(mrb, "ooo", &klass, &req, &resp);
@@ -208,7 +208,7 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   // structs and nothing else.
   // The wire calls resource_run from outside the VM, where mrb->jmp is
   // NULL and every raise lands in mrb->exc for the engine's raise path.
-  // The shim runs INSIDE the VM, so it lends the engine that same
+  // The shim runs inside the VM, so it lends the engine that same
   // top-level frame for the duration of the run.
   struct mrb_jmpbuf* const saved_jmp = mrb->jmp;
   mrb->jmp = nullptr;
@@ -263,7 +263,7 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
 
 }  // namespace
 
-// The gem's ONE gem_test entry point - mruby calls this once when mrbtest
+// The gem's one gem_test entry point - mruby calls this once when mrbtest
 // starts, and the oracle's C half is all there is to register.
 extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
   struct RClass* wm = mrb_module_get_id(mrb, mrb_intern_lit(mrb, "Webmachine"));

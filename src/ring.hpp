@@ -1,6 +1,6 @@
 // The reactor: one io_uring, one thread, every connection.
 //
-// It lives HERE and not in webmachine.hpp because it is a template on
+// It lives here and not in webmachine.hpp because it is a template on
 // the application type, so it has to be a header - and only four
 // translation units instantiate one. The other nineteen read
 // webmachine.hpp and were paying for 2159 lines they never name.
@@ -46,7 +46,7 @@ class Ring {
   }
 
   // Everything through the ring: unlink, socket_direct, setsockopt, bind,
-  // listen as ONE linked chain, every CQE checked, a failure naming its stage.
+  // listen as one linked chain, every CQE checked, a failure naming its stage.
   void init(const RingConfig& cfg) {
     mrb_ = cfg.mrb;
     // The one refusal here that cannot raise: there is no VM to raise
@@ -167,8 +167,8 @@ class Ring {
     while (!stop_) tick(nullptr);
   }
 
-  // ONE bounded step: the budget bounds the WORK, not just the wait, and
-  // the batch is interrupted BETWEEN completions.
+  // One bounded step: the budget bounds the work, not just the wait, and
+  // the batch is interrupted between completions.
   bool tick(const struct __kernel_timespec* budget) {
     if (budget == nullptr) return step(nullptr, false);
     struct timespec now {};
@@ -185,7 +185,7 @@ class Ring {
   bool stopped() const { return stop_; }
 
 
-  // Drain, then FORGET: the listeners close at once, and what survives the
+  // Drain, then forget: the listeners close at once, and what survives the
   // grace is ended by the destructor's ring exit.
   void drain(int64_t grace_ns) {
     if (draining_) return;
@@ -203,11 +203,11 @@ class Ring {
   // The derived capacity - what this machine actually allows.
   uint32_t max_conns() const { return max_conns_; }
 
-  // A TCP listener's REAL port, including the kernel's pick for port 0.
+  // A TCP listener's real port, including the kernel's pick for port 0.
   int bound_port(uint32_t li) const { return li < kMaxListeners ? bound_port_[li] : 0; }
 
  private:
-  // One listener as one linked chain; a stale unix path is unlinked OUTSIDE
+  // One listener as one linked chain; a stale unix path is unlinked outside
   // the chain, because ENOENT there is normal.
   void setup_listener(uint32_t li, const ListenerSpec& want) {
     const uint32_t slot = listener_base_ + li;
@@ -340,8 +340,8 @@ class Ring {
     }
   }
 
-  // NO RFC - one slot of the reactor, so what the kernel touches carries
-  // the kernel's names (rule 4: the ARGUMENT a field becomes) and what
+  // No RFC - one slot of the reactor, so what the kernel touches carries
+  // the kernel's names (rule 4: the argument a field becomes) and what
   // only we touch says that it is ours:
   //   meminfo   getsockopt(fd, SOL_SOCKET, SO_MEMINFO, optval, optlen)
   //   addr,     accept4/getsockname(fd, addr, addrlen) - and what
@@ -359,7 +359,7 @@ class Ring {
     int64_t deadline_s = 0;
     // #30: when the watcher this connection's stopped run waits on has
     // been quiet for as long as it allowed. 0 = nothing is armed. It is
-    // NOT deadline_s: the peer on this socket is fine, some other
+    // Not deadline_s: the peer on this socket is fine, some other
     // descriptor is the quiet one, and nothing here closes anything.
     // #30: the earliest deadline any watcher of this connection owes.
     // Each watcher keeps its own - the App has them, one per Ruby
@@ -402,8 +402,8 @@ class Ring {
     // one: conns_ is a vector, and a raw pointer with a destructor of its
     // own would delete the move constructor a resize needs. unique_ptr
     // keeps the move and needs no destructor.
-    // NO RFC - this is the kernel's ABI, so the fields carry the names of
-    // the ARGUMENTS they become:
+    // No RFC - this is the kernel's ABI, so the fields carry the names of
+    // the arguments they become:
     //
     //   io_uring_prep_read(sqe, fd, buf + filled, nbytes - filled,
     //                      offset + filled)
@@ -411,8 +411,8 @@ class Ring {
     //
     // Two of them are not arguments and say so.
     struct FileIo {
-      // A PLAIN fd, not a direct descriptor: statx is the one op here the
-      // kernel takes no fixed file for. Statting the OPENED fd keeps size
+      // A plain fd, not a direct descriptor: statx is the one op here the
+      // kernel takes no fixed file for. Statting the opened fd keeps size
       // and mtime describing the bytes openat2 confined; a statx by path
       // would resolve a second time, unguarded.
       int fd = -1;
@@ -434,16 +434,16 @@ class Ring {
 
     // Not ABI: our own ceiling, one segment more than a Plan can hold, for
     // the head that rides in front of it - and the kernel's own UIO_MAXIOV.
-    // It is what a round may NEVER exceed, not what a connection carries.
+    // It is what a round may never exceed, not what a connection carries.
     //
     // What a round actually plans, counted: an h1 answer that lends takes
-    // THREE segments (the head out of the sink, and a gzip member's two
+    // Three segments (the head out of the sink, and a gzip member's two
     // halves out of the mapping), an h2 one nine. The ceiling is reachable
     // only by heavy multiplexing. So the common case rides inline and
     // costs no allocation at all, and the heap is for the round that does
     // not fit - see take_plan.
     //
-    // FOUR and not sixteen: this is paid by every slot the FD budget
+    // Four and not sixteen: this is paid by every slot the FD budget
     // allows, live or not (conns_.resize(max_conns_)), so each entry is
     // 16 bytes times ~19k here. Four covers h1's three; h2 takes one heap
     // array on a connection that already carries an H2State.
@@ -453,7 +453,7 @@ class Ring {
     struct msghdr msg {};
 
     unsigned msg_iovlen = 0;
-    // How many segments the CURRENT store has room for. A high-water mark,
+    // How many segments the current store has room for. A high-water mark,
     // because the slot outlives the connection and a grown array is the
     // answer to the next round on it as well.
     unsigned msg_iov_cap = kMsgIovInline;
@@ -531,7 +531,7 @@ class Ring {
   // process belongs to somebody else. So it raises, and the embedder's
   // Ruby sees Webmachine::Error and chooses. There is no second branch:
   // init() refuses a RingConfig without a VM, so this always has one.
-  // A failure that belongs to ONE connection. It throws, the completion
+  // A failure that belongs to one connection. It throws, the completion
   // handler below catches it, says what happened and closes that
   // connection. One peer's bad day is not the process's end; `fatal`
   // below is for when it is.
@@ -575,7 +575,7 @@ class Ring {
   [[noreturn]] void fatal(const char* what) {
     mrb_raise(mrb_, E_WM_ERROR(mrb_), what);
     // mruby declares mrb_raise mrb_noreturn, but that macro (common.h)
-    // resolves to NOTHING under -std=c++20: it asks for __GNUC__ &&
+    // resolves to nothing under -std=c++20: it asks for __GNUC__ &&
     // !__STRICT_ANSI__, and a strict -std= (rather than -std=gnu=) defines
     // __STRICT_ANSI__. So the compiler cannot see what is true either way -
     // with MRB_USE_CXX_EXCEPTION the raise throws, without it it longjmps -
@@ -608,7 +608,7 @@ class Ring {
     flush_error();
   }
 
-  // The whole batch in ONE send: small, constant-shaped records.
+  // The whole batch in one send: small, constant-shaped records.
   void flush_access() {
     if (log_fd_ < 0) return;
     Logger* al = app_.access_log();
@@ -624,7 +624,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, kStreamAccess));
   }
 
-  // ONE record per flush, as two linked sends.
+  // One record per flush, as two linked sends.
   void flush_error() {
     if (err_fd_ < 0) return;
     Logger* el = app_.error_log();
@@ -638,7 +638,7 @@ class Ring {
     el->in_flight = true;
     arm_error_write(el);
   }
-  // MSG_WAITALL is what makes the LINK safe: IO_LINK breaks only on FAILURE,
+  // MSG_WAITALL is what makes the link safe: IO_LINK breaks only on failure,
   // and a short send is not one.
   void arm_error_write(Logger* el) {
     struct io_uring_sqe* s = sqe();
@@ -652,7 +652,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kLog, 0, kStreamError));
   }
 
-  // THE RULE: every line formatted lands. A refused write is a named refusal.
+  // The rule: every line formatted lands. A refused write is a named refusal.
   void on_log(uint16_t gen, uint32_t stream, struct io_uring_cqe* cqe) {
     Logger* lg = stream == kStreamError ? app_.error_log() : app_.access_log();
     if (lg == nullptr) return;
@@ -700,7 +700,7 @@ class Ring {
 
   void setup_keys(uint32_t li, const ListenerSpec& want) {
     if (want.cert_pem == nullptr) return;
-    // The certificate BEFORE the kernel, deliberately: both can be wrong
+    // The certificate before the kernel, deliberately: both can be wrong
     // at once, and the one the operator can fix is the one worth saying.
     // It also means a machine without the module still checks the config.
     HeldKeys keys{ktls_keys_server(want.cert_pem, want.cert_len, want.key_pem, want.key_len)};
@@ -765,7 +765,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kAccept, 0, li));
   }
 
-  // Room for the ONE cmsg an offloaded socket carries, TLS_GET_RECORD_TYPE.
+  // Room for the one cmsg an offloaded socket carries, TLS_GET_RECORD_TYPE.
   static constexpr size_t kTlsCmsgSpace = CMSG_SPACE(sizeof(unsigned char));
 
   // Multishot recv out of the buffer ring, bundles where the kernel offers
@@ -775,7 +775,7 @@ class Ring {
     struct io_uring_sqe* s = sqe();
     if (mrb_unlikely(c.tls != nullptr)) {
       if (!c.tls->offloaded) {
-        // ONE completion at a time while the exchange runs. The moment it
+        // One completion at a time while the exchange runs. The moment it
         // is done this process must stop reading: bytes it takes off the
         // socket after that are records the kernel's own record layer is
         // about to be made responsible for, and nothing here could decrypt
@@ -827,7 +827,7 @@ class Ring {
       sink.append(buf, n);
     }
     if (step != KTLS_DONE) {
-      // EXACTLY ONE read is armed at a time, and whoever writes last
+      // Exactly one read is armed at a time, and whoever writes last
       // arms it: a flight going out means on_send does, because two
       // reads on one connection would feed the exchange two halves of
       // the peer's next flight in whatever order they completed.
@@ -838,7 +838,7 @@ class Ring {
       arm_recv(idx);
       return;
     }
-    // Everything the exchange still holds is read HERE, in the order
+    // Everything the exchange still holds is read here, in the order
     // ktls.h asks for: the backlog first, because draining it can consume
     // a post-handshake record, and the crypto_info last, because that is
     // where the record sequence is finally settled.
@@ -877,7 +877,7 @@ class Ring {
 
   // A key per direction, linked so the order is the kernel's to keep
   // rather than two completions to sort out. The ULP went on at accept.
-  // The options go on the DIRECT descriptor through the ring, like every
+  // The options go on the direct descriptor through the ring, like every
   // other option this reactor sets.
   void tls_handover(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -998,7 +998,7 @@ class Ring {
 
   // The send key, turned before the limit rather than after it, and only
   // where no send is in flight - the kernel must not be writing under a
-  // key that is being replaced. ktls_record_limit already answers HALF of
+  // key that is being replaced. ktls_record_limit already answers half of
   // what the RFC allows, so there is room to get here.
   bool tls_turn_send_key(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -1060,13 +1060,13 @@ class Ring {
   //
   // MSG_WAITALL where the kernel takes it: it finishes a short send
   // itself, so the round is one operation and there is no offset to
-  // carry. An OFFLOADED connection cannot have it - tls_sw_sendmsg
+  // carry. An offloaded connection cannot have it - tls_sw_sendmsg
   // answers EOPNOTSUPP for any flag outside MSG_MORE, MSG_DONTWAIT,
   // MSG_NOSIGNAL, MSG_SPLICE_PAGES and MSG_EOR - so that one asks for no
   // retry and resumes itself, out of `out_sent` or its own iovecs.
   //
   // The lend survives either way: resource.cpp freezes and roots the
-  // String and zc_release hands it back when the ROUND drains, never
+  // String and zc_release hands it back when the round drains, never
   // when one send returns.
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -1078,7 +1078,7 @@ class Ring {
       io_uring_prep_send(s, static_cast<int>(idx), c.out.data() + c.out_sent,
                          c.out.size() - c.out_sent, flags);
     } else if (c.msg_iovlen == 1 && !resumes) {
-      // ONE segment is one buffer, and a buffer does not need an iovec.
+      // One segment is one buffer, and a buffer does not need an iovec.
       // sendmsg makes the kernel copy an msghdr in from user space and
       // import the vector behind it - io_msg_copy_hdr, io_sendmsg_prep,
       // copy_iovec_from_user, __import_iovec - which a profile of one h1
@@ -1112,7 +1112,7 @@ class Ring {
   // the type this control message names - so it is a sendmsg like any
   // other, linked ahead of the shutdown that follows it.
   //
-  // Only where the socket already IS the kernel's: before the handover
+  // Only where the socket is already the kernel's: before the handover
   // there is no key to encrypt an alert with, and a cleartext one would
   // be noise on the wire.
   void arm_close_notify(uint32_t idx) {
@@ -1142,7 +1142,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kTlsBye, c.gen, idx));
   }
 
-  // shutdown BEFORE close_direct, linked: close_direct alone leaves the
+  // shutdown before close_direct, linked: close_direct alone leaves the
   // socket open and the peer never sees FIN.
   void begin_close(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -1156,7 +1156,7 @@ class Ring {
     // really went out.
     app_.file_abandon(c.app);
     // The exchange goes now - it is the biggest thing this slot holds and
-    // nothing submitted points into it. The struct around it does NOT: a
+    // nothing submitted points into it. The struct around it does not: a
     // handover's three setsockopts read c.tls->info and a multishot
     // recvmsg writes through c.tls->recv_msg, and either may still be with
     // the kernel. It goes when the slot is accepted into again.
@@ -1217,7 +1217,7 @@ class Ring {
         begin_close(idx);
         return;
       }
-      // The ULP goes on HERE, not at the handover - the order the kernel
+      // The ULP goes on here, not at the handover - the order the kernel
       // documents and the one OpenSSL's own ktls_enable uses. Without
       // keys it forwards bytes unchanged, so the handshake reads and
       // writes exactly as it would have; TLS_TX and TLS_RX are what
@@ -1392,7 +1392,7 @@ class Ring {
     if (mrb_unlikely(closing)) round_closed(idx, c);
   }
 
-  // ONE contiguous stretch of plaintext to the App, and the round it
+  // One contiguous stretch of plaintext to the App, and the round it
   // finishes. `last` is what lets a Plan form, so a caller that has the
   // whole of what arrived says so.
   void deliver(uint32_t idx, const char* data, size_t len, bool last) {
@@ -1500,7 +1500,7 @@ class Ring {
     if (mrb_unlikely(took != offered)) {
       // Nobody retried this one, so what is left is still owed and the
       // stream carries on where it stopped. That is the one thing a
-      // half-written response CAN do; what it cannot do is start again.
+      // half-written response can do; what it cannot do is start again.
       if (mrb_unlikely(c.tls != nullptr) && c.tls->offloaded) {
         send_resume(idx, c, took);
         return;
@@ -1514,9 +1514,9 @@ class Ring {
     c.out_sent = 0;
     c.msg_iovlen = 0;
     c.plan_byte_total = 0;
-    // A send key at its record limit is turned HERE, where nothing is in
+    // A send key at its record limit is turned here, where nothing is in
     // flight; what the round owes next waits for that completion. The
-    // null test is at THIS side of the call so a cleartext send does not
+    // null test is at this side of the call so a cleartext send does not
     // make one.
     if (mrb_unlikely(c.tls != nullptr) && tls_turn_send_key(idx)) return;
     send_done(idx);
@@ -1532,7 +1532,7 @@ class Ring {
 
   // Only an offloaded connection gets here: without MSG_WAITALL nobody
   // retried, so what is left is still owed and the stream carries on
-  // where it stopped. That is the one thing a half-written response CAN
+  // where it stopped. That is the one thing a half-written response can
   // do; what it cannot do is start again.
   void send_resume(uint32_t idx, Conn& c, size_t took) {
     if (c.msg_iovlen != 0) {
@@ -1577,7 +1577,7 @@ class Ring {
   }
 
   // response.file, stage 1: openat2 against the docroot fd. RESOLVE_BENEATH
-  // anchors the walk to THAT fd, so the confinement is the kernel's and not
+  // anchors the walk to that fd, so the confinement is the kernel's and not
   // this code's - no path math here, on purpose.
   void arm_file_open(uint32_t idx) {
     Conn& c = conns_[idx];
@@ -1602,7 +1602,7 @@ class Ring {
   // watcher under a slot; this puts a poll on its descriptor with the
   // events it asks for, and the slot rides in the tag.
   //
-  // ONE-SHOT, not multishot. A watcher changes what it waits for in the
+  // One-shot, not multishot. A watcher changes what it waits for in the
   // middle of a wait - libpq wants writable while it flushes and
   // readable while it reads, and hiredis says so through addWrite and
   // delWrite - and a one-shot poll is re-armed with the new mask
@@ -1729,7 +1729,7 @@ class Ring {
 
   void arm_compute_deadline(unsigned slot, uint16_t gen, double deadline) {
     if (deadline <= 0.0 || compute_ts_.empty()) return;
-    // The kernel reads the timespec when the SQE is SUBMITTED, and a
+    // The kernel reads the timespec when the SQE is submitted, and a
     // round arms several before one submit. So each arm gets its own,
     // out of a table as large as the pool has jobs in flight - which is
     // the same bound the pool's slots carry.
@@ -1757,7 +1757,7 @@ class Ring {
     if (!conns_[idx].sending) continue_conn(idx);
   }
 
-  // #80: a worker answered. The tag is the CONNECTION's, so the same
+  // #80: a worker answered. The tag is the connection's, so the same
   // generation guard every other op relies on discards an answer whose
   // connection is already gone - the run died with the slot, and its
   // frame with it.
@@ -1794,7 +1794,7 @@ class Ring {
                             static_cast<uint16_t>(answered.over_deadline ? 500 : 503)});
     }
     // A generation that moved means the connection is gone and its run
-    // died with it. The answer is still TAKEN, because the slot is the
+    // died with it. The answer is still taken, because the slot is the
     // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
     // The slot was taken again since this job was sent: the answer is a
@@ -1805,7 +1805,7 @@ class Ring {
   }
 
   // ENOENT, EXDEV (RESOLVE_BENEATH), ELOOP (RESOLVE_NO_SYMLINKS), EACCES -
-  // ONE answer for all of them, so probing for a symlink or a traversal
+  // One answer for all of them, so probing for a symlink or a traversal
   // cannot be told apart from asking for a name that was never there.
   void on_file_open(Completed done) {
     const uint32_t idx = done.idx;
@@ -1830,7 +1830,7 @@ class Ring {
     io_uring_sqe_set_data64(s, detail::tag(detail::kFileStat, c.gen, idx));
   }
 
-  // statx on the OPENED fd, never by path: size and mtime have to describe
+  // statx on the opened fd, never by path: size and mtime have to describe
   // the bytes openat2 confined, and a second resolve would not be confined.
   void on_file_stat(Completed done) {
     const uint32_t idx = done.idx;
@@ -1860,7 +1860,7 @@ class Ring {
     }
     // A large file is mapped, not read: the sends walk the mapping and the
     // fd is done with. A failed mmap is not an error - the read path below
-    // serves the same bytes, only slower, and `want` is a WINDOW whatever
+    // serves the same bytes, only slower, and `want` is a window whatever
     // the answer here was, so falling through cannot ask for the file.
     const size_t maplen = App::file_map_len(c.app);
     if (maplen != 0) {
@@ -1965,7 +1965,7 @@ class Ring {
     s->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kPeer, c.gen, idx));
   }
-  // The peer's RAW sockaddr for the log; "-" and one line if the kernel
+  // The peer's raw sockaddr for the log; "-" and one line if the kernel
   // has no such cmd.
   void on_peer(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (mrb_unlikely(idx >= max_conns_)) return;
@@ -2007,7 +2007,7 @@ class Ring {
     continue_conn(idx);
   }
 
-  // RESOLVE a plan into iovecs: a sink segment carried an OFFSET, and this
+  // Resolve a plan into iovecs: a sink segment carried an offset, and this
   // is the first moment the address is final.
   void take_plan(Conn& c, const typename App::Plan& req) {
     // What this round needs, not what a round could ever need: allocating
@@ -2067,7 +2067,7 @@ class Ring {
       return;
     }
     // Nothing went out this round, so the window lent to the last one is
-    // off the wire and the buffer is free. THIS is the only point where the
+    // off the wire and the buffer is free. This is the only point where the
     // next window may be read - doing it on the round that just lent the
     // buffer out overwrites the bytes still being sent.
     if (c.file_io != nullptr && c.file_io->fd >= 0 && !c.file_io->reading &&
@@ -2097,7 +2097,7 @@ class Ring {
     const uint8_t kind = static_cast<uint8_t>(ud >> 56);
     const uint16_t gen = static_cast<uint16_t>(ud >> 32);
     const uint32_t idx = static_cast<uint32_t>(ud);
-    // The try is HERE and not around a dispatch() of its own. This is
+    // The try is here and not around a dispatch() of its own. This is
     // the hottest path in the reactor, and a separate function takes
     // on_send back out of line: measured, that cost 5%.
     try {
@@ -2231,7 +2231,7 @@ class Ring {
       last_reap_s_ = now_s_;
       const size_t nwords = live_bits_.size();
       for (size_t w = 0; w < nwords; w++) {
-        // begin_close only CLEARS bits and no accept runs inside this
+        // begin_close only clears bits and no accept runs inside this
         // sweep, so a snapshot can go stale in one direction only - the
         // c.live guard below still catches that.
         uint64_t bits = live_bits_[w];
@@ -2246,11 +2246,11 @@ class Ring {
             continue;
           }
           // #30: a watcher that said nothing for as long as it allowed.
-          // This is NOT the connection's own deadline - the peer on the
+          // This is not the connection's own deadline - the peer on the
           // socket is fine, some other descriptor is quiet - so it is
           // asked first and it never closes anything.
           if (c.w_deadline_s != 0 && c.w_deadline_s < now_s_) {
-            // Every watcher that stayed quiet for as long as IT allowed,
+            // Every watcher that stayed quiet for as long as it allowed,
             // not only the first one.
             int over[16];
             const size_t n = App::watchers_over_deadline(c.app, now_s_, over, 16);

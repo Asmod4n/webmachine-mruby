@@ -11,7 +11,7 @@
 # wire. That is webmachine's whole caching story, with generate_etag and
 # last_modified beside it, and it needs no header written by hand.
 #
-# A date in the PAST is how a resource says "never keep this": RFC 9111
+# A date in the past is how a resource says "never keep this": RFC 9111
 # 4.2.1 makes such an answer stale the moment it arrives, so a cache has
 # to ask again. The clock, the search and the counter answer that way.
 def stale_at_once

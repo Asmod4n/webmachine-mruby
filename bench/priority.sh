@@ -1,14 +1,14 @@
 #!/bin/bash
-# The bench gets the machine WHERE IT CAN, and asks nothing where it
+# The bench gets the machine where it can, and asks nothing where it
 # cannot.
 #
 # On a machine that is otherwise idle this does nothing worth having:
-# the numbers repeat without it. It exists for a machine that is NOT
+# the numbers repeat without it. It exists for a machine that is not
 # idle - an agent building and testing in the background is enough to
 # move a median, and it moves it for one arm of a comparison and not
 # the others.
 #
-# Where it works, the gap is TWENTY points: -10 for this run, +10 for
+# Where it works, the gap is twenty points: -10 for this run, +10 for
 # everything else this user runs. Ten does not do it, and +19 is the
 # ceiling, so the gap cannot be built from above alone.
 #
@@ -18,17 +18,17 @@
 # bench benches. +19 for everything else would starve it instead, which
 # buys no accuracy and costs a usable machine.
 #
-# NO SUDO, EVER. A negative nice value needs RLIMIT_NICE, which is
+# No sudo, ever. A negative nice value needs RLIMIT_NICE, which is
 # granted once to a user and never per run:
 #
 #   echo 'YOU  -  nice  -10' | sudo tee /etc/security/limits.d/90-bench-nice.conf
 #   # log out and in;  ulimit -e  must say 30
 #
-# Without that grant this is a NO-OP, not a refusal: the run goes ahead
+# Without that grant this is a no-op, not a refusal: the run goes ahead
 # and $BENCH_NICE stays 0, which is what the harness line records. A row
 # taken at even priority is honest as long as it says so.
 #
-# WHAT IS SKIPPED: the bench's own ancestors. Your login shell is one of
+# What is skipped: the bench's own ancestors. Your login shell is one of
 # them, and a nice value raised beyond the limit cannot be lowered
 # again. Processes of other users are skipped by the kernel.
 bench_priority() {

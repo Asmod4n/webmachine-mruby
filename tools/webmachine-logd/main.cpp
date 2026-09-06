@@ -28,8 +28,8 @@ static int log_fd = -1;
 static size_t max_bytes = 0;
 static size_t on_disk = 0;
 
-// The hard ceiling: keep the NEWEST bytes, drop the oldest, in place.
-// The cut lands on a whole ENTRY, never mid-record.
+// The hard ceiling: keep the newest bytes, drop the oldest, in place.
+// The cut lands on a whole entry, never mid-record.
 static void enforce_cap() {
   if (max_bytes == 0 || on_disk <= max_bytes) return;
   const size_t keep = max_bytes / 2;
@@ -115,7 +115,7 @@ static void spell_ts(int64_t sec) {
                 kMon[g.tm_mon], g.tm_year + 1900, g.tm_hour, g.tm_min, g.tm_sec);
 }
 
-// Escaping happens HERE: an attacker's header must not forge log columns.
+// Escaping happens here: an attacker's header must not forge log columns.
 static void esc(const char* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     const unsigned char c = static_cast<unsigned char>(p[i]);
@@ -144,7 +144,7 @@ static void spell_num(size_t v) {
 enum class Privacy { kNone, kAnon, kFull };
 static Privacy privacy = Privacy::kAnon;
 
-// Combined Log Format %h, at the operator's PRIVACY level; DNT/Sec-GPC
+// Combined Log Format %h, at the operator's privacy level; DNT/Sec-GPC
 // can only ever add privacy.
 static void spell_peer(const char* sa, size_t salen, bool no_track) {
   Privacy level = privacy;
