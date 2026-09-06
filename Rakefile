@@ -514,6 +514,10 @@ PACK_STORED = %w[
 # keep the file but ask before using it. The ETag then makes that ask
 # cost a 304 with no body.
 PACK_IMMUTABLE = 'public, max-age=31536000, immutable'
+# What a hashed name looks like: name.<12 hex>.ext. An old one is kept in
+# the directory when a build no longer makes it, because a link somebody
+# wrote down still names it.
+PACK_HASHED = /\.[0-9a-f]{12}\.[A-Za-z0-9]+\z/.freeze
 PACK_RULES_FILE = '.cache-rules'
 
 # What the task offers when it asks. Nothing here is applied unasked.
@@ -601,43 +605,6 @@ def pack_entry_extra(mtime, plain_name, cache_control)
   extra
 end
 
-# One entry per file, NAMED BY ITS CONTENT, with the name a client asks
-# for beside it in field 0x574F and that name's lifetime in 0x574E. The
-# server reads the pair and answers both names from these bytes: the
-# hashed one for a year, immutable, and the plain one for as long as
-# the person who packed the site said.
-def pack_zip(entries)
-  out = +''.b
-  cd = +''.b
-  entries.each do |name, data, mtime, seconds, page|
-    data = data.b
-    # A page answers under the name people call, and under that one only.
-    hashed = page ? name : pack_hashed_name(name, data)
-    ddate, dtime = dos_stamp(mtime)
-    crc = Zlib.crc32(data)
-    extra = pack_entry_extra(mtime, page ? nil : name, pack_cache_control(seconds))
-    stored = PACK_STORED.include?(File.extname(name).downcase)
-    body = stored ? data : Zlib::Deflate.deflate(data, 9)[2..-5]
-    # A file that grows under deflate is stored instead.
-    if !stored && body.bytesize >= data.bytesize
-      stored = true
-      body = data
-    end
-    method = stored ? 0 : 8
-    lho = out.bytesize
-    out << [0x04034b50, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
-            hashed.bytesize, extra.bytesize].pack('VvvvvvVVVvv') << hashed.b << extra << body
-    cd << [0x02014b50, 20, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
-           hashed.bytesize, extra.bytesize, 0, 0, 0, 0, lho]
-          .pack('VvvvvvvVVVvvvvvVV') << hashed.b << extra
-  end
-  cd_off = out.bytesize
-  out << cd
-  out << [0x06054b50, 0, 0, entries.size, entries.size, cd.bytesize, cd_off, 0]
-         .pack('VvvvvVVv')
-  out
-end
-
 # A page that wants the hashed name of a file it embeds has to be able to
 # write it, and it cannot know a hash before the file is packed. So the
 # page writes the path it means, in one spelling, and the pack fills it
@@ -665,6 +632,10 @@ PACK_ASSET_TAG = /\{\{\s*asset:\s*([^\s}]+)\s*\}\}/.freeze
 # Which entries can carry {{asset:...}} at all: the text ones.
 PACK_TEXT = %w[.html .htm .css .js .mjs .svg .json .txt .xml .webmanifest].freeze
 
+def pack_text?(name)
+  PACK_TEXT.include?(File.extname(name).downcase)
+end
+
 def pack_fill(name, body, table)
   body.gsub(PACK_ASSET_TAG) do
     path = Regexp.last_match(1)
@@ -672,17 +643,6 @@ def pack_fill(name, body, table)
       raise "#{name} asks for #{path}, which the pack does not hold.\n" \
             "  it holds: #{table.keys.sort.join(', ')}"
   end
-end
-
-def pack_text?(name)
-  PACK_TEXT.include?(File.extname(name).downcase)
-end
-
-# name.ext -> name.<12 hex of the content>.ext, in the same directory.
-def pack_hashed_name(name, data)
-  require 'digest'
-  ext = File.extname(name)
-  "#{name[0, name.length - ext.length]}.#{Digest::SHA256.hexdigest(data)[0, 12]}#{ext}"
 end
 
 # The order the naming gives. A file that names no other file is ready at
@@ -708,8 +668,7 @@ def pack_fill_all(files, pages)
     ready.each do |name, data|
       out = pack_text?(name) ? pack_fill(name, data, table) : data
       filled[name] = out
-      # A page answers under its own name; only a leaf gets a hashed one,
-      # and only a leaf goes into the table.
+      # A page answers under its own name; only a leaf gets a hashed one.
       table["/#{name}"] = pages.include?(name) ? "/#{name}" : "/#{pack_hashed_name(name, out)}"
       left.delete(name)
     end
@@ -717,8 +676,138 @@ def pack_fill_all(files, pages)
   [filled, table]
 end
 
-desc 'pack a directory for --assets: rake pack[DIR,OUT.zip]'
-task :pack, %i[dir out] do |_t, args|
+# What a pack already holds, read from its central directory: the name,
+# the extra field, and where the local record lies. The bytes themselves
+# are not read - they stay where they are.
+def pack_read(path)
+  return [+''.b, []] unless File.exist?(path)
+
+  raw = File.binread(path)
+  eocd = raw.rindex([0x06054b50].pack('V'))
+  raise "#{path} has no end record - it is not a zip this task wrote" if eocd.nil?
+
+  count, cd_size, cd_off = raw[eocd + 10, 12].unpack('vVV')
+  old = []
+  at = cd_off
+  count.times do
+    raise "#{path}: broken central directory" unless raw[at, 4] == [0x02014b50].pack('V')
+
+    method, dtime, ddate, crc, csize, usize, nlen, elen, clen =
+      raw[at + 10, 24].unpack("vvvVVVvvv")
+    lho = raw[at + 42, 4].unpack1('V')
+    name = raw[at + 46, nlen]
+    extra = raw[at + 46 + nlen, elen]
+    old << { name: name, extra: extra, method: method, dtime: dtime, ddate: ddate,
+             crc: crc, csize: csize, usize: usize, lho: lho }
+    at += 46 + nlen + elen + clen
+  end
+  raise "#{path}: central directory is #{at - cd_off} bytes, not #{cd_size}" if
+    at - cd_off != cd_size
+
+  # Everything up to the central directory is the part that never moves.
+  [raw[0, cd_off], old]
+end
+
+def pack_central(e)
+  [0x02014b50, 20, 20, 0, e[:method], e[:dtime], e[:ddate], e[:crc], e[:csize], e[:usize],
+   e[:name].bytesize, e[:extra].bytesize, 0, 0, 0, 0, e[:lho]]
+    .pack('VvvvvvvVVVvvvvvVV') << e[:name].b << e[:extra].b
+end
+
+# APPEND ONLY. A pack that is written a second time keeps every byte it
+# already has where it already is: the local records stay at their
+# offsets, and this writes the new records after them and one fresh
+# central directory over both. ZIP is built for that - the directory is
+# at the end and names an offset per entry.
+#
+# Two things follow, and both are what a running server wants:
+#
+#   an entry the build makes again, byte for byte, is ALREADY THERE. Its
+#   hashed name is the same, so nothing is appended and nothing is
+#   deflated a second time;
+#
+#   an entry the build no longer makes stays in the directory. That is
+#   how a link somebody's browser wrote down two minutes ago still
+#   answers: a hashed name means the same bytes forever, so the old one
+#   is never wrong, only old.
+#
+# A page is the exception, because a page is not named by its content: a
+# new one is appended and the directory names the new record. The old
+# record stays in the file as dead space, which is what `compact` clears.
+def pack_write(path, entries, compact: false)
+  base, old = compact ? [+''.b, []] : pack_read(path)
+  out = base.dup
+  kept = old.to_h { |e| [e[:name], e] }
+  fresh = {}
+  appended = 0
+
+  entries.each do |name, data, mtime, cache_control, plain|
+    data = data.b
+    ddate, dtime = dos_stamp(mtime)
+    crc = Zlib.crc32(data)
+    extra = pack_entry_extra(mtime, plain, cache_control)
+    # An entry already in the pack under this name holds these bytes -
+    # the name is a hash of them - and says the same thing about them.
+    # There is nothing to write, and nothing to deflate a second time.
+    if kept[name] && kept[name][:extra] == extra && kept[name][:crc] == crc
+      fresh[name] = kept[name]
+      next
+    end
+
+    stored = PACK_STORED.include?(File.extname(name).downcase)
+    body = stored ? data : Zlib::Deflate.deflate(data, 9)[2..-5]
+    # A file that grows under deflate is stored instead.
+    if !stored && body.bytesize >= data.bytesize
+      stored = true
+      body = data
+    end
+    lho = out.bytesize
+    out << [0x04034b50, 20, 0, stored ? 0 : 8, dtime, ddate, crc, body.bytesize,
+            data.bytesize, name.bytesize, extra.bytesize].pack('VvvvvvVVVvv') <<
+           name.b << extra << body
+    fresh[name] = { name: name, extra: extra, method: stored ? 0 : 8, dtime: dtime,
+                    ddate: ddate, crc: crc, csize: body.bytesize, usize: data.bytesize,
+                    lho: lho }
+    appended += 1
+  end
+
+  # The old names this build did not make again. A hashed one is kept -
+  # it is an old link that still answers. A plain one is dropped: it is
+  # a page or a file that is not part of the site any more.
+  gone = kept.reject { |name, _e| fresh.key?(name) || !name.match?(PACK_HASHED) }
+  all = fresh.values + gone.values
+  cd = +''.b
+  all.each { |e| cd << pack_central(e) }
+  cd_off = out.bytesize
+  out << cd
+  out << [0x06054b50, 0, 0, all.size, all.size, cd.bytesize, cd_off, 0].pack('VvvvvVVv')
+
+  # NEVER IN PLACE. A running server has this file MAPPED, and a mapping
+  # follows the inode, not the name. Writing over it would show the
+  # server a half-written pack, and File.binwrite truncates first.
+  #
+  # What that costs depends on who reads. On h1 the mapped bytes go to
+  # the kernel as iovecs (Assets::wire_iov), and a truncated mapping
+  # fails the send. On h2 the server copies them itself
+  # (Assets::copy_wire, src/http2.cpp) - a read past the end of a
+  # mapping in this process is SIGBUS, which kills the server instead of
+  # failing one request.
+  #
+  # So the pack is written beside the old one and renamed over it.
+  # rename(2) only swaps the directory entry: the old inode stays alive
+  # for as long as anybody holds it open or mapped, so the server keeps
+  # a whole and correct view until it opens the path again.
+  tmp = "#{path}.#{Process.pid}.new"
+  File.open(tmp, 'wb') do |f|
+    f.write(out)
+    f.fsync
+  end
+  File.rename(tmp, path)
+  { appended: appended, reused: fresh.size - appended, kept: gone.size, names: all.size }
+end
+
+desc 'pack a directory for --assets: rake pack[DIR,OUT.zip,compact]'
+task :pack, %i[dir out compact] do |_t, args|
   require 'zlib'
   dir = args[:dir] or raise 'rake pack[DIR,OUT.zip] - which directory?'
   raise "#{dir} is not a directory" unless File.directory?(dir)
@@ -750,17 +839,29 @@ task :pack, %i[dir out] do |_t, args|
   files = names.to_h { |n| [n, File.binread(File.join(root, n))] }
   filled, table = pack_fill_all(files, pages)
 
-  entries = names.map do |n|
-    [n, filled[n], File.mtime(File.join(root, n)), rules[File.extname(n).downcase],
-     pages.include?(n) ? :page : nil]
+  # What goes into the pack, name by name. A page is one entry under the
+  # name people call. Everything else is two: the hashed name, which is
+  # where the bytes lie, and the plain name, which the server answers
+  # from the same bytes with the lifetime this site decided.
+  entries = []
+  names.each do |n|
+    data = filled[n]
+    mtime = File.mtime(File.join(root, n))
+    cache = pack_cache_control(rules[File.extname(n).downcase])
+    if pages.include?(n)
+      entries << [n, data, mtime, cache, nil]
+    else
+      entries << [pack_hashed_name(n, data), data, mtime, cache, n]
+    end
   end
 
-  File.binwrite(out, pack_zip(entries))
-  puts "#{out}: #{entries.size} files (#{pages.size} page(s)) under " \
-       "#{entries.size * 2 - pages.size} names, #{File.size(out)} bytes"
-  entries.each do |n, data, _mtime, seconds, page|
-    puts "  /#{n}  #{pack_cache_control(seconds)}"
-    puts "    #{pack_hashed_name(n, data)}  #{PACK_IMMUTABLE}" unless page
+  said = pack_write(out, entries, compact: args[:compact].to_s == 'compact')
+  puts "#{out}: #{names.size} files, #{said[:names]} names, #{File.size(out)} bytes " \
+       "(#{said[:appended]} appended, #{said[:reused]} already there, " \
+       "#{said[:kept]} older name(s) still answering)"
+  names.each do |n|
+    puts "  /#{n}  #{pack_cache_control(rules[File.extname(n).downcase])}"
+    puts "    /#{pack_hashed_name(n, filled[n])}  #{PACK_IMMUTABLE}" unless pages.include?(n)
   end
 end
 
