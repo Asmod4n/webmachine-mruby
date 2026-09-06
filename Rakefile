@@ -677,6 +677,30 @@ def pack_read(path)
   [raw[0, cd_off], old]
 end
 
+# What decides that an entry already in the pack IS this entry: its
+# name, which is a hash of the bytes, its CRC, and what the pack says
+# ABOUT it - the lifetime and the plain name. The modification time is
+# none of that: touch(1) on an unchanged file must not write it again.
+def pack_same(old, crc, extra)
+  old[:crc] == crc && pack_extra_without_time(old[:extra]) == pack_extra_without_time(extra)
+end
+
+# The extra field with the timestamp block taken out. APPNOTE 4.5.2: a
+# block is (id, size, payload), and a reader skips the ids it does not
+# know - so this drops one id and keeps the rest in order.
+def pack_extra_without_time(extra)
+  out = +''.b
+  at = 0
+  while at + 4 <= extra.bytesize
+    id, size = extra[at, 4].unpack('vv')
+    break if at + 4 + size > extra.bytesize
+
+    out << extra[at, 4 + size] unless id == 0x5455
+    at += 4 + size
+  end
+  out
+end
+
 def pack_central(e)
   [0x02014b50, 20, 20, 0, e[:method], e[:dtime], e[:ddate], e[:crc], e[:csize], e[:usize],
    e[:name].bytesize, e[:extra].bytesize, 0, 0, 0, 0, e[:lho]]
@@ -718,7 +742,7 @@ def pack_write(path, entries, compact: false)
     # An entry already in the pack under this name holds these bytes -
     # the name is a hash of them - and says the same thing about them.
     # There is nothing to write, and nothing to deflate a second time.
-    if kept[name] && kept[name][:extra] == extra && kept[name][:crc] == crc
+    if kept[name] && pack_same(kept[name], crc, extra)
       fresh[name] = kept[name]
       next
     end
@@ -748,6 +772,13 @@ def pack_write(path, entries, compact: false)
   cd = +''.b
   all.each { |e| cd << pack_central(e) }
   cd_off = out.bytesize
+  # What the file holds that no entry names any more: the records of
+  # pages that were replaced, and of anything an older build wrote
+  # differently. It is why the file can grow while the number of names
+  # does not, so the task says it rather than leaving it to be found in
+  # ls(1).
+  live = all.sum { |e| 30 + e[:name].bytesize + e[:extra].bytesize + e[:csize] }
+  dead = cd_off - live
   out << cd
   out << [0x06054b50, 0, 0, all.size, all.size, cd.bytesize, cd_off, 0].pack('VvvvvVVv')
 
@@ -772,7 +803,8 @@ def pack_write(path, entries, compact: false)
     f.fsync
   end
   File.rename(tmp, path)
-  { appended: appended, reused: fresh.size - appended, kept: gone.size, names: all.size }
+  { appended: appended, reused: fresh.size - appended, kept: gone.size, names: all.size,
+    dead: dead }
 end
 
 desc 'pack a directory for --assets: rake pack[DIR,OUT.zip,compact]'
@@ -828,6 +860,10 @@ task :pack, %i[dir out compact] do |_t, args|
   puts "#{out}: #{names.size} files, #{said[:names]} names, #{File.size(out)} bytes " \
        "(#{said[:appended]} appended, #{said[:reused]} already there, " \
        "#{said[:kept]} older name(s) still answering)"
+  if said[:dead] > 0
+    puts "  #{said[:dead]} bytes no name points at any more - " \
+         "rake pack[#{dir},#{out},compact] writes the file without them"
+  end
   names.each do |n|
     puts "  /#{n}  #{pack_cache_control(rules[File.extname(n).downcase])}"
     puts "    /#{pack_hashed_name(n, filled[n])}  #{PACK_IMMUTABLE}" unless pages.include?(n)
