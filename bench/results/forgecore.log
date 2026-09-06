@@ -1428,3 +1428,123 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc
 env: runnable=1/1065 busy=0% (200ms sample)
 responses=92784993 bad=0 seconds=10.000 rps=9278444 bytes=7793940100 MB/s=743.28 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1206220263 tx_MB/s=115.03
 server: 99% of one core (87u/12s)   client: 80% of one core (70u/10s)   other: 14% of one core
+==== 2026-09-04T18:19Z repo=2e90352 mruby=8510288 ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=1/1942 busy=0% (200ms sample)
+responses=10025957 bad=0 seconds=10.000 rps=1002595 bytes=1554023335 MB/s=148.20 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=350913815 tx_MB/s=33.47
+server: 99% of one core (10u/89s)   client: 90% of one core (0u/90s)   other: 17% of one core
+==== 2026-09-04T18:51Z repo=bc6669a mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/2137 busy=1% (200ms sample)
+responses=8731391 bad=0 seconds=10.000 rps=873138 bytes=1353365605 MB/s=129.07 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=305604040 tx_MB/s=29.14
+server: 99% of one core (10u/89s)   client: 80% of one core (0u/80s)   other: 43% of one core
+==== 2026-09-04T18:52Z repo=bc6669a mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=1/908 busy=0% (200ms sample)
+responses=8965044 bad=0 seconds=10.000 rps=896504 bytes=1389581820 MB/s=132.52 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=313781895 tx_MB/s=29.92
+server: 99% of one core (11u/88s)   client: 80% of one core (0u/80s)   other: 17% of one core
+==== 2026-09-04T19:05Z repo=8057bfb mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/881 busy=0% (200ms sample)
+responses=8821270 bad=0 seconds=10.000 rps=882126 bytes=1367296850 MB/s=130.40 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=308749805 tx_MB/s=29.44
+server: 100% of one core (10u/89s)   client: 80% of one core (0u/80s)   other: 13% of one core
+==== 2026-09-04T19:09Z repo=84aae37 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=3/1255 busy=1% (200ms sample)
+responses=8800933 bad=0 seconds=10.000 rps=880091 bytes=1364144615 MB/s=130.09 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=308038010 tx_MB/s=29.38
+server: 99% of one core (11u/88s)   client: 80% of one core (0u/80s)   other: 31% of one core
+==== 2026-09-04T19:19Z repo=223cd20 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/892 busy=0% (200ms sample)
+responses=8851869 bad=0 seconds=10.000 rps=885187 bytes=1372039695 MB/s=130.85 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=309822135 tx_MB/s=29.55
+server: 99% of one core (11u/88s)   client: 80% of one core (0u/80s)   other: 18% of one core
+==== 2026-09-04T19:20Z repo=223cd20 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/1192 busy=2% (200ms sample)
+responses=97068738 bad=0 seconds=10.000 rps=9706780 bytes=8153774680 MB/s=777.60 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1261908090 tx_MB/s=120.34
+server: 99% of one core (86u/13s)   client: 90% of one core (80u/10s)   other: 44% of one core
+==== 2026-09-04T19:21Z repo=223cd20 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c16 -d10s h2 -m32 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/887 busy=0% (200ms sample)
+responses=71436576 bad=0 seconds=10.000 rps=7143656 bytes=6000673072 MB/s=572.27 conns=16 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=928683328 tx_MB/s=88.57
+server: 87% of one core (62u/24s)   client: 80% of one core (60u/20s)   other: 4% of one core
+==== 2026-09-04T19:23Z repo=223cd20 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=1/901 busy=0% (200ms sample)
+responses=101657860 bad=0 seconds=10.000 rps=10165746 bytes=8539260928 MB/s=814.36 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1321566676 tx_MB/s=126.03
+server: 99% of one core (87u/12s)   client: 90% of one core (80u/10s)   other: 11% of one core
+==== 2026-09-04T19:28Z repo=6daaabc mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/882 busy=0% (200ms sample)
+responses=6778380 bad=0 seconds=10.000 rps=677838 bytes=1050648900 MB/s=100.20 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=237250020 tx_MB/s=22.63
+server: 100% of one core (7u/92s)   client: 90% of one core (0u/90s)   other: 9% of one core
+==== 2026-09-04T20:02Z repo=e82832b mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/899 busy=0% (200ms sample)
+responses=8934162 bad=0 seconds=10.000 rps=893416 bytes=1384795110 MB/s=132.06 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=312702390 tx_MB/s=29.82
+server: 100% of one core (11u/88s)   client: 80% of one core (0u/80s)   other: 16% of one core
+==== 2026-09-04T20:10Z repo=2e90352 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/909 busy=0% (200ms sample)
+responses=9744141 bad=0 seconds=10.000 rps=974412 bytes=1510341855 MB/s=144.04 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=341050955 tx_MB/s=32.53
+server: 100% of one core (10u/90s)   client: 90% of one core (0u/90s)   other: 11% of one core
+==== 2026-09-04T20:21Z repo=c63f7a0 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/897 busy=0% (200ms sample)
+responses=8836162 bad=0 seconds=10.000 rps=883615 bytes=1369605110 MB/s=130.62 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=309272390 tx_MB/s=29.49
+server: 100% of one core (11u/88s)   client: 80% of one core (0u/80s)   other: 15% of one core
+==== 2026-09-04T20:33Z repo=0e2d541 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c192 -d10s h1 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/898 busy=0% (200ms sample)
+responses=10059687 bad=0 seconds=10.000 rps=1005965 bytes=1559251485 MB/s=148.70 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=352094365 tx_MB/s=33.58
+server: 100% of one core (11u/88s)   client: 90% of one core (0u/90s)   other: 10% of one core
+==== 2026-09-04T20:55Z repo=0e2d541 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/973 busy=0% (200ms sample)
+responses=98379881 bad=0 seconds=10.000 rps=9837932 bytes=8263910692 MB/s=788.10 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1278952949 tx_MB/s=121.97
+server: 97% of one core (84u/12s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-09-04T20:56Z repo=0e2d541 mruby=b9260fa ====
+harness: /home/hendrik/htgen/htgen(2026-09-02T06:23) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=static kernel=7.2.2-1-default host=forgecore
+env: runnable=2/975 busy=0% (200ms sample)
+responses=101098120 bad=0 seconds=10.000 rps=10109744 bytes=8492242768 MB/s=809.88 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1314289198 tx_MB/s=125.34
+server: 99% of one core (86u/13s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-09-06T07:22Z repo=7b907fe mruby=a9151d7 ====
+harness: /home/hendrik/code/webmachine-mruby/../htgen/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.2-1-default host=forgecore
+env: runnable=3/1665 busy=2% (200ms sample)
+responses=87892333 bad=0 seconds=10.000 rps=8789232 bytes=7382956756 MB/s=704.09 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1142628137 tx_MB/s=108.97
+server: 99% of one core (87u/11s)   client: 80% of one core (70u/10s)   other: 30% of one core
+==== 2026-09-06T07:22Z repo=7b907fe mruby=a9151d7 ====
+harness: /home/hendrik/code/webmachine-mruby/../htgen/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.2-1-default host=forgecore
+env: runnable=2/1358 busy=0% (200ms sample)
+responses=88990119 bad=0 seconds=10.000 rps=8898982 bytes=7475170780 MB/s=712.89 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1156886901 tx_MB/s=110.33
+server: 99% of one core (87u/12s)   client: 80% of one core (70u/10s)   other: 16% of one core
+==== 2026-09-06T07:23Z repo=7b907fe mruby=a9151d7 ====
+harness: /home/hendrik/code/webmachine-mruby/../htgen/htgen(2026-08-29T09:59) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.2-1-default host=forgecore
+env: runnable=2/845 busy=0% (200ms sample)
+responses=82069314 bad=0 seconds=10.000 rps=8206840 bytes=6893823160 MB/s=657.44 conns=16 streams=128 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1066915578 tx_MB/s=101.75
+server: 92% of one core (80u/12s)   client: 90% of one core (80u/10s)   other: 10% of one core
+==== 2026-09-06T07:24Z repo=7b907fe mruby=a9151d7 ====
+harness: /home/hendrik/code/webmachine-mruby/../htgen/htgen(2026-08-29T09:59) -c192 -d10s h1 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 7.2.2-1-default x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (SUSE Linux) 16.2.0 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.2-1-default host=forgecore
+env: runnable=2/821 busy=0% (200ms sample)
+responses=10082891 bad=0 seconds=10.000 rps=1008288 bytes=1562848105 MB/s=149.04 conns=192 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=352906505 tx_MB/s=33.66
+server: 100% of one core (10u/89s)   client: 90% of one core (0u/90s)   other: 10% of one core
