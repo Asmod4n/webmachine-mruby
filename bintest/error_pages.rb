@@ -21,7 +21,7 @@ def epg_server
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   app = Tempfile.new(['wm-epg', '.mrb'])
   app.close
-  raise "mrbc failed on #{EPG_APP}" unless system(mrbc, '-o', app.path, EPG_APP)
+  raise "mrbc failed on #{EPG_APP}" unless system(mrbc, '-g', '-o', app.path, EPG_APP)
 
   sock = "/tmp/wm-epg-#{$$}.sock"
   log = "/tmp/wm-epg-#{$$}.log"
@@ -151,7 +151,7 @@ assert('error pages: conf.disable_http_cats leaves the pages and drops the pictu
   src.close
   app = Tempfile.new(['wm-nocats', '.mrb'])
   app.close
-  raise 'mrbc failed' unless system(mrbc, '-o', app.path, src.path)
+  raise 'mrbc failed' unless system(mrbc, '-g', '-o', app.path, src.path)
 
   pack = File.expand_path('../share/error-assets.zip', __dir__)
   sock = "/tmp/wm-nocats-#{$$}.sock"

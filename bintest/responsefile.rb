@@ -51,7 +51,7 @@ def rf_compile(source)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   mrb = Tempfile.new(['wm-rfapp', '.mrb'])
   mrb.close
-  ok = system(mrbc, '-o', mrb.path, src.path)
+  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
   raise 'mrbc failed to compile the response.file fixture' unless ok
   mrb
 ensure

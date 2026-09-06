@@ -18,7 +18,7 @@ def wm_compile(app_source)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   mrb = Tempfile.new(['wm-h2app', '.mrb'])
   mrb.close
-  ok = system(mrbc, '-o', mrb.path, src.path)
+  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
   raise "mrbc failed to compile:\n#{app_source}" unless ok
   mrb
 ensure

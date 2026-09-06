@@ -41,7 +41,7 @@ RUN rake compile
 # The app is BYTECODE (#100): the server never compiles Ruby. mrbc
 # comes out of the same build, so an image can carry it and compile the
 # app right here.
-RUN mruby/build/host/mrbc/bin/mrbc -o /src/app.mrb examples/hello.rb
+RUN mruby/build/host/mrbc/bin/mrbc -g -o /src/app.mrb examples/hello.rb
 
 # -------------------------------------------------------------- runtime
 FROM debian:trixie-slim AS runtime

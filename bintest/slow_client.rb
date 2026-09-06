@@ -46,7 +46,7 @@ def slow_app
   rb = "/tmp/wm-slow-app-#{$$}.rb"
   mrb = "/tmp/wm-slow-app-#{$$}.mrb"
   File.write(rb, SLOW_APP)
-  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the slow-client app'
+  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the slow-client app'
   File.unlink(rb) rescue nil
   $slow_app = mrb
 end

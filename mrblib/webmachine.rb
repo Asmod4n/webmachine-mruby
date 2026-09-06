@@ -1,3 +1,18 @@
+# An exception crosses between VMs as CBOR, whole: its class, its
+# message and its backtrace. Every VM this process opens loads this, so
+# a worker encodes what it raised and the reactor decodes the same
+# exception.
+CBOR.register_tag(5900) do
+  encode Exception do |e|
+    [e.class, e.message, e.backtrace]
+  end
+  decode Array do |a|
+    exc = a[0].new(a[1])
+    exc.set_backtrace(a[2] || [])
+    exc
+  end
+end
+
 module Webmachine
   module Workers
     # #30: the response a compute task speaks to. It has one thing, and

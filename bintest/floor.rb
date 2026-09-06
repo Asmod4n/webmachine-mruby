@@ -32,7 +32,7 @@ def floor_app
   rb = "/tmp/wm-floor-app-#{$$}.rb"
   mrb = "/tmp/wm-floor-app-#{$$}.mrb"
   File.write(rb, FLOOR_APP)
-  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the floor app'
+  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the floor app'
   File.unlink(rb) rescue nil
   $floor_app = mrb
 end

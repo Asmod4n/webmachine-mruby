@@ -1756,17 +1756,14 @@ class Ring {
     // backtrace and which worker - and it goes there even when the
     // connection is gone, because the fault is the application's either
     // way.
-    if (answered.raised && !answered.exception_class.empty()) {
-      Logger* const el = app_.error_log();
-      if (el != nullptr && el->enabled) {
-        log_compute_fault(*el, {answered.exception_class, answered.message, answered.backtrace,
-                                answered.worker_name,
-                                c.live && c.gen == gen && c.peer != nullptr
-                                    ? std::string_view{reinterpret_cast<const char*>(&c.peer->addr),
-                                                       static_cast<size_t>(c.peer->addrlen)}
-                                    : std::string_view{},
-                                {}});
-      }
+    if (answered.raised && have) {
+      report_compute_fault(app_.error_log(), mrb_,
+                           {answered.exception, answered.step, answered.worker_name,
+                            c.live && c.gen == gen && c.peer != nullptr
+                                ? std::string_view{reinterpret_cast<const char*>(&c.peer->addr),
+                                                   static_cast<size_t>(c.peer->addrlen)}
+                                : std::string_view{},
+                            static_cast<uint16_t>(answered.over_deadline ? 500 : 503)});
     }
     // A generation that moved means the connection is gone and its run
     // died with it. The answer is still TAKEN, because the slot is the

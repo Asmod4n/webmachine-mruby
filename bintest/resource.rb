@@ -11,7 +11,7 @@ def wm_compile(app_source)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   mrb = Tempfile.new(['wm-app', '.mrb'])
   mrb.close
-  ok = system(mrbc, '-o', mrb.path, src.path)
+  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
   raise "mrbc failed to compile:\n#{app_source}" unless ok
   mrb
 ensure
@@ -488,7 +488,7 @@ assert('resource: a .rb path is refused by name, with the mrbc line that fixes i
   out, rb_path = resource_refused_rb("class NotCompiled < Webmachine::Resource; end\n")
   assert_true out.include?(rb_path), out
   mrb_path = "#{rb_path[0..-4]}.mrb"
-  assert_true out.include?("mrbc -o #{mrb_path} #{rb_path}"), out
+  assert_true out.include?("mrbc -g -o #{mrb_path} #{rb_path}"), out
 end
 
 assert('chrono: duration units and clocks answer inside the run frame') do

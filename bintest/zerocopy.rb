@@ -52,7 +52,7 @@ def zc_compile(source)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   mrb = Tempfile.new(['wm-zcapp', '.mrb'])
   mrb.close
-  ok = system(mrbc, '-o', mrb.path, src.path)
+  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
   raise "mrbc failed to compile the zero-copy fixture" unless ok
   mrb
 ensure

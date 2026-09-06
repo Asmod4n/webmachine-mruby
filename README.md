@@ -34,7 +34,7 @@ end
 ```
 
     rake
-    mruby/bin/mrbc -o hello.mrb hello.rb
+    mruby/bin/mrbc -g -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb --port=8080
 
 `self.to_html` is the whole trick. The server calls it once at start

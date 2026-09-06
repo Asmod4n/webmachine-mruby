@@ -33,7 +33,7 @@ def wpq_head(app_source)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   mrb = Tempfile.new(['wm-wpq', '.mrb'])
   mrb.close
-  raise "mrbc failed:\n#{app_source}" unless system(mrbc, '-o', mrb.path, src.path)
+  raise "mrbc failed:\n#{app_source}" unless system(mrbc, '-g', '-o', mrb.path, src.path)
   sock = "/tmp/wm-wpq-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-wpq-err-#{$$}.log"

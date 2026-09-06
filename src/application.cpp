@@ -731,7 +731,7 @@ void app_load(mrb_state* mrb, const char* path) {
     const std::string mrb_path(path, path_len - 3);
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                "%s is Ruby source, not bytecode - this server loads bytecode only. Compile "
-               "it first: mrbc -o %s.mrb %s",
+               "it first: mrbc -g -o %s.mrb %s",
                path, mrb_path.c_str(), path);
   }
   FILE* f = std::fopen(path, "rb");
@@ -757,11 +757,24 @@ void app_load(mrb_state* mrb, const char* path) {
   // than any sentence this frame could add.
   if (mrb->exc != nullptr) rethrow(mrb);
   struct RClass* owner = mrb->object_class;
-  if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(main)))) {
+  const mrb_method_t main_m = mrb_method_search_vm(mrb, &owner, MRB_SYM(main));
+  if (MRB_METHOD_UNDEF_P(main_m)) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                "%s defines no `main` - since #116 an app file defines exactly that, and "
                "Webmachine::Application.new inside it registers the app",
                path);
+  }
+  // Without debug info a raise in this app has no file and no line, in
+  // the error log and on the page. mrbc keeps it with -g, and the
+  // server says so once at boot rather than once per record.
+  if (!MRB_METHOD_CFUNC_P(main_m)) {
+    const struct RProc* const main_p = MRB_METHOD_PROC(main_m);
+    if (main_p != nullptr && !MRB_PROC_CFUNC_P(main_p) && main_p->body.irep->debug_info == nullptr) {
+      std::fprintf(stderr,
+                   "webmachine: %s carries no line numbers - a raise in it names no file and "
+                   "no line. Compile it with mrbc -g\n",
+                   path);
+    }
   }
   mrb_funcall_argv(mrb, mrb_top_self(mrb), MRB_SYM(main), 0, nullptr);
   if (mrb->exc != nullptr) rethrow(mrb);

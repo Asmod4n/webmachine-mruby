@@ -21,7 +21,7 @@ def cppr_server
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
   app = Tempfile.new(['wm-cppr', '.mrb'])
   app.close
-  raise "mrbc failed on #{CPPR_APP}" unless system(mrbc, '-o', app.path, CPPR_APP)
+  raise "mrbc failed on #{CPPR_APP}" unless system(mrbc, '-g', '-o', app.path, CPPR_APP)
 
   sock = "/tmp/wm-cppr-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)

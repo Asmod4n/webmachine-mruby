@@ -27,7 +27,7 @@ def h1_app_mrb
   rb = "/tmp/wm-h1-app-#{$$}.rb"
   mrb = "/tmp/wm-h1-app-#{$$}.mrb"
   File.write(rb, H1_APP)
-  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the h1 floor app'
+  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the h1 floor app'
   File.unlink(rb) rescue nil
   $h1_app_mrb = mrb
 end

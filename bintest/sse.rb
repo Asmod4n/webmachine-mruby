@@ -11,7 +11,7 @@ def sse_compile(src)
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set'
   out = Tempfile.new(['wm-sse', '.mrb'])
   out.close
-  raise "mrbc failed:\n#{src}" unless system(mrbc, '-o', out.path, f.path)
+  raise "mrbc failed:\n#{src}" unless system(mrbc, '-g', '-o', out.path, f.path)
   out
 ensure
   f&.unlink

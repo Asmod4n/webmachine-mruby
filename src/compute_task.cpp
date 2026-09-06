@@ -71,12 +71,11 @@ struct Slot {
   // answer from a raise: the author's number was wrong, and a retry
   // would take just as long (.DESIGN.md #compute-task-bound).
   bool over_deadline = false;
-  // What the raise said, in text. An exception object belongs to the
-  // worker's VM and cannot cross, so the worker reads it here and the
-  // reactor writes it to the error log.
-  std::string exception_class;
-  std::string message;
-  std::string backtrace;
+  // What the worker raised, as CBOR (mrblib registers Exception), and
+  // the step of the job it raised in. The reactor decodes the same
+  // exception in its own VM.
+  std::string exception;
+  std::string step;
   // Which worker ran it, as the name its thread carries, and as the
   // number the pool addresses it by.
   std::string worker_name;
@@ -596,32 +595,58 @@ struct WorkerVm {
 };
 
 
-// One failure inside a worker, written down before the VM forgets it.
-// The exception is cleared here and nowhere else: a VM that keeps an
-// exception raises it again on the next job, and the next job belongs
-// to another request.
-//
-// `step` names the part of the job that failed - decode, build, run,
-// encode. The class and the message speak about the Ruby; `step` says
-// which of the four steps was running when it broke.
+void report_compute_fault(Logger* lg, mrb_state* mrb, const ComputeFault& x) {
+  const int ai = mrb_gc_arena_save(mrb);
+  if (!x.exception.empty()) {
+    const mrb_value e = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, x.exception.data(),
+                                                                 x.exception.size()));
+    if (mrb->exc == nullptr && mrb_exception_p(e)) mrb->exc = mrb_obj_ptr(e);
+  }
+  std::string where(x.step);
+  if (!x.worker_name.empty()) where.append(" (").append(x.worker_name).append(")");
+  if (mrb->exc != nullptr) {
+    if (lg != nullptr && lg->enabled) {
+      ErrFacts f;
+      std::string backtrace;
+      f.status_code = x.status;
+      f.peer = x.peer.data();
+      f.peer_len = x.peer.size();
+      f.steering = where.data();
+      f.steering_len = where.size();
+      exception_facts(mrb, {f, backtrace});
+      if (f.exception_class != nullptr) log_error(*lg, f);
+    }
+    if (kDebugBuild) mrb_print_error(mrb);
+    mrb->exc = nullptr;
+  } else if (lg != nullptr && lg->enabled) {
+    // Nothing decodable crossed: the step alone is the record.
+    log_internal_error(*lg, {x.peer, {}, where, x.status});
+  }
+  mrb_gc_arena_restore(mrb, ai);
+}
+
+// One failure inside a worker: the exception itself, as CBOR, and the
+// step of the job it happened in. The exception is cleared here and
+// nowhere else: a VM that keeps one raises it again on the next job,
+// and the next job belongs to another request.
 void note_raise(mrb_state* mrb, Slot& s, const char* step) {
   s.raised = true;
-  ErrFacts f;
-  std::string backtrace;
-  exception_facts(mrb, {f, backtrace});
-  if (f.exception_class != nullptr) {
-    s.exception_class.assign(f.exception_class, f.exception_class_len);
-    if (f.message != nullptr) s.message.assign(f.message, f.message_len);
-    s.backtrace.swap(backtrace);
-  } else {
-    // Nothing raised, and the step still refused: a block that is not
-    // there, a value CBOR cannot carry. It is the server's own fault
-    // and it carries the server's own class.
-    s.exception_class = "Webmachine::Error";
-  }
-  if (!s.message.empty()) s.message.append(" - ");
-  s.message.append(step);
+  s.step = step;
+  s.exception.clear();
+  if (mrb->exc == nullptr) return;
+  const mrb_value exc = mrb_obj_value(mrb->exc);
   mrb->exc = nullptr;
+  const int ai = mrb_gc_arena_save(mrb);
+  const mrb_value bytes = mrb_cbor_encode_fast(mrb, exc);
+  if (mrb->exc == nullptr && mrb_string_p(bytes)) {
+    s.exception.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+  } else {
+    // The exception itself could not cross. Its text still can.
+    mrb->exc = nullptr;
+    const mrb_value text = mrb_inspect(mrb, exc);
+    s.step.append(": ").append(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text)));
+  }
+  mrb_gc_arena_restore(mrb, ai);
 }
 
 // #30: the worker's own response.userdata. mrblib carries the object -
@@ -724,9 +749,8 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
   s.raised = false;
   s.over_deadline = false;
   s.out.clear();
-  s.exception_class.clear();
-  s.message.clear();
-  s.backtrace.clear();
+  s.exception.clear();
+  s.step.clear();
   mrb->vm_interrupt = FALSE;
   asked_stop.store(false, std::memory_order_relaxed);
 
@@ -1005,9 +1029,8 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
       out->user_changed = s.user_changed;
       out->raised = s.raised;
       out->over_deadline = s.over_deadline;
-      out->exception_class.swap(s.exception_class);
-      out->message.swap(s.message);
-      out->backtrace.swap(s.backtrace);
+      out->exception.swap(s.exception);
+      out->step.swap(s.step);
       out->worker_name = s.worker_name;
       impl_->job_seq[s.worker].fetch_add(1, std::memory_order_acq_rel);
       s.busy = false;
@@ -1015,9 +1038,8 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
       s.out.clear();
       s.user_in.clear();
       s.user_out.clear();
-      s.exception_class.clear();
-      s.message.clear();
-      s.backtrace.clear();
+      s.exception.clear();
+      s.step.clear();
       return true;
     }
   }

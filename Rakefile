@@ -46,7 +46,7 @@ def wm_smoke_app
   rb = "/tmp/wm-smoke-app-#{$$}.rb"
   mrb = "/tmp/wm-smoke-app-#{$$}.mrb"
   File.write(rb, SMOKE_APP)
-  sh "#{mrbc} -o #{mrb} #{rb}"
+  sh "#{mrbc} -g -o #{mrb} #{rb}"
   File.unlink(rb) rescue nil
   @wm_smoke_app = mrb
 end
@@ -897,7 +897,7 @@ task :site do
   mrbc = File.expand_path('mruby/bin/mrbc', __dir__)
   raise "#{mrbc} not found - rake compile builds it" unless File.executable?(mrbc)
 
-  sh "#{mrbc} -o examples/site.mrb examples/site.rb"
+  sh "#{mrbc} -g -o examples/site.mrb examples/site.rb"
   puts 'now: webmachine-server --port=8080 --app=examples/site.mrb ' \
        '--assets=examples/site.zip'
 end

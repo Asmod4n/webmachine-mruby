@@ -1317,40 +1317,17 @@ inline void log_internal_error(Logger& lg, const ErrorLine& line) {
 // it - so the worker spells it out as text and these are its words. The
 // worker's thread name goes into the message, because a fault that says
 // what broke and not WHERE it ran sends the reader to the wrong core.
+// A raise inside a worker, reported on the reactor as the exception the
+// worker's VM made, decoded from CBOR. The step and the worker go into
+// the record's steering field, so the message stays the VM's own.
 struct ComputeFault {
-  std::string_view exception_class;
-  std::string_view message;
-  std::string_view backtrace;
+  std::string_view exception;  // CBOR, may be empty when it could not cross
+  std::string_view step;
   std::string_view worker_name;
   std::string_view peer;
-  std::string_view request_target;
+  uint16_t status;
 };
 
-inline void log_compute_fault(Logger& lg, const ComputeFault& x) {
-  if (!lg.enabled) return;
-  std::string message;
-  message.reserve(x.message.size() + x.worker_name.size() + 4);
-  message.append(x.message);
-  if (!x.worker_name.empty()) {
-    if (!message.empty()) message.append(" ");
-    message.append("(").append(x.worker_name).append(")");
-  }
-  ErrFacts f;
-  f.peer = x.peer.data();
-  f.peer_len = x.peer.size();
-  f.request_target = x.request_target.data();
-  f.request_target_len = x.request_target.size();
-  f.exception_class = x.exception_class.data();
-  f.exception_class_len = x.exception_class.size();
-  f.message = message.data();
-  f.message_len = message.size();
-  f.backtrace = x.backtrace.data();
-  f.backtrace_len = x.backtrace.size();
-  // A compute task that raised answers nothing, and 500 is what the run
-  // sends. The record says the same number the client got.
-  f.status_code = 500;
-  log_error(lg, f);
-}
 
 // A condition the server hit with nobody to answer for it: no request, no
 // peer, no status. The error log is where it belongs and it goes there
@@ -1411,6 +1388,7 @@ inline void report_raise(Logger* lg, mrb_state* mrb, uint16_t status) {
   if (kDebugBuild) mrb_print_error(mrb);
   mrb->exc = nullptr;
 }
+void report_compute_fault(Logger* lg, mrb_state* mrb, const ComputeFault& x);
 }
 
 namespace webmachine::http {
@@ -3083,9 +3061,10 @@ struct ComputeAnswer {
   // raise: the author's number was wrong, and a retry costs the same
   // (.DESIGN.md #compute-task-bound).
   bool over_deadline = false;
-  std::string exception_class;
-  std::string message;
-  std::string backtrace;
+  // What the worker raised, as CBOR, decoded on the reactor to the same
+  // exception; and the step of the job it raised in.
+  std::string exception;
+  std::string step;
   // The thread that ran it, as the name a backtrace shows.
   std::string worker_name;
 };

@@ -34,7 +34,7 @@ def cfg_app
   rb = "/tmp/wm-cfg-app-#{$$}.rb"
   mrb = "/tmp/wm-cfg-app-#{$$}.mrb"
   File.write(rb, CFG_APP)
-  system(mrbc, '-o', mrb, rb) or raise 'mrbc failed to compile the config floor app'
+  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the config floor app'
   File.unlink(rb) rescue nil
   $cfg_app = mrb
 end
