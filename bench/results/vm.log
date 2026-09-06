@@ -1541,3 +1541,7 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.
 env: runnable=1/121 busy=0% (200ms sample)
 responses=260789 bad=0 seconds=2.000 rps=130394 bytes=40422295 MB/s=19.27 conns=8 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=9127860 tx_MB/s=4.35
 server: 69% of one core (9u/59s)   client: 59% of one core (4u/54s)   other: 0% of one core
+==== 2026-09-06T08:03Z repo=b3762e7 mruby=a9151d7 ====
+harness: htgen -c16 -d5s PIPELINED depth=16 transport=unix app=examples/hello.rb 6.18.44-fc-v24 x86_64
+responses=13001328 bad=0 seconds=5.000 rps=2600263 bytes=2015205840 MB/s=384.37 conns=16 streams=1 pipeline=16 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=455054880 tx_MB/s=86.79
+  bytes/response: 155.0 (must equal the response size - a batch that lost answers still reports throughput)
