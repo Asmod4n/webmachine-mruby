@@ -85,11 +85,21 @@ constexpr Face kFaces[] = {
     {599, "Network Connect Timeout Error", "not registered"},
 };
 
-const Face* face_for(uint16_t status) {
-  for (const Face& f : kFaces) {
-    if (f.status == status) return &f;
+// The face of a status, by index: one table over 400..599, built at
+// compile time, so a lookup is one load.
+constexpr uint16_t kFaceFirst = 400;
+constexpr uint16_t kFacePast = 600;
+struct FaceIndex {
+  const Face* at[kFacePast - kFaceFirst] = {};
+  constexpr FaceIndex() {
+    for (const Face& f : kFaces) at[f.status - kFaceFirst] = &f;
   }
-  return nullptr;
+};
+constexpr FaceIndex kFaceIndex;
+
+const Face* face_for(uint16_t status) {
+  if (status < kFaceFirst || status >= kFacePast) return nullptr;
+  return kFaceIndex.at[status - kFaceFirst];
 }
 
 // mruby: the handler call, under mrb_protect_error - it is app code from

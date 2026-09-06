@@ -62,6 +62,13 @@ The tag works in every text file in the pack, so a stylesheet writes
 the order the naming gives, and two files that name each other are
 refused rather than looped over.
 
+## Which files get their tags filled
+
+Text files do: `.html`, `.css`, `.js`, `.svg`, `.json`, `.xml` and the
+other text extensions `rake pack` knows. To decide it yourself, write
+`<DIR>/.fill-extensions`, one extension per line with the dot. That
+file replaces the whole list.
+
 ## How long is yours to say
 
 `rake pack` asks, once per file extension, and writes the answers into

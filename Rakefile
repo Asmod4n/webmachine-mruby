@@ -597,11 +597,32 @@ end
 # picture - and the pack does those in the order the naming gives.
 PACK_ASSET_TAG = /\{\{\s*asset:\s*([^\s}]+)\s*\}\}/.freeze
 
-# Which entries can carry {{asset:...}} at all: the text ones.
-PACK_TEXT = %w[.html .htm .css .js .mjs .svg .json .txt .xml .webmanifest].freeze
+# Which entries get their {{asset:...}} tags filled: the text ones. This
+# is the list when <DIR>/.fill-extensions does not say otherwise. That
+# file holds one extension per line, with the dot, and replaces the
+# whole list.
+PACK_FILL_FILE = '.fill-extensions'
+PACK_TEXT_DEFAULT = %w[.html .htm .xhtml .css .js .mjs .cjs .map .svg .json .jsonld .txt
+                       .md .xml .rss .atom .webmanifest .manifest .csv .tsv .yaml .yml
+                       .toml .ini .vtt .srt .ics .txt .appcache].uniq.freeze
+
+def pack_text_extensions(root)
+  path = File.join(root, PACK_FILL_FILE)
+  return PACK_TEXT_DEFAULT unless File.file?(path)
+
+  list = File.readlines(path, chomp: true).map { |l| l.sub(/#.*/, '').strip.downcase }
+  list = list.reject(&:empty?)
+  bad = list.reject { |e| e.start_with?('.') }
+  raise "#{path}: an extension starts with a dot, and these do not: #{bad.join(', ')}" unless bad.empty?
+
+  list.uniq
+end
+
+# Set once per pack, from the directory being packed.
+$pack_text = PACK_TEXT_DEFAULT
 
 def pack_text?(name)
-  PACK_TEXT.include?(File.extname(name).downcase)
+  $pack_text.include?(File.extname(name).downcase)
 end
 
 def pack_fill(name, body, table)
@@ -828,6 +849,7 @@ task :pack, %i[dir out compact] do |_t, args|
 
   rules_path = File.join(root, PACK_RULES_FILE)
   rules = read_cache_rules(rules_path)
+  $pack_text = pack_text_extensions(root)
   wanted = names.group_by { |n| File.extname(n).downcase }
   missing = wanted.keys.sort.reject { |ext| rules.key?(ext) }
   unless missing.empty?

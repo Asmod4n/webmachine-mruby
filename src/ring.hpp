@@ -22,6 +22,8 @@ class Ring {
   // The ring exit is what ends surviving connections, and what unlinks a
   // unix listener's path.
   ~Ring() {
+    // The workers are told through this ring, so they go first.
+    compute_.stop();
     for (ktls_keys*& k : tls_keys_) {
       ktls_keys_free(k);
       k = nullptr;

@@ -787,39 +787,54 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   impl->vms[me].store(vm.mrb, std::memory_order_release);
 
   for (;;) {
-    struct io_uring_cqe* cqe = nullptr;
-    const int rc = io_uring_wait_cqe(ring, &cqe);
+    struct io_uring_cqe* first = nullptr;
+    const int rc = io_uring_wait_cqe(ring, &first);
     if (rc < 0) {
       if (rc == -EINTR) continue;
       impl->vms[me].store(nullptr, std::memory_order_release);
       vm.close();
       return;
     }
-    const uint64_t job = cqe->user_data;
-    io_uring_cqe_seen(ring, cqe);
-    if (job == kStopJob) {
+    // Every completion the wait woke up to, in one pass. The answers
+    // are submitted once, after the pass.
+    unsigned head = 0;
+    unsigned seen = 0;
+    unsigned answers = 0;
+    bool told_to_stop = false;
+    struct io_uring_cqe* cqe = nullptr;
+    io_uring_for_each_cqe(ring, head, cqe) {
+      seen++;
+      const uint64_t job = cqe->user_data;
+      if (job == kStopJob) {
+        told_to_stop = true;
+        break;
+      }
+      // Our own send, or anything else that is not one of our slots.
+      if (job >= impl->slots.size()) continue;
+
+      Slot& s = impl->slots[static_cast<size_t>(job)];
+      // The reader of an error record asks WHERE it ran before anything
+      // else, so the name goes in beside the answer.
+      s.worker_name = thread_name;
+      run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
+
+      // The answer goes home as a completion. The reactor wrote the slot
+      // before the job was sent and reads it after this arrives, so the
+      // ring's ordering is the whole synchronisation. There is no lock
+      // because no two threads touch anything at the same time.
+      struct io_uring_sqe* sqe = nullptr;
+      while ((sqe = io_uring_get_sqe(ring)) == nullptr) io_uring_submit(ring);
+      io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, s.answer, 0);
+      io_uring_sqe_set_data64(sqe, kSent);
+      answers++;
+    }
+    io_uring_cq_advance(ring, seen);
+    if (answers != 0) io_uring_submit(ring);
+    if (told_to_stop) {
       impl->vms[me].store(nullptr, std::memory_order_release);
       vm.close();
       return;
     }
-    // Our own send, or anything else that is not one of our slots.
-    if (job >= impl->slots.size()) continue;
-
-    Slot& s = impl->slots[static_cast<size_t>(job)];
-    // The reader of an error record asks WHERE it ran before anything
-    // else, so the name goes in beside the answer.
-    s.worker_name = thread_name;
-    run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
-
-    // The answer goes home as a completion. The reactor wrote the slot
-    // before the job was sent and reads it after this arrives, so the
-    // ring's ordering is the whole synchronisation. There is no lock
-    // because no two threads touch anything at the same time.
-    struct io_uring_sqe* sqe = nullptr;
-    while ((sqe = io_uring_get_sqe(ring)) == nullptr) io_uring_submit(ring);
-    io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, s.answer, 0);
-    io_uring_sqe_set_data64(sqe, kSent);
-    io_uring_submit(ring);
   }
 }
 
@@ -862,22 +877,45 @@ const char* ComputePool::start(unsigned workers, unsigned depth, struct io_uring
   return nullptr;
 }
 
+// The stop word goes to each worker through the reactor's own ring,
+// the way a job does: a worker's ring is submitted by the worker only.
+// A worker that could not be told is not joined, because it would
+// never come, and its ring is left standing: the process is ending.
 void ComputePool::stop() {
   if (impl_ == nullptr) return;
   Impl* impl = impl_;
+  std::vector<bool> told(impl->rings.size(), false);
   for (size_t i = 0; i < impl->rings.size(); i++) {
-    struct io_uring_sqe* sqe = io_uring_get_sqe(&impl->rings[i]);
-    if (sqe != nullptr) {
-      // A ring may message itself, which is how a worker is told to go
-      // without a second channel for the telling.
-      io_uring_prep_msg_ring(sqe, impl->rings[i].ring_fd, 0, kStopJob, 0);
-      io_uring_submit(&impl->rings[i]);
+    struct io_uring_sqe* sqe = nullptr;
+    while ((sqe = io_uring_get_sqe(impl->home)) == nullptr) {
+      if (io_uring_submit(impl->home) < 0) break;
+    }
+    if (sqe == nullptr) {
+      std::fprintf(stderr, "webmachine: compute worker %zu cannot be told to stop: no sqe\n", i);
+      continue;
+    }
+    io_uring_prep_msg_ring(sqe, impl->rings[i].ring_fd, 0, kStopJob, 0);
+    io_uring_sqe_set_data64(sqe, detail::tag(detail::kComputeTask, 0, 0));
+    const int rc = io_uring_submit(impl->home);
+    if (rc < 0) {
+      std::fprintf(stderr, "webmachine: compute worker %zu cannot be told to stop: %s\n", i,
+                   std::strerror(-rc));
+      continue;
+    }
+    told[i] = true;
+  }
+  for (size_t i = 0; i < impl->threads.size(); i++) {
+    std::thread& t = impl->threads[i];
+    if (!t.joinable()) continue;
+    if (told[i]) {
+      t.join();
+    } else {
+      t.detach();
     }
   }
-  for (std::thread& t : impl->threads) {
-    if (t.joinable()) t.join();
+  for (size_t i = 0; i < impl->rings.size(); i++) {
+    if (told[i]) io_uring_queue_exit(&impl->rings[i]);
   }
-  for (struct io_uring& r : impl->rings) io_uring_queue_exit(&r);
   delete impl;
   impl_ = nullptr;
 }
