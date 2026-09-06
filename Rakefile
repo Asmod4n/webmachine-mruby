@@ -38,6 +38,13 @@ RUBY
 
 # The server refuses to start with nothing to serve, so a smoke brings its
 # own resource - one route, one baked body.
+#
+# mrbc -g, here and in every place this tree compiles an app: an error
+# record names the app's source line, and only the debug section of the
+# .mrb carries the line table. The cost is that section's size, once
+# per file; a ship build reads it and pays nothing per request. The
+# installed mrbc is the same program, and README tells users the same
+# line.
 def wm_smoke_app
   return @wm_smoke_app if @wm_smoke_app
   mrbc = [File.expand_path('mruby/build/host/mrbc/bin/mrbc', __dir__),

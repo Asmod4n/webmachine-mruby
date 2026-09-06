@@ -57,7 +57,7 @@ def main
   end
 end
 APP
-"$mrbc" -o "$work/app.mrb" "$work/app.rb" >/dev/null
+"$mrbc" -g -o "$work/app.mrb" "$work/app.rb" >/dev/null
 
 say "2. does the server come up on a TLS listener?"
 "$bin" --app="$work/app.mrb" >"$work/out.log" 2>"$work/err.log" &
