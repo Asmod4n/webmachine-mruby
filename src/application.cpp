@@ -26,11 +26,14 @@ std::vector<AppSpec*> registered_;
 
 const struct mrb_data_type app_type = {"webmachine.app", nullptr};
 
-// Webmachine::Config, defined in mrblib. Looked up once, when the
-// mrblib that defines it has run - C makes what Ruby needs to run,
-// so this is the other direction and cannot be done at gem init.
-struct RClass* config_class_ = nullptr;
-struct RClass* route_class_ = nullptr;
+
+// The class of the object `app.routes` yields. It is named under the
+// module and looked up in the VM that asks: a worker's VM runs this
+// gem's init as well, and a pointer kept here would be the last VM's.
+struct RClass* routes_class(mrb_state* mrb) {
+  return mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)),
+                                MRB_SYM(Routes));
+}
 
 // Exactly one listener spelling per app; a second refuses by name.
 // One form an application may be declared in, and the word that names it.
@@ -595,10 +598,10 @@ mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   mrb_data_init(self, s, &app_type);
   // Looked up here and not at gem init: mrblib runs AFTER the C side, so
   // Webmachine::Config does not exist yet when this file's init does.
-  if (config_class_ == nullptr) {
-    config_class_ = mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)),
-                                           MRB_SYM(Config));
-  }
+  // Looked up in the VM that asks, every time: a pointer kept across
+  // VMs would name the class of whichever VM ran this gem's init last.
+  struct RClass* const config_class_ = mrb_class_get_under_id(
+      mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Config));
   // The conf object is Ruby's: mrblib names the members, this only reads
   // them back at the end of the block. mrb_obj_new and not a hand-built
   // array, so Struct.new's own initialize decides the shape.
@@ -607,7 +610,7 @@ mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   mrb_gc_register(mrb, conf);
   mrb_iv_set(mrb, self, MRB_IVSYM(conf), conf);
   mrb_iv_set(mrb, self, MRB_IVSYM(routes),
-             mrb_obj_value(mrb_data_object_alloc(mrb, route_class_, s, &app_type)));
+             mrb_obj_value(mrb_data_object_alloc(mrb, routes_class(mrb), s, &app_type)));
   if (mrb_nil_p(blk)) return self;
   mrb_yield(mrb, blk, self);
   read_config(mrb, conf, s);
@@ -674,14 +677,13 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_method_id(mrb, app, MRB_SYM(add_websocket), route_websocket, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, app, MRB_SYM(add_sse), route_sse, MRB_ARGS_REQ(2));
 
-  route_class_ = mrb_class_new(mrb, mrb->object_class);
-  MRB_SET_INSTANCE_TT(route_class_, MRB_TT_CDATA);
-  mrb_gc_register(mrb, mrb_obj_value(route_class_));
-  mrb_define_method_id(mrb, route_class_, MRB_SYM(add), route_add, MRB_ARGS_REQ(2));
-  mrb_define_method_id(mrb, route_class_, MRB_SYM(sse), route_sse, MRB_ARGS_REQ(2));
-  mrb_define_method_id(mrb, route_class_, MRB_SYM(websocket), route_websocket,
-                       MRB_ARGS_ANY());
-  mrb_define_method_id(mrb, route_class_, MRB_SYM(assets), route_assets, MRB_ARGS_ANY());
+  struct RClass* const routes = mrb_define_class_under_id(mrb, wm, MRB_SYM(Routes),
+                                                          mrb->object_class);
+  MRB_SET_INSTANCE_TT(routes, MRB_TT_CDATA);
+  mrb_define_method_id(mrb, routes, MRB_SYM(add), route_add, MRB_ARGS_REQ(2));
+  mrb_define_method_id(mrb, routes, MRB_SYM(sse), route_sse, MRB_ARGS_REQ(2));
+  mrb_define_method_id(mrb, routes, MRB_SYM(websocket), route_websocket, MRB_ARGS_ANY());
+  mrb_define_method_id(mrb, routes, MRB_SYM(assets), route_assets, MRB_ARGS_ANY());
 }
 
 namespace {

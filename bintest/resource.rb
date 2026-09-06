@@ -1268,3 +1268,30 @@ assert('compute: a request received behind a parked run is answered after it (#8
     end
   end
 end
+
+# The class app.routes yields is named, so a worker's VM running this
+# gem's init leaves the reactor's class alone (#80). A compute route
+# still answers after the workers opened.
+assert('application: the routes object is a Webmachine::Routes, and compute keeps answering') do
+  src = <<~RUBY_SRC
+    class RoutesNamed < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
+      def to_html
+        Webmachine::Routes.name
+      end
+    end
+  RUBY_SRC
+  resource_server(wm_app('RoutesNamed', src)) do |sock|
+    3.times do
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head, body = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+        assert_equal 'Webmachine::Routes', body
+      end
+    end
+  end
+end
