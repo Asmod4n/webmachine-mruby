@@ -69,8 +69,12 @@ class CountFragment < Webmachine::Resource
     true
   end
 
+  # htmx swaps what the answer carries, and a 204 carries nothing - it
+  # would leave the old number on the page. So the delete writes the new
+  # number as its body, which makes the answer a 200.
   def delete_resource
     COUNT[0] = 0
+    response.body = to_html
     true
   end
 
