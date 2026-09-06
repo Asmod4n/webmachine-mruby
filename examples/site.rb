@@ -27,12 +27,12 @@ end
 # is the round trip, and the answer is the <li> elements themselves.
 class SearchFragment < Webmachine::Resource
   SUBJECTS = [
-    'a ship at anchor, 1015',
-    'a river between rocks, 1016',
-    'a road under cloud, 1018',
-    'a book on a table, 1024',
-    'a sea wall at dusk, 1039',
-    'a forest road, 1043',
+    'a fjord seen from a cliff top, 1015',
+    'red rock in a canyon at sunset, 1016',
+    'a road under cloud in green hills, 1018',
+    'a vulture landing, wings open, 1024',
+    'a waterfall in a pine forest, 1039',
+    'a granite wall above a river, 1043',
     'the sea from a hill',
     'a bridge over water'
   ].freeze
@@ -93,12 +93,12 @@ end
 # about how many photographs there are.
 class PhotoFragment < Webmachine::Resource
   PHOTOS = [
-    %w[p1015.jpg a\ ship\ at\ anchor],
-    %w[p1016.jpg a\ river\ between\ rocks],
-    %w[p1018.jpg a\ road\ under\ cloud],
-    %w[p1024.jpg a\ book\ on\ a\ table],
-    %w[p1039.jpg a\ sea\ wall\ at\ dusk],
-    %w[p1043.jpg a\ forest\ road]
+    ['p1015.jpg', 'a fjord seen from a cliff top'],
+    ['p1016.jpg', 'red rock in a canyon at sunset'],
+    ['p1018.jpg', 'a road under cloud in green hills'],
+    ['p1024.jpg', 'a vulture landing, wings open'],
+    ['p1039.jpg', 'a waterfall in a pine forest'],
+    ['p1043.jpg', 'a granite wall above a river']
   ].freeze
   PER_PAGE = 2
 
