@@ -2678,14 +2678,13 @@ struct Resource {
   };
   std::vector<TypedHandler> content_types_provided;
 
-  // #80: EVERYTHING one request writes on the way through, in one
-  // place. It used to be thirty-one `mutable` members on Resource, and
-  // that was right while a run could not stop: only one ran at a time.
-  // A run that PARKS breaks it - the next request on the same route
-  // writes these while the parked one still needs them. So the parked
-  // run takes the whole struct with it and gives it back on the way in.
-  // One move each way, and no hand-written member list that can be
-  // short by one - the same argument Held is built on.
+  // #80: EVERYTHING one request writes on the way through, in one place.
+  //
+  // A run that PARKS is why it is one struct: the next request on the
+  // same route would otherwise write these while the parked run still
+  // needs them. The parked run takes the whole struct with it and gives
+  // it back on the way in - one move each way, and no member list that
+  // can be short by one.
   struct RunState {
     mrb_value live = {};
     // #80: where the walk stands. A run that parks returns out of the
@@ -4650,12 +4649,12 @@ class Http1 {
     // spelled and `spell_next_round` may put it on the wire. Nothing else about the
     // request survives the run, so the framing it needs is copied here.
     //
-    // Lazy, like h2/ws/sse below - most connections never call
-    // response.file=, and this used to sit inline (10 std::strings plus a
-    // dozen scalars) on EVERY connection slot, paid by the accept/recv/
-    // send hot path whether or not it was ever touched. Allocated on first
-    // use and kept for the life of the connection (not freed per request)
-    // so a connection that repeatedly serves files doesn't thrash malloc;
+    // Lazy, like h2/ws/sse below: most connections never call
+    // response.file=, and ten strings on every connection slot would be
+    // paid for by the accept, recv and send path either way.
+    //
+    // Allocated on first use and kept for the life of the connection, so
+    // a connection that serves file after file does not thrash malloc.
     // `reset()` and `~Conn()` are the only places that delete it.
     // Three sources meet here, and the names say which is which. The
     // kernel's fields are named for the arguments they become (openat,
@@ -5645,11 +5644,10 @@ class Http1 {
     kClose         // answered, and the connection ends
   };
 
-  // #80: what the BOUND answer needs beyond the Round. The bound branch
-  // used to sit inline in feed_parse, and it has to leave: a run that
-  // parks returns out of it and comes back later, which an inline block
-  // in a loop body cannot do. Same rule as Spelling below - these
-  // travelled together as a dozen arguments, so they are a type.
+  // #80: what the BOUND answer needs beyond the Round. It cannot sit
+  // inline in feed_parse: a run that parks returns out of it and comes
+  // back later, which a block in a loop body cannot do. A dozen values
+  // that travel together are a type, like Spelling below.
   struct BoundAsk {
     const void* fields;
     size_t nfields;

@@ -955,9 +955,8 @@ bool Http1::file_stat(Conn& st, const struct statx& stx, size_t* want) {
   st.file->content_sent = 0;
   // [tune] file_map_threshold: 0 is "never map", so it is not a plain >=.
   st.file->map_wanted = map_min_ != 0 && len >= map_min_;
-  // ONE meaning: what a READ may take. The mapping's length is a separate
-  // question with a separate answer (file_map_len) - the two used to share
-  // this variable, and the read path then asked for the whole file.
+  // ONE meaning: what a READ may take. How long the mapping is has its
+  // own answer, in file_map_len.
   *want = len < kResponseFileWindow ? len : kResponseFileWindow;
   return true;
 }
@@ -1104,9 +1103,8 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
 
 // #80: the bound answer, out of feed_parse's loop body. It is a function
 // because a run that PARKS has to return out of it and re-enter later,
-// and an inline block inside a loop body cannot be re-entered. Nothing
-// else changed with the move: what it used to read from the loop now
-// comes from the Round and the BoundAsk beside it.
+// and an inline block inside a loop body cannot be re-entered. What the
+// loop held is in the Round and the BoundAsk beside it.
 
 // #80: what happens to a bound run's answer AFTER the walk - the lend,
 // the error asset, response.file, and the head a run spells for itself.

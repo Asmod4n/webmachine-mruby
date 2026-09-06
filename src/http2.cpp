@@ -1599,9 +1599,9 @@ static size_t h2_emit(RoundOut& out, const H2Sending& sending) {
   return off;
 }
 
-// Both windows and the body's one cursor, from what really went out. The
-// owned buffer used to erase from its front - a memmove per round to say
-// what an offset says for free.
+// Both windows and the body's one cursor, from what really went out. An
+// offset says this for free; erasing from the front of a buffer would
+// cost a memmove per round.
 static void h2_advance(H2State& h2, H2Stream& s, size_t sent) {
   if (sent == 0) return;
   h2.flow_window -= static_cast<int64_t>(sent);
@@ -1690,10 +1690,9 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   // and a lent body use, so the bytes reach the kernel without a copy.
   if (st.file != nullptr && (st.file->stage == FileStage::kDeliver ||
                                          st.file->stage == FileStage::kDone)) {
-    // The round is COMPUTED first and performed second. Everything that
-    // used to be decided in the middle of doing - which window, whether the
-    // mapping may go back, whether the access line is owed - is one value
-    // now, and file_apply is the only thing that writes.
+    // The round is COMPUTED first and performed second. Which window,
+    // whether the mapping may go back, whether the access line is owed:
+    // one value, and file_apply is the only thing that writes.
     const FileStep step = file_step(*st.file, send_chunk_);
     if (step.head) sink.append(st.file->head);
     if (step.src != FileStep::Src::kNone) {
