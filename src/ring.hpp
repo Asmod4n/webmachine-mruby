@@ -1693,7 +1693,8 @@ class Ring {
         ComputePool::Sent sent;
         if (!compute_.submit(mrb_, code, arg, App::compute_task_user(c.app, park, slot), deadline,
                              detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(park),
-                                                      static_cast<uint8_t>(slot)),
+                                                      static_cast<uint8_t>(slot),
+                                                      App::park_generation(c.app, park)),
                              &sent)) {
           // Every slot taken. Not a refusal this layer invents - the run
           // is told, and it answers 503 the way it would answer anything
@@ -1756,13 +1757,15 @@ class Ring {
   // its answer into, and this is not a point where either exists; `spell_next_round`
   // is. So this only says the answer arrived, and takes the same door
   // response.file takes.
-  void on_compute_task(uint32_t idx, uint16_t gen, uint8_t both, struct io_uring_cqe* cqe) {
+  void on_compute_task(uint32_t word, uint16_t gen, uint8_t both, struct io_uring_cqe* cqe) {
     (void)cqe;
+    const uint8_t park_gen = static_cast<uint8_t>(word >> 24);
+    const uint32_t idx = word & 0xffffffu;
     if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     const uint8_t park = static_cast<uint8_t>(both >> 4);
     const uint8_t slot = static_cast<uint8_t>(both & 0x0f);
-    const uint64_t tag = detail::compute_task_tag(gen, idx, park, slot);
+    const uint64_t tag = detail::compute_task_tag(gen, idx, park, slot, park_gen);
     ComputeAnswer answered;
     const bool have = compute_.take(tag, &answered);
     if (!have) answered.raised = true;
@@ -1785,6 +1788,9 @@ class Ring {
     // died with it. The answer is still TAKEN, because the slot is the
     // pool's and would otherwise stay busy for the life of the process.
     if (!c.live || c.gen != gen) return;
+    // The slot was taken again since this job was sent: the answer is a
+    // round's that ended, and the round parked there now is not its.
+    if (App::park_generation(c.app, park) != park_gen) return;
     App::compute_task_answered(c.app, static_cast<int>(park), static_cast<int>(slot), answered);
     if (!c.sending) continue_conn(idx);
   }

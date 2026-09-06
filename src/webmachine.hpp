@@ -4610,6 +4610,11 @@ class Http1 {
     // find one and to erase one, and it allocated.
     uint16_t park_taken = 0;
     uint16_t park_owes = 0;
+    // #80: which taking of the slot a tag names. A round refused halfway
+    // leaves earlier jobs in flight, and the next run on this connection
+    // takes the same slot; their answers carry this number, and one
+    // that names a taking that ended is dropped.
+    uint8_t park_gen[kParkSlots] = {};
     void park_wants_arming(int slot) {
       if (slot < 0 || slot >= kParkSlots) return;
       park_owes |= static_cast<uint16_t>(1u << slot);
@@ -4622,6 +4627,7 @@ class Http1 {
       const int i = __builtin_ctz(static_cast<unsigned>(~park_taken) & 0xffffu);
       park_taken |= static_cast<uint16_t>(1u << i);
       park[i] = r;
+      park_gen[i]++;
       return i;
     }
     void park_drop(int slot) {
@@ -5113,6 +5119,9 @@ class Http1 {
   // The same, for the work a stopped run left. arm_compute_task built a
   // std::string before it asked. Measured at 0.45%.
   static bool compute_task_waiting(const Conn& st) { return st.park_owes != 0; }
+  static uint8_t park_generation(const Conn& st, int park) {
+    return park >= 0 && park < Conn::kParkSlots ? st.park_gen[park] : 0;
+  }
   // The next parked run with a job to arm, or false. Taken, not read -
   // the same shape as file_take and watch_take.
   static bool park_take_pending(Conn& st, int* park) {
@@ -6567,9 +6576,15 @@ inline uint64_t compute_deadline_tag(unsigned worker, uint8_t seq) {
   return tag(kComputeDeadline, 0, static_cast<uint32_t>(worker)) |
          (static_cast<uint64_t>(seq) << 48);
 }
-inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job) {
+// The connection index takes 24 bits, which is more than the fixed
+// file table allows, and the top byte of that word names which taking
+// of the park slot this job belongs to.
+static_assert(kFixedTableKernelMax <= (1u << 24), "a connection index must fit 24 bits");
+inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job,
+                                 uint8_t park_gen) {
   const uint8_t both = static_cast<uint8_t>((park << 4) | (job & 0x0f));
-  return tag(kComputeTask, gen, idx) | (static_cast<uint64_t>(both) << 48);
+  const uint32_t word = (idx & 0xffffffu) | (static_cast<uint32_t>(park_gen) << 24);
+  return tag(kComputeTask, gen, word) | (static_cast<uint64_t>(both) << 48);
 }
 
 enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
