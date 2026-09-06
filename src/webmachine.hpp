@@ -6338,7 +6338,14 @@ struct ServerOptions {
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
   long long file_map_threshold = -1;
+
+  // [assets] max_age: how long a browser may use a PAGE without asking
+  // again, and with it how long the pack keeps what a page can name.
+  // See kAssetsMaxAgeDefault and config_write_default.
+  long long assets_max_age = -1;
 };
+
+
 void server_options(const ServerOptions& opts);
 
 void server_backend_say();
@@ -6379,7 +6386,33 @@ struct Config {
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
   long long file_map_threshold = -1;
+
+  // [assets] max_age: how long a browser may use a PAGE without asking
+  // again, and with it how long the pack keeps what a page can name.
+  // See kAssetsMaxAgeDefault and config_write_default.
+  long long assets_max_age = -1;
 };
+
+// The lifetime a page carries when nobody said otherwise, in seconds. A
+// reader who walks a site comes back to the page they just left, and
+// five minutes of that costs no request; it is short enough that a
+// correction is visible while the person who made it is still watching.
+inline constexpr long long kAssetsMaxAgeDefault = 300;
+
+// WHAT THE PACK KEEPS, from that one number: twice it.
+//
+// A cache may use a page for max_age. The files that page names can be
+// asked for as long as the page is in a cache, so nothing older than
+// max_age + max_age can still be named by any page anywhere - the first
+// max_age is how long the page could have been taken before now, the
+// second is how long it may still be used. An entry older than that is
+// named by nothing and can go.
+inline constexpr long long assets_retention(long long max_age) { return max_age * 2; }
+
+// webmachine.toml, written when there is none. The first run of a server
+// is where an operator finds out which questions exist, and a file with
+// the answers in it says more than a manual page nobody opened.
+bool config_write_default(const char* path);
 
 void config_load(mrb_state* mrb, const char* path, Config& out);
 }

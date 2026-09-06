@@ -138,6 +138,37 @@ void take_seconds(Setting s, int* out, const ConfigFile& f) {
 }
 }
 
+// The file a first run leaves behind. It is written ONCE, when none was
+// there, and what is in it is what this server would have done anyway -
+// so an operator can read the defaults instead of being told them, and
+// change one line instead of learning a flag.
+bool config_write_default(const char* path) {
+  FILE* f = std::fopen(path, "wxe");  // x: never over a file somebody has
+  if (f == nullptr) return false;
+  std::fprintf(f,
+               "# webmachine.toml - written on the first run, because there was none.\n"
+               "# Every setting here is what the server does without it. A flag beats\n"
+               "# this file; this file beats the app's own conf.\n"
+               "\n"
+               "[assets]\n"
+               "# How long a browser may use a PAGE without asking again, in seconds.\n"
+               "# Every other file's lifetime is decided per extension when the pack\n"
+               "# is written; this is the one number that also decides RETENTION.\n"
+               "max_age = %lld\n"
+               "\n"
+               "# WHAT THE PACK KEEPS is twice that number, and it is not a setting.\n"
+               "# A page may be used for max_age seconds, and the files it names may\n"
+               "# be asked for as long as that page lives - so nothing older than\n"
+               "# 2 x max_age can still be named by any page in any cache, and an\n"
+               "# entry older than that is pruned when the pack is written.\n"
+               "#\n"
+               "# Raise max_age and readers ask less often, and the pack keeps more.\n"
+               "# Lower it and the pack stays small, and a reader comes back sooner.\n",
+               kAssetsMaxAgeDefault);
+  std::fclose(f);
+  return true;
+}
+
 // TOML: parse and validate webmachine.toml through the VM the process carries.
 void config_load(mrb_state* mrb, const char* path, Config& out) {
   const ArenaGuard arena(mrb);
@@ -145,11 +176,12 @@ void config_load(mrb_state* mrb, const char* path, Config& out) {
   const ConfigFile file = {mrb, path};
   const mrb_value doc = toml_load(file);
 
-  FoundTable server, log, tune;
-  mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1;
+  FoundTable server, log, tune, assets;
+  mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1, age = -1;
   section({doc, "", "server"}, server, file);
   section({doc, "", "log"}, log, file);
   section({doc, "", "tune"}, tune, file);
+  section({doc, "", "assets"}, assets, file);
 
   if (server.present) {
     const mrb_value t = server.table;
@@ -183,6 +215,13 @@ void config_load(mrb_state* mrb, const char* path, Config& out) {
     take_string({t, "log", "error_file"}, out.error_log_file, file);
     take_int({t, "log", "max_bytes"}, {4096, 1LL << 40}, &maxb, file);
     out.log_max_bytes = static_cast<unsigned long long>(maxb);
+  }
+
+  if (assets.present) {
+    // A day is the ceiling because retention is twice this, and a page
+    // kept for longer than a day is a page nobody is editing.
+    take_int({assets.table, "assets", "max_age"}, {0, 86400}, &age, file);
+    if (age >= 0) out.assets_max_age = static_cast<long long>(age);
   }
 
   if (tune.present) {
