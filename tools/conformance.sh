@@ -27,8 +27,10 @@ cd "$(dirname "$0")/.."
 SUITE="${1:-}"
 PORT="${PORT:-9977}"
 CASES="${CASES:-\"*\"}"
-BIN=mruby/build/host/bin/webmachine-server
-MRBC=mruby/build/host/mrbc/bin/mrbc
+# The ship build's binary, unless the caller names another: CI runs the
+# suites against the debug build it already made.
+BIN="${BIN:-mruby/build/host/bin/webmachine-server}"
+MRBC="${MRBC:-mruby/build/host/mrbc/bin/mrbc}"
 OUT=build/conformance
 PIDFILE="$OUT/server.pid"
 
@@ -69,7 +71,9 @@ stop_server() {
 # app.rb -> app.mrb -> a running server whose pid is on disk before the
 # suite gets to send a byte.
 start_server() {
-  "$MRBC" -o "$OUT/app.mrb" "$1"
+  # -g, as everywhere an app is compiled: an error record names the
+  # app's source line, and only a debug section carries it.
+  "$MRBC" -g -o "$OUT/app.mrb" "$1"
   rm -f "$PIDFILE"
   setsid "$BIN" --app="$OUT/app.mrb" --port="$PORT" --pidfile="$PIDFILE" \
     > "$OUT/server.log" 2>&1 &

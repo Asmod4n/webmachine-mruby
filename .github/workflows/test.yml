@@ -1,0 +1,100 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The debug build, and every test the tree has: mruby's own, this
+  # gem's unit tests, and the bintests against the debug binary. A KO
+  # or a crash anywhere fails the push.
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: install what a build needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ruby git pkg-config zlib1g-dev libssl-dev
+      - name: build the debug config and run every test
+        run: |
+          MRUBY_CONFIG=build_config_debug.rb rake test 2>&1 | tee test.log
+          test "${PIPESTATUS[0]}" -eq 0
+          # The totals are the record. portable_smoke at the end of a
+          # debug run is expected to fail (there is no portable binary);
+          # nothing else may.
+          if grep -Eq '^ *(KO|Crash): [1-9]' test.log; then
+            echo 'a test failed or crashed' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-build
+          path: |
+            test.log
+            mruby/build/debug/bin/webmachine-server
+            mruby/build/debug/bin/mrbc
+
+  # The external oracles, against the debug binary the suite job made:
+  # h2spec for RFC 9113 and RFC 7541, the Autobahn fuzzingclient for
+  # RFC 6455. Both are containers; the runner has docker.
+  conformance:
+    runs-on: ubuntu-latest
+    needs: suite
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: debug-build
+      - name: make the binaries runnable again
+        run: chmod +x mruby/build/debug/bin/webmachine-server mruby/build/debug/bin/mrbc
+      - name: h2spec
+        env:
+          BIN: mruby/build/debug/bin/webmachine-server
+          MRBC: mruby/build/debug/bin/mrbc
+        run: |
+          tools/conformance.sh h2
+          # 3.5/2 is a known refusal, not a gap: tools/conformance.sh
+          # says why. Any other failure is real.
+          ruby -e '
+            log = File.read("build/conformance/h2spec.log")
+            m = log.match(/(\d+) tests, (\d+) passed, (\d+) skipped, (\d+) failed/)
+            abort "no h2spec summary in the log" unless m
+            failed = m[4].to_i
+            known = log.include?("Sends invalid connection preface") ? 1 : 0
+            abort "h2spec: #{failed} failed, #{known} of them the known preface refusal" if failed > known
+            puts "h2spec: #{m[2]} passed, #{failed} failed (#{known} known)"
+          '
+      - name: Autobahn
+        env:
+          BIN: mruby/build/debug/bin/webmachine-server
+          MRBC: mruby/build/debug/bin/mrbc
+        run: |
+          tools/conformance.sh ws
+          ruby -rjson -e '
+            report = JSON.parse(File.read("build/conformance/reports/index.json"))
+            bad = []
+            report.each_value do |cases|
+              cases.each do |name, r|
+                ok = %w[OK INFORMATIONAL NON-STRICT UNIMPLEMENTED].include?(r["behavior"]) &&
+                     %w[OK INFORMATIONAL NON-STRICT UNIMPLEMENTED].include?(r["behaviorClose"])
+                bad << "#{name}: #{r["behavior"]}/#{r["behaviorClose"]}" unless ok
+              end
+            end
+            abort "Autobahn: #{bad.size} case(s) failed:\n#{bad.join("\n")}" unless bad.empty?
+            puts "Autobahn: every case passed"
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance
+          path: build/conformance
