@@ -1682,6 +1682,17 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   if (mrb_unlikely(st.ws != nullptr)) return ws_feed(st.ws, in, sink);
   if (mrb_unlikely(st.sse != nullptr)) return true;
 
+  // RFC 9112 9.3.2: a run that parked, or a file the ring still owes,
+  // is the next answer on this connection. A request that arrives
+  // behind it in a receive of its own waits in the carry, and the
+  // round that spells that answer feeds the carry.
+  if (mrb_unlikely(st.run_parked() ||
+                   (st.file != nullptr && st.file->stage != FileStage::kNone))) {
+    if (mrb_unlikely(st.carry.size() + len > kMaxHead)) return fail(st, 431, sink);
+    st.carry.append(data, len);
+    return true;
+  }
+
   const bool in_place = st.carry.empty();
   const char* view = data;
   size_t viewlen = len;

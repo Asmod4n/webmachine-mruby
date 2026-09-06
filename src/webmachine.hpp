@@ -5095,14 +5095,6 @@ class Http1 {
     j.waiting = false;
     return true;
   }
-  // Is this connection waiting on one? The Ring asks before it lets
-  // anything else speak for the connection.
-  static bool run_answer_pending(const Conn& st) {
-    if (!st.run_parked()) return false;
-    const Conn::Round* const r = st.park_at(st.parked.co.promise().park);
-    return r == nullptr || !r->answer_ready;
-  }
-
   // response.file, the reactor's half. A bound run may name a file instead
   // of spelling a body; opening it is disk work, so it never happens inside
   // the run. These five are the whole contract with the Ring - it drives

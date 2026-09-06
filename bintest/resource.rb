@@ -1235,3 +1235,36 @@ assert('compute: a job queued behind a long one keeps its own deadline (#80)') d
     end
   end
 end
+
+# RFC 9112 9.3.2: a request that arrives while a run is parked waits,
+# and the answers leave in the order the requests came.
+assert('compute: a request received behind a parked run is answered after it (#80)') do
+  src = <<~RUBY_SRC
+    class ComputeThenNext < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) do
+          t0 = Chrono::Steady.now
+          nil while Chrono::Steady.now - t0 < 0.2
+          true
+        end
+      end
+      def to_html
+        request.path.delete_prefix("/")
+      end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeThenNext', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /first HTTP/1.1\r\nHost: x\r\n\r\n")
+      sleep 0.05
+      s.write("GET /second HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'first', body
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'second', body
+    end
+  end
+end
