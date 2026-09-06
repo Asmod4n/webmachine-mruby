@@ -260,13 +260,17 @@ HTGEN="${HTGEN:-$HOME/htgen/htgen}"
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
 # naming the .rb source. An .mrb APP (or none) passes through as-is.
+# Everything this run writes lives here. A fixed name under /tmp is a
+# name somebody else's run - or somebody else's user - already owns.
+WORK=$(mktemp -d)
+
 APP_ARGS=()
 if [ -n "${APP:-}" ]; then
   case "$APP" in
     *.rb)
       MRBC="${MRBC:-mruby/bin/mrbc}"
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB=/tmp/wm-profile-app.mrb
+      APP_MRB="$WORK/app.mrb"
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
       APP_ARGS=(--app="$APP_MRB")
       ;;
@@ -274,7 +278,6 @@ if [ -n "${APP:-}" ]; then
   esac
 fi
 
-WORK=$(mktemp -d)
 ASSET_ARGS=()
 # The same field, spelled for two tools: curl proves the target, htgen
 # drives the load.
@@ -322,7 +325,7 @@ fi
 
 OUT=bench/profile
 mkdir -p "$OUT"
-WM_SOCK=/tmp/wm-profile-bench.sock
+WM_SOCK="$WORK/bench.sock"
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} path $REQPATH coding ${ASSETS:+$ASSET_CODING}"
 # Which binary, built with what, running on what. A profile without this
 # is a share of a machine nobody wrote down.
@@ -347,7 +350,6 @@ cleanup() {
   [ -n "$PERFPID" ] && kill "$PERFPID" 2>/dev/null
   wait 2>/dev/null
   rm -rf "$WORK"
-  rm -f "$WM_SOCK"
   return 0
 }
 trap cleanup EXIT INT TERM
@@ -370,7 +372,7 @@ leg() {
   local bindargs=(--unix="$WM_SOCK")
   "$PERF" record "${EVENT_ARGS[@]}" -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
     "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
-    >/tmp/wm-profile-srv.log 2>&1 &
+    >"$WORK/srv.log" 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid
   # $! is perf's own pid (it execs the server as ITS child, so
@@ -399,16 +401,16 @@ leg() {
   # server's, and the ENOMEM reading below would be the wrong one.
   if [ -z "$srvpid" ] && [ "${perfstate:-Z}" = Z ] && [ ! -s "$data" ]; then
     echo "perf record exited before the server was up${EVENT:+ - EVENT=$EVENT}. perf's own words:" >&2
-    cat /tmp/wm-profile-srv.log >&2
+    cat "$WORK/srv.log" >&2
     exit 1
   fi
   if [ -z "$srvpid" ]; then
     echo "server did not start (or never became reachable on $WM_SOCK):" >&2
-    cat /tmp/wm-profile-srv.log >&2
+    cat "$WORK/srv.log" >&2
     # perf's own mmap buffers and io_uring's ring draw on the SAME
     # locked-memory budget, and the server only ever fails this way
     # UNDER perf - so say so instead of leaving it to be rediscovered.
-    if grep -q "Cannot allocate memory" /tmp/wm-profile-srv.log 2>/dev/null; then
+    if grep -q "Cannot allocate memory" "$WORK/srv.log" 2>/dev/null; then
       # Traced on forgecore: perf's 32 per-CPU buffers pushed the
       # per-user locked_vm over RLIMIT_MEMLOCK, and io_uring_setup then
       # refused even a 2-entry ring with ENOMEM. -m is already lowered

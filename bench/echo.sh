@@ -23,7 +23,11 @@ if [ ! -x "$BIN" ] || [ bench/echo/echo.cpp -nt "$BIN" ]; then
     bench/echo/echo.cpp "$LIBURING" -o "$BIN"
 fi
 
-SOCK=/tmp/wm-echo-bench.sock
+# A private directory, not a fixed name under /tmp: that one is owned by
+# whoever ran this first, and a second run collides with it.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+SOCK="$WORK/bench.sock"
 CFLAGS_LINE='-O3 -march=native'
 
 cell() {  # cell <server-mode> <client-mode> <size>

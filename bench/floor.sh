@@ -152,14 +152,14 @@ parse_child_cpu() {
 # naming the .rb source. An .mrb APP (or none) passes through as-is.
 LOG="${LOG:-0}"
 LOG_ARGS=()
-[ "$LOG" = 1 ] && LOG_ARGS=(--log="/tmp/wm-floor-access.$$.log")
+[ "$LOG" = 1 ] && LOG_ARGS=(--log="$WORK/access.log")
 APP_ARGS=()
 if [ -n "${APP:-}" ]; then
   case "$APP" in
     *.rb)
       MRBC="${MRBC:-mruby/bin/mrbc}"
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB=/tmp/wm-floor-app.mrb
+      APP_MRB="$WORK/app.mrb"
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
       APP_ARGS=(--app="$APP_MRB")
       ;;
@@ -203,12 +203,12 @@ if [ "$BROWSER" = 1 ]; then
             --header 'Accept-Language: en-US,en;q=0.9')
 fi
 
-SOCK=/tmp/wm-floor-bench.sock
+SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "${SRV_PIN[@]}" "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "${SRV_PIN[@]}" "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 else
-  "${SRV_PIN[@]}" "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>/tmp/wm-floor-srv.log & SRV=$!
+  "${SRV_PIN[@]}" "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 fi
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -274,8 +274,8 @@ sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
 sleep 0.5
-kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-floor-srv.log; exit 1; }
-grep -q "select(2) SHIM" /tmp/wm-floor-srv.log 2>/dev/null && {
+kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
+grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }

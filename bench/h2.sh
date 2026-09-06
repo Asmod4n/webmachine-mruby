@@ -67,7 +67,11 @@ PORT="${PORT:-8123}"
 # whole TCP stack out of the measurement. TRANSPORT=tcp keeps the old
 # shape for a comparison against an older row.
 TRANSPORT="${TRANSPORT:-unix}"
-SOCK=/tmp/wm-h2bench.sock
+# Everything this run writes lives here: the compiled app, the socket,
+# the server's stderr and the access log. A fixed name under /tmp is a
+# name somebody else's run - or somebody else's user - already owns.
+WORK=$(mktemp -d)
+SOCK="$WORK/bench.sock"
 APP="${APP-examples/hello.rb}"
 BIN=mruby/build/host/bin/webmachine-server
 # The bench owns the machine while it runs; see bench/priority.sh.
@@ -93,7 +97,7 @@ if [ -n "${APP:-}" ]; then
     *.rb)
       MRBC="${MRBC:-mruby/bin/mrbc}"
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB=/tmp/wm-h2-app.mrb
+      APP_MRB="$WORK/app.mrb"
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
       APP_ARGS=(--app="$APP_MRB")
       ;;
@@ -103,20 +107,19 @@ fi
 
 LOG="${LOG:-0}"
 LOG_ARGS=()
-[ "$LOG" = 1 ] && LOG_ARGS=(--log="/tmp/wm-h2bench-access.$$.log")
+[ "$LOG" = 1 ] && LOG_ARGS=(--log="$WORK/access.log")
 # THE CLIENT MUST NOT BE THE BOTTLENECK - the same refusal bench/assets.sh
 # already has (and bench/floor.sh now too), ported here: a number where
 # the client burned as much CPU as the server describes the client, not
 # webmachine. cpu_ticks reads the SERVER's own /proc/pid/stat
 # (utime+stime); snap_times/parse_child_cpu read the CLIENT's, via
-# bash's own `times` for its reaped children. Defined and WORK created
-# before the trap below, which references it on every exit path.
+# bash's own `times` for its reaped children. Defined before the trap
+# below, which references WORK on every exit path.
 cpu_ticks() {
   awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
     "/proc/$1/stat" 2>/dev/null || echo 0
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
-WORK=$(mktemp -d)
 snap_times() { times > "$WORK/.times"; }
 parse_child_cpu() {
   awk 'NR==2 { split($1, u, "m"); split($2, sy, "m");
@@ -125,15 +128,15 @@ parse_child_cpu() {
 
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>"$WORK/srv.log" &
 else
-  "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>/tmp/wm-h2bench-srv.log &
+  "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>"$WORK/srv.log" &
 fi
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"; rm -f "$SOCK"' EXIT
 sleep 0.5
-kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat /tmp/wm-h2bench-srv.log >&2; exit 1; }
-grep -q "select(2) SHIM" /tmp/wm-h2bench-srv.log 2>/dev/null && {
+kill -0 $SRV 2>/dev/null || { echo "server died:" >&2; cat "$WORK/srv.log" >&2; exit 1; }
+grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }
