@@ -60,51 +60,51 @@ module Webmachine
     # ZERO_COPY_MAX come from application.cpp, which is where the code
     # that honours them lives.
     def port=(v)
-      Config.whole(v, PORT_MAX, 'port', '')
+      Config.check_whole_number(v, PORT_MAX, 'port', '')
       self[:port] = v
     end
 
     def file_map_threshold=(v)
-      Config.whole(v, FILE_MAP_MAX, 'file_map_threshold', ' bytes')
+      Config.check_whole_number(v, FILE_MAP_MAX, 'file_map_threshold', ' bytes')
       self[:file_map_threshold] = v
     end
 
     def zero_copy_threshold=(v)
-      Config.whole(v, ZERO_COPY_MAX, 'zero_copy_threshold', ' bytes')
+      Config.check_whole_number(v, ZERO_COPY_MAX, 'zero_copy_threshold', ' bytes')
       self[:zero_copy_threshold] = v
     end
 
     def unix_path=(v)
-      Config.text(v, 'unix_path')
+      Config.check_text(v, 'unix_path')
       self[:unix_path] = v
     end
 
     def docroot=(v)
-      Config.text(v, 'docroot')
+      Config.check_text(v, 'docroot')
       self[:docroot] = v
     end
 
     def certificate=(v)
-      Config.text(v, 'certificate')
+      Config.check_text(v, 'certificate')
       self[:certificate] = v
     end
 
     def private_key=(v)
-      Config.text(v, 'private_key')
+      Config.check_text(v, 'private_key')
       self[:private_key] = v
     end
 
     # conf.url is not checked here: its grammar - the scheme, the IPv6
     # literal, the settings its query may name - is ada's and
     # application.cpp's, and there is no second copy of it in Ruby.
-    def self.whole(v, ceiling, name, unit)
+    def self.check_whole_number(v, ceiling, name, unit)
       raise ConfigError, "conf.#{name} wants an Integer" unless v.is_a?(Integer)
       return if v >= 0 && v <= ceiling
 
       raise ConfigError, "conf.#{name} = #{v} is outside 0..#{ceiling}#{unit}"
     end
 
-    def self.text(v, name)
+    def self.check_text(v, name)
       raise ConfigError, "conf.#{name} wants a String" unless v.is_a?(String)
       raise ConfigError, "conf.#{name} is empty" if v.empty?
     end
