@@ -1619,8 +1619,9 @@ class Ring {
     if (fd < 0 || mask == 0) return;
     struct io_uring_sqe* s = sqe();
     io_uring_prep_poll_add(s, fd, mask);
-    io_uring_sqe_set_data64(s, detail::watch_tag(c.gen, idx, static_cast<uint8_t>(slot)));
-    App::watcher_is_armed(c.app, slot, &ring_);
+    const uint64_t t = detail::watch_tag(c.gen, idx, static_cast<uint8_t>(slot));
+    io_uring_sqe_set_data64(s, t);
+    App::watcher_is_armed(c.app, slot, &ring_, t);
     // How long this one may stay quiet. The sweep reads whole seconds,
     // so a fraction becomes the next whole second up - a deadline that
     // fires early is a promise broken, one that fires late is not.
@@ -1637,6 +1638,10 @@ class Ring {
     if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;
+    // A poll this side removed, at a deadline: not a readiness, and the
+    // slot may hold a new watcher by now.
+    if (cqe->res == -ECANCELED) return;
+    App::watcher_is_unarmed(c.app, slot);
     // A poll that failed says the descriptor is gone. The block hears
     // nothing more; the run reads nil and answers for it.
     const unsigned revents =
@@ -1690,12 +1695,10 @@ class Ring {
         unsigned code = 0;
         double deadline = 0.0;
         if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline)) continue;
-        ComputePool::Sent sent;
         if (!compute_.submit(mrb_, code, arg, App::compute_task_user(c.app, park, slot), deadline,
                              detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(park),
                                                       static_cast<uint8_t>(slot),
-                                                      App::park_generation(c.app, park)),
-                             &sent)) {
+                                                      App::park_generation(c.app, park)))) {
           // Every slot taken. Not a refusal this layer invents - the run
           // is told, and it answers 503 the way it would answer anything
           // else.
@@ -1703,7 +1706,6 @@ class Ring {
           if (!c.sending) continue_conn(idx);
           return;
         }
-        arm_compute_deadline(sent, deadline);
       }
     }
   }
@@ -1718,7 +1720,14 @@ class Ring {
   // moves the job number on, and a timeout that names the job before it
   // interrupts nothing. One SQE is cheaper than a cancel plus its own
   // completion.
-  void arm_compute_deadline(const ComputePool::Sent& sent, double deadline) {
+  // A worker began a job. Its deadline is execution time, so the timer
+  // is armed here and not when the job was queued.
+  void on_compute_started(uint32_t slot, uint16_t gen) {
+    const double deadline = compute_.started(slot, gen);
+    if (deadline > 0.0) arm_compute_deadline(slot, gen, deadline);
+  }
+
+  void arm_compute_deadline(unsigned slot, uint16_t gen, double deadline) {
     if (deadline <= 0.0 || compute_ts_.empty()) return;
     // The kernel reads the timespec when the SQE is SUBMITTED, and a
     // round arms several before one submit. So each arm gets its own,
@@ -1731,7 +1740,7 @@ class Ring {
     ts.tv_nsec = static_cast<long long>((deadline - static_cast<double>(whole)) * 1e9);
     struct io_uring_sqe* s = sqe();
     io_uring_prep_timeout(s, &ts, 0, 0);
-    io_uring_sqe_set_data64(s, detail::compute_deadline_tag(sent.worker, sent.seq));
+    io_uring_sqe_set_data64(s, detail::compute_deadline_tag(slot, gen));
   }
 
   // The fd leaves through the ring like every other descriptor here.
@@ -2111,6 +2120,7 @@ class Ring {
           }
           break;
         case detail::kShutdown: break;
+        case detail::kPollRemove: break;
         // The first two only report: a failure in either cancels the rest of
         // the chain, and the third is where the socket is finally the
         // kernel's, so that is the one that acts.
@@ -2141,10 +2151,9 @@ class Ring {
         // first; the pool reads the job number and leaves such a worker
         // alone.
         case detail::kComputeDeadline:
-          if (cqe->res == -ETIME) {
-            compute_.interrupt(idx, detail::watch_slot(cqe->user_data));
-          }
+          if (cqe->res == -ETIME) compute_.interrupt(idx, gen);
           break;
+        case detail::kComputeStarted: on_compute_started(idx, gen); break;
         case detail::kWatch: on_watch(idx, gen, detail::watch_slot(cqe->user_data), cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;
@@ -2246,6 +2255,16 @@ class Ring {
             int over[16];
             const size_t n = App::watchers_over_deadline(c.app, now_s_, over, 16);
             for (size_t k = 0; k < n; k++) {
+              // The poll armed for it is still in the ring. It goes
+              // first, by its tag, so a new arming is the only one and
+              // a dropped slot leaves no poll to fire on its successor.
+              const uint64_t armed = App::watcher_poll_tag(c.app, over[k]);
+              if (armed != 0) {
+                struct io_uring_sqe* s = sqe();
+                io_uring_prep_poll_remove(s, armed);
+                io_uring_sqe_set_data64(s, detail::tag(detail::kPollRemove, c.gen, i));
+                App::watcher_is_unarmed(c.app, over[k]);
+              }
               step_watch(i, c, over[k], App::watcher_deadline(c.app, over[k]));
             }
             c.w_deadline_s = App::watchers_soonest_deadline(c.app);

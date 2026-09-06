@@ -46,6 +46,9 @@ struct WatcherData {
   // do at the deadline differs, and only that.
   double timeout = 0.0;
   struct io_uring* ring = nullptr;
+  // The tag the armed poll carries, so a cancel names exactly it and
+  // never another watcher's poll on the same descriptor.
+  uint64_t tag = 0;
   bool armed = false;
 };
 
@@ -58,7 +61,7 @@ void watcher_free(mrb_state*, void* p) {
   // No VM to raise into here: the GC is freeing this. A full queue is
   // submitted and tried once more, and a cancel that still finds no
   // room is said on stderr.
-  if (d->armed && d->ring != nullptr && d->fd >= 0) {
+  if (d->armed && d->ring != nullptr) {
     struct io_uring_sqe* s = io_uring_get_sqe(d->ring);
     if (s == nullptr) {
       io_uring_submit(d->ring);
@@ -68,7 +71,7 @@ void watcher_free(mrb_state*, void* p) {
       std::fprintf(stderr, "webmachine: watcher on fd %d could not be cancelled: SQ full\n",
                    d->fd);
     } else {
-      io_uring_prep_cancel_fd(s, d->fd, IORING_ASYNC_CANCEL_ALL);
+      io_uring_prep_poll_remove(s, d->tag);
       io_uring_sqe_set_data64(s, 0);
       io_uring_submit(d->ring);
     }
@@ -312,10 +315,22 @@ void watcher_set_slot(mrb_value v, int slot) {
   static_cast<WatcherData*>(DATA_PTR(v))->slot = slot;
 }
 
-void watcher_armed(mrb_value v, struct io_uring* ring) {
+void watcher_armed(mrb_value v, struct io_uring* ring, uint64_t tag) {
   auto* d = static_cast<WatcherData*>(DATA_PTR(v));
   d->ring = ring;
+  d->tag = tag;
   d->armed = true;
+}
+
+// The poll completed, or was removed: nothing is in the ring for it.
+void watcher_unarmed(mrb_value v) {
+  auto* d = static_cast<WatcherData*>(DATA_PTR(v));
+  if (d != nullptr) d->armed = false;
+}
+
+uint64_t watcher_armed_tag(mrb_value v) {
+  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
+  return d != nullptr && d->armed ? d->tag : 0;
 }
 
 // Empties the CDATA after the caller has cancelled, so watcher_free
@@ -407,9 +422,19 @@ int Http1::watcher_descriptor(Conn& st, int slot) {
   return mrb_nil_p(w) ? -1 : watcher_fd(w);
 }
 
-void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring) {
+void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring, uint64_t tag) {
   const mrb_value w = st.watchers_at(slot);
-  if (!mrb_nil_p(w)) watcher_armed(w, ring);
+  if (!mrb_nil_p(w)) watcher_armed(w, ring, tag);
+}
+
+void Http1::watcher_is_unarmed(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  if (!mrb_nil_p(w)) watcher_unarmed(w);
+}
+
+uint64_t Http1::watcher_poll_tag(Conn& st, int slot) {
+  const mrb_value w = st.watchers_at(slot);
+  return mrb_nil_p(w) ? 0 : watcher_armed_tag(w);
 }
 
 // The wait is over, however it ended. The watcher goes, and with it the

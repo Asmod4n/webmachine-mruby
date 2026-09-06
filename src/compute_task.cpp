@@ -80,6 +80,9 @@ struct Slot {
   // number the pool addresses it by.
   std::string worker_name;
   unsigned worker = 0;
+  // Which taking of this slot: a deadline names a slot and this, so a
+  // timer armed for a job that answered finds a number that moved on.
+  uint16_t gen = 0;
   // The reactor's own tag for this compute task: what its completion will
   // carry, so the reactor knows whose answer arrived. The pool never
   // looks inside it.
@@ -452,7 +455,8 @@ struct ComputePool::Impl {
   // Which job each worker is on. The reactor arms a timeout per job and
   // the number tells a late timeout from a live one: an answer bumps it,
   // so a timeout for a job that already answered interrupts nothing.
-  std::vector<std::atomic<uint8_t>> job_seq;
+  // The slot each worker runs right now, or the slot count for none.
+  std::vector<std::atomic<unsigned>> running;
   // One per slot: the reactor sets it before it interrupts, the worker
   // reads it after its block returned.
   std::vector<std::atomic<bool>> asked_stop;
@@ -840,10 +844,23 @@ void ComputePool::worker(Impl* impl, unsigned me) {
       if (job >= impl->slots.size()) continue;
 
       Slot& s = impl->slots[static_cast<size_t>(job)];
-      // The reader of an error record asks WHERE it ran before anything
+      // The reader of an error record asks where it ran before anything
       // else, so the name goes in beside the answer.
       s.worker_name = thread_name;
+      // The reactor arms the deadline from this message: the clock
+      // starts when the job starts, not when it was queued.
+      impl->running[me].store(static_cast<unsigned>(job), std::memory_order_release);
+      if (s.deadline > 0.0) {
+        struct io_uring_sqe* began = nullptr;
+        while ((began = io_uring_get_sqe(ring)) == nullptr) io_uring_submit(ring);
+        io_uring_prep_msg_ring(began, impl->home->ring_fd, 0,
+                               detail::compute_started_tag(static_cast<unsigned>(job), s.gen), 0);
+        io_uring_sqe_set_data64(began, kSent);
+        io_uring_submit(ring);
+      }
       run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
+      impl->running[me].store(static_cast<unsigned>(impl->slots.size()),
+                              std::memory_order_release);
 
       // The answer goes home as a completion. The reactor wrote the slot
       // before the job was sent and reads it after this arrives, so the
@@ -880,12 +897,12 @@ const char* ComputePool::start(unsigned workers, unsigned depth, struct io_uring
   // grow: a vector that reallocates would move what another thread
   // reads.
   std::vector<std::atomic<mrb_state*>>(workers).swap(impl->vms);
-  std::vector<std::atomic<uint8_t>>(workers).swap(impl->job_seq);
+  std::vector<std::atomic<unsigned>>(workers).swap(impl->running);
   std::vector<std::atomic<bool>>(impl->slots.size()).swap(impl->asked_stop);
   for (std::atomic<bool>& a : impl->asked_stop) a.store(false, std::memory_order_relaxed);
   for (unsigned i = 0; i < workers; i++) {
     impl->vms[i].store(nullptr, std::memory_order_relaxed);
-    impl->job_seq[i].store(0, std::memory_order_relaxed);
+    impl->running[i].store(static_cast<unsigned>(impl->slots.size()), std::memory_order_relaxed);
   }
 
   for (unsigned i = 0; i < workers; i++) {
@@ -947,26 +964,32 @@ void ComputePool::stop() {
   impl_ = nullptr;
 }
 
-void ComputePool::interrupt(unsigned worker, uint8_t seq) {
-  if (impl_ == nullptr || worker >= impl_->vms.size()) return;
-  // The worker moved on. Its next job cleared the flag at its own start,
-  // and this timeout belongs to a job that already answered.
-  if (impl_->job_seq[worker].load(std::memory_order_acquire) != seq) return;
-  mrb_state* const mrb = impl_->vms[worker].load(std::memory_order_acquire);
+double ComputePool::started(unsigned slot, uint16_t gen) {
+  if (impl_ == nullptr || slot >= impl_->slots.size()) return 0.0;
+  const Slot& s = impl_->slots[slot];
+  if (!s.busy || s.gen != gen) return 0.0;
+  return s.deadline;
+}
+
+void ComputePool::interrupt(unsigned slot, uint16_t gen) {
+  if (impl_ == nullptr || slot >= impl_->slots.size()) return;
+  Slot& s = impl_->slots[slot];
+  // The job answered, or the slot holds a later job: this timer is not
+  // its. And a job still queued behind another is not interrupted
+  // either; its own clock starts when it starts.
+  if (!s.busy || s.gen != gen) return;
+  if (impl_->running[s.worker].load(std::memory_order_acquire) != slot) return;
+  mrb_state* const mrb = impl_->vms[s.worker].load(std::memory_order_acquire);
   if (mrb == nullptr) return;
-  // Which slot that worker runs, so the answer can say "the deadline"
-  // rather than "it raised". Set BEFORE the interrupt: the worker reads
-  // it only after its block returned.
-  for (size_t i = 0; i < impl_->slots.size(); i++) {
-    if (impl_->slots[i].busy && impl_->slots[i].worker == worker) {
-      impl_->asked_stop[i].store(true, std::memory_order_release);
-    }
-  }
+  // Set before the interrupt: the worker reads it only after its block
+  // returned, and it is what makes the answer "the deadline" and not
+  // "it raised".
+  impl_->asked_stop[slot].store(true, std::memory_order_release);
   mrb_vm_interrupt(mrb);
 }
 
 bool ComputePool::submit(mrb_state* mrb, unsigned code_id, std::string_view arg,
-                         std::string_view user, double deadline, uint64_t answer, Sent* sent) {
+                         std::string_view user, double deadline, uint64_t answer) {
   if (impl_ == nullptr) return false;
   Impl* impl = impl_;
   // A free slot, or no. Full means every worker is busy with a full
@@ -992,6 +1015,7 @@ bool ComputePool::submit(mrb_state* mrb, unsigned code_id, std::string_view arg,
   s.out.clear();
   s.raised = false;
   s.answer = answer;
+  s.gen++;
   s.busy = true;
 
   const unsigned to = impl->next++ % static_cast<unsigned>(impl->rings.size());
@@ -1003,13 +1027,6 @@ bool ComputePool::submit(mrb_state* mrb, unsigned code_id, std::string_view arg,
     throw;
   }
   s.worker = to;
-  // The number this job answers to. It goes up when the job is sent, so
-  // a timeout armed for the job before it finds a number that moved on.
-  const uint8_t seq = static_cast<uint8_t>(impl->job_seq[to].fetch_add(1, std::memory_order_acq_rel) + 1);
-  if (sent != nullptr) {
-    sent->worker = to;
-    sent->seq = seq;
-  }
   io_uring_prep_msg_ring(sqe, impl->rings[to].ring_fd, 0, static_cast<uint64_t>(at), 0);
   // The submission itself owes no completion to anyone: the answer comes
   // from the worker, not from the act of sending.
@@ -1032,7 +1049,6 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
       out->exception.swap(s.exception);
       out->step.swap(s.step);
       out->worker_name = s.worker_name;
-      impl_->job_seq[s.worker].fetch_add(1, std::memory_order_acq_rel);
       s.busy = false;
       s.arg.clear();
       s.out.clear();

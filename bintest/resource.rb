@@ -1,5 +1,6 @@
 
 require 'socket'
+require 'etc'
 require 'tempfile'
 
 RES_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RES_BIN)
@@ -1199,6 +1200,38 @@ assert('compute: the worker reads response.userdata and leaves something else (#
       head, body = resource_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_equal 'worker saw from the run', body
+    end
+  end
+end
+
+# #80: a worker runs its jobs one after another. A job queued behind a
+# long one starts its clock when it starts, not when it was queued, and
+# a deadline that fires names the job it belongs to. Every worker gets
+# one long job, and one more waits behind one of them: all answer 200.
+assert('compute: a job queued behind a long one keeps its own deadline (#80)') do
+  src = <<~RUBY_SRC
+    class ComputeQueued < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 250.ms) do
+          t0 = Chrono::Steady.now
+          nil while Chrono::Steady.now - t0 < 0.15
+          true
+        end
+      end
+      def to_html; 'queued'; end
+    end
+  RUBY_SRC
+  cores = Etc.respond_to?(:nprocessors) ? Etc.nprocessors : 2
+  workers = cores > 1 ? cores - 1 : 1
+  resource_server(wm_app('ComputeQueued', src)) do |sock|
+    conns = (workers + 1).times.map { UNIXSocket.open(sock) }
+    conns.each { |s| s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
+    conns.each do |s|
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'queued', body
+      s.close
     end
   end
 end

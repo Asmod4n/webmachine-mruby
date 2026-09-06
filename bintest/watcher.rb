@@ -55,6 +55,44 @@ def wa_exchange(app_source, times: 1)
   end
 end
 
+# The same server, `times` requests on one connection. The block sees
+# the request number, from one, with each answer.
+def wa_same_connection(app_source, times: 1)
+  src = Tempfile.new(['wm-wa', '.rb'])
+  src.write(app_source)
+  src.close
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  mrb = Tempfile.new(['wm-wa', '.mrb'])
+  mrb.close
+  raise "mrbc failed:\n#{app_source}" unless system(mrbc, '-g', '-o', mrb.path, src.path)
+  sock = "/tmp/wm-wa-#{$$}.sock"
+  File.unlink(sock) if File.exist?(sock)
+  err = "/tmp/wm-wa-err-#{$$}.log"
+  pid = spawn(WA_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
+              out: File::NULL, err: err)
+  100.times { break if File.socket?(sock); sleep 0.05 }
+  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  begin
+    UNIXSocket.open(sock) do |c|
+      1.upto(times) do |n|
+        c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        head = +''
+        head << wa_recv(c) until head.end_with?("\r\n\r\n")
+        len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
+        body = +''
+        body << wa_recv(c, len - body.bytesize) while body.bytesize < len
+        yield n, head, body
+      end
+    end
+  ensure
+    Process.kill('TERM', pid) rescue nil
+    Process.wait(pid) rescue nil
+    File.unlink(sock) rescue nil
+    src.unlink
+    mrb.unlink
+  end
+end
+
 # #30: a Watcher is a DESCRIPTION - a source, what to wait for, and what
 # to do when that happens. Building one arms nothing, so all of this can
 # be asked without a reactor being involved at all.
@@ -356,4 +394,47 @@ assert('watcher: the block speaks for the run it belongs to (#30)') do
   assert_equal 'kept in the block', body
   assert_true head.include?('ETag: "etag-from-block"')
   assert_true head.include?('X-From-Block: yes')
+end
+
+# #80: a watcher that runs out of time leaves no poll behind. The next
+# request on the same connection arms a new watcher in the same slot,
+# and the old poll, had it stayed, would have fired on it.
+assert('watcher: a timed-out watcher leaves no poll for its successor (#80)') do
+  src = <<~RUBY_SRC
+    class WatchThenWatch < Webmachine::Resource
+      watch :generate_etag
+      def generate_etag
+        $asked = ($asked || 0) + 1
+        r, w = IO.pipe
+        if $asked.odd?
+          Webmachine::Watcher.new(r, :r, timeout: 50.ms) do |ev, self_|
+            self_.abort
+            "quiet-\#{ev}"
+          end
+        else
+          w.write('x')
+          Webmachine::Watcher.new(r, :r, timeout: 2.s) do |ev, self_|
+            r.read(1)
+            self_.abort
+            "ready-\#{ev}"
+          end
+        end
+      end
+      def to_html
+        'body'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], WatchThenWatch }
+      end
+    end
+  RUBY_SRC
+  wa_same_connection(src, times: 4) do |n, head, body|
+    assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+    assert_equal 'body', body
+    want = n.odd? ? 'ETag: "quiet-timeout"' : 'ETag: "ready-r"'
+    assert_true head.include?(want), head
+  end
 end

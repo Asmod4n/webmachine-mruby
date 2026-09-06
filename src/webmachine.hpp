@@ -3089,22 +3089,19 @@ class ComputePool {
   // CBOR - bytes, because an mrb_value belongs to one VM. False when
   // every slot is taken; the caller decides what a full pool means, and
   // this layer does not invent a refusal for it.
-  // `sent` names the worker that took the job and which job of that
-  // worker it is, so the caller can arm a deadline for exactly this one.
-  struct Sent {
-    unsigned worker = 0;
-    uint8_t seq = 0;
-  };
   // False means every slot is taken. The sqe itself is never the reason:
   // a full submission queue is a raise (sqe_or_raise).
   bool submit(mrb_state* mrb, unsigned code_id, std::string_view arg, std::string_view user,
-              double deadline, uint64_t answer, Sent* sent);
-  // The deadline passed. This is the ONE thing the reactor does to a
+              double deadline, uint64_t answer);
+  // A worker began the job in `slot`, its `gen`th taking. The deadline
+  // to arm for it, or 0 when it has none or the slot moved on.
+  double started(unsigned slot, uint16_t gen);
+  // The deadline passed. This is the one thing the reactor does to a
   // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
-  // is safe from this thread. The sequence number says whether the job
-  // that was armed is still the job that runs - a worker that already
-  // answered is left alone.
-  void interrupt(unsigned worker, uint8_t seq);
+  // is safe from this thread. The job is named by its slot and the
+  // taking of it, and only when that job is the one its worker runs now
+  // is the worker interrupted.
+  void interrupt(unsigned slot, uint16_t gen);
   // What the worker answered. Reading it frees the slot: the answer is
   // handed over once.
   bool take(uint64_t answer, ComputeAnswer* out);
@@ -3149,7 +3146,9 @@ void watcher_set_run(mrb_value v, Resource::RunState* run);
 int watcher_job(mrb_value v);
 void watcher_set_job(mrb_value v, int job);
 void watcher_set_slot(mrb_value v, int slot);
-void watcher_armed(mrb_value v, struct io_uring* ring);
+void watcher_armed(mrb_value v, struct io_uring* ring, uint64_t tag);
+void watcher_unarmed(mrb_value v);
+uint64_t watcher_armed_tag(mrb_value v);
 void watcher_disarm(mrb_value v);
 mrb_value watcher_source_of(mrb_state* mrb, mrb_value v);
 mrb_value watcher_block_of(mrb_state* mrb, mrb_value v);
@@ -5044,7 +5043,10 @@ class Http1 {
   // may stay quiet. The reactor asks both when it arms one.
   static unsigned watcher_mask(Conn& st, int slot);
   static int watcher_descriptor(Conn& st, int slot);
-  static void watcher_is_armed(Conn& st, int slot, struct io_uring* ring);
+  static void watcher_is_armed(Conn& st, int slot, struct io_uring* ring, uint64_t tag);
+  static void watcher_is_unarmed(Conn& st, int slot);
+  // The tag of the poll in the ring for this watcher, or 0 when none is.
+  static uint64_t watcher_poll_tag(Conn& st, int slot);
   static void watchers_drop_slot(Conn& st, int slot);
   // A watcher this connection has not armed yet. Taken, not read: the
   // reactor arms it once and the connection stops naming it - exactly
@@ -6553,7 +6555,13 @@ enum : uint8_t {
   // connection, because what it acts on is the worker's VM. Bits 48..55
   // carry the job number, so a timeout for a job that already answered
   // interrupts nothing.
-  kComputeDeadline = 22
+  kComputeDeadline = 22,
+  // A poll_remove for a watcher whose deadline passed. Nothing reads
+  // its completion.
+  kPollRemove = 23,
+  // #80: a worker began a job. The reactor arms the job's deadline
+  // from here, so the deadline is execution time and not queue time.
+  kComputeStarted = 24
 };
 
 
@@ -6572,9 +6580,12 @@ inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); 
 // Four bits name the stopped run and four name its job, so one byte
 // carries both: a connection holds up to 16 stopped runs - one per h2
 // stream - and a run hands over up to four jobs at a stop.
-inline uint64_t compute_deadline_tag(unsigned worker, uint8_t seq) {
-  return tag(kComputeDeadline, 0, static_cast<uint32_t>(worker)) |
-         (static_cast<uint64_t>(seq) << 48);
+// Both name one job: the pool's slot and which taking of it.
+inline uint64_t compute_deadline_tag(unsigned slot, uint16_t gen) {
+  return tag(kComputeDeadline, gen, static_cast<uint32_t>(slot));
+}
+inline uint64_t compute_started_tag(unsigned slot, uint16_t gen) {
+  return tag(kComputeStarted, gen, static_cast<uint32_t>(slot));
 }
 // The connection index takes 24 bits, which is more than the fixed
 // file table allows, and the top byte of that word names which taking
