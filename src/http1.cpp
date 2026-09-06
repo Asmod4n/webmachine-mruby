@@ -682,6 +682,10 @@ bool Http1::answer_from_file(Round& r, uint16_t status, const std::string& rhdrs
   st.file->request_target.assign(r.path, r.path_len);
   st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
   st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
+  // RFC 9110 12.5.1: which form a refusal takes is the caller's Accept,
+  // and a refusal can land long after this round - so it is decided here,
+  // while the request is still in hand.
+  st.file->err_media = err_pages_.media_for(404, r.vals.accept, r.vals.accept_len);
   st.file->stage = FileStage::kNamed;
   if (wanted.bad) file_reject(st);
   file_named_tail(r);
@@ -766,6 +770,7 @@ Http1::Took Http1::answer_from_docroot(Round& r) {
   st.file->request_target.assign(r.path, r.path_len);
   st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
   st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
+  st.file->err_media = err_pages_.media_for(404, r.vals.accept, r.vals.accept_len);
   st.file->stage = FileStage::kNamed;
   if (!readable) file_prebuilt(st, r.facts.method == flow::Method::kOther ? 501 : 405);
   else if (bad) file_reject(st);
@@ -824,12 +829,29 @@ void Http1::lend_body(Conn& st, std::string& sink, Lending lend) {
   st.zc_split = true;
 }
 
-// RFC 9112 9.3: a file answer that carries nothing of its own - the status
-// straight out of the shared store, in this connection's spelling.
+// RFC 9112 9.3: a file answer of its own status, in this connection's
+// spelling - and with the page that status has.
+//
+// EVERY REFUSAL WEARS ITS PAGE, whatever served it. The graph has one
+// 404, and a file that is not there is that 404: the same body a
+// resource answering g7 with false would send. This used to take the
+// bodyless status out of the shared store, so a docroot miss answered
+// Content-Length: 0 while the same miss on a pack answered a page.
 void Http1::file_prebuilt(Conn& st, uint16_t status_code) {
   const Variants& sv = variants(status_code);
-  st.file->head = st.file->minor >= 1 ? (st.file->persist ? sv.plain.bytes : sv.close.bytes)
-                                      : (st.file->persist ? sv.keep.bytes : sv.close.bytes);
+  const Resp& bodyless = st.file->minor >= 1 ? (st.file->persist ? sv.plain : sv.close)
+                                             : (st.file->persist ? sv.keep : sv.close);
+  st.file->head.clear();
+  if (status_code >= 400) {
+    const Variants& pv = prefixes(status_code);
+    const Resp& prefix = st.file->minor >= 1 ? (st.file->persist ? pv.plain : pv.close)
+                                             : (st.file->persist ? pv.keep : pv.close);
+    const ErrorPages::Fields f;
+    spell_error({prefix, bodyless, status_code, st.file->err_media, f, st.file->head_only},
+                st.file->head);
+  } else {
+    st.file->head = bodyless.bytes;
+  }
   st.file->status_code = status_code;
   st.file->buf_filled = 0;
   st.file->stage = FileStage::kDeliver;

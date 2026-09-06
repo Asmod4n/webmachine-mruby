@@ -42,18 +42,17 @@ void usage(const char* me) {
   std::fprintf(stderr,
                "usage: %s [OPTIONS]\n"
                "\n"
-               "  Every option is --key=value. At least one of --app, --assets and\n"
-               "  --docroot; with nothing to serve, no start.\n"
+               "  Every option is --key=value. There are two ways to serve:\n"
+               "  an APPLICATION (--app), or STANDALONE (--standalone), which\n"
+               "  serves files and enters no VM. One of the two, or no start.\n"
                "\n"
                "LISTENER\n"
                "  --unix=PATH              answer on a unix socket; beats the app's conf\n"
                "  --port=N                 answer on a TCP port; beats the app's conf\n"
                "\n"
-               "SERVE\n"
-               "  --app=FILE.mrb           the application, as bytecode\n"
-               "  --assets=FILE.zip        assets from one mapping; alone, 404s the rest\n"
-               "  --error-assets=FILE.zip  what an error answer may hand over\n"
-               "  --docroot=DIR            files from here; the only directory response.file reaches\n"
+               "FILES BOTH WAYS SERVE\n"
+               "  --assets=FILE.zip        a pack, answered from one mapping\n"
+               "  --docroot=DIR            a directory of files\n"
                "  --mime-types=FILE        this media-type database, not the machine's\n"
                "\n"
                "LOG\n"
@@ -64,10 +63,22 @@ void usage(const char* me) {
                "\n"
                "TUNE\n"
                "  --zero-copy-threshold=N  lend a body this big instead of copying (128 KiB)\n"
+               "  --file-map-threshold=N   map a file this big instead of reading  (256 KiB)\n"
                "\n"
                "OTHER\n"
                "  --config=FILE.toml       these choices from a file; flags beat it\n"
                "  --pidfile=PATH           write this pid, remove it on the way out\n"
+               "\n"
+               "AN APPLICATION\n"
+               "  --app=FILE.mrb           the application, as bytecode - required\n"
+               "  --error-assets=FILE.zip  what an error answer may hand over\n"
+               "  --docroot=DIR            here, the only directory response.file may reach\n"
+               "\n"
+               "STANDALONE - files only, and the folded graph answers them\n"
+               "  --standalone             no app, no route, no VM entry per request\n"
+               "  --assets=FILE.zip        answered first, from its mapping\n"
+               "  --docroot=DIR            answered next, from disk; needs one of the two\n"
+               "                           GET and HEAD; a directory takes its index.html\n"
                ,
                me);
 }
@@ -76,7 +87,7 @@ void usage(const char* me) {
 // key, so the set a typo is measured against has to be stated: it is
 // this one, and it is also what the usage text above lists.
 const char* const kFlags[] = {
-    "unix", "port", "app", "assets", "error-assets", "docroot", "mime-types",
+    "unix", "port", "app", "standalone", "assets", "error-assets", "docroot", "mime-types",
     "log", "log-privacy", "error-log", "log-max-bytes", "file-map-threshold",
     "zero-copy-threshold", "pidfile", "config",
 };
@@ -89,6 +100,15 @@ const char* text_of(mrb_state* mrb, mrb_value h, const char* key) {
   if (mrb_nil_p(v)) return nullptr;
   if (!mrb_string_p(v)) mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s takes text", key);
   return mrb_string_cstr(mrb, v);
+}
+
+// A flag with no value: `--standalone`. TypedArgs answers true for one
+// that was given, and nothing for one that was not.
+bool flag_of(mrb_state* mrb, mrb_value h, const char* key) {
+  const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
+  if (mrb_nil_p(v) || mrb_false_p(v)) return false;
+  if (!mrb_true_p(v)) mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s takes no value", key);
+  return true;
 }
 
 // A whole number, or `missing` when the flag was not given. TypedArgs
@@ -150,6 +170,7 @@ bool parse_argv(mrb_state* mrb, Invocation& in) {
   in.cli_unix = text_of(mrb, h, "unix");
   in.cli_port = static_cast<int>(number_of(mrb, h, "port", 0));
   opts.app_path = text_of(mrb, h, "app");
+  opts.standalone = flag_of(mrb, h, "standalone");
   opts.assets_path = text_of(mrb, h, "assets");
   opts.error_assets_path = text_of(mrb, h, "error-assets");
   opts.docroot_path = text_of(mrb, h, "docroot");
@@ -268,18 +289,32 @@ int serve(mrb_state* mrb, Invocation& in) {
 
   webmachine::server_options(opts);
 
+  if (opts.standalone && opts.app_path != nullptr) {
+    std::fprintf(stderr, "webmachine: --standalone enters no VM, so it cannot run --app. "
+                         "Name one or the other\n");
+    return 1;
+  }
   if (opts.app_path != nullptr) {
     webmachine::app_load(mrb, opts.app_path);
-  } else if (opts.assets_path != nullptr || opts.docroot_path != nullptr) {
+  } else if (opts.standalone) {
     // STANDALONE: a pack, a docroot, or both, and no app. There is no
     // resource to enter, so the folded graph answers on its own - the
     // pack from its mapping, the docroot from disk, everything else 404.
+    if (opts.assets_path == nullptr && opts.docroot_path == nullptr) {
+      std::fprintf(stderr, "webmachine: --standalone serves files, so it needs some: "
+                           "--assets=FILE.zip, --docroot=DIR, or both\n");
+      return 1;
+    }
     webmachine::app_assets_only();
   } else {
+    // A pack or a directory beside no app is not a server by itself any
+    // more: --standalone is how an operator says that is what they meant.
     std::fprintf(stderr,
                  "webmachine: nothing to serve - name an application with --app=FILE.mrb "
-                 "(or app = in the config), a pack with --assets=FILE.zip, or a directory "
-                 "with --docroot=DIR\n");
+                 "(or app = in the config)%s\n",
+                 (opts.assets_path != nullptr || opts.docroot_path != nullptr)
+                     ? ", or add --standalone to serve the files you named without one"
+                     : ", or serve files with --standalone and --assets/--docroot");
     return 1;
   }
 

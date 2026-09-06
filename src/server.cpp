@@ -330,7 +330,7 @@ void build(mrb_state* mrb) {
   }
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
-  const bool standalone = specs_.empty() || (specs_.size() == 1 && specs_[0]->table.empty());
+  const bool standalone = opts_.standalone;
   if (opts_.assets_path != nullptr || !error_assets_file.empty() ||
       (standalone && docroot_fd() >= 0)) {
     mime_.load(mrb, opts_.mime_types_path);

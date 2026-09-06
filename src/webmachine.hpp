@@ -4726,6 +4726,9 @@ class Http1 {
       bool persist = true;             // RFC 9112 9.3
       bool head_only = false;          // RFC 9110 9.3.2
       bool if_modified_since_valid = false;
+      // Which form a refusal takes, weighed against the caller's Accept
+      // while the request was still in hand.
+      int err_media = 0;
       int minor = 1;                   // RFC 9112 2.3: HTTP-version's
                                        // second DIGIT
     };
@@ -6307,6 +6310,9 @@ struct ServerOptions {
   const char* cli_unix = nullptr;
   int cli_port = 0;
   const char* app_path = nullptr;
+  // --standalone: files only. No app is loaded, no route table exists,
+  // and no request enters the VM.
+  bool standalone = false;
   unsigned sq_entries = 0;
   int backlog = 0;
   int header_timeout = 0;
