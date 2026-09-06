@@ -518,7 +518,11 @@ PACK_RULES_FILE = '.cache-rules'
 
 # What the task offers when it asks. Nothing here is applied unasked.
 PACK_SUGGESTED = {
-  '.html' => 0, '.htm' => 0, '.json' => 0, '.txt' => 0, '.md' => 0, '.xml' => 0,
+  # A page gets a few minutes, not nothing. A reader who walks a site
+  # comes back to the page they just left, and 300 seconds of that costs
+  # no request at all. It is short enough that a correction is visible
+  # while the person who made it is still watching.
+  '.html' => 300, '.htm' => 300, '.json' => 0, '.txt' => 60, '.md' => 60, '.xml' => 60,
   '.css' => 3600, '.js' => 3600, '.mjs' => 3600, '.map' => 3600, '.wasm' => 3600,
   '.jpg' => 604_800, '.jpeg' => 604_800, '.png' => 604_800, '.gif' => 604_800,
   '.webp' => 604_800, '.avif' => 604_800, '.ico' => 604_800, '.bmp' => 604_800,
@@ -591,7 +595,9 @@ end
 def pack_entry_extra(mtime, plain_name, cache_control)
   extra = [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
   extra << [WM_CACHE_ID, cache_control.bytesize].pack('vv') << cache_control.b
-  extra << [WM_PLAIN_ID, plain_name.bytesize].pack('vv') << plain_name.b
+  # A page has no second name, so it carries no table field: the entry is
+  # already named what it answers under.
+  extra << [WM_PLAIN_ID, plain_name.bytesize].pack('vv') << plain_name.b if plain_name
   extra
 end
 
@@ -603,12 +609,13 @@ end
 def pack_zip(entries)
   out = +''.b
   cd = +''.b
-  entries.each do |name, data, mtime, seconds|
+  entries.each do |name, data, mtime, seconds, page|
     data = data.b
-    hashed = pack_hashed_name(name, data)
+    # A page answers under the name people call, and under that one only.
+    hashed = page ? name : pack_hashed_name(name, data)
     ddate, dtime = dos_stamp(mtime)
     crc = Zlib.crc32(data)
-    extra = pack_entry_extra(mtime, name, pack_cache_control(seconds))
+    extra = pack_entry_extra(mtime, page ? nil : name, pack_cache_control(seconds))
     stored = PACK_STORED.include?(File.extname(name).downcase)
     body = stored ? data : Zlib::Deflate.deflate(data, 9)[2..-5]
     # A file that grows under deflate is stored instead.
@@ -631,6 +638,85 @@ def pack_zip(entries)
   out
 end
 
+# A page that wants the hashed name of a file it embeds has to be able to
+# write it, and it cannot know a hash before the file is packed. So the
+# page writes the path it means, in one spelling, and the pack fills it
+# in:
+#
+#     <link rel="stylesheet" href="{{asset:/site.css}}">
+#     <img src="{{asset:/img/p1015.jpg}}">
+#
+# {{asset:PATH}}, with the real path inside it. The pack replaces it with
+# that file's hashed name and refuses, by name, a path it does not hold.
+# The path stays readable in the source, and there is no second name for
+# anything to learn.
+#
+# A LINK TO A PAGE IS NOT AN ASSET. It stays plain - href="/gallery.html".
+# A page is what somebody calls, bookmarks and links to from outside, and
+# a hashed page address would change with every word on the page. So only
+# what a page EMBEDS is hashed: a stylesheet, a script, a picture, a font.
+#
+# That is also why there is no hen and egg here. Hashed references point
+# from a page to a leaf and never back, so nothing waits for a hash that
+# waits for it. A leaf may name another leaf - a stylesheet that names a
+# picture - and the pack does those in the order the naming gives.
+PACK_ASSET_TAG = /\{\{\s*asset:\s*([^\s}]+)\s*\}\}/.freeze
+
+# Which entries can carry {{asset:...}} at all: the text ones.
+PACK_TEXT = %w[.html .htm .css .js .mjs .svg .json .txt .xml .webmanifest].freeze
+
+def pack_fill(name, body, table)
+  body.gsub(PACK_ASSET_TAG) do
+    path = Regexp.last_match(1)
+    table[path] or
+      raise "#{name} asks for #{path}, which the pack does not hold.\n" \
+            "  it holds: #{table.keys.sort.join(', ')}"
+  end
+end
+
+def pack_text?(name)
+  PACK_TEXT.include?(File.extname(name).downcase)
+end
+
+# name.ext -> name.<12 hex of the content>.ext, in the same directory.
+def pack_hashed_name(name, data)
+  require 'digest'
+  ext = File.extname(name)
+  "#{name[0, name.length - ext.length]}.#{Digest::SHA256.hexdigest(data)[0, 12]}#{ext}"
+end
+
+# The order the naming gives. A file that names no other file is ready at
+# once; one that names files is ready when all of them are hashed. Two
+# files that name each other have no order, and that is refused by name.
+def pack_fill_all(files, pages)
+  table = {}
+  left = files.dup
+  filled = {}
+  until left.empty?
+    ready = left.reject do |name, data|
+      pack_text?(name) &&
+        data.scan(PACK_ASSET_TAG).flatten.uniq.any? { |path| !table.key?(path) }
+    end
+    if ready.empty?
+      waiting = left.map do |name, data|
+        want = data.scan(PACK_ASSET_TAG).flatten.uniq.reject { |path| table.key?(path) }
+        "#{name} waits for #{want.join(', ')}"
+      end
+      raise "these files name each other, or name what the pack does not hold:\n  " +
+            waiting.join("\n  ")
+    end
+    ready.each do |name, data|
+      out = pack_text?(name) ? pack_fill(name, data, table) : data
+      filled[name] = out
+      # A page answers under its own name; only a leaf gets a hashed one,
+      # and only a leaf goes into the table.
+      table["/#{name}"] = pages.include?(name) ? "/#{name}" : "/#{pack_hashed_name(name, out)}"
+      left.delete(name)
+    end
+  end
+  [filled, table]
+end
+
 desc 'pack a directory for --assets: rake pack[DIR,OUT.zip]'
 task :pack, %i[dir out] do |_t, args|
   require 'zlib'
@@ -647,6 +733,10 @@ task :pack, %i[dir out] do |_t, args|
   end
   raise "#{dir} holds no files" if names.empty?
 
+  # A page is an HTML document: what somebody calls, bookmarks and links
+  # to. Everything else is a leaf, which is what a page embeds.
+  pages = names.select { |n| %w[.html .htm].include?(File.extname(n).downcase) }
+
   rules_path = File.join(root, PACK_RULES_FILE)
   rules = read_cache_rules(rules_path)
   wanted = names.group_by { |n| File.extname(n).downcase }
@@ -657,16 +747,20 @@ task :pack, %i[dir out] do |_t, args|
     write_cache_rules(rules_path, rules)
   end
 
+  files = names.to_h { |n| [n, File.binread(File.join(root, n))] }
+  filled, table = pack_fill_all(files, pages)
+
   entries = names.map do |n|
-    path = File.join(root, n)
-    [n, File.binread(path), File.mtime(path), rules[File.extname(n).downcase]]
+    [n, filled[n], File.mtime(File.join(root, n)), rules[File.extname(n).downcase],
+     pages.include?(n) ? :page : nil]
   end
+
   File.binwrite(out, pack_zip(entries))
-  puts "#{out}: #{entries.size} files under #{entries.size * 2} names, " \
-       "#{File.size(out)} bytes"
-  entries.each do |n, data, _mtime, seconds|
-    puts "  #{n}  #{pack_cache_control(seconds)}"
-    puts "  #{pack_hashed_name(n, data)}  #{PACK_IMMUTABLE}"
+  puts "#{out}: #{entries.size} files (#{pages.size} page(s)) under " \
+       "#{entries.size * 2 - pages.size} names, #{File.size(out)} bytes"
+  entries.each do |n, data, _mtime, seconds, page|
+    puts "  /#{n}  #{pack_cache_control(seconds)}"
+    puts "    #{pack_hashed_name(n, data)}  #{PACK_IMMUTABLE}" unless page
   end
 end
 
