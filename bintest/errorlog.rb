@@ -2,24 +2,9 @@
 require 'socket'
 require 'tempfile'
 
-ELOG_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(ELOG_BIN)
-
 # mruby's enable_debug is what build/debug has and the ship builds do not
 # - the same line the server reads as kDebugBuild.
 ELOG_DEBUG_BUILD = (ENV['BUILD_DIR'] || 'build/host').include?('debug')
-
-def elog_compile(source)
-  src = Tempfile.new(['wm-elog', '.rb'])
-  src.write(source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-elog', '.mrb'])
-  mrb.close
-  raise "mrbc failed:\n#{source}" unless system(mrbc, '-g', '-o', mrb.path, src.path)
-  mrb
-ensure
-  src&.unlink
-end
 
 ELOG_APP = <<~APP
   class Boom < Webmachine::Resource
@@ -35,37 +20,23 @@ ELOG_APP = <<~APP
   end
 APP
 
+# One server with an error log. The block gets the socket and the log.
 def elog_server(extra_args)
-  app = elog_compile(ELOG_APP)
-  sock = "/tmp/wm-elog-#{$$}.sock"
   log = "/tmp/wm-elog-#{$$}.log"
-  err = "/tmp/wm-elog-stderr-#{$$}.log"
-  [sock, log].each { |f| File.unlink(f) rescue nil }
-  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              "--error-log=#{log}", *extra_args, out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
+  File.unlink(log) rescue nil
+  wm_server(ELOG_APP, "--error-log=#{log}", *extra_args, tag: 'wm-elog') do |sock|
     yield sock, log
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    [sock, log, err].each { |f| File.unlink(f) rescue nil }
-    app.unlink
   end
+ensure
+  File.unlink(log) rescue nil
 end
 
+# One request, one connection, the whole answer as one string.
 def elog_get(sock, target)
-  s = UNIXSocket.new(sock)
-  s.write "GET #{target} HTTP/1.1\r\nHost: e\r\nConnection: close\r\n\r\n"
-  out = +''
-  loop do
-    out << s.readpartial(4096)
-  rescue EOFError
-    break
+  wm_conn(sock) do |s|
+    wm_request(s, target)
+    wm_read(s).join
   end
-  s.close
-  out
 end
 
 def elog_await(log, want)
@@ -153,16 +124,10 @@ end
 # empty file and prove nothing. The exit flush is also what runs the cap.
 assert('access log: --log-max-bytes is a ceiling, and the newest lines survive') do
   cap = 8192
-  app = elog_compile(ELOG_APP)
-  sock = "/tmp/wm-alog-#{$$}.sock"
   alog = "/tmp/wm-alog-#{$$}.log"
-  err = "/tmp/wm-alog-stderr-#{$$}.log"
-  [sock, alog].each { |f| File.unlink(f) rescue nil }
-  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              "--log=#{alog}", "--log-max-bytes=#{cap.to_s}", out: File::NULL, err: err)
-  begin
-    100.times { break if File.socket?(sock); sleep 0.05 }
-    raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  File.unlink(alog) rescue nil
+  wm_server(ELOG_APP, "--log=#{alog}", "--log-max-bytes=#{cap.to_s}",
+            tag: 'wm-alog') do |sock, pid|
     400.times { |i| elog_get(sock, "/hit#{i}") }
     Process.kill('TERM', pid)
     Process.wait(pid)
@@ -178,10 +143,7 @@ assert('access log: --log-max-bytes is a ceiling, and the newest lines survive')
     assert_include text, '/hit399'
     assert_false text.include?('/hit0 ')
   ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    [sock, alog, err].each { |f| File.unlink(f) rescue nil }
-    app.unlink
+    File.unlink(alog) rescue nil
   end
 end
 
@@ -191,16 +153,10 @@ end
 # was pinned on the error stream, the one place it never applied.
 assert('access log: --log-max-bytes is a ceiling, and the newest lines survive') do
   cap = 8192
-  app = elog_compile(ELOG_APP)
-  sock = "/tmp/wm-alog-#{$$}.sock"
   alog = "/tmp/wm-alog-#{$$}.log"
-  err = "/tmp/wm-alog-stderr-#{$$}.log"
-  [sock, alog].each { |f| File.unlink(f) rescue nil }
-  pid = spawn(ELOG_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              "--log=#{alog}", "--log-max-bytes=#{cap.to_s}", out: File::NULL, err: err)
-  begin
-    100.times { break if File.socket?(sock); sleep 0.05 }
-    raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
+  File.unlink(alog) rescue nil
+  wm_server(ELOG_APP, "--log=#{alog}", "--log-max-bytes=#{cap.to_s}",
+            tag: 'wm-alog') do |sock, pid|
     400.times { |i| elog_get(sock, "/hit#{i}") }
     text = ''
     100.times do
@@ -212,9 +168,6 @@ assert('access log: --log-max-bytes is a ceiling, and the newest lines survive')
     assert_include text, '/hit399'
     assert_false text.include?('/hit0 ')
   ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    [sock, alog, err].each { |f| File.unlink(f) rescue nil }
-    app.unlink
+    File.unlink(alog) rescue nil
   end
 end

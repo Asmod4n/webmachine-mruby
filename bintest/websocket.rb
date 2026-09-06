@@ -2,38 +2,8 @@
 require 'socket'
 require 'tempfile'
 
-WS_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(WS_BIN)
-
-def ws_compile(src)
-  f = Tempfile.new(['wm-ws', '.rb'])
-  f.write(src)
-  f.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set'
-  out = Tempfile.new(['wm-ws', '.mrb'])
-  out.close
-  raise "mrbc failed:\n#{src}" unless system(mrbc, '-g', '-o', out.path, f.path)
-  out
-ensure
-  f&.unlink
-end
-
-def ws_server(app_src)
-  app = ws_compile(app_src)
-  sock = "/tmp/wm-ws-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-ws-stderr-#{$$}.log"
-  pid = spawn(WS_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "ws server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock, err
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
+def ws_server(app_src, &block)
+  wm_server(app_src, tag: 'wm-ws', &block)
 end
 
 def ws_recv(s, n, deadline = 10)
@@ -422,9 +392,9 @@ assert('ws: route.websocket refuses a class that is not a WebsocketResource') do
       end
     end
   RUBY
-  app = ws_compile(src)
+  app = wm_compile(src, 'wm-ws')
   err = "/tmp/wm-ws-refuse-#{$$}.log"
-  pid = spawn(WS_BIN, "--unix=/tmp/wm-ws-refuse-#{$$}.sock",
+  pid = spawn(WM_BIN, "--unix=/tmp/wm-ws-refuse-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0
@@ -444,9 +414,9 @@ assert('ws: a resource without on_data is refused at route.websocket') do
       end
     end
   RUBY
-  app = ws_compile(src)
+  app = wm_compile(src, 'wm-ws')
   err = "/tmp/wm-ws-mute-#{$$}.log"
-  pid = spawn(WS_BIN, "--unix=/tmp/wm-ws-mute-#{$$}.sock",
+  pid = spawn(WM_BIN, "--unix=/tmp/wm-ws-mute-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0
@@ -474,7 +444,7 @@ assert('ws: on_close hears the client going away, with its code and reason') do
       end
     end
   RUBY
-  ws_server(src) do |sock, errlog|
+  ws_server(src) do |sock, _pid, errlog|
     s = UNIXSocket.new(sock)
     ws_handshake(s)
     s.write(ws_frame(0x8, ws_be16(1001) + 'leaving'))

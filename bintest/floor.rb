@@ -2,13 +2,6 @@
 require 'socket'
 require 'tempfile'
 
-SERVER_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SERVER_BIN)
-
-def wm_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
 # The server refuses to start with nothing to serve. The floor tests are
 # about the reactor and the listener, so they carry the smallest resource
 # there is: one splat route, one baked body.
@@ -37,28 +30,8 @@ def floor_app
   $floor_app = mrb
 end
 
-def floor_server
-  sock = "/tmp/wm-floor-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  args = [SERVER_BIN, "--unix=#{sock}", "--app=#{floor_app}"]
-  err = "/tmp/wm-floor-stderr-#{$$}.log"
-  pid = spawn(*args, out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  unless File.socket?(sock)
-    Process.kill('TERM', pid) rescue nil
-    raise "floor never came up\n#{File.read(err) rescue '(no stderr)'}"
-  end
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-  end
-end
-
 assert('floor: a receive is answered 200, keep-alive holds') do
-  floor_server do |sock|
+  wm_server(FLOOR_APP, tag: 'wm-floor') do |sock|
     UNIXSocket.open(sock) do |s|
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -77,7 +50,7 @@ end
 assert('floor: the ring-built TCP listener answers like the unix one') do
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
-  pid = spawn(SERVER_BIN, "--port=#{port.to_s}",
+  pid = spawn(WM_BIN, "--port=#{port.to_s}",
               "--app=#{floor_app}", out: File::NULL, err: err)
   begin
     s = nil
@@ -104,7 +77,7 @@ end
 assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(SERVER_BIN, "--unix=#{sock}",
+  pid = spawn(WM_BIN, "--unix=#{sock}",
               "--app=#{floor_app}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   assert_true File.socket?(sock)

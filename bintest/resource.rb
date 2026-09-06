@@ -3,22 +3,6 @@ require 'socket'
 require 'etc'
 require 'tempfile'
 
-RES_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RES_BIN)
-
-def wm_compile(app_source)
-  src = Tempfile.new(['wm-app', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-app', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise "mrbc failed to compile:\n#{app_source}" unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
 def wm_app(name, src)
   <<~RUBY
     #{src}
@@ -32,29 +16,10 @@ def wm_app(name, src)
   RUBY
 end
 
-def resource_server(app_source)
-  app = wm_compile(app_source)
-  sock = "/tmp/wm-res-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn(RES_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock, pid
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
-end
-
 def resource_refused(app_source)
   app = wm_compile(app_source)
   err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn(RES_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
+  pid = spawn(WM_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
@@ -68,7 +33,7 @@ def resource_refused_rb(app_source)
   src.write(app_source)
   src.close
   err = "/tmp/wm-res-stderr-#{$$}.log"
-  pid = spawn(RES_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
+  pid = spawn(WM_BIN, "--unix=/tmp/wm-res-#{$$}.sock",
               "--app=#{src.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused the .rb path' if $?.exitstatus == 0
@@ -77,25 +42,11 @@ ensure
   src.unlink
 end
 
-def wm_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
-def resource_read(s)
-  head = +''
-  head << wm_recv(s) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''
-  body << wm_recv(s, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
-
 assert('resource: hello world serves its rendered body, typed, VM silent') do
-  resource_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
+  wm_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i)
       assert_equal '<html><body>Hello, World!</body></html>', body
@@ -110,7 +61,7 @@ assert('resource: hello world serves its rendered body, typed, VM silent') do
       drain = +''
       drain << wm_recv(s, len - drain.bytesize) while drain.bytesize < len
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
-      head3, = resource_read(s)
+      head3, = wm_read(s)
       assert_true head3.start_with?('HTTP/1.1 405')
     end
   end
@@ -136,12 +87,12 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
       end
     end
   RUBY
-  resource_server(wm_app('WideResource', src)) do |sock|
+  wm_server(wm_app('WideResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       # RFC 9110 9.3.3 / fsm.rb n11: a POST that is not a create and has no
       # process_post is the app's mistake, and it is named as one.
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
-      head, = resource_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500'), "POST expected 500, got #{head.lines.first}"
       # RFC 9110 15.3.5 / fsm.rb o20: nothing set a body, so no entity.
       s.write("DELETE / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -149,7 +100,7 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
       head2 << wm_recv(s) until head2.end_with?("\r\n\r\n")
       assert_true head2.start_with?('HTTP/1.1 204'), "DELETE expected 204, got #{head2.lines.first}"
       s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
-      head3, = resource_read(s)
+      head3, = wm_read(s)
       assert_true head3.start_with?('HTTP/1.1 405')
       assert_true head3.match?(/^Allow: GET, HEAD, POST, DELETE\r$/i)
     end
@@ -164,10 +115,10 @@ assert('resource: service_available? false turns every request into 503 (B13)') 
       end
     end
   RUBY
-  resource_server(wm_app('DownResource', src)) do |sock|
+  wm_server(wm_app('DownResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = resource_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 503')
     end
   end
@@ -181,13 +132,13 @@ assert('resource: a missing resource speaks 404/412 like the graph says') do
       end
     end
   RUBY
-  resource_server(wm_app('GhostResource', src)) do |sock|
+  wm_server(wm_app('GhostResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = resource_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 404')
       s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-Match: *\r\n\r\n")
-      head2, = resource_read(s)
+      head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 412')
     end
   end
@@ -268,10 +219,10 @@ assert('ComputeTask wants a block and a deadline that is a time (#80)') do
       def to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('ComputeNoBlock', src)) do |sock|
+  wm_server(wm_app('ComputeNoBlock', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500')
     end
   end
@@ -287,10 +238,10 @@ assert('compute: a worker answers the node, and the graph carries on (#80)') do
       def to_html; 'answered by a worker'; end
     end
   RUBY
-  resource_server(wm_app('ComputeAuth', src)) do |sock|
+  wm_server(wm_app('ComputeAuth', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_equal 'answered by a worker', body
     end
@@ -325,7 +276,7 @@ assert('compute: a parked run reads its own request after it resumes (#80)') do
       end
     end
   RUBY
-  resource_server(wm_app('ParkedReads', src)) do |sock|
+  wm_server(wm_app('ParkedReads', src)) do |sock|
     a = UNIXSocket.open(sock)
     a.write("GET /alpha?q=1 HTTP/1.1\r\nHost: x\r\nX-Probe: first\r\n\r\n")
     sleep 0.05
@@ -333,19 +284,19 @@ assert('compute: a parked run reads its own request after it resumes (#80)') do
     # buffer the first one was read into.
     UNIXSocket.open(sock) do |b|
       b.write("GET /beta?q=2 HTTP/1.1\r\nHost: x\r\nX-Probe: second\r\n\r\n")
-      _, body = resource_read(b)
+      _, body = wm_read(b)
       assert_equal '/beta|second|2', body
     end
-    _, body = resource_read(a)
+    _, body = wm_read(a)
     assert_equal '/alpha|first|1', body
     a.write("POST /gamma HTTP/1.1\r\nHost: x\r\nX-Probe: third\r\n" \
             "Content-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello")
     sleep 0.05
     UNIXSocket.open(sock) do |b|
       b.write("GET /delta?q=4 HTTP/1.1\r\nHost: x\r\nX-Probe: fourth\r\n\r\n")
-      resource_read(b)
+      wm_read(b)
     end
-    _, body = resource_read(a)
+    _, body = wm_read(a)
     assert_equal '/gamma|third|hello', body
     a.close
   end
@@ -369,7 +320,7 @@ assert('compute: a peer that leaves mid-park frees its park slot (#80)') do
       def to_html; 'still here'; end
     end
   RUBY
-  resource_server(wm_app('ParkLeave', src)) do |sock|
+  wm_server(wm_app('ParkLeave', src)) do |sock|
     20.times do
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -380,7 +331,7 @@ assert('compute: a peer that leaves mid-park frees its park slot (#80)') do
     sleep 0.3
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head
       assert_equal 'still here', body
     end
@@ -409,16 +360,16 @@ assert('compute: userdata set before a park is the same run\'s after it (#30)') 
       end
     end
   RUBY
-  resource_server(wm_app('ParkUser', src)) do |sock|
+  wm_server(wm_app('ParkUser', src)) do |sock|
     a = UNIXSocket.open(sock)
     a.write("GET / HTTP/1.1\r\nHost: x\r\nX-Who: alpha\r\n\r\n")
     sleep 0.05
     UNIXSocket.open(sock) do |b|
       b.write("GET / HTTP/1.1\r\nHost: x\r\nX-Who: beta\r\n\r\n")
-      _, body = resource_read(b)
+      _, body = wm_read(b)
       assert_equal 'beta', body
     end
-    _, body = resource_read(a)
+    _, body = wm_read(a)
     assert_equal 'alpha', body
     a.close
   end
@@ -433,13 +384,13 @@ assert('http1: buffers of a closed slot go back to the pool') do
       def self.to_html; 'buffers'; end
     end
   RUBY
-  resource_server(wm_app('Buffers', src)) do |sock|
+  wm_server(wm_app('Buffers', src)) do |sock|
     5000.times do
       UNIXSocket.open(sock) { |s| s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
     end
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head
       assert_equal 'buffers', body
     end
@@ -456,11 +407,11 @@ assert('compute: the second request on a server is answered like the first (#80)
       def to_html; 'again'; end
     end
   RUBY
-  resource_server(wm_app('ComputeTwice', src)) do |sock|
+  wm_server(wm_app('ComputeTwice', src)) do |sock|
     3.times do
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 200'), head
         assert_equal 'again', body
       end
@@ -478,10 +429,10 @@ assert('compute: a task over its max_runtime answers 500 and no Retry-After (#80
       def to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('ComputeTooSlow', src)) do |sock|
+  wm_server(wm_app('ComputeTooSlow', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500'), head
       # The author's number was wrong. A second attempt costs the same,
       # so nothing tells the client to come back.
@@ -500,10 +451,10 @@ assert('compute: a worker that raises answers 503 and Retry-After: 60 (#80)') do
       def to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('ComputeRaises', src)) do |sock|
+  wm_server(wm_app('ComputeRaises', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 503'), head
       assert_true head.match?(/^Retry-After: 60\r$/i), head
     end
@@ -516,10 +467,10 @@ assert('a konst answer carries a real Date, not the placeholder (RFC 9110 6.6.1)
       def self.to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('KonstDate', src)) do |sock|
+  wm_server(wm_app('KonstDate', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       date = head[/^Date: (.*)\r$/, 1]
       assert_true !date.nil?, head
       # The prebuilt heads carry a placeholder until the ticker stamps
@@ -531,19 +482,19 @@ end
 
 assert('resource: an instance body renders per request through the VM') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
-  resource_server(src) do |sock|
+  wm_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body1 = resource_read(s)
+      _, body1 = wm_read(s)
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body2 = resource_read(s)
+      _, body2 = wm_read(s)
       assert_equal '<html><body>hit 1</body></html>', body1
       assert_equal '<html><body>hit 2</body></html>', body2
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
       hh = +''
       hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
       assert_true hh.match?(/^Content-Length: 31\r$/i), hh
-      nxt, body4 = resource_read(s)
+      nxt, body4 = wm_read(s)
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
       assert_equal '<html><body>hit 4</body></html>', body4
     end
@@ -559,16 +510,16 @@ assert('resource: an instance decision is asked per request (state changes answe
       end
     end
   RUBY
-  resource_server(wm_app('Flaky', src)) do |sock|
+  wm_server(wm_app('Flaky', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head1, = resource_read(s)
+      head1, = wm_read(s)
       assert_true head1.start_with?('HTTP/1.1 200')
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head2, = resource_read(s)
+      head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 404')
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head3, = resource_read(s)
+      head3, = wm_read(s)
       assert_true head3.start_with?('HTTP/1.1 200')
     end
   end
@@ -582,17 +533,17 @@ assert('resource: a raising callback answers 500 in the negotiated type, reason 
       end
     end
   RUBY
-  resource_server(wm_app('Boom', src)) do |sock|
+  wm_server(wm_app('Boom', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500')
       assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i)
       assert_true body.include?('boom'), body
     end
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = resource_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500')
     end
   end
@@ -625,10 +576,10 @@ assert('resource: a class not on a route never answers - the route is the door')
       end
     end
   RUBY
-  resource_server(wm_app('Served', src)) do |sock|
+  wm_server(wm_app('Served', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = resource_read(s)
+      _, body = wm_read(s)
       assert_equal '<html><body>served</body></html>', body
     end
   end
@@ -657,11 +608,11 @@ assert('chrono: duration units and clocks answer inside the run frame') do
       end
     end
   RUBY
-  resource_server(wm_app('Clocked', src)) do |sock|
+  wm_server(wm_app('Clocked', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       2.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
         assert_equal '<html><body>chrono ok</body></html>', body
       end
@@ -682,11 +633,11 @@ assert('run frame: bodies survive a full GC per request, 200 requests exact') do
       end
     end
   RUBY
-  resource_server(wm_app('Churn', src)) do |sock|
+  wm_server(wm_app('Churn', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       200.times do |i|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        _, body = resource_read(s)
+        _, body = wm_read(s)
         assert_equal "<html><body>hit #{i + 1} of 64</body></html>", body
       end
     end
@@ -702,11 +653,11 @@ assert('run frame: a raise right after GC still answers 500 with its message') d
       end
     end
   RUBY
-  resource_server(wm_app('GcBoom', src)) do |sock|
+  wm_server(wm_app('GcBoom', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 500')
         assert_true body.include?('gcboom'), body
       end
@@ -716,13 +667,13 @@ end
 
 assert('run frame: RSS stays flat across 8000 runtime requests') do
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
-  resource_server(src) do |sock, pid|
+  wm_server(src) do |sock, pid|
     rss = -> { File.read("/proc/#{pid}/status")[/^VmRSS:\s*(\d+)/, 1].to_i }
     UNIXSocket.open(sock) do |s|
       run = lambda do |n|
         n.times do
           s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-          resource_read(s)
+          wm_read(s)
         end
       end
       run.call(4000)
@@ -748,11 +699,11 @@ assert('resource: the instance is the request\'s - ivars never cross, always car
       end
     end
   RUBY
-  resource_server(wm_app('Scope', src)) do |sock|
+  wm_server(wm_app('Scope', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       3.times do
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        _, body = resource_read(s)
+        _, body = wm_read(s)
         assert_equal 'seen=1', body
       end
     end
@@ -779,10 +730,10 @@ WM_INSTANCE_CT = <<~RUBY_SRC unless defined?(WM_INSTANCE_CT)
 RUBY_SRC
 
 assert('resource: an instance-level content_types_provided types the answer') do
-  resource_server(wm_app('OneType', WM_INSTANCE_CT)) do |sock|
+  wm_server(wm_app('OneType', WM_INSTANCE_CT)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK'), head
       # http::with_charset spells charset only for text/*; a +json type
       # carries no parameter, which is what RFC 9110 8.3 wants here.
@@ -798,10 +749,10 @@ end
 # on the class, so the fold bakes every one of those fields into the head.
 assert('resource: the conditional example spells its caching fields, then answers 304') do
   src = File.read(File.expand_path('../examples/conditional.rb', __dir__))
-  resource_server(src) do |sock|
+  wm_server(src) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK'), head
       assert_true head.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i), head
       assert_true head.match?(/^Vary: Accept\r$/i), head
@@ -824,7 +775,7 @@ assert('resource: the conditional example spells its caching fields, then answer
       assert_true ms.start_with?('HTTP/1.1 304 Not Modified'), ms
 
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n")
-      jh, jb = resource_read(s)
+      jh, jb = wm_read(s)
       assert_true jh.match?(%r{^Content-Type: application/json\r$}i), jh
       assert_equal '{"title":"Conditional"}', jb
     end
@@ -862,10 +813,10 @@ WM_CLASS_CB = <<~RUBY_SRC unless defined?(WM_CLASS_CB)
 RUBY_SRC
 
 assert('resource: value callbacks on the class answer, and their fields land') do
-  resource_server(wm_app('ClassCb', WM_CLASS_CB)) do |sock|
+  wm_server(wm_app('ClassCb', WM_CLASS_CB)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK'), head
       assert_true head.match?(/^ETag: "class-etag-3"\r$/i), head
       assert_true head.match?(/^Expires: Tue, 24 Oct 2028 11:33:20 GMT\r$/i), head
@@ -902,10 +853,10 @@ assert('a resource cannot splice a field into its own answer') do
       end
     end
   APP
-  resource_server(wm_app('Splicer', src)) do |sock|
+  wm_server(wm_app('Splicer', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-      head, = resource_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500'), "expected a 500, got: #{head[0, 60]}"
       assert_false head.include?('X-Injected'), "the field was spliced in:\n#{head}"
     end
@@ -925,11 +876,11 @@ assert('response.headers[]= refuses a name that is not a token, and a value with
       end
     end
   APP
-  resource_server(wm_app('Setter', src)) do |sock|
+  wm_server(wm_app('Setter', src)) do |sock|
     [['name', true], ['value', true], ['plain', false]].each do |mode, must_fail|
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\nX-Mode: #{mode}\r\nConnection: close\r\n\r\n")
-        head, = resource_read(s)
+        head, = wm_read(s)
         assert_false head.include?('X-Injected'), "#{mode} spliced a field in:\n#{head}"
         if must_fail
           assert_true head.start_with?('HTTP/1.1 500'), "#{mode}: expected 500, got #{head[0, 60]}"
@@ -962,14 +913,14 @@ assert('resource: an Accept that names no offered type is 406 on both tiers') do
     end
   RUBY
   [['KonstOne', konst], ['DynOne', dyn]].each do |name, src|
-    resource_server(wm_app(name, src)) do |sock|
+    wm_server(wm_app(name, src)) do |sock|
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: image/png\r\n\r\n")
-        head, = resource_read(s)
+        head, = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 406'),
                     "#{name} expected 406, got #{head.lines.first}"
         s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: text/html\r\n\r\n")
-        head2, body2 = resource_read(s)
+        head2, body2 = wm_read(s)
         assert_true head2.start_with?('HTTP/1.1 200'),
                     "#{name} expected 200, got #{head2.lines.first}"
         assert_true body2.include?('html'), "#{name} sent no body: #{body2.inspect}"
@@ -981,7 +932,7 @@ assert('resource: an Accept that names no offered type is 406 on both tiers') do
          ['a browser Accept',
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8']].each do |what, av|
           s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: #{av}\r\n\r\n")
-          h, b = resource_read(s)
+          h, b = wm_read(s)
           assert_true h.start_with?('HTTP/1.1 200'),
                       "#{name} on #{what}: #{h.lines.first}"
           assert_true b.include?('html'), "#{name} on #{what} sent no body"
@@ -1009,20 +960,20 @@ assert('resource: a class-form resource with two types negotiates like an instan
       end
     end
   RUBY
-  resource_server(wm_app('ClassConneg', src)) do |sock|
+  wm_server(wm_app('ClassConneg', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_true head.match?(%r{^Content-Type: application/json\r$}i),
                   "wrong type for the second handler: #{head.inspect}"
       assert_equal '{"form":"class"}', body
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: text/html\r\n\r\n")
-      head2, body2 = resource_read(s)
+      head2, body2 = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 200'), head2.lines.first.to_s
       assert_equal '<html>HTML</html>', body2
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: image/png\r\n\r\n")
-      head3, = resource_read(s)
+      head3, = wm_read(s)
       assert_true head3.start_with?('HTTP/1.1 406'), head3.lines.first.to_s
     end
   end
@@ -1043,10 +994,10 @@ assert('resource: a baked body survives the resource becoming dynamic') do
       end
     end
   RUBY
-  resource_server(wm_app('BakedBody', src)) do |sock|
+  wm_server(wm_app('BakedBody', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_true head.match?(/^ETag: "e-1"\r$/i), "no ETag: #{head.inspect}"
       assert_true head.match?(%r{^Content-Type: text/html}i), "no type: #{head.inspect}"
@@ -1071,10 +1022,10 @@ assert('compute: a round answers ETag and Last-Modified at one stop (#30)') do
       def to_html; 'body'; end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeRound', src)) do |sock|
+  wm_server(wm_app('ComputeRound', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_true head.include?('ETag: "from-a-worker"')
       assert_true head.include?('Last-Modified: Sun, 09 Sep 2001 01:46:40 GMT')
@@ -1095,11 +1046,11 @@ assert('compute: a value round starts on every request, not on the first only (#
       def to_html; 'x'; end
     end
   RUBY
-  resource_server(wm_app('EtagEveryTime', src)) do |sock|
+  wm_server(wm_app('EtagEveryTime', src)) do |sock|
     3.times do
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, _ = resource_read(s)
+        head, _ = wm_read(s)
         assert_true head.match?(/^ETag: "every-time"\r$/i), head
       end
     end
@@ -1116,10 +1067,10 @@ assert('compute: a round answers a conditional request (#30)') do
       def to_html; 'body'; end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeRoundCond', src)) do |sock|
+  wm_server(wm_app('ComputeRoundCond', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"w-etag\"\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 304')
     end
   end
@@ -1140,10 +1091,10 @@ assert('response: what one callback keeps, another one reads (#30)') do
       end
     end
   RUBY_SRC
-  resource_server(wm_app('Kept', src)) do |sock|
+  wm_server(wm_app('Kept', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_equal 'from is_authorized?/42', body
     end
@@ -1161,12 +1112,12 @@ assert('response: the scratch is one run long (#30)') do
       end
     end
   RUBY_SRC
-  resource_server(wm_app('KeptTwice', src)) do |sock|
+  wm_server(wm_app('KeptTwice', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, first = resource_read(s)
+      _, first = wm_read(s)
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, second = resource_read(s)
+      _, second = wm_read(s)
       assert_equal 'nothing', first
       assert_equal 'nothing', second
     end
@@ -1194,10 +1145,10 @@ assert('compute: the worker reads response.userdata and leaves something else (#
       end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeUser', src)) do |sock|
+  wm_server(wm_app('ComputeUser', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200')
       assert_equal 'worker saw from the run', body
     end
@@ -1224,11 +1175,11 @@ assert('compute: a job queued behind a long one keeps its own deadline (#80)') d
   RUBY_SRC
   cores = Etc.respond_to?(:nprocessors) ? Etc.nprocessors : 2
   workers = cores > 1 ? cores - 1 : 1
-  resource_server(wm_app('ComputeQueued', src)) do |sock|
+  wm_server(wm_app('ComputeQueued', src)) do |sock|
     conns = (workers + 1).times.map { UNIXSocket.open(sock) }
     conns.each { |s| s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
     conns.each do |s|
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal 'queued', body
       s.close
@@ -1254,15 +1205,15 @@ assert('compute: a request received behind a parked run is answered after it (#8
       end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeThenNext', src)) do |sock|
+  wm_server(wm_app('ComputeThenNext', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /first HTTP/1.1\r\nHost: x\r\n\r\n")
       sleep 0.05
       s.write("GET /second HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal 'first', body
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal 'second', body
     end
@@ -1285,11 +1236,11 @@ assert('response.redirect_to refuses a location with CRLF; response.code= refuse
       end
     end
   APP
-  resource_server(wm_app('Refuser', src)) do |sock|
+  wm_server(wm_app('Refuser', src)) do |sock|
     [['crlf', '500'], ['high', '500'], ['low', '500'], ['ok', '200'], ['none', '200']].each do |mode, want|
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\nX-Mode: #{mode}\r\nConnection: close\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_false head.include?('X-Injected'), "#{mode} spliced a field in:\n#{head}"
         assert_true head.start_with?("HTTP/1.1 #{want}"), "#{mode}: expected #{want}, got #{head[0, 60]}"
         if mode == 'crlf'
@@ -1318,16 +1269,16 @@ assert('request: repeated Cookie and If-None-Match lines are joined') do
       end
     end
   APP
-  resource_server(wm_app('Joined', src)) do |sock|
+  wm_server(wm_app('Joined', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\nCookie: a=1\r\nCookie: b=2\r\n" \
               "If-None-Match: \"z\"\r\nIf-None-Match: \"y\"\r\n\r\n")
-      head, body = resource_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal '1|2|"z", "y"|http://x/', body
       # The ETag is on the second line: still a match, still 304.
       s.write("GET / HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"z\"\r\nIf-None-Match: \"b\"\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 304'), head.lines.first.to_s
     end
   end
@@ -1348,11 +1299,11 @@ assert('application: the routes object is a Webmachine::Routes, and compute keep
       end
     end
   RUBY_SRC
-  resource_server(wm_app('RoutesNamed', src)) do |sock|
+  wm_server(wm_app('RoutesNamed', src)) do |sock|
     3.times do
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
         assert_equal 'Webmachine::Routes', body
       end
@@ -1372,11 +1323,11 @@ assert('compute: a class-level node callback is not folded, and answers per requ
       def to_html; 'up'; end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeNode', src)) do |sock|
+  wm_server(wm_app('ComputeNode', src)) do |sock|
     2.times do
       UNIXSocket.open(sock) do |s|
         s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        head, body = resource_read(s)
+        head, body = wm_read(s)
         assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
         assert_equal 'up', body
       end
@@ -1399,14 +1350,14 @@ assert('compute: a worker that cannot build its registry answers 503, not silenc
       def to_html; 'x'; end
     end
   RUBY_SRC
-  resource_server(wm_app('ComputeNoWorker', src)) do |sock, pid|
+  wm_server(wm_app('ComputeNoWorker', src)) do |sock, _pid, errlog|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _ = resource_read(s)
+      head, _ = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 503'), head.lines.first.to_s
       assert_true head.match?(/^Retry-After: 60\r$/i), head
     end
-    err = File.read("/tmp/wm-res-stderr-#{$$}.log") rescue ''
+    err = File.read(errlog) rescue ''
     assert_true err.include?('Registry[broken] could not be built'), err
     assert_true err.include?('no handle here'), err
   end

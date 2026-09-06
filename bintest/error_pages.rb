@@ -10,51 +10,28 @@
 require 'socket'
 require 'tempfile'
 
-EPG_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server')
 EPG_APP = File.expand_path('../examples/every_path.rb', __dir__)
 
 # What a client can put in a target: the five characters mustache escapes
 # for HTML, and a tag that must not come back as one.
 EPG_NASTY = %q{a=<script>alert(1)</script>&b="q"&c='z'}.freeze
 
+# One server with an error log. The block gets the socket and the log.
 def epg_server
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  app = Tempfile.new(['wm-epg', '.mrb'])
-  app.close
-  raise "mrbc failed on #{EPG_APP}" unless system(mrbc, '-g', '-o', app.path, EPG_APP)
-
-  sock = "/tmp/wm-epg-#{$$}.sock"
   log = "/tmp/wm-epg-#{$$}.log"
-  err = "/tmp/wm-epg-stderr-#{$$}.log"
-  [sock, log].each { |f| File.unlink(f) rescue nil }
-  pid = spawn(EPG_BIN, "--unix=#{sock}", "--app=#{app.path}", "--error-log=#{log}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
+  File.unlink(log) rescue nil
+  wm_server(File.read(EPG_APP), "--error-log=#{log}", tag: 'wm-epg') do |sock|
     yield sock, log
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    [sock, log, err].each { |f| File.unlink(f) rescue nil }
-    app.unlink
   end
+ensure
+  File.unlink(log) rescue nil
 end
 
+# One request, one connection, the whole answer as one string.
 def epg_ask(sock, path, fields = {})
-  UNIXSocket.open(sock) do |s|
-    head = +"GET #{path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
-    fields.each { |k, v| head << "#{k}: #{v}\r\n" }
-    head << "\r\n"
-    s.write(head)
-    out = +''.b
-    loop do
-      IO.select([s], nil, nil, 10) or raise "read deadline on #{path}"
-      out << s.readpartial(65_536)
-    rescue EOFError
-      break
-    end
-    out
+  wm_conn(sock) do |s|
+    wm_request(s, path, fields)
+    wm_read(s).join
   end
 end
 
@@ -145,23 +122,8 @@ EPG_NO_CATS = <<~APP
 APP
 
 assert('error pages: conf.disable_http_cats leaves the pages and drops the pictures') do
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  src = Tempfile.new(['wm-nocats', '.rb'])
-  src.write(EPG_NO_CATS)
-  src.close
-  app = Tempfile.new(['wm-nocats', '.mrb'])
-  app.close
-  raise 'mrbc failed' unless system(mrbc, '-g', '-o', app.path, src.path)
-
   pack = File.expand_path('../share/error-assets.zip', __dir__)
-  sock = "/tmp/wm-nocats-#{$$}.sock"
-  err = "/tmp/wm-nocats-stderr-#{$$}.log"
-  File.unlink(sock) rescue nil
-  pid = spawn(EPG_BIN, "--unix=#{sock}", "--app=#{app.path}", "--error-assets=#{pack}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
+  wm_server(EPG_NO_CATS, "--error-assets=#{pack}", tag: 'wm-nocats') do |sock, _pid, err|
     answer = epg_ask(sock, '/no-such-route')
     assert_equal 404, answer[%r{\AHTTP/1\.1 (\d+)}, 1].to_i
     # The page is there - it never lived in the pack.
@@ -173,12 +135,6 @@ assert('error pages: conf.disable_http_cats leaves the pages and drops the pictu
     assert_equal 404, picture[%r{\AHTTP/1\.1 (\d+)}, 1].to_i
     # And the operator was told, once, that this was asked for.
     assert_include File.read(err), 'conf.disable_http_cats'
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    [sock, err].each { |f| File.unlink(f) rescue nil }
-    app.unlink
-    src.unlink
   end
   true
 end

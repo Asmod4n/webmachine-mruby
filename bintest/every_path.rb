@@ -9,7 +9,6 @@
 require 'socket'
 require 'tempfile'
 
-EP_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server')
 EP_APP = File.expand_path('../examples/every_path.rb', __dir__)
 
 FORM = 'application/x-www-form-urlencoded'.freeze
@@ -46,51 +45,17 @@ EP_CASES = [
   ['GET',    '/writes-response',     {},                                    200]
 ].freeze
 
-def ep_server
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  app = Tempfile.new(['wm-ep', '.mrb'])
-  app.close
-  raise "mrbc failed on #{EP_APP}" unless system(mrbc, '-g', '-o', app.path, EP_APP)
-
-  sock = "/tmp/wm-ep-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-ep-stderr-#{$$}.log"
-  pid = spawn(EP_BIN, "--unix=#{sock}", "--app=#{app.path}", out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
-end
-
-# One request, one connection: Connection: close makes the socket itself
-# the framing, so nothing here has to agree with the writer about lengths.
+# One request, one connection, the whole answer as one string.
 def ep_ask(sock, method, path, fields)
-  body = %w[POST PUT].include?(method) ? 'a=b' : ''
-  UNIXSocket.open(sock) do |s|
-    head = +"#{method} #{path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
-    fields.each { |k, v| head << "#{k}: #{v}\r\n" }
-    head << "Content-Length: #{body.bytesize}\r\n" unless body.empty?
-    head << "\r\n"
-    s.write(head + body)
-    out = +''.b
-    loop do
-      IO.select([s], nil, nil, 10) or raise "read deadline on #{method} #{path}"
-      out << s.readpartial(65_536)
-    rescue EOFError
-      break
-    end
-    out
+  body = %w[POST PUT].include?(method) ? 'a=b' : nil
+  wm_conn(sock) do |s|
+    wm_request(s, path, fields, method: method, body: body)
+    wm_read(s).join
   end
 end
 
 assert('every_path: each route answers the terminal it exists for') do
-  ep_server do |sock|
+  wm_server(File.read(EP_APP), tag: 'wm-ep') do |sock|
     EP_CASES.each do |method, path, fields, want|
       answer = ep_ask(sock, method, path, fields)
       got = answer[/\AHTTP\/1\.1 (\d+)/, 1].to_i
@@ -101,7 +66,7 @@ assert('every_path: each route answers the terminal it exists for') do
 end
 
 assert('every_path: 303 carries the Location process_post set') do
-  ep_server do |sock|
+  wm_server(File.read(EP_APP), tag: 'wm-ep') do |sock|
     answer = ep_ask(sock, 'POST', '/see-other', { 'Content-Type' => FORM })
     assert_include answer, "\r\nLocation: /ok\r\n"
   end
@@ -109,7 +74,7 @@ assert('every_path: 303 carries the Location process_post set') do
 end
 
 assert('every_path: the response API reaches the wire') do
-  ep_server do |sock|
+  wm_server(File.read(EP_APP), tag: 'wm-ep') do |sock|
     answer = ep_ask(sock, 'GET', '/writes-response', {})
     assert_include answer, "\r\nX-Every-Path: yes\r\n"
     assert_include answer, "\r\nX-Finished: yes\r\n"

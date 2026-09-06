@@ -2,65 +2,11 @@
 require 'socket'
 require 'tempfile'
 
-WMR_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(WMR_BIN)
-
-def wmr_compile(app_source)
-  src = Tempfile.new(['wmr-app', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wmr-app', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise "mrbc failed to compile:\n#{app_source}" unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
-def wmr_server(app_source)
-  app = wmr_compile(app_source)
-  sock = "/tmp/wm-oracle-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-oracle-stderr-#{$$}.log"
-  pid = spawn(WMR_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
-end
-
-def wmr_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
-def wmr_read(s)
-  head = +''
-  head << wmr_recv(s) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''
-  body << wmr_recv(s, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
-
 WMR_AUTH = 'Basic c3BlYzpzcGVj' unless defined?(WMR_AUTH)
 
 def wmr_request(s, method, path = '/', fields = {}, body = nil)
-  head = +"#{method} #{path} HTTP/1.1\r\nHost: oracle\r\n"
-  fields.each { |k, v| head << "#{k}: #{v}\r\n" }
-  head << "Content-Length: #{body.bytesize}\r\n" if body
-  head << "\r\n"
-  head << body if body
-  s.write(head)
-  wmr_read(s)
+  wm_request(s, path, fields, method: method, body: body)
+  wm_read(s)
 end
 
 WMR_APP = <<~'RUBY' unless defined?(WMR_APP)
@@ -128,7 +74,7 @@ WMR_APP = <<~'RUBY' unless defined?(WMR_APP)
 RUBY
 
 assert('wm-ruby app: GET carries the representation, its ETag and its Last-Modified') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, body = wmr_request(s, 'GET', '/', 'Authorization' => WMR_AUTH)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
@@ -141,7 +87,7 @@ assert('wm-ruby app: GET carries the representation, its ETag and its Last-Modif
 end
 
 assert('wm-ruby app: If-None-Match of the served ETag answers 304') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'GET', '/', 'Authorization' => WMR_AUTH)
       etag = head[/^ETag: *(\S+)\r$/i, 1]
@@ -153,7 +99,7 @@ assert('wm-ruby app: If-None-Match of the served ETag answers 304') do
 end
 
 assert('wm-ruby app: no Authorization answers 401 with the challenge (b8)') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'GET', '/')
       assert_true head.start_with?('HTTP/1.1 401'), head.lines.first.to_s
@@ -165,7 +111,7 @@ assert('wm-ruby app: no Authorization answers 401 with the challenge (b8)') do
 end
 
 assert('wm-ruby app: POST creates and answers 201 with Location (n11 -> p11)') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'POST', '/',
                           { 'Authorization' => WMR_AUTH, 'Content-Type' => 'text/plain' },
@@ -178,7 +124,7 @@ assert('wm-ruby app: POST creates and answers 201 with Location (n11 -> p11)') d
 end
 
 assert('wm-ruby app: a PUT the resource does not accept answers 415 (o14)') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'PUT', '/',
                           { 'Authorization' => WMR_AUTH, 'Content-Type' => 'application/xml' },
@@ -193,7 +139,7 @@ assert('wm-ruby app: a PUT the resource does not accept answers 415 (o14)') do
 end
 
 assert('wm-ruby app: DELETE completes and answers 204 (m20 -> m20b -> o20)') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'DELETE', '/', 'Authorization' => WMR_AUTH)
       assert_true head.start_with?('HTTP/1.1 204'), head.lines.first.to_s
@@ -203,7 +149,7 @@ assert('wm-ruby app: DELETE completes and answers 204 (m20 -> m20b -> o20)') do
 end
 
 assert('wm-ruby app: a known method outside allowed_methods answers 405, Allow names the list') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'OPTIONS', '/', 'Authorization' => WMR_AUTH)
       assert_true head.start_with?('HTTP/1.1 405'), head.lines.first.to_s
@@ -213,7 +159,7 @@ assert('wm-ruby app: a known method outside allowed_methods answers 405, Allow n
 end
 
 assert('wm-ruby app: an unknown method answers 501 (b12)') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       head, = wmr_request(s, 'PATCH', '/',
                           { 'Authorization' => WMR_AUTH, 'Content-Type' => 'text/plain' },
@@ -224,15 +170,15 @@ assert('wm-ruby app: an unknown method answers 501 (b12)') do
 end
 
 assert('wm-ruby app: HEAD answers the GET head and no body bytes') do
-  wmr_server(WMR_APP) do |sock|
+  wm_server(WMR_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("HEAD / HTTP/1.1\r\nHost: oracle\r\nAuthorization: #{WMR_AUTH}\r\n\r\n" \
               "GET / HTTP/1.1\r\nHost: oracle\r\nAuthorization: #{WMR_AUTH}\r\n\r\n")
       hh = +''
-      hh << wmr_recv(s) until hh.end_with?("\r\n\r\n")
+      hh << wm_recv(s) until hh.end_with?("\r\n\r\n")
       assert_true hh.start_with?('HTTP/1.1 200'), hh.lines.first.to_s
       assert_true hh.match?(/^Content-Length: 32\r$/i), hh
-      nxt, body = wmr_read(s)
+      nxt, body = wm_read(s)
       assert_true nxt.start_with?('HTTP/1.1 200 OK'), "HEAD leaked body bytes: #{nxt.inspect}"
       assert_equal '<html><body>oracle</body></html>', body
     end

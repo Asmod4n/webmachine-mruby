@@ -2,60 +2,10 @@
 require 'socket'
 require 'tempfile'
 
-AP_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(AP_BIN)
-
-def ap_compile(app_source)
-  src = Tempfile.new(['wm-apapp', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-apapp', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise "mrbc failed to compile:\n#{app_source}" unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
-def ap_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
-def ap_read(s)
-  head = +''
-  head << ap_recv(s) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''
-  body << ap_recv(s, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
-
-def ap_server(app_source, sock: nil, args: nil)
-  app = ap_compile(app_source)
-  sock ||= "/tmp/wm-ap-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  args ||= ["--unix=#{sock}"]
-  out = "/tmp/wm-ap-stdout-#{$$}.log"
-  err = "/tmp/wm-ap-stderr-#{$$}.log"
-  pid = spawn(AP_BIN, *args, "--app=#{app.path}", out: out, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock, out, err
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
-end
-
 def ap_refused(app_source)
-  app = ap_compile(app_source)
+  app = wm_compile(app_source)
   err = "/tmp/wm-ap-refuse-#{$$}.log"
-  pid = spawn(AP_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
+  pid = spawn(WM_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
               "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
@@ -67,9 +17,9 @@ end
 # Like ap_refused, but without --unix: some refusals are about the
 # listener the app named, and an override would answer before them.
 def ap_refused_unaided(app_source)
-  app = ap_compile(app_source)
+  app = wm_compile(app_source)
   err = "/tmp/wm-ap-unaided-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
   File.read(err)
@@ -100,37 +50,37 @@ AP_FIZZ = <<~RUBY unless defined?(AP_FIZZ)
 RUBY
 
 assert('application: literal, binding and splat match on the wire; a miss is 404') do
-  ap_server(AP_FIZZ) do |sock|
+  wm_server(AP_FIZZ, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /fizz/one HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = ap_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal '<html><body>fizzbuzz</body></html>', body
       s.write("GET /fizz/one/two/three HTTP/1.1\r\nHost: x\r\n\r\n")
-      head2, = ap_read(s)
+      head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 200'), head2.lines.first.to_s
       s.write("GET /fizz/one?v=1 HTTP/1.1\r\nHost: x\r\n\r\n")
-      head3, = ap_read(s)
+      head3, = wm_read(s)
       assert_true head3.start_with?('HTTP/1.1 200'), head3.lines.first.to_s
       s.write("GET /buzz/one HTTP/1.1\r\nHost: x\r\n\r\n")
-      head4, = ap_read(s)
+      head4, = wm_read(s)
       assert_true head4.start_with?('HTTP/1.1 404'), head4.lines.first.to_s
       s.write("GET /fizz HTTP/1.1\r\nHost: x\r\n\r\n")
-      head5, = ap_read(s)
+      head5, = wm_read(s)
       assert_true head5.start_with?('HTTP/1.1 404'), head5.lines.first.to_s
     end
   end
 end
 
 assert('application: a router miss is 404 before B13 - POST on an unknown path is not 405') do
-  ap_server(AP_FIZZ) do |sock|
+  wm_server(AP_FIZZ, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("POST /nowhere HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
-      head, = ap_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
       assert_false head.match?(/^Allow:/i), head
       s.write("POST /fizz/one HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
-      head2, = ap_read(s)
+      head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 405'), head2.lines.first.to_s
       assert_true head2.match?(/^Allow: GET, HEAD\r$/i), head2
     end
@@ -159,10 +109,10 @@ assert('application: the first matching route wins, in registration order') do
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /a/b HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = ap_read(s)
+      _, body = wm_read(s)
       assert_equal 'first', body
     end
   end
@@ -196,22 +146,22 @@ assert('application: two resources on two routes keep their own body and Allow')
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /narrow HTTP/1.1\r\nHost: x\r\n\r\n")
-      h1, b1 = ap_read(s)
+      h1, b1 = wm_read(s)
       assert_equal 'narrow', b1
       assert_true h1.match?(%r{^Content-Type: text/html; charset=utf-8\r$}i), h1
       s.write("GET /wide HTTP/1.1\r\nHost: x\r\n\r\n")
-      h2, b2 = ap_read(s)
+      h2, b2 = wm_read(s)
       assert_equal 'wide', b2
       assert_true h2.match?(%r{^Content-Type: text/plain; charset=utf-8\r$}i), h2
       s.write("PUT /narrow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
-      h3, = ap_read(s)
+      h3, = wm_read(s)
       assert_true h3.start_with?('HTTP/1.1 405'), h3.lines.first.to_s
       assert_true h3.match?(/^Allow: GET, HEAD\r$/i), h3
       s.write("PUT /wide HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
-      h4, = ap_read(s)
+      h4, = wm_read(s)
       assert_true h4.start_with?('HTTP/1.1 405'), h4.lines.first.to_s
       assert_true h4.match?(/^Allow: GET, HEAD, POST\r$/i), h4
       # RFC 9110 9.3.3 / fsm.rb n11, and #201: Wide allows POST and defines
@@ -219,7 +169,7 @@ assert('application: two resources on two routes keep their own body and Allow')
       # walked past n11 without performing it - and the engine has always
       # called it what it is.
       s.write("POST /wide HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
-      h5, = ap_read(s)
+      h5, = wm_read(s)
       assert_true h5.start_with?('HTTP/1.1 500'), h5.lines.first.to_s
     end
   end
@@ -241,14 +191,14 @@ assert('application: the empty token list is the root route') do
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = ap_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
       assert_equal 'root', body
       s.write("GET /deeper HTTP/1.1\r\nHost: x\r\n\r\n")
-      head2, = ap_read(s)
+      head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 404'), head2.lines.first.to_s
     end
   end
@@ -282,11 +232,11 @@ assert('application: ready runs exactly once, after the bind, and reads back the
       end
     end
   RUBY
-  ap_server(src, sock: sock) do |s, out|
+  wm_server(src, sock: sock, tag: 'wm-ap') do |s, _pid, _err, out|
     UNIXSocket.open(s) do |c|
       5.times do
         c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        ap_read(c)
+        wm_read(c)
       end
     end
     text = File.read(out)
@@ -314,10 +264,10 @@ assert('application: config is the same method as configure') do
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = ap_read(s)
+      _, body = wm_read(s)
       assert_equal 'aliased', body
     end
   end
@@ -337,10 +287,10 @@ assert('application: add_route on the app itself is route.add (webmachine-ruby s
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET /direct HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = ap_read(s)
+      _, body = wm_read(s)
       assert_equal 'direct', body
     end
   end
@@ -369,9 +319,9 @@ assert('application: conf.url names the listener when nothing overrides it') do
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-url-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     up = false
     50.times do
@@ -387,7 +337,7 @@ assert('application: conf.url names the listener when nothing overrides it') do
     raise "no listener on #{port}:\n#{File.read(err) rescue ''}" unless up
     TCPSocket.open('127.0.0.1', port) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      _, body = ap_read(s)
+      _, body = wm_read(s)
       assert_equal 'urled', body
     end
   ensure
@@ -437,10 +387,10 @@ assert('application: conf.port = 0 is legal - the OS picks at bind time') do
     app.conf.port = 0
     app.add_route [:*], R
   BODY
-  ap_server(src, sock: sock) do |s, _out|
+  wm_server(src, sock: sock, tag: 'wm-ap') do |s|
     UNIXSocket.open(s) do |c|
       c.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, _body = ap_read(c)
+      head, _body = wm_read(c)
       assert_include head, '200 OK'
     end
   end
@@ -589,9 +539,9 @@ assert('application: two applications, two listeners, one ring - each answers it
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-two-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(a) && File.socket?(b); sleep 0.05 }
     assert_true File.socket?(a) && File.socket?(b), (File.read(err) rescue '')
@@ -600,7 +550,7 @@ assert('application: two applications, two listeners, one ring - each answers it
       s = UNIXSocket.new(sock)
       path = body == 'from-a' ? '/only-a' : '/only-b'
       s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, got = ap_read(s)
+      head, got = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200'), head
       assert_equal body, got
       s.close
@@ -609,7 +559,7 @@ assert('application: two applications, two listeners, one ring - each answers it
     { a => '/only-b', b => '/only-a' }.each do |sock, path|
       s = UNIXSocket.new(sock)
       s.write("GET #{path} HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, = ap_read(s)
+      head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 404'), head
       s.close
     end
@@ -688,15 +638,15 @@ assert('application: main drives the loop itself with Webmachine.tick(3.ms)') do
       Webmachine.tick(3.ms) until Webmachine.stopped?
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-tick-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
     s = UNIXSocket.new(sock)
     s.write("GET /anything HTTP/1.1\r\nHost: x\r\n\r\n")
-    head, body = ap_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200'), head
     assert_equal 'ticked', body
     s.close
@@ -732,15 +682,15 @@ assert('application: Webmachine.fd is pollable - idle costs nothing, a request w
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-fd-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
     s = UNIXSocket.new(sock)
     s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    head, body = ap_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200'), head
     assert_equal 'polled', body
     s.close
@@ -770,15 +720,15 @@ assert('application: Webmachine.run inside main serves like the tool loop') do
       Webmachine.run
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-run-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
     s = UNIXSocket.new(sock)
     s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    head, body = ap_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200'), head
     assert_equal 'ran', body
     s.close
@@ -811,10 +761,10 @@ assert('application: request names what the route captured, per request') do
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     s = UNIXSocket.new(sock)
     s.write("GET /fizz/one/a/b?x=1&y=two%20words&z HTTP/1.1\r\nHost: x\r\n\r\n")
-    head, body = ap_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200'), head
     f = body.split("\n", -1)
     assert_equal 'GET', f[0]
@@ -827,7 +777,7 @@ assert('application: request names what the route captured, per request') do
     assert_equal 'x=1&y=two%20words&z', f[7]
 
     s.write("GET /fizz/two HTTP/1.1\r\nHost: x\r\n\r\n")
-    _, body2 = ap_read(s)
+    _, body2 = wm_read(s)
     g = body2.split("\n", -1)
     assert_equal '/fizz/two', g[1]
     assert_equal '', g[3]
@@ -842,7 +792,7 @@ assert('application: request names what the route captured, per request') do
     # one value, semicolons and all. Cookies are the other decision and
     # keep their ';' (RFC 6265 4.2).
     s.write("GET /fizz/three?a=one+word&b=2;c=3&d=%zz HTTP/1.1\r\nHost: x\r\n\r\n")
-    _, body3 = ap_read(s)
+    _, body3 = wm_read(s)
     q = body3.split("\n", -1)
     assert_equal 'a=one word,b=2;c=3,d=%zz', q[6]
     assert_equal 'a=one+word&b=2;c=3&d=%zz', q[7]
@@ -883,16 +833,16 @@ assert('application: request.headers are the head, lowercased; request.body is t
       end
     end
   RUBY
-  ap_server(src) do |sock|
+  wm_server(src, tag: 'wm-ap') do |sock|
     s = UNIXSocket.new(sock)
     s.write("GET /h HTTP/1.1\r\nHost: x\r\nX-One: a\r\nX-TWO: b\r\nX-One: c\r\n\r\n")
-    _, body = ap_read(s)
+    _, body = wm_read(s)
     assert_equal 'a, c|b|x', body
     s.write("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
-    _, body2 = ap_read(s)
+    _, body2 = wm_read(s)
     assert_equal 'none', body2
     s.write("POST /b HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nding")
-    _, body3 = ap_read(s)
+    _, body3 = wm_read(s)
     assert_equal 'ding', body3
     s.close
   end
@@ -945,15 +895,15 @@ assert('application: Webmachine.stop drains, then the process ends by itself') d
       Webmachine.run
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   err = "/tmp/wm-ap-stop-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   begin
     100.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), (File.read(err) rescue '')
     s = UNIXSocket.new(sock)
     s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    head, body = ap_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200'), head
     assert_equal 'bye', body
     s.close
@@ -1000,10 +950,10 @@ assert('application: conf.url is a URL, and ada parses it as one') do
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   out = "/tmp/wm-ap-v6-out-#{$$}.log"
   err = "/tmp/wm-ap-v6-err-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1094,10 +1044,10 @@ assert('application: a conf.url query names settings, and only settings') do
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   out = "/tmp/wm-ap-q-out-#{$$}.log"
   err = "/tmp/wm-ap-q-err-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: out, err: err)
   begin
     line = nil
     100.times do
@@ -1172,10 +1122,10 @@ assert('application: conf.url port 0 - the kernel picks, ready reads the pick ba
       end
     end
   RUBY
-  app = ap_compile(src)
+  app = wm_compile(src)
   out = "/tmp/wm-ap-eph-out-#{$$}.log"
   err = "/tmp/wm-ap-eph-err-#{$$}.log"
-  pid = spawn(AP_BIN, "--app=#{app.path}", out: out, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: out, err: err)
   port = nil
   refused = false
   100.times do
@@ -1237,7 +1187,7 @@ assert('application: app.conf is one object, not a fresh one per read') do
       end
     end
   RUBY
-  ap_server(src) do |_sock, out|
+  wm_server(src, tag: 'wm-ap') do |_sock, _pid, _err, out|
     # The socket exists once bind/listen answered; app.ready runs and
     # flushes after that, so reading stdout right away is a race the
     # helper cannot close for every caller. Wait for the line this test
@@ -1272,7 +1222,7 @@ assert('application: a refusal is catchable by class, not by luck') do
       end
     end
   RUBY
-  ap_server(src) do |_sock, out|
+  wm_server(src, tag: 'wm-ap') do |_sock, _pid, _err, out|
     text = File.read(out)
     assert_true text.include?('config=Webmachine::ConfigError'), text
     assert_true text.include?('route=Webmachine::RouteError'), text
@@ -1285,7 +1235,7 @@ assert('application: a server with nothing to serve refuses to start') do
   # behind any answer - and it is exactly the shape #201 was about.
   err = "/tmp/wm-ap-nothing-#{$$}.log"
   sock = "/tmp/wm-ap-nothing-#{$$}.sock"
-  pid = spawn(AP_BIN, "--unix=#{sock}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--unix=#{sock}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0, 'server came up with nothing to serve'
   text = File.read(err) rescue ''
@@ -1361,14 +1311,13 @@ assert('application: response.error_asset answers with the mapped entry, byte fo
   assert_true want != nil, 'no 418.jpg in the shipped error assets'
 
   sock = "/tmp/wm-ap-ea-#{$$}.sock"
-  ap_server(AP_EASSET, sock: sock,
-            args: ["--unix=#{sock}", "--error-assets=#{pack}"]) do |s|
+  wm_server(AP_EASSET, "--error-assets=#{pack}", sock: sock, tag: 'wm-ap') do |s|
     UNIXSocket.open(s) do |c|
       # Twice on one connection: a lend that was not handed back, or a
       # pointer the run frame owned, shows up on the second answer.
       2.times do |i|
         c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
-        head, body = ap_read(c)
+        head, body = wm_read(c)
         assert_true head.start_with?('HTTP/1.1 200 OK'), "#{i}: #{head}"
         assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i), head
         assert_equal want.bytesize, body.bytesize
@@ -1379,7 +1328,7 @@ assert('application: response.error_asset answers with the mapped entry, byte fo
       # here waiting for a body that is never coming.
       c.write("HEAD /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
       head = +''
-      head << ap_recv(c) until head.end_with?("\r\n\r\n")
+      head << wm_recv(c) until head.end_with?("\r\n\r\n")
       assert_true head.start_with?('HTTP/1.1 200 OK'), head
       assert_true head.include?("Content-Length: #{want.bytesize}\r\n"), head
     end
@@ -1393,11 +1342,11 @@ assert('application: an error_asset the archive does not carry is refused by nam
   log = "/tmp/wm-ap-ea2-#{$$}.errlog"
   File.unlink(log) if File.exist?(log)
   begin
-    ap_server(AP_EASSET, sock: sock,
-              args: ["--unix=#{sock}", "--error-assets=#{pack}", "--error-log=#{log}"]) do |s|
+    wm_server(AP_EASSET, "--error-assets=#{pack}", "--error-log=#{log}",
+              sock: sock, tag: 'wm-ap') do |s|
       UNIXSocket.open(s) do |c|
         c.write("GET /typo HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
-        head, = ap_read(c)
+        head, = wm_read(c)
         assert_true head.start_with?('HTTP/1.1 500'), head
       end
     end
@@ -1421,12 +1370,11 @@ assert('application: response.error_asset without error assets says so, and how 
     # up with no error assets - which is the state under test. Leaving the
     # flag off no longer reaches it: a server with nothing named now finds
     # the shipped file beside its own binary.
-    ap_server(AP_EASSET, sock: sock,
-              args: ["--unix=#{sock}", '--error-assets=/dev/null',
-                     "--error-log=#{log}"]) do |s|
+    wm_server(AP_EASSET, '--error-assets=/dev/null', "--error-log=#{log}",
+              sock: sock, tag: 'wm-ap') do |s|
       UNIXSocket.open(s) do |c|
         c.write("GET /teapot HTTP/1.1\r\nHost: x\r\nAccept: image/jpeg\r\n\r\n")
-        head, = ap_read(c)
+        head, = wm_read(c)
         assert_true head.start_with?('HTTP/1.1 500'), head
       end
     end
@@ -1455,11 +1403,11 @@ assert('application: without a flag, only the installed archive is looked for') 
   skip "#{installed.find { |p| File.exist?(p) }} is installed here" if installed.any? { |p| File.exist?(p) }
 
   sock = "/tmp/wm-ap-find-#{$$}.sock"
-  ap_server(AP_FIZZ, sock: sock, args: ["--unix=#{sock}"]) do |s, _out, err|
+  wm_server(AP_FIZZ, sock: sock, tag: 'wm-ap') do |s, _pid, err|
     UNIXSocket.open(s) do |c|
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\n" \
               "Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n\r\n")
-      head, body = ap_read(c)
+      head, body = wm_read(c)
       assert_true head.start_with?('HTTP/1.1 404'), head
       assert_false head.match?(%r{^Content-Type: image/}i), head
       assert_true body.include?('404'), body
@@ -1484,18 +1432,17 @@ assert('application: a navigation gets the page, a picture fetch gets the pictur
   img = 'image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5'
 
   sock = "/tmp/wm-ap-conneg-#{$$}.sock"
-  ap_server(AP_FIZZ, sock: sock,
-            args: ["--unix=#{sock}", "--error-assets=#{pack}"]) do |s|
+  wm_server(AP_FIZZ, "--error-assets=#{pack}", sock: sock, tag: 'wm-ap') do |s|
     UNIXSocket.open(s) do |c|
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\nAccept: #{nav}\r\n\r\n")
-      head, body = ap_read(c)
+      head, body = wm_read(c)
       assert_true head.start_with?('HTTP/1.1 404'), head
       assert_true head.match?(%r{^Content-Type: text/html}i),
                   "a navigation got #{head[/^Content-Type:.*$/i]}"
       assert_true body.include?('404'), body[0, 200]
 
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\nAccept: #{img}\r\n\r\n")
-      head, body = ap_read(c)
+      head, body = wm_read(c)
       assert_true head.start_with?('HTTP/1.1 404'), head
       assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i),
                   "a picture fetch got #{head[/^Content-Type:.*$/i]}"

@@ -2,38 +2,8 @@
 require 'socket'
 require 'tempfile'
 
-SSE_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SSE_BIN)
-
-def sse_compile(src)
-  f = Tempfile.new(['wm-sse', '.rb'])
-  f.write(src)
-  f.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set'
-  out = Tempfile.new(['wm-sse', '.mrb'])
-  out.close
-  raise "mrbc failed:\n#{src}" unless system(mrbc, '-g', '-o', out.path, f.path)
-  out
-ensure
-  f&.unlink
-end
-
-def sse_server(app_src)
-  app = sse_compile(app_src)
-  sock = "/tmp/wm-sse-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-sse-stderr-#{$$}.log"
-  pid = spawn(SSE_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "sse server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock, err
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
+def sse_server(app_src, &block)
+  wm_server(app_src, tag: 'wm-sse', &block)
 end
 
 def sse_head(s)

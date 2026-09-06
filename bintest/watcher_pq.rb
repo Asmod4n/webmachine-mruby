@@ -14,7 +14,6 @@ require 'tempfile'
 # server to talk to. Both are asked for by name, and the case skips when
 # either is missing - a test that lies about what it ran is worse than
 # one that says it did not run.
-WPQ_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(WPQ_BIN)
 WPQ_URL = ENV['WM_PG_URL'] || 'postgresql://127.0.0.1:5432/postgres?user=postgres' unless defined?(WPQ_URL)
 
 def wpq_server_there?(url)
@@ -27,22 +26,8 @@ rescue StandardError
 end
 
 def wpq_head(app_source)
-  src = Tempfile.new(['wm-wpq', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-wpq', '.mrb'])
-  mrb.close
-  raise "mrbc failed:\n#{app_source}" unless system(mrbc, '-g', '-o', mrb.path, src.path)
-  sock = "/tmp/wm-wpq-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-wpq-err-#{$$}.log"
-  pid = spawn(WPQ_BIN, "--unix=#{sock}", "--app=#{mrb.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    UNIXSocket.open(sock) do |c|
+  wm_server(app_source, tag: 'wm-wpq') do |sock, _pid, err|
+    wm_conn(sock) do |c|
       c.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
       head = +''
       until head.end_with?("\r\n\r\n")
@@ -51,12 +36,6 @@ def wpq_head(app_source)
       end
       head
     end
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    src.unlink
-    mrb.unlink
   end
 end
 

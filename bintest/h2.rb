@@ -3,28 +3,6 @@ require 'socket'
 require 'tempfile'
 require 'zlib'
 
-H2_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(H2_BIN)
-H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(H2_PREFACE)
-
-def wm_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
-def wm_compile(app_source)
-  src = Tempfile.new(['wm-h2app', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-h2app', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise "mrbc failed to compile:\n#{app_source}" unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
 def h2_app(name, src)
   <<~RUBY
     #{src}
@@ -54,42 +32,8 @@ H2_FLOOR_APP = <<~RUBY unless defined?(H2_FLOOR_APP)
   end
 RUBY
 
-def h2_server(app_source = nil, *extra_args)
-  app = wm_compile(app_source || H2_FLOOR_APP)
-  args = ["--app=#{app.path}", *extra_args]
-  sock = "/tmp/wm-h2-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-h2-stderr-#{$$}.log"
-  pid = spawn(H2_BIN, "--unix=#{sock}", *args, out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "h2 server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app&.unlink
-  end
-end
-
-def h2_read_exact(s, n)
-  buf = +''.b
-  buf << wm_recv(s, n - buf.bytesize) while buf.bytesize < n
-  buf
-end
-
-def h2_frame(type, flags, stream, payload = ''.b)
-  len = payload.bytesize
-  [(len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, type, flags].pack('C5') +
-    [stream].pack('N') + payload
-end
-
-def h2_next(s)
-  h = h2_read_exact(s, 9)
-  len = (h.getbyte(0) << 16) | (h.getbyte(1) << 8) | h.getbyte(2)
-  payload = len > 0 ? h2_read_exact(s, len) : ''.b
-  [h.getbyte(3), h.getbyte(4), h[5, 4].unpack1('N') & 0x7fffffff, payload]
+def h2_server(app_source = nil, *extra_args, &block)
+  wm_server(app_source || H2_FLOOR_APP, *extra_args, tag: 'wm-h2', &block)
 end
 
 def h2_get_block
@@ -105,7 +49,7 @@ def h2_path_block(path)
 end
 
 def h2_handshake(s, settings = ''.b)
-  s.write(H2_PREFACE + h2_frame(4, 0, 0, settings))
+  s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, settings))
   t, f, st, = h2_next(s)
   raise "expected server SETTINGS, got type #{t}" unless t == 4 && f == 0 && st == 0
   t, f, = h2_next(s)
@@ -275,7 +219,7 @@ end
 assert('h2: an exhausted window parks DATA, WINDOW_UPDATE drains it (9113 6.9)') do
   h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
-      s.write(H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
+      s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
       t, f, = h2_next(s)
       raise 'expected server SETTINGS' unless t == 4 && f == 0
       t, f, = h2_next(s)
@@ -300,7 +244,7 @@ end
 assert('h2: a drained stream is debited for what it already sent (9113 6.9.1)') do
   h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
-      s.write(H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
+      s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
       t, f, = h2_next(s)
       raise 'expected server SETTINGS' unless t == 4 && f == 0
       t, f, = h2_next(s)
@@ -540,21 +484,11 @@ def h2_asset_server(zip_bytes)
   zf.binmode
   zf.write(zip_bytes)
   zf.close
-  sock = "/tmp/wm-h2a-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-h2a-stderr-#{$$}.log"
-  pid = spawn(H2_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "h2 asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
+  wm_server('--standalone', "--assets=#{zf.path}", app: false, tag: 'wm-h2a') do |sock|
     yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    zf.unlink
   end
+ensure
+  zf&.unlink
 end
 
 assert('h2: two big assets share the rounds and arrive byte-exact (#168)') do
@@ -856,23 +790,8 @@ H2_EASSET_APP = <<~RUBY unless defined?(H2_EASSET_APP)
   end
 RUBY
 
-def h2_error_assets_server(pack)
-  app = wm_compile(H2_EASSET_APP)
-  sock = "/tmp/wm-h2-ea-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-h2-ea-stderr-#{$$}.log"
-  pid = spawn(H2_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              "--error-assets=#{pack}", out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "h2 server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app&.unlink
-  end
+def h2_error_assets_server(pack, &block)
+  wm_server(H2_EASSET_APP, "--error-assets=#{pack}", tag: 'wm-h2-ea', &block)
 end
 
 def h2_zip_entry(path, name)
@@ -1102,7 +1021,7 @@ end
 assert('h2: the server says it takes the extended CONNECT (RFC 8441)') do
   h2_server(H2_WS_APP) do |sock|
     UNIXSocket.open(sock) do |s|
-      s.write(H2_PREFACE + h2_frame(4, 0, 0, ''.b))
+      s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, ''.b))
       type, _flags, _stream, payload = h2_next(s)
       assert_equal 4, type
       # Every setting is a 6-byte pair; 0x8 is ENABLE_CONNECT_PROTOCOL.

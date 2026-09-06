@@ -4,13 +4,6 @@ require 'stringio'
 require 'tempfile'
 require 'zlib'
 
-GZ_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(GZ_BIN)
-
-def gz_recv(s, maxlen = 65536, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
 def gz_app(name, src)
   <<~RUBY
     #{src}
@@ -24,50 +17,14 @@ def gz_app(name, src)
   RUBY
 end
 
-def gz_compile(app_source)
-  src = Tempfile.new(['wm-gzapp', '.rb'])
-  src.write(app_source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-gzapp', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise "mrbc failed to compile:\n#{app_source}" unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
-def gz_read(s)
-  head = +''.b
-  head << gz_recv(s, 1) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''.b
-  body << gz_recv(s, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
-
 def gz_unix_server(app_source)
-  app = gz_compile(app_source)
-  sock = "/tmp/wm-gz-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-gz-stderr-#{$$}.log"
-  pid = spawn(GZ_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    UNIXSocket.open(sock) { |s| yield s }
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
+  wm_server(app_source, tag: 'wm-gz') do |sock|
+    wm_conn(sock) { |s| yield s }
   end
 end
 
 def gz_tcp_server(app_source)
-  app = gz_compile(app_source)
+  app = wm_compile(app_source, 'wm-gzapp')
   err = "/tmp/wm-gz-tcp-stderr-#{$$}.log"
   port = nil
   pid = nil
@@ -76,7 +33,7 @@ def gz_tcp_server(app_source)
     # inside that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn(GZ_BIN, "--port=#{port.to_s}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--port=#{port.to_s}", "--app=#{app.path}",
                 out: File::NULL, err: err)
     up = false
     50.times do
@@ -160,7 +117,7 @@ assert('gzip: encodings_provided + Accept-Encoding: gzip + a body over the floor
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_true head.match?(/^Content-Encoding: gzip\r$/i), head
       assert_true head.match?(/^Vary: Accept-Encoding\r$/i), head
@@ -176,7 +133,7 @@ end
 assert('gzip: the same resource over a unix socket never compresses') do
   gz_unix_server(GZ_ENC_RESOURCE) do |s|
     s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-    head, body = gz_read(s)
+    head, body = wm_read(s)
     assert_true head.start_with?('HTTP/1.1 200 OK')
     assert_false head.match?(/^Content-Encoding:/i), head
     assert_true head.match?(/^Vary: Accept-Encoding\r$/i), head
@@ -189,7 +146,7 @@ assert('gzip: a response under the compress floor stays identity') do
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_false head.match?(/^Content-Encoding:/i), head
       assert_true head.match?(/^Vary: Accept-Encoding\r$/i), head
@@ -205,7 +162,7 @@ assert('gzip: a resource without encodings_provided is always identity') do
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_false head.match?(/^Content-Encoding:/i), head
       assert_false head.match?(/^Vary:/i), head
@@ -221,7 +178,7 @@ assert('gzip: Accept-Encoding: gzip;q=0 refuses the coding, identity answers') d
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip;q=0\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
       assert_false head.match?(/^Content-Encoding:/i), head
       assert_equal GZ_BODY, body
@@ -236,7 +193,7 @@ assert('gzip: a missing Accept-Encoding still compresses past the size gate') do
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.match?(/^Content-Encoding: gzip\r$/i), head
       assert_equal GZ_BODY, Zlib::GzipReader.new(StringIO.new(body)).read
     ensure
@@ -252,7 +209,7 @@ assert('gzip: HEAD reports the gzipped Content-Length and no body') do
       s.write("HEAD / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
       data = +''.b
       begin
-        loop { data << gz_recv(s) }
+        loop { data << wm_recv(s, 65_536) }
       rescue EOFError
       end
       idx = data.index("\r\n\r\n")
@@ -274,7 +231,7 @@ assert('gzip: exactly at the compress floor (1280B) compresses; 1279B does not')
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip;q=0\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_false head.match?(/^Content-Encoding:/i), head
       assert_equal cal_n, body.bytesize
       head_bytesize = head.bytesize
@@ -292,7 +249,7 @@ assert('gzip: exactly at the compress floor (1280B) compresses; 1279B does not')
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_true head.match?(/^Content-Encoding: gzip\r$/i), head
       assert_equal GZ_BODY[0, n_compress], Zlib::GzipReader.new(StringIO.new(body)).read
     ensure
@@ -304,7 +261,7 @@ assert('gzip: exactly at the compress floor (1280B) compresses; 1279B does not')
     s = gz_tcp_connect(port)
     begin
       s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n")
-      head, body = gz_read(s)
+      head, body = wm_read(s)
       assert_false head.match?(/^Content-Encoding:/i), head
       assert_equal GZ_BODY[0, n_identity], body
     ensure

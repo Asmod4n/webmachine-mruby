@@ -5,26 +5,10 @@ require 'socket'
 require 'tempfile'
 require 'fileutils'
 
-S_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(S_BIN)
-
-def s_recv(sock, maxlen = 1, deadline = 10)
-  IO.select([sock], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s"
-  sock.readpartial(maxlen)
-end
-
-def s_read(sock)
-  head = +''.b
-  head << s_recv(sock) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''.b
-  body << s_recv(sock, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
-
 def s_ask(sock_path, request)
-  UNIXSocket.open(sock_path) do |s|
+  wm_conn(sock_path) do |s|
     s.write(request)
-    s_read(s)
+    wm_read(s)
   end
 end
 
@@ -41,21 +25,12 @@ def s_server(extra = [])
   File.binwrite(File.join(root, 'small.bin'), S_SMALL)
   File.binwrite(File.join(root, 'big.bin'), S_BIG)
   File.binwrite(File.join(root, 'a.css'), "body { margin: 0; }\n")
-  sock = "/tmp/wm-standalone-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-standalone-stderr-#{$$}.log"
-  pid = spawn(S_BIN, "--unix=#{sock}", "--standalone", "--docroot=#{root}", *extra,
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "standalone server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
+  wm_server('--standalone', "--docroot=#{root}", *extra, app: false,
+            tag: 'wm-standalone') do |sock|
     yield sock, root
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    FileUtils.rm_rf(root)
   end
+ensure
+  FileUtils.rm_rf(root)
 end
 
 assert('standalone: a docroot alone is a server, and / takes its index.html') do
@@ -116,7 +91,7 @@ assert('standalone: If-Modified-Since answers 304 without a body') do
     out = +''.b
     UNIXSocket.open(sock) do |s|
       s.write("GET /a.css HTTP/1.1\r\nHost: x\r\nIf-Modified-Since: #{when_}\r\n\r\n")
-      out << s_recv(s) until out.end_with?("\r\n\r\n")
+      out << wm_recv(s) until out.end_with?("\r\n\r\n")
     end
     assert_true out.start_with?('HTTP/1.1 304'), out
   end

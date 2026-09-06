@@ -2,8 +2,6 @@
 require 'socket'
 require 'tempfile'
 
-CFG_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(CFG_BIN)
-
 def cfg_write(toml)
   f = Tempfile.new(['wm-cfg', '.toml'])
   f.write(toml)
@@ -29,40 +27,20 @@ CFG_APP = <<~RUBY unless defined?(CFG_APP)
 RUBY
 
 def cfg_app
-  return $cfg_app if $cfg_app
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  rb = "/tmp/wm-cfg-app-#{$$}.rb"
-  mrb = "/tmp/wm-cfg-app-#{$$}.mrb"
-  File.write(rb, CFG_APP)
-  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the config floor app'
-  File.unlink(rb) rescue nil
-  $cfg_app = mrb
+  $cfg_app ||= wm_compile(CFG_APP, 'wm-cfg-app')
+  $cfg_app.path
 end
 
 def cfg_spawn(args, err)
   args = ["--app=#{cfg_app}"] + args unless args.any? { |a| a.start_with?('--app=') }
-  spawn(CFG_BIN, *args, out: File::NULL, err: err)
-end
-
-def cfg_await(sock, err)
-  100.times do
-    break if File.socket?(sock)
-    sleep 0.05
-  end
-  raise "server never came up:\n#{begin File.read(err) rescue '' end}" unless File.socket?(sock)
+  spawn(WM_BIN, *args, out: File::NULL, err: err)
 end
 
 def cfg_get(sock, target)
-  s = UNIXSocket.new(sock)
-  s.write "GET #{target} HTTP/1.1\r\nHost: cfg\r\nConnection: close\r\n\r\n"
-  head = +''
-  loop do
-    head << s.readpartial(4096)
-  rescue EOFError
-    break
+  wm_conn(sock) do |s|
+    wm_request(s, target)
+    wm_read(s).join
   end
-  s.close
-  head
 end
 
 assert('webmachine.toml: the invocation as a file') do
@@ -72,7 +50,7 @@ assert('webmachine.toml: the invocation as a file') do
   err = "/tmp/wm-cfg-stderr-#{$$}.log"
   pid = cfg_spawn(["--config=#{cfg.path}"], err)
   begin
-    cfg_await(sock, err)
+    wm_await_socket(sock, err)
     assert_include cfg_get(sock, '/'), '200 OK'
     assert_include File.read(err), 'config '
   ensure
@@ -90,7 +68,7 @@ assert('the typed flag beats the file') do
   err = "/tmp/wm-cfg-stderr2-#{$$}.log"
   pid = cfg_spawn(["--config=#{cfg.path}", "--unix=#{sock_cli}"], err)
   begin
-    cfg_await(sock_cli, err)
+    wm_await_socket(sock_cli, err)
     assert_include cfg_get(sock_cli, '/'), '200 OK'
     assert_false File.socket?(sock_file)
   ensure
@@ -131,7 +109,7 @@ assert('[tune] timeouts: the reaper closes what never speaks and what fell silen
   err = "/tmp/wm-cfg-to-stderr-#{$$}.log"
   pid = cfg_spawn(["--config=#{cfg.path}"], err)
   begin
-    cfg_await(sock, err)
+    wm_await_socket(sock, err)
     c = UNIXSocket.new(sock)
     t0 = Time.now
     got = begin
@@ -155,7 +133,7 @@ end
 # the old space-separated spelling among them, which the parser would
 # otherwise read as a bare flag with the value dropped on the floor.
 def cfg_argv(*args)
-  IO.popen([CFG_BIN, *args, { err: [:child, :out] }], &:read)
+  IO.popen([WM_BIN, *args, { err: [:child, :out] }], &:read)
 end
 
 assert('cli: --key=value, and every other spelling is refused') do
@@ -179,7 +157,7 @@ assert('config: --write-config writes no [assets] section, and the example match
   out = "/tmp/wm-cfg-written-#{$$}.toml"
   File.unlink(out) if File.exist?(out)
   err = "/tmp/wm-cfg-written-err-#{$$}.log"
-  pid = spawn(CFG_BIN, "--write-config=#{out}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--write-config=#{out}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true File.exist?(out), "nothing written:\n#{File.read(err) rescue ''}"
   text = File.read(out)

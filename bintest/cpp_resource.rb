@@ -12,55 +12,19 @@ require 'tempfile'
 
 CPPR_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-example')
 CPPR_APP = File.expand_path('../examples/cpp_resource.rb', __dir__)
-CPPR_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b
 
-def cppr_server
+def cppr_server(&block)
   raise "no #{CPPR_BIN} - the example binary needs WM_EXAMPLES (build_config_debug.rb)" \
     unless File.executable?(CPPR_BIN)
 
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  app = Tempfile.new(['wm-cppr', '.mrb'])
-  app.close
-  raise "mrbc failed on #{CPPR_APP}" unless system(mrbc, '-g', '-o', app.path, CPPR_APP)
-
-  sock = "/tmp/wm-cppr-#{$$}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-cppr-stderr-#{$$}.log"
-  pid = spawn(CPPR_BIN, "--unix=#{sock}", "--app=#{app.path}",
-              out: File::NULL, err: err)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  raise "example server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
-  begin
-    yield sock
-  ensure
-    Process.kill('TERM', pid) rescue nil
-    Process.wait(pid) rescue nil
-    File.unlink(sock) rescue nil
-    app.unlink
-  end
+  wm_server(File.read(CPPR_APP), bin: CPPR_BIN, tag: 'wm-cppr', &block)
 end
 
-def cppr_recv(s, maxlen = 1, deadline = 10)
-  IO.select([s], nil, nil, deadline) or raise "read deadline: no bytes in #{deadline}s"
-  s.readpartial(maxlen)
-end
-
-# One request, one connection, the whole answer - Connection: close makes
-# the socket itself the framing, so nothing here has to agree with the
-# writer about lengths.
+# One request, one connection, the whole answer as one string.
 def cppr_ask(sock, method, path, fields = {})
-  UNIXSocket.open(sock) do |s|
-    head = +"#{method} #{path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
-    fields.each { |k, v| head << "#{k}: #{v}\r\n" }
-    head << "\r\n"
-    s.write(head)
-    out = +''.b
-    loop do
-      out << cppr_recv(s, 65_536)
-    rescue EOFError
-      break
-    end
-    out
+  wm_conn(sock) do |s|
+    wm_request(s, path, fields, method: method)
+    wm_read(s, body: method != 'HEAD').join
   end
 end
 
@@ -78,45 +42,17 @@ def cppr_untarget(answer, path)
   answer.sub(/^Content-Length: \d+\r\n/, "Content-Length: N\r\n").gsub(path, '/TARGET')
 end
 
-def cppr_h2_frame(type, flags, stream, payload = ''.b)
-  len = payload.bytesize
-  [(len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, type, flags].pack('C5') +
-    [stream].pack('N') + payload
-end
-
-def cppr_h2_read(s, n)
-  buf = +''.b
-  buf << cppr_recv(s, n - buf.bytesize) while buf.bytesize < n
-  buf
-end
-
-def cppr_h2_next(s)
-  h = cppr_h2_read(s, 9)
-  len = (h.getbyte(0) << 16) | (h.getbyte(1) << 8) | h.getbyte(2)
-  [h.getbyte(3), h.getbyte(4), h[5, 4].unpack1('N') & 0x7fffffff,
-   len > 0 ? cppr_h2_read(s, len) : ''.b]
-end
-
 # One h2 request as the first on its connection: the HPACK encoder is in
 # its initial state both times, so two answers that mean the same are
 # also spelled the same - which is what makes a byte comparison possible
 # at all on a stateful encoding.
 def cppr_h2_ask(sock, method, path)
-  UNIXSocket.open(sock) do |s|
-    s.write(CPPR_PREFACE + cppr_h2_frame(4, 0, 0))
-    t, = cppr_h2_next(s)
-    raise "expected server SETTINGS, got #{t}" unless t == 4
-    cppr_h2_next(s)
+  wm_conn(sock) do |s|
+    h2_handshake(s)
     block = "\x02#{method.bytesize.chr}#{method}\x86\x04#{path.bytesize.chr}#{path}" \
             "\x41\x0bexample.com".b
-    s.write(cppr_h2_frame(1, 0x05, 1, block))
-    frames = []
-    loop do
-      type, flags, _, payload = cppr_h2_next(s)
-      frames << [type, payload]
-      break if (flags & 0x01) != 0
-    end
-    frames
+    h2_stream(s, 1, block)
+    h2_collect(s, 1).map { |type, _flags, _stream, payload| [type, payload] }
   end
 end
 

@@ -3,26 +3,9 @@ require 'socket'
 require 'tempfile'
 require 'fileutils'
 
-RF_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(RF_BIN)
-
 RF_TEXT = 'hello from the docroot'.freeze
 RF_BIG = ('rf' + ('0123456789abcdefghij' * 12_499) + 'END').freeze
 RF_SECRET = 'THIS FILE IS OUTSIDE THE DOCROOT'.freeze
-
-def rf_recv(s, maxlen = 65_536, deadline = 10)
-  IO.select([s], nil, nil, deadline) or
-    raise "read deadline: no bytes in #{deadline}s (server wedged?)"
-  s.readpartial(maxlen)
-end
-
-def rf_read(s)
-  head = +''.b
-  head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
-  len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
-  body = +''.b
-  body << rf_recv(s, len - body.bytesize) while body.bytesize < len
-  [head, body]
-end
 
 def rf_app
   <<~RUBY
@@ -44,20 +27,6 @@ def rf_app
   RUBY
 end
 
-def rf_compile(source)
-  src = Tempfile.new(['wm-rfapp', '.rb'])
-  src.write(source)
-  src.close
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  mrb = Tempfile.new(['wm-rfapp', '.mrb'])
-  mrb.close
-  ok = system(mrbc, '-g', '-o', mrb.path, src.path)
-  raise 'mrbc failed to compile the response.file fixture' unless ok
-  mrb
-ensure
-  src&.unlink
-end
-
 def rf_tree
   base = "/tmp/wm-rf-#{$$}-#{rand(1 << 30)}"
   root = File.join(base, 'root')
@@ -76,34 +45,19 @@ end
 def rf_serve(docroot: true)
   base, root = rf_tree
   sock = "/tmp/wm-rf-#{$$}-#{rand(1 << 30)}.sock"
-  File.unlink(sock) if File.exist?(sock)
-  err = "/tmp/wm-rf-stderr-#{$$}.log"
-  app = rf_compile(rf_app)
-  args = [RF_BIN, "--unix=#{sock}", "--app=#{app.path}"]
-  args += ["--docroot=#{root}"] if docroot
-  pid = spawn(*args, out: File::NULL, err: err)
-  200.times do
-    break if File.socket?(sock)
-    sleep 0.05
+  args = docroot ? ["--docroot=#{root}"] : []
+  wm_server(rf_app, *args, sock: sock, tag: 'wm-rf') do |s|
+    yield s, root
   end
-  unless File.socket?(sock)
-    raise "server never came up:\n#{begin File.read(err) rescue '' end}"
-  end
-  yield sock, root
 ensure
-  Process.kill(:TERM, pid) rescue nil
-  Process.waitpid(pid) rescue nil
-  app&.unlink
-  File.unlink(sock) rescue nil
   FileUtils.rm_rf(base) if base
 end
 
 def rf_get(sock, name, extra = '', method = 'GET')
-  s = UNIXSocket.new(sock)
-  s.write "#{method} /f?n=#{name} HTTP/1.1\r\nHost: rf\r\n#{extra}Connection: close\r\n\r\n"
-  head, body = rf_read(s)
-  s.close
-  [head, body]
+  wm_conn(sock) do |s|
+    s.write "#{method} /f?n=#{name} HTTP/1.1\r\nHost: rf\r\n#{extra}\r\n"
+    wm_read(s)
+  end
 end
 
 def rf_undated(head)
@@ -143,7 +97,7 @@ assert('response.file answers HEAD with the length and no body') do
     s.write "HEAD /f?n=a.txt HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
     buf = +''.b
     loop do
-      chunk = (rf_recv(s) rescue nil)
+      chunk = (wm_recv(s, 65_536) rescue nil)
       break if chunk.nil? || chunk.empty?
       buf << chunk
     end
@@ -213,7 +167,7 @@ assert('response.file keeps a keep-alive connection in order') do
     s = UNIXSocket.new(sock)
     3.times do
       s.write "GET /f?n=a.txt HTTP/1.1\r\nHost: rf\r\n\r\n"
-      head, body = rf_read(s)
+      head, body = wm_read(s)
       assert_include head, 'HTTP/1.1 200 OK'
       assert_equal RF_TEXT, body
     end
@@ -227,52 +181,27 @@ assert('response.file answers pipelined requests in order') do
     s.write("GET /f?n=a.txt HTTP/1.1\r\nHost: rf\r\n\r\n" \
             "GET /f?n=big.txt HTTP/1.1\r\nHost: rf\r\n\r\n" \
             "GET /f?n=nothing-here.txt HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n")
-    head, body = rf_read(s)
+    head, body = wm_read(s)
     assert_include head, 'HTTP/1.1 200 OK'
     assert_equal RF_TEXT, body
-    head, body = rf_read(s)
+    head, body = wm_read(s)
     assert_include head, 'HTTP/1.1 200 OK'
     assert_equal RF_BIG, body
-    head, body = rf_read(s)
+    head, body = wm_read(s)
     assert_include head, 'HTTP/1.1 404 Not Found'
     assert_include body, '<p class=n>404</p>'
     s.close
   end
 end
 
-RF_H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(RF_H2_PREFACE)
-
-def rf_h2_frame(type, flags, stream, payload = ''.b)
-  len = payload.bytesize
-  [(len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, type, flags].pack('C5') +
-    [stream].pack('N') + payload
-end
-
-def rf_h2_exact(s, n)
-  buf = +''.b
-  buf << rf_recv(s, n - buf.bytesize) while buf.bytesize < n
-  buf
-end
-
-def rf_h2_next(s)
-  h = rf_h2_exact(s, 9)
-  len = (h.getbyte(0) << 16) | (h.getbyte(1) << 8) | h.getbyte(2)
-  payload = len > 0 ? rf_h2_exact(s, len) : ''.b
-  [h.getbyte(3), h.getbyte(4), h[5, 4].unpack1('N') & 0x7fffffff, payload]
-end
-
 assert('response.file over h2 refuses rather than sending an empty body') do
   rf_serve do |sock, _root|
     UNIXSocket.open(sock) do |s|
-      s.write(RF_H2_PREFACE + rf_h2_frame(4, 0, 0, ''.b))
-      t, = rf_h2_next(s)
-      assert_equal 4, t
-      t, = rf_h2_next(s)
-      assert_equal 4, t
+      h2_handshake(s)
       path = '/f?n=a.txt'
       block = "\x82\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
-      s.write(rf_h2_frame(1, 0x05, 1, block))
-      type, _flags, stream, hblock = rf_h2_next(s)
+      s.write(h2_frame(1, 0x05, 1, block))
+      type, _flags, stream, hblock = h2_next(s)
       assert_equal 1, type
       assert_equal 1, stream
       assert_equal 0x8e, hblock.getbyte(0)
@@ -283,11 +212,11 @@ end
 
 assert('a docroot that is missing or is not a directory refuses startup') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   begin
     [[File.join(base, 'no-such-dir'), 'No such file'],
      [File.join(root, 'a.txt'), 'is not a directory']].each do |path, want|
-      out = IO.popen([RF_BIN, "--unix=/tmp/wm-rf-never-#{$$}.sock", "--app=#{app.path}",
+      out = IO.popen([WM_BIN, "--unix=/tmp/wm-rf-never-#{$$}.sock", "--app=#{app.path}",
                       "--docroot=#{path}", { err: [:child, :out] }], &:read)
       assert_include out, '--docroot'
       assert_include out, want
@@ -303,11 +232,11 @@ end
 # far past the 16 MiB ceiling this path used to refuse outright.
 assert('response.file streams a file of any size, window by window') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-big-#{$$}-#{rand(1 << 30)}.sock"
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
                 "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -339,13 +268,13 @@ end
 # wins the race against the send does not change what must not happen.
 assert('response.file that shrinks mid-flight ends the request, never hangs') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-shrink-#{$$}-#{rand(1 << 30)}.sock"
   path = File.join(root, 'shrink.bin')
   File.binwrite(path, 'S' * (48 << 20))
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
                 "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -392,13 +321,13 @@ def rf_stream(sock, name)
   s = UNIXSocket.new(sock)
   s.write "GET /f?n=#{name} HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
   head = +''.b
-  head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
+  head << wm_recv(s, 1) until head.end_with?("\r\n\r\n")
   len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
   got = 0
   last = nil
   begin
     while got < len
-      part = rf_recv(s, 1 << 16, 30)
+      part = wm_recv(s, 1 << 16, 30)
       got += part.bytesize
       last = part.getbyte(-1)
     end
@@ -416,12 +345,12 @@ end
 # mattering.
 assert('response.file serves a file larger than one send can move') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-huge-#{$$}-#{rand(1 << 30)}.sock"
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
                 "--docroot=#{root}", out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -445,13 +374,13 @@ end
 # the process down, every connection on it with one request.
 assert('response.file survives an mmap it cannot make, and still serves') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-nomap-#{$$}-#{rand(1 << 30)}.sock"
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
   begin
     # An address space too small for the mapping, large enough for the server.
-    cmd = "ulimit -v 2000000; exec #{RF_BIN} --unix=#{sock} --app=#{app.path} " \
+    cmd = "ulimit -v 2000000; exec #{WM_BIN} --unix=#{sock} --app=#{app.path} " \
           "--docroot=#{root}"
     pid = spawn('sh', '-c', cmd, out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
@@ -478,7 +407,7 @@ end
 # round - sixteen lines for one request, each with a window's byte count.
 assert('response.file writes one access line per request, not one per window') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-log-#{$$}-#{rand(1 << 30)}.sock"
   logf = "/tmp/wm-rf-access-#{$$}-#{rand(1 << 30)}.log"
   File.unlink(logf) if File.exist?(logf)
@@ -486,7 +415,7 @@ assert('response.file writes one access line per request, not one per window') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
                 "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
@@ -514,7 +443,7 @@ end
 # not the ones the head promised.
 assert('response.file logs an abandoned transfer once, with what really left') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-abort-#{$$}-#{rand(1 << 30)}.sock"
   logf = "/tmp/wm-rf-abort-access-#{$$}-#{rand(1 << 30)}.log"
   File.unlink(logf) if File.exist?(logf)
@@ -522,7 +451,7 @@ assert('response.file logs an abandoned transfer once, with what really left') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--unix=#{sock}", "--app=#{app.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
                 "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
@@ -530,8 +459,8 @@ assert('response.file logs an abandoned transfer once, with what really left') d
     s = UNIXSocket.new(sock)
     s.write "GET /f?n=big.bin HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
     head = +''.b
-    head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
-    rf_recv(s, 4096)
+    head << wm_recv(s, 1) until head.end_with?("\r\n\r\n")
+    wm_recv(s, 4096)
     s.close                       # hang up with the body still owed
   ensure
     sleep 0.3
@@ -558,7 +487,7 @@ def rf_throttled(sock, name, rate)
   s = UNIXSocket.new(sock)
   s.write "GET /f?n=#{name} HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
   head = +''.b
-  head << rf_recv(s, 1) until head.end_with?("\r\n\r\n")
+  head << wm_recv(s, 1) until head.end_with?("\r\n\r\n")
   len = head[/^Content-Length: *(\d+)\r$/i, 1].to_i
   t0 = Time.now
   got = 0
@@ -566,7 +495,7 @@ def rf_throttled(sock, name, rate)
     while got < len
       wait = t0 + got.to_f / rate - Time.now
       sleep wait if wait > 0
-      got += rf_recv(s, 1 << 14, 20).bytesize
+      got += wm_recv(s, 1 << 14, 20).bytesize
     end
   rescue EOFError, Errno::ECONNRESET
   end
@@ -586,7 +515,7 @@ end
 # at the rate this client reads. Offered whole, it dies around 700 KB.
 assert('response.file serves a client slower than one send-timeout of body') do
   base, root = rf_tree
-  app = rf_compile(rf_app)
+  app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-slow-#{$$}-#{rand(1 << 30)}.sock"
   n = 1_500_000
   File.binwrite(File.join(root, 'slow.bin'), 'S' * n)
@@ -596,7 +525,7 @@ assert('response.file serves a client slower than one send-timeout of body') do
   cfg.close
   pid = nil
   begin
-    pid = spawn(RF_BIN, "--config=#{cfg.path}",
+    pid = spawn(WM_BIN, "--config=#{cfg.path}",
                 "--app=#{app.path}", "--docroot=#{root}",
                 '--file-map-threshold=65536',
                 out: File::NULL, err: File::NULL)

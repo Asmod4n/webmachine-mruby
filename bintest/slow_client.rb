@@ -1,7 +1,6 @@
 require 'socket'
 require 'tempfile'
 
-SLOW_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(SLOW_BIN)
 
 # 16 ms between every read and every write - a phone on a train, and the
 # shape a reactor has to survive without noticing. The body is big enough
@@ -40,30 +39,9 @@ SLOW_APP = <<~RUBY unless defined?(SLOW_APP)
   end
 RUBY
 
-def slow_app
-  return $slow_app if $slow_app
-  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  rb = "/tmp/wm-slow-app-#{$$}.rb"
-  mrb = "/tmp/wm-slow-app-#{$$}.mrb"
-  File.write(rb, SLOW_APP)
-  system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the slow-client app'
-  File.unlink(rb) rescue nil
-  $slow_app = mrb
-end
-
-def slow_server
+def slow_server(&block)
   sock = "/tmp/wm-slow-#{$$}-#{rand(1 << 30)}.sock"
-  err = Tempfile.new(['wm-slow-err', '.log'])
-  pid = spawn(SLOW_BIN, "--unix=#{sock}", "--app=#{slow_app}",
-              out: File::NULL, err: err.path)
-  200.times { break if File.socket?(sock); sleep 0.05 }
-  raise "server never came up: #{File.read(err.path)}" unless File.socket?(sock)
-  yield sock
-ensure
-  Process.kill(:TERM, pid) rescue nil
-  Process.waitpid(pid) rescue nil
-  File.unlink(sock) rescue nil
-  err.unlink rescue nil
+  wm_server(SLOW_APP, sock: sock, tag: 'wm-slow', &block)
 end
 
 # Read a whole response the slow way: one chunk per 16 ms, never asking
