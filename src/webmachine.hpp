@@ -3465,10 +3465,9 @@ namespace webmachine {
 
 struct AssetEntry;
 
-// RFC 9113 5.1: one entry per stream in a non-idle state. What a stream
-// must remember between frames is exactly what the state machine there
-// names - what it has received, what it still owes, and whether either
-// half is closed - so the fields are that list and nothing else.
+// RFC 9113 5.1: one entry per stream in a non-idle state. The fields are
+// what that state machine names and nothing else: what the stream has
+// received, what it still owes, and whether either half is closed.
 struct SseStream;
 void sse_free(SseStream* s);
 struct WsConn;
@@ -3636,10 +3635,11 @@ struct H2State {
     size_t head_len = 0;
     uint64_t enc_ins = 0;
     // RFC 7541 6.2.1: the SAME head, spelled with the insert instead of
-    // the reference. A dynamic-table entry has to reach the peer once
-    // before anything may point at it, and `bytes` is replayed verbatim
-    // for the rest of the second - so the response that BUILDS the entry
-    // carries this form, and every one after it carries `bytes`.
+    // the reference.
+    //
+    // A dynamic-table entry has to reach the peer once before anything
+    // may point at it. So the response that BUILDS the entry carries
+    // this form, and every one after it carries `bytes`.
     std::string prime;
     bool primed = false;
     bool has_data = false;
@@ -4414,12 +4414,13 @@ class Http1 {
     handle co{};
   };
 
-  // #80: the stop itself. It always suspends, and what it hands back on
-  // the way in is the run's OWN promise - because the sink and the plan
-  // it must write into belong to the round that RESUMED it, not to the
-  // round that started it. The resumer sets them just before resume(),
-  // so reading them through the promise is the only way to read the
-  // right ones. A reference captured before the stop would name a sink
+  // #80: the stop itself. It always suspends, and hands back the run's
+  // OWN promise on the way in.
+  //
+  // The sink and the plan it writes into belong to the round that
+  // RESUMED it, not to the one that started it. The resumer sets them
+  // just before resume(), so the promise is the only way to reach the
+  // right ones - a reference captured before the stop would name a sink
   // that is gone.
   struct Park {
     Run::promise_type* p = nullptr;
@@ -4499,11 +4500,11 @@ class Http1 {
 
     // #30: everything ONE stopped run waits on.
     //
-    // It is a struct of its own because a connection can hold more than
-    // one. h1 holds a single stopped run - RFC 9112 9.3.2 puts the
-    // answers out in the order the requests came - but an h2 connection
-    // multiplexes streams, and every stream that stops is a run with its
-    // own jobs, its own watchers and its own answers.
+    // A struct of its own because a connection can hold more than one.
+    // h1 holds a single stopped run, since RFC 9112 9.3.2 puts the
+    // answers out in the order the requests came. An h2 connection
+    // multiplexes, and every stream that stops is a run with its own
+    // jobs, watchers and answers.
     struct Round {
       // #80: what the worker said, in THIS VM's values. The reactor puts
       // it here on the way in and the resumed walk reads it once. It is
@@ -4723,9 +4724,9 @@ class Http1 {
       // The mapping is NOT released from here. Which round may hand it back
       // is a decision, and decisions live in file_step(); this function
       // runs before that one and could only guess.
-      // h2 lends PER STREAM and hands each one back where the stream ends,
-      // but the last bytes are still in flight there - this is the point
-      // that knows they are not, so the h2 backlog is freed from here.
+      // h2 lends PER STREAM and hands each back where the stream ends,
+      // but the last bytes are still in flight there. This is the point
+      // that knows they are not, so the h2 backlog is freed here.
       if (h2 != nullptr) h2->content_drain();
       zc_covered = 0;
       zc_split = false;
@@ -4850,9 +4851,8 @@ class Http1 {
         Assets* assets = nullptr);
 
   // #210: the error pages render in a VM, and this layer is handed one
-  // rather than owning it - the h1 model (#173) is bytes in, bytes out,
-  // and a caller that never calls this gets the bodyless statuses it
-  // always got.
+  // rather than owning it: the h1 model is bytes in, bytes out. A caller
+  // that never calls this gets the bodyless statuses.
   void open_error_assets(mrb_state* mrb, Assets* error_assets);
 
   // A pack that was built again, put in the place of the one this layer
@@ -5193,10 +5193,9 @@ class Http1 {
     return o;
   }
 
-  // What the asset tier does with ONE request, computed here and performed
-  // by the caller - the range verdict used to be decided inside the branch
-  // that was already writing, with two shadow variables (alog_st/alog_by)
-  // carrying the answer back out.
+  // What the asset tier does with ONE request: computed here, performed
+  // by the caller. One value, so nothing is decided inside a branch that
+  // is already writing.
   //   status_code      RFC 9110 15 - and what the access line says
   //   first_byte_pos   RFC 9110 14.1.2
   //   content_length   RFC 9110 8.6 - the span sent, and what the access
@@ -5541,11 +5540,11 @@ class Http1 {
   const Variants& prefixes(uint16_t status) const {
     return store_prefix_[index_[status]];
   }
-  // RFC 9110 15: the error answer this connection gets - the prebuilt
-  // status line and Date, then the page rendered for THIS request. When
-  // there is no page (no VM handed over, or a template that raised) the
-  // bodyless status goes out instead, which is what this server sent
-  // before there were pages at all.
+  // RFC 9110 15: the error answer this connection gets. The prebuilt
+  // status line and Date, then the page rendered for THIS request.
+  //
+  // With no page - no VM handed over, or a template that raised - the
+  // bodyless status goes out instead.
   // The parts of one: the prefix its status line and Date come from, the
   // bodyless spelling that stands when there is no page, the status, the
   // media the page renders in, the words #210 filled in, and whether the
@@ -6238,9 +6237,9 @@ void docroot_open(mrb_state* mrb, const char* path);
 std::string dev_open(const char* dir);
 // Does this name carry {{asset:...}} tags this mode fills? Text only.
 bool dev_fills(const char* name, size_t len);
-// The file with its tags filled in, or false when it cannot be read, is
-// too big to be a page, or carries no tag at all - then it is served as
-// it lies, which is the usual answer.
+// The file with its tags filled in. False when it cannot be read, is too
+// big to be a page, or carries no tag at all: then it is served as it
+// lies, which is the usual answer.
 bool dev_fill(const char* name, size_t len, std::string& out);
 // The folder, for whoever writes the pack when the server quits.
 const char* dev_source();
@@ -6352,11 +6351,10 @@ inline constexpr long long kAssetsMaxAgeDefault = 300;
 
 // WHAT THE PACK KEEPS, from that one number: twice it.
 //
-// A cache may use a page for max_age. The files that page names can be
-// asked for as long as the page is in a cache, so nothing older than
-// max_age + max_age can still be named by any page anywhere - the first
-// max_age is how long the page could have been taken before now, the
-// second is how long it may still be used. An entry older than that is
+// A cache may use a page for max_age, and the files that page names can
+// be asked for as long as the page lives. So the window is max_age
+// twice: once for how long ago the page could have been taken, once for
+// how long it may still be used. An entry older than that is
 // named by nothing and can go.
 inline constexpr long long assets_retention(long long max_age) { return max_age * 2; }
 
