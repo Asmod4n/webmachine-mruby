@@ -41,23 +41,10 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # builds it with the seam, so whether the kernel or slipstream's
   # engine answers is decided at runtime, per process, by asking the
   # kernel. There is no build-time fallback to reach for, because the one
-  # binary is the fallback.
+  # binary is the fallback. That gem builds its liburing when its own
+  # mrbgem.rake runs, and a build that fails stops there with the
+  # compiler's own words; nothing here asks for liburing before that.
   spec.add_dependency 'mruby-slipstreamio', github: 'Asmod4n/slipstreamIO', branch: 'main'
-
-  uring_built = File.exist?("#{build.build_dir}/mrbgems/mruby-slipstreamio/build/lib/liburing.a")
-  if spec.cc.search_header('sys/epoll.h') &&
-     !spec.cc.search_header('liburing.h') && !uring_built
-    abort <<~MSG
-      webmachine-mruby: liburing could not be built here (see
-      mruby-slipstreamio's output above; it needs a working C compiler).
-
-      There is no separate fallback build to point at any more: the one
-      binary IS the fallback - liburing built with the slipstream seam
-      answers from slipstream's engine wherever the kernel refuses
-      io_uring. A failing liburing BUILD is a broken build host, and it
-      is reported instead of served around.
-    MSG
-  end
 
   # mruby: the VM as a guest - every gem this build carries is named
   # here, core ones included, and no build config names a gembox.
