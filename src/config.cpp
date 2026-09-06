@@ -183,31 +183,6 @@ bool config_write_default(const char* path, const char* error_assets) {
       "# either, the pages render without pictures.\n"
       "%serror_assets = \"%s\"\n"
       "\n"
-      "[assets]\n"
-      "# How long a browser may use a PAGE without asking again, in seconds.\n"
-      "# Every other file's lifetime is decided per extension when the pack\n"
-      "# is written; this is the one number that also decides RETENTION.\n"
-      "max_age = %lld\n"
-      "\n"
-      "# WHAT THE PACK KEEPS: everything, and there is no setting here on\n"
-      "# purpose.\n"
-      "#\n"
-      "# A pack is appended to and never rewritten, so every name a build\n"
-      "# ever handed out still answers with the bytes it meant. That is not\n"
-      "# tidiness - a page from an older build needs THAT build's stylesheet,\n"
-      "# and today's would break it as thoroughly as none.\n"
-      "#\n"
-      "# The window is not ours to guess. A television app, a kiosk, a phone\n"
-      "# nobody has opened since spring: each asks for the files its own\n"
-      "# build named, whenever it wakes up. So dropping old entries is a\n"
-      "# decision about YOUR clients, and it is made by hand:\n"
-      "#\n"
-      "#   rake pack[DIR,OUT.zip,compact]   keep only what this build makes\n"
-      "#\n"
-      "# Never below 2 x max_age, whatever else you decide: a page may be\n"
-      "# used for max_age, and the files it names may be asked for that long\n"
-      "# again.\n"
-      "\n"
       "[log]\n"
       "# The access log. Both logs are opt-in, separate files, separate\n"
       "# writers, no field in common. Without them, nothing is written.\n"
@@ -256,7 +231,7 @@ bool config_write_default(const char* path, const char* error_assets) {
       "                               # connection\n",
       have_assets ? "" : "# ",
       have_assets ? error_assets : "/usr/local/share/webmachine-mruby/error-assets.zip",
-      kAssetsMaxAgeDefault, kSqWanted, kZeroCopyDefault, kZeroCopyDefault / 1024,
+      kSqWanted, kZeroCopyDefault, kZeroCopyDefault / 1024,
       kFileMapDefault, kFileMapDefault / 1024);
   std::fclose(f);
   return true;
@@ -269,12 +244,11 @@ void config_load(mrb_state* mrb, const char* path, Config& out) {
   const ConfigFile file = {mrb, path};
   const mrb_value doc = toml_load(file);
 
-  FoundTable server, log, tune, assets;
-  mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1, age = -1;
+  FoundTable server, log, tune;
+  mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1;
   section({doc, "", "server"}, server, file);
   section({doc, "", "log"}, log, file);
   section({doc, "", "tune"}, tune, file);
-  section({doc, "", "assets"}, assets, file);
 
   if (server.present) {
     const mrb_value t = server.table;
@@ -309,13 +283,6 @@ void config_load(mrb_state* mrb, const char* path, Config& out) {
     take_string({t, "log", "error_file"}, out.error_log_file, file);
     take_int({t, "log", "max_bytes"}, {4096, 1LL << 40}, &maxb, file);
     out.log_max_bytes = static_cast<unsigned long long>(maxb);
-  }
-
-  if (assets.present) {
-    // A day is the ceiling because retention is twice this, and a page
-    // kept for longer than a day is a page nobody is editing.
-    take_int({assets.table, "assets", "max_age"}, {0, 86400}, &age, file);
-    if (age >= 0) out.assets_max_age = static_cast<long long>(age);
   }
 
   if (tune.present) {

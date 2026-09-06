@@ -172,3 +172,22 @@ assert('cli: --key=value, and every other spelling is refused') do
   out = cfg_argv("--app=#{cfg_app}", '--port=8080', '--unix=/tmp/wm-cli.sock')
   assert_include out, 'at most one of --unix or --port'
 end
+
+# [assets] max_age was parsed and read by nothing. The written config no
+# longer shows it, and the example file is that written config.
+assert('config: --write-config writes no [assets] section, and the example matches') do
+  out = "/tmp/wm-cfg-written-#{$$}.toml"
+  File.unlink(out) if File.exist?(out)
+  err = "/tmp/wm-cfg-written-err-#{$$}.log"
+  pid = spawn(CFG_BIN, "--write-config=#{out}", out: File::NULL, err: err)
+  Process.wait(pid)
+  assert_true File.exist?(out), "nothing written:\n#{File.read(err) rescue ''}"
+  text = File.read(out)
+  assert_false text.include?('[assets]'), text
+  assert_false text.include?('max_age'), text
+  example = File.read(File.expand_path('../webmachine.toml.example', __dir__))
+  assert_false example.include?('max_age'), 'webmachine.toml.example still names max_age'
+ensure
+  File.unlink(out) rescue nil
+  File.unlink(err) rescue nil
+end

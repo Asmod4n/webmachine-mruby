@@ -6334,11 +6334,6 @@ struct ServerOptions {
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
   long long file_map_threshold = -1;
-
-  // [assets] max_age: how long a browser may use a PAGE without asking
-  // again, and with it how long the pack keeps what a page can name.
-  // See kAssetsMaxAgeDefault and config_write_default.
-  long long assets_max_age = -1;
 };
 
 
@@ -6383,27 +6378,7 @@ struct Config {
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
   long long file_map_threshold = -1;
-
-  // [assets] max_age: how long a browser may use a PAGE without asking
-  // again, and with it how long the pack keeps what a page can name.
-  // See kAssetsMaxAgeDefault and config_write_default.
-  long long assets_max_age = -1;
 };
-
-// The lifetime a page carries when nobody said otherwise, in seconds. A
-// reader who walks a site comes back to the page they just left, and
-// five minutes of that costs no request; it is short enough that a
-// correction is visible while the person who made it is still watching.
-inline constexpr long long kAssetsMaxAgeDefault = 300;
-
-// WHAT THE PACK KEEPS, from that one number: twice it.
-//
-// A cache may use a page for max_age, and the files that page names can
-// be asked for as long as the page lives. So the window is max_age
-// twice: once for how long ago the page could have been taken, once for
-// how long it may still be used. An entry older than that is
-// named by nothing and can go.
-inline constexpr long long assets_retention(long long max_age) { return max_age * 2; }
 
 // webmachine.toml, written BECAUSE SOMEBODY ASKED - --write-config, and
 // nothing else. A server that leaves files behind on its own is a server

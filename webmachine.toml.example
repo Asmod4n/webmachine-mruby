@@ -33,31 +33,6 @@
 # either, the pages render without pictures.
 # error_assets = "/usr/local/share/webmachine-mruby/error-assets.zip"
 
-[assets]
-# How long a browser may use a PAGE without asking again, in seconds.
-# Every other file's lifetime is decided per extension when the pack
-# is written; this is the one number that also decides RETENTION.
-max_age = 300
-
-# WHAT THE PACK KEEPS: everything, and there is no setting here on
-# purpose.
-#
-# A pack is appended to and never rewritten, so every name a build
-# ever handed out still answers with the bytes it meant. That is not
-# tidiness - a page from an older build needs THAT build's stylesheet,
-# and today's would break it as thoroughly as none.
-#
-# The window is not ours to guess. A television app, a kiosk, a phone
-# nobody has opened since spring: each asks for the files its own
-# build named, whenever it wakes up. So dropping old entries is a
-# decision about YOUR clients, and it is made by hand:
-#
-#   rake pack[DIR,OUT.zip,compact]   keep only what this build makes
-#
-# Never below 2 x max_age, whatever else you decide: a page may be
-# used for max_age, and the files it names may be asked for that long
-# again.
-
 [log]
 # The access log. Both logs are opt-in, separate files, separate
 # writers, no field in common. Without them, nothing is written.
