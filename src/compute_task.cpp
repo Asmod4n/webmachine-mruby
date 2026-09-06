@@ -748,10 +748,8 @@ void ComputePool::worker(Impl* impl, unsigned me) {
 
   // ONE VM at a time, whatever the pool's size. mrb_open is safe per VM,
   // but the gems in this build are not all safe against each other:
-  // mruby-task keeps file-scope statics and takes a process-wide lock in
-  // its init, and a core dump from a 28-core machine showed twenty-eight
-  // threads inside mrb_init_mrbgems together, with three of them aborting
-  // in a name lookup that had no protect frame.
+  // some keep file-scope statics and take a process-wide lock while
+  // they initialise, so two VMs opening at once can abort.
   //
   // This costs startup time once per worker and nothing afterwards: a
   // worker opens its VM before it takes its first job.

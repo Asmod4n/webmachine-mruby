@@ -39,13 +39,14 @@
 #include <utility>
 #include <vector>
 
-// openat2(2) IS the docroot confinement response.file rests on, so a
-// toolchain whose kernel headers predate it must not silently lose the
-// hardening - same shape as the SO_MEMINFO fallback further down, and the
-// kernel's own fixed ABI values read off linux/openat2.h, never guessed.
-// RESOLVE_BENEATH alone blocks ".."/absolute escapes but NOT a symlink INSIDE
-// the docroot pointing out; NO_SYMLINKS closes that, NO_MAGICLINKS closes the
-// /proc-style ones. All three, always - each covers what the others do not.
+// openat2(2) is the docroot confinement response.file rests on, so an
+// older toolchain gets these values rather than losing the hardening.
+// They are the kernel's own, read off linux/openat2.h.
+//
+// All three flags, always, because each covers what the others do not:
+// RESOLVE_BENEATH stops ".." and absolute paths, NO_SYMLINKS stops a
+// symlink inside the docroot pointing out, NO_MAGICLINKS stops the
+// /proc-style ones.
 #if __has_include(<linux/openat2.h>)
 #include <linux/openat2.h>
 #else
@@ -267,12 +268,12 @@ static_assert(both_targets_of_every_node_name_one(), "every edge continues or ha
 
 // Proof: no cycle, and so every path from here halts.
 //
-// A depth-first walk that colours each node - kUnseen, kOnThePath,
-// kFinished - where a node met again while it is still ON the path is a
-// back edge, which is what a cycle is. Each node is entered once and
-// left once, so this walks the GRAPH; the earlier form walked every
-// PATH through it, which is exponential in the number of branches and
-// crashed gcc 16's constexpr evaluator outright.
+// A depth-first walk that colours each node. A node met again while it
+// is still ON the path is a back edge, which is what a cycle is.
+//
+// Each node is entered once, so this walks the GRAPH. Walking every
+// PATH instead is exponential in the branches, and crashed gcc 16's
+// constexpr evaluator.
 enum : uint8_t { kUnseen = 0, kOnThePath = 1, kFinished = 2 };
 constexpr bool no_cycle_from(Node n, uint8_t (&colour)[kNodeCount]) {
   const size_t i = static_cast<size_t>(n);
@@ -319,9 +320,8 @@ namespace webmachine::flow {
 enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOther };
 
 // RFC 9110: everything a kRequest node needs, decided from the parsed
-// request alone. Every field is a FIELD OF THE SPECIFICATION and now
-// spells it out - has_if_unmodified_since used to sit next to ius_valid,
-// the same header abbreviated in one line and not in the next.
+// request alone. Every field is named for the field of the
+// specification it carries, spelled out.
 //   has_accept*                 RFC 9110 12.5.1-12.5.4
 //   has_if_match, *_star        RFC 9110 13.1.1
 //   has_if_unmodified_since     RFC 9110 13.1.4
@@ -672,21 +672,14 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 namespace webmachine {
 
 // mruby's GC arena is a stack, and a setup that gives up has to leave it
-// where it found it. Since #33 those exits are raises - a raise is a C++
-// throw here, MRB_USE_CXX_EXCEPTION is always on - so the restore belongs
-// to a destructor, not to fifteen copies of the same line before fifteen
-// returns, each of which was a chance to forget one.
-// A setup callback raised and the VM left the exception in mrb->exc
-// (mrb_funcall_argv catches it there; mrb_protect_error hands it back and
-// take_pending puts it there). Let it out again: the exception's own
-// class, message and backtrace name what went wrong better than any
-// sentence the frame that caught it could spell - and since #33 there is
-// no string channel left to spell one into. What this replaced printed
-// the exception to stderr, which nothing reads unless the process dies,
-// and passed "<callback> (exception below)" upwards: a note about a note.
+// where it found it. A raise here is a C++ throw, so a destructor is the
+// one place that restore can live.
+// A setup callback raised, and the VM left the exception in mrb->exc.
+// Let it out again: its own class, message and backtrace say what went
+// wrong better than any sentence this frame could write.
 // The same, for what mrb_protect_error hands BACK rather than leaves in
-// mrb->exc. Only an exception object can be raised, and protect_error
-// returns whatever was pending - the trap take_pending is about.
+// mrb->exc. Only an exception object can be raised, and this returns
+// whatever was pending.
 [[noreturn]] inline void reraise(mrb_state* mrb, mrb_value pending) {
   if (mrb_exception_p(pending)) mrb_exc_raise(mrb, pending);
   mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
@@ -962,22 +955,16 @@ inline constexpr uint8_t kLogRecVersion = 3;
 // One row of the password database, shared by webmachine-passwd, which
 // writes it, and the server, which verifies against it.
 //
-// The format is ours, and it exists for one reason: argon2's own encoded
-// form ($argon2id$v=19$m=...,t=...,p=...$salt$hash) cannot carry the ad
-// parameter. argon2id_hash_encoded takes a password, a salt and the
-// three costs and nothing else; ad needs the context API, and that hands
-// back a raw hash. So salt and cost are written here instead of read out
+// The format is ours because argon2's own encoded form cannot carry the
+// ad parameter. So salt and cost are written here rather than read out
 // of a string.
 //
-// ad is the sub-database's NAME, and it is NOT stored. Both sides
-// already hold it - the tool from its argument, the server from the
-// route that named it - and a record therefore verifies only in the set
-// it was made for. Copying a row from one sub-database to another leaves
-// it unverifiable.
+// ad is the sub-database's NAME, and it is not stored: both sides
+// already hold it. A record therefore verifies only in the set it was
+// made for, and a row copied to another sub-database is unverifiable.
 //
-// Native widths and native order. That is not a shortcut: LMDB refuses a
-// file written by a different endianness or word size, so a record can
-// never outlive the constraint the database is already under.
+// Native widths and native order, because LMDB already refuses a file
+// written by another endianness or word size.
 struct PasswdRec {
   uint8_t version;
   uint8_t salt_len;
@@ -1054,21 +1041,19 @@ inline void log_access(Logger& lg, const AccessLine& line) {
   if (user_agent_len != 0) lg.pending.append(user_agent, user_agent_len);
 }
 
-// One raise as one record. Same finding as LogRec - no format specifies
-// this - and here even the CONTENT mostly has no source: an exception
-// class, a message and a backtrace are mruby's, not any RFC's.
+// One raise as one record. No format specifies this, and most of what is
+// in it has no RFC either - an exception class, a message and a
+// backtrace are mruby's.
 //   status_code           RFC 9110 15, or 0 when the raise never reached
 //                         an answer
 //   request_target        RFC 9112 3.2
-//   peer                  no RFC: the socket's address
-//   exception_class,      no RFC: mruby. Note message_len is the
-//   message, backtrace    EXCEPTION's message - LogRec's neighbouring
-//                         field of the same shape is a METHOD's length,
-//                         which is why neither is called mlen any more.
-//   dynamic_len           no RFC: it is the LENGTH argument of the second
-//                         io_uring_prep_send, so the daemon can read this
-//                         fixed header first and then take exactly that
-//                         many bytes.
+//   peer                  the socket's address
+//   exception_class,      mruby's. message_len is the EXCEPTION's
+//   message, backtrace    message; LogRec's field of the same shape is a
+//                         METHOD's length, so neither is called mlen.
+//   dynamic_len           the LENGTH argument of the second
+//                         io_uring_prep_send: the daemon reads this
+//                         fixed header, then takes that many bytes.
 struct ErrRec {
   uint8_t version;
   uint8_t flags;
@@ -1617,21 +1602,16 @@ struct HeaderList {
 };
 
 struct NamedFieldIndex {
-  // THE INDEX NEVER LEAVES. A stored position is only meaningful for the
-  // field array it was taken from, so the only way to read one is to
-  // hand that array and its count back in - `find` applies the index
-  // itself and answers nullptr for anything it cannot reach. Nobody
-  // outside can subscribe `at`, so nobody can apply it to a different
-  // array, and the bound stops being an invariant that lives in three
-  // other files.
+  // THE INDEX NEVER LEAVES. A stored position means something only for
+  // the array it was taken from, so reading one means handing that array
+  // back in: `find` applies the index and answers nullptr for anything
+  // it cannot reach. Nobody outside can apply it to another array.
   //
-  // The static_assert below fixes the byte WIDTH and nothing else - that
-  // kMaxHeaders fits a uint8_t says nothing about whether this
-  // request's array is that long, which is what `find` checks.
+  // The static_assert below fixes the byte width, and `find` checks the
+  // length of this request's array.
   //
-  // Declared, not defined: phr_header is incomplete here (see the
-  // forward declaration at the top of this file), so the body sits in
-  // request.cpp where the framer's header has been included.
+  // Declared here, defined in request.cpp, where the framer's header has
+  // been included and phr_header is complete.
   const struct phr_header* find(NamedField f, HeaderList hs) const;
 
   constexpr void note(NamedField f, size_t i) {
@@ -3706,23 +3686,17 @@ struct H2State {
     hpack_ready = lshpack_enc_init(&enc) == 0;
     lshpack_dec_init(&dec);
     lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
-    // ls-hpack: lshpack_dec_init leaves the dynamic table's array NULL -
-    // lshpack_arr_init is a memset and nothing else - and the first
-    // lshpack_arr_push then grows it with
-    // memcpy(new_els, arr->els + arr->off, ... * arr->nelem), which is
-    // memcpy(new, NULL + 0, 0). NULL + 0 is undefined and memcpy's source
-    // is declared non-null, so it trips two UBSan checks at once, on the
-    // FIRST dynamic-table insert of every h2 connection - which is to say
-    // on the first h2 request the server ever answers.
+    // ls-hpack leaves the dynamic table's array NULL, and its first
+    // growth does memcpy(new, NULL + 0, 0) - undefined, and two UBSan
+    // reports on the first h2 request this server ever answers.
     //
-    // It is not something a caller can pass its way out of, so this is
-    // the handover that stops it: the decoder is HANDED a table that
-    // already exists, and upstream's first-growth path never runs. 64 is
-    // the size upstream would have chosen; lshpack_dec_cleanup frees
-    // els, so the allocation belongs to the decoder from here. A failed
-    // malloc leaves it exactly as ls-hpack would have left it.
-    // The pin is v2.3.5 (cf0f70d, upstream HEAD); this goes when a
-    // release grows the array before its first push.
+    // No caller can avoid it, so the decoder is HANDED a table instead
+    // and that growth never runs. 64 is the size upstream would have
+    // chosen, and lshpack_dec_cleanup frees it. A failed malloc leaves
+    // things exactly as ls-hpack would have.
+    //
+    // Pinned at v2.3.5 (cf0f70d). This goes when a release grows the
+    // array before its first push.
     if (dec.hpd_dyn_table.els == nullptr) {
       constexpr unsigned kFirstTableSlots = 64;
       void* const mem = std::malloc(kFirstTableSlots * sizeof(uintptr_t));
@@ -4369,28 +4343,16 @@ class Http1 {
 
   // #80: a bound run that can STOP. Only a resource that declared a
   // promise or a watch is called through one, so a run that can never
-  // stop pays no frame for the ability - the same reasoning #cold-paths
-  // applies to code, applied to control flow.
+  // stop pays no frame for the ability.
   //
-  // WHY a coroutine and not a stage on the connection: at the stop the
-  // round's borrowed pointers have to be saved somewhere, and there is
-  // no choice about that - `view`, `method`, `path` and every field in
-  // ReqValues point into a PROVIDED BUFFER, and on_recv hands that
-  // buffer back to the kernel (replenish_/io_uring_buf_ring_advance)
-  // before anything could resume. Holding it instead is not an option:
-  // the ring has kBufCount of them for the whole process, and a run that
-  // parked for 40 ms of argon2 while holding one starves every other
-  // connection's recv. So the bytes are copied, and the frame is the one
-  // obvious place for the copy rather than a hand-built park struct that
-  // has to be re-pointed by hand on the way back.
+  // A stopped run has to keep what it borrowed. `view`, `method`, `path`
+  // and every field in ReqValues point into a provided buffer, and
+  // on_recv gives that buffer back to the kernel before anything
+  // resumes. So the bytes are copied, and this frame holds the copy.
   //
-  // The head and the body are held SEPARATELY even though carry holds
-  // them adjacent today: a head is a few hundred bytes and a body may be
-  // a megabyte, and the megabyte is the one that will later be spilled to
-  // an O_TMPFILE through the ring. A spilled body is not addressable at
-  // all until a read completes, so it can never be a span beside the
-  // head - it is a descriptor and a length, and fetching it is a second
-  // stop this same coroutine takes.
+  // The head and the body are held separately: a head is a few hundred
+  // bytes, a body may be a megabyte, and a body will later be spilled
+  // to an O_TMPFILE that only a read makes addressable.
   struct Run {
     struct promise_type;
     using handle = std::coroutine_handle<promise_type>;
@@ -4695,13 +4657,11 @@ class Http1 {
     // use and kept for the life of the connection (not freed per request)
     // so a connection that repeatedly serves files doesn't thrash malloc;
     // `reset()` and `~Conn()` are the only places that delete it.
-    // THREE sources meet in one struct, and the names say which is which.
-    // The kernel's, by rule: pathname/buf/map_addr/map_length are the
-    // ARGUMENTS they become (openat, io_uring_prep_read, munmap). HTTP's:
-    // head, content_type, field_lines, content_length, content_sent,
-    // status_code, if_modified_since, head_only, persist, minor. And the
-    // access line's copies - the request they describe is gone by the time
-    // the ring answers, so they are taken while it still exists.
+    // Three sources meet here, and the names say which is which. The
+    // kernel's fields are named for the arguments they become (openat,
+    // io_uring_prep_read, munmap). HTTP's are named for their fields.
+    // The access line's are COPIES: the request is gone by the time the
+    // ring answers, so they are taken while it still exists.
     struct FileXfer {
       std::string pathname;      // openat(dirfd, pathname, flags)
       std::string head;          // RFC 9112 2.1: status-line + fields

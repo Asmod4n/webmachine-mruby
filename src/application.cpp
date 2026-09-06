@@ -752,10 +752,8 @@ void app_load(mrb_state* mrb, const char* path) {
   app_build_hash() = fnv1a(kFnvBasis, image.data(), image.size());
   const ArenaGuard arena(mrb);
   mrb_load_irep_buf(mrb, image.data(), image.size());
-  // The app's own exception, with its class and its line. It used to be
-  // printed here and replaced by "app raised while loading (exception
-  // below)" - which said less than the exception and went to a stream
-  // nothing reads.
+  // The app's own exception, with its class and its line: it says more
+  // than any sentence this frame could add.
   if (mrb->exc != nullptr) rethrow(mrb);
   struct RClass* owner = mrb->object_class;
   if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(main)))) {

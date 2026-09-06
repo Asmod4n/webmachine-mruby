@@ -275,13 +275,10 @@ void server_backend_say() {
                  "webmachine: ================================================================\n",
                  why);
   }
-  // NO runtime "is liburing here" question any more. With the wrappers it
-  // is always here - mrbgem.rake aborts the BUILD when liburing cannot
-  // be built, which is the moment that can still be acted on - and the
-  // only open question is which side answers, which the banner above
-  // has just said. The check that used to stand here asked a Ruby
-  // constant that a since-removed gem defined, so it answered "no
-  // liburing" for a binary that carries it.
+  // There is no runtime "is liburing here" question. mrbgem.rake aborts
+  // the BUILD when liburing cannot be built, which is the moment an
+  // operator can still act on. The only open question is which side
+  // answers the rings, and the banner above has just said it.
 }
 
 namespace {

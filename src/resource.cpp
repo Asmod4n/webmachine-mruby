@@ -1441,9 +1441,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
 
   // RFC 9112 5: field-line = field-name ":" OWS field-value OWS CRLF. A
   // node decides WHICH field it produces; this is the only place that
-  // knows how one is spelled. Every node below used to spell its own,
-  // which is why "Allow: " and "ETag: " carried the colon inside the
-  // literal and every site ended with its own append("\r\n", 2).
+  // knows how one is spelled, so no node below spells its own.
 
   // RFC 9110 5.6.1: a field whose value is a #rule - a comma-separated
   // list. The members go in one at a time, so a list never needs a string

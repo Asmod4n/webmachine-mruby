@@ -1571,10 +1571,8 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
 }
 
 Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
-  // What this function still reads. It used to unpack the whole request
-  // here, because it used to spell the answer as well; bound_finish and
-  // spell_answer took that half, and the unpacking stayed behind as
-  // twenty-two names nothing used.
+  // What this function reads. Spelling the answer belongs to
+  // bound_finish and spell_answer.
   const Bundle* const b = r.b;
   const flow::ReqFacts& facts = r.facts;
   const http::ReqValues& vals = r.vals;
