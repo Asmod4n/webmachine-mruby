@@ -154,7 +154,7 @@ assert('watcher: it describes, and it says no to what it cannot describe') do
   assert_true out.include?('then:true'), out
   # The order menu is :r, :w, :rw and nothing else - what ARRIVES is a
   # wider set, which is why the two do not share a name.
-  assert_true out.include?('order:a watcher waits for :r, :w or :rw'), out
+  assert_true out.include?('order:a watcher waits for :r (:in), :w (:out) or :rw (:inout)'), out
   # A source is something with a descriptor, refused where the mistake
   # was made rather than somewhere inside the reactor.
   # One conversion covers both shapes: an Integer passes through, anything
@@ -493,4 +493,40 @@ assert('watcher: the server exits clean with a watcher still armed') do
     src.unlink
     mrb.unlink
   end
+end
+
+# The three directions have two names each: :r or :in, :w or :out,
+# :rw or :inout. Both spell the same order, and events reads back the
+# short one.
+assert('watcher: :in, :out and :inout are the same orders as :r, :w and :rw') do
+  out = wa_body(<<~RUBY_SRC)
+    class TwoNames < Webmachine::Resource
+      def self.to_html
+        r, w = IO.pipe
+        lines = []
+        begin
+          a = Webmachine::Watcher.new(r, :in, timeout: 1.s) { |_e, s| s.abort }
+          b = Webmachine::Watcher.new(w, :out, timeout: 1.s) { |_e, s| s.abort }
+          c = Webmachine::Watcher.new(r, :inout, timeout: 1.s) { |_e, s| s.abort }
+          lines << "in:\#{a.events}" << "out:\#{b.events}" << "inout:\#{c.events}"
+          c.events = :in
+          lines << "changed:\#{c.events}"
+        ensure
+          r.close
+          w.close
+        end
+        lines.join("\n")
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], TwoNames }
+      end
+    end
+  RUBY_SRC
+  assert_true out.include?('in:r'), out
+  assert_true out.include?('out:w'), out
+  assert_true out.include?('inout:rw'), out
+  assert_true out.include?('changed:r'), out
 end

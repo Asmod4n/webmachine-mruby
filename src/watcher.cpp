@@ -87,16 +87,19 @@ WatcherData* live(mrb_state* mrb, mrb_value self) {
   return d;
 }
 
-// What may be ORDERED. What arrives (revents) is a wider set.
+// What may be ordered. What arrives (revents) is a wider set. Each
+// direction has two names: :r or :in, :w or :out, :rw or :inout.
 unsigned mask_of(mrb_state* mrb, mrb_value v) {
   if (!mrb_symbol_p(v)) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher waits for :r, :w or :rw, not %v", v);
+    mrb_raisef(mrb, E_ARGUMENT_ERROR,
+               "a watcher waits for :r (:in), :w (:out) or :rw (:inout), not %v", v);
   }
   const mrb_sym s = mrb_symbol(v);
-  if (s == MRB_SYM(r)) return POLLIN;
-  if (s == MRB_SYM(w)) return POLLOUT;
-  if (s == MRB_SYM(rw)) return POLLIN | POLLOUT;
-  mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher waits for :r, :w or :rw, not %v", v);
+  if (s == MRB_SYM(r) || s == MRB_SYM(in)) return POLLIN;
+  if (s == MRB_SYM(w) || s == MRB_SYM(out)) return POLLOUT;
+  if (s == MRB_SYM(rw) || s == MRB_SYM(inout)) return POLLIN | POLLOUT;
+  mrb_raisef(mrb, E_ARGUMENT_ERROR,
+             "a watcher waits for :r (:in), :w (:out) or :rw (:inout), not %v", v);
   return 0;
 }
 
