@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gallery - webmachine + htmx</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/site.css">
+<script src="/htmx.min.js"></script>
+<header><div class="bar">
+  <span class="name">webmachine</span>
+  <a href="/">Fragments</a>
+  <a class="here" href="/gallery.html">Gallery</a>
+  <a href="/events.html">Server events</a>
+  <a href="/ws.html">WebSocket</a>
+</div></header>
+<main>
+  <h1>Pictures from the pack, rows from the app</h1>
+  <p class="lede">The photographs are entries in the same ZIP as this page. The
+    rows around them come from <code>GET /fragment/photos?page=N</code>. The
+    last row asks for the next one when it comes into view, so scrolling loads
+    the rest.</p>
+  <div class="grid" id="wall"
+       hx-get="/fragment/photos?page=1" hx-trigger="load" hx-swap="innerHTML">
+  </div>
+  <p class="htmx-indicator state">loading the next row...</p>
+</main>

@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>webmachine + htmx</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/site.css">
+<script src="/htmx.min.js"></script>
+<header><div class="bar">
+  <span class="name">webmachine</span>
+  <a class="here" href="/">Fragments</a>
+  <a href="/gallery.html">Gallery</a>
+  <a href="/events.html">Server events</a>
+  <a href="/ws.html">WebSocket</a>
+</div></header>
+<main>
+  <h1>Four pages, one server</h1>
+  <p class="lede">Every page here is a file in the asset pack. The server sends
+    it from the ZIP without a Ruby call. The parts that change come from
+    resources, one request each.</p>
+
+  <div class="card">
+    <h2>Ask for a fragment</h2>
+    <p>htmx sends <code>GET /fragment/time</code> and puts the answer in the
+      box. The server writes the box, not the page.</p>
+    <button hx-get="/fragment/time" hx-target="#clock" hx-swap="innerHTML">
+      Read the clock
+    </button>
+    <span class="htmx-indicator state">asking...</span>
+    <div id="clock" class="state">Nothing asked yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Type, and the server answers</h2>
+    <p>Each keystroke waits 300 ms, then goes out as
+      <code>GET /fragment/search?q=...</code>.</p>
+    <input type="text" name="q" placeholder="ship, sea, road, ..."
+           hx-get="/fragment/search" hx-target="#hits"
+           hx-trigger="keyup changed delay:300ms, search">
+    <ul class="feed" id="hits"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Count on the server</h2>
+    <p><code>POST /fragment/count</code> raises a number the server keeps and
+      returns the new one.</p>
+    <button hx-post="/fragment/count" hx-target="#count" hx-swap="innerHTML">
+      One more
+    </button>
+    <button class="ghost" hx-delete="/fragment/count" hx-target="#count"
+            hx-swap="innerHTML">Back to zero</button>
+    <div id="count" hx-get="/fragment/count" hx-trigger="load"
+         class="state">0</div>
+  </div>
+</main>

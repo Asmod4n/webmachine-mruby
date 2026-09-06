@@ -1,0 +1,75 @@
+/* One stylesheet for the four pages. The pages are static files in the
+   asset pack; only the fragments they ask for come from Ruby. */
+:root {
+  --ink: #14181f;
+  --paper: #f7f7f4;
+  --line: #d8d8d0;
+  --accent: #1f5f8b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+header {
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+header .bar {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 0.9rem 1.2rem;
+  display: flex;
+  gap: 1.2rem;
+  align-items: baseline;
+}
+header .name { font-weight: 700; letter-spacing: 0.01em; }
+header a { color: var(--ink); text-decoration: none; }
+header a.here { color: var(--accent); border-bottom: 2px solid var(--accent); }
+main { max-width: 62rem; margin: 0 auto; padding: 1.6rem 1.2rem 4rem; }
+h1 { font-size: 1.6rem; margin: 0 0 0.4rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 0.6rem; }
+p.lede { color: #4b5563; margin: 0 0 1.4rem; }
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  margin: 0 0 1.2rem;
+}
+button, .btn {
+  font: inherit;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button.ghost { background: #fff; color: var(--accent); }
+input[type=text] {
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  width: 18rem;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1rem;
+}
+.grid figure { margin: 0; }
+.grid img { width: 100%; border-radius: 6px; display: block; }
+.grid figcaption { font-size: 0.85rem; color: #4b5563; padding-top: 0.3rem; }
+ul.feed { list-style: none; margin: 0; padding: 0; font-variant-numeric: tabular-nums; }
+ul.feed li { border-bottom: 1px solid var(--line); padding: 0.35rem 0; }
+ul.feed li:last-child { border-bottom: 0; }
+code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+.state { font-size: 0.85rem; color: #4b5563; }
+.state.up { color: #146c43; }
+.state.down { color: #b02a37; }
+.htmx-indicator { opacity: 0; transition: opacity 0.2s; }
+.htmx-request .htmx-indicator { opacity: 1; }

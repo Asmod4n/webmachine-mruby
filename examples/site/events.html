@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Server events - webmachine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/site.css">
+<header><div class="bar">
+  <span class="name">webmachine</span>
+  <a href="/">Fragments</a>
+  <a href="/gallery.html">Gallery</a>
+  <a class="here" href="/events.html">Server events</a>
+  <a href="/ws.html">WebSocket</a>
+</div></header>
+<main>
+  <h1>One stream, from the server</h1>
+  <p class="lede">The browser opens <code>/events</code> and the server writes
+    to it. The connection stays open; nothing here asks a second time.</p>
+  <div class="card">
+    <button id="start">Open the stream</button>
+    <button class="ghost" id="stop">Close it</button>
+    <span id="state" class="state">closed</span>
+    <ul class="feed" id="feed"></ul>
+  </div>
+<script>
+// EventSource is the browser's own client for text/event-stream. It
+// reconnects on its own, and it sends Last-Event-ID when it does.
+let source = null;
+const state = document.getElementById('state');
+const feed = document.getElementById('feed');
+
+function say(text) {
+  const li = document.createElement('li');
+  li.textContent = text;
+  feed.prepend(li);
+  while (feed.children.length > 40) feed.lastChild.remove();
+}
+
+document.getElementById('start').onclick = () => {
+  if (source) return;
+  source = new EventSource('/events');
+  source.onopen = () => { state.textContent = 'open'; state.className = 'state up'; };
+  source.onerror = () => { state.textContent = 'lost, retrying'; state.className = 'state down'; };
+  source.addEventListener('tick', (e) => say(`#${e.lastEventId}  ${e.data}`));
+};
+
+document.getElementById('stop').onclick = () => {
+  if (!source) return;
+  source.close();
+  source = null;
+  state.textContent = 'closed';
+  state.className = 'state';
+};
+</script>
+</main>

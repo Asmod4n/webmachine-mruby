@@ -34,7 +34,7 @@ end
 
 ```
 rake
-mruby/build/host/mrbc/bin/mrbc -o hello.mrb examples/hello.rb
+mruby/build/host/mrbc/bin/mrbc -o hello.mrb bench/apps/hello.rb
 mruby/build/host/bin/webmachine-server --app=hello.mrb
 ```
 
@@ -52,7 +52,9 @@ app.add_sse       ['events'],          Clock        # text/event-stream
 ```
 
 A String is a literal segment, a Symbol binds one, `:*` is the tail.
-`examples/` has one file per kind.
+`examples/` has one file per kind, and `examples/site/` is a whole site:
+four htmx pages served from an asset pack, with the fragments, the event
+stream and the websocket behind them in `examples/site.rb`.
 
 ## Running it
 

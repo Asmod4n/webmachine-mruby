@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebSocket - webmachine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/site.css">
+<header><div class="bar">
+  <span class="name">webmachine</span>
+  <a href="/">Fragments</a>
+  <a href="/gallery.html">Gallery</a>
+  <a href="/events.html">Server events</a>
+  <a class="here" href="/ws.html">WebSocket</a>
+</div></header>
+<main>
+  <h1>Two ways, one socket</h1>
+  <p class="lede">This page speaks to <code>/ws</code> with the browser's own
+    WebSocket object. Send <code>bye</code> and the server closes the socket.</p>
+  <div class="card">
+    <button id="open">Connect</button>
+    <button class="ghost" id="close">Disconnect</button>
+    <span id="state" class="state">closed</span>
+    <p>
+      <input type="text" id="line" placeholder="say something" autocomplete="off">
+      <button id="send">Send</button>
+    </p>
+    <ul class="feed" id="log"></ul>
+  </div>
+<script>
+// The browser's WebSocket, used directly. The URL keeps the page's scheme:
+// wss:// on an https:// page, ws:// otherwise.
+let socket = null;
+const state = document.getElementById('state');
+const log = document.getElementById('log');
+
+function say(text) {
+  const li = document.createElement('li');
+  li.textContent = text;
+  log.prepend(li);
+  while (log.children.length > 40) log.lastChild.remove();
+}
+
+function mark(text, kind) {
+  state.textContent = text;
+  state.className = kind ? 'state ' + kind : 'state';
+}
+
+document.getElementById('open').onclick = () => {
+  if (socket) return;
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+              location.host + '/ws';
+  socket = new WebSocket(url);
+  socket.onopen = () => mark('open', 'up');
+  socket.onmessage = (e) => say('server: ' + e.data);
+  socket.onclose = (e) => {
+    socket = null;
+    mark('closed (' + e.code + ')', 'down');
+  };
+};
+
+document.getElementById('close').onclick = () => {
+  if (socket) socket.close(1000, 'done');
+};
+
+function send() {
+  const line = document.getElementById('line');
+  if (!socket || socket.readyState !== WebSocket.OPEN || line.value === '') return;
+  socket.send(line.value);
+  say('you: ' + line.value);
+  line.value = '';
+}
+
+document.getElementById('send').onclick = send;
+document.getElementById('line').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') send();
+});
+</script>
+</main>
