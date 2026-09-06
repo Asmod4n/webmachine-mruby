@@ -738,9 +738,9 @@ struct Bound {
 // a name, and {} is the call that carries nothing.
 using Args = std::span<const mrb_value>;
 
-mrb_value naked(Run& r, Bound b, Args args = {});
-mrb_value naked_class(Run& r, Bound b, Args args = {});
-mrb_value cbv(Run& r, const Resource::ValueCb& cb, Args args = {});
+mrb_value call_direct(Run& r, Bound b, Args args = {});
+mrb_value call_on_class(Run& r, Bound b, Args args = {});
+mrb_value call_value_cb(Run& r, const Resource::ValueCb& cb, Args args = {});
 mrb_value nodecall(Run& r, Node nd, Args args);
 mrb_value arg_for(Run& r, Node nd);
 void marshal_methods(Run& r, const Resource::ValueCb& cb);
@@ -765,7 +765,7 @@ bool param_find(Param p, std::string_view& value);
 int accept_helper(Run& r);
 int run_n11(Run& r);
 
-mrb_value naked(Run& r, Bound b, Args args) {
+mrb_value call_direct(Run& r, Bound b, Args args) {
     const mrb_int argc = static_cast<mrb_int>(args.size());
     const mrb_value* const argv = args.data();
     const NativeCb native = b.native;
@@ -788,7 +788,7 @@ mrb_value naked(Run& r, Bound b, Args args) {
     return answer;
 }
 
-mrb_value naked_class(Run& r, Bound b, Args args) {
+mrb_value call_on_class(Run& r, Bound b, Args args) {
     const mrb_int argc = static_cast<mrb_int>(args.size());
     const mrb_value* const argv = args.data();
     const NativeCb native = b.native;
@@ -812,18 +812,18 @@ mrb_value naked_class(Run& r, Bound b, Args args) {
     return answer;
 }
 
-mrb_value cbv(Run& r, const Resource::ValueCb& cb, Args args) {
+mrb_value call_value_cb(Run& r, const Resource::ValueCb& cb, Args args) {
     const Bound b = {cb.m, cb.irep, cb.native, cb.sym};
-    if (cb.on_class) return naked_class(r, b, args);
-    return naked(r, b, args);
+    if (cb.on_class) return call_on_class(r, b, args);
+    return call_direct(r, b, args);
 }
 
 mrb_value nodecall(Run& r, Node nd, Args args) {
     const size_t i = static_cast<size_t>(nd);
     const Bound b = {r.res.node_m[i], r.res.node_irep[i], r.res.node_native[i],
                      r.res.node_sym[i]};
-    if ((r.res.node_on_class >> i) & 1) return naked_class(r, b, args);
-    return naked(r, b, args);
+    if ((r.res.node_on_class >> i) & 1) return call_on_class(r, b, args);
+    return call_direct(r, b, args);
 }
 
 // #80: a node whose answer a worker may give. Three ways out, and the
@@ -945,7 +945,7 @@ mrb_value arg_for(Run& r, Node nd) {
 void marshal_methods(Run& r, const Resource::ValueCb& cb) {
   mrb_state* mrb = r.mrb;
   r.res.run.methods.clear();
-  const mrb_value v = cbv(r, cb);
+  const mrb_value v = call_value_cb(r, cb);
   if (mrb_array_p(v)) {
     for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
       const mrb_value s = RARRAY_PTR(v)[j];
@@ -1006,7 +1006,7 @@ void marshal_ct(Run& r) {
   mrb_state* mrb = r.mrb;
   if (!r.ct_dyn || r.res.run.content_types_marshalled) return;
   r.res.run.content_types_marshalled = true;
-  const mrb_value v = cbv(r, r.res.cb_content_types_provided);
+  const mrb_value v = call_value_cb(r, r.res.cb_content_types_provided);
   if (WM_RES_UNLIKELY(!mrb_array_p(v) || RARRAY_LEN(v) == 0)) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "content_types_provided must answer [[type, handler]] pairs");
@@ -1066,7 +1066,7 @@ int ensure_etag(Run& r) {
     // #30: a worker answers this one. If the memo is empty here, no
     // round ever started, and there is nothing to say.
     if (((r.res.value_jobs | r.res.value_watch) & (1u << kJobEtag)) != 0) return -1;
-    mrb_value v = cbv(r, r.res.cb_generate_etag);
+    mrb_value v = call_value_cb(r, r.res.cb_generate_etag);
     if (mrb_integer_p(v)) return halt_of(r, v, r.res.cb_generate_etag.sym);
     if (mrb_nil_p(v) || mrb_false_p(v)) return -1;
     if (!mrb_string_p(v)) v = mrb_obj_as_string(r.mrb, v);
@@ -1094,7 +1094,7 @@ void epoch_memo(Run& r, const DateField& d) {
   // worker was declared for.
   const uint8_t what = cb.sym == MRB_SYM(last_modified) ? kJobLastModified : kJobExpires;
   if (((r.res.value_jobs | r.res.value_watch) & (1u << what)) != 0) return;
-  mrb_value v = cbv(r, cb);
+  mrb_value v = call_value_cb(r, cb);
   if (mrb_nil_p(v) || mrb_false_p(v)) return;
   // mruby owns this conversion already: Integer straight through, Time
   // and anything else through #to_i, nil back when the answer is neither.
@@ -1174,7 +1174,7 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
   for (const Want& w : wants) {
     const bool watched = (res.value_watch & (1u << w.what)) != 0;
     if ((res.value_jobs & (1u << w.what)) == 0 && !watched) continue;
-    const mrb_value v = cbv(r, *w.cb);
+    const mrb_value v = call_value_cb(r, *w.cb);
     // #30: a watcher answers this one. It waits beside the tasks - a
     // descriptor and a worker are two ways to the same round.
     if (watched) {
@@ -1270,7 +1270,7 @@ int accept_helper(Run& r) {
   }
   const std::string_view arrived_base = media_base(arrived);
   if (!r.res.cb_content_types_accepted.has) return 415;
-  const mrb_value v = cbv(r, r.res.cb_content_types_accepted);
+  const mrb_value v = call_value_cb(r, r.res.cb_content_types_accepted);
   if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "content_types_accepted must answer [[type, Symbol]] pairs");
@@ -1298,12 +1298,12 @@ int accept_helper(Run& r) {
 int run_n11(Run& r) {
   mrb_state* mrb = r.mrb;
   mrb_value pic = mrb_false_value();
-  if (r.res.cb_post_is_create.has) pic = cbv(r, r.res.cb_post_is_create);
+  if (r.res.cb_post_is_create.has) pic = call_value_cb(r, r.res.cb_post_is_create);
   if (mrb_test(pic)) {
     if (WM_RES_UNLIKELY(!r.res.cb_create_path.has)) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
     }
-    const mrb_value cp = cbv(r, r.res.cb_create_path);
+    const mrb_value cp = call_value_cb(r, r.res.cb_create_path);
     if (mrb_integer_p(cp)) return halt_of(r, cp, r.res.cb_create_path.sym);
     if (WM_RES_UNLIKELY(mrb_nil_p(cp))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "post_is_create? is true but create_path answered nil");
@@ -1312,7 +1312,7 @@ int run_n11(Run& r) {
       mrb_raise(mrb, E_TYPE_ERROR, "create_path must answer a String path");
     }
     mrb_value base = mrb_nil_value();
-    if (r.res.cb_base_uri.has) base = cbv(r, r.res.cb_base_uri);
+    if (r.res.cb_base_uri.has) base = call_value_cb(r, r.res.cb_base_uri);
     {
       std::string b;
       if (mrb_string_p(base)) {
@@ -1348,7 +1348,7 @@ int run_n11(Run& r) {
     if (WM_RES_UNLIKELY(!r.res.cb_process_post.has)) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "process_post answered false, which is invalid");
     }
-    const mrb_value pp = cbv(r, r.res.cb_process_post);
+    const mrb_value pp = call_value_cb(r, r.res.cb_process_post);
     if (mrb_integer_p(pp)) return halt_of(r, pp, r.res.cb_process_post.sym);
     if (WM_RES_UNLIKELY(!mrb_true_p(pp))) {
       mrb_raise(mrb, E_WM_ERROR(mrb), "process_post must answer true or a response code");
@@ -1415,10 +1415,10 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   // that did not override Object's - the implicit one is not a reason to
   // run anything.
   if (WM_RES_UNLIKELY(res.init_needed && !resuming)) {
-    naked(r, {res.init_m, res.init_irep, nullptr, MRB_SYM(initialize)});
+    call_direct(r, {res.init_m, res.init_irep, nullptr, MRB_SYM(initialize)});
   }
 
-  // cb.rb: the same direct entry as naked, for a `def self.x` - the
+  // cb.rb: the same direct entry as call_direct, for a `def self.x` - the
   // receiver is the class and the frame's class is the class's own, which
   // is where the fold found the method.
 
@@ -1532,7 +1532,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
           continue;
         }
         if (res.cb_options.has) {
-          const mrb_value v = cbv(r, res.cb_options);
+          const mrb_value v = call_value_cb(r, res.cb_options);
           if (WM_RES_UNLIKELY(!mrb_hash_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "options must answer a Hash of header fields");
           }
@@ -1593,7 +1593,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
       }
       case Node::kG7: {
         if (res.cb_variances.has) {
-          const mrb_value v = cbv(r, res.cb_variances);
+          const mrb_value v = call_value_cb(r, res.cb_variances);
           if (WM_RES_UNLIKELY(!mrb_array_p(v))) {
             mrb_raise(mrb, E_TYPE_ERROR, "variances must answer an Array of Strings");
           }
@@ -1681,7 +1681,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
         const Resource::ValueCb& cb =
             n == Node::kL5 ? res.cb_moved_temporarily : res.cb_moved_permanently;
         if (!cb.has) break;
-        const mrb_value v = cbv(r, cb);
+        const mrb_value v = call_value_cb(r, cb);
         if (mrb_string_p(v)) {
           field(r, {"Location", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
           status = n == Node::kL5 ? 307 : 301;
@@ -1767,7 +1767,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
           } else {
             mrb_value v;
             if (!MRB_METHOD_UNDEF_P(th.m)) {
-              v = naked(r, {th.m, th.irep, th.native, th.handler});
+              v = call_direct(r, {th.m, th.irep, th.native, th.handler});
             } else if (r.ct_dyn) {
               v = mrb_funcall_argv(mrb, res.run.live, th.handler, 0, nullptr);
             } else {
@@ -1872,7 +1872,7 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   }
   res.run.resp_code = status;
   res.run.status = status;
-  if (res.cb_finish_request.has) cbv(r, res.cb_finish_request);
+  if (res.cb_finish_request.has) call_value_cb(r, res.cb_finish_request);
   res.run.status = res.run.resp_code;
   return mrb_nil_value();
 }

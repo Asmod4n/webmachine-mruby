@@ -26,7 +26,7 @@ struct ExtBeforeKey {
 };
 
 // POSIX read(2): a whole file into memory. Setup only.
-bool slurp(const char* path, std::string& out) {
+bool read_whole_file(const char* path, std::string& out) {
   const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return false;
   char buf[64 * 1024];
@@ -45,7 +45,7 @@ bool slurp(const char* path, std::string& out) {
 }
 
 // Apache mime.types / shared-mime-info globs2: field separators.
-bool blank(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+bool is_blank(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
 // RFC 9110 8.3: a media type's extension key is case-insensitive.
 char lower(char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; }
@@ -66,14 +66,14 @@ void MimeDb::parse_types(const char* p, const char* end) {
     const char* stop = eol != nullptr ? eol : end;
     const char* hash = static_cast<const char*>(std::memchr(p, '#', size_t(stop - p)));
     if (hash != nullptr) stop = hash;
-    while (p < stop && blank(*p)) p++;
+    while (p < stop && is_blank(*p)) p++;
     const char* type = p;
-    while (p < stop && !blank(*p)) p++;
+    while (p < stop && !is_blank(*p)) p++;
     const size_t tlen = size_t(p - type);
     while (p < stop) {
-      while (p < stop && blank(*p)) p++;
+      while (p < stop && is_blank(*p)) p++;
       const char* ext = p;
-      while (p < stop && !blank(*p)) p++;
+      while (p < stop && !is_blank(*p)) p++;
       take(type, tlen, ext, size_t(p - ext));
     }
     if (eol == nullptr) break;
@@ -118,7 +118,7 @@ void MimeDb::load(mrb_state* mrb, const char* configured) {
   std::string text;
   bool globs2 = false;
   if (configured != nullptr && configured[0] != '\0') {
-    if (!slurp(configured, text)) {
+    if (!read_whole_file(configured, text)) {
       mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
                  std::strerror(errno));
     }
@@ -126,12 +126,12 @@ void MimeDb::load(mrb_state* mrb, const char* configured) {
     globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
   } else {
     for (const char* path : kTypesPaths) {
-      if (slurp(path, text)) {
+      if (read_whole_file(path, text)) {
         source_ = path;
         break;
       }
     }
-    if (source_.empty() && slurp(kGlobs2, text)) {
+    if (source_.empty() && read_whole_file(kGlobs2, text)) {
       source_ = kGlobs2;
       globs2 = true;
     }

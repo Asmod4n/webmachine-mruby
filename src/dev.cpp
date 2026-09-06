@@ -57,7 +57,7 @@ constexpr size_t kTagOpenLen = sizeof(kTagOpen) - 1;
 constexpr size_t kFillMax = 4u * 1024 * 1024;
 
 // The whole file, or empty when it cannot be read.
-std::string slurp(const std::string& path) {
+std::string read_whole_file(const std::string& path) {
   std::string out;
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return out;
@@ -110,7 +110,7 @@ bool dev_fill(const char* name, size_t len, std::string& out) {
   if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
   if (static_cast<size_t>(st.st_size) > kFillMax) return false;
 
-  const std::string body = slurp(path);
+  const std::string body = read_whole_file(path);
   if (body.empty()) return false;
   if (body.find(kTagOpen) == std::string::npos) return false;
 
