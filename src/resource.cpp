@@ -1890,12 +1890,16 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
 
 // RFC 9110: fold one resource class - every konst callback asked once,
 // every dynamic callback resolved, the class frozen.
-void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
-  const Folding fold = {mrb, klass};
-  const ArenaGuard arena(mrb);
-  out = Resource{};
-  out.mrb = mrb;
+namespace {
+constexpr size_t kBoolCount = sizeof(kBools) / sizeof(kBools[0]);
 
+// The steps of resource_fold, in the order they run. Each one reads and
+// writes the Resource being folded; the order matters where a later
+// step reads what an earlier one decided, and each says so.
+
+// A callback this tree does not honour, a konst-only one written on the
+// instance, or a work-only one written on the class: refused by name.
+void fold_refuse_misplaced(mrb_state* mrb, mrb_value klass) {
   for (const NamedSym& cb : kUnhonored) {
     if (mrb_unlikely(resolve(mrb, mrb_class(mrb, klass), cb.sym).defined ||
                         instance_defined(mrb, klass, cb.sym))) {
@@ -1920,6 +1924,13 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+}
+
+// The node callbacks: instance ones into the node tables, class-level
+// ones asked once, except the ones a compute or watch declaration names.
+void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCount]) {
+  mrb_state* const mrb = fold.mrb;
+  const mrb_value klass = fold.klass;
   // #80: a node callback named in `compute` or `watch` is asked per
   // request, on the class, and never folded: its answer is what a
   // worker or a watcher says, and that changes from request to request.
@@ -1933,8 +1944,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
-  bool ans[sizeof(kBools) / sizeof(kBools[0])];
-  for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
+  for (size_t i = 0; i < kBoolCount; i++) {
     const BoolCb& cb = kBools[i];
     ans[i] = cb.defv;
     const size_t at = static_cast<size_t>(cb.node);
@@ -1989,6 +1999,10 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   }
 
 
+}
+
+// The value callbacks the compute and watch folds read.
+void fold_value_callbacks(mrb_state* mrb, mrb_value klass, Resource& out) {
   // cb.rb: the value callbacks; known/allowed/content_types_provided keep their konst
   // twin on the class, everything else may live on either side.
   out.cb_known_methods = value_cb(mrb, klass, {MRB_SYM(known_methods), false});
@@ -2000,6 +2014,10 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   out.cb_generate_etag = value_cb(mrb, klass, {MRB_SYM(generate_etag), true});
   out.cb_last_modified = value_cb(mrb, klass, {MRB_SYM(last_modified), true});
   out.cb_expires = value_cb(mrb, klass, {MRB_SYM(expires), true});
+}
+
+// `compute :name`, checked against what the fold now knows each name is.
+void fold_compute_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
   // #30: both folds read those three, so they come after them and
   // before the bake below: a value a worker or a watcher answers is
   // never baked.
@@ -2078,6 +2096,10 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+}
+
+// `watch :name`, the same, for a block that runs in this VM.
+void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
   // #30: the same fold for `watch`. A watcher's block is never dumped -
   // it runs in this VM, on this thread - so the callback may live on the
   // instance and keep whatever it closed over. Two things are asked: the
@@ -2133,6 +2155,13 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     }
   }
 
+}
+
+// The class forms of the caching answers, the remaining value callbacks,
+// and the one mask every run reads instead of sixteen structs.
+void fold_caching_and_mask(const Folding& fold, Resource& out) {
+  mrb_state* const mrb = fold.mrb;
+  const mrb_value klass = fold.klass;
   // #202: the class forms of the three caching answers are asked once, now.
   if (((out.value_jobs | out.value_watch) & (1u << kJobEtag)) == 0) {
     bake_value(fold, {out.cb_generate_etag, "generate_etag", true, out.konst_etag});
@@ -2182,6 +2211,11 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   // touching any konst answer.
   if (out.cb_mask != 0) out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
 
+}
+
+// content_type, content_types_provided, encodings_provided, and the
+// body the fold bakes from the first pair.
+void fold_content_types(mrb_state* mrb, mrb_value klass, Resource& out) {
   std::string content_type = "text/html";
   {
     const Resolved ct = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_type));
@@ -2301,6 +2335,12 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);
   }
 
+}
+
+// known and allowed methods, the Allow line, and the per-method answer
+// tables the walk reads.
+void fold_methods_and_tables(const Folding& fold, Resource& out,
+                             const bool (&ans)[kBoolCount]) {
   bool known[7] = {true, true, true, true, true, true, false};
   if (!out.cb_known_methods.has) {
     ask_methods(fold, {MRB_SYM(known_methods), "known_methods"}, known);
@@ -2332,11 +2372,31 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
     flow::KonstAnswers& k = out.konst.per_method[m];
     k.ans[static_cast<size_t>(Node::kB12)] = known[m];
     k.ans[static_cast<size_t>(Node::kB10)] = allowed[m];
-    for (size_t i = 0; i < sizeof(kBools) / sizeof(kBools[0]); i++) {
+    for (size_t i = 0; i < kBoolCount; i++) {
       k.ans[static_cast<size_t>(kBools[i].node)] = ans[i];
     }
   }
   out.konst.resolve_shortcuts();
+
+}
+
+}  // namespace
+
+void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
+  const Folding fold = {mrb, klass};
+  const ArenaGuard arena(mrb);
+  out = Resource{};
+  out.mrb = mrb;
+
+  fold_refuse_misplaced(mrb, klass);
+  bool ans[kBoolCount];
+  fold_node_callbacks(fold, out, ans);
+  fold_value_callbacks(mrb, klass, out);
+  fold_compute_declarations(mrb, klass, out);
+  fold_watch_declarations(mrb, klass, out);
+  fold_caching_and_mask(fold, out);
+  fold_content_types(mrb, klass, out);
+  fold_methods_and_tables(fold, out, ans);
 
   out.klass = mrb_class_ptr(klass);
   out.meta_klass = mrb_class(mrb, klass);
