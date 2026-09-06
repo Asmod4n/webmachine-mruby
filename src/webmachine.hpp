@@ -712,25 +712,13 @@ namespace webmachine {
 }
 
 // An sqe from this ring, or a raise. A full submission queue is
-// submitted first, and the retry then has room. EINTR and EAGAIN are
-// ordinary and tried again. Anything else, or a queue still full after
-// eight submits, is raised with the reason: a silent null here would
-// drop an operation on the floor.
+// submitted once, and a queue still full after that is raised.
 inline struct io_uring_sqe* sqe_or_raise(mrb_state* mrb, struct io_uring* ring) {
   struct io_uring_sqe* s = io_uring_get_sqe(ring);
-  if (s != nullptr) return s;
-  for (int attempt = 0; attempt < 8; attempt++) {
-    const int rc = io_uring_submit(ring);
-    if (rc < 0 && rc != -EINTR && rc != -EAGAIN) {
-      mrb_raisef(mrb, E_WM_ERROR(mrb), "SQ (%d entries) full and io_uring_enter refused it: %s",
-                 static_cast<int>(ring->sq.ring_entries), std::strerror(-rc));
-    }
-    s = io_uring_get_sqe(ring);
-    if (s != nullptr) return s;
-  }
-  mrb_raisef(mrb, E_WM_ERROR(mrb), "SQ (%d entries) still full after 8 submits",
-             static_cast<int>(ring->sq.ring_entries));
-  WM_UNREACHABLE();
+  if (s == nullptr) io_uring_submit(ring);
+  s = io_uring_get_sqe(ring);
+  if (s == nullptr) mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
+  return s;
 }
 
 // mrb_open runs every gem init, and a gem init that raises leaves its
