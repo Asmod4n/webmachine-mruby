@@ -54,9 +54,9 @@ H2_FLOOR_APP = <<~RUBY unless defined?(H2_FLOOR_APP)
   end
 RUBY
 
-def h2_server(app_source = nil)
+def h2_server(app_source = nil, *extra_args)
   app = wm_compile(app_source || H2_FLOOR_APP)
-  args = ["--app=#{app.path}"]
+  args = ["--app=#{app.path}", *extra_args]
   sock = "/tmp/wm-h2-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2-stderr-#{$$}.log"
@@ -1285,5 +1285,316 @@ assert('h2: the CONNECT carries the websocket subprotocol offer (RFC 8441)') do
       len = data.getbyte(1) & 0x7f
       assert_equal offer, data[2, len]
     end
+  end
+end
+
+# RFC 9113 6.9: a DATA frame the server refuses still counts against the
+# connection window, so its credit comes back like any other. The
+# credits on stream 0 add up to every DATA byte sent, refused ones
+# included, and a second upload on the same connection completes.
+assert('h2: a refused DATA frame is credited on the connection (RFC 9113 6.9)') do
+  src = <<~RUBY_SRC
+    class TakesPosts < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+      def process_post
+        response.body = 'taken'
+        true
+      end
+    end
+  RUBY_SRC
+  h2_server(h2_app('TakesPosts', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      frames = []
+      reader = Thread.new do
+        loop do
+          f = h2_next(s)
+          frames << f
+          # HEADERS on stream 3 is the second upload's answer.
+          break if f[0] == 1 && f[2] == 3
+        end
+      rescue StandardError
+        nil
+      end
+      # One frame past kMaxBody (1 MiB): the last one is refused.
+      chunk = 16_384
+      sent = 0
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      (1 + (1 << 20) / chunk).times do
+        s.write(h2_frame(0, 0x00, 1, 'a' * chunk))
+        sent += chunk
+        # Stay inside the connection window: wait until stream 0 gave
+        # back what the peer still owes past 65535.
+        waited = 0
+        until sent - frames.select { |t, _, st, _| t == 8 && st == 0 }.sum { |_, _, _, p| p.unpack1('N') } < 65_535
+          sleep 0.005
+          waited += 1
+          raise 'the server credited nothing for 5 seconds' if waited > 1000
+        end
+      end
+      s.write(h2_frame(1, 0x04, 3, h2_method_block('POST')))
+      s.write(h2_frame(0, 0x01, 3, 'b' * 100))
+      sent += 100
+      reader.join(10) or raise "no answer for the second upload; frames: #{frames.map { |f| f[0..2] }.inspect}"
+      rst = frames.find { |t, _, st, _| t == 3 && st == 1 }
+      assert_true rst != nil, 'the oversize upload must be RST_STREAM'
+      credited = frames.select { |t, _, st, _| t == 8 && st == 0 }.sum { |_, _, _, p| p.unpack1('N') }
+      assert_equal sent, credited
+      answer = frames.find { |t, _, st, _| t == 1 && st == 3 }
+      assert_true answer != nil, 'the second upload must be answered'
+    end
+  end
+end
+
+# RFC 7541 4.4: a dynamic table entry the encoder adds moves every index
+# the peer holds. An asset answer adds none, so a cached konst head
+# still points where it did. The blocks are walked by shape here: a
+# literal with incremental indexing (01xxxxxx) is an insert, an indexed
+# field (1xxxxxxx) names an entry, and the entry named for content-type
+# must be the one the first konst head inserted.
+def h2_hpack_int(bytes, at, prefix)
+  mask = (1 << prefix) - 1
+  v = bytes[at] & mask
+  at += 1
+  return [v, at] if v < mask
+  m = 0
+  loop do
+    b = bytes[at]
+    at += 1
+    v += (b & 0x7f) << m
+    m += 7
+    break if (b & 0x80) == 0
+  end
+  [v, at]
+end
+
+def h2_hpack_shape(block)
+  bytes = block.bytes
+  at = 0
+  out = []
+  while at < bytes.size
+    b = bytes[at]
+    if (b & 0x80) != 0
+      idx, at = h2_hpack_int(bytes, at, 7)
+      out << [:indexed, idx]
+    elsif (b & 0xc0) == 0x40
+      name, at = h2_hpack_int(bytes, at, 6)
+      if name == 0
+        len, at = h2_hpack_int(bytes, at, 7)
+        at += len
+      end
+      len, at = h2_hpack_int(bytes, at, 7)
+      at += len
+      out << [:insert, name]
+    elsif (b & 0xe0) == 0x20
+      _size, at = h2_hpack_int(bytes, at, 5)
+      out << [:resize]
+    else
+      name, at = h2_hpack_int(bytes, at, 4)
+      if name == 0
+        len, at = h2_hpack_int(bytes, at, 7)
+        at += len
+      end
+      len, at = h2_hpack_int(bytes, at, 7)
+      at += len
+      out << [:literal, name]
+    end
+  end
+  out
+end
+
+assert('h2: an asset answer between two konst heads leaves their index in place') do
+  src = <<~RUBY_SRC
+    class KonstBeside < Webmachine::Resource
+      def self.to_html
+        '<p>konst</p>'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [:*], KonstBeside }
+      end
+    end
+  RUBY_SRC
+  zip = h2_stored_zip([['a.txt', 'asset']])
+  zf = Tempfile.new(['wm-h2ka', '.zip'])
+  zf.binmode
+  zf.write(zip)
+  zf.close
+  begin
+    h2_server(src, "--assets=#{zf.path}") do |sock|
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        blocks = []
+        [['/k', 1], ['/a.txt', 3], ['/k', 5]].each do |path, id|
+          s.write(h2_frame(1, 0x05, id, h2_method_path_block('GET', path)))
+          type, _, _, block = h2_next(s)
+          assert_equal 1, type, "stream #{id}: expected HEADERS"
+          blocks << block
+          h2_next(s)
+        end
+        # Every insert seen, in order, from the first block on. The
+        # content-type insert is the first konst head's, with static
+        # name index 31.
+        inserts = 0
+        content_type_at = nil
+        shapes = blocks.map { |b| h2_hpack_shape(b) }
+        shapes[0].each do |kind, name|
+          next unless kind == :insert
+          inserts += 1
+          content_type_at = inserts if name == 31
+        end
+        assert_true content_type_at != nil, "the first konst head inserts content-type: #{shapes[0].inspect}"
+        shapes[1].each { |kind, _| inserts += 1 if kind == :insert }
+        # RFC 7541 2.3.3: the newest entry is index 62; an entry made
+        # n inserts ago is 62 + n.
+        want = 62 + (inserts - content_type_at)
+        named = shapes[2].select { |kind, idx| kind == :indexed && idx >= 62 }.map(&:last)
+        assert_true named.include?(want),
+                    "the third head must name content-type at #{want}, names #{named.inspect}; " \
+                    "shapes: #{shapes.inspect}"
+      end
+    end
+  ensure
+    zf.unlink
+  end
+end
+
+# WHATWG HTML: an event stream that ends at once. The stream still has
+# to end on the wire, so the peer sees END_STREAM and not a silence.
+assert('h2: an event stream that closes with nothing to say ends the stream (#30)') do
+  src = <<~RUBY_SRC
+    class ClosesAtOnce < Webmachine::SseResource
+      def on_tick
+        :close
+      end
+    end
+
+    class ClosePage < Webmachine::Resource
+      def self.to_html
+        'not a stream'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_sse ['events'], ClosesAtOnce
+        app.add_route [:*], ClosePage
+      end
+    end
+  RUBY_SRC
+  h2_server(src) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_path_block('/events')))
+      type, flags, stream, _block = h2_next(s)
+      assert_equal 1, type, 'HEADERS first'
+      assert_equal 1, stream
+      assert_true (flags & 0x01) == 0, 'the head does not end the stream'
+      type, flags, stream, data = h2_next(s)
+      assert_equal 0, type, 'a DATA frame ends it'
+      assert_equal 1, stream
+      assert_true (flags & 0x01) != 0, 'END_STREAM must be set'
+      assert_equal '', data
+    end
+  end
+end
+
+# RFC 9113 5.1: a stream the peer resets while a run is parked on it is
+# closed. When the run answers, nothing goes out on that id.
+assert('h2: RST_STREAM on a parked stream ends it, and its answer stays silent') do
+  src = <<~RUBY_SRC
+    class H2ParkThenReset < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) do
+          t0 = Chrono::Steady.now
+          nil while Chrono::Steady.now - t0 < 0.3
+          true
+        end
+      end
+      def to_html
+        'answered by a worker'
+      end
+    end
+  RUBY_SRC
+  h2_server(h2_app('H2ParkThenReset', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x05, 1, h2_get_block))
+      sleep 0.05
+      s.write(h2_frame(3, 0x00, 1, [0x8].pack('N')))   # RST_STREAM CANCEL
+      s.write(h2_frame(1, 0x05, 3, h2_get_block))
+      frames = []
+      loop do
+        f = h2_next(s)
+        frames << f
+        break if f[0] == 0 && f[2] == 3
+      end
+      # Stream 3 answered. Stream 1's run answers about now, and says
+      # nothing. What comes after is read for a while, and must not
+      # name stream 1 either.
+      sleep 0.5
+      while IO.select([s], nil, nil, 0.2)
+        frames << h2_next(s)
+      end
+      on_reset = frames.select { |_, _, st, _| st == 1 }
+      assert_true on_reset.empty?, "frames on the reset stream: #{on_reset.map { |f| f[0..2] }.inspect}"
+      assert_true frames.any? { |t, _, st, _| t == 1 && st == 3 }, 'stream 3 must be answered'
+    end
+  end
+end
+
+# The access line of a parked request is written when its run answers,
+# with that answer's status and bytes, not the previous answer's.
+assert('h2: a parked request logs its own status and bytes') do
+  src = <<~RUBY_SRC
+    class H2LoggedPark < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) { true }
+      end
+      def to_html
+        'answered by a worker'
+      end
+    end
+
+    class H2LoggedPlain < Webmachine::Resource
+      def self.to_html
+        'plain'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['park'], H2LoggedPark
+          route.add [:*], H2LoggedPlain
+        end
+      end
+    end
+  RUBY_SRC
+  logf = "/tmp/wm-h2log-#{$$}.log"
+  File.unlink(logf) if File.exist?(logf)
+  begin
+    h2_server(src, "--log=#{logf}") do |sock|
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        s.write(h2_frame(1, 0x05, 1, h2_method_path_block('GET', '/plain')))
+        2.times { h2_next(s) }
+        s.write(h2_frame(1, 0x05, 3, h2_method_path_block('GET', '/park')))
+        2.times { h2_next(s) }
+      end
+    end
+    20.times { break if File.exist?(logf) && File.readlines(logf).size >= 2; sleep 0.1 }
+    lines = File.readlines(logf)
+    assert_equal 2, lines.size, lines.inspect
+    assert_true lines[0].match?(%r{"GET /plain [^"]*" 200 5 }), lines[0]
+    assert_true lines[1].match?(%r{"GET /park [^"]*" 200 20 }), lines[1]
+  ensure
+    File.unlink(logf) rescue nil
   end
 end

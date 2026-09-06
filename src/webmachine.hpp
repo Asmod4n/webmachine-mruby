@@ -6077,7 +6077,7 @@ class Http1 {
     const http::ReqValues* vals;
   };
   bool h2_sse_begin(Conn& st, const H2SseAsk& ask, std::string& sink);
-  void h2_sse_second(Conn& st);
+  void h2_sse_second(Conn& st, std::string& sink);
   // RFC 8441: a WebSocket on one h2 stream, opened by the extended
   // CONNECT. The same fields the event stream needs, plus what the
   // handshake reads.

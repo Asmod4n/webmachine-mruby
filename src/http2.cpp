@@ -64,6 +64,15 @@ void emit_control(std::string& sink, const H2Control& c) {
   if (len != 0) sink.append(reinterpret_cast<const char*>(c.payload.data()), len);
 }
 
+// RFC 9113 6.9: every DATA frame counts against the connection window,
+// a refused one as well. The credit for it goes back at once.
+void h2_credit_connection(std::string& sink, uint32_t flen) {
+  if (flen == 0) return;
+  unsigned char inc[4];
+  put_u32(inc, flen);
+  emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+}
+
 // RFC 7541 5.2: a string length, 7-bit prefix, H bit 0 - no Huffman out.
 void hp_len(std::string& out, size_t n) {
   if (n < 127) {
@@ -722,9 +731,12 @@ bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
   alog_status_ = status;
   alog_bytes_ = no_data ? 0 : blen;
 
+  // Without an insert: an insert here would move every index a cached
+  // konst head holds, and nothing counts it there.
   unsigned char dbuf[64];
   unsigned char* dp = dbuf;
-  if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)}, {"date", {date_, sizeof(date_)}})) {
+  if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
+                    {"date", {date_, sizeof(date_)}, false})) {
     return h2_error(st0, kH2InternalError, sink);
   }
   const size_t dlen = static_cast<size_t>(dp - dbuf);
@@ -1048,9 +1060,10 @@ bool Http1::h2_sse_begin(Conn& st0, const H2SseAsk& ask, std::string& sink) {
 
 // WHATWG HTML: one second has passed. Every event stream this connection
 // carries is asked, and what it says goes on its own stream.
-void Http1::h2_sse_second(Conn& st0) {
+void Http1::h2_sse_second(Conn& st0, std::string& sink) {
   H2State& h2 = *st0.h2;
-  for (H2Stream& stp : h2.streams) {
+  for (size_t i = 0; i < h2.streams.size(); i++) {
+    H2Stream& stp = h2.streams[i];
     if (stp.sse == nullptr) continue;
     std::string body;
     const bool go_on = sse_tick(stp.sse, sec_, body);
@@ -1058,9 +1071,18 @@ void Http1::h2_sse_second(Conn& st0) {
     if (go_on) continue;
     // The resource said :close. The stream ends when what it already
     // handed over has left, so END_STREAM rides the last DATA frame.
+    // A stream that owes nothing gets an empty one, or the peer waits
+    // for an end that never comes.
     sse_free(stp.sse);
     stp.sse = nullptr;
     stp.streaming = false;
+    if (!stp.response_content.owes()) {
+      unsigned char eh[kH2FrameHeaderLen];
+      h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stp.id});
+      sink.append(reinterpret_cast<const char*>(eh), sizeof(eh));
+      h2.close_stream(stp.id);
+      i--;
+    }
   }
 }
 
@@ -1719,7 +1741,7 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
   if (st.h2 != nullptr) {
     // WHATWG HTML: every event stream this connection carries, asked
     // once per second, before the frames go out.
-    h2_sse_second(st);
+    h2_sse_second(st, sink);
     // #30: every run this connection stopped whose round is done. Each
     // one frames its own stream, so several may go out in one round.
     for (size_t i = 0; i < st.h2_parked.size();) {
@@ -1810,10 +1832,12 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         H2Stream* stp = h2.find(stream);
         if (stp == nullptr) {
           if (h2_is_idle(h2, stream)) return h2_error(st0, kH2ProtocolError, sink);
+          h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2StreamClosed, sink);
           break;
         }
         if (!stp->end_headers || stp->half_closed_remote) {
+          h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2StreamClosed, sink);
           break;
         }
@@ -1862,6 +1886,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           break;
         }
         if (stp->content_received + dlen > kMaxBody) {
+          h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2RefusedStream, sink);
           break;
         }
