@@ -68,7 +68,9 @@ void usage(const char* me) {
                "  --file-map-threshold=N   map a file this big instead of reading  (256 KiB)\n"
                "\n"
                "OTHER\n"
-               "  --config=FILE.toml       these choices from a file; flags beat it\n"
+               "  --config=FILE.toml       these choices from a file; flags beat it.\n"
+               "                           Without it: ./webmachine.toml, then\n"
+               "                           /usr/local/etc/webmachine/, then /etc/webmachine/\n"
                "  --write-config[=PATH]    write that file with the defaults in it, and stop\n"
                "  --pidfile=PATH           write this pid, remove it on the way out\n"
                "\n"
@@ -229,8 +231,21 @@ int serve(mrb_state* mrb, Invocation& in) {
   const char*& error_log_path = in.error_log_path;
   long long& log_max_bytes = in.log_max_bytes;
   int& cli_port = in.cli_port;
-  if (config_path == nullptr && ::access("webmachine.toml", R_OK) == 0) {
-    config_path = "webmachine.toml";
+  // Without --config: the file in the start directory, then the two
+  // places the Filesystem Hierarchy Standard gives a package's own
+  // configuration, locally installed first.
+  if (config_path == nullptr) {
+    static constexpr const char* const kConfigPlaces[] = {
+        "webmachine.toml",
+        "/usr/local/etc/webmachine/webmachine.toml",
+        "/etc/webmachine/webmachine.toml",
+    };
+    for (const char* p : kConfigPlaces) {
+      if (::access(p, R_OK) == 0) {
+        config_path = p;
+        break;
+      }
+    }
   }
   if (config_path != nullptr) {
     webmachine::config_load(mrb, config_path, fc);
@@ -246,6 +261,9 @@ int serve(mrb_state* mrb, Invocation& in) {
     }
     if (opts.mime_types_path == nullptr && !fc.mime_types.empty()) {
       opts.mime_types_path = fc.mime_types.c_str();
+    }
+    if (opts.error_assets_path == nullptr && !fc.error_assets.empty()) {
+      opts.error_assets_path = fc.error_assets.c_str();
     }
     if (log_path == nullptr && !fc.log_file.empty()) log_path = fc.log_file.c_str();
     if (log_privacy == nullptr && !fc.log_privacy.empty()) log_privacy = fc.log_privacy.c_str();
@@ -296,7 +314,7 @@ int serve(mrb_state* mrb, Invocation& in) {
   if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
 
   if (in.write_config != nullptr) {
-    if (!webmachine::config_write_default(in.write_config)) {
+    if (!webmachine::config_write_default(in.write_config, opts.error_assets_path)) {
       std::fprintf(stderr, "webmachine: %s is already there - it is never written over\n",
                    in.write_config);
       return 1;

@@ -28,6 +28,11 @@
 # Where the pid goes, removed on the way out. Without it, nowhere.
 # pidfile = "/run/webmachine.pid"
 
+# The error pages' pictures. Without it, the installed archive under
+# /usr/local/share/webmachine-mruby, then under /usr/share; without
+# either, the pages render without pictures.
+# error_assets = "/usr/local/share/webmachine-mruby/error-assets.zip"
+
 [assets]
 # How long a browser may use a PAGE without asking again, in seconds.
 # Every other file's lifetime is decided per extension when the pack

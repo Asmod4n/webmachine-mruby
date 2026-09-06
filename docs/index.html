@@ -248,6 +248,10 @@ end</code></pre>
   </table>
 
   <h2>What you need</h2>
+  <p><code>rake install[PREFIX]</code> puts the four programs under
+  <code>PREFIX/bin</code>, the error pages' pictures under
+  <code>PREFIX/share/webmachine-mruby</code>, and a config that names
+  them under <code>PREFIX/etc/webmachine</code>.</p>
   <p>To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers. To
   run: OpenSSL 3, and for TLS a kernel with the tls module loaded. TLS
   is kTLS, which Linux and FreeBSD offer. On a kernel without it the

@@ -938,8 +938,8 @@ void ComputePool::interrupt(unsigned worker, uint8_t seq) {
   mrb_vm_interrupt(mrb);
 }
 
-bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_view user,
-                         double deadline, uint64_t answer, Sent* sent) {
+bool ComputePool::submit(mrb_state* mrb, unsigned code_id, std::string_view arg,
+                         std::string_view user, double deadline, uint64_t answer, Sent* sent) {
   if (impl_ == nullptr) return false;
   Impl* impl = impl_;
   // A free slot, or no. Full means every worker is busy with a full
@@ -968,10 +968,12 @@ bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_vie
   s.busy = true;
 
   const unsigned to = impl->next++ % static_cast<unsigned>(impl->rings.size());
-  struct io_uring_sqe* sqe = io_uring_get_sqe(impl->home);
-  if (sqe == nullptr) {
+  struct io_uring_sqe* sqe = nullptr;
+  try {
+    sqe = sqe_or_raise(mrb, impl->home);
+  } catch (...) {
     s.busy = false;
-    return false;
+    throw;
   }
   s.worker = to;
   // The number this job answers to. It goes up when the job is sent, so

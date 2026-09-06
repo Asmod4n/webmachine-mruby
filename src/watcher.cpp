@@ -54,9 +54,19 @@ struct WatcherData {
 void watcher_free(mrb_state*, void* p) {
   auto* d = static_cast<WatcherData*>(p);
   if (d == nullptr) return;
+  // No VM to raise into here: the GC is freeing this. A full queue is
+  // submitted and tried once more, and a cancel that still finds no
+  // room is said on stderr.
   if (d->armed && d->ring != nullptr && d->fd >= 0) {
     struct io_uring_sqe* s = io_uring_get_sqe(d->ring);
-    if (s != nullptr) {
+    if (s == nullptr) {
+      io_uring_submit(d->ring);
+      s = io_uring_get_sqe(d->ring);
+    }
+    if (s == nullptr) {
+      std::fprintf(stderr, "webmachine: watcher on fd %d could not be cancelled: SQ full\n",
+                   d->fd);
+    } else {
       io_uring_prep_cancel_fd(s, d->fd, IORING_ASYNC_CANCEL_ALL);
       io_uring_sqe_set_data64(s, 0);
       io_uring_submit(d->ring);

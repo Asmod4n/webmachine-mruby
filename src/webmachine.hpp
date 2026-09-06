@@ -711,6 +711,28 @@ namespace webmachine {
   reraise(mrb, exc);
 }
 
+// An sqe from this ring, or a raise. A full submission queue is
+// submitted first, and the retry then has room. EINTR and EAGAIN are
+// ordinary and tried again. Anything else, or a queue still full after
+// eight submits, is raised with the reason: a silent null here would
+// drop an operation on the floor.
+inline struct io_uring_sqe* sqe_or_raise(mrb_state* mrb, struct io_uring* ring) {
+  struct io_uring_sqe* s = io_uring_get_sqe(ring);
+  if (s != nullptr) return s;
+  for (int attempt = 0; attempt < 8; attempt++) {
+    const int rc = io_uring_submit(ring);
+    if (rc < 0 && rc != -EINTR && rc != -EAGAIN) {
+      mrb_raisef(mrb, E_WM_ERROR(mrb), "SQ (%d entries) full and io_uring_enter refused it: %s",
+                 static_cast<int>(ring->sq.ring_entries), std::strerror(-rc));
+    }
+    s = io_uring_get_sqe(ring);
+    if (s != nullptr) return s;
+  }
+  mrb_raisef(mrb, E_WM_ERROR(mrb), "SQ (%d entries) still full after 8 submits",
+             static_cast<int>(ring->sq.ring_entries));
+  WM_UNREACHABLE();
+}
+
 // mrb_open runs every gem init, and a gem init that raises leaves its
 // exception in mrb->exc with the VM otherwise standing. Such a VM is
 // not open: the error is printed, the VM is closed, and nullptr says so.
@@ -3097,8 +3119,10 @@ class ComputePool {
     unsigned worker = 0;
     uint8_t seq = 0;
   };
-  bool submit(unsigned code_id, std::string_view arg, std::string_view user, double deadline,
-              uint64_t answer, Sent* sent);
+  // False means every slot is taken. The sqe itself is never the reason:
+  // a full submission queue is a raise (sqe_or_raise).
+  bool submit(mrb_state* mrb, unsigned code_id, std::string_view arg, std::string_view user,
+              double deadline, uint64_t answer, Sent* sent);
   // The deadline passed. This is the ONE thing the reactor does to a
   // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
   // is safe from this thread. The sequence number says whether the job
@@ -6331,6 +6355,7 @@ struct Config {
   std::string assets;
   std::string docroot;
   std::string mime_types;
+  std::string error_assets;
   std::string pidfile;
 
   std::string log_file;
@@ -6377,7 +6402,9 @@ inline constexpr long long assets_retention(long long max_age) { return max_age 
 // What it writes is what this server does without it, so the file is a
 // starting point that changes nothing until a line in it is changed.
 // False when the path already exists: it is never written over.
-bool config_write_default(const char* path);
+// `error_assets` names the archive the written file points at, or is
+// null for the commented example line.
+bool config_write_default(const char* path, const char* error_assets);
 
 void config_load(mrb_state* mrb, const char* path, Config& out);
 }

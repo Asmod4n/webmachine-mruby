@@ -142,9 +142,10 @@ void take_seconds(Setting s, int* out, const ConfigFile& f) {
 // server would have done anyway, so an operator can read the defaults
 // instead of being told them, and change one line instead of learning a
 // flag. Nothing writes this without being asked.
-bool config_write_default(const char* path) {
+bool config_write_default(const char* path, const char* error_assets) {
   FILE* f = std::fopen(path, "wxe");  // x: never over a file somebody has
   if (f == nullptr) return false;
+  const bool have_assets = error_assets != nullptr && error_assets[0] != '\0';
   std::fprintf(
       f,
       "# webmachine.toml - written by --write-config.\n"
@@ -176,6 +177,11 @@ bool config_write_default(const char* path) {
       "\n"
       "# Where the pid goes, removed on the way out. Without it, nowhere.\n"
       "# pidfile = \"/run/webmachine.pid\"\n"
+      "\n"
+      "# The error pages' pictures. Without it, the installed archive under\n"
+      "# /usr/local/share/webmachine-mruby, then under /usr/share; without\n"
+      "# either, the pages render without pictures.\n"
+      "%serror_assets = \"%s\"\n"
       "\n"
       "[assets]\n"
       "# How long a browser may use a PAGE without asking again, in seconds.\n"
@@ -248,6 +254,8 @@ bool config_write_default(const char* path) {
       "# send_timeout = 60            # to take an answer this side wrote\n"
       "# idle_timeout = 75            # to send the next request on a kept\n"
       "                               # connection\n",
+      have_assets ? "" : "# ",
+      have_assets ? error_assets : "/usr/local/share/webmachine-mruby/error-assets.zip",
       kAssetsMaxAgeDefault, kSqWanted, kZeroCopyDefault, kZeroCopyDefault / 1024,
       kFileMapDefault, kFileMapDefault / 1024);
   std::fclose(f);
@@ -276,6 +284,7 @@ void config_load(mrb_state* mrb, const char* path, Config& out) {
     take_string({t, "server", "assets"}, out.assets, file);
     take_string({t, "server", "docroot"}, out.docroot, file);
     take_string({t, "server", "mime_types"}, out.mime_types, file);
+    take_string({t, "server", "error_assets"}, out.error_assets, file);
     take_string({t, "server", "pidfile"}, out.pidfile, file);
     out.port = static_cast<int>(port);
     if (!out.unix_path.empty() && out.port != 0) {

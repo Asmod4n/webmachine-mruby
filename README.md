@@ -172,7 +172,14 @@ connection is served in between.
 
 `--standalone` serves a pack or a directory with no app at all.
 `--write-config` writes a `webmachine.toml` with every setting and what
-it does. `webmachine.toml.example` is that file.
+it does. `webmachine.toml.example` is that file. Without `--config` the
+server reads `webmachine.toml` in the start directory, then
+`/usr/local/etc/webmachine/webmachine.toml`, then the same under `/etc`.
+
+`rake install[PREFIX]` puts the four programs under `PREFIX/bin`, the
+error pages' pictures under `PREFIX/share/webmachine-mruby`, and a
+config that names them under `PREFIX/etc/webmachine`. `PREFIX` is
+`/usr/local` when not given.
 
 Both logs are off until you name a file. The access log anonymizes
 addresses by default. Every error record carries a fingerprint, and the

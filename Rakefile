@@ -902,6 +902,38 @@ task :site do
        '--assets=examples/site.zip'
 end
 
+# Where an installed server lives, by the Filesystem Hierarchy Standard:
+# the programs under PREFIX/bin, the package's data under
+# PREFIX/share/webmachine-mruby, and its configuration in its own
+# directory under PREFIX/etc. The config is written by the server
+# itself, naming the archive it was just given, and never over one that
+# is there.
+desc 'install the ship build: rake install[PREFIX], PREFIX is /usr/local'
+task :install, %i[prefix] do |_t, args|
+  prefix = args[:prefix] || '/usr/local'
+  bin = File.join(prefix, 'bin')
+  share = File.join(prefix, 'share', 'webmachine-mruby')
+  etc = File.join(prefix, 'etc', 'webmachine')
+  host_bin = File.expand_path('mruby/build/host/bin', __dir__)
+  programs = %w[webmachine-server webmachine-logd webmachine-passwd]
+  mrbc = File.expand_path('mruby/build/host/mrbc/bin/mrbc', __dir__)
+  missing = programs.reject { |p| File.executable?(File.join(host_bin, p)) }
+  raise "no ship build at #{host_bin}: #{missing.join(', ')} - run rake ship_smoke first" unless missing.empty?
+  raise "no mrbc at #{mrbc}" unless File.executable?(mrbc)
+
+  [bin, share, etc].each { |d| mkdir_p d }
+  programs.each { |p| install File.join(host_bin, p), bin, mode: 0o755 }
+  install mrbc, bin, mode: 0o755
+  archive = File.join(share, 'error-assets.zip')
+  install ERROR_ASSETS, archive, mode: 0o644
+  conf = File.join(etc, 'webmachine.toml')
+  if File.exist?(conf)
+    puts "#{conf} is there and is kept"
+  else
+    sh "#{File.join(bin, 'webmachine-server')} --error-assets=#{archive} --write-config=#{conf}"
+  end
+end
+
 # The reference config in this tree is GENERATED, and by the server
 # itself: --write-config states every knob it reads, and a second copy
 # written by hand is a second answer that goes stale on the first change.

@@ -10,7 +10,6 @@
 #include <mruby/variable.h>
 
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -127,72 +126,27 @@ mrb_value handler_body(mrb_state* mrb, void* ud) {
 
 }  // namespace
 
-// XDG Base Directory Specification, and the FHS underneath it: shipped
-// read-only data lives in <datadir>/<package>, and XDG's own defaults
-// for XDG_DATA_DIRS are "/usr/local/share:/usr/share" - the FHS pair.
-// True only for a path that names a plain file that is there.
+// Filesystem Hierarchy Standard 4.11: read-only data of a package lives
+// in <datadir>/<package>, and the two datadirs are /usr/local/share for
+// software installed locally and /usr/share for the distribution's. An
+// explicit path wins. Nothing is read from the environment, and nothing
+// under a user's home is looked at: whoever can write there would
+// write every error page.
+namespace {
 bool is_regular_file(const std::string& p) {
   struct stat st {};
   return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
+}  // namespace
 
-// So one search order covers a distro package, a local build and a
-// container image, without any of them being special-cased and without
-// walking from argv[0], which is a trick rather than a convention.
-//
-// An explicit path always wins; it is the only one that may fail loudly.
 std::string error_assets_path(const char* configured) {
   if (configured != nullptr && configured[0] != '\0') return std::string(configured);
-  if (const char* env = ::getenv("WM_ERROR_ASSETS"); env != nullptr && env[0] != '\0') {
-    return std::string(env);
-  }
-  static constexpr const char* kLeaf = "/webmachine-mruby/error-assets.zip";
-  if (const char* home = ::getenv("XDG_DATA_HOME"); home != nullptr && home[0] == '/') {
-    const std::string p = std::string(home) + kLeaf;
-    if (is_regular_file(p)) return p;
-  } else if (const char* h = ::getenv("HOME"); h != nullptr && h[0] == '/') {
-    const std::string p = std::string(h) + "/.local/share" + kLeaf;
-    if (is_regular_file(p)) return p;
-  }
-  const char* dirs = ::getenv("XDG_DATA_DIRS");
-  const std::string list =
-      (dirs != nullptr && dirs[0] != '\0') ? std::string(dirs) : "/usr/local/share:/usr/share";
-  size_t at = 0;
-  while (at <= list.size()) {
-    const size_t end = list.find(':', at);
-    const std::string dir = list.substr(at, end == std::string::npos ? std::string::npos
-                                                                    : end - at);
-    if (!dir.empty() && dir[0] == '/') {
-      const std::string p = dir + kLeaf;
-      if (is_regular_file(p)) return p;
-    }
-    if (end == std::string::npos) break;
-    at = end + 1;
-  }
-  // Nothing installed. A server started out of its own build tree is
-  // ordinary while something is being written, and it should find the
-  // file lying right there.
-  //
-  // So walk UP from the binary and take the first ancestor that carries
-  // the shipped layout. One stat per level at startup, and the same walk
-  // covers both shapes - /usr/bin -> /usr/share/webmachine-mruby/, and a
-  // build
-  // directory somewhere under the checkout -> the checkout's share/.
-  char exe[4096];
-  const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof exe - 1);
-  if (n <= 0) return std::string();
-  exe[n] = '\0';
-  std::string dir(exe, static_cast<size_t>(n));
-  for (int up = 0; up < 12; up++) {
-    const size_t slash = dir.rfind('/');
-    if (slash == std::string::npos || slash == 0) break;
-    dir.resize(slash);
-    // The installed spelling first: it is the one an operator can also
-    // reach through XDG, so a tree that has both stays consistent.
-    const std::string shared = dir + "/share" + kLeaf;
-    if (is_regular_file(shared)) return shared;
-    const std::string flat = dir + "/share/error-assets.zip";
-    if (is_regular_file(flat)) return flat;
+  static constexpr const char* const kInstalled[] = {
+      "/usr/local/share/webmachine-mruby/error-assets.zip",
+      "/usr/share/webmachine-mruby/error-assets.zip",
+  };
+  for (const char* p : kInstalled) {
+    if (is_regular_file(p)) return std::string(p);
   }
   return std::string();
 }

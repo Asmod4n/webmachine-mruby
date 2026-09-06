@@ -595,26 +595,11 @@ class Ring {
     WM_UNREACHABLE();
   }
 
-  // Never null on return: a full SQ is drained by submitting it, and the
-  // retry then has room.
-  //
-  // io_uring_enter(2) can refuse that submit, and its answer decides
-  // what happens. EINTR and EAGAIN are ordinary and retried. EBUSY means
-  // the CQ is full and completions must be reaped first, which this call
-  // cannot do re-entrantly.
+  // Never null on return, or a raise: see sqe_or_raise.
   struct io_uring_sqe* sqe() {
     struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
     if (WM_LIKELY(s != nullptr)) return s;
-    for (int attempt = 0; attempt < 8; attempt++) {
-      const int rc = io_uring_submit(&ring_);
-      if (rc < 0 && rc != -EINTR && rc != -EAGAIN) {
-        fatalf("SQ (%d entries) full and io_uring_enter refused it: %s",
-               static_cast<int>(sq_entries_), std::strerror(-rc));
-      }
-      s = io_uring_get_sqe(&ring_);
-      if (WM_LIKELY(s != nullptr)) return s;
-    }
-    fatalf("SQ (%d entries) stuck after 8 submits", static_cast<int>(sq_entries_));
+    return sqe_or_raise(mrb_, &ring_);
   }
 
   static constexpr uint32_t kStreamAccess = 0;
@@ -767,8 +752,7 @@ class Ring {
     if (listeners_closed_) return;
     listeners_closed_ = true;
     for (uint32_t i = 0; i < nlisteners_; i++) {
-      struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-      if (s == nullptr) break;
+      struct io_uring_sqe* s = sqe();
       io_uring_prep_close_direct(s, listener_base_ + i);
       io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
     }
@@ -1694,7 +1678,7 @@ class Ring {
         double deadline = 0.0;
         if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline)) continue;
         ComputePool::Sent sent;
-        if (!compute_.submit(code, arg, App::compute_task_user(c.app, park, slot), deadline,
+        if (!compute_.submit(mrb_, code, arg, App::compute_task_user(c.app, park, slot), deadline,
                              detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(park),
                                                       static_cast<uint8_t>(slot)),
                              &sent)) {

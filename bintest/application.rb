@@ -1444,30 +1444,28 @@ end
 # that was silently broken: the lookup knew only the XDG directories, so a
 # server run from a checkout answered every error in plain text and never
 # said why - which reads exactly like conneg picking the wrong type.
-assert('application: error assets are found beside the binary, with no flag at all') do
-  pack = ap_shipped_error_assets
-  skip "no #{pack} - run rake error_assets" unless File.exist?(pack)
-  want = ap_zip_entry(pack, '404.jpg')
-  assert_true want != nil, 'no 404.jpg in the shipped error assets'
+# Without --error-assets and without a config that names one, the only
+# places looked at are the two the Filesystem Hierarchy Standard gives a
+# package's data. Nothing from the environment, nothing under a home,
+# nothing beside the binary: whoever can write there would write every
+# error page.
+assert('application: without a flag, only the installed archive is looked for') do
+  installed = %w[/usr/local/share/webmachine-mruby/error-assets.zip
+                 /usr/share/webmachine-mruby/error-assets.zip]
+  skip "#{installed.find { |p| File.exist?(p) }} is installed here" if installed.any? { |p| File.exist?(p) }
 
   sock = "/tmp/wm-ap-find-#{$$}.sock"
-  # NO --error-assets. The route below leaves /favicon.ico unrouted, and
-  # the Accept is the one a browser sends for a picture: image/* carries
-  # q=0.8 over */* at q=0.5, so a picture is what it asked for.
   ap_server(AP_FIZZ, sock: sock, args: ["--unix=#{sock}"]) do |s, _out, err|
     UNIXSocket.open(s) do |c|
       c.write("GET /favicon.ico HTTP/1.1\r\nHost: x\r\n" \
               "Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n\r\n")
       head, body = ap_read(c)
       assert_true head.start_with?('HTTP/1.1 404'), head
-      assert_true head.match?(%r{^Content-Type: image/jpeg\r$}i),
-                  "no picture: #{head[/^Content-Type:.*$/i]}"
-      assert_equal want, body.b
+      assert_false head.match?(%r{^Content-Type: image/}i), head
+      assert_true body.include?('404'), body
     end
-    # And it says which file it took, so an operator can tell a server
-    # with pictures from one without at a glance.
     text = File.read(err) rescue ''
-    assert_true text.include?('error assets from'), text
+    assert_false text.include?('error assets from'), text
   end
 end
 
