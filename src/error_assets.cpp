@@ -115,6 +115,11 @@ mrb_value handler_no_args(mrb_state* mrb, void* ud) {
   return mrb_funcall_argv(mrb, c->self, c->sym, 0, nullptr);
 }
 
+// One instance of the handler class, under the same protection.
+mrb_value handler_new(mrb_state* mrb, void* ud) {
+  return mrb_obj_new(mrb, static_cast<struct RClass*>(ud), 0, nullptr);
+}
+
 mrb_value handler_body(mrb_state* mrb, void* ud) {
   const HandlerCall* c = static_cast<const HandlerCall*>(ud);
   return mrb_funcall_argv(mrb, c->self, c->sym, 1, &c->arg);
@@ -231,11 +236,7 @@ void ErrorPages::open(mrb_state* mrb, Assets* assets) {
     // A class body that raises (a template of its own that does not
     // parse) is a startup refusal with a name, not a crash on the first
     // 404.
-    HandlerCall c{mrb_obj_value(klass), MRB_SYM(new), mrb_nil_value()};
-    const mrb_value obj = mrb_protect_error(
-        mrb,
-        handler_no_args,
-        &c, &raised);
+    const mrb_value obj = mrb_protect_error(mrb, handler_new, klass, &raised);
     if (raised) reraise(mrb, obj);
     res_ = obj;
     mrb_gc_register(mrb, res_);
