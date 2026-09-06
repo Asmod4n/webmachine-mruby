@@ -581,7 +581,7 @@ class Ring {
     // __STRICT_ANSI__. So the compiler cannot see what is true either way -
     // with MRB_USE_CXX_EXCEPTION the raise throws, without it it longjmps -
     // and warns that a [[noreturn]] function returns. This says it instead.
-    __builtin_unreachable();
+    WM_UNREACHABLE();
   }
 
   // The same, with the sentence built by mruby instead of by a 160-byte
@@ -590,7 +590,7 @@ class Ring {
   template <typename... Args>
   [[noreturn]] void fatalf(const char* fmt, Args... args) {
     mrb_raisef(mrb_, E_WM_ERROR(mrb_), fmt, args...);
-    __builtin_unreachable();
+    WM_UNREACHABLE();
   }
 
   // Never null on return: a full SQ is drained by submitting it, and the

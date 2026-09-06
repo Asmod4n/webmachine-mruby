@@ -160,9 +160,8 @@ int main(int argc, char** argv) {
   sigaddset(&stop_signals, SIGINT);
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
-  mrb_state* mrb = mrb_open();
+  mrb_state* mrb = webmachine::open_vm_or_say("webmachine-example");
   if (mrb == nullptr) {
-    std::fprintf(stderr, "webmachine-example: mrb_open failed\n");
     return 1;
   }
   define_resources(mrb);

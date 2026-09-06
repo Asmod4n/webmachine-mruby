@@ -74,7 +74,7 @@ mrb_value load_app_body(mrb_state* mrb, void* ud) {
 
 void setup() {
   ::unlink(kSock);
-  g_mrb = mrb_open();
+  g_mrb = webmachine::open_vm_or_say("webmachine-fuzz");
   if (g_mrb == nullptr) std::abort();
   g_wm = mrb_module_get_id(g_mrb, MRB_SYM(Webmachine));
 

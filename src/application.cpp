@@ -182,7 +182,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
     case Setting::kUnknown:
       break;
   }
-  __builtin_unreachable();
+  WM_UNREACHABLE();
 }
 
 // conf.url = "scheme://host[:port][?setting=value&...]" - webmachine-ruby's

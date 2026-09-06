@@ -597,7 +597,7 @@ uint16_t halt_of(Run& r, mrb_value v, mrb_sym sym) {
     mrb_raisef(mrb, E_RANGE_ERROR, "%s answered %i, which is not an HTTP status",
                mrb_sym_name(mrb, sym), code);
   }
-  __builtin_unreachable();
+  WM_UNREACHABLE();
 }
 
 // RFC 9110 9.1: the method token as the request spelled it, or the name
@@ -865,9 +865,8 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       // is the same block with the same arguments, and the only thing
       // lost is that the reactor waits for it.
       if (WM_RES_UNLIKELY(!res.run.can_park)) {
-        *out = mrb_funcall_argv(r.mrb, ask.block, MRB_SYM(call),
-                                static_cast<mrb_int>(RARRAY_LEN(ask.args)),
-                                RARRAY_PTR(ask.args));
+        *out = mrb_yield_argv(r.mrb, ask.block, static_cast<mrb_int>(RARRAY_LEN(ask.args)),
+                              RARRAY_PTR(ask.args));
         return true;
       }
       res.run.stop_node = nd;
@@ -1201,9 +1200,8 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
     // Nobody can park this run, so the block runs HERE - the same block
     // with the same arguments, and only the waiting is lost.
     if (WM_RES_UNLIKELY(!res.run.can_park)) {
-      const mrb_value said = mrb_funcall_argv(r.mrb, ask.block, MRB_SYM(call),
-                                              static_cast<mrb_int>(RARRAY_LEN(ask.args)),
-                                              RARRAY_PTR(ask.args));
+      const mrb_value said = mrb_yield_argv(
+          r.mrb, ask.block, static_cast<mrb_int>(RARRAY_LEN(ask.args)), RARRAY_PTR(ask.args));
       value_answer(res, w.what, said);
       continue;
     }

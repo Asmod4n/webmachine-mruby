@@ -376,9 +376,8 @@ int main(int argc, char** argv) {
   sigaddset(&stop_signals, SIGINT);
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
-  mrb_state* mrb = mrb_open();
+  mrb_state* mrb = webmachine::open_vm_or_say("webmachine");
   if (mrb == nullptr) {
-    std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
   const int rc = webmachine::run_guarded(mrb, {serve_body, &in});

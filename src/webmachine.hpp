@@ -49,6 +49,15 @@
 // /proc-style ones.
 #if __has_include(<linux/openat2.h>)
 #include <linux/openat2.h>
+
+// A raise here is a C++ throw, and mrb_noreturn resolves to nothing
+// under -std=c++20. A function that ends in a raise says so with this,
+// so the compiler does not warn that a [[noreturn]] function returns.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define WM_UNREACHABLE() __assume(0)
+#else
+#define WM_UNREACHABLE() __builtin_unreachable()
+#endif
 #else
 struct open_how {
   uint64_t flags;
@@ -687,13 +696,31 @@ namespace webmachine {
   // __GNUC__ && !__STRICT_ANSI__), so the compiler cannot see that the
   // two raises above end this function, and it warns that a [[noreturn]]
   // one returns. Ring::fatal says the same at its own raise.
-  __builtin_unreachable();
+  WM_UNREACHABLE();
 }
 
 [[noreturn]] inline void rethrow(mrb_state* mrb) {
   const mrb_value exc = mrb_obj_value(mrb->exc);
   mrb->exc = nullptr;
   reraise(mrb, exc);
+}
+
+// mrb_open runs every gem init, and a gem init that raises leaves its
+// exception in mrb->exc with the VM otherwise standing. Such a VM is
+// not open: the error is printed, the VM is closed, and nullptr says so.
+inline mrb_state* open_vm_or_say(const char* who) {
+  mrb_state* const mrb = mrb_open();
+  if (mrb == nullptr) {
+    std::fprintf(stderr, "%s: mrb_open failed\n", who);
+    return nullptr;
+  }
+  if (mrb->exc != nullptr) {
+    std::fprintf(stderr, "%s: a gem init raised\n", who);
+    mrb_print_error(mrb);
+    mrb_close(mrb);
+    return nullptr;
+  }
+  return mrb;
 }
 
 class ArenaGuard {

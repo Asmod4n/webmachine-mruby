@@ -542,6 +542,11 @@ bool ErrorPages::render(const Page& p, std::string& out) {
   if (raised || !mrb_string_p(body)) {
     // A handler that raises has no page to offer, and the caller still
     // owes the client an answer - it falls back to the bodyless status.
+    // The raise is printed, so the handler can be fixed.
+    if (raised && mrb_exception_p(body)) {
+      mrb->exc = mrb_obj_ptr(body);
+      mrb_print_error(mrb);
+    }
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
     return false;

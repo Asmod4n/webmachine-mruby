@@ -88,7 +88,8 @@ made per file.
 `mrb_noreturn` resolves to nothing under `-std=c++20` - `common.h` asks
 for `__GNUC__ && !__STRICT_ANSI__`, and a strict `-std=` defines
 `__STRICT_ANSI__` - so a function ending in `mrb_raise` still needs
-`__builtin_unreachable()`.
+`WM_UNREACHABLE()`, which is `__builtin_unreachable()` on GCC and Clang
+and `__assume(0)` on MSVC.
 
 Only the debug config is built while developing:
 

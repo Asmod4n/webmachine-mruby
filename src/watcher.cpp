@@ -479,11 +479,13 @@ Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
   {
     const Conn::Round* const own = watcher_round(w);
     const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
-    said = mrb_funcall_argv(mrb, block, MRB_SYM(call), 2, argv);
+    said = mrb_yield_argv(mrb, block, 2, argv);
   }
   if (mrb->exc != nullptr) {
     // A raise inside the block ends the wait. The run reads nil and
-    // answers 500 the way it answers any raise.
+    // answers 500. The exception is printed here, because the run
+    // never sees it.
+    mrb_print_error(mrb);
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
     Conn::Round* const r = watcher_round(w);
@@ -522,6 +524,7 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
     again = watcher_deadline_passed(mrb, w, &said);
   }
   if (mrb->exc != nullptr) {
+    mrb_print_error(mrb);
     mrb->exc = nullptr;
     said = mrb_nil_value();
   }
