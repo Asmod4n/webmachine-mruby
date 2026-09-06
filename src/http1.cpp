@@ -1059,9 +1059,14 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
   rv.values = &vals;
   rv.fields = fields.get();
   rv.spans = from.spans != nullptr ? &spans : nullptr;
-  // The body stays where the caller put it: it is the one span that will
-  // not always be a span (#80, the O_TMPFILE spill).
-  rv.content = from.content;
+  // The body too: it lies in the same buffer as the head, and the run
+  // reads request.body after it resumes.
+  if (from.content != nullptr && from.content_len != 0) {
+    content.assign(from.content, from.content_len);
+    rv.content = content.data();
+  } else {
+    rv.content = from.content;
+  }
   rv.content_len = from.content_len;
 
   // The check the member table cannot do for itself. kReqValueSpans is a
@@ -1402,6 +1407,9 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // die with the round that read them.
       if (h1) {
         held.hold(s.head_at, s.head_len, prep.rv);
+        // The view the run bound (res.run.req is &prep.rv) reads the copy
+        // from here on, not the buffer the kernel has back.
+        prep.rv = held.rv;
         s.view = held.head.data();
         s.viewlen = held.head.size();
         s.off = held.head.size();

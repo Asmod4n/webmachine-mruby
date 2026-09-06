@@ -296,6 +296,60 @@ assert('compute: a worker answers the node, and the graph carries on (#80)') do
   end
 end
 
+# #80: a run that parks reads its request after it resumes: the path, the
+# fields and the body. They were in the recv buffer, and that buffer is
+# the kernel's again while the run waits. A second request on another
+# connection lands in it meanwhile, so a view left pointing there would
+# answer the other request's bytes.
+assert('compute: a parked run reads its own request after it resumes (#80)') do
+  src = <<~RUBY
+    class ParkedReads < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) do
+          t = Time.now
+          nil while Time.now - t < 0.3
+          true
+        end
+      end
+      def self.allowed_methods
+        %w[GET HEAD POST]
+      end
+      def to_html
+        "\#{request.path}|\#{request.headers['x-probe']}|\#{request.query['q']}"
+      end
+      def process_post
+        response.body = "\#{request.path}|\#{request.headers['x-probe']}|\#{request.body}"
+        true
+      end
+    end
+  RUBY
+  resource_server(wm_app('ParkedReads', src)) do |sock|
+    a = UNIXSocket.open(sock)
+    a.write("GET /alpha?q=1 HTTP/1.1\r\nHost: x\r\nX-Probe: first\r\n\r\n")
+    sleep 0.05
+    # The second request, while the first waits: its bytes take the
+    # buffer the first one was read into.
+    UNIXSocket.open(sock) do |b|
+      b.write("GET /beta?q=2 HTTP/1.1\r\nHost: x\r\nX-Probe: second\r\n\r\n")
+      _, body = resource_read(b)
+      assert_equal '/beta|second|2', body
+    end
+    _, body = resource_read(a)
+    assert_equal '/alpha|first|1', body
+    a.write("POST /gamma HTTP/1.1\r\nHost: x\r\nX-Probe: third\r\n" \
+            "Content-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello")
+    sleep 0.05
+    UNIXSocket.open(sock) do |b|
+      b.write("GET /delta?q=4 HTTP/1.1\r\nHost: x\r\nX-Probe: fourth\r\n\r\n")
+      resource_read(b)
+    end
+    _, body = resource_read(a)
+    assert_equal '/gamma|third|hello', body
+    a.close
+  end
+end
+
 assert('compute: the second request on a server is answered like the first (#80)') do
   src = <<~RUBY
     class ComputeTwice < Webmachine::Resource
