@@ -6279,6 +6279,22 @@ namespace webmachine {
 // confinement, this code never does path math of its own.
 void docroot_open(mrb_state* mrb, const char* path);
 
+// --dev=DIR: the folder somebody is editing, served as it lies. See
+// src/dev.cpp for why there is no second copy of it anywhere.
+//
+// dev_open answers the folder's canonical path, or an empty string when
+// it is not a directory this process can read.
+std::string dev_open(const char* dir);
+// Does this name carry {{asset:...}} tags this mode fills? Text only.
+bool dev_fills(const char* name, size_t len);
+// The file with its tags filled in, or false when it cannot be read, is
+// too big to be a page, or carries no tag at all - then it is served as
+// it lies, which is the usual answer.
+bool dev_fill(const char* name, size_t len, std::string& out);
+// The folder, for whoever writes the pack when the server quits.
+const char* dev_source();
+void dev_close();
+
 // Did an operator configure one? response.file= refuses by name when not.
 bool docroot_ready();
 
