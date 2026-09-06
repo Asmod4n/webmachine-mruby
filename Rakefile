@@ -245,6 +245,8 @@ TEXT
 # picture - src, size and alt, the bytes a page emits - so the server
 # appends what it read and spells nothing.
 WM_EXTRA_ID = 0x574d
+WM_CACHE_ID = 0x574e
+WM_PLAIN_ID = 0x574f
 
 def read_pack_entries(path)
   raw = File.binread(path)
@@ -490,16 +492,123 @@ PACK_STORED = %w[
   .pdf .wasm
 ].freeze
 
+# 0x574E, the pack's second extra field: what Cache-Control this entry
+# answers with. It is decided HERE, once, and the server bakes it into the
+# prebuilt head when it opens the pack - no request ever reads it.
+#
+# Every file goes into the pack TWICE, under two names for the same
+# bytes: the name it has, and the name plus a hash of its content -
+# site.css and site.a1b2c3d4e5f6.css. Both central directory entries
+# point at one local record, so the pack does not grow.
+#
+# The point of the pair is that the two names deserve different answers.
+# The hashed name cannot ever mean other bytes, so it says the maximum a
+# cache is allowed to hold: a year, immutable, never asked about again.
+# A page that wants that names the hashed file. The plain name means
+# "whatever is there now", so how long a browser may use it without
+# asking is a decision only the person with the site can make - and this
+# task asks them, once per file extension, and writes the answers into
+# <DIR>/.cache-rules beside the files.
+#
+# RFC 9111 5.2.2.1: a lifetime of 0 is spelled no-cache, which means
+# keep the file but ask before using it. The ETag then makes that ask
+# cost a 304 with no body.
+PACK_IMMUTABLE = 'public, max-age=31536000, immutable'
+PACK_RULES_FILE = '.cache-rules'
+
+# What the task offers when it asks. Nothing here is applied unasked.
+PACK_SUGGESTED = {
+  '.html' => 0, '.htm' => 0, '.json' => 0, '.txt' => 0, '.md' => 0, '.xml' => 0,
+  '.css' => 3600, '.js' => 3600, '.mjs' => 3600, '.map' => 3600, '.wasm' => 3600,
+  '.jpg' => 604_800, '.jpeg' => 604_800, '.png' => 604_800, '.gif' => 604_800,
+  '.webp' => 604_800, '.avif' => 604_800, '.ico' => 604_800, '.bmp' => 604_800,
+  '.svg' => 604_800, '.pdf' => 604_800,
+  '.woff' => 31_536_000, '.woff2' => 31_536_000, '.otf' => 31_536_000,
+  '.ttf' => 31_536_000, '.ttc' => 31_536_000,
+  '.mp3' => 2_592_000, '.mp4' => 2_592_000, '.m4a' => 2_592_000,
+  '.webm' => 2_592_000, '.ogg' => 2_592_000, '.opus' => 2_592_000,
+  '.flac' => 2_592_000, '.mov' => 2_592_000
+}.freeze
+
+def pack_cache_control(seconds)
+  seconds.to_i <= 0 ? 'no-cache' : "public, max-age=#{seconds.to_i}"
+end
+
+def read_cache_rules(path)
+  rules = {}
+  return rules unless File.exist?(path)
+
+  File.readlines(path).each_with_index do |line, i|
+    line = line.sub(/#.*/, '').strip
+    next if line.empty?
+
+    ext, secs = line.split(/[\s=]+/, 2)
+    raise "#{path}:#{i + 1}: #{line.inspect} is not 'EXTENSION SECONDS'" if secs.nil?
+    raise "#{path}:#{i + 1}: #{secs.inspect} is not a number of seconds" unless
+      secs.match?(/\A\d+\z/)
+
+    rules[ext.downcase] = secs.to_i
+  end
+  rules
+end
+
+def write_cache_rules(path, rules)
+  body = +"# How long a browser may use a file under its PLAIN name without\n" \
+          "# asking again, in seconds. 0 means ask every time (no-cache).\n" \
+          "# The hashed name of the same file always says one year.\n" \
+          "# rake pack asks for an extension that is not here yet.\n"
+  rules.keys.sort.each { |ext| body << format("%-8s %d\n", ext, rules[ext]) }
+  File.write(path, body)
+end
+
+# The one question this task asks. It asks per extension, not per file,
+# and it asks once: the answer goes into .cache-rules and no later run
+# asks again.
+def ask_cache_seconds(ext, count)
+  suggested = PACK_SUGGESTED.fetch(ext, 0)
+  unless $stdin.tty?
+    puts "  #{ext}: no rule, and nobody to ask - taking #{suggested} s. " \
+         "Write #{PACK_RULES_FILE} to decide it."
+    return suggested
+  end
+  print "  #{ext} (#{count} file(s)): how many seconds may a browser use it " \
+        "without asking? [#{suggested}] "
+  $stdout.flush
+  answer = $stdin.gets.to_s.strip
+  return suggested if answer.empty?
+  raise "#{answer.inspect} is not a number of seconds" unless answer.match?(/\A\d+\z/)
+
+  answer.to_i
+end
+
+# name.ext -> name.<12 hex of the content>.ext, in the same directory.
+def pack_hashed_name(name, data)
+  require 'digest'
+  ext = File.extname(name)
+  "#{name[0, name.length - ext.length]}.#{Digest::SHA256.hexdigest(data)[0, 12]}#{ext}"
+end
+
+def pack_entry_extra(mtime, plain_name, cache_control)
+  extra = [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
+  extra << [WM_CACHE_ID, cache_control.bytesize].pack('vv') << cache_control.b
+  extra << [WM_PLAIN_ID, plain_name.bytesize].pack('vv') << plain_name.b
+  extra
+end
+
+# One entry per file, NAMED BY ITS CONTENT, with the name a client asks
+# for beside it in field 0x574F and that name's lifetime in 0x574E. The
+# server reads the pair and answers both names from these bytes: the
+# hashed one for a year, immutable, and the plain one for as long as
+# the person who packed the site said.
 def pack_zip(entries)
   out = +''.b
   cd = +''.b
-  entries.each do |name, data, mtime|
+  entries.each do |name, data, mtime, seconds|
     data = data.b
+    hashed = pack_hashed_name(name, data)
     ddate, dtime = dos_stamp(mtime)
     crc = Zlib.crc32(data)
-    # Info-ZIP's extended timestamp, so the mtime survives at one second
-    # rather than at the two the DOS field holds.
-    extra = [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
+    extra = pack_entry_extra(mtime, name, pack_cache_control(seconds))
     stored = PACK_STORED.include?(File.extname(name).downcase)
     body = stored ? data : Zlib::Deflate.deflate(data, 9)[2..-5]
     # A file that grows under deflate is stored instead.
@@ -510,10 +619,10 @@ def pack_zip(entries)
     method = stored ? 0 : 8
     lho = out.bytesize
     out << [0x04034b50, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
-            name.bytesize, extra.bytesize].pack('VvvvvvVVVvv') << name.b << extra << body
+            hashed.bytesize, extra.bytesize].pack('VvvvvvVVVvv') << hashed.b << extra << body
     cd << [0x02014b50, 20, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
-           name.bytesize, extra.bytesize, 0, 0, 0, 0, lho]
-          .pack('VvvvvvvVVVvvvvvVV') << name.b << extra
+           hashed.bytesize, extra.bytesize, 0, 0, 0, 0, lho]
+          .pack('VvvvvvvVVVvvvvvVV') << hashed.b << extra
   end
   cd_off = out.bytesize
   out << cd
@@ -531,19 +640,34 @@ task :pack, %i[dir out] do |_t, args|
   out = args[:out] || "#{File.basename(File.expand_path(dir))}.zip"
   root = File.expand_path(dir)
   # Files only, sorted, and nothing whose name begins with a dot - an
-  # editor's swap file and a .git directory are not part of a site.
+  # editor's swap file, a .git directory and .cache-rules itself are not
+  # part of a site.
   names = Dir.glob('**/*', File::FNM_DOTMATCH, base: root).sort.reject do |n|
     n.split('/').any? { |seg| seg.start_with?('.') } || File.directory?(File.join(root, n))
   end
   raise "#{dir} holds no files" if names.empty?
 
+  rules_path = File.join(root, PACK_RULES_FILE)
+  rules = read_cache_rules(rules_path)
+  wanted = names.group_by { |n| File.extname(n).downcase }
+  missing = wanted.keys.sort.reject { |ext| rules.key?(ext) }
+  unless missing.empty?
+    puts "#{rules_path}: #{missing.size} extension(s) with no rule yet."
+    missing.each { |ext| rules[ext] = ask_cache_seconds(ext, wanted[ext].size) }
+    write_cache_rules(rules_path, rules)
+  end
+
   entries = names.map do |n|
     path = File.join(root, n)
-    [n, File.binread(path), File.mtime(path)]
+    [n, File.binread(path), File.mtime(path), rules[File.extname(n).downcase]]
   end
   File.binwrite(out, pack_zip(entries))
-  puts "#{out}: #{entries.size} entries, #{File.size(out)} bytes"
-  names.each { |n| puts "  #{n}" }
+  puts "#{out}: #{entries.size} files under #{entries.size * 2} names, " \
+       "#{File.size(out)} bytes"
+  entries.each do |n, data, _mtime, seconds|
+    puts "  #{n}  #{pack_cache_control(seconds)}"
+    puts "  #{pack_hashed_name(n, data)}  #{PACK_IMMUTABLE}"
+  end
 end
 
 desc 'build the example site: examples/site.zip and examples/site.mrb'

@@ -3253,6 +3253,10 @@ struct AssetEntry {
   // on an entry that carries none.
   const char* img_tag = nullptr;
   size_t img_tag_len = 0;
+  // The pack's extra field 0x574E: this entry's Cache-Control value,
+  // baked into the prebuilt 200 and 304 heads at open. Empty when the
+  // pack says nothing, and then no answer names the field.
+  std::string cache_control;
 
   // RFC 9112 2.1: a status-line and a header section, complete, ending in
   // the empty line - everything of a response except its content.

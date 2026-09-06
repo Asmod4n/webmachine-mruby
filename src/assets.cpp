@@ -56,19 +56,43 @@ void spell_hex8(char* out, uint32_t v) {
 // so nothing here has a URL to join or a number to spell.
 constexpr uint16_t kExtraImgTag = 0x574d;
 
+// 0x574E is the second, written by the pack task: the Cache-Control field
+// value for THIS entry. A freshness lifetime is a property of the file,
+// not of the server - a hashed bundle may be kept for a year, an
+// index.html for a minute - so the pack says it, once, and the head is
+// built with it at open. No request reads this.
+constexpr uint16_t kExtraCacheControl = 0x574e;
+
+// 0x574F is the table the pack task writes. An entry there is NAMED by a
+// hash of its content - index.4f3a1c9d2b70.html - and this field holds
+// the name a client actually asks for: index.html. The pack therefore
+// holds one copy of the bytes under two names, and the two names get
+// different answers, which is the whole point of hashing a name:
+//
+//   the hashed name cannot ever mean other bytes, so it says the maximum
+//   a cache may hold and is never asked about again;
+//
+//   the plain name means whatever is there now, so it says what the
+//   person who packed the site decided (field 0x574E).
+constexpr uint16_t kExtraPlainName = 0x574f;
+
+// RFC 9111 5.2.2.1: what a name that cannot change is worth saying.
+constexpr const char kImmutable[] = "public, max-age=31536000, immutable";
+
 struct Borrowed {
   const char* text = nullptr;
   size_t len = 0;
 };
 
-Borrowed img_tag_of(const unsigned char* extra, size_t len) {
+// APPNOTE 4.5.2: walk the blocks, answer the one id asked for.
+Borrowed extra_field(const unsigned char* extra, size_t len, uint16_t want) {
   Borrowed b;
   size_t off = 0;
   while (off + 4 <= len) {
     const uint16_t id = MZ_READ_LE16(extra + off);
     const size_t size = MZ_READ_LE16(extra + off + 2);
     if (off + 4 + size > len) break;
-    if (id == kExtraImgTag && size != 0) {
+    if (id == want && size != 0) {
       b.text = reinterpret_cast<const char*>(extra + off + 4);
       b.len = size;
       break;
@@ -210,9 +234,34 @@ void Assets::open(mrb_state* mrb, const char* zip_path, const MimeDb& mime) {
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);
     e.etag[9] = '"';
-    const Borrowed tag = img_tag_of(base + extra_off, extra_len);
+    const Borrowed tag = extra_field(base + extra_off, extra_len, kExtraImgTag);
     e.img_tag = tag.text;
     e.img_tag_len = tag.len;
+    const Borrowed cc = extra_field(base + extra_off, extra_len, kExtraCacheControl);
+    // RFC 9110 5.6.2: a field value is visible ASCII and space. A pack
+    // that carries anything else does not get to spell a header field.
+    bool cc_ok = cc.len != 0;
+    for (size_t k = 0; k < cc.len; k++) {
+      const unsigned char c = static_cast<unsigned char>(cc.text[k]);
+      if (c < 0x20 || c > 0x7e) cc_ok = false;
+    }
+    if (cc.len != 0 && !cc_ok) {
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s carries a Cache-Control that is not a field value",
+                 zip_path, st.m_filename);
+    }
+    // The pack's table: this entry is named by its content, and the
+    // plain name beside it is what a client asks for. Both are answered,
+    // from these bytes, with the two lifetimes they deserve.
+    const Borrowed plain = extra_field(base + extra_off, extra_len, kExtraPlainName);
+    if (plain.len != 0) {
+      AssetEntry alias = e;
+      alias.file_name.assign(plain.text, plain.len);
+      if (cc_ok) alias.cache_control.assign(cc.text, cc.len);
+      e.cache_control.assign(kImmutable);
+      entries_.push_back(std::move(alias));
+    } else if (cc_ok) {
+      e.cache_control.assign(cc.text, cc.len);
+    }
     entries_.push_back(std::move(e));
   }
 
@@ -234,6 +283,9 @@ void Assets::open(mrb_state* mrb, const char* zip_path, const MimeDb& mime) {
     if (e.last_modified_valid) {
       f.append("Last-Modified: ").append(e.last_modified, sizeof(e.last_modified)).append("\r\n");
     }
+    if (!e.cache_control.empty()) {
+      f.append("Cache-Control: ").append(e.cache_control).append("\r\n");
+    }
     f.append("Accept-Ranges: bytes\r\n");
     const size_t clen = e.deflated ? e.compressed_size + 18 : e.compressed_size;
     f.append("Content-Length: ").append(std::to_string(clen)).append("\r\n");
@@ -241,6 +293,11 @@ void Assets::open(mrb_state* mrb, const char* zip_path, const MimeDb& mime) {
 
     std::string f304;
     f304.append("ETag: ").append(e.etag, sizeof(e.etag)).append("\r\n");
+    // RFC 9111 4.3.4: what a 304 carries updates the stored response, and
+    // the freshness lifetime is the field a cache most needs updated.
+    if (!e.cache_control.empty()) {
+      f304.append("Cache-Control: ").append(e.cache_control).append("\r\n");
+    }
     if (e.deflated) f304.append("Vary: Accept-Encoding\r\n");
     build_triple(e.head_304, {"HTTP/1.1 304 Not Modified", nullptr, f304});
 
