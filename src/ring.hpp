@@ -1675,19 +1675,17 @@ class Ring {
     // build nothing until the answer is yes.
     if (WM_LIKELY(!App::compute_task_waiting(c.app))) return;
     if (compute_.workers() == 0) {
-      // One per core the process may use, less the reactor's own - and
-      // never more VMs than the build allows. Every worker opens an
-      // mrb_state, the HAL counts those across the PROCESS, and a VM
-      // over the ceiling is refused: the worker then dies, its ring
-      // still takes its turn in the round robin, and the jobs sent to it
-      // are never answered. On a four-core machine that never showed; on
-      // a bigger one every compute task hung.
+      // One per core the process may use, less the reactor's own. Every
+      // worker opens an mrb_state of its own, and nothing counts those
+      // any more: the VM ceiling belonged to mruby-task, which this
+      // tree no longer builds.
       const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
       const unsigned by_core = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
-      const unsigned ceiling = compute_worker_ceiling();
-      const unsigned want = by_core < ceiling ? by_core : ceiling;
+      const unsigned want = by_core;
       if (const char* why = compute_.start(want, kComputeDepth, &ring_)) {
         conn_failed(why, -EAGAIN);
+      } else {
+        compute_ts_.resize(static_cast<size_t>(want) * kComputeDepth);
       }
     }
     // #30: a value round hands over several jobs at one stop, and they
@@ -1701,9 +1699,11 @@ class Ring {
         unsigned code = 0;
         double deadline = 0.0;
         if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline)) continue;
+        ComputePool::Sent sent;
         if (!compute_.submit(code, arg, App::compute_task_user(c.app, park, slot), deadline,
                              detail::compute_task_tag(c.gen, idx, static_cast<uint8_t>(park),
-                                                      static_cast<uint8_t>(slot)))) {
+                                                      static_cast<uint8_t>(slot)),
+                             &sent)) {
           // Every slot taken. Not a refusal this layer invents - the run
           // is told, and it answers 503 the way it would answer anything
           // else.
@@ -1711,8 +1711,35 @@ class Ring {
           if (!c.sending) continue_conn(idx);
           return;
         }
+        arm_compute_deadline(sent, deadline);
       }
     }
+  }
+
+  // #80: what bounds a compute job now that no scheduler does. The
+  // reactor owns the clock, so it arms one timeout per job and calls
+  // mrb_vm_interrupt on that worker's VM when it fires. A job with no
+  // max_runtime is unbounded by the author's own choice and gets no
+  // timeout at all.
+  //
+  // Nothing cancels the timeout when the answer comes first: the pool
+  // moves the job number on, and a timeout that names the job before it
+  // interrupts nothing. One SQE is cheaper than a cancel plus its own
+  // completion.
+  void arm_compute_deadline(const ComputePool::Sent& sent, double deadline) {
+    if (deadline <= 0.0 || compute_ts_.empty()) return;
+    // The kernel reads the timespec when the SQE is SUBMITTED, and a
+    // round arms several before one submit. So each arm gets its own,
+    // out of a table as large as the pool has jobs in flight - which is
+    // the same bound the pool's slots carry.
+    __kernel_timespec& ts = compute_ts_[compute_ts_at_];
+    compute_ts_at_ = (compute_ts_at_ + 1) % compute_ts_.size();
+    const int64_t whole = static_cast<int64_t>(deadline);
+    ts.tv_sec = whole;
+    ts.tv_nsec = static_cast<long long>((deadline - static_cast<double>(whole)) * 1e9);
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_timeout(s, &ts, 0, 0);
+    io_uring_sqe_set_data64(s, detail::compute_deadline_tag(sent.worker, sent.seq));
   }
 
   // The fd leaves through the ring like every other descriptor here.
@@ -2117,6 +2144,15 @@ class Ring {
         case detail::kComputeTask:
           on_compute_task(idx, gen, detail::watch_slot(cqe->user_data), cqe);
           break;
+        // #80: a job that ran past its max_runtime. The timeout also
+        // completes when it is cancelled or when the job answered
+        // first; the pool reads the job number and leaves such a worker
+        // alone.
+        case detail::kComputeDeadline:
+          if (cqe->res == -ETIME) {
+            compute_.interrupt(idx, detail::watch_slot(cqe->user_data));
+          }
+          break;
         case detail::kWatch: on_watch(idx, gen, detail::watch_slot(cqe->user_data), cqe); break;
         case detail::kStop: stop_ = true; break;
         default: break;
@@ -2285,6 +2321,9 @@ class Ring {
   int64_t drain_deadline_ = 0;
   uint32_t live_ = 0;
   std::vector<uint64_t> live_bits_;
+  // One timespec per job in flight, for the deadline SQEs above.
+  std::vector<__kernel_timespec> compute_ts_;
+  size_t compute_ts_at_ = 0;
   char* pool_ = nullptr;
   // #80: the threads a compute task is answered by. Empty until the first run
   // stops; ComputePool::stop() runs from its own destructor.

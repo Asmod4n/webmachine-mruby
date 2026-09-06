@@ -135,17 +135,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   # #80: the compute pool, and what crosses into it.
   #
-  # A worker VM must be preemptible. A promise carries a deadline. A Ruby
-  # job that runs past the deadline is stopped, not waited for. mruby-task
-  # does that.
-  #
-  # The HAL comes from this tree. mruby-task/ports/posix drives its tick
-  # from SIGALRM. It also protects the scheduler with sigprocmask(), which
-  # is undefined in a threaded process. The build system finds our HAL by
-  # name: a gem called hal-<short>-<conf> replaces the ports of the gem
-  # whose name ends in <short>.
-  spec.add_dependency 'hal-task-webmachine', gemdir: "#{dir}/hal-task-webmachine"
-
   # A promised callback crosses as a dumped irep, once per worker. Its
   # arguments and its answer cross as CBOR, once per request. Nothing else
   # crosses. An mrb_value belongs to one mrb_state, so a handle, an object
@@ -153,13 +142,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-proc-irep-ext', github: 'Asmod4n/mruby-proc-irep-ext',
                                              branch: 'master'
   spec.add_dependency 'mruby-cbor', github: 'Asmod4n/mruby-cbor', branch: 'main'
-
-  # A worker runs every promised block as a Task, so a deadline can end
-  # one. That API lives in mruby-task's own header, and the gem does not
-  # export its include path - so it is named here rather than declared a
-  # second time in our source. One fact, one source.
-  spec.cc.include_paths  << "#{build.root}/mrbgems/mruby-task/include"
-  spec.cxx.include_paths << "#{build.root}/mrbgems/mruby-task/include"
 
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"

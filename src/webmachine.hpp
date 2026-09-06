@@ -3050,12 +3050,6 @@ unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime
 // for that id.
 bool compute_task_code_of(unsigned id, std::string* irep, double* max_runtime);
 
-// How many workers this build may ever run: MRB_TASK_MAX_VMS less the
-// reactor's own VM. The number is mruby-task's, and it counts VMs over
-// the whole PROCESS - a worker that cannot register its VM answers
-// nothing, so asking here is not a preference, it is the ceiling.
-// Defined in compute_task.cpp, which is where mruby-task's header is.
-unsigned compute_worker_ceiling();
 
 // What one job left behind. The bytes are the answer; the rest is what
 // the reactor needs to write a failure down, because a worker cannot -
@@ -3096,8 +3090,20 @@ class ComputePool {
   // CBOR - bytes, because an mrb_value belongs to one VM. False when
   // every slot is taken; the caller decides what a full pool means, and
   // this layer does not invent a refusal for it.
+  // `sent` names the worker that took the job and which job of that
+  // worker it is, so the caller can arm a deadline for exactly this one.
+  struct Sent {
+    unsigned worker = 0;
+    uint8_t seq = 0;
+  };
   bool submit(unsigned code_id, std::string_view arg, std::string_view user, double deadline,
-              uint64_t answer);
+              uint64_t answer, Sent* sent);
+  // The deadline passed. This is the ONE thing the reactor does to a
+  // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
+  // is safe from this thread. The sequence number says whether the job
+  // that was armed is still the job that runs - a worker that already
+  // answered is left alone.
+  void interrupt(unsigned worker, uint8_t seq);
   // What the worker answered. Reading it frees the slot: the answer is
   // handed over once.
   bool take(uint64_t answer, ComputeAnswer* out);
@@ -6468,7 +6474,12 @@ enum : uint8_t {
   // #80: a compute worker answered. The tag is the connection's, so the
   // generation guard every other op relies on discards an answer whose
   // connection is already gone.
-  kComputeTask = 21
+  kComputeTask = 21,
+  // #80: a compute job's deadline. The tag names the WORKER, not a
+  // connection, because what it acts on is the worker's VM. Bits 48..55
+  // carry the job number, so a timeout for a job that already answered
+  // interrupts nothing.
+  kComputeDeadline = 22
 };
 
 
@@ -6487,6 +6498,10 @@ inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); 
 // Four bits name the stopped run and four name its job, so one byte
 // carries both: a connection holds up to 16 stopped runs - one per h2
 // stream - and a run hands over up to four jobs at a stop.
+inline uint64_t compute_deadline_tag(unsigned worker, uint8_t seq) {
+  return tag(kComputeDeadline, 0, static_cast<uint32_t>(worker)) |
+         (static_cast<uint64_t>(seq) << 48);
+}
 inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job) {
   const uint8_t both = static_cast<uint8_t>((park << 4) | (job & 0x0f));
   return tag(kComputeTask, gen, idx) | (static_cast<uint64_t>(both) << 48);

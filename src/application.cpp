@@ -16,8 +16,6 @@
 #include <cstring>
 #include <string>
 
-#include <mruby/task_hal_webmachine.h>
-#include <task.h>
 
 #include <ada.h>
 
@@ -701,10 +699,6 @@ mrb_value guarded_body(mrb_state* mrb, void* ud) {
 }  // namespace
 
 int run_guarded(mrb_state* mrb, Guarded step) {
-  // The two things every VM in this process needs, and the only place
-  // this one passes through right after mrb_open. The HAL header says
-  // why the queue can only be taken away here.
-  mrb_hal_task_drop_queue(mrb);
   GuardedRun g{step, 0};
   mrb_bool raised = FALSE;
   const mrb_value e = mrb_protect_error(mrb, guarded_body, &g, &raised);

@@ -20,7 +20,6 @@
 // from one resolved by a disk.
 #include "webmachine.hpp"
 
-#include <mruby/task_hal_webmachine.h>
 
 
 #include <liburing.h>
@@ -36,11 +35,6 @@
 #include <mruby/proc_irep_ext.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
-
-// mruby-task's own header. A worker runs every declared block as a
-// Task, so it needs the creation, the scheduler loop and the abort.
-// Named here and not in webmachine.hpp: only this file opens a VM.
-#include <task.h>
 
 #include <atomic>
 #include <cerrno>
@@ -72,8 +66,12 @@ struct Slot {
   std::string user_in;
   std::string user_out;
   bool user_changed = false;
-  // Seconds of EXECUTION. The worker ends a task that runs past it.
+  // Seconds of EXECUTION. The reactor arms a timeout for this and
+  // interrupts the worker's VM when it passes.
   double deadline = 0.0;
+  // Whether the reactor asked THIS job to stop is one atomic per slot,
+  // and it lives beside the slots rather than inside one: an atomic
+  // cannot be copied, and a vector of Slot has to be able to grow.
   bool raised = false;
   // The task was ended because it passed its deadline. A different
   // answer from a raise: the author's number was wrong, and a retry
@@ -85,8 +83,10 @@ struct Slot {
   std::string exception_class;
   std::string message;
   std::string backtrace;
-  // Which worker ran it, as the name its thread carries.
+  // Which worker ran it, as the name its thread carries, and as the
+  // number the pool addresses it by.
   std::string worker_name;
+  unsigned worker = 0;
   // The reactor's own tag for this compute task: what its completion will
   // carry, so the reactor knows whose answer arrived. The pool never
   // looks inside it.
@@ -437,6 +437,18 @@ struct ComputePool::Impl {
   std::vector<struct io_uring> rings;
   std::vector<std::thread> threads;
   std::vector<Slot> slots;
+  // Each worker's VM, published by the worker itself once mrb_open
+  // answered. The reactor reads it to call mrb_vm_interrupt, which
+  // writes one word and reads none - the only thing one thread may do
+  // to another thread's mrb_state.
+  std::vector<std::atomic<mrb_state*>> vms;
+  // Which job each worker is on. The reactor arms a timeout per job and
+  // the number tells a late timeout from a live one: an answer bumps it,
+  // so a timeout for a job that already answered interrupts nothing.
+  std::vector<std::atomic<uint8_t>> job_seq;
+  // One per slot: the reactor sets it before it interrupts, the worker
+  // reads it after its block returned.
+  std::vector<std::atomic<bool>> asked_stop;
   // Round-robin, and that is enough: every job in this pool is a
   // password hash with fixed m and t, so they all cost the same. A
   // shortest-queue choice would compute an answer the caller already
@@ -476,11 +488,6 @@ struct WorkerVm {
   bool open() {
     mrb = mrb_open();
     if (mrb == nullptr) return false;
-    // Every mrb_state in this process, and a worker's is one: mruby-task
-    // caches VM-owned objects in file-scope statics, so a queue built in
-    // one VM answers with another VM's objects. The HAL header says why
-    // it can only happen here, after mrb_open.
-    mrb_hal_task_drop_queue(mrb);
     // Webmachine::Workers, looked up ONCE. A module is rooted by the
     // constant that names it, so nothing else has to hold it.
     workers = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
@@ -493,10 +500,6 @@ struct WorkerVm {
     // whatever mruby gave the re-loaded proc, and it must not matter.
     mrb_define_method_id(mrb, mrb->object_class, MRB_SYM(response), worker_response,
                          MRB_ARGS_NONE());
-    // The scheduler STAYS on. Every declared block runs as a Task, which
-    // is what makes a deadline enforceable: mruby preempts Ruby at a
-    // safe point, and mrb_terminate_task ends a run that is over its
-    // max_runtime. A worker VM with the scheduler off could not do that.
     return build_registry();
   }
 
@@ -622,7 +625,7 @@ mrb_value worker_userdata(WorkerVm& vm) {
 
 // What a worker does with one slot: decode the argument, run the
 // callback, encode the answer. Every step stays inside this VM.
-void run_job(WorkerVm& vm, Slot& s) {
+void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
   mrb_state* const mrb = vm.mrb;
   const int ai = mrb_gc_arena_save(mrb);
   s.raised = false;
@@ -651,18 +654,6 @@ void run_job(WorkerVm& vm, Slot& s) {
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
-  // The block runs as a TASK, which is the whole reason this VM keeps
-  // its scheduler. mruby preempts Ruby at a safe point, so a run that
-  // passes its max_runtime is ended where it stands - and that is what
-  // makes a deadline a promise this tree can keep for Ruby.
-  //
-  // Under Ruby there is C, and C stops for one thing only: a signal
-  // while the thread sits in a syscall that answers EINTR. argon2 sits
-  // in none. So the deadline holds for what mruby can preempt, and
-  // admission holds for the rest (.DESIGN.md #promise-bound).
-  // A task body has to be Ruby: task_init_context reads
-  // proc->body.irep, so a proc built from a C function has nothing the
-  // scheduler could run. The wrapper makes a Ruby one.
   // #30: what the run put in response.userdata, into this VM's own
   // response - the block reads and writes it the way it does at home.
   mrb_value user_before = mrb_nil_value();
@@ -675,82 +666,38 @@ void run_job(WorkerVm& vm, Slot& s) {
     }
   }
   worker_userdata_set(vm, user_before);
-  const mrb_value wrapped[2] = {block, mrb_array_p(arg) ? arg : mrb_ary_new(mrb)};
-  const mrb_value task_proc = mrb_funcall_argv(mrb, vm.workers, MRB_SYM(wrap), 2, wrapped);
-  if (mrb->exc != nullptr || !mrb_proc_p(task_proc)) {
-    note_raise(mrb, s, "building the proc of a compute task");
-    mrb_gc_arena_restore(mrb, ai);
-    return;
-  }
-  const mrb_value task = mrb_create_task(mrb, mrb_proc_ptr(task_proc), mrb_nil_value(),
-                                         mrb_nil_value(), mrb_nil_value());
-  if (mrb->exc != nullptr || mrb_nil_p(task)) {
-    note_raise(mrb, s, "starting the task of a compute task");
-    mrb_gc_arena_restore(mrb, ai);
-    return;
-  }
-  // The WORKER decides when the VM runs, never the VM. Task.run hands
-  // the thread to the scheduler until every queue is empty, and while
-  // any task waits it sits in the idle hook - this thread has its own
-  // loop and could not serve it again. mrb_hal_task_step is one step
-  // plus an answer: when to come back. mruby-task/ports/glib drives a
-  // GTK loop the same way.
+  // The block runs HERE, in this thread, in this VM, with nothing
+  // between it and the answer. What bounds it is mrb_vm_interrupt: the
+  // reactor holds this VM's address and calls it when the deadline
+  // passes, the VM reads that flag at a send and at the four jumps, and
+  // the raise lands in the code that was running (mruby a9151d77).
   //
-  // The deadline is checked HERE, between steps, because this loop is
-  // the host's. max_runtime is EXECUTION time, so the mark is taken
-  // now - the wait in the queue was not this task's to pay.
-  const double mark = s.deadline > 0.0 ? now_seconds() + s.deadline : 0.0;
-  for (;;) {
-    const int64_t next_us = mrb_hal_task_step();
-    if (mrb->exc != nullptr) break;
-    if (mrb_symbol(mrb_task_status(mrb, task)) == MRB_SYM(DORMANT)) break;
-    if (mark != 0.0 && now_seconds() >= mark) {
-      mrb_terminate_task(mrb, task);
-      s.over_deadline = true;
-      s.raised = true;
-      s.exception_class = "Webmachine::Error";
-      s.message = "the compute task ran past its max_runtime and the worker ended it";
-      // One more step, so the scheduler sees the task end and every
-      // queue empties. Without it the task stays in a queue and the
-      // next job on this worker would find it there.
-      mrb_hal_task_step();
-      break;
-    }
-    // Nothing is ready and nothing sleeps, yet the task is not done:
-    // it waits on something this loop cannot see. A worker has no
-    // such thing to offer, so this is the end of it.
-    if (next_us < 0) break;
-    if (next_us > 0) {
-      const int64_t left = mark == 0.0 ? next_us
-                                       : static_cast<int64_t>((mark - now_seconds()) * 1e6);
-      const int64_t wait = (mark != 0.0 && left < next_us) ? left : next_us;
-      if (wait > 0) mrb_hal_task_sleep_us(mrb, static_cast<mrb_int>(wait));
-    }
+  // The flag is cleared first, because an interrupt that arrived after
+  // the last job answered is not this job's to carry.
+  //
+  // Under Ruby there is C, and a C function stops for nothing the VM
+  // can do. So the deadline holds for what mruby executes, and
+  // admission holds for the rest (.DESIGN.md #promise-bound).
+  mrb->vm_interrupt = FALSE;
+  asked_stop.store(false, std::memory_order_relaxed);
+  const mrb_value args = mrb_array_p(arg) ? arg : mrb_ary_new(mrb);
+  const mrb_value answer =
+      mrb_funcall_argv(mrb, block, MRB_SYM(call), static_cast<mrb_int>(RARRAY_LEN(args)),
+                       RARRAY_PTR(args));
+  // The reactor asked for the stop, so the raise is the deadline and
+  // not the application's. It is read AFTER the call: the reactor sets
+  // it before it interrupts.
+  if (mrb->exc != nullptr && asked_stop.load(std::memory_order_acquire)) {
+    mrb->exc = nullptr;
+    mrb->vm_interrupt = FALSE;
+    s.over_deadline = true;
+    s.raised = true;
+    s.exception_class = "Webmachine::Error";
+    s.message = "the compute task ran past its max_runtime and the reactor stopped it";
+    mrb_gc_arena_restore(mrb, ai);
+    return;
   }
   if (mrb->exc != nullptr) {
-    note_raise(mrb, s, "running a compute task");
-    mrb_gc_arena_restore(mrb, ai);
-    return;
-  }
-  if (s.over_deadline) {
-    mrb_gc_arena_restore(mrb, ai);
-    return;
-  }
-  const mrb_value answer = mrb_task_value(mrb, task);
-  if (mrb->exc != nullptr) {
-    note_raise(mrb, s, "reading the answer of a compute task");
-    mrb_gc_arena_restore(mrb, ai);
-    return;
-  }
-  // A task that raised does NOT leave the exception in mrb->exc: the
-  // scheduler moves it to the task's result and clears the VM
-  // (mruby-task/src/task.c:424). So the result IS the raise, and asking
-  // mrb->exc would say the run went well and then hand an Exception to
-  // CBOR - which the reactor cannot read back.
-  if (mrb_obj_is_kind_of(mrb, answer, mrb->eException_class)) {
-    // note_raise reads the VM, so the exception goes back for the one
-    // call that needs it. It clears it again.
-    mrb->exc = mrb_obj_ptr(answer);
     note_raise(mrb, s, "running a compute task");
     mrb_gc_arena_restore(mrb, ai);
     return;
@@ -782,14 +729,6 @@ void run_job(WorkerVm& vm, Slot& s) {
   // The next job on this worker starts with an empty slot.
   worker_userdata_set(vm, mrb_nil_value());
   mrb_gc_arena_restore(mrb, ai);
-}
-
-unsigned compute_worker_ceiling() {
-  // The reactor's VM is one of them and it is always there, so the pool
-  // may have the rest. Never zero: a build with MRB_TASK_MAX_VMS 1 has
-  // no room for a worker, and one worker that refuses to open says so
-  // at startup - better than a pool that silently answers nothing.
-  return MRB_TASK_MAX_VMS > 1 ? static_cast<unsigned>(MRB_TASK_MAX_VMS - 1) : 1;
 }
 
 // One worker: block, run what the slot names, answer, repeat.
@@ -830,18 +769,24 @@ void ComputePool::worker(Impl* impl, unsigned me) {
       return;
     }
   }
+  // The address the reactor interrupts. It is published only after the
+  // VM stands, and taken back before it closes, so the reactor never
+  // holds a pointer to a VM that is being built or torn down.
+  impl->vms[me].store(vm.mrb, std::memory_order_release);
 
   for (;;) {
     struct io_uring_cqe* cqe = nullptr;
     const int rc = io_uring_wait_cqe(ring, &cqe);
     if (rc < 0) {
       if (rc == -EINTR) continue;
+      impl->vms[me].store(nullptr, std::memory_order_release);
       vm.close();
       return;
     }
     const uint64_t job = cqe->user_data;
     io_uring_cqe_seen(ring, cqe);
     if (job == kStopJob) {
+      impl->vms[me].store(nullptr, std::memory_order_release);
       vm.close();
       return;
     }
@@ -852,7 +797,7 @@ void ComputePool::worker(Impl* impl, unsigned me) {
     // The reader of an error record asks WHERE it ran before anything
     // else, so the name goes in beside the answer.
     s.worker_name = thread_name;
-    run_job(vm, s);
+    run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
 
     // The answer goes home as a completion. The reactor reads the slot
     // only after this arrives, and wrote it only before the job was
@@ -878,6 +823,17 @@ const char* ComputePool::start(unsigned workers, unsigned depth, struct io_uring
   impl->home = home;
   impl->rings.resize(workers);
   impl->slots.resize(static_cast<size_t>(workers) * depth);
+  // An atomic is not copyable, so these two are sized once and never
+  // grow: a vector that reallocates would move what another thread
+  // reads.
+  std::vector<std::atomic<mrb_state*>>(workers).swap(impl->vms);
+  std::vector<std::atomic<uint8_t>>(workers).swap(impl->job_seq);
+  std::vector<std::atomic<bool>>(impl->slots.size()).swap(impl->asked_stop);
+  for (std::atomic<bool>& a : impl->asked_stop) a.store(false, std::memory_order_relaxed);
+  for (unsigned i = 0; i < workers; i++) {
+    impl->vms[i].store(nullptr, std::memory_order_relaxed);
+    impl->job_seq[i].store(0, std::memory_order_relaxed);
+  }
 
   for (unsigned i = 0; i < workers; i++) {
     const int rc = io_uring_queue_init(depth < 8 ? 8 : depth, &impl->rings[i], 0);
@@ -915,8 +871,26 @@ void ComputePool::stop() {
   impl_ = nullptr;
 }
 
+void ComputePool::interrupt(unsigned worker, uint8_t seq) {
+  if (impl_ == nullptr || worker >= impl_->vms.size()) return;
+  // The worker moved on. Its next job cleared the flag at its own start,
+  // and this timeout belongs to a job that already answered.
+  if (impl_->job_seq[worker].load(std::memory_order_acquire) != seq) return;
+  mrb_state* const mrb = impl_->vms[worker].load(std::memory_order_acquire);
+  if (mrb == nullptr) return;
+  // Which slot that worker runs, so the answer can say "the deadline"
+  // rather than "it raised". Set BEFORE the interrupt: the worker reads
+  // it only after its block returned.
+  for (size_t i = 0; i < impl_->slots.size(); i++) {
+    if (impl_->slots[i].busy && impl_->slots[i].worker == worker) {
+      impl_->asked_stop[i].store(true, std::memory_order_release);
+    }
+  }
+  mrb_vm_interrupt(mrb);
+}
+
 bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_view user,
-                         double deadline, uint64_t answer) {
+                         double deadline, uint64_t answer, Sent* sent) {
   if (impl_ == nullptr) return false;
   Impl* impl = impl_;
   // A free slot, or no. Full means every worker is busy with a full
@@ -932,6 +906,7 @@ bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_vie
   if (at == impl->slots.size()) return false;
 
   Slot& s = impl->slots[at];
+  impl->asked_stop[at].store(false, std::memory_order_relaxed);
   s.code_id = code_id;
   s.deadline = deadline;
   s.arg.assign(arg.data(), arg.size());
@@ -948,6 +923,14 @@ bool ComputePool::submit(unsigned code_id, std::string_view arg, std::string_vie
   if (sqe == nullptr) {
     s.busy = false;
     return false;
+  }
+  s.worker = to;
+  // The number this job answers to. It goes up when the job is sent, so
+  // a timeout armed for the job before it finds a number that moved on.
+  const uint8_t seq = static_cast<uint8_t>(impl->job_seq[to].fetch_add(1, std::memory_order_acq_rel) + 1);
+  if (sent != nullptr) {
+    sent->worker = to;
+    sent->seq = seq;
   }
   io_uring_prep_msg_ring(sqe, impl->rings[to].ring_fd, 0, static_cast<uint64_t>(at), 0);
   // The submission itself owes no completion to anyone: the answer comes
@@ -972,6 +955,7 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
       out->message.swap(s.message);
       out->backtrace.swap(s.backtrace);
       out->worker_name = s.worker_name;
+      impl_->job_seq[s.worker].fetch_add(1, std::memory_order_acq_rel);
       s.busy = false;
       s.arg.clear();
       s.out.clear();
