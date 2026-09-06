@@ -466,6 +466,97 @@ task :error_assets do
        "#{entries.size} entries, #{File.size(ERROR_ASSETS)} bytes"
 end
 
+# --- packing a directory for --assets ---------------------------------
+#
+# The server serves static files from a ZIP, and this writes one. It is
+# here rather than in a shell line because the two decisions a pack makes
+# are decisions, not switches: WHAT is compressed, and what the entry is
+# NAMED.
+#
+# A deflate entry leaves the server as gzip - always, to every client,
+# because the tier hands out the archive's own stream. That is right for
+# text and wrong for a JPEG, which does not compress and would then reach
+# `curl -o` as a gzip file. So a suffix that names an already compressed
+# format is STORED, and everything else is deflated at level 9.
+#
+# The name in the archive is the path a client writes, without a leading
+# slash: examples/site/img/p1015.jpg goes in as img/p1015.jpg and answers
+# GET /img/p1015.jpg. A directory takes its own index.html.
+PACK_STORED = %w[
+  .jpg .jpeg .png .gif .webp .avif .ico .bmp
+  .woff .woff2 .otf .ttc
+  .zip .gz .br .zst .xz .bz2
+  .mp3 .mp4 .m4a .webm .ogg .ogv .opus .flac .mov .avi .mkv
+  .pdf .wasm
+].freeze
+
+def pack_zip(entries)
+  out = +''.b
+  cd = +''.b
+  entries.each do |name, data, mtime|
+    data = data.b
+    ddate, dtime = dos_stamp(mtime)
+    crc = Zlib.crc32(data)
+    # Info-ZIP's extended timestamp, so the mtime survives at one second
+    # rather than at the two the DOS field holds.
+    extra = [0x5455, 5, 0x01, mtime.to_i].pack('vvCl<')
+    stored = PACK_STORED.include?(File.extname(name).downcase)
+    body = stored ? data : Zlib::Deflate.deflate(data, 9)[2..-5]
+    # A file that grows under deflate is stored instead.
+    if !stored && body.bytesize >= data.bytesize
+      stored = true
+      body = data
+    end
+    method = stored ? 0 : 8
+    lho = out.bytesize
+    out << [0x04034b50, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
+            name.bytesize, extra.bytesize].pack('VvvvvvVVVvv') << name.b << extra << body
+    cd << [0x02014b50, 20, 20, 0, method, dtime, ddate, crc, body.bytesize, data.bytesize,
+           name.bytesize, extra.bytesize, 0, 0, 0, 0, lho]
+          .pack('VvvvvvvVVVvvvvvVV') << name.b << extra
+  end
+  cd_off = out.bytesize
+  out << cd
+  out << [0x06054b50, 0, 0, entries.size, entries.size, cd.bytesize, cd_off, 0]
+         .pack('VvvvvVVv')
+  out
+end
+
+desc 'pack a directory for --assets: rake pack[DIR,OUT.zip]'
+task :pack, %i[dir out] do |_t, args|
+  require 'zlib'
+  dir = args[:dir] or raise 'rake pack[DIR,OUT.zip] - which directory?'
+  raise "#{dir} is not a directory" unless File.directory?(dir)
+
+  out = args[:out] || "#{File.basename(File.expand_path(dir))}.zip"
+  root = File.expand_path(dir)
+  # Files only, sorted, and nothing whose name begins with a dot - an
+  # editor's swap file and a .git directory are not part of a site.
+  names = Dir.glob('**/*', File::FNM_DOTMATCH, base: root).sort.reject do |n|
+    n.split('/').any? { |seg| seg.start_with?('.') } || File.directory?(File.join(root, n))
+  end
+  raise "#{dir} holds no files" if names.empty?
+
+  entries = names.map do |n|
+    path = File.join(root, n)
+    [n, File.binread(path), File.mtime(path)]
+  end
+  File.binwrite(out, pack_zip(entries))
+  puts "#{out}: #{entries.size} entries, #{File.size(out)} bytes"
+  names.each { |n| puts "  #{n}" }
+end
+
+desc 'build the example site: examples/site.zip and examples/site.mrb'
+task :site do
+  Rake::Task[:pack].invoke('examples/site', 'examples/site.zip')
+  mrbc = File.expand_path('mruby/bin/mrbc', __dir__)
+  raise "#{mrbc} not found - rake compile builds it" unless File.executable?(mrbc)
+
+  sh "#{mrbc} -o examples/site.mrb examples/site.rb"
+  puts 'now: webmachine-server --port=8080 --app=examples/site.mrb ' \
+       '--assets=examples/site.zip'
+end
+
 desc 'remove build output (keeps the mruby checkout)'
 task :clean do
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake clean" if File.directory?(MRUBY_DIR)

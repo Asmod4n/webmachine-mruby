@@ -70,7 +70,8 @@ Every option is `--key=value`; the command line is parsed by
 value are one argument. Precedence is CLI > `webmachine.toml` > the
 app's `conf`. Static files
 are served from a ZIP (`--assets`), gzip synthesized from the archive's
-own deflate stream.
+own deflate stream. `rake pack[DIR,OUT.zip]` writes such a pack from a
+directory: it stores what does not compress and deflates the rest.
 
 **One of `--app` and `--assets` is required** - a server with nothing to
 serve says so and exits. A pack on its own is a valid server: it answers

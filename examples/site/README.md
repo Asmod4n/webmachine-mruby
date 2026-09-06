@@ -10,26 +10,29 @@ is written by Ruby. The parts of a page that change come from
     events.html   an EventSource on /events, opened and closed by hand
     ws.html       a WebSocket on /ws, spoken to with the browser's own object
 
-## Build the pack
+## Build it
 
-The server serves static files from a ZIP. Store the photographs and
-send the text compressed:
+One task builds both halves - the pack and the bytecode:
 
-    cd examples/site
-    zip -q -9 -r ../../site.zip . -x README.md 'img/*'
-    zip -q -0 -r ../../site.zip img -x 'img/SOURCES.md'
+    rake site
 
-The second line stores the photographs, because a JPEG does not
-compress. A stored entry goes out as it lies; a deflated one goes out as
-gzip, and a client that says it cannot take gzip gets a 406.
+That writes `examples/site.zip` and `examples/site.mrb`. Neither is in
+git; both are build output, and the files they are built from are here.
 
-## Compile the app
+`rake pack[DIR,OUT.zip]` does the pack half for any directory, so a site
+of your own needs no new task:
 
-    mruby/bin/mrbc -o site.mrb examples/site.rb
+    rake pack[public,public.zip]
 
-## Run the two together
+The pack stores what does not compress (a JPEG, a font, a video) and
+deflates the rest. That matters: a deflated entry leaves the server as
+gzip, to every client, so a stored JPEG is what makes `curl -o` save a
+JPEG.
 
-    mruby/bin/webmachine-server --port=8080 --app=site.mrb --assets=site.zip
+## Run it
+
+    mruby/bin/webmachine-server --port=8080 \
+        --app=examples/site.mrb --assets=examples/site.zip
 
 Then open <http://127.0.0.1:8080/>. The root of the pack answers `/`,
 because a path that names a directory takes that directory's

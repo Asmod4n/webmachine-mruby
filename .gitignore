@@ -35,3 +35,7 @@ build/conformance/
 
 # Agent worktrees. They are checkouts of this repository, not content.
 .claude/worktrees/
+
+# build output of `rake site`
+/examples/site.zip
+/examples/site.mrb
