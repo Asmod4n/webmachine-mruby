@@ -18,7 +18,6 @@
 
 
 #include <liburing.h>
-#include <pthread.h>
 
 #include <mruby/array.h>
 #include <mruby/cbor.h>
@@ -732,16 +731,11 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
 // One worker: block, run what the slot names, answer, repeat.
 void ComputePool::worker(Impl* impl, unsigned me) {
   struct io_uring* ring = &impl->rings[me];
-  // A thread with no name is a number in a backtrace, and a backtrace
-  // taken while a compute task is being answered is exactly the one that has
-  // to say WHICH worker. Linux takes 16 bytes with the terminator, so
-  // the number has to fit inside that - it is not a place to be
-  // generous with words.
+  // The name an error record gives this worker. It is not the OS
+  // thread's name: the workers are std::thread, and C++ has no call for
+  // that.
   char thread_name[16];
   std::snprintf(thread_name, sizeof(thread_name), "wm-compute%u", me);
-#if defined(__linux__)
-  pthread_setname_np(pthread_self(), thread_name);
-#endif
   // The VM this worker answers in, built ONCE. A worker that cannot
   // open one answers nothing: it goes, and the pool is short one
   // thread rather than quietly running a job on the wrong VM.
