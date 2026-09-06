@@ -4896,6 +4896,13 @@ class Http1 {
   // always got.
   void open_error_assets(mrb_state* mrb, Assets* error_assets);
 
+  // A pack that was built again, put in the place of the one this layer
+  // was handed. Every prebuilt block h2 keeps per entry belongs to the
+  // entry, so this rebuilds them for the new pack and nothing else
+  // changes. The old pack is not freed here - a response that is on the
+  // wire is still lending its bytes, and the caller owns that decision.
+  void swap_assets(Assets* assets);
+
   void on_tick();
 
   bool pending(const Conn& st) const;

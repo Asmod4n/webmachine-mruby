@@ -417,6 +417,17 @@ void Http1::build(const AppInput* apps, size_t napps) {
   on_tick();
 }
 
+// A pack built again while this one serves. The entries are new objects
+// in a new mapping, so the h2 blocks are built for them the way the
+// constructor built them for the pack this replaces.
+void Http1::swap_assets(Assets* assets) {
+  assets_ = assets;
+  if (assets_ == nullptr) return;
+
+  h2_build_asset_shared();
+  for (AssetEntry& e : assets_->entries()) h2_build_asset_blocks(e);
+}
+
 // RFC 9110 5.6.7: the wall-clock second changed - patch every prebuilt date.
 void Http1::on_tick() {
   const time_t now = ::time(nullptr);
