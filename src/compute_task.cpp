@@ -1,23 +1,18 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 //
-// #80: the compute pool a ComputeTask is answered by.
+// #80: the compute pool that answers a ComputeTask.
 //
-// Watcher is this file's sibling and the other half of the same idea: a
-// watcher answers the SAME question again until somebody disarms it, and
-// it watches a descriptor. A compute task is asked once, it is answered once,
-// and what answers it is a thread - because the work is not waiting for
-// a descriptor, it is arithmetic that would otherwise be done on the
-// reactor's core. argon2 is the first of it: ~40 ms, which is every
-// other connection on this core stopped for that long.
+// A compute task is asked once and answered once, and a thread answers
+// it. The work is arithmetic, not waiting: argon2 takes about 40 ms,
+// and the reactor's core would stop for that long.
 //
-// The queue between the two is io_uring's own. A worker blocks in
-// io_uring_wait_cqe on a ring of its own; the reactor posts work into it
-// with IORING_OP_MSG_RING, and the worker posts the answer back the same
-// way. So there is no ring buffer here to get the memory ordering right
-// in, no condition variable, no eventfd beside the queue to wake anyone
-// - and the answer arrives at the reactor as an ORDINARY completion,
-// which is what makes a compute task answered by a thread indistinguishable
-// from one resolved by a disk.
+// The queue is io_uring's own. A worker blocks on a ring of its own,
+// the reactor posts work into it with IORING_OP_MSG_RING, and the
+// answer comes back the same way - an ordinary completion, like a
+// disk's.
+//
+// Watcher is this file's sibling: it answers the same question again,
+// and it watches a descriptor.
 #include "webmachine.hpp"
 
 
