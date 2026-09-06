@@ -61,8 +61,9 @@ mrb_method_t resolve_alias(mrb_method_t m) {
 
 // One name looked up on one class: what mruby found, whether anything
 // answers, whether it is an irep (so the proc may be entered directly),
-// our own C++ body where there is one, and the name it was found by - the
-// funcall fallback needs it, and passing it separately let it disagree.
+// our own C++ body where there is one, and the name it was found by.
+// The name travels with the rest so the funcall fallback cannot use a
+// different one.
 struct Resolved {
   mrb_method_t m = {};
   mrb_sym sym = 0;
@@ -564,10 +565,10 @@ mrb_value run_rescue_body(mrb_state* mrb, void* ud) {
   return mrb_nil_value();
 }
 
-// fsm.rb: everything one run carries from one node to the next. It is a
-// struct and not a row of stack locals because the arms that are not the
-// straight line live in functions of their own, and this is what they
-// are handed (.DESIGN.md "The happy path is the straight line").
+// fsm.rb: everything one run carries from one node to the next.
+//
+// A struct rather than a row of locals, because the arms off the
+// straight line are functions of their own and this is what they take.
 //
 // `facts` and `k` are references into `res` rather than lookups repeated
 // at each use; `chosen` is written where the content type is negotiated

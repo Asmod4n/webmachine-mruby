@@ -1335,10 +1335,11 @@ inline constexpr bool kDebugBuild = false;
 #endif
 
 // The raise half of the facts, read off the VM. Defined in resource.cpp,
-// which is where a VM is. The caller has already filled what it knows of
-// the request and owns `backtrace`, which the facts point into - so the
-// caller can hash the whole and hand the same hash to the page and to
-// log_error, instead of the two computing it apart from each other.
+// which is where a VM is.
+//
+// The caller fills what it knows of the request and owns `backtrace`,
+// which the facts point into. So one hash is taken over the whole and
+// handed to both the page and log_error.
 // What one raise leaves behind: the record's fields, and the backtrace
 // text they point into.
 struct Raised {

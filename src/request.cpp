@@ -129,10 +129,9 @@ mrb_value req_query_string(mrb_state* mrb, mrb_value) {
 // application/x-www-form-urlencoded, WHATWG URL Standard: the pairs of
 // a query string, percent-decoded, '+' read as a space.
 //
-// NOT RFC 9110: this comment used to cite 4.2.1 for "'&' or ';'
-// separated", and that section says no such thing - it defines the http
-// URI scheme, where the query is an opaque string, as it is in RFC 3986
-// 3.4. Key-value pairs are not an HTTP concept at all; they are the
+// NOT RFC 9110. That specification defines the http URI scheme, where
+// the query is an opaque string, as it is in RFC 3986 3.4. Key-value
+// pairs are not an HTTP concept at all; they are the
 // form encoding's, and its living definition is the URL Standard. That
 // standard splits on '&' (0x26) and nothing else. The ';' this used to
 // accept came from a note to CGI authors in HTML 4.01 B.2.2 and was

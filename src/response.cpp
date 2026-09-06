@@ -350,10 +350,9 @@ mrb_value resp_is_redirect(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(live(mrb)->run.redirect);
 }
 
-// App-level only: no C++ run slot backs an error message, so it lives
-// as a plain ivar on the handle - as long as app code keeps ONE handle
-// (from a single `response` call) around, get/set on it agree, exactly
-// like any other Ruby attr_accessor.
+// App-level only: no C++ run slot backs an error message, so it lives as
+// a plain ivar on the handle. Keep one handle and get and set agree on
+// it, like any other Ruby attr_accessor.
 mrb_value resp_error(mrb_state* mrb, mrb_value self) {
   return mrb_iv_get(mrb, self, MRB_IVSYM(error));
 }
