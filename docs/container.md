@@ -47,7 +47,7 @@ Runtime: `libz1 libssl3 libstdc++6`.
 
 `--app` takes bytecode, not `.rb`:
 
-    mruby/build/host/mrbc/bin/mrbc -o app.mrb examples/hello.rb
+    mruby/build/host/mrbc/bin/mrbc -o app.mrb bench/apps/hello.rb
 
 ## Smaller base
 

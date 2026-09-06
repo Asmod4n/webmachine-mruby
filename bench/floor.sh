@@ -22,7 +22,7 @@
 #   IMPL=portable ...  REFUSED. 0b0b11d removed build_config_portable.rb,
 #                      so this named a binary nobody can produce - the
 #                      exact failure this file's header forbids.
-#   APP=examples/hello.rb ...  bind a resource (konst or runtime tier)
+#   APP=bench/apps/hello.rb ...  bind a resource (konst or runtime tier)
 #   REQPATH=/cpp ...   which route to ask for, when the app has several
 #   PIPELINE=8 ...     h1 requests in flight per connection (RFC 9112 9.3.2)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion

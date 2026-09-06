@@ -38,7 +38,7 @@
 # entirely about whether ONE client thread can generate enough load to
 # saturate it - it silently could not at deep multiplexing on forgecore,
 # reading as a server-side cost that was actually client starvation),
-# CONNS (load mode, default 32), PORT, APP (default examples/hello.rb),
+# CONNS (load mode, default 32), PORT, APP (default bench/apps/hello.rb),
 # ASSETS + ASSET_CODING + REQPATH (see below).
 #
 # EVENT= is the perf event the recording samples. Unset, perf takes its
@@ -203,7 +203,7 @@ ASSET_CODING="${ASSET_CODING:-stored}"
 REQPATH="${REQPATH:-/}"
 # An asset run has nothing to ask an app for; loading one anyway would
 # put mruby in the profile for no reason. An explicit APP= still wins.
-if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-examples/hello.rb}"; fi
+if [ -n "$ASSETS" ]; then APP="${APP-}"; else APP="${APP-bench/apps/hello.rb}"; fi
 MULTI="${MULTI:-1}"
 CONNS="${CONNS:-32}"
 STAT="${STAT:-0}"

@@ -91,7 +91,7 @@ def resource_read(s)
 end
 
 assert('resource: hello world serves its rendered body, typed, VM silent') do
-  resource_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
+  resource_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = resource_read(s)

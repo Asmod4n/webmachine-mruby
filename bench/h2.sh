@@ -37,7 +37,7 @@
 # THREADS is GONE: both ends are one thread (#120, #196), and the knob
 # only ever described h2load.
 # DURATION (default 10), REPS (default 1), PORT (default 8123), APP (default
-# examples/hello.rb; empty = the bare floor). Appends to
+# bench/apps/hello.rb; empty = the bare floor). Appends to
 # bench/results/$(hostname).log; failed runs write nothing.
 # NO PINNING - measured twice, lost twice. The previous tree removed
 # every taskset it had ("handing the scheduler one core was slower than
@@ -72,7 +72,7 @@ TRANSPORT="${TRANSPORT:-unix}"
 # name somebody else's run - or somebody else's user - already owns.
 WORK=$(mktemp -d)
 SOCK="$WORK/bench.sock"
-APP="${APP-examples/hello.rb}"
+APP="${APP-bench/apps/hello.rb}"
 BIN=mruby/build/host/bin/webmachine-server
 
 # The bench owns the machine while it runs; see bench/priority.sh.

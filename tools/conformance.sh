@@ -81,7 +81,7 @@ start_server() {
 
 case "$SUITE" in
 h2)
-  start_server examples/hello.rb
+  start_server bench/apps/hello.rb
   trap stop_server EXIT INT TERM
   if [ -n "${H2SPEC:-}" ]; then
     "$H2SPEC" -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"

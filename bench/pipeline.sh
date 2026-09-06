@@ -41,7 +41,7 @@ DURATION="${DURATION:-10}"
 DEPTH="${DEPTH:-16}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
-APP="${APP-examples/hello.rb}"
+APP="${APP-bench/apps/hello.rb}"
 cd "$(dirname "$0")/.." || exit 1
 
 BIN=mruby/build/host/bin/webmachine-server
