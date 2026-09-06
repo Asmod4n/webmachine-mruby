@@ -57,6 +57,18 @@ mrb_value open_pack_body(mrb_state* mrb, void* ud) {
 }
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
+#ifdef MRB_DEBUG
+// The VM a reload opens a pack in, kept from build(). A pack that cannot
+// be read raises, and a raise needs a state to raise into.
+mrb_state* reload_mrb_ = nullptr;
+// The pack that serves, and the ones that used to. NOTHING IS FREED WHILE
+// A RESPONSE MAY STILL LEND ITS BYTES: an answer on the wire points into
+// the mapping, and a munmap under one hands the peer somebody else's
+// memory or a SIGBUS. The retired ones go when the ring says no
+// connection is open.
+std::unique_ptr<Assets> live_;
+std::vector<std::unique_ptr<Assets>> retired_;
+#endif
 std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
@@ -338,6 +350,9 @@ void build(mrb_state* mrb) {
                  mime_.source().c_str(), mime_.size());
   }
   if (opts_.assets_path != nullptr) assets_.open(mrb, opts_.assets_path, mime_);
+#ifdef MRB_DEBUG
+  reload_mrb_ = mrb;
+#endif
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
@@ -538,11 +553,66 @@ mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// Webmachine.reload: open the pack again, without stopping.
+//
+// ONLY IN A DEBUG BUILD. A shipped server never rereads its own inputs -
+// that is one more state an operator has to reason about, and the answer
+// for a changed pack is a new process, which is atomic and leaves no
+// half-swapped middle. This exists for the loop somebody editing a site
+// runs, where a restart per keystroke is the wrong cost.
+mrb_value wm_reload(mrb_state* mrb, mrb_value) {
+#ifdef MRB_DEBUG
+  ensure(mrb);
+  if (opts_.assets_path == nullptr) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.reload has no pack to open - none was named");
+  }
+  return mrb_bool_value(server_reload());
+#else
+  mrb_raise(mrb, E_RUNTIME_ERROR,
+            "Webmachine.reload is a debug build's tool - a shipped server does not reread "
+            "its inputs; start a new one");
+  return mrb_nil_value();
+#endif
+}
+
 // Did the stop signal's completion land?
 mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
   ensure(mrb);
   return mrb_bool_value(ring_->stopped());
 }
+}
+
+// Webmachine.reload: the pack is opened again, and what answers from it
+// changes over on the next request. MRB_DEBUG only - see wm_reload.
+bool server_reload() {
+#ifdef MRB_DEBUG
+  if (http_ == nullptr || opts_.assets_path == nullptr || reload_mrb_ == nullptr) return false;
+
+  std::unique_ptr<Assets> fresh(new Assets());
+  OpenPack pack{fresh.get(), opts_.assets_path, &mime_};
+  mrb_bool raised = FALSE;
+  const mrb_value e = mrb_protect_error(reload_mrb_, open_pack_body, &pack, &raised);
+  if (raised) {
+    // A pack that cannot be read leaves the one that serves in place. A
+    // half-written zip is the usual reason, and 404 for every name until
+    // the next write is worse than the bytes that were already there.
+    const mrb_value said = mrb_obj_as_string(reload_mrb_, e);
+    std::fprintf(stderr, "webmachine: reload refused - %s (%.*s)\n", opts_.assets_path,
+                 static_cast<int>(RSTRING_LEN(said)), RSTRING_PTR(said));
+    return false;
+  }
+  http_->swap_assets(fresh.get());
+  if (live_ != nullptr) retired_.push_back(std::move(live_));
+  live_ = std::move(fresh);
+  // What was retired earlier can go once nothing is connected: no answer
+  // is on the wire, so nothing lends those bytes any more.
+  if (ring_ != nullptr && ring_->live_conns() == 0) retired_.clear();
+  std::fprintf(stderr, "webmachine: reload - %s, %zu retired mapping(s) still held\n",
+               opts_.assets_path, retired_.size());
+  return true;
+#else
+  return false;
+#endif
 }
 
 // What the INVOCATION decides; not reachable from Ruby, deliberately.
@@ -560,6 +630,7 @@ void server_init(mrb_state* mrb, struct RClass* wm) {
   struct RClass* app = mrb_class_get_under_id(mrb, wm, MRB_SYM(Application));
   mrb_define_method_id(mrb, app, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
   mrb_define_module_function_id(mrb, wm, MRB_SYM_Q(stopped), wm_stopped, MRB_ARGS_NONE());
+  mrb_define_module_function_id(mrb, wm, MRB_SYM(reload), wm_reload, MRB_ARGS_NONE());
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.
