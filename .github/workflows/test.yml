@@ -48,6 +48,10 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     needs: suite
+    # A stalled suite must not hold a runner for hours. The Autobahn run
+    # is bounded below, so the report and the server's log still reach
+    # the artifact; this is the ceiling for the whole job.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,7 +83,15 @@ jobs:
           BIN: mruby/build/debug/bin/webmachine-server
           MRBC: mruby/build/debug/bin/mrbc
         run: |
-          tools/conformance.sh ws
+          # Every case together takes about 13 minutes here. A run that
+          # goes past 25 is stalled, and the log says where.
+          if ! timeout 1500 tools/conformance.sh ws; then
+            echo '--- the server log ---'
+            tail -50 build/conformance/server.log || true
+            echo '--- the last case ---'
+            grep 'Running test case' build/conformance/autobahn.log | tail -3 || true
+            exit 1
+          fi
           ruby -rjson -e '
             report = JSON.parse(File.read("build/conformance/reports/index.json"))
             bad = []
