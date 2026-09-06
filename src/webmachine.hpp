@@ -55,6 +55,8 @@
 // so the compiler does not warn that a [[noreturn]] function returns.
 #if defined(_MSC_VER) && !defined(__clang__)
 #define WM_UNREACHABLE() __assume(0)
+#define WM_LIKELY(x) (x)
+#define WM_UNLIKELY(x) (x)
 #else
 #define WM_UNREACHABLE() __builtin_unreachable()
 #endif
@@ -4339,12 +4341,6 @@ inline constexpr size_t file_send_chunk(int send_timeout_s) {
 
 inline constexpr uint16_t kNoRoute = 0xffff;
 
-// http1.cpp's own hint macro, needed here because spell_answer's body
-// lives in this header - see the note on spell_answer for why.
-#ifndef WM_H1_UNLIKELY
-#define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#endif
-
 class Http1 {
  public:
   // ONE of these per connection, so the order is by alignment and not by
@@ -5831,7 +5827,7 @@ class Http1 {
     std::string ef_backtrace;
     std::string ef_steering;
     char ef_hash[kFingerprintLen] = {};
-    if (WM_H1_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
+    if (WM_UNLIKELY(astep.shape == AnswerStep::Shape::kException)) {
       ef.peer = st.peer;
       ef.peer_len = st.peer_len;
       ef.request_target = path;

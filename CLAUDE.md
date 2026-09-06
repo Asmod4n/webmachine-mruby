@@ -44,6 +44,9 @@ The rules that matter most:
 - Active voice. Name who does the thing.
 - Simple words. One word keeps one meaning.
 - No metaphors, no idioms, no rhetorical questions.
+- No word in capitals for emphasis. `ONE binary` and `READ THE DIFF`
+  are shouting. An acronym (RFC, HTTP) and the name of a constant are
+  not emphasis.
 
 A NAME follows the same rule, and it is the rule that is broken most
 often. A function is named for what it does. A file is named for what

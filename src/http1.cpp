@@ -9,10 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 
-#ifndef WM_H1_UNLIKELY
-#define WM_H1_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#endif
-#define WM_H1_LIKELY(x) __builtin_expect(!!(x), 1)
 
 namespace webmachine {
 namespace {
@@ -79,7 +75,7 @@ void read_wire_header(WireSink into, http::Field f) {
   switch (nl) {
     case 14:
       if (http::tok_eq({n, nl}, "content-length")) {
-        if (WM_H1_UNLIKELY(w.have_cl)) {
+        if (WM_UNLIKELY(w.have_cl)) {
           w.err = 400;
           return;
         }
@@ -101,7 +97,7 @@ void read_wire_header(WireSink into, http::Field f) {
       break;
     case 4:
       if (http::tok_eq({n, nl}, "host")) {
-        if (WM_H1_UNLIKELY(w.have_host)) w.err = 400;
+        if (WM_UNLIKELY(w.have_host)) w.err = 400;
         w.have_host = true;
       }
       break;
@@ -811,7 +807,7 @@ bool Http1::feed(Conn& st, std::string_view data, Sink out) {
   std::string& sink = out.bytes;
   Plan* const plan = out.plan;
   const bool ok = feed_parse(st, data, out);
-  if (WM_H1_UNLIKELY(st.zc_split) && plan != nullptr) claim_sink(st, sink, *plan);
+  if (WM_UNLIKELY(st.zc_split) && plan != nullptr) claim_sink(st, sink, *plan);
   return ok;
 }
 
@@ -1172,7 +1168,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   const char* lent = nullptr;
   size_t lent_len = 0;
   LentBody lent_body;
-  if (WM_H1_UNLIKELY(resource_body_lent(*b->res, lent_body))) {
+  if (WM_UNLIKELY(resource_body_lent(*b->res, lent_body))) {
     st.zc_value = lent_body.value;
     lent = lent_body.bytes.data();
     lent_len = lent_body.bytes.size();
@@ -1186,7 +1182,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   // a mapping that outlives every request, so nothing here is
   // rooted and nothing is released: a plan carries the segment
   // (wire_iov), and without one the bytes are copied (copy_wire).
-  if (WM_H1_UNLIKELY(b->res->run.asset != nullptr)) {
+  if (WM_UNLIKELY(b->res->run.asset != nullptr)) {
     const AssetEntry& ae = *b->res->run.asset;
     const size_t n = Assets::wire_len(ae);
     if (plan != nullptr) {
@@ -1211,7 +1207,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   // name this process already refused takes the same 404 the kernel's
   // own refusal takes, spelled right here since no ring trip is owed.
   {
-    if (WM_H1_UNLIKELY(answer_from_file(r, status, ask.rhdrs))) {
+    if (WM_UNLIKELY(answer_from_file(r, status, ask.rhdrs))) {
       ask.body.clear();
       // accept_gzip came in with `out` and stays there: the caller read
       // Accept-Encoding once, and a file answer does not change what the
@@ -1226,7 +1222,7 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
   }
   // RFC 9110 6.3: field lines or a conneg no prebuilt head can hold -
   // this run spells its own. 500 stays on the exception path below.
-  if (WM_H1_UNLIKELY((!b->res->run.content_type.empty() || !ask.rhdrs.empty()) &&
+  if (WM_UNLIKELY((!b->res->run.content_type.empty() || !ask.rhdrs.empty()) &&
                      status != 500)) {
     const bool bodyless = status == 204 || status == 304;
     if (bodyless || !have_body) {
@@ -1396,7 +1392,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // completion carries a number and not a pointer.
     Conn::Round mine_round;
     int park = -1;
-    while (WM_H1_UNLIKELY(ran != nullptr && run_stopped(*ran))) {
+    while (WM_UNLIKELY(ran != nullptr && run_stopped(*ran))) {
       const Resource& res = *ran;
       // The head, copied, and everything re-pointed at the copy. After
       // this the provided buffer may go back to the kernel.
@@ -1475,7 +1471,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // a handle that died may come back (.DESIGN.md #compute-task-bound).
       // A refused run does not walk on - there is no answer to walk to.
       const ComputeRefusal refused = compute_task_refusal(mine_round);
-      if (WM_H1_UNLIKELY(refused.status != 0)) {
+      if (WM_UNLIKELY(refused.status != 0)) {
         // Nothing the run said still holds: it never reached an answer.
         // A content type, a file name, an error asset - all of them
         // belong to a walk that was refused, and the finish would try
@@ -1538,7 +1534,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     out.status = status;
     out.have_body = have_body;
     out.accept_gzip = prep.accept_gzip;
-    if (WM_H1_UNLIKELY(bound_finish(fr, fask, out) == Took::kOwed)) {
+    if (WM_UNLIKELY(bound_finish(fr, fask, out) == Took::kOwed)) {
       // response.file: the reactor fetches it and spell_next_round puts
       // it on the wire. Nothing is spelled here.
       co_return 0;
@@ -1630,7 +1626,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   // RFC 9110 6.4: a bound route's head waits in the carry until the whole
   // body is here - the run READS the body, so it cannot answer before the
   // last byte. Nothing is parsed again until body_need is paid off.
-  if (WM_H1_UNLIKELY(st.content_need != 0)) {
+  if (WM_UNLIKELY(st.content_need != 0)) {
     if (len < st.content_need) {
       st.content_need -= len;
       st.carry.append(data, len);
@@ -1639,8 +1635,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     st.content_need = 0;
   }
 
-  if (WM_H1_UNLIKELY(st.asset != nullptr)) {
-    if (WM_H1_UNLIKELY(st.carry.size() + len > kMaxHead)) {
+  if (WM_UNLIKELY(st.asset != nullptr)) {
+    if (WM_UNLIKELY(st.carry.size() + len > kMaxHead)) {
       st.carry.clear();
       st.content_skip = 0;
       st.asset = nullptr;
@@ -1650,15 +1646,15 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     return true;
   }
 
-  if (WM_H1_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, in, sink);
-  if (WM_H1_UNLIKELY(st.sse != nullptr)) return true;
+  if (WM_UNLIKELY(st.ws != nullptr)) return ws_feed(st.ws, in, sink);
+  if (WM_UNLIKELY(st.sse != nullptr)) return true;
 
   const bool in_place = st.carry.empty();
   const char* view = data;
   size_t viewlen = len;
-  if (WM_H1_UNLIKELY(!in_place)) {
+  if (WM_UNLIKELY(!in_place)) {
     size_t grown = 0;
-    if (WM_H1_UNLIKELY(__builtin_add_overflow(st.carry.size(), len, &grown))) {
+    if (WM_UNLIKELY(__builtin_add_overflow(st.carry.size(), len, &grown))) {
       return fail(st, 431, sink);
     }
     st.carry.append(data, len);
@@ -1677,15 +1673,15 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     size_t num_headers = kMaxHeaders;
     const int ret = phr_parse_request(view + off, viewlen - off, &method, &method_len, &path,
                                       &path_len, &minor, headers, &num_headers, 0);
-    if (WM_H1_UNLIKELY(ret == -2)) {
+    if (WM_UNLIKELY(ret == -2)) {
       const size_t rest = viewlen - off;
-      if (WM_H1_UNLIKELY(rest > kMaxHead)) return fail(st, 431, sink);
+      if (WM_UNLIKELY(rest > kMaxHead)) return fail(st, 431, sink);
       if (in_place) st.carry.assign(view + off, rest);
       else st.carry.erase(0, off);
       return true;
     }
-    if (WM_H1_UNLIKELY(ret <= 0)) return fail(st, 400, sink);
-    if (WM_H1_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, 431, sink);
+    if (WM_UNLIKELY(ret <= 0)) return fail(st, 400, sink);
+    if (WM_UNLIKELY(static_cast<size_t>(ret) > kMaxHead)) return fail(st, 431, sink);
 
     WireFacts w;
     flow::ReqFacts facts;
@@ -1699,15 +1695,15 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       }
     }
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
-    if (WM_H1_UNLIKELY(w.err != 0)) return fail(st, w.err, sink, lflags);
-    if (WM_H1_UNLIKELY(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
-    if (WM_H1_UNLIKELY(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
-    if (WM_H1_UNLIKELY(w.content_length > kMaxBody)) return fail(st, 413, sink, lflags);
+    if (WM_UNLIKELY(w.err != 0)) return fail(st, w.err, sink, lflags);
+    if (WM_UNLIKELY(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
+    if (WM_UNLIKELY(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
+    if (WM_UNLIKELY(w.content_length > kMaxBody)) return fail(st, 413, sink, lflags);
 
     const bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
 
-    if (WM_H1_UNLIKELY(w.up_ws && w.conn_upgrade)) {
+    if (WM_UNLIKELY(w.up_ws && w.conn_upgrade)) {
       const AppSlot& wslot = apps_[st.listener];
       RouteSpans wspans;
       const int wr =
@@ -1733,7 +1729,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       }
     }
 
-    if (WM_H1_UNLIKELY(apps_[st.listener].sse_table != nullptr)) {
+    if (WM_UNLIKELY(apps_[st.listener].sse_table != nullptr)) {
       const AppSlot& sslot = apps_[st.listener];
       RouteSpans sspans;
       const int sr = sslot.sse_table->match(path, path_len, sspans);
@@ -1754,7 +1750,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
               in_place, method, method_len, path, path_len, minor, persist, head_only,
               w.content_length, lflags, facts, vals};
       const Took took = answer_from_assets(r, sink, plan);
-      if (WM_H1_UNLIKELY(took != Took::kNo)) {
+      if (WM_UNLIKELY(took != Took::kNo)) {
         off = r.off;
         if (took == Took::kClose) return false;
         if (took == Took::kOwed) return true;
@@ -1785,12 +1781,12 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     // assemble_dynamic() further down - Accept-Encoding does not change
     // between the two.
     bool accept_gzip = false;
-    if (WM_H1_UNLIKELY(route < 0)) {
+    if (WM_UNLIKELY(route < 0)) {
       status = 404;
     } else {
       b = &bundles_[slot.base + static_cast<size_t>(route)];
       idx = &b->index;
-      if (WM_H1_LIKELY(b->bound)) {
+      if (WM_LIKELY(b->bound)) {
         const size_t head_len = static_cast<size_t>(ret);
         if (w.content_length != 0 && viewlen - off - head_len < w.content_length) {
           st.content_need = w.content_length - (viewlen - off - head_len);
@@ -1809,7 +1805,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // declaration of its own before it can reach this path.
         // #30: a value round stops the run as much as a node does, and
         // a resource may declare only values.
-        if (WM_H1_UNLIKELY(b->res->compute != 0 || b->res->watch != 0 ||
+        if (WM_UNLIKELY(b->res->compute != 0 || b->res->watch != 0 ||
                            b->res->value_jobs != 0 || b->res->value_watch != 0)) {
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + head_len,       head_len,   method,
@@ -1819,8 +1815,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
                                     route,    minor,      lflags,     in_place,
                                     persist,  head_only};
           const ComputeRound r = start_compute_round(st, start, &sink, plan, off);
-          if (WM_H1_UNLIKELY(r == ComputeRound::kParked)) return true;
-          if (WM_H1_UNLIKELY(r == ComputeRound::kClosed)) return false;
+          if (WM_UNLIKELY(r == ComputeRound::kParked)) return true;
+          if (WM_UNLIKELY(r == ComputeRound::kClosed)) return false;
           continue;
         }
         Round br{st,   b,        view,      viewlen,  off + head_len,
@@ -1834,7 +1830,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         const BoundAsk basked = {headers, num_headers, spans,  slot.table,
                                  route,   plan,        sink,   body_,
                                  rhdrs_};
-        if (WM_H1_UNLIKELY(answer_bound(br, basked, bo) == Took::kOwed)) {
+        if (WM_UNLIKELY(answer_bound(br, basked, bo) == Took::kOwed)) {
           have_body = false;
           return true;
         }
@@ -1848,7 +1844,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // RFC 9110 12.5.1: c4 belongs to the client. The fold left this
         // resource with exactly one media type (two would have bound it), so
         // the question is one match, asked here in C++ and never in the VM.
-        if (WM_H1_UNLIKELY(facts.has_accept && vals.accept != nullptr)) {
+        if (WM_UNLIKELY(facts.has_accept && vals.accept != nullptr)) {
           if (http::accept_is_exact({vals.accept, vals.accept_len}, b->accept_type)) {
             // Asked and answered: this Accept names the one type offered,
             // so c3/c4 have nothing left to decide and the request is as
@@ -1890,13 +1886,13 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       off += skip;
       st.content_skip = w.content_length - skip;
     }
-    if (WM_H1_UNLIKELY(!persist)) {
+    if (WM_UNLIKELY(!persist)) {
       st.carry.clear();
       st.content_skip = 0;
       return false;
     }
   }
-  if (WM_H1_UNLIKELY(!in_place)) st.carry.clear();
+  if (WM_UNLIKELY(!in_place)) st.carry.clear();
   return true;
 }
 
@@ -1991,14 +1987,14 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
   const flow::Method m = req.m;
   const http::ReqValues& vals = req.vals;
   const uint8_t lflags = req.lflags;
-  if (WM_H1_UNLIKELY(m != flow::Method::kGet)) {
+  if (WM_UNLIKELY(m != flow::Method::kGet)) {
     log_sse(alog_, st, {method, path, vals, 405, lflags});
     sink.append("HTTP/1.1 405 Method Not Allowed\r\nDate: ");
     sink.append(date_, http::kDateLen);
     sink.append("\r\nAllow: GET\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     return false;
   }
-  if (WM_H1_UNLIKELY(minor < 1)) {
+  if (WM_UNLIKELY(minor < 1)) {
     log_sse(alog_, st, {method, path, vals, 505, lflags});
     sink.append("HTTP/1.1 505 HTTP Version Not Supported\r\nDate: ");
     sink.append(date_, http::kDateLen);
