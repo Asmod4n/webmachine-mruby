@@ -47,19 +47,23 @@
 // RESOLVE_BENEATH stops ".." and absolute paths, NO_SYMLINKS stops a
 // symlink inside the docroot pointing out, NO_MAGICLINKS stops the
 // /proc-style ones.
-#if __has_include(<linux/openat2.h>)
-#include <linux/openat2.h>
-
 // A raise here is a C++ throw, and mrb_noreturn resolves to nothing
-// under -std=c++20. A function that ends in a raise says so with this,
-// so the compiler does not warn that a [[noreturn]] function returns.
+// under -std=c++20. A function that ends in a raise says so with
+// WM_UNREACHABLE, so the compiler does not warn that a [[noreturn]]
+// function returns. The two branch hints beside it are for the cold
+// paths (.DESIGN.md #cold-paths), and MSVC has no form of them.
 #if defined(_MSC_VER) && !defined(__clang__)
 #define WM_UNREACHABLE() __assume(0)
 #define WM_LIKELY(x) (x)
 #define WM_UNLIKELY(x) (x)
 #else
 #define WM_UNREACHABLE() __builtin_unreachable()
+#define WM_LIKELY(x) __builtin_expect(!!(x), 1)
+#define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
+
+#if __has_include(<linux/openat2.h>)
+#include <linux/openat2.h>
 #else
 struct open_how {
   uint64_t flags;
@@ -6381,9 +6385,6 @@ void config_load(mrb_state* mrb, const char* path, Config& out);
 #ifndef SO_MEMINFO
 #define SO_MEMINFO 55
 #endif
-
-#define WM_LIKELY(x) __builtin_expect(!!(x), 1)
-#define WM_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 
 namespace webmachine {
