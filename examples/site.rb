@@ -6,6 +6,13 @@
 
 # --- GET /fragment/time -----------------------------------------------
 # The smallest htmx answer there is: an element, not a page.
+# RFC 9111 4.2.2: a response that says nothing about how long it may be
+# used lets a cache GUESS one. That is right for a document and wrong
+# for these three, so they say no-store: the clock is a clock, the
+# search answers what was typed a moment ago, and a counter that comes
+# from a cache is a wrong number.
+NEVER_STORE = 'no-store'
+
 class TimeFragment < Webmachine::Resource
   MONTHS = %w[January February March April May June July August September
               October November December].freeze
@@ -16,6 +23,7 @@ class TimeFragment < Webmachine::Resource
   end
 
   def to_html
+    response.headers['cache-control'] = NEVER_STORE
     now = Time.now
     "<span class=\"state up\">#{TimeFragment.clock(now)} on the server, " \
       "#{now.day} #{MONTHS[now.month - 1]} #{now.year}</span>"
@@ -38,6 +46,7 @@ class SearchFragment < Webmachine::Resource
   ].freeze
 
   def to_html
+    response.headers['cache-control'] = NEVER_STORE
     q = request.query['q'].to_s.downcase
     return '' if q.empty?
 
@@ -83,6 +92,7 @@ class CountFragment < Webmachine::Resource
   end
 
   def to_html
+    response.headers['cache-control'] = NEVER_STORE
     "<strong>#{COUNT[0]}</strong> so far"
   end
 end
