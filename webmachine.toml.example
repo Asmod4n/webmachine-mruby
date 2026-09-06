@@ -1,0 +1,101 @@
+# webmachine.toml - written by --write-config.
+#
+# EVERY KNOB THIS SERVER READS FROM A FILE IS HERE, with what it does
+# and what it does without you. Nothing in this file changes anything
+# until you change a line: these ARE the answers.
+#
+# A flag beats this file; this file beats the app's own conf.
+
+[server]
+# WHERE it answers. At most one of the two - a unix socket, or a TCP
+# port. Without either, the app's conf decides.
+# unix = "/run/webmachine.sock"
+# port = 8080
+
+# WHAT it serves. One of app and assets, or a docroot with
+# --standalone; with nothing to serve there is no start.
+# app = "site.mrb"           # the application, as bytecode (mrbc)
+# assets = "site.zip"        # a pack, answered from one mapping
+# docroot = "/srv/site"      # with an app: the only directory
+                             # response.file may reach. Standalone:
+                             # the files that are served.
+
+# The media-type database. Without it the machine's own is found:
+# /etc/mime.types, then Apache's, then shared-mime-info, then the
+# list compiled in.
+# mime_types = "/etc/mime.types"
+
+# Where the pid goes, removed on the way out. Without it, nowhere.
+# pidfile = "/run/webmachine.pid"
+
+[assets]
+# How long a browser may use a PAGE without asking again, in seconds.
+# Every other file's lifetime is decided per extension when the pack
+# is written; this is the one number that also decides RETENTION.
+max_age = 300
+
+# WHAT THE PACK KEEPS: everything, and there is no setting here on
+# purpose.
+#
+# A pack is appended to and never rewritten, so every name a build
+# ever handed out still answers with the bytes it meant. That is not
+# tidiness - a page from an older build needs THAT build's stylesheet,
+# and today's would break it as thoroughly as none.
+#
+# The window is not ours to guess. A television app, a kiosk, a phone
+# nobody has opened since spring: each asks for the files its own
+# build named, whenever it wakes up. So dropping old entries is a
+# decision about YOUR clients, and it is made by hand:
+#
+#   rake pack[DIR,OUT.zip,compact]   keep only what this build makes
+#
+# Never below 2 x max_age, whatever else you decide: a page may be
+# used for max_age, and the files it names may be asked for that long
+# again.
+
+[log]
+# The access log. Both logs are opt-in, separate files, separate
+# writers, no field in common. Without them, nothing is written.
+# file = "/var/log/webmachine/access.log"
+
+# What an address looks like in that log: none, anon or full.
+# anon is the default and drops the host part; full keeps the
+# address; none writes no address at all.
+# privacy = "anon"
+
+# What a callback RAISED, with its class, message, backtrace, the
+# request that led there and up to 4 KB of its body. That last part
+# is whatever the app was sent - a form login puts a password in it -
+# so give the file the permissions that says so.
+# error_file = "/var/log/webmachine/error.log"
+
+# The ceiling on the access log, in bytes. 0 is no ceiling.
+# max_bytes = 524288000        # 500 MB, the default
+
+[tune]
+# EVERY VALUE HERE IS A PROPERTY OF THE MACHINE, not of the site.
+# Measure before you change one: bench/ has the harnesses.
+
+# listen(2)'s backlog. Without it, SOMAXCONN.
+# backlog = 4096
+
+# The submission queue this ring asks the kernel for. It is halved
+# until the kernel agrees, so this is a wish and not a promise.
+# sq_entries = 32768
+
+# From this size up a body is LENT to the kernel instead of copied
+# into the send buffer. 0 is "never lend", which is a real answer.
+# zero_copy_threshold = 131072     # 128 KiB, the default
+
+# From this size up a file is MAPPED and handed to one send instead
+# of being read window by window. The default is one window: a file
+# that small IS one read, so a mapping would replace nothing and
+# still cost the mmap/munmap pair. 0 is "never map".
+# file_map_threshold = 262144      # 256 KiB, the default
+
+# How long a client may take over one thing, in seconds. Fractions
+# are allowed (0.5).
+# header_timeout = 60          # to finish sending a request head
+# send_timeout = 60            # to take an answer this side wrote
+# idle_timeout = 75            # to send the next request on a kept
+                               # connection

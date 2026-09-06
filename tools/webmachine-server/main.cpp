@@ -33,6 +33,8 @@ struct Invocation {
   const char* cli_unix = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
+  // --write-config[=PATH]: write the file and stop. Nothing is served.
+  const char* write_config = nullptr;
   const char* error_log_path = nullptr;
   long long log_max_bytes = -1;
   int cli_port = 0;
@@ -67,6 +69,7 @@ void usage(const char* me) {
                "\n"
                "OTHER\n"
                "  --config=FILE.toml       these choices from a file; flags beat it\n"
+               "  --write-config[=PATH]    write that file with the defaults in it, and stop\n"
                "  --pidfile=PATH           write this pid, remove it on the way out\n"
                "\n"
                "AN APPLICATION\n"
@@ -88,6 +91,7 @@ void usage(const char* me) {
 // this one, and it is also what the usage text above lists.
 const char* const kFlags[] = {
     "unix", "port", "app", "standalone", "assets", "error-assets", "docroot", "mime-types",
+    "write-config",
     "log", "log-privacy", "error-log", "log-max-bytes", "file-map-threshold",
     "zero-copy-threshold", "pidfile", "config",
 };
@@ -171,6 +175,10 @@ bool parse_argv(mrb_state* mrb, Invocation& in) {
   in.cli_port = static_cast<int>(number_of(mrb, h, "port", 0));
   opts.app_path = text_of(mrb, h, "app");
   opts.standalone = flag_of(mrb, h, "standalone");
+  in.write_config = text_of(mrb, h, "write-config");
+  if (in.write_config == nullptr && flag_of(mrb, h, "write-config")) {
+    in.write_config = "webmachine.toml";
+  }
   opts.assets_path = text_of(mrb, h, "assets");
   opts.error_assets_path = text_of(mrb, h, "error-assets");
   opts.docroot_path = text_of(mrb, h, "docroot");
@@ -286,6 +294,17 @@ int serve(mrb_state* mrb, Invocation& in) {
   opts.log_privacy = log_privacy;
   opts.error_log_path = error_log_path;
   if (log_max_bytes >= 0) opts.log_max_bytes = static_cast<unsigned long long>(log_max_bytes);
+
+  if (in.write_config != nullptr) {
+    if (!webmachine::config_write_default(in.write_config)) {
+      std::fprintf(stderr, "webmachine: %s is already there - it is never written over\n",
+                   in.write_config);
+      return 1;
+    }
+    std::fprintf(stderr, "webmachine: wrote %s - it changes nothing until you change a line\n",
+                 in.write_config);
+    return 0;
+  }
 
   webmachine::server_options(opts);
 

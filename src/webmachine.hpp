@@ -4247,6 +4247,12 @@ inline constexpr size_t kDeliverChunk = 64u * 1024;
 // deployment that never tunes it - so the default errs high. 0 turns lending
 // off and every body is copied, exactly as before.
 inline constexpr size_t kZeroCopyDefault = 128u * 1024;
+
+// The submission queue the ring ASKS FOR. It is halved until the kernel
+// agrees, so this is a wish and not a promise - and it is named here
+// rather than in ring.hpp because --write-config states it too, and one
+// number stated twice is one too many.
+inline constexpr unsigned kSqWanted = 32768;
 // A ceiling on what an operator may ask for, so a typo cannot quietly mean
 // "never lend": beyond this a body is larger than anything this tier serves.
 // 1 GiB and not 2, so it still fits an mrb_int on a 32-bit-integer build -
@@ -6409,9 +6415,14 @@ inline constexpr long long kAssetsMaxAgeDefault = 300;
 // named by nothing and can go.
 inline constexpr long long assets_retention(long long max_age) { return max_age * 2; }
 
-// webmachine.toml, written when there is none. The first run of a server
-// is where an operator finds out which questions exist, and a file with
-// the answers in it says more than a manual page nobody opened.
+// webmachine.toml, written BECAUSE SOMEBODY ASKED - --write-config, and
+// nothing else. A server that leaves files behind on its own is a server
+// an operator has to clean up after, and a config that appeared without
+// being asked for is one nobody knows the provenance of.
+//
+// What it writes is what this server does without it, so the file is a
+// starting point that changes nothing until a line in it is changed.
+// False when the path already exists: it is never written over.
 bool config_write_default(const char* path);
 
 void config_load(mrb_state* mrb, const char* path, Config& out);

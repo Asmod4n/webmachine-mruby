@@ -881,6 +881,20 @@ task :site do
        '--assets=examples/site.zip'
 end
 
+# The reference config in this tree is GENERATED, and by the server
+# itself: --write-config states every knob it reads, and a second copy
+# written by hand is a second answer that goes stale on the first change.
+desc 'regenerate webmachine.toml.example from the server itself'
+task :config_example => :compile do
+  out = File.expand_path('webmachine.toml.example', __dir__)
+  bin = File.expand_path('mruby/bin/webmachine-server', __dir__)
+  raise "#{bin} not found - rake compile builds it" unless File.executable?(bin)
+
+  rm_f out
+  sh "#{bin} --write-config=#{out}"
+  puts "webmachine.toml.example: #{File.readlines(out).size} lines"
+end
+
 desc 'remove build output (keeps the mruby checkout)'
 task :clean do
   sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{CONFIG} rake clean" if File.directory?(MRUBY_DIR)

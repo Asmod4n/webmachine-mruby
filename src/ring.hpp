@@ -59,7 +59,6 @@ class Ring {
     }
     int rc = 0;
     raise_memlock();
-    constexpr unsigned kSqWanted = 32768;
     constexpr unsigned kSqFloor = 1024;
     constexpr unsigned kSetupFlags =
         IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;

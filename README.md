@@ -65,6 +65,11 @@ webmachine-server [--config=FILE.toml] [--unix=PATH | --port=N]
                   [--error-log=FILE] [--log-max-bytes=N] [--pidfile=PATH]
 ```
 
+`webmachine.toml.example` in this tree lists every setting the file form
+carries, with what each one does and what it does without you. It is
+written by the server itself - `--write-config[=PATH]` - so it cannot go
+stale, and nothing writes such a file unless somebody asks.
+
 Every option is `--key=value`; the command line is parsed by
 [TypedArgs](https://github.com/Asmod4n/typedargs), so a flag and its
 value are one argument. Precedence is CLI > `webmachine.toml` > the
