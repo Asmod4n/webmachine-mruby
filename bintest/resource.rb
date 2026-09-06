@@ -1383,3 +1383,31 @@ assert('compute: a class-level node callback is not folded, and answers per requ
     end
   end
 end
+
+# #80: a worker whose VM cannot be built stays at its ring and answers
+# every job as a fault, so the request gets its 503 and nothing waits
+# for an answer that never comes. The failure itself is on stderr.
+assert('compute: a worker that cannot build its registry answers 503, not silence') do
+  src = <<~RUBY_SRC
+    Webmachine::Workers::Registry[:broken] = proc { raise 'no handle here' }
+
+    class ComputeNoWorker < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
+      def to_html; 'x'; end
+    end
+  RUBY_SRC
+  resource_server(wm_app('ComputeNoWorker', src)) do |sock, pid|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, _ = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 503'), head.lines.first.to_s
+      assert_true head.match?(/^Retry-After: 60\r$/i), head
+    end
+    err = File.read("/tmp/wm-res-stderr-#{$$}.log") rescue ''
+    assert_true err.include?('Registry[broken] could not be built'), err
+    assert_true err.include?('no handle here'), err
+  end
+end

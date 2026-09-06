@@ -804,18 +804,24 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // This costs startup time once per worker and nothing afterwards: a
   // worker opens its VM before it takes its first job.
   WorkerVm vm;
+  // A worker whose VM did not open stays at its ring and answers every
+  // job it is sent as a fault, so the run behind it gets its 503 and
+  // the error log names this worker. Leaving would strand each job
+  // sent here with no answer and no deadline, because the clock starts
+  // when a job starts.
+  bool boot_failed = false;
   {
     static std::mutex opening;
     const std::lock_guard<std::mutex> hold(opening);
     if (!vm.open()) {
       vm.close();
-      return;
+      boot_failed = true;
     }
   }
   // The address the reactor interrupts. It is published only after the
   // VM stands, and taken back before it closes, so the reactor never
   // holds a pointer to a VM that is being built or torn down.
-  impl->vms[me].store(vm.mrb, std::memory_order_release);
+  if (!boot_failed) impl->vms[me].store(vm.mrb, std::memory_order_release);
 
   for (;;) {
     struct io_uring_cqe* first = nullptr;
@@ -858,7 +864,15 @@ void ComputePool::worker(Impl* impl, unsigned me) {
         io_uring_sqe_set_data64(began, kSent);
         io_uring_submit(ring);
       }
-      run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
+      if (boot_failed) {
+        s.raised = true;
+        s.over_deadline = false;
+        s.exception.clear();
+        s.step = "the worker could not open its VM at start, and this job was sent to it";
+        s.out.clear();
+      } else {
+        run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
+      }
       impl->running[me].store(static_cast<unsigned>(impl->slots.size()),
                               std::memory_order_release);
 
