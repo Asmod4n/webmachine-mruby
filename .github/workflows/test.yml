@@ -83,6 +83,10 @@ jobs:
           BIN: mruby/build/debug/bin/webmachine-server
           MRBC: mruby/build/debug/bin/mrbc
         run: |
+          # What this runner is, for a stall that does not happen elsewhere:
+          # the kernel, the cores, and whether io_uring is switched off.
+          uname -r; nproc
+          cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'no io_uring_disabled knob'
           # Every case together takes about 13 minutes here. A run that
           # goes past 25 is stalled, and the log says where.
           if ! timeout 1500 tools/conformance.sh ws; then
