@@ -97,11 +97,9 @@ end
 
 ERROR_ASSETS = File.expand_path('share/error-assets.zip', __dir__)
 
-# WHICH pictures the pack carries. Not their names: a page's <h1> and the
-# alt text on its picture have to say the same thing, so both come from
-# the server's own table (kFaces in src/error_assets.cpp, falling back to
-# http::reason the way status_title does) and this list only decides what
-# gets fetched.
+# WHICH pictures the pack carries, and only that. A page's <h1> and the
+# alt text on its picture have to say the same thing, so both names come
+# from the server's own table in src/error_assets.cpp.
 #
 # 418 is here and not in kFaces: the picture ships, the page has no name
 # for the status, and both stay true of whatever this bakes.
@@ -285,10 +283,9 @@ rescue ArgumentError
 end
 
 # MS-DOS date and time, which is what a ZIP header holds: two-second
-# resolution and no zone. The upstream Last-Modified is GMT, and that is
-# what goes in - a reader that treats it as local time is off by its own
-# offset, which is the format's limitation and the reason the exact
-# second rides in the extended timestamp beside it.
+# resolution and no zone. GMT goes in, so a reader that takes it as local
+# time is off by its own offset. That is the format's limitation, and the
+# reason the exact second rides in the extended timestamp beside it.
 def dos_stamp(unix)
   t = Time.at(unix || 0).utc
   [((t.year - 1980) << 9) | (t.month << 5) | t.day,
@@ -471,12 +468,14 @@ PACK_STORED = %w[
 # point at one local record, so the pack does not grow.
 #
 # The point of the pair is that the two names deserve different answers.
-# The hashed name cannot ever mean other bytes, so it says the maximum a
-# cache is allowed to hold: a year, immutable, never asked about again.
-# A page that wants that names the hashed file. The plain name means
-# "whatever is there now", so how long a browser may use it without
-# asking is a decision only the person with the site can make - and this
-# task asks them, once per file extension, and writes the answers into
+#
+# The hashed name can never mean other bytes, so it says the maximum a
+# cache may hold: a year, immutable, never asked about again. A page
+# that wants that names the hashed file.
+#
+# The plain name means "whatever is there now". How long a browser may
+# use it is a decision only the person with the site can make, so this
+# task asks them once per extension and writes the answers into
 # <DIR>/.cache-rules beside the files.
 #
 # RFC 9111 5.2.2.1: a lifetime of 0 is spelled no-cache, which means
