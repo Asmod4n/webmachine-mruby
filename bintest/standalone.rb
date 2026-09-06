@@ -44,7 +44,7 @@ def s_server(extra = [])
   sock = "/tmp/wm-standalone-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-standalone-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, S_BIN, "--unix=#{sock}", "--docroot=#{root}", *extra,
+  pid = spawn({ 'WM_BUNDLE' => '0' }, S_BIN, "--unix=#{sock}", "--standalone", "--docroot=#{root}", *extra,
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "standalone server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)

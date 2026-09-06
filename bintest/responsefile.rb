@@ -170,7 +170,9 @@ assert('response.file refuses every escape as the same 404') do
   rf_serve do |sock, _root|
     miss, missb = rf_get(sock, 'nothing-here.txt')
     assert_include miss, 'HTTP/1.1 404 Not Found'
-    assert_equal '', missb
+    # Every refusal wears the page its status has - the graph has one 404,
+    # and a file that is not there is that 404.
+    assert_include missb, '<p class=n>404</p>'
     baseline = rf_undated(miss)
 
     {
@@ -187,7 +189,9 @@ assert('response.file refuses every escape as the same 404') do
       head, body = rf_get(sock, name)
       assert_include head, 'HTTP/1.1 404 Not Found'
       assert_false head.include?(RF_SECRET)
-      assert_equal '', body
+      # The SAME bytes as a plain miss, so an attacker cannot tell a
+      # caught escape from a name that was never there.
+      assert_equal missb, body, "#{what} answered a different body"
       assert_equal baseline, rf_undated(head), "#{what} answered differently"
     end
   end
@@ -231,7 +235,7 @@ assert('response.file answers pipelined requests in order') do
     assert_equal RF_BIG, body
     head, body = rf_read(s)
     assert_include head, 'HTTP/1.1 404 Not Found'
-    assert_equal '', body
+    assert_include body, '<p class=n>404</p>'
     s.close
   end
 end

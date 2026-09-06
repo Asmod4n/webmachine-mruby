@@ -543,7 +543,7 @@ def h2_asset_server(zip_bytes)
   sock = "/tmp/wm-h2a-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-h2a-stderr-#{$$}.log"
-  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
+  pid = spawn({ 'WM_BUNDLE' => '0' }, H2_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
               out: File::NULL, err: err)
   100.times { break if File.socket?(sock); sleep 0.05 }
   raise "h2 asset server never came up:\n#{File.read(err) rescue ''}" unless File.socket?(sock)
