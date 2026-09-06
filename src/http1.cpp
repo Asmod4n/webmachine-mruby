@@ -5,16 +5,6 @@
 
 #include <picohttpparser.h>
 
-// The parser's field pair and HeaderField are the same bytes, and this
-// is the one place that says so: the array the parser fills is handed
-// on as HeaderField[] without a copy.
-static_assert(sizeof(struct phr_header) == sizeof(webmachine::HeaderField));
-static_assert(offsetof(struct phr_header, name) == offsetof(webmachine::HeaderField, name));
-static_assert(offsetof(struct phr_header, name_len) == offsetof(webmachine::HeaderField, name_len));
-static_assert(offsetof(struct phr_header, value) == offsetof(webmachine::HeaderField, value));
-static_assert(offsetof(struct phr_header, value_len) ==
-              offsetof(webmachine::HeaderField, value_len));
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1025,7 +1015,10 @@ void Http1::file_ready_now(Conn& st, size_t n) {
 // RFC 9112: the framer. phr on the wire bytes, the carry only when a head
 // splits; RFC 9113 3.4 decides h2 on the first bytes; the flow decides
 // every status.
-// #80: Held's out-of-line half.
+// #80: Held's out-of-line half. It is out of line because phr_header is
+// incomplete in webmachine.hpp on purpose - the framer's header does not
+// belong in this tree's one contract - and a unique_ptr<T[]> needs T
+// complete exactly where these are defined.
 Http1::Held::Held() = default;
 Http1::Held::~Held() = default;
 Http1::Held::Held(Held&&) noexcept = default;
@@ -1040,8 +1033,8 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
 
   nfields = from.field_count;
   if (nfields != 0) {
-    fields = std::make_unique<HeaderField[]>(nfields);
-    const HeaderField* src = from.fields;
+    fields = std::make_unique<struct phr_header[]>(nfields);
+    const auto* src = static_cast<const struct phr_header*>(from.fields);
     for (size_t i = 0; i < nfields; i++) {
       fields[i] = src[i];
       if (fields[i].name != nullptr) fields[i].name += delta;
@@ -1134,7 +1127,7 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   const bool head_only = r.head_only;
   const flow::ReqFacts& facts = r.facts;
   const http::ReqValues& vals = r.vals;
-  const HeaderField* const headers = ask.fields;
+  const struct phr_header* const headers = static_cast<const struct phr_header*>(ask.fields);
   const size_t num_headers = ask.nfields;
   const RouteSpans& spans = ask.spans;
   Plan* const plan = ask.plan;
@@ -1736,7 +1729,6 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     size_t num_headers = kMaxHeaders;
     const int ret = phr_parse_request(view + off, viewlen - off, &method, &method_len, &path,
                                       &path_len, &minor, headers, &num_headers, 0);
-    const HeaderField* const fields = reinterpret_cast<const HeaderField*>(headers);
     if (mrb_unlikely(ret == -2)) {
       const size_t rest = viewlen - off;
       if (mrb_unlikely(rest > kMaxHead)) return fail(st, 431, sink);
@@ -1788,7 +1780,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
         const WsUpgrade up{wslot,  wr,   {path, path_len},
                            wspans, {w.ws_key, w.ws_key_len},
-                           fields, num_headers, vals, {rest, rest_len}};
+                           headers, num_headers, vals, {rest, rest_len}};
         return ws_upgrade(st, up, sink);
       }
     }
@@ -1799,7 +1791,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       const int sr = sslot.sse_table->match(path, path_len, sspans);
       if (sr >= 0) {
         const SseBegin req{sslot,   sr,          {method, method_len},
-                           {path, path_len},    sspans,  fields,
+                           {path, path_len},    sspans,  headers,
                            num_headers, minor,  facts.method, vals, lflags};
         return sse_begin(st, req, sink);
       }
@@ -1874,7 +1866,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + head_len,       head_len,   method,
                                     method_len,           path,       path_len,
-                                    w.content_length,     fields,     num_headers,
+                                    w.content_length,     headers,    num_headers,
                                     spans,    slot.table, facts,      vals,
                                     route,    minor,      lflags,     in_place,
                                     persist,  head_only};
@@ -1891,7 +1883,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // body_ and rhdrs_ are this writer's own scratch, reused request
         // after request. The straight path hands them in; a parked run
         // will hand in a pair of its own.
-        const BoundAsk basked = {fields, num_headers, spans,  slot.table,
+        const BoundAsk basked = {headers, num_headers, spans,  slot.table,
                                  route,   plan,        sink,   body_,
                                  rhdrs_};
         if (mrb_unlikely(answer_bound(br, basked, bo) == Took::kOwed)) {
@@ -1966,7 +1958,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   const int route = up.route;
   const std::string_view path = up.path;
   const RouteSpans& spans = up.spans;
-  const HeaderField* hdrs = up.hdrs;
+  const void* hdrs = up.hdrs;
   const size_t nhdr = up.nhdr;
   const http::ReqValues& vals = up.vals;
   char accept[28];
@@ -1998,7 +1990,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
   wsdeflate::Params dparams;
   std::string ext_answer;
   if (ws_wants_deflate(res)) {
-    const HeaderField* hs = hdrs;
+    const struct phr_header* hs = static_cast<const struct phr_header*>(hdrs);
     for (size_t i = 0; i < nhdr && !dparams.on; i++) {
       if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions")) continue;
       wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
@@ -2046,7 +2038,7 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
   const std::string_view method = req.method;
   const std::string_view path = req.path;
   const RouteSpans& spans = req.spans;
-  const HeaderField* hdrs = req.hdrs;
+  const void* hdrs = req.hdrs;
   const size_t nhdr = req.nhdr;
   const int minor = req.minor;
   const flow::Method m = req.m;

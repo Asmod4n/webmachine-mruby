@@ -77,18 +77,8 @@ struct open_how {
 #define RESOLVE_BENEATH 0x08
 #endif
 
-// One header field as the framers hand it on: a name and a value, each
-// a pointer and a length. It has picohttpparser's layout, and http1.cpp
-// asserts that, so the parser's array is this array. The parser's own
-// header is included in http1.cpp and nowhere else.
-namespace webmachine {
-struct HeaderField {
-  const char* name;
-  size_t name_len;
-  const char* value;
-  size_t value_len;
-};
-}
+// picohttpparser's field pair; the framers include the header itself.
+struct phr_header;
 
 namespace webmachine::flow {
 // Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
@@ -1632,7 +1622,7 @@ enum class NamedField : uint8_t {
 // The parsed field array and how many fields it holds - the pair every
 // stored position is only meaningful against.
 struct HeaderList {
-  const HeaderField* items;
+  const struct phr_header* items;
   size_t count;
 };
 
@@ -1645,8 +1635,9 @@ struct NamedFieldIndex {
   // The static_assert below fixes the byte width, and `find` checks the
   // length of this request's array.
   //
-  // Declared here, defined in request.cpp.
-  const HeaderField* find(NamedField f, HeaderList hs) const;
+  // Declared here, defined in request.cpp, where the framer's header has
+  // been included and phr_header is complete.
+  const struct phr_header* find(NamedField f, HeaderList hs) const;
 
   constexpr void note(NamedField f, size_t i) {
     // The framer kept no slot for this one (its field array was full), so
@@ -2498,7 +2489,7 @@ struct ReqView {
   // RFC 9110 6.3: the header field section, in the parser's own layout.
   // Only request.headers reads it - it is the one caller that asked for
   // all of them. Every named accessor reads `values` instead.
-  const HeaderField* fields = nullptr;
+  const void* fields = nullptr;
   size_t field_count = 0;
   // Where the one pass found the ten fields Resource#request names. The
   // field array is walked once; answering request.accept by walking it
@@ -5456,7 +5447,7 @@ class Http1 {
     std::string_view method;
     std::string_view path;
     const RouteSpans& spans;
-    const HeaderField* hdrs;
+    const void* hdrs;   // struct phr_header[]; the framer's header is not here
     size_t nhdr;
     int minor;
     flow::Method m;
@@ -5470,7 +5461,7 @@ class Http1 {
     std::string_view path;
     const RouteSpans& spans;
     std::string_view key;
-    const HeaderField* hdrs;
+    const void* hdrs;   // struct phr_header[]; the framer's header is not here
     size_t nhdr;
     const http::ReqValues& vals;
     std::string_view rest;  // bytes after the head, already in hand
@@ -5654,7 +5645,7 @@ class Http1 {
   // that one is an h2 stream's view - a different thing entirely.
   //
   // What borrows, and it is more than ReqValues: ReqView's
-  // request_target and method_token, the framer's field array with
+  // request_target and method_token, the framer's phr_header array with
   // a name and a value each, and RouteSpans' captures. All of it points
   // into one contiguous head - the provided buffer, or carry - so one
   // delta moves the lot, and the only way to get that wrong is to miss a
@@ -5674,7 +5665,7 @@ class Http1 {
     http::ReqValues vals{};
     RouteSpans spans{};
     ReqView rv{};
-    std::unique_ptr<HeaderField[]> fields;
+    std::unique_ptr<struct phr_header[]> fields;
     size_t nfields = 0;
 
     Held();
@@ -5727,7 +5718,7 @@ class Http1 {
   // back later, which a block in a loop body cannot do. A dozen values
   // that travel together are a type, like Spelling below.
   struct BoundAsk {
-    const HeaderField* fields;
+    const void* fields;
     size_t nfields;
     const RouteSpans& spans;
     const RouteTable* table;
@@ -5783,7 +5774,7 @@ class Http1 {
     const char* path;
     size_t path_len;
     size_t content_length;
-    const HeaderField* fields;
+    const void* fields;
     size_t nfields;
     RouteSpans spans;
     const RouteTable* table;
@@ -6126,7 +6117,7 @@ class Http1 {
     uint16_t route;
     std::string_view target;
     RouteSpans* spans;
-    const HeaderField* fields;
+    const void* fields;
     size_t nfields;
     const http::ReqValues* vals;
   };
@@ -6140,7 +6131,7 @@ class Http1 {
     uint16_t route;
     std::string_view target;
     RouteSpans* spans;
-    const HeaderField* fields;
+    const void* fields;
     size_t nfields;
     const http::ReqValues* vals;
   };

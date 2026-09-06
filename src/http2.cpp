@@ -3,6 +3,7 @@
 
 #include "ring.hpp"
 
+#include <picohttpparser.h>
 
 #include <cstring>
 
@@ -361,7 +362,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     body.swap(existing->request_content);
     // The fields this stream copied when it parked, rebuilt over the
     // blob that outlived hdrbuf.
-    HeaderField hv[kH2MaxFields];
+    struct phr_header hv[kH2MaxFields];
     size_t nh = existing->field_spans.size() / 4;
     if (nh > kH2MaxFields) nh = kH2MaxFields;
     for (size_t i = 0; i < nh; i++) {
@@ -405,7 +406,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   // both protocols. Filled in the loop that already holds the pointers -
   // the pseudo-fields are not among them, because the branch below takes
   // them first, which is also what h1 means by a header.
-  HeaderField hv[kH2MaxFields];
+  struct phr_header hv[kH2MaxFields];
   size_t nh = 0;
   // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
   // and the method as the client spelled it - CONNECT is not one of the
@@ -934,7 +935,7 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   wsdeflate::Params dparams;
   std::string ext_answer;
   if (ws_wants_deflate(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)])) {
-    const HeaderField* const hs = static_cast<const HeaderField*>(ask.fields);
+    const struct phr_header* const hs = static_cast<const struct phr_header*>(ask.fields);
     for (size_t i = 0; i < ask.nfields && !dparams.on; i++) {
       if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions")) continue;
       wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
@@ -1927,7 +1928,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           body.swap(stp->request_content);
           // The fields the HEADERS frame copied when this stream parked,
           // rebuilt over the blob that outlived hdrbuf's reuse.
-          HeaderField hv[kH2MaxFields];
+          struct phr_header hv[kH2MaxFields];
           size_t nh = stp->field_spans.size() / 4;
           if (nh > kH2MaxFields) nh = kH2MaxFields;
           for (size_t i = 0; i < nh; i++) {
