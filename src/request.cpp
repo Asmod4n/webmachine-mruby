@@ -8,7 +8,6 @@
 #include <mruby/presym.h>
 #include <mruby/string.h>
 
-#include <picohttpparser.h>
 
 #include <ada.h>
 
@@ -165,7 +164,7 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
 // copies them (H2Stream::field_blob), so they are never gone.
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
-  const struct phr_header* hs = static_cast<const struct phr_header*>(v->fields);
+  const HeaderField* hs = v->fields;
   mrb_value h = mrb_hash_new_capa(mrb, static_cast<mrb_int>(v->field_count));
   for (size_t i = 0; i < v->field_count; i++) {
     mrb_value name = mrb_str_new(mrb, hs[i].name, hs[i].name_len);
@@ -210,7 +209,7 @@ mrb_value req_has_body(mrb_state* mrb, mrb_value) {
 void join_repeated_fields(const ReqView* v, std::string_view name, std::string_view sep,
                           std::string& out) {
   out.clear();
-  const auto* h = static_cast<const struct phr_header*>(v->fields);
+  const HeaderField* h = v->fields;
   for (size_t i = 0; i < v->field_count; i++) {
     if (h[i].name_len != name.size()) continue;
     bool same = true;
@@ -233,8 +232,7 @@ mrb_value req_named(mrb_state* mrb, http::NamedField f) {
   // it is being applied to - see http::NamedFieldIndex. A position this
   // request's array cannot reach reads as "no such field" instead of
   // reading past the end.
-  const struct phr_header* h = v->values->named.find(
-      f, {static_cast<const struct phr_header*>(v->fields), v->field_count});
+  const HeaderField* h = v->values->named.find(f, {v->fields, v->field_count});
   if (h == nullptr) return mrb_nil_value();
   return mrb_str_new(mrb, h->value, h->value_len);
 }
@@ -438,10 +436,10 @@ void request_init(mrb_state* mrb, struct RClass* wm) {
 
 // RFC 9110 5.1: the one way a stored position is read - see the
 // declaration in webmachine.hpp for why it is the only one. Lives here
-// because this is a file where phr_header is a complete type; the header
+// because this is the one file that reads it.
 // only forward-declares it.
 namespace http {
-const struct phr_header* NamedFieldIndex::find(NamedField f, HeaderList hs) const {
+const HeaderField* NamedFieldIndex::find(NamedField f, HeaderList hs) const {
   if (hs.items == nullptr || !carries(f)) return nullptr;
   const uint8_t i = at[static_cast<uint8_t>(f)];
   // A position this array cannot reach is no field. Every producer

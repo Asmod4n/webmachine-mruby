@@ -43,7 +43,6 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 
-#include <picohttpparser.h>
 #include <simdutf.h>
 
 #include <cstring>
@@ -72,7 +71,7 @@ const mrb_data_type fsm_type = {"Webmachine::Decision::FSM", fsm_free};
 // reallocation after that would dangle every pointer handed out.
 void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& facts,
                  webmachine::http::ReqValues& vals, std::string& store,
-                 std::vector<struct phr_header>& hdrs) {
+                 std::vector<webmachine::HeaderField>& hdrs) {
   const mrb_value keys = mrb_hash_keys(mrb, headers);
   const mrb_int n = RARRAY_LEN(keys);
   size_t need = 0;
@@ -112,7 +111,7 @@ void fields_from(mrb_state* mrb, mrb_value headers, webmachine::flow::ReqFacts& 
   hdrs.reserve(klen.size() + 1);
   size_t at = 0;
   for (size_t i = 0; i < klen.size(); i++) {
-    struct phr_header h;
+    webmachine::HeaderField h;
     h.name = store.data() + at;
     h.name_len = klen[i];
     h.value = store.data() + at + klen[i];
@@ -182,7 +181,7 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   webmachine::flow::ReqFacts facts;
   webmachine::http::ReqValues vals;
   std::string store;
-  std::vector<struct phr_header> hdrs;
+  std::vector<webmachine::HeaderField> hdrs;
   facts.method = webmachine::http::parse_method(RSTRING_PTR(m), RSTRING_LEN(m));
   fields_from(mrb, headers, facts, vals, store, hdrs);
 
