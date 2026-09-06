@@ -1264,10 +1264,26 @@ class Ring {
     replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
   }
 
+  // The buffers a completion consumed, whatever became of the connection.
+  // Every completion takes at least one whole buffer, and a bundle takes
+  // consecutive ones, so the count is the whole of it.
+  void give_back_buffers(const struct io_uring_cqe* cqe) {
+    if (!(cqe->flags & IORING_CQE_F_BUFFER)) return;
+    const size_t total = cqe->res > 0 ? static_cast<size_t>(cqe->res) : 0;
+    const size_t n = total == 0 ? 1 : (total + kBufSize - 1) / kBufSize;
+    replenish_ += static_cast<uint32_t>(n);
+  }
+
   void on_recv(uint32_t idx, uint16_t gen, struct io_uring_cqe* cqe) {
     if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
-    if (mrb_unlikely(!c.live || c.gen != gen)) return;
+    // A slot that closed, or one already reused: the bytes are nobody's,
+    // and the buffers still go back, or the pool runs dry one closed
+    // connection at a time.
+    if (mrb_unlikely(!c.live || c.gen != gen)) {
+      give_back_buffers(cqe);
+      return;
+    }
 
     if (mrb_unlikely(cqe->res <= 0)) {
       on_recv_nothing_to_parse({idx, c}, cqe);

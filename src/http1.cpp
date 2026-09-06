@@ -1453,8 +1453,30 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       Resource::RunState mine = std::move(res.run);
       res.run = Resource::RunState{};
       watch_run_is(st, mine_round, &mine);
+      // #80: if this frame is destroyed while the run waits - the peer
+      // left, Conn::reset ran - the roots run_settle took and the
+      // answers the round already holds are given back here. On the
+      // way back the guard is disarmed: res.run owns them again.
+      struct ParkedRoots {
+        const Resource* res;
+        Resource::RunState* state;
+        Conn::Round* round;
+        ~ParkedRoots() {
+          if (res == nullptr) return;
+          resource_abandon(*res, *state);
+          for (mrb_value& a : round->answer_value) {
+            if (!mrb_nil_p(a)) mrb_gc_unregister(res->mrb, a);
+            a = mrb_nil_value();
+          }
+          for (int i = 0; i < Conn::kJobSlots; i++) {
+            if (round->user_have[i]) mrb_gc_unregister(res->mrb, round->user_value[i]);
+            round->user_have[i] = false;
+          }
+        }
+      } parked_roots{&res, &mine, &mine_round};
 
       Run::promise_type& pr = co_await Park{};
+      parked_roots.res = nullptr;
 
       // Back, into a round that is not the one that left. Only the WIRE
       // is the resumer's: the sink to write into and the plan a lend
@@ -1469,6 +1491,9 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       sink = pr.sink;
       plan = pr.plan;
       pr.persist = s.persist;
+      // What the resource holds now is another request's leftovers, and
+      // its userdata root would be lost under the move.
+      resource_forget_userdata(res);
       res.run = std::move(mine);
       // Back in the resource. Nothing may point at this frame's copy
       // any more - a watcher that outlived its answer would lend a
@@ -1484,8 +1509,8 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         // A content type, a file name, an error asset - all of them
         // belong to a walk that was refused, and the finish would try
         // to serve them. The status and the Retry-After are the whole
-        // answer.
-        res.run = Resource::RunState{};
+        // answer. The roots the wait took are given back with it.
+        resource_abandon(res, res.run);
         status = refused.status;
         have_body = false;
         body.clear();

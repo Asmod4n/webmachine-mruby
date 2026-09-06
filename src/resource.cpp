@@ -2406,6 +2406,33 @@ bool run_stopped(const Resource& res) { return res.run.stopped; }
 //
 // A resumed run may stop again: a resource is free to declare two nodes,
 // and the second stop is answered exactly like the first.
+// #30: what the last run put in userdata is not the next run's. It goes
+// before a walk starts, and before a resumed run takes the resource
+// back, so no request can read another's.
+void resource_forget_userdata(const Resource& res) {
+  if (!res.run.userdata_held) return;
+  mrb_gc_unregister(res.mrb, res.run.userdata);
+  res.run.userdata_held = false;
+  res.run.userdata = mrb_undef_value();
+}
+
+// #80: a parked run that never resumes: the connection left, or the
+// round was refused. Every root run_settle took for the wait is given
+// back, and a lent body is returned. The state is empty afterwards.
+void resource_abandon(const Resource& res, Resource::RunState& state) {
+  mrb_state* const mrb = res.mrb;
+  if (state.stopped) {
+    mrb_gc_unregister(mrb, state.live);
+    for (uint8_t i = 0; i < state.compute_task_count; i++) {
+      mrb_gc_unregister(mrb, state.compute_task[i].block);
+      mrb_gc_unregister(mrb, state.compute_task[i].args);
+    }
+  }
+  if (state.userdata_held) mrb_gc_unregister(mrb, state.userdata);
+  if (state.zc_have) resource_body_unlend(mrb, state.zc);
+  state = Resource::RunState{};
+}
+
 uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round) {
   mrb_state* mrb = res.mrb;
   // What the park took away, back: the bindings, and the roots.
@@ -2469,15 +2496,7 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   res.run.vals = ask.vals;
   res.run.req = ask.req;
   res.run.can_park = ask.can_park;
-  // #30: what the LAST run kept is not this run's. It goes before the
-  // walk starts, so nothing of one request can be read by another.
-  // #30: what the LAST run put in userdata is not this run's. It goes
-  // before the walk starts, so no request can read another's.
-  if (res.run.userdata_held) {
-    mrb_gc_unregister(mrb, res.run.userdata);
-    res.run.userdata_held = false;
-  }
-  res.run.userdata = mrb_undef_value();
+  resource_forget_userdata(res);
   res.run.stopped = false;
   res.run.answered = false;
   res.run.headers = out.headers;

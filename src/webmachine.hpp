@@ -2910,6 +2910,8 @@ struct RunRound {
   uint8_t n;
 };
 uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round);
+void resource_forget_userdata(const Resource& res);
+void resource_abandon(const Resource& res, Resource::RunState& state);
 bool run_stopped(const Resource& res);
 
 bool resource_exception_take(const Resource& res, mrb_value* out);
@@ -4814,6 +4816,14 @@ class Http1 {
     void reset(uint8_t li, bool pkt) {
       zc_release();
       watchers_release();
+      // #80: a run still parked when the peer left. Its frame holds the
+      // roots and the round; destroying the frame gives them back (see
+      // ParkedRoots in run_parkable), and the park bits are free again.
+      parked.destroy();
+      h2_parked.clear();
+      for (Round*& r : park) r = nullptr;
+      park_taken = 0;
+      park_owes = 0;
       map_release();
       delete file;
       file = nullptr;

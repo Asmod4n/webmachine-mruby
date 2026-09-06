@@ -350,6 +350,101 @@ assert('compute: a parked run reads its own request after it resumes (#80)') do
   end
 end
 
+# #80: a peer that leaves while its run is parked leaves nothing behind:
+# not the frame, not its roots, not the park bit. Sixteen park slots per
+# connection slot, so twenty leaving peers on the same slot would take
+# every bit for good if the reset kept them.
+assert('compute: a peer that leaves mid-park frees its park slot (#80)') do
+  src = <<~RUBY
+    class ParkLeave < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) do
+          t = Time.now
+          nil while Time.now - t < 0.05
+          true
+        end
+      end
+      def to_html; 'still here'; end
+    end
+  RUBY
+  resource_server(wm_app('ParkLeave', src)) do |sock|
+    20.times do
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        # Gone before the worker answers.
+      end
+      sleep 0.01
+    end
+    sleep 0.3
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'still here', body
+    end
+  end
+end
+
+# #30: response.userdata travels with the parked run and not with the
+# resource. Another request on the route meanwhile has its own.
+assert('compute: userdata set before a park is the same run\'s after it (#30)') do
+  src = <<~RUBY
+    class ParkUser < Webmachine::Resource
+      compute :is_authorized?
+      def service_available?
+        response.userdata = request.headers['x-who']
+        true
+      end
+      def self.is_authorized?(_header)
+        Webmachine::ComputeTask.new(max_runtime: 2.s) do
+          t = Time.now
+          nil while Time.now - t < 0.3
+          true
+        end
+      end
+      def to_html
+        response.userdata.to_s
+      end
+    end
+  RUBY
+  resource_server(wm_app('ParkUser', src)) do |sock|
+    a = UNIXSocket.open(sock)
+    a.write("GET / HTTP/1.1\r\nHost: x\r\nX-Who: alpha\r\n\r\n")
+    sleep 0.05
+    UNIXSocket.open(sock) do |b|
+      b.write("GET / HTTP/1.1\r\nHost: x\r\nX-Who: beta\r\n\r\n")
+      _, body = resource_read(b)
+      assert_equal 'beta', body
+    end
+    _, body = resource_read(a)
+    assert_equal 'alpha', body
+    a.close
+  end
+end
+
+# A recv completion for a slot that closed still returns its buffer to
+# the pool. Many connections that send and leave at once, then a request
+# that must still find a buffer.
+assert('http1: buffers of a closed slot go back to the pool') do
+  src = <<~RUBY
+    class Buffers < Webmachine::Resource
+      def self.to_html; 'buffers'; end
+    end
+  RUBY
+  resource_server(wm_app('Buffers', src)) do |sock|
+    5000.times do
+      UNIXSocket.open(sock) { |s| s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
+    end
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = resource_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'buffers', body
+    end
+  end
+end
+
 assert('compute: the second request on a server is answered like the first (#80)') do
   src = <<~RUBY
     class ComputeTwice < Webmachine::Resource
