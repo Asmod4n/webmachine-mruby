@@ -622,9 +622,8 @@ assert('resource: an instance-level content_types_provided types the answer') do
 end
 
 # RFC 9110 13: examples/conditional.rb is the caching resource - two
-# provided types (so Vary), generate_etag, last_modified and expires. It is
-# the only example that drives the value engine's FIELD emission, which is
-# what makes it the load for that path.
+# provided types (so Vary), generate_etag, last_modified and expires, all
+# on the class, so the fold bakes every one of those fields into the head.
 assert('resource: the conditional example spells its caching fields, then answers 304') do
   src = File.read(File.expand_path('../examples/conditional.rb', __dir__))
   resource_server(src) do |sock|

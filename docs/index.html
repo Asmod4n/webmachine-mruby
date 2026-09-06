@@ -178,15 +178,15 @@ mruby/bin/webmachine-server --app=hello.mrb --port=8080</code></pre>
 
   <h2>A resource declares, the flow answers</h2>
 <pre><code>class Article &lt; Webmachine::Resource
-  def content_types_provided
+  def self.content_types_provided
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def generate_etag
+  def self.generate_etag
     'article-7'
   end
 
-  def last_modified
+  def self.last_modified
     1_756_000_000   # seconds since the epoch
   end
 end</code></pre>

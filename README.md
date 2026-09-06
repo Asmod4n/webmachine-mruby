@@ -79,15 +79,15 @@ A resource declares what it knows, and the flow does the rest:
 
 ```ruby
 class Article < Webmachine::Resource
-  def content_types_provided
+  def self.content_types_provided
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def generate_etag
+  def self.generate_etag
     'article-7'
   end
 
-  def last_modified
+  def self.last_modified
     1_756_000_000   # seconds since the epoch
   end
 end

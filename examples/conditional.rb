@@ -3,27 +3,27 @@ class Article < Webmachine::Resource
   JSON = '{"title":"Conditional"}'
   UPDATED = 1_756_000_000
 
-  def content_types_provided
+  def self.content_types_provided
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def generate_etag
+  def self.generate_etag
     'article-7'
   end
 
-  def last_modified
+  def self.last_modified
     UPDATED
   end
 
-  def expires
+  def self.expires
     UPDATED + 86_400
   end
 
-  def to_html
+  def self.to_html
     HTML
   end
 
-  def to_json
+  def self.to_json
     JSON
   end
 end

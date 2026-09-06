@@ -3031,7 +3031,7 @@ struct ComputeAnswer {
   bool raised = false;
   // The task ran past its max_runtime and the worker ended it. Not a
   // raise: the author's number was wrong, and a retry costs the same
-  // (.DESIGN.md #promise-bound).
+  // (.DESIGN.md #compute-task-bound).
   bool over_deadline = false;
   std::string exception_class;
   std::string message;
@@ -4553,7 +4553,7 @@ class Http1 {
       // #30: the watcher slot each job of this round waits on, or -1.
       int w_slot[kValueJobs] = {-1, -1, -1, -1};
       // The pool had no slot: LOAD, and load passes. 429 with a
-      // Retry-After of a few seconds (.DESIGN.md #promise-bound).
+      // Retry-After of a few seconds (.DESIGN.md #compute-task-bound).
       bool compute_task_full = false;
       // The worker ended the task at its max_runtime. NOT load: a second
       // attempt costs the same, so 500 and no Retry-After.
@@ -4945,7 +4945,7 @@ class Http1 {
     r->compute_task_full = true;
   }
   // The three refusals a stopped run can meet, told apart here so no
-  // call site has to (.DESIGN.md #promise-bound). Status 0 means the
+  // call site has to (.DESIGN.md #compute-task-bound). Status 0 means the
   // worker answered and the run reads the answer.
   //
   // Retry-After holds a whole header line, ready to append: these are

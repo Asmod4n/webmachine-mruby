@@ -18,6 +18,8 @@
 BODY = '<html><body>every path</body></html>'
 
 # --- 200, and the callbacks a plain answer still runs -----------------
+# Kept on the instance on purpose: /ok is the run-tier baseline that
+# /reads-request and /writes-response are measured against.
 class Ok < Webmachine::Resource
   def to_html
     BODY
@@ -26,117 +28,117 @@ end
 
 # --- 503 b13 service_available? ---------------------------------------
 class Unavailable < Webmachine::Resource
-  def service_available?
+  def self.service_available?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 501 b12 known_methods --------------------------------------------
 class KnownOnly < Webmachine::Resource
-  def known_methods
+  def self.known_methods
     %w[GET HEAD]
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 414 b11 uri_too_long? --------------------------------------------
 class UriTooLong < Webmachine::Resource
-  def uri_too_long?
+  def self.uri_too_long?
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 405 b10 allowed_methods (ask with POST) --------------------------
 class GetOnly < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD]
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 400 b9b malformed_request? ---------------------------------------
 class Malformed < Webmachine::Resource
-  def malformed_request?
+  def self.malformed_request?
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 401 b8 is_authorized? --------------------------------------------
 class Unauthorized < Webmachine::Resource
-  def is_authorized?
+  def self.is_authorized?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 403 b7 forbidden? ------------------------------------------------
 class Forbidden < Webmachine::Resource
-  def forbidden?
+  def self.forbidden?
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 501 b6 valid_content_headers? ------------------------------------
 class BadContentHeaders < Webmachine::Resource
-  def valid_content_headers?
+  def self.valid_content_headers?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 415 b5 known_content_type? ---------------------------------------
 class BadType < Webmachine::Resource
-  def known_content_type?
+  def self.known_content_type?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 413 b4 valid_entity_length? --------------------------------------
 class TooLarge < Webmachine::Resource
-  def valid_entity_length?
+  def self.valid_entity_length?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 406 c4, and f6/f7 through a konst encodings_provided -------------
 class Negotiate < Webmachine::Resource
-  def content_types_provided
+  def self.content_types_provided
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
@@ -147,15 +149,15 @@ class Negotiate < Webmachine::Resource
     { 'identity' => :identity }
   end
 
-  def variances
+  def self.variances
     %w[Accept-Language]
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 
-  def to_json
+  def self.to_json
     '{"every":"path"}'
   end
 end
@@ -164,101 +166,101 @@ end
 class Conditional < Webmachine::Resource
   UPDATED = 1_756_000_000
 
-  def generate_etag
+  def self.generate_etag
     'every-path-1'
   end
 
-  def last_modified
+  def self.last_modified
     UPDATED
   end
 
-  def expires
+  def self.expires
     UPDATED + 86_400
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 404 g7 false, k7 false -------------------------------------------
 class Missing < Webmachine::Resource
-  def resource_exists?
+  def self.resource_exists?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 410 k7 true, gone ------------------------------------------------
 class Gone < Webmachine::Resource
-  def resource_exists?
+  def self.resource_exists?
     false
   end
 
-  def previously_existed?
+  def self.previously_existed?
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 301 k5/i4 moved_permanently? -------------------------------------
 class MovedPermanently < Webmachine::Resource
-  def resource_exists?
+  def self.resource_exists?
     false
   end
 
-  def previously_existed?
+  def self.previously_existed?
     true
   end
 
-  def moved_permanently?
+  def self.moved_permanently?
     'http://example.invalid/moved'
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 307 l5 moved_temporarily? ----------------------------------------
 class MovedTemporarily < Webmachine::Resource
-  def resource_exists?
+  def self.resource_exists?
     false
   end
 
-  def previously_existed?
+  def self.previously_existed?
     true
   end
 
-  def moved_temporarily?
+  def self.moved_temporarily?
     'http://example.invalid/elsewhere'
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 300 o18b multiple_choices? ---------------------------------------
 class Choices < Webmachine::Resource
-  def multiple_choices?
+  def self.multiple_choices?
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 202 m20b delete_completed? false (ask with DELETE) ---------------
 class DeleteAccepted < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD DELETE]
   end
 
@@ -266,18 +268,18 @@ class DeleteAccepted < Webmachine::Resource
     true
   end
 
-  def delete_completed?
+  def self.delete_completed?
     false
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 204 the same, completed and with no body (ask with DELETE) -------
 class DeleteDone < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD DELETE]
   end
 
@@ -285,18 +287,18 @@ class DeleteDone < Webmachine::Resource
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 201 n11 post_is_create? + create_path (ask with POST) ------------
 class Created < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD POST]
   end
 
-  def post_is_create?
+  def self.post_is_create?
     true
   end
 
@@ -304,7 +306,7 @@ class Created < Webmachine::Resource
     'created/1'
   end
 
-  def content_types_accepted
+  def self.content_types_accepted
     [['application/x-www-form-urlencoded', :from_form]]
   end
 
@@ -312,18 +314,18 @@ class Created < Webmachine::Resource
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 303 n11 process_post + do_redirect (ask with POST) ---------------
 class SeeOther < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD POST]
   end
 
-  def post_is_create?
+  def self.post_is_create?
     false
   end
 
@@ -332,22 +334,22 @@ class SeeOther < Webmachine::Resource
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end
 
 # --- 409 o14/p3 is_conflict? (ask with PUT) ---------------------------
 class Conflict < Webmachine::Resource
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD PUT]
   end
 
-  def is_conflict?
+  def self.is_conflict?
     true
   end
 
-  def content_types_accepted
+  def self.content_types_accepted
     [['application/x-www-form-urlencoded', :from_form]]
   end
 
@@ -355,7 +357,7 @@ class Conflict < Webmachine::Resource
     true
   end
 
-  def to_html
+  def self.to_html
     BODY
   end
 end

@@ -70,7 +70,7 @@ struct Slot {
   bool raised = false;
   // The task was ended because it passed its deadline. A different
   // answer from a raise: the author's number was wrong, and a retry
-  // would take just as long (.DESIGN.md #promise-bound).
+  // would take just as long (.DESIGN.md #compute-task-bound).
   bool over_deadline = false;
   // What the raise said, in text. An exception object belongs to the
   // worker's VM and cannot cross, so the worker reads it here and the
@@ -672,7 +672,7 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
   //
   // Under Ruby there is C, and a C function stops for nothing the VM
   // can do. So the deadline holds for what mruby executes, and
-  // admission holds for the rest (.DESIGN.md #promise-bound).
+  // admission holds for the rest (.DESIGN.md #compute-task-bound).
   mrb->vm_interrupt = FALSE;
   asked_stop.store(false, std::memory_order_relaxed);
   const mrb_value args = mrb_array_p(arg) ? arg : mrb_ary_new(mrb);

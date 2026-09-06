@@ -75,11 +75,11 @@ end
 class CountFragment < Webmachine::Resource
   COUNT = [0]
 
-  def allowed_methods
+  def self.allowed_methods
     %w[GET HEAD POST DELETE]
   end
 
-  def post_is_create?
+  def self.post_is_create?
     false
   end
 
@@ -98,7 +98,7 @@ class CountFragment < Webmachine::Resource
     true
   end
 
-  def delete_completed?
+  def self.delete_completed?
     true
   end
 
