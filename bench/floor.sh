@@ -87,14 +87,8 @@ PIPELINE="${PIPELINE:-1}"
 # generator was "not found" with the binary right beside the checkout.
 # Look there too - a clone next to this one is the ordinary layout - and
 # then on PATH.
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 [ -z "${CLIENT:-}" ] || {
   echo "CLIENT= is gone: htgen is the only generator this tree measures with." >&2
   echo "A path goes in HTGEN=." >&2

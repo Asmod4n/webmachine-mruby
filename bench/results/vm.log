@@ -1483,3 +1483,49 @@ harness: htgen -c8 -d2s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.4
   responses=4119296 bad=0 seconds=2.000 rps=2059629 bytes=346021256 MB/s=164.99 conns=8 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=53551856 tx_MB/s=25.54 (steal +0 ticks, req/syscall -, server 68%, client 64%)
 == h2 --streams 64 ==
   responses=4060992 bad=0 seconds=2.000 rps=2030483 bytes=341123720 MB/s=162.66 conns=8 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=52799312 tx_MB/s=25.18 (steal +1 ticks, req/syscall -, server 93%, client 51%)
+==== 2026-09-06T07:30Z repo=efabe70 mruby=a9151d7 ====
+harness: htgen -c16 -d5s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.44-fc-v24 x86_64
+== h1 anchor: one request in flight ==
+  responses=1251317 bad=0 seconds=5.000 rps=250263 bytes=193954135 MB/s=36.99 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=43796620 tx_MB/s=8.35 (steal +0 ticks, req/syscall -, server 73%, client 70%)
+== h2 --streams 1 (expect: within noise of the anchor) ==
+  responses=1172316 bad=0 seconds=5.000 rps=234463 bytes=98475328 MB/s=18.78 conns=16 streams=1 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=15241487 tx_MB/s=2.91 (steal +0 ticks, req/syscall -, server 72%, client 68%)
+== h2 --streams 32 ==
+  responses=18207104 bad=0 seconds=5.000 rps=3641357 bytes=1529397520 MB/s=291.70 conns=16 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=236693536 tx_MB/s=45.14 (steal +0 ticks, req/syscall -, server 87%, client 85%)
+== h2 --streams 64 ==
+  responses=15028672 bad=0 seconds=5.000 rps=3005716 bytes=1262409232 MB/s=240.78 conns=16 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=195384736 tx_MB/s=37.27 (steal +0 ticks, req/syscall -, server 94%, client 65%)
+==== 2026-09-06T07:30Z repo=efabe70 mruby=a9151d7 ====
+harness: htgen -c16 -d5s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.44-fc-v24 x86_64
+== h1 anchor: one request in flight ==
+  responses=1138464 bad=0 seconds=5.000 rps=227693 bytes=176461920 MB/s=33.66 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=39846240 tx_MB/s=7.60 (steal +0 ticks, req/syscall -, server 73%, client 72%)
+== h2 --streams 1 (expect: within noise of the anchor) ==
+  responses=1002555 bad=0 seconds=5.000 rps=200510 bytes=84215404 MB/s=16.06 conns=16 streams=1 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=13034399 tx_MB/s=2.49 (steal +0 ticks, req/syscall -, server 78%, client 76%)
+== h2 --streams 32 ==
+  responses=16283968 bad=0 seconds=5.000 rps=3256776 bytes=1367854096 MB/s=260.90 conns=16 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=211696512 tx_MB/s=40.38 (steal +0 ticks, req/syscall -, server 88%, client 79%)
+== h2 --streams 64 ==
+  responses=17755200 bad=0 seconds=5.000 rps=3551024 bytes=1491437584 MB/s=284.47 conns=16 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=230832096 tx_MB/s=44.03 (steal +0 ticks, req/syscall -, server 91%, client 74%)
+==== 2026-09-06T07:32Z repo=efabe70 mruby=a9151d7 ====
+harness: htgen -c16 -d5s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.44-fc-v24 x86_64
+== h1 anchor: one request in flight ==
+  responses=937637 bad=0 seconds=5.000 rps=187526 bytes=145333735 MB/s=27.72 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=32817295 tx_MB/s=6.26 (steal +0 ticks, req/syscall -, server 75%, client 73%)
+== h2 --streams 1 (expect: within noise of the anchor) ==
+  responses=1057075 bad=0 seconds=5.000 rps=211414 bytes=88795084 MB/s=16.94 conns=16 streams=1 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=13743159 tx_MB/s=2.62 (steal +0 ticks, req/syscall -, server 75%, client 71%)
+== h2 --streams 32 ==
+  responses=18021984 bad=0 seconds=5.000 rps=3604392 bytes=1513847440 MB/s=288.74 conns=16 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=234290304 tx_MB/s=44.69 (steal +0 ticks, req/syscall -, server 93%, client 91%)
+== h2 --streams 64 ==
+  responses=16618496 bad=0 seconds=5.000 rps=3323682 bytes=1395954448 MB/s=266.26 conns=16 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=216054112 tx_MB/s=41.21 (steal +0 ticks, req/syscall -, server 91%, client 73%)
+==== 2026-09-06T07:32Z repo=efabe70 mruby=a9151d7 ====
+harness: htgen -c16 -d5s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.44-fc-v24 x86_64
+== h1 anchor: one request in flight ==
+  responses=1014329 bad=0 seconds=5.000 rps=202865 bytes=157220995 MB/s=29.99 conns=16 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=35502040 tx_MB/s=6.77 (steal +0 ticks, req/syscall -, server 75%, client 73%)
+== h2 --streams 1 (expect: within noise of the anchor) ==
+  responses=869653 bad=0 seconds=5.000 rps=173930 bytes=73051636 MB/s=13.93 conns=16 streams=1 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=11306868 tx_MB/s=2.16 (steal +0 ticks, req/syscall -, server 76%, client 73%)
+== h2 --streams 32 ==
+  responses=16792992 bad=0 seconds=5.000 rps=3358587 bytes=1410612112 MB/s=269.05 conns=16 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=218313408 tx_MB/s=41.64 (steal +0 ticks, req/syscall -, server 89%, client 90%)
+== h2 --streams 64 ==
+  responses=15737984 bad=0 seconds=5.000 rps=3147573 bytes=1321991440 MB/s=252.15 conns=16 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=204608288 tx_MB/s=39.03 (steal +0 ticks, req/syscall -, server 83%, client 74%)
+==== 2026-09-06T07:34Z repo=efabe70 mruby=a9151d7 ====
+harness: /home/user/webmachine-mruby/../htgen/htgen(2026-09-03T07:13) -c8 -d2s h1 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/123 busy=0% (200ms sample)
+responses=230251 bad=0 seconds=2.000 rps=115124 bytes=35688905 MB/s=17.02 conns=8 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=8058820 tx_MB/s=3.84
+server: 69% of one core (5u/63s)   client: 62% of one core (3u/60s)   other: 0% of one core

@@ -51,14 +51,8 @@ command -v "$H2O" >/dev/null || { echo "h2o not found (set H2O=)" >&2; exit 1; }
   echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
 case "$PROTO" in h1|h2) ;; *) echo "PROTO must be h1 or h2" >&2; exit 2 ;; esac
 for a in $ARMS; do case "$a" in stored|gzip|304|206) ;; *) echo "unknown arm '$a'" >&2; exit 2 ;; esac; done

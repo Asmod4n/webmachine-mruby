@@ -244,14 +244,8 @@ case "$PROTO" in
   h1|h2) ;;
   *) echo "PROTO=$PROTO is neither h1 nor h2" >&2; exit 1 ;;
 esac
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 [ -z "${THREADS:-}" ] || {
   echo "THREADS= is gone: both ends are one thread (#120, #196)." >&2
   exit 2

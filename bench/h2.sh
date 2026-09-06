@@ -78,14 +78,8 @@ BIN=mruby/build/host/bin/webmachine-server
 . "$(dirname "$0")/priority.sh"
 bench_priority
 
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
 # The server loads bytecode only (#100). A .rb APP is compiled here

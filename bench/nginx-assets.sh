@@ -52,14 +52,8 @@ command -v "$NGINX" >/dev/null || { echo "nginx not found (set NGINX=)" >&2; exi
   echo "described h2load, which this tree no longer uses." >&2
   exit 2
 }
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 command -v gzip >/dev/null || { echo "gzip not found" >&2; exit 1; }
 "$NGINX" -V 2>&1 | grep -q http_v2_module || { echo "this nginx lacks http_v2" >&2; exit 1; }
 "$NGINX" -V 2>&1 | grep -q http_gzip_static_module || { echo "this nginx lacks gzip_static" >&2; exit 1; }

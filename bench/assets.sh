@@ -121,14 +121,8 @@ PORT="${PORT:-8123}"
 LOG="${LOG:-0}"
 SETUP_ENTRIES="${SETUP_ENTRIES:-5000}"
 BIN=mruby/build/host/bin/webmachine-server
-HTGEN="${HTGEN:-$HOME/htgen/htgen}"
-[ -x "$HTGEN" ] || HTGEN="$PWD/../htgen/htgen"   # a clone beside this one
-[ -x "$HTGEN" ] || HTGEN=$(command -v htgen) || {
-  echo "htgen not found. Build it once:" >&2
-  echo "  git clone --recursive https://github.com/Asmod4n/htgen ~/htgen && make -C ~/htgen" >&2
-  echo "or point HTGEN= at the binary." >&2
-  exit 1
-}
+. "$(dirname "$0")/htgen.sh"
+HTGEN=$(bench_htgen) || exit 1
 command -v zip >/dev/null || { echo "zip not found" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not found" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
