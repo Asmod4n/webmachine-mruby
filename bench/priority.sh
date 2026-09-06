@@ -10,9 +10,13 @@
 #
 # Where it works, the gap is TWENTY points: -10 for this run, +10 for
 # everything else this user runs. Ten does not do it, and +19 is the
-# ceiling, so the gap cannot be built from above alone - and +19 for
-# everything else would starve whatever shares the box rather than
-# stepping it back.
+# ceiling, so the gap cannot be built from above alone.
+#
+# Both numbers are deliberate. -10 does not take the machine from the
+# system, and +10 does not take it from whoever else is working here:
+# each side still does its job. The other work waits and watches, the
+# bench benches. +19 for everything else would starve it instead, which
+# buys no accuracy and costs a usable machine.
 #
 # NO SUDO, EVER. A negative nice value needs RLIMIT_NICE, which is
 # granted once to a user and never per run:
