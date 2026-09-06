@@ -92,56 +92,46 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
 
   spec.add_dependency 'mruby-toml'
 
-  # ada-url, vendored by this gem as its 3.4.4 amalgamation, and put on
-  # this one's compiler path the way mruby does for a dependency's
-  # include/. What is wanted here is the decoding, not the URL parser:
-  # a request target arrives already split by picohttpparser, and an
-  # origin-form target is a path and a query. Affordable only because
-  # the host build drops the sections nothing reaches - whole, the
-  # amalgamation is 103 KB of .text.
-  spec.add_dependency 'mruby-uri-parser', github: 'Asmod4n/mruby-uri-parser', branch: 'master'
+  # ada-url, vendored by this gem as an amalgamation. What is wanted here
+  # is percent decoding and the query parser, not the URL parser: a
+  # request target arrives already split by picohttpparser.
+  spec.add_dependency 'mruby-uri-parser'
 
-  # Authentication: the password database is LMDB, the hash is argon2,
-  # and both gems carry their C library, so naming them is enough - each
-  # exports its vendored header's directory, and argon2.h and lmdb.h
-  # land on this gem's compiler path with nothing to wire up here.
+  # Authentication: the password database is LMDB, the hash is argon2id.
+  # Both gems carry their C library, so naming them is enough.
   #
-  # What is stored is argon2's OWN encoded form,
-  # $argon2id$v=19$m=...,t=...,p=...$salt$hash. Salt and parameters
-  # travel inside it, so there is no record format belonging to this
-  # tree that webmachine-passwd, which writes, and the server, which
-  # verifies, would have to keep in step. Raising the cost later is a
-  # per-record decision, because every record says what it cost.
+  # A record is PasswdRec (src/webmachine.hpp) followed by its salt and
+  # its hash, written by webmachine-passwd and read by the server. The
+  # cost is in the record, so raising it later re-hashes one user at
+  # their next password change and leaves the others verifiable.
   spec.add_dependency 'mruby-argon2'
   spec.add_dependency 'mruby-lmdb'
 
   # The command line is TypedArgs' grammar (--key=value), parsed in Ruby
   # by the gem rather than by a switch over argv here. One parser, one
-  # set of refusals, and the structured forms are there the day a flag
-  # needs a list or a record instead of a scalar.
-  spec.add_dependency 'typedargs', github: 'Asmod4n/typedargs', branch: 'main'
+  # set of refusals.
+  spec.add_dependency 'typedargs'
 
-  # The error pages are mustache templates (#210). They are rendered per
-  # response, not once at boot: a 404 names what was not found, so the set
-  # of bodies is as large as the set of request targets.
+  # The error pages are mustache templates (#210). Every status is
+  # rendered once at boot and lent from there. A page that carries a
+  # message, a backtrace or a fingerprint, the 500s, is rendered when it
+  # is sent.
   spec.add_dependency 'mruby-mustache', github: 'Asmod4n/mruby-mustache', branch: 'main'
 
   # TLS: the handshake is this process's, the record layer is the
-  # kernel's (.DESIGN.md "TLS"). The gem brings include/ktls.h - mruby
-  # puts a dependency's include/ on this one's compiler path - and the
-  # machine's OpenSSL >= 3.0, which is also where SHA1() for the
-  # websocket handshake comes from once this is in the build.
+  # kernel's (.DESIGN.md "TLS"). The gem brings ktls.h and links the
+  # machine's OpenSSL 3, which also gives SHA1() to the WebSocket
+  # handshake.
   spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'master'
 
   # #80: the compute pool, and what crosses into it.
   #
-  # A promised callback crosses as a dumped irep, once per worker. Its
-  # arguments and its answer cross as CBOR, once per request. Nothing else
-  # crosses. An mrb_value belongs to one mrb_state, so a handle, an object
-  # or a closure cannot travel (.DESIGN.md #promise).
-  spec.add_dependency 'mruby-proc-irep-ext', github: 'Asmod4n/mruby-proc-irep-ext',
-                                             branch: 'master'
-  spec.add_dependency 'mruby-cbor', github: 'Asmod4n/mruby-cbor', branch: 'main'
+  # A compute task's block is dumped as an irep once per process, the
+  # first time the reactor sees it, and each worker loads it once. The
+  # arguments and the answer cross as CBOR, per request. Nothing else
+  # crosses: an mrb_value belongs to one mrb_state.
+  spec.add_dependency 'mruby-proc-irep-ext'
+  spec.add_dependency 'mruby-cbor'
 
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
@@ -156,8 +146,8 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     abort <<~MSG
       webmachine-mruby: zlib headers not found.
 
-      This tree links the SYSTEM zlib (gzip for dynamic bodies, #147,
-      and permessage-deflate next). The library itself is on every
+      This tree links the SYSTEM zlib (gzip for dynamic bodies and
+      permessage-deflate). The library itself is on every
       server distribution; only its headers are a separate package:
 
         Debian/Ubuntu   apt install zlib1g-dev
@@ -236,11 +226,4 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     File.write(mime_builtin, mime_builtin_content)
   end
   spec.cxx.include_paths << mime_gen
-
-  # SHA1() for the websocket handshake (#175) comes out of the SAME
-  # libcrypto the key exchange uses. mruby-ktls picks it - the machine's
-  # OpenSSL >= 3.0 with kTLS, never a bare `pkg-config libssl`, which on
-  # openSUSE answers LibreSSL - and exports its include path, so this
-  # gem names no crypto library of its own. Two libcryptos in one
-  # address space is a bug waiting for a link order.
 end

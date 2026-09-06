@@ -500,9 +500,10 @@ void ErrorPages::read_cats(Assets& assets) {
 }
 
 // #210: one error body. The Hash built here is what every handler is
-// handed, and it is also the template context - status, title, source,
-// target, and for a 500 the message. Rendered per response: a 404 names
-// what was not found, so there is nothing a boot could have prepared.
+// handed, and it is also the template context: status, title, source,
+// and for a 500 the fingerprint, the message and the backtrace.
+// read_prepared runs this once per status at boot; body_for runs it
+// again only for a page that carries one of those three.
 bool ErrorPages::render(const Page& p, std::string& out) {
   const uint16_t status = p.status;
   const int slot = p.slot;
