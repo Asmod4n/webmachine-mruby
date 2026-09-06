@@ -1467,3 +1467,19 @@ openlitespeed: rps=40271 (c64) / 41972 (c192)    server=99% of one core   MB/s=9
 webmachine:    rps=184491 (c64) / 231912 (c192)  server=95% / 99%         MB/s=27.27 / 34.28
 # Both are server-bound at one core, so the pair measures the servers.
 # 4.6x at c64 and 5.5x at c192.
+==== 2026-09-06T07:23Z repo=7b907fe mruby=a9151d7 ====
+harness: /home/user/webmachine-mruby/../htgen/htgen(2026-09-03T07:13) -c8 -d2s h1 (one ring, one thread) impl=uring nice=-10 transport=unix app=examples/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=251776 bad=0 seconds=2.000 rps=125887 bytes=39025280 MB/s=18.61 conns=8 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=8812405 tx_MB/s=4.20
+server: 70% of one core (8u/62s)   client: 60% of one core (5u/55s)   other: 0% of one core
+==== 2026-09-06T07:23Z repo=7b907fe mruby=a9151d7 ====
+harness: htgen -c8 -d2s reps=1 app=examples/hello.rb log=0 transport=unix 6.18.44-fc-v24 x86_64
+== h1 anchor: one request in flight ==
+  responses=251320 bad=0 seconds=2.000 rps=125658 bytes=38954600 MB/s=18.57 conns=8 streams=1 pipeline=1 method=GET proto=h1 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=8796445 tx_MB/s=4.19 (steal +0 ticks, req/syscall -, server 71%, client 62%)
+== h2 --streams 1 (expect: within noise of the anchor) ==
+  responses=241598 bad=0 seconds=2.000 rps=120799 bytes=20294624 MB/s=9.68 conns=8 streams=1 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=3141457 tx_MB/s=1.50 (steal +0 ticks, req/syscall -, server 69%, client 63%)
+== h2 --streams 32 ==
+  responses=4119296 bad=0 seconds=2.000 rps=2059629 bytes=346021256 MB/s=164.99 conns=8 streams=32 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=53551856 tx_MB/s=25.54 (steal +0 ticks, req/syscall -, server 68%, client 64%)
+== h2 --streams 64 ==
+  responses=4060992 bad=0 seconds=2.000 rps=2030483 bytes=341123720 MB/s=162.66 conns=8 streams=64 pipeline=1 method=GET proto=h2 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=52799312 tx_MB/s=25.18 (steal +1 ticks, req/syscall -, server 93%, client 51%)

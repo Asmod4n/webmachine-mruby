@@ -63,13 +63,18 @@ HTGEN="${HTGEN:-$HOME/htgen/htgen}"
 # The server loads bytecode only (#100). A .rb APP is compiled here
 # with the tree's own mrbc into a scratch .mrb; the harness line keeps
 # naming the .rb source. An .mrb APP (or none) passes through as-is.
+# Everything this run writes lives here: the compiled app, the socket
+# and the server's stderr. A fixed name under /tmp is a name somebody
+# else's run - or somebody else's user - already owns.
+WORK=$(mktemp -d)
+
 APP_ARGS=()
 if [ -n "${APP:-}" ]; then
   case "$APP" in
     *.rb)
       MRBC="${MRBC:-mruby/bin/mrbc}"
       [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB=/tmp/wm-pipeline-app.mrb
+      APP_MRB="$WORK/app.mrb"
       "$MRBC" -o "$APP_MRB" "$APP" || exit 1
       APP_ARGS=(--app="$APP_MRB")
       ;;
@@ -77,17 +82,17 @@ if [ -n "${APP:-}" ]; then
   esac
 fi
 
-SOCK=/tmp/wm-pipeline-bench.sock
+SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
+  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 else
-  "$BIN" --port="$PORT" "${APP_ARGS[@]}" 2>/tmp/wm-pipeline-srv.log & SRV=$!
+  "$BIN" --port="$PORT" "${APP_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 fi
-trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -f "$SOCK"' EXIT
+trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 0.5
-kill -0 $SRV 2>/dev/null || { echo "server died:"; cat /tmp/wm-pipeline-srv.log; exit 1; }
-grep -q "select(2) SHIM" /tmp/wm-pipeline-srv.log 2>/dev/null && {
+kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
+grep -q "select(2) SHIM" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
 }
