@@ -296,6 +296,28 @@ assert('compute: a worker answers the node, and the graph carries on (#80)') do
   end
 end
 
+assert('compute: the second request on a server is answered like the first (#80)') do
+  src = <<~RUBY
+    class ComputeTwice < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(header)
+        Webmachine::ComputeTask.new(header, max_runtime: 500.ms) { |h| !h.nil? }
+      end
+      def to_html; 'again'; end
+    end
+  RUBY
+  resource_server(wm_app('ComputeTwice', src)) do |sock|
+    3.times do
+      UNIXSocket.open(sock) do |s|
+        s.write("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic eA==\r\n\r\n")
+        head, body = resource_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), head
+        assert_equal 'again', body
+      end
+    end
+  end
+end
+
 assert('compute: a task over its max_runtime answers 500 and no Retry-After (#80)') do
   src = <<~RUBY
     class ComputeTooSlow < Webmachine::Resource

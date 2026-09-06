@@ -129,7 +129,6 @@ Registry& registry() {
 // one way: a flow node the resource declared.
 namespace {
 
-struct RClass* compute_task_class_ = nullptr;
 
 mrb_value compute_task_initialize(mrb_state* mrb, mrb_value self) {
   // mruby checks keywords against a DECLARED table, and a null table
@@ -258,9 +257,9 @@ void worker_builds_close() {
 }
 
 void compute_task_init_class(mrb_state* mrb, struct RClass* wm) {
-  compute_task_class_ = mrb_define_class_under_id(mrb, wm, MRB_SYM(ComputeTask),
-                                                 mrb->object_class);
-  mrb_define_method_id(mrb, compute_task_class_, MRB_SYM(initialize), compute_task_initialize,
+  struct RClass* const task = mrb_define_class_under_id(mrb, wm, MRB_SYM(ComputeTask),
+                                                        mrb->object_class);
+  mrb_define_method_id(mrb, task, MRB_SYM(initialize), compute_task_initialize,
                        MRB_ARGS_ANY() | MRB_ARGS_BLOCK());
 
   struct RClass* workers = mrb_define_module_under_id(mrb, wm, MRB_SYM(Workers));
@@ -270,8 +269,12 @@ void compute_task_init_class(mrb_state* mrb, struct RClass* wm) {
 }
 
 bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out) {
-  if (compute_task_class_ == nullptr) return false;
-  if (!mrb_obj_is_kind_of(mrb, v, compute_task_class_)) return false;
+  // The class is looked up in the VM that holds v. Every VM in this
+  // process runs the gem init, workers included, so a pointer kept at
+  // file scope would name whichever VM opened last.
+  struct RClass* const klass = mrb_class_get_under_id(
+      mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ComputeTask));
+  if (!mrb_obj_is_kind_of(mrb, v, klass)) return false;
   out->block = mrb_iv_get(mrb, v, MRB_IVSYM(block));
   out->args = mrb_iv_get(mrb, v, MRB_IVSYM(args));
   out->max_runtime = mrb_as_float(mrb, mrb_iv_get(mrb, v, MRB_IVSYM(max_runtime)));
