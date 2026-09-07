@@ -10,6 +10,10 @@
 #include "http1.hpp"
 #include "ring_setup.hpp"
 
+#include <sys/utsname.h>
+
+#include <cstdio>
+
 namespace webmachine {
 
 template <class App>
@@ -130,6 +134,9 @@ class Ring {
                             static_cast<uint16_t>(i), mask, static_cast<int>(i));
     }
     io_uring_buf_ring_advance(buf_ring_, kBufCount);
+    buf_tail_ = kBufCount;
+    bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
+    rewrite_entries_ = kernel_shortens_bundle_entries();
 
     if (cfg.nlisteners == 0 || cfg.nlisteners > kMaxListeners) {
       mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener count %d out of range (1..%d)",
@@ -767,11 +774,8 @@ class Ring {
   // Room for the one cmsg an offloaded socket carries, TLS_GET_RECORD_TYPE.
   static constexpr size_t kTlsCmsgSpace = CMSG_SPACE(sizeof(unsigned char));
 
-  // Multishot recv out of the buffer ring, one buffer per completion,
-  // and two other shapes for a connection that is doing TLS. Recv
-  // bundles are not asked for: on kernel 6.17 a bundle handed one
-  // buffer to two receives, and a handshake arrived as the bytes of
-  // another connection's message.
+  // Multishot recv out of the buffer ring, bundles where the kernel offers
+  // them - and two other shapes for a connection that is doing TLS.
   void arm_recv(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
@@ -805,6 +809,7 @@ class Ring {
     io_uring_prep_recv_multishot(s, static_cast<int>(idx), nullptr, 0, 0);
     s->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
     s->buf_group = kBufGroup;
+    if (bundles_) s->ioprio |= IORING_RECVSEND_BUNDLE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
   }
 
@@ -2175,8 +2180,13 @@ class Ring {
   // the timeout clocks get a wake when nothing completes.
   bool step(const int64_t* deadline, bool bounded) {
     if (replenish_ != 0) {
-      io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
-      replenish_ = 0;
+      if (rewrite_entries_) {
+        give_back_to_ring();
+      } else {
+        io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
+        buf_tail_ += replenish_;
+        replenish_ = 0;
+      }
     }
     flush_log();
     if (bounded) {
@@ -2341,6 +2351,42 @@ class Ring {
   ComputePool compute_;
   struct io_uring_buf_ring* buf_ring_ = nullptr;
   unsigned replenish_ = 0;
+  // Where the next returned buffer goes. Entry i of the ring holds buffer
+  // i, always, so a bundle's buffers are the consecutive ids after the
+  // first one the completion names.
+  uint32_t buf_tail_ = 0;
+  bool bundles_ = false;
+  bool rewrite_entries_ = false;
+
+  // A kernel before 7.1 shortens the length of a bundle's last entry to
+  // the bytes it had available, and leaves it short when that transfer
+  // fails (io_uring/kbuf: don't truncate end buffer for bundles). On such
+  // a kernel a returned buffer goes back as a whole entry; on 7.1 and
+  // later the tail advances over the old entries, which the kernel then
+  // never changed.
+  static bool kernel_shortens_bundle_entries() {
+    struct utsname u {};
+    if (::uname(&u) != 0) return true;
+    unsigned major = 0;
+    unsigned minor = 0;
+    if (std::sscanf(u.release, "%u.%u", &major, &minor) != 2) return true;
+    return major < 7 || (major == 7 && minor < 1);
+  }
+
+  // The buffers the last batch consumed go back as whole entries. An
+  // entry written here is whole again, and the buffer it names is the one
+  // at its position.
+  void give_back_to_ring() {
+    const int mask = io_uring_buf_ring_mask(kBufCount);
+    for (unsigned k = 0; k < replenish_; k++) {
+      const uint32_t pos = (buf_tail_ + k) & static_cast<uint32_t>(mask);
+      io_uring_buf_ring_add(buf_ring_, pool_ + static_cast<size_t>(pos) * kBufSize, kBufSize,
+                            static_cast<uint16_t>(pos), mask, static_cast<int>(k));
+    }
+    io_uring_buf_ring_advance(buf_ring_, static_cast<int>(replenish_));
+    buf_tail_ += replenish_;
+    replenish_ = 0;
+  }
   // Built in place and never moved: a slot holds a coroutine handle and
   // four raw pointers it owns, so growing an array of them is not a
   // thing this should be able to do by accident. max_conns_ is decided
