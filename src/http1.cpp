@@ -1297,18 +1297,17 @@ Http1::Took Http1::bound_finish(Round& r, const BoundAsk& ask, BoundOut& out) {
 // is the copy that cannot be short by one member.
 //
 // A resource that never says `compute` never reaches this. Its answer
-// goes through answer_bound, straight, with no frame - #cold-paths
-// applied to control flow.
-// The compute round, out of line and out of feed_parse (#cold-paths).
-// Everything here happens only for a resource that said `compute`, and
-// feed_parse is walked by every request that did not.
+// goes through answer_bound, straight, with no frame.
+// The compute round, out of line and out of feed_parse: everything here
+// happens only for a resource that said `compute`, and feed_parse is
+// walked by every request that did not.
 Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, std::string* sink,
                                                Plan* plan, size_t& off) {
   st.parked = run_parkable(st, {RunStart::Proto::kH1, s}, sink, plan);
   // The bookkeeping is done here either way, because the bytes it moves
   // belong to the buffer the parse was handed, and a stopped run
-  // outlives it. #decide-then-do. BoundStart::off is already past the
-  // head, which is what the parse has to carry on from.
+  // outlives it. BoundStart::off is already past the head, which is
+  // what the parse has to carry on from.
   off = s.off;
   if (s.content_length != 0) {
     const size_t avail = s.viewlen - off;

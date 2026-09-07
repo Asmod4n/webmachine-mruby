@@ -864,8 +864,8 @@ class Http1 {
         status = s;
         finished = true;
       }
-      // #mruby-raises: a raise is a C++ throw here, and the run frames
-      // above already catch it. Rethrowing leaves this frame suspended at
+      // A raise is a C++ throw here, and the run frames above already
+      // catch it. Rethrowing leaves this frame suspended at
       // its final point, which is where the caller destroys it.
       void unhandled_exception() { throw; }
     };

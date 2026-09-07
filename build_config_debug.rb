@@ -49,7 +49,7 @@ MRuby::Build.new('debug') do |conf|
 
   # #30: the watcher is a promise about foreign descriptors, and the only
   # honest test of one drives a real database. libpq is the case the
-  # design was written against: it says what to wait for, and it changes
+  # watcher was written against: it says what to wait for, and it changes
   # its mind in the middle of a wait - writable while it flushes,
   # readable while it reads.
   #
