@@ -60,18 +60,21 @@ unless defined?(wm_server)
   # log paths. The helper kills the pid, waits, and unlinks the socket.
   def wm_server(app_source = nil, *args, app: true, bin: WM_BIN, env: {},
                 sock: nil, tag: 'wm')
+    sock ||= "/tmp/#{tag}-#{$$}.sock"
     mrb = nil
     if app
-      mrb = wm_compile(app_source, "#{tag}-app")
+      # An application names its own listener; the command line names
+      # none for it.
+      mrb = wm_compile(wm_listen(app_source, sock), "#{tag}-app")
       args = ["--app=#{mrb.path}", *args]
-    elsif app_source
-      args = [app_source, *args]
+    else
+      args = [app_source, *args].compact
+      args = ["--unix=#{sock}", *args]
     end
-    sock ||= "/tmp/#{tag}-#{$$}.sock"
     File.unlink(sock) if File.exist?(sock)
     err = "/tmp/#{tag}-stderr-#{$$}.log"
     out = "/tmp/#{tag}-stdout-#{$$}.log"
-    pid = spawn(env, bin, "--unix=#{sock}", *args, out: out, err: err)
+    pid = spawn(env, bin, *args, out: out, err: err)
     begin
       wm_await_socket(sock, err)
       yield sock, pid, err, out
@@ -81,6 +84,21 @@ unless defined?(wm_server)
       File.unlink(sock) rescue nil
       mrb&.unlink
     end
+  end
+end
+
+unless defined?(wm_listen)
+  # The application source with its listener named: a unix socket, or a
+  # TCP port. A source that already names one keeps its shape and gets
+  # the new value; one that names none gets the line after
+  # `Application.new do |app|`.
+  def wm_listen(app_source, sock = nil, port: nil)
+    line = port ? "conf.port = #{port}" : "conf.unix_path = #{sock.inspect}"
+    src = app_source.dup
+    if src =~ /^\s*(app\.)?conf\.(port|unix_path) = /
+      return src.sub(/^(\s*)(app\.)?conf\.(port|unix_path) = .*$/) { "#{$1}#{$2}#{line}" }
+    end
+    src.sub(/^(\s*)Webmachine::Application\.new do \|app\|\n/) { "#{$&}#{$1}  app.#{line}\n" }
   end
 end
 

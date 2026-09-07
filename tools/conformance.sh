@@ -73,11 +73,13 @@ stop_server() {
 start_server() {
   # -g, as everywhere an app is compiled: an error record names the
   # app's source line, and only a debug section carries it.
-  "$MRBC" -g -o "$OUT/app.mrb" "$1"
+  # The app names its listener; the fixture's port becomes this run's.
+  sed "s/app.conf.port = [0-9]*/app.conf.port = $PORT/" "$1" > "$OUT/app.rb"
+  "$MRBC" -g -o "$OUT/app.mrb" "$OUT/app.rb"
   rm -f "$PIDFILE"
   # Both logs, so a handshake the suite never saw answered is in the
   # access log, and a raise is in the error log.
-  setsid "$BIN" --app="$OUT/app.mrb" --port="$PORT" --pidfile="$PIDFILE" \
+  setsid "$BIN" --app="$OUT/app.mrb" --pidfile="$PIDFILE" \
     --log="$OUT/access.log" --log-privacy=none --error-log="$OUT/error.log" \
     > "$OUT/server.log" 2>&1 &
   i=0

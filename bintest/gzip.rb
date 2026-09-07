@@ -33,8 +33,8 @@ def gz_tcp_server(app_source)
     # inside that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn(WM_BIN, "--port=#{port.to_s}", "--app=#{app.path}",
-                out: File::NULL, err: err)
+    app = wm_compile(wm_listen(app_source, port: port), 'wm-gzapp')
+    pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
     up = false
     50.times do
       begin

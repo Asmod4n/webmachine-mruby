@@ -7,18 +7,18 @@
 # A flag beats this file; this file beats the app's own conf.
 
 [server]
-# Where it answers. At most one of the two - a unix socket, or a TCP
-# port. Without either, the app's conf decides.
+# Where a standalone server answers. At most one of the two - a unix
+# socket, or a TCP port. An application names its own listener in its
+# conf, and one process serves any number of applications.
 # unix = "/run/webmachine.sock"
 # port = 8080
 
-# What it serves. One of app and assets, or a docroot with
-# --standalone; with nothing to serve there is no start.
+# What it serves: an application, or files with --standalone. With
+# nothing to serve there is no start. An application names its own
+# pack and docroot in its conf (conf.assets, conf.docroot).
 # app = "site.mrb"           # the application, as bytecode (mrbc)
-# assets = "site.zip"        # a pack, answered from one mapping
-# docroot = "/srv/site"      # with an app: the only directory
-                             # response.file may reach. Standalone:
-                             # the files that are served.
+# assets = "site.zip"        # standalone: a pack, answered from one mapping
+# docroot = "/srv/site"      # standalone: a directory of files
 
 # The media-type database. Without it the machine's own is found:
 # /etc/mime.types, then Apache's, then shared-mime-info, then the

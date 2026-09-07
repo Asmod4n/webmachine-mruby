@@ -394,8 +394,7 @@ assert('ws: route.websocket refuses a class that is not a WebsocketResource') do
   RUBY
   app = wm_compile(src, 'wm-ws')
   err = "/tmp/wm-ws-refuse-#{$$}.log"
-  pid = spawn(WM_BIN, "--unix=/tmp/wm-ws-refuse-#{$$}.sock",
-              "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0
   out = File.read(err)
@@ -416,8 +415,7 @@ assert('ws: a resource without on_data is refused at route.websocket') do
   RUBY
   app = wm_compile(src, 'wm-ws')
   err = "/tmp/wm-ws-mute-#{$$}.log"
-  pid = spawn(WM_BIN, "--unix=/tmp/wm-ws-mute-#{$$}.sock",
-              "--app=#{app.path}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_true $?.exitstatus != 0
   out = File.read(err)

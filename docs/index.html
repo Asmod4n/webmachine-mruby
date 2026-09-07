@@ -160,7 +160,7 @@ def main
 end</code></pre>
 <pre><code>rake
 mruby/bin/mrbc -g -o hello.mrb hello.rb
-mruby/bin/webmachine-server --app=hello.mrb --port=8080</code></pre>
+mruby/bin/webmachine-server --app=hello.mrb</code></pre>
   <p><code>self.to_html</code> is the whole trick. The server calls it
   once at start and keeps the answer, with its status line, its head,
   its ETag and its HTTP/2 header block, as bytes. A request against this

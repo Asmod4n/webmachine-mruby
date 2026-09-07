@@ -87,8 +87,10 @@ the file, but ask before using it, which the ETag then answers with a
 
 ## Run it
 
-    mruby/bin/webmachine-server --port=8080 \
-        --app=examples/site.mrb --assets=examples/site.zip
+    mruby/bin/webmachine-server --app=examples/site.mrb
+
+The application names its port and its pack: `app.conf.port = 8080`
+and `app.conf.assets = 'examples/site.zip'` in `examples/site.rb`.
 
 Then open <http://127.0.0.1:8080/>. The root of the pack answers `/`,
 because a path that names a directory takes that directory's

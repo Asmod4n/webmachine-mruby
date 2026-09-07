@@ -484,7 +484,7 @@ assert('watcher: a class-level callback is refused at the start') do
   mrb = Tempfile.new(['wm-wa', '.mrb'])
   mrb.close
   raise 'mrbc failed' unless system(mrbc, '-g', '-o', mrb.path, src.path)
-  out = `#{WM_BIN} --unix=/tmp/wm-wa-refused-#{$$}.sock --app=#{mrb.path} 2>&1`
+  out = `#{WM_BIN} --app=#{mrb.path} 2>&1`
   assert_false $?.success?, out
   assert_true out.include?('defined on the class'), out
   assert_true out.include?('write def generate_etag'), out

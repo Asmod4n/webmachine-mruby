@@ -47,13 +47,7 @@ void usage(const char* me) {
                "  an application (--app), or standalone (--standalone), which\n"
                "  serves files and enters no VM. One of the two, or no start.\n"
                "\n"
-               "LISTENER\n"
-               "  --unix=PATH              answer on a unix socket; beats the app's conf\n"
-               "  --port=N                 answer on a TCP port; beats the app's conf\n"
-               "\n"
-               "FILES BOTH WAYS SERVE\n"
-               "  --assets=FILE.zip        a pack, answered from one mapping\n"
-               "  --docroot=DIR            a directory of files\n"
+               "FILES\n"
                "  --mime-types=FILE        this media-type database, not the machine's\n"
                "\n"
                "LOG\n"
@@ -76,10 +70,15 @@ void usage(const char* me) {
                "AN APPLICATION\n"
                "  --app=FILE.mrb           the application, as bytecode - required\n"
                "  --error-assets=FILE.zip  what an error answer may hand over\n"
-               "  --docroot=DIR            here, the only directory response.file may reach\n"
+               "                           The listener, the pack and the docroot are the\n"
+               "                           application's own: conf.port, conf.unix_path,\n"
+               "                           conf.url, conf.assets, conf.docroot. One process\n"
+               "                           serves any number of applications.\n"
                "\n"
                "STANDALONE - files only, and the folded graph answers them\n"
                "  --standalone             no app, no route, no VM entry per request\n"
+               "  --unix=PATH              answer on a unix socket\n"
+               "  --port=N                 answer on a TCP port\n"
                "  --assets=FILE.zip        answered first, from its mapping\n"
                "  --docroot=DIR            answered next, from disk; needs one of the two\n"
                "                           GET and HEAD; a directory takes its index.html\n"
@@ -156,19 +155,26 @@ bool parse_argv(mrb_state* mrb, Invocation& in) {
   // than for the life of this call.
   mrb_gc_register(mrb, h);
 
-  const mrb_value keys = mrb_hash_keys(mrb, h);
-  for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
-    const mrb_value k = mrb_ary_entry(keys, i);
-    const char* name = mrb_string_cstr(mrb, k);
-    bool known = false;
-    for (const char* f : kFlags) {
-      if (std::strcmp(name, f) == 0) { known = true; break; }
-    }
-    if (!known) {
-      std::fprintf(stderr, "webmachine: --%s?\n", name);
-      usage(argv[0]);
-      return false;
-    }
+  // Every flag given is one this program knows. The hash is walked in
+  // place; the first unknown name ends the walk and the start.
+  struct UnknownFlag {
+    const char* name;
+  } unknown = {nullptr};
+  mrb_hash_foreach(
+      mrb, mrb_hash_ptr(h),
+      [](mrb_state* m, mrb_value k, mrb_value, void* ud) -> int {
+        const char* name = mrb_string_cstr(m, k);
+        for (const char* f : kFlags) {
+          if (std::strcmp(name, f) == 0) return 0;
+        }
+        static_cast<UnknownFlag*>(ud)->name = name;
+        return 1;
+      },
+      &unknown);
+  if (unknown.name != nullptr) {
+    std::fprintf(stderr, "webmachine: --%s?\n", unknown.name);
+    usage(argv[0]);
+    return false;
   }
 
   webmachine::ServerOptions& opts = in.opts;
@@ -323,6 +329,25 @@ int serve(mrb_state* mrb, Invocation& in) {
     return 0;
   }
 
+  // An application names its own listener, pack and docroot in its conf,
+  // and one process serves any number of applications. On the command
+  // line or in the config, those are a standalone server's.
+  if (opts.app_path != nullptr) {
+    const char* taken = nullptr;
+    if (cli_unix != nullptr) taken = "--unix";
+    else if (cli_port != 0) taken = "--port";
+    else if (opts.assets_path != nullptr) taken = "--assets";
+    else if (opts.docroot_path != nullptr) taken = "--docroot";
+    if (taken != nullptr) {
+      std::fprintf(stderr,
+                   "webmachine: %s (and its line in the config's [server]) is a standalone "
+                   "server's. An application names its own listener, pack and docroot in "
+                   "its conf (conf.port, conf.unix_path, conf.url, conf.assets, "
+                   "conf.docroot), and one process serves any number of applications\n",
+                   taken);
+      return 1;
+    }
+  }
   webmachine::server_options(opts);
 
   if (opts.standalone && opts.app_path != nullptr) {

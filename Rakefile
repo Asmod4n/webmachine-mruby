@@ -45,14 +45,15 @@ RUBY
 # per file; a ship build reads it and pays nothing per request. The
 # installed mrbc is the same program, and README tells users the same
 # line.
-def wm_smoke_app
+def wm_smoke_app(sock)
   return @wm_smoke_app if @wm_smoke_app
   mrbc = [File.expand_path('mruby/build/host/mrbc/bin/mrbc', __dir__),
           File.expand_path('mruby/bin/mrbc', __dir__)].find { |c| File.executable?(c) }
   raise 'no mrbc to compile the smoke app - run rake compile first' unless mrbc
   rb = "/tmp/wm-smoke-app-#{$$}.rb"
   mrb = "/tmp/wm-smoke-app-#{$$}.mrb"
-  File.write(rb, SMOKE_APP)
+  File.write(rb, SMOKE_APP.sub("Webmachine::Application.new do |app|\n",
+                              "Webmachine::Application.new do |app|\n      app.conf.unix_path = #{sock.inspect}\n"))
   sh "#{mrbc} -g -o #{mrb} #{rb}"
   File.unlink(rb) rescue nil
   @wm_smoke_app = mrb
@@ -66,7 +67,7 @@ def wm_smoke(build_name, label)
   sock = "/tmp/wm-#{build_name}-smoke-#{$$}.sock"
   log = "/tmp/wm-#{build_name}-smoke-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(bin, "--unix=#{sock}", "--app=#{wm_smoke_app}", out: File::NULL, err: log)
+  pid = spawn(bin, "--app=#{wm_smoke_app(sock)}", out: File::NULL, err: log)
   begin
     200.times do
       break if File.socket?(sock)
@@ -905,8 +906,7 @@ task :site do
   raise "#{mrbc} not found - rake compile builds it" unless File.executable?(mrbc)
 
   sh "#{mrbc} -g -o examples/site.mrb examples/site.rb"
-  puts 'now: webmachine-server --port=8080 --app=examples/site.mrb ' \
-       '--assets=examples/site.zip'
+  puts 'now: webmachine-server --app=examples/site.mrb'
 end
 
 # Where an installed server lives, by the Filesystem Hierarchy Standard:

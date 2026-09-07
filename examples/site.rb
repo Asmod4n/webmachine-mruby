@@ -195,6 +195,7 @@ end
 def main
   Webmachine::Application.new do |app|
     app.conf.port = 8080
+    app.conf.assets = 'examples/site.zip'
     app.add_route %w[fragment time], TimeFragment
     app.add_route %w[fragment search], SearchFragment
     app.add_route %w[fragment count], CountFragment

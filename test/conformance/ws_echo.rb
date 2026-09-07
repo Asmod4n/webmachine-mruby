@@ -18,6 +18,7 @@ end
 
 def main
   Webmachine::Application.new do |app|
+    app.conf.port = 9977
     app.routes do |route|
       route.websocket ['echo'], AutobahnEcho
     end

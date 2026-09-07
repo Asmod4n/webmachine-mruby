@@ -7,7 +7,8 @@ RF_TEXT = 'hello from the docroot'.freeze
 RF_BIG = ('rf' + ('0123456789abcdefghij' * 12_499) + 'END').freeze
 RF_SECRET = 'THIS FILE IS OUTSIDE THE DOCROOT'.freeze
 
-def rf_app
+def rf_app(docroot = nil)
+  root_line = docroot ? "app.conf.docroot = #{docroot.inspect}" : ''
   <<~RUBY
     # The name comes off the query string on purpose: a path a request chose
     # is the only interesting case, and the one every traversal test needs.
@@ -19,6 +20,7 @@ def rf_app
     end
     def main
       Webmachine::Application.new do |app|
+        #{root_line}
         app.routes do |route|
           route.add ['f'], RfFile
         end
@@ -45,8 +47,7 @@ end
 def rf_serve(docroot: true)
   base, root = rf_tree
   sock = "/tmp/wm-rf-#{$$}-#{rand(1 << 30)}.sock"
-  args = docroot ? ["--docroot=#{root}"] : []
-  wm_server(rf_app, *args, sock: sock, tag: 'wm-rf') do |s|
+  wm_server(rf_app(docroot ? root : nil), sock: sock, tag: 'wm-rf') do |s|
     yield s, root
   end
 ensure
@@ -212,17 +213,16 @@ end
 
 assert('a docroot that is missing or is not a directory refuses startup') do
   base, root = rf_tree
-  app = wm_compile(rf_app, 'wm-rfapp')
   begin
     [[File.join(base, 'no-such-dir'), 'No such file'],
      [File.join(root, 'a.txt'), 'is not a directory']].each do |path, want|
-      out = IO.popen([WM_BIN, "--unix=/tmp/wm-rf-never-#{$$}.sock", "--app=#{app.path}",
-                      "--docroot=#{path}", { err: [:child, :out] }], &:read)
-      assert_include out, '--docroot'
+      app = wm_compile(wm_listen(rf_app(path), "/tmp/wm-rf-nodir-#{$$}.sock"), 'wm-rfapp')
+      out = IO.popen([WM_BIN, "--app=#{app.path}", { err: [:child, :out] }], &:read)
+      app.unlink
+      assert_include out, 'docroot'
       assert_include out, want
     end
   ensure
-    app&.unlink
     FileUtils.rm_rf(base)
   end
 end
@@ -236,8 +236,8 @@ assert('response.file streams a file of any size, window by window') do
   sock = "/tmp/wm-rf-big-#{$$}-#{rand(1 << 30)}.sock"
   pid = nil
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
-                "--docroot=#{root}", out: File::NULL, err: File::NULL)
+    pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
+                out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     [262_143, 262_144, 262_145, 700_000, 20 << 20].each do |n|
@@ -274,8 +274,8 @@ assert('response.file that shrinks mid-flight ends the request, never hangs') do
   File.binwrite(path, 'S' * (48 << 20))
   pid = nil
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
-                "--docroot=#{root}", out: File::NULL, err: File::NULL)
+    pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
+                out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     cutter = Thread.new { sleep 0.05; File.truncate(path, 1 << 20) rescue nil }
@@ -350,8 +350,8 @@ assert('response.file serves a file larger than one send can move') do
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
-                "--docroot=#{root}", out: File::NULL, err: File::NULL)
+    pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
+                out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
     head, len, got, last = rf_stream(sock, 'huge.bin')
@@ -380,8 +380,8 @@ assert('response.file survives an mmap it cannot make, and still serves') do
   pid = nil
   begin
     # An address space too small for the mapping, large enough for the server.
-    cmd = "ulimit -v 2000000; exec #{WM_BIN} --unix=#{sock} --app=#{app.path} " \
-          "--docroot=#{root}"
+    app = wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp')
+    cmd = "ulimit -v 2000000; exec #{WM_BIN} --app=#{app.path}"
     pid = spawn('sh', '-c', cmd, out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock), 'the server never came up under the limit'
@@ -415,8 +415,8 @@ assert('response.file writes one access line per request, not one per window') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
-                "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
+    pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
+                "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -451,8 +451,8 @@ assert('response.file logs an abandoned transfer once, with what really left') d
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--app=#{app.path}",
-                "--docroot=#{root}", "--log=#{logf}", '--file-map-threshold=0',
+    pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
+                "--log=#{logf}", '--file-map-threshold=0',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }
     assert_true File.socket?(sock)
@@ -520,13 +520,12 @@ assert('response.file serves a client slower than one send-timeout of body') do
   n = 1_500_000
   File.binwrite(File.join(root, 'slow.bin'), 'S' * n)
   cfg = Tempfile.new(['wm-rf-slow', '.toml'])
-  cfg.write("[server]\nunix = \"#{sock}\"\n\n[tune]\n" \
-            "header_timeout = 3\nsend_timeout = 3\n")
+  cfg.write("[tune]\nheader_timeout = 3\nsend_timeout = 3\n")
   cfg.close
   pid = nil
   begin
     pid = spawn(WM_BIN, "--config=#{cfg.path}",
-                "--app=#{app.path}", "--docroot=#{root}",
+                "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
                 '--file-map-threshold=65536',
                 out: File::NULL, err: File::NULL)
     200.times { break if File.socket?(sock); sleep 0.05 }

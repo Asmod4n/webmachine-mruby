@@ -174,14 +174,6 @@ void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
                  static_cast<mrb_int>(i),
                  spec.cert_path.empty() ? "only the key" : "only the certificate");
     }
-    if (cfg.listeners[i].unix_path != nullptr) {
-      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                 "application %i serves https on a unix socket. TLS there is a real thing, "
-                 "but the kernel's record layer is a TCP ULP - setsockopt(IPPROTO_TCP, "
-                 "TCP_ULP) on AF_UNIX is ENOTSUP - and this server has no record layer of "
-                 "its own to fall back to",
-                 static_cast<mrb_int>(i));
-    }
     std::string& cert = pem_[i * 2];
     std::string& key = pem_[i * 2 + 1];
     read_pem(mrb, {spec.cert_path, "certificate"}, cert);
@@ -196,13 +188,6 @@ void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
 void build_listeners(mrb_state* mrb, RingConfig& cfg) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
-  const bool cli = opts_.cli_unix != nullptr || opts_.cli_port != 0;
-  if (cli && specs_.size() > 1) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "--unix/--port names one listener and this file registered %i applications - "
-               "drop the override and let each app's conf speak",
-               static_cast<mrb_int>(specs_.size()));
-  }
   if (opts_.cli_unix != nullptr) {
     cfg.listeners[0].unix_path = opts_.cli_unix;
     return;
@@ -221,8 +206,7 @@ void build_listeners(mrb_state* mrb, RingConfig& cfg) {
       case AppSpec::Form::kNone:
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                    "application %i has no listener - its configure block names one "
-                   "(conf.port / conf.unix_path / conf.url), or pass --port/--unix for a "
-                   "file with a single app",
+                   "(conf.port / conf.unix_path / conf.url)",
                    static_cast<mrb_int>(i));
     }
   }
@@ -299,8 +283,8 @@ void build(mrb_state* mrb) {
   build_listeners(mrb, cfg);
   build_listener_tls(mrb, cfg);
 
-  // server.docroot: a typed flag beats [server], and both beat the app's
-  // conf - the same order --unix and --port already follow. The canonical
+  // The docroot: a standalone server's --docroot or [server] docroot, or
+  // the first app that names one in its conf. The canonical
   // path is settled once, here, before the first accept: no request may race
   // the anchor RESOLVE_BENEATH is measured against. A configured docroot
   // that is missing or is not a directory refuses startup by name, because
@@ -327,13 +311,17 @@ void build(mrb_state* mrb) {
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   const bool standalone = opts_.standalone;
-  if (opts_.assets_path != nullptr || !error_assets_file.empty() ||
+  const char* assets_path = opts_.assets_path;
+  for (size_t i = 0; assets_path == nullptr && i < specs_.size(); i++) {
+    if (!specs_[i]->assets.empty()) assets_path = specs_[i]->assets.c_str();
+  }
+  if (assets_path != nullptr || !error_assets_file.empty() ||
       (standalone && docroot_fd() >= 0)) {
     mime_.load(mrb, opts_.mime_types_path);
     std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
                  mime_.source().c_str(), mime_.size());
   }
-  if (opts_.assets_path != nullptr) assets_.open(mrb, opts_.assets_path, mime_);
+  if (assets_path != nullptr) assets_.open(mrb, assets_path, mime_);
   if (!error_assets_file.empty()) {
     // A picture is no reason not to start: an unreadable one is said
     // out loud and the pages render without it.
@@ -420,7 +408,7 @@ void build(mrb_state* mrb) {
                                 specs_[i]->tls};
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
-                        opts_.assets_path != nullptr ? &assets_ : nullptr));
+                        assets_path != nullptr ? &assets_ : nullptr));
   // #210: the error pages render in the app's VM. A template the pack
   // carries and that does not parse is a startup refusal with a name -
   // the operator hears it here, not on the first 404.

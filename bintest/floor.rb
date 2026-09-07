@@ -19,15 +19,18 @@ FLOOR_APP = <<~RUBY unless defined?(FLOOR_APP)
   end
 RUBY
 
-def floor_app
-  return $floor_app if $floor_app
+# The floor app with its listener named, compiled once per listener.
+def floor_app(sock = nil, port: nil)
+  $floor_apps ||= {}
+  key = port || sock
+  return $floor_apps[key] if $floor_apps[key]
   mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
-  rb = "/tmp/wm-floor-app-#{$$}.rb"
-  mrb = "/tmp/wm-floor-app-#{$$}.mrb"
-  File.write(rb, FLOOR_APP)
+  rb = "/tmp/wm-floor-app-#{$$}-#{$floor_apps.size}.rb"
+  mrb = "/tmp/wm-floor-app-#{$$}-#{$floor_apps.size}.mrb"
+  File.write(rb, wm_listen(FLOOR_APP, sock, port: port))
   system(mrbc, '-g', '-o', mrb, rb) or raise 'mrbc failed to compile the floor app'
   File.unlink(rb) rescue nil
-  $floor_app = mrb
+  $floor_apps[key] = mrb
 end
 
 assert('floor: a receive is answered 200, keep-alive holds') do
@@ -50,8 +53,7 @@ end
 assert('floor: the ring-built TCP listener answers like the unix one') do
   port = 20000 + ($$ % 20000)
   err = "/tmp/wm-floor-tcp-stderr-#{$$}.log"
-  pid = spawn(WM_BIN, "--port=#{port.to_s}",
-              "--app=#{floor_app}", out: File::NULL, err: err)
+  pid = spawn(WM_BIN, "--app=#{floor_app(port: port)}", out: File::NULL, err: err)
   begin
     s = nil
     100.times do
@@ -77,8 +79,7 @@ end
 assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(WM_BIN, "--unix=#{sock}",
-              "--app=#{floor_app}", out: File::NULL, err: File::NULL)
+  pid = spawn(WM_BIN, "--app=#{floor_app(sock)}", out: File::NULL, err: File::NULL)
   100.times { break if File.socket?(sock); sleep 0.05 }
   assert_true File.socket?(sock)
   Process.kill('TERM', pid)

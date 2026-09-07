@@ -3619,9 +3619,12 @@ struct AppSpec {
   long long zero_copy_threshold = -1;
   // conf.file_map_threshold = N; -1 = this app said nothing.
   long long file_map_threshold = -1;
-  // conf.docroot = PATH; empty = this app said nothing. --docroot and
-  // [server] docroot both beat it, same order as every other choice here.
+  // conf.docroot = PATH; empty = this app said nothing. The docroot is
+  // one anchor for the process, so the first app that names one decides.
   std::string docroot;
+  // conf.assets = FILE.zip; empty = this app said nothing. The pack is
+  // one mapping for the process, so the first app that names one decides.
+  std::string assets;
   // conf.certificate = PATH, conf.private_key = PATH, and whether
   // conf.url said https. All three have to agree, and server.cpp is
   // where that is checked - a listener either serves TLS or does not.

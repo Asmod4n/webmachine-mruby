@@ -1334,6 +1334,7 @@ assert('h2: an asset answer between two konst heads leaves their index in place'
 
     def main
       Webmachine::Application.new do |app|
+        app.conf.assets = ASSETS_PATH
         app.routes { |route| route.add [:*], KonstBeside }
       end
     end
@@ -1344,7 +1345,7 @@ assert('h2: an asset answer between two konst heads leaves their index in place'
   zf.write(zip)
   zf.close
   begin
-    h2_server(src, "--assets=#{zf.path}") do |sock|
+    h2_server(src.sub('ASSETS_PATH', zf.path.inspect)) do |sock|
       UNIXSocket.open(sock) do |s|
         h2_handshake(s)
         blocks = []

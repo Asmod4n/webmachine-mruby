@@ -34,7 +34,7 @@ end
 
     rake
     mruby/bin/mrbc -g -o hello.mrb hello.rb
-    mruby/bin/webmachine-server --app=hello.mrb --port=8080
+    mruby/bin/webmachine-server --app=hello.mrb
 
 `self.to_html` is the whole trick. The server calls it once at start
 and keeps the answer, with its status line, its head, its ETag and its
@@ -175,15 +175,23 @@ connection is served in between.
 
 ## Running it
 
-    webmachine-server [--config=FILE.toml] [--unix=PATH | --port=N]
-                      [--app=FILE.mrb] [--assets=FILE.zip] [--docroot=DIR]
-                      [--standalone] [--log=FILE] [--error-log=FILE]
+    webmachine-server --app=FILE.mrb [--config=FILE.toml]
+                      [--log=FILE] [--error-log=FILE]
+    webmachine-server --standalone [--unix=PATH | --port=N]
+                      [--assets=FILE.zip] [--docroot=DIR]
+
+An application names its own listener, in its conf: `app.conf.port`,
+`app.conf.unix_path`, or `app.conf.url`. One process serves any number of
+applications, each on its own. `--unix` and `--port` are a standalone
+server's, which has no app to name one.
 
 A pack is a zip of your site's files, built once with
 `rake pack[DIR,OUT.zip]`. The server maps the archive and answers every
 file in it from memory, with its ETag and its compressed form ready.
-`--assets` names a pack, `--docroot` names a directory of files instead.
-`--standalone` serves a pack or a directory with no app at all.
+An application names its pack with `app.conf.assets`, and a directory of
+files with `app.conf.docroot`, the only directory `response.file` may
+reach. `--assets` and `--docroot` are the standalone server's, which
+serves a pack or a directory with no app at all.
 `--write-config` writes a `webmachine.toml` with every setting and what
 it does. `webmachine.toml.example` is that file. Without `--config` the
 server reads `webmachine.toml` in the start directory, then

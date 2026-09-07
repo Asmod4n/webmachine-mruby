@@ -140,9 +140,9 @@ end
 assert('zero-copy: [tune] zero_copy_threshold is read from the config file') do
   sock = "/tmp/wm-zc-toml-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
-  app = wm_compile(zc_app, 'wm-zcapp')
+  app = wm_compile(wm_listen(zc_app, sock), 'wm-zcapp')
   cfg = Tempfile.new(['wm-zc', '.toml'])
-  cfg.write("[server]\nunix = \"#{sock}\"\napp = \"#{app.path}\"\n\n" \
+  cfg.write("[server]\napp = \"#{app.path}\"\n\n" \
             "[tune]\nzero_copy_threshold = 1024\n")
   cfg.close
   err = "/tmp/wm-zc-toml-stderr-#{$$}.log"

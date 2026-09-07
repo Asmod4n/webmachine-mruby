@@ -71,6 +71,7 @@ void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
 // reachable from here because they are not in it.
 enum class Setting : uint8_t {
   kDocroot,
+  kAssets,
   kCertificate,
   kPrivateKey,
   kFileMapThreshold,
@@ -81,6 +82,7 @@ enum class Setting : uint8_t {
 
 Setting setting_for(std::string_view k) {
   if (k == "docroot") return Setting::kDocroot;
+  if (k == "assets") return Setting::kAssets;
   if (k == "certificate") return Setting::kCertificate;
   if (k == "private_key") return Setting::kPrivateKey;
   if (k == "file_map_threshold") return Setting::kFileMapThreshold;
@@ -119,7 +121,7 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
   const Setting what = setting_for(key);
   if (what == Setting::kUnknown) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-               "conf.url: %s is not a setting - a URL may name docroot, certificate, "
+               "conf.url: %s is not a setting - a URL may name docroot, assets, certificate, "
                "private_key, file_map_threshold, zero_copy_threshold or "
                "disable_http_cats, and routes stay in Ruby",
                std::string(key).c_str());
@@ -133,6 +135,13 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
         mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
       }
       s->docroot.assign(val);
+      return;
+    case Setting::kAssets:
+      if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: assets is empty");
+      if (!s->assets.empty()) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: assets was already named");
+      }
+      s->assets.assign(val);
       return;
     case Setting::kCertificate:
       if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: certificate is empty");
@@ -299,6 +308,7 @@ enum ConfIdx {
   kConfUnixPath,
   kConfUrl,
   kConfDocroot,
+  kConfAssets,
   kConfCertificate,
   kConfPrivateKey,
   kConfFileMapThreshold,
@@ -371,6 +381,12 @@ void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
       mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
     }
     s->docroot = text;
+  }
+  if (conf_str(mrb, conf, kConfAssets, "assets", &text)) {
+    if (!s->assets.empty()) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: assets was already named");
+    }
+    s->assets = text;
   }
   if (conf_str(mrb, conf, kConfCertificate, "certificate", &text)) {
     if (!s->cert_path.empty()) {
@@ -556,7 +572,7 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
 mrb_value route_assets(mrb_state* mrb, mrb_value) {
   mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
          "route.assets is reserved - the asset mount is #170/#115. Assets are configured "
-         "with --assets and serve unchanged");
+         "with conf.assets and serve unchanged");
   return mrb_nil_value();
 }
 

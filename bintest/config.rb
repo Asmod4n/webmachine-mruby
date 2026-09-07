@@ -21,10 +21,12 @@ CFG_APP = <<~RUBY unless defined?(CFG_APP)
 
   def main
     Webmachine::Application.new do |app|
+      app.conf.unix_path = "/tmp/wm-cfg-app-#{$$}.sock"
       app.routes { |route| route.add [:*], CfgFloor }
     end
   end
 RUBY
+CFG_SOCK = "/tmp/wm-cfg-app-#{$$}.sock" unless defined?(CFG_SOCK)
 
 def cfg_app
   $cfg_app ||= wm_compile(CFG_APP, 'wm-cfg-app')
@@ -44,9 +46,9 @@ def cfg_get(sock, target)
 end
 
 assert('webmachine.toml: the invocation as a file') do
-  sock = "/tmp/wm-cfg-#{$$}.sock"
+  sock = CFG_SOCK
   File.unlink(sock) if File.exist?(sock)
-  cfg = cfg_write("[server]\nunix = \"#{sock}\"\n\n[tune]\nbacklog = 128\nsq_entries = 2048\n")
+  cfg = cfg_write("[tune]\nbacklog = 128\nsq_entries = 2048\n")
   err = "/tmp/wm-cfg-stderr-#{$$}.log"
   pid = cfg_spawn(["--config=#{cfg.path}"], err)
   begin
@@ -60,22 +62,21 @@ assert('webmachine.toml: the invocation as a file') do
   end
 end
 
-assert('the typed flag beats the file') do
+assert('a listener in the file or on the command line is refused beside an app') do
   sock_file = "/tmp/wm-cfg-file-#{$$}.sock"
-  sock_cli = "/tmp/wm-cfg-cli-#{$$}.sock"
-  [sock_file, sock_cli].each { |s| File.unlink(s) if File.exist?(s) }
   cfg = cfg_write("[server]\nunix = \"#{sock_file}\"\n")
   err = "/tmp/wm-cfg-stderr2-#{$$}.log"
-  pid = cfg_spawn(["--config=#{cfg.path}", "--unix=#{sock_cli}"], err)
-  begin
-    wm_await_socket(sock_cli, err)
-    assert_include cfg_get(sock_cli, '/'), '200 OK'
-    assert_false File.socket?(sock_file)
-  ensure
-    Process.kill(:TERM, pid) rescue nil
-    Process.waitpid(pid) rescue nil
-    cfg.unlink
-  end
+  pid = cfg_spawn(["--config=#{cfg.path}"], err)
+  Process.waitpid(pid)
+  assert_false $?.success?
+  assert_include File.read(err), 'names its own listener'
+  assert_false File.socket?(sock_file)
+  pid = cfg_spawn(["--unix=#{sock_file}"], err)
+  Process.waitpid(pid)
+  assert_false $?.success?
+  assert_include File.read(err), 'names its own listener'
+ensure
+  cfg&.unlink
 end
 
 assert('a bad config refuses the start by name') do
@@ -95,12 +96,9 @@ assert('a bad config refuses the start by name') do
 end
 
 assert('[tune] timeouts: the reaper closes what never speaks and what fell silent') do
-  sock = "/tmp/wm-cfg-to-#{$$}.sock"
+  sock = CFG_SOCK
   File.unlink(sock) if File.exist?(sock)
   cfg = cfg_write(<<~TOML)
-    [server]
-    unix = "#{sock}"
-
     [tune]
     header_timeout = 1
     send_timeout = 1

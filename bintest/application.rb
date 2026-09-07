@@ -5,20 +5,6 @@ require 'tempfile'
 def ap_refused(app_source)
   app = wm_compile(app_source)
   err = "/tmp/wm-ap-refuse-#{$$}.log"
-  pid = spawn(WM_BIN, "--unix=/tmp/wm-ap-refuse-#{$$}.sock",
-              "--app=#{app.path}", out: File::NULL, err: err)
-  Process.wait(pid)
-  raise 'server came up but must have refused' if $?.exitstatus == 0
-  File.read(err)
-ensure
-  app.unlink
-end
-
-# Like ap_refused, but without --unix: some refusals are about the
-# listener the app named, and an override would answer before them.
-def ap_refused_unaided(app_source)
-  app = wm_compile(app_source)
-  err = "/tmp/wm-ap-unaided-#{$$}.log"
   pid = spawn(WM_BIN, "--app=#{app.path}", out: File::NULL, err: err)
   Process.wait(pid)
   raise 'server came up but must have refused' if $?.exitstatus == 0
@@ -449,7 +435,7 @@ assert('application: https, a certificate and a key are one decision') do
 end
 
 assert('application: an https listener says which file it could not read') do
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.url = 'https://example.com:0'
       conf.certificate = '/nonexistent/cert.pem'
@@ -461,25 +447,10 @@ assert('application: an https listener says which file it could not read') do
   assert_true out.include?('No such file'), out
 end
 
-assert('application: the kernel has no record layer on a unix socket') do
-  # --unix overrides the listener the app named, so this app ends up
-  # asking for TLS where setsockopt(IPPROTO_TCP, TCP_ULP) is ENOTSUP.
-  out = ap_refused(ap_one_route(<<~BODY))
-    app.configure do |conf|
-      conf.url = 'https://example.com'
-      conf.certificate = '/nonexistent/cert.pem'
-      conf.private_key = '/nonexistent/key.pem'
-    end
-    app.add_route [:*], R
-  BODY
-  assert_true out.include?('unix socket'), out
-  assert_true out.include?('TCP ULP'), out
-end
-
 assert('application: route.assets is a signpost, route.sse is a real route kind') do
   assets = ap_refused(ap_one_route("app.routes { |route| route.assets '/static' }"))
   assert_true assets.include?('#170'), assets
-  assert_true assets.include?('--assets'), assets
+  assert_true assets.include?('conf.assets'), assets
   sse = ap_refused(ap_one_route("app.routes { |route| route.sse ['sse'], R }"))
   assert_true sse.include?('SseResource'), sse
 end
@@ -571,7 +542,7 @@ assert('application: two applications, two listeners, one ring - each answers it
   end
 end
 
-assert('application: --unix cannot speak for a file with several apps') do
+assert('application: every application in a file names its own listener') do
   src = <<~RUBY
     class R < Webmachine::Resource
       def self.to_html
@@ -585,13 +556,12 @@ assert('application: --unix cannot speak for a file with several apps') do
         app.add_route [:*], R
       end
       Webmachine::Application.new do |app|
-        app.configure { |conf| conf.port = 8081 }
         app.add_route [:*], R
       end
     end
   RUBY
   out = ap_refused(src)
-  assert_true out.include?('names one listener'), out
+  assert_true out.include?('has no listener'), out
 end
 
 assert('application: new without a block builds nothing anybody serves') do
@@ -977,20 +947,20 @@ assert('application: conf.url is a URL, and ada parses it as one') do
 
   # Credentials name no listener, so they are refused rather than folded
   # into the host the way they used to be.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'http://user@127.0.0.1:20001' }
     app.add_route [:*], R
   BODY
   assert_true out.include?('credentials'), out
 
   # A scheme that is neither, and something that is not a URL at all.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'ftp://example.com' }
     app.add_route [:*], R
   BODY
   assert_true out.include?('is not http, https or unix'), out
 
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'not-a-url' }
     app.add_route [:*], R
   BODY
@@ -1002,7 +972,7 @@ assert('application: a threshold above its ceiling is refused, not a crash') do
   # %l as a char* and a size_t, so the "%lld" these two messages used
   # consumed the number as a pointer. A config typo took the server down
   # instead of naming itself.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.port = 20006
       conf.zero_copy_threshold = 999999999999
@@ -1011,7 +981,7 @@ assert('application: a threshold above its ceiling is refused, not a crash') do
   BODY
   assert_true out.include?('conf.zero_copy_threshold = 999999999999 is outside 0..1073741824 bytes'), out
 
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.port = 20007
       conf.file_map_threshold = 999999999999
@@ -1072,7 +1042,7 @@ assert('application: a conf.url query names settings, and only settings') do
 
   # A name that is not a setting is refused - including one that is a
   # method on the app. This is the line between a config URL and RCE.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'http://127.0.0.1:20002?add_route=Evil' }
     app.add_route [:*], R
   BODY
@@ -1080,13 +1050,13 @@ assert('application: a conf.url query names settings, and only settings') do
   assert_true out.include?('routes stay in Ruby'), out
 
   # A value the setter would refuse is refused here too, in its words.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'http://127.0.0.1:20003?file_map_threshold=8k' }
     app.add_route [:*], R
   BODY
   assert_true out.include?('file_map_threshold = 8k is outside'), out
 
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure { |conf| conf.url = 'http://127.0.0.1:20004?disable_http_cats=yes' }
     app.add_route [:*], R
   BODY
@@ -1094,7 +1064,7 @@ assert('application: a conf.url query names settings, and only settings') do
 
   # Named twice is a ConfigError, not a precedence rule - the same answer
   # claim_form gives a listener named twice.
-  out = ap_refused_unaided(ap_one_route(<<~BODY))
+  out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.docroot = '/tmp'
       conf.url = 'http://127.0.0.1:20005?docroot=%2Fsrv'

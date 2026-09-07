@@ -55,7 +55,7 @@ module Webmachine
   # is a NameError - "no member 'add_route' in struct" - because []= can
   # only reach a member, never a method. Routes name classes and stay in
   # Ruby code; nothing a URL or a config file says can reach them.
-  class Config < Struct.new(:port, :unix_path, :url, :docroot, :certificate,
+  class Config < Struct.new(:port, :unix_path, :url, :docroot, :assets, :certificate,
                             :private_key, :file_map_threshold, :zero_copy_threshold,
                             :disable_http_cats)
     # A refusal belongs where it was caused. bintest calls this "catchable
@@ -97,6 +97,11 @@ module Webmachine
     def docroot=(v)
       Config.check_text(v, 'docroot')
       self[:docroot] = v
+    end
+
+    def assets=(v)
+      Config.check_text(v, 'assets')
+      self[:assets] = v
     end
 
     def certificate=(v)
