@@ -1629,6 +1629,85 @@ Http1::Took Http1::answer_bound(Round& r, const BoundAsk& ask, BoundOut& out) {
   return bound_finish(r, ask, out);
 }
 
+// RFC 9113 3.4: the first bytes of a fresh connection decide the
+// protocol. The preface is matched across receives; a connection that
+// sent enough of it to be h2 and then diverged is refused with GOAWAY.
+Http1::Preface Http1::h1_preface(Conn& st, const char* data, size_t len, std::string& sink,
+                                 size_t* consumed) {
+  st.content_need = 0;
+  const size_t seen = st.carry.size();
+  size_t i = 0;
+  while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
+  if (seen + i == kH2PrefaceLen) {
+    st.fresh = false;
+    st.carry.clear();
+    if (!h2_begin(st, sink)) return Preface::kRefused;
+    *consumed = i;
+    return Preface::kH2;
+  }
+  if (i == len) {
+    st.carry.append(data, len);
+    return Preface::kWait;
+  }
+  if (seen + i >= kH2PrefaceAnnounce) {
+    static const unsigned char kGoaway[kH2FrameHeaderLen + 8] = {
+        0, 0, 8, kH2Goaway, 0, 0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, kH2ProtocolError};
+    sink.append(reinterpret_cast<const char*>(kGoaway), sizeof(kGoaway));
+    return Preface::kRefused;
+  }
+  st.fresh = false;
+  return Preface::kH1;
+}
+
+// RFC 6455 4.2 and WHATWG HTML: a head that upgrades to a WebSocket, or
+// names an event-stream route, leaves the request path here. Returns
+// whether it was taken; `lives` then says whether the connection goes
+// on. A head that is neither falls back to the tables.
+bool Http1::h1_upgrade_or_stream(Conn& st, const H1Head& h, std::string& sink, bool* lives) {
+  if (mrb_unlikely(h.wants_ws)) {
+    const AppSlot& wslot = apps_[st.listener];
+    RouteSpans wspans;
+    const int wr = wslot.ws_table != nullptr
+                       ? wslot.ws_table->match(h.path.data(), h.path.size(), wspans)
+                       : -1;
+    if (wr >= 0) {
+      if (h.ws_version != 13) {
+        sink.append("HTTP/1.1 426 Upgrade Required\r\nDate: ");
+        sink.append(date_, http::kDateLen);
+        sink.append(
+            "\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n"
+            "Content-Length: 0\r\n\r\n");
+        *lives = false;
+        return true;
+      }
+      if (h.facts.method != flow::Method::kGet || h.ws_key == nullptr) {
+        *lives = fail(st, 400, sink, h.lflags);
+        return true;
+      }
+      const WsUpgrade up{wslot,  wr,   h.path,
+                         wspans, {h.ws_key, h.ws_key_len},
+                         h.headers, h.num_headers, h.vals, {h.rest, h.rest_len}};
+      *lives = ws_upgrade(st, up, sink);
+      return true;
+    }
+  }
+  if (mrb_unlikely(apps_[st.listener].sse_table != nullptr)) {
+    const AppSlot& sslot = apps_[st.listener];
+    RouteSpans sspans;
+    const int sr = sslot.sse_table->match(h.path.data(), h.path.size(), sspans);
+    if (sr >= 0) {
+      const SseBegin req{sslot,   sr,          h.method,
+                         h.path,  sspans,      h.headers,
+                         h.num_headers, h.minor, h.facts.method, h.vals, h.lflags};
+      *lives = sse_begin(st, req, sink);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   const char* data = in.data();
   size_t len = in.size();
@@ -1636,29 +1715,13 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   Plan* const plan = out.plan;
   if (st.h2 != nullptr) return h2_feed(st, in, out);
   if (st.fresh) {
-    st.content_need = 0;
-    const size_t seen = st.carry.size();
-    size_t i = 0;
-    while (i < len && seen + i < kH2PrefaceLen && data[i] == kH2Preface[seen + i]) i++;
-    if (seen + i == kH2PrefaceLen) {
-      st.fresh = false;
-      st.carry.clear();
-      if (!h2_begin(st, sink)) return false;
-      return h2_feed(st, {data + i, len - i}, out);
+    size_t consumed = 0;
+    switch (h1_preface(st, data, len, sink, &consumed)) {
+      case Preface::kH2: return h2_feed(st, {data + consumed, len - consumed}, out);
+      case Preface::kWait: return true;
+      case Preface::kRefused: return false;
+      case Preface::kH1: break;
     }
-    if (i == len) {
-      st.carry.append(data, len);
-      return true;
-    }
-    if (seen + i >= kH2PrefaceAnnounce) {
-      static const unsigned char kGoaway[kH2FrameHeaderLen + 8] = {
-          0, 0, 8, kH2Goaway, 0, 0, 0, 0, 0,
-          0, 0, 0, 0,
-          0, 0, 0, kH2ProtocolError};
-      sink.append(reinterpret_cast<const char*>(kGoaway), sizeof(kGoaway));
-      return false;
-    }
-    st.fresh = false;
   }
   if (st.content_skip != 0) {
     const size_t take = st.content_skip < len ? st.content_skip : len;
@@ -1759,42 +1822,14 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     const bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
 
-    if (mrb_unlikely(w.up_ws && w.conn_upgrade)) {
-      const AppSlot& wslot = apps_[st.listener];
-      RouteSpans wspans;
-      const int wr =
-          wslot.ws_table != nullptr ? wslot.ws_table->match(path, path_len, wspans) : -1;
-      if (wr >= 0) {
-        if (w.ws_version != 13) {
-          sink.append("HTTP/1.1 426 Upgrade Required\r\nDate: ");
-          sink.append(date_, http::kDateLen);
-          sink.append(
-              "\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n"
-              "Content-Length: 0\r\n\r\n");
-          return false;
-        }
-        if (facts.method != flow::Method::kGet || w.ws_key == nullptr) {
-          return fail(st, 400, sink, lflags);
-        }
-        const char* rest = view + off + static_cast<size_t>(ret);
-        const size_t rest_len = viewlen - off - static_cast<size_t>(ret);
-        const WsUpgrade up{wslot,  wr,   {path, path_len},
-                           wspans, {w.ws_key, w.ws_key_len},
-                           headers, num_headers, vals, {rest, rest_len}};
-        return ws_upgrade(st, up, sink);
-      }
-    }
-
-    if (mrb_unlikely(apps_[st.listener].sse_table != nullptr)) {
-      const AppSlot& sslot = apps_[st.listener];
-      RouteSpans sspans;
-      const int sr = sslot.sse_table->match(path, path_len, sspans);
-      if (sr >= 0) {
-        const SseBegin req{sslot,   sr,          {method, method_len},
-                           {path, path_len},    sspans,  headers,
-                           num_headers, minor,  facts.method, vals, lflags};
-        return sse_begin(st, req, sink);
-      }
+    if (mrb_unlikely((w.up_ws && w.conn_upgrade) || apps_[st.listener].sse_table != nullptr)) {
+      const H1Head head = {{method, method_len}, {path, path_len}, minor,   headers,
+                           num_headers,          facts,            vals,    lflags,
+                           w.up_ws && w.conn_upgrade, w.ws_version, w.ws_key, w.ws_key_len,
+                           view + off + static_cast<size_t>(ret),
+                           viewlen - off - static_cast<size_t>(ret)};
+      bool lives = true;
+      if (h1_upgrade_or_stream(st, head, sink, &lives)) return lives;
     }
 
     // #210: the error assets answer under one reserved prefix, always,

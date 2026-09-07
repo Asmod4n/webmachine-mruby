@@ -2023,6 +2023,28 @@ class Http1 {
   };
   static void assemble(std::string& sink, const Assembled& a);
   bool feed_parse(Conn& st, std::string_view data, Sink out);
+  // The cold branches of feed_parse, out of line: the protocol decision
+  // on a fresh connection, and a head that upgrades or opens a stream.
+  enum class Preface : uint8_t { kH1, kH2, kWait, kRefused };
+  Preface h1_preface(Conn& st, const char* data, size_t len, std::string& sink,
+                     size_t* consumed);
+  struct H1Head {
+    std::string_view method;
+    std::string_view path;
+    int minor;
+    const struct phr_header* headers;
+    size_t num_headers;
+    const flow::ReqFacts& facts;
+    const http::ReqValues& vals;
+    uint8_t lflags;
+    bool wants_ws;
+    int ws_version;
+    const char* ws_key;
+    size_t ws_key_len;
+    const char* rest;
+    size_t rest_len;
+  };
+  bool h1_upgrade_or_stream(Conn& st, const H1Head& h, std::string& sink, bool* lives);
   static void claim_sink(Conn& st, const std::string& sink, Plan& plan);
   // The bytes one answer lends rather than copies, and the plan they are
   // lent into.
@@ -2498,6 +2520,21 @@ class Http1 {
     std::span<const unsigned char> block;
   };
   bool h2_dispatch(Conn& st, const H2Headers& h, std::string& sink);
+  // The cold branches of h2_dispatch, out of line: the second HEADERS
+  // of a stream and the DATA that ends one both serve the parked
+  // stream; :protocol opens a WebSocket.
+  struct H2Connect {
+    uint32_t stream_id;
+    std::string_view method;
+    std::string_view protocol;
+    std::string_view path;
+    const struct phr_header* fields;
+    size_t nfields;
+    const http::ReqValues* vals;
+  };
+  static size_t h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv);
+  bool h2_serve_parked(Conn& st, H2Stream& stp, std::string& sink);
+  bool h2_extended_connect(Conn& st, const H2Connect& ask, std::string& sink);
   // A parked stream's request as a view: the target it named, and the
   // ReqView the caller owns for it to point into.
   struct Parked {

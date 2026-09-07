@@ -303,6 +303,86 @@ bool Http1::h2_error_page(const H2ErrorAsk& a, H2ErrorPage& p, H2Answer& out) {
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
 // either answer or park the facts on the stream.
+// RFC 9113 8.1: the fields a parked stream copied when its HEADERS came,
+// rebuilt over the blob that outlived hdrbuf. Returns how many.
+size_t Http1::h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv) {
+  size_t nh = stp.field_spans.size() / 4;
+  if (nh > kH2MaxFields) nh = kH2MaxFields;
+  for (size_t i = 0; i < nh; i++) {
+    hv[i].name = stp.field_blob.data() + stp.field_spans[i * 4];
+    hv[i].name_len = stp.field_spans[i * 4 + 1];
+    hv[i].value = stp.field_blob.data() + stp.field_spans[i * 4 + 2];
+    hv[i].value_len = stp.field_spans[i * 4 + 3];
+  }
+  return nh;
+}
+
+// A stream that parked at its HEADERS is served now: its request ended
+// with the last DATA frame, or with trailers. Both ends come here. The
+// values negotiation reads point into the decode buffer this stream no
+// longer owns, so they are derived again from the copied fields, which
+// are the only place they still exist.
+bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
+  const uint32_t stream_id = stp.id;
+  stp.half_closed_remote = true;
+  const flow::ReqFacts facts = stp.facts;
+  const bool head_only = stp.head_method;
+  const AssetEntry* asset = stp.parked_asset;
+  const uint16_t asset_status = stp.parked_status;
+  const size_t asset_off = stp.parked_first;
+  const size_t asset_end = stp.parked_end;
+  const uint16_t route = stp.route;
+  const std::string target = stp.request_target;
+  if (asset != nullptr) {
+    const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
+    if (!h2_asset_answer(st0, ask, sink)) return false;
+    h2_log(st0, {facts, target});
+    return true;
+  }
+  std::string body;
+  body.swap(stp.request_content);
+  struct phr_header hv[kH2MaxFields];
+  const size_t nh = h2_fields_of_parked(stp, hv);
+  http::ReqValues pvals;
+  values_of_copied_fields({hv, nh}, pvals);
+  ReqView rv;
+  rv.tls = apps_[st0.listener].tls;
+  RouteSpans pspans;
+  rv.method = facts.method;
+  rv.content = body.empty() ? nullptr : body.data();
+  rv.content_len = body.size();
+  rv.fields = hv;
+  rv.field_count = nh;
+  rv.values = &pvals;
+  const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
+  const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
+  const H2Served served = h2_serve(st0, q, sink);
+  if (served == H2Served::kClosed) return false;
+  // A parked run logs from its own tail, with its own status.
+  if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
+  return true;
+}
+
+// RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
+// Anything else that carries :protocol is malformed.
+bool Http1::h2_extended_connect(Conn& st0, const H2Connect& ask, std::string& sink) {
+  const bool is_connect = ask.method.size() == 7 && std::memcmp(ask.method.data(), "CONNECT", 7) == 0;
+  const bool is_ws = ask.protocol.size() == 9 && http::tok_eq(ask.protocol, "websocket");
+  if (!is_connect || !is_ws || apps_[st0.listener].ws_table == nullptr) {
+    h2_rst(st0, ask.stream_id, kH2ProtocolError, sink);
+    return true;
+  }
+  RouteSpans wspans;
+  const int wr = apps_[st0.listener].ws_table->match(ask.path.data(), ask.path.size(), wspans);
+  if (wr < 0) {
+    h2_rst(st0, ask.stream_id, kH2RefusedStream, sink);
+    return true;
+  }
+  const H2WsAsk wask = {ask.stream_id, static_cast<uint16_t>(wr), ask.path, &wspans,
+                        ask.fields,    ask.nfields,               ask.vals};
+  return h2_ws_begin(st0, wask, sink);
+}
+
 bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   const uint32_t stream_id = h.stream_id;
   const bool end_stream = h.end_stream;
@@ -343,55 +423,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (!end_stream || existing->half_closed_remote) {
       return h2_error(st0, kH2ProtocolError, sink);
     }
-    existing->half_closed_remote = true;
-    const flow::ReqFacts facts = existing->facts;
-    const bool head_only = existing->head_method;
-    const AssetEntry* asset = existing->parked_asset;
-    const uint16_t asset_status = existing->parked_status;
-    const size_t asset_off = existing->parked_first;
-    const size_t asset_end = existing->parked_end;
-    const uint16_t route = existing->route;
-    const std::string target = existing->request_target;
-    if (asset != nullptr) {
-      const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
-      if (!h2_asset_answer(st0, ask, sink)) return false;
-      h2_log(st0, {facts, target});
-      return true;
-    }
-    std::string body;
-    body.swap(existing->request_content);
-    // The fields this stream copied when it parked, rebuilt over the
-    // blob that outlived hdrbuf.
-    struct phr_header hv[kH2MaxFields];
-    size_t nh = existing->field_spans.size() / 4;
-    if (nh > kH2MaxFields) nh = kH2MaxFields;
-    for (size_t i = 0; i < nh; i++) {
-      hv[i].name = existing->field_blob.data() + existing->field_spans[i * 4];
-      hv[i].name_len = existing->field_spans[i * 4 + 1];
-      hv[i].value = existing->field_blob.data() + existing->field_spans[i * 4 + 2];
-      hv[i].value_len = existing->field_spans[i * 4 + 3];
-    }
-    // RFC 9110 12.5: same as the resume in h2_feed - the values point into
-    // the decode buffer this stream no longer owns, and the copied fields
-    // are where they still are.
-    http::ReqValues pvals;
-    values_of_copied_fields({hv, nh}, pvals);
-    ReqView rv;
-    rv.tls = apps_[st0.listener].tls;
-    RouteSpans pspans;
-    rv.method = facts.method;
-    rv.content = body.empty() ? nullptr : body.data();
-    rv.content_len = body.size();
-    rv.fields = hv;
-    rv.field_count = nh;
-    rv.values = &pvals;
-    const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-    const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
-    const H2Served served = h2_serve(st0, q, sink);
-    if (served == H2Served::kClosed) return false;
-    // A parked run logs from its own tail, with its own status.
-    if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
-    return true;
+    return h2_serve_parked(st0, *existing, sink);
   }
 
   flow::ReqFacts facts;
@@ -519,25 +551,10 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   }
 
   // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
-  // Anything else that carries :protocol is malformed.
   if (mrb_unlikely(protocol_val != nullptr)) {
-    const bool is_connect = method_vlen == 7 && std::memcmp(method_val, "CONNECT", 7) == 0;
-    const bool is_ws = protocol_vlen == 9 && http::tok_eq({protocol_val, protocol_vlen},
-                                                          "websocket");
-    if (!is_connect || !is_ws || apps_[st0.listener].ws_table == nullptr) {
-      h2_rst(st0, stream_id, kH2ProtocolError, sink);
-      return true;
-    }
-    RouteSpans wspans;
-    const int wr = apps_[st0.listener].ws_table->match(path_val, path_vlen, wspans);
-    if (wr < 0) {
-      h2_rst(st0, stream_id, kH2RefusedStream, sink);
-      return true;
-    }
-    const H2WsAsk ask = {stream_id, static_cast<uint16_t>(wr), {path_val, path_vlen},
-                         &wspans,   hv,                       nh,
-                         &vals};
-    return h2_ws_begin(st0, ask, sink);
+    const H2Connect ask = {stream_id, {method_val, method_vlen}, {protocol_val, protocol_vlen},
+                           {path_val, path_vlen}, hv, nh, &vals};
+    return h2_extended_connect(st0, ask, sink);
   }
 
   RouteSpans spans;
@@ -1919,47 +1936,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
             h2_rst(st0, stream, kH2ProtocolError, sink);
             break;
           }
-          stp->half_closed_remote = true;
-          const flow::ReqFacts facts = stp->facts;
-          const bool head_only = stp->head_method;
-          const uint16_t route = stp->route;
-          const std::string target = stp->request_target;
-          std::string body;
-          body.swap(stp->request_content);
-          // The fields the HEADERS frame copied when this stream parked,
-          // rebuilt over the blob that outlived hdrbuf's reuse.
-          struct phr_header hv[kH2MaxFields];
-          size_t nh = stp->field_spans.size() / 4;
-          if (nh > kH2MaxFields) nh = kH2MaxFields;
-          for (size_t i = 0; i < nh; i++) {
-            hv[i].name = stp->field_blob.data() + stp->field_spans[i * 4];
-            hv[i].name_len = stp->field_spans[i * 4 + 1];
-            hv[i].value = stp->field_blob.data() + stp->field_spans[i * 4 + 2];
-            hv[i].value_len = stp->field_spans[i * 4 + 3];
-          }
-          // RFC 9110 12.5: the values negotiation reads point into hdrbuf
-          // too, so a parked answer had none and every request that named
-          // an Accept was refused 406 for a header it had actually sent.
-          // Re-derived from the copied fields, which is the only place
-          // they still exist.
-          http::ReqValues pvals;
-          values_of_copied_fields({hv, nh}, pvals);
-          ReqView rv;
-          rv.tls = apps_[st0.listener].tls;
-          RouteSpans pspans;
-          // h2_parked_view only knows the target - the method and the DATA
-          // bytes come from the stream that carried them.
-          rv.method = facts.method;
-          rv.content = body.empty() ? nullptr : body.data();
-          rv.content_len = body.size();
-          rv.fields = hv;
-          rv.field_count = nh;
-          rv.values = &pvals;
-          const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-          const H2Request q{stream, facts, &pvals, rvp, target, route, head_only};
-          const H2Served served = h2_serve(st0, q, sink);
-          if (served == H2Served::kClosed) return false;
-          if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
+          if (!h2_serve_parked(st0, *stp, sink)) return false;
         }
         break;
       }
