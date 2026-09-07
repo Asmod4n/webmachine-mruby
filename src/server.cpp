@@ -12,7 +12,6 @@
 #include <mruby/error.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
@@ -60,13 +59,10 @@ std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
 
-// One webmachine-logd over a socketpair, before the ring exists. Two
-// streams take this road, and they do not share a ceiling - see the
-// two call sites for why an access log is a window and an error log
-// is not.
-// One log process: which log it is (the word a refusal names), the file it
-// writes, the privacy the operator chose - none for an error log - and the
-// size at which it rolls.
+// One webmachine-logd over a socketpair, before the ring exists: which
+// log it is, the file it writes, the privacy the operator chose (none
+// for an error log), and the size at which it rolls. The two call
+// sites say why an access log has a ceiling and an error log has none.
 struct LogdSpawn {
   const char* mode;
   const char* path;
@@ -81,7 +77,7 @@ int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
   const unsigned long long max_bytes = log.max_bytes;
   int sp[2];
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
-    mrb_raisef(mrb, E_WM_ERROR(mrb), "--%s log socketpair: %s", mode, std::strerror(errno));
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: socketpair: %s", mode, std::strerror(errno));
   }
   char self[4096];
   const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
@@ -97,10 +93,10 @@ int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
   std::snprintf(cap, sizeof cap, "%llu", max_bytes);
   const pid_t pid = ::fork();
   if (pid < 0) {
-    mrb_raisef(mrb, E_WM_ERROR(mrb), "--%s log fork: %s", mode, std::strerror(errno));
+    const int err = errno;
     ::close(sp[0]);
     ::close(sp[1]);
-    return -1;
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: fork: %s", mode, std::strerror(err));
   }
   if (pid == 0) {
     ::dup2(sp[0], 0);
@@ -115,17 +111,13 @@ int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
   return sp[1];
 }
 
-// The listener table, straight out of the registry: registration order
-// is listener order.
 // The PEM bytes a TLS listener answers with. Read at boot and kept
 // here because ListenerSpec only points at them and the ring outlives
 // the call that filled it in. Two per listener, indexed by listener.
 std::vector<std::string> pem_;
 
-// A whole file, or false with the reason spelled. Small by nature: a
-// certificate chain and a key, not a body.
-// One PEM file: its path, and the conf key that named it - which is what a
-// refusal has to say back to the operator.
+// One PEM file: its path, and the conf key that named it, which is what
+// a refusal says back to the operator.
 struct PemFile {
   const std::string& path;
   const char* what;
@@ -185,6 +177,9 @@ void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
   }
 }
 
+// The listener table, in registration order. A standalone server has
+// one application, made by app_assets_only, and --unix or --port is
+// its listener; every other application names its own.
 void build_listeners(mrb_state* mrb, RingConfig& cfg) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
@@ -215,10 +210,9 @@ void build_listeners(mrb_state* mrb, RingConfig& cfg) {
 
 #include "slipstream_syscall.h"
 
-// Which side answers this process's rings, said at startup: liburing
-// works either way now - slipstream underneath it answers every
-// call to the engine when the kernel refuses io_uring - and the banner
-// is the receipt. Silence is the kernel side.
+// Which side answers this process's rings, said at startup. When the
+// kernel refuses io_uring, slipstream's engine answers every call
+// underneath liburing, and this banner says so. Silence is the kernel.
 void server_backend_say() {
   if (slipstream_syscall_uses_engine()) {
     char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
@@ -258,14 +252,10 @@ void server_backend_say() {
                  "webmachine: ================================================================\n",
                  why);
   }
-  // There is no runtime "is liburing here" question. mrbgem.rake aborts
-  // the build when liburing cannot be built, which is the moment an
-  // operator can still act on. The only open question is which side
-  // answers the rings, and the banner above has just said it.
 }
 
 namespace {
-// Everything between "main returned" and "the first accept", once.
+// Everything before the first accept, once.
 void build(mrb_state* mrb) {
   if (built_) return;
   server_backend_say();
@@ -284,12 +274,10 @@ void build(mrb_state* mrb) {
   build_listener_tls(mrb, cfg);
 
   // The docroot: a standalone server's --docroot or [server] docroot, or
-  // the first app that names one in its conf. The canonical
-  // path is settled once, here, before the first accept: no request may race
-  // the anchor RESOLVE_BENEATH is measured against. A configured docroot
-  // that is missing or is not a directory refuses startup by name, because
-  // an operator who asked for one and silently got a server without it would
-  // find that out through 500s in production.
+  // the first application that names one in its conf. The canonical path
+  // is settled here, before the first accept, so no request can race the
+  // anchor RESOLVE_BENEATH measures against. A docroot that is missing or
+  // is not a directory refuses the start by name.
   {
     const char* dr = opts_.docroot_path;
     for (size_t i = 0; dr == nullptr && i < specs_.size(); i++) {
@@ -323,11 +311,9 @@ void build(mrb_state* mrb) {
   }
   if (assets_path != nullptr) assets_.open(mrb, assets_path, mime_);
   if (!error_assets_file.empty()) {
-    // A picture is no reason not to start: an unreadable one is said
-    // out loud and the pages render without it.
-    // Caught on purpose, and the only startup refusal that is not one: a
-    // picture is no reason not to serve. What it refused with is said in
-    // the error log, and the pages render without it.
+    // Caught on purpose, the one start-up refusal that is not one: a
+    // picture is no reason not to serve. The reason goes to the error
+    // log, and the pages render without it.
     OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
     mrb_bool raised = FALSE;
     const mrb_value e = mrb_protect_error(mrb, open_pack_body, &pack, &raised);
@@ -345,11 +331,8 @@ void build(mrb_state* mrb) {
     // show no picture, and nothing is mounted at /error_assets/.
     std::fprintf(stderr, "webmachine: conf.disable_http_cats - error pages without pictures\n");
   } else {
-    // Silence here is what makes a server look like it is answering
-    // errors wrong: it answers them in plain text because it never found
-    // a page to render, and until now it did not say so. It is not a
-    // reason to refuse to start - a server with no error assets is a
-    // perfectly good server - but the operator hears it once.
+    // Without a pack the errors answer in plain text. That is no reason
+    // to refuse the start, but the operator hears it once.
     std::fprintf(stderr, "webmachine: no error assets found - errors answer in plain text. "
                          "Name a file with --error-assets=FILE.zip, or install one as "
                          "<prefix>/share/webmachine-mruby/error-assets.zip\n");
@@ -409,15 +392,15 @@ void build(mrb_state* mrb) {
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         assets_path != nullptr ? &assets_ : nullptr));
-  // #210: the error pages render in the app's VM. A template the pack
-  // carries and that does not parse is a startup refusal with a name -
-  // the operator hears it here, not on the first 404.
-  // The standalone tier: nobody wrote a resource, so the docroot answers
-  // through the folded graph and the VM is never entered for a request.
+  // Standalone: nobody wrote a resource, so the docroot answers through
+  // the folded graph and the VM is never entered for a request.
   if (standalone && docroot_fd() >= 0) {
     http_->serve_docroot(&mime_);
     std::fprintf(stderr, "webmachine: standalone - the docroot answers, no app\n");
   }
+  // #210: the error pages render in the app's VM. A template the pack
+  // carries that does not parse refuses the start by name, here and not
+  // on the first 404.
   http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
   // #210: and the same assets under response.error_asset("404.jpg"),
   // so an app can answer with one of these pictures wherever it likes,
@@ -429,8 +412,8 @@ void build(mrb_state* mrb) {
     say_server_error(http_->error_log(), error_assets_note_);
     error_assets_note_.clear();
   }
-  // A typed flag and [tune] beat the app's conf, and all three beat the
-  // built-in default - the same order --unix and --port already follow.
+  // A flag and [tune] beat the app's conf, and all three beat the
+  // built-in default.
   long long zct = opts_.zero_copy_threshold;
   for (size_t i = 0; zct < 0 && i < specs_.size(); i++) {
     zct = specs_[i]->zero_copy_threshold;
@@ -454,7 +437,7 @@ void build(mrb_state* mrb) {
     app_ready_run(mrb, *specs_[i]);
   }
 
-  std::fprintf(stderr, "webmachine: http/1.1 up, pid %d, %u listener(s)\n", getpid(),
+  std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)\n", getpid(),
                cfg.nlisteners);
   for (uint32_t i = 0; i < cfg.nlisteners; i++) {
     if (cfg.listeners[i].unix_path != nullptr) {
@@ -467,8 +450,8 @@ void build(mrb_state* mrb) {
   built_ = true;
 }
 
-// The Ruby doors all need the server standing, and since #33 build says
-// so itself - this is only the door that marks the server entered.
+// Webmachine.run, .tick, .fd and .stopped need the server built. This
+// builds it and marks it entered.
 void ensure(mrb_state* mrb) {
   build(mrb);
   entered_ = true;

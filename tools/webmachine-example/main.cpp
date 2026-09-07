@@ -27,6 +27,7 @@
 #include <mruby/hash.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
+#include <mruby/throw.h>
 #include <mruby/variable.h>
 #include <pthread.h>
 #include <sys/signalfd.h>
@@ -35,6 +36,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 
 #include "../../src/webmachine.hpp"
 
@@ -97,11 +99,10 @@ struct Invocation {
   char** argv = nullptr;
 };
 
-// run_guarded's shape: what the example serves, once the VM is up. The
-// command line is read in here because TypedArgs parses it in Ruby, and
-// a malformed flag is a raise like every other start-up refusal (#33).
-int serve_body(mrb_state* mrb, void* ud) {
-  Invocation& in = *static_cast<Invocation*>(ud);
+// What the example serves, once the VM is up. TypedArgs parses the
+// command line in Ruby, so a malformed flag is a raise like every other
+// start-up refusal.
+int serve(mrb_state* mrb, Invocation& in) {
   webmachine::ServerOptions& opts = in.opts;
 
   mrb_value av = mrb_ary_new_capa(mrb, in.argc > 1 ? in.argc - 1 : 0);
@@ -116,21 +117,16 @@ int serve_body(mrb_state* mrb, void* ud) {
   mrb_gc_register(mrb, h);
 
   const mrb_value app = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "app"));
-  const mrb_value unix_path = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "unix"));
-  const mrb_value port = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "port"));
   if (!mrb_string_p(app)) {
     std::fprintf(stderr,
                  "usage: webmachine-example --app=examples/cpp_resource.mrb\n"
-                 "                          (--unix=PATH | --port=N)\n"
                  "\n"
-                 "The app file routes CppKonst and CppRun - defined in C++, in\n"
-                 "this binary - beside their Ruby twins, so the same bytes can\n"
-                 "be asked for over both.\n");
-    return 2;
+                 "The app names its listener in its conf. It routes CppKonst and\n"
+                 "CppRun - defined in C++, in this binary - beside their Ruby\n"
+                 "twins, so the same bytes can be asked for over both.\n");
+    return 1;
   }
   opts.app_path = mrb_string_cstr(mrb, app);
-  opts.cli_unix = mrb_string_p(unix_path) ? mrb_string_cstr(mrb, unix_path) : nullptr;
-  opts.cli_port = mrb_integer_p(port) ? static_cast<int>(mrb_integer(port)) : 0;
 
   // main() blocked these before it made a thread. The fd is the only
   // reader; this process installs no signal handler.
@@ -146,30 +142,47 @@ int serve_body(mrb_state* mrb, void* ud) {
   return webmachine::server_run(mrb);
 }
 
+// The same frame tools/webmachine-server/main.cpp spells: every step
+// after mrb_open raises to refuse, and the catch is where a raise lands.
 int main(int argc, char** argv) {
   Invocation in;
+  sigset_t stop_signals;
+  mrb_state* mrb = nullptr;
+  mrb_jmpbuf frame;
+  int rc = 0;
+
   in.argc = argc;
   in.argv = argv;
 
   // Before the first thread: mrb_open() makes one, and a thread inherits
-  // the mask of the thread that makes it. See tools/webmachine-server
-  // for what a late block cost.
-  sigset_t stop_signals;
+  // the mask of the thread that makes it.
   sigemptyset(&stop_signals);
   sigaddset(&stop_signals, SIGTERM);
   sigaddset(&stop_signals, SIGINT);
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
-  mrb_state* mrb = webmachine::open_vm_or_say("webmachine-example");
+  mrb = mrb_open();
   if (mrb == nullptr) {
+    std::fprintf(stderr, "webmachine-example: mrb_open failed\n");
     return 1;
   }
-  define_resources(mrb);
-
-  // #33: reading the flags, loading the app and coming up all refuse by
-  // raising, and a raise is a C++ throw that needs a frame to land in.
-  // This is it.
-  const int rc = webmachine::run_guarded(mrb, {serve_body, &in});
+  mrb->jmp = &frame;
+  try {
+    if (mrb->exc != nullptr) mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+    define_resources(mrb);
+    rc = serve(mrb, in);
+  } catch (mrb_jmpbuf*) {
+    mrb_print_error(mrb);
+    mrb->exc = nullptr;
+    rc = 1;
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "webmachine-example: %s\n", e.what());
+    rc = 1;
+  } catch (...) {
+    std::fprintf(stderr, "webmachine-example: an unknown exception ended the start\n");
+    rc = 1;
+  }
+  mrb->jmp = nullptr;
   mrb_close(mrb);
   return rc;
 }

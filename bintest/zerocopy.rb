@@ -177,7 +177,7 @@ assert('zero-copy: a threshold outside the range refuses the start') do
   pid = spawn(WM_BIN, "--config=#{cfg.path}",
               out: File::NULL, err: err)
   Process.waitpid(pid)
-  ok = $?.exitstatus == 2
+  ok = $?.exitstatus == 1
   assert_true ok
   assert_include File.read(err), 'zero_copy_threshold'
 ensure

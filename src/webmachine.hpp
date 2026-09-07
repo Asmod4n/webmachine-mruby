@@ -671,7 +671,7 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 }
 
 // The three classes this library refuses with. Defined here, above the
-// first raise, because since #33 a refusal is one of these.
+// first raise, because a refusal is one of these.
 #define E_WM_ERROR(mrb) \
   (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
 #define E_WM_CONFIG_ERROR(mrb) \
@@ -924,8 +924,8 @@ class RouteTable {
 
 // route.add: a route is open from its first token until it stands. Every
 // other way out of that window - a token that is not a segment, a class
-// the fold refuses - leaves nothing registered, and since #33 every one
-// of those ways out is a raise.
+// the fold refuses - leaves nothing registered, and every one of those
+// ways out is a raise.
 class OpenRoute {
  public:
   explicit OpenRoute(RouteTable& table) : table_(table) { table_.open(); }
@@ -3634,21 +3634,6 @@ struct AppSpec {
 };
 
 void application_init(mrb_state* mrb, struct RClass* wm);
-
-// What a tool wants done under the VM's protection: the step, and what it
-// needs to do it.
-struct Guarded {
-  int (*body)(mrb_state*, void*);
-  void* ud;
-};
-
-// #33: a startup refuses by raising, and a raise is a C++ throw that needs
-// a frame to land in. A tool's main is that frame, and this is how it
-// spells one: the step runs, and what it refused with is printed and
-// becomes a non-zero exit code. Printed, because a process that will not
-// come up has no log to write into yet - and because stderr is read at
-// exactly the moment a process dies.
-int run_guarded(mrb_state* mrb, Guarded step);
 
 void app_load(mrb_state* mrb, const char* path);
 

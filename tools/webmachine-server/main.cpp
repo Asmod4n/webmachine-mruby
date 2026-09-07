@@ -3,6 +3,7 @@
 #include <mruby/hash.h>
 #include <mruby/presym.h>
 #include <mruby/string.h>
+#include <mruby/throw.h>
 #include <mruby/variable.h>
 #include <pthread.h>
 #include <sys/signalfd.h>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 
 #include "../../src/webmachine.hpp"
@@ -224,7 +226,7 @@ bool parse_argv(mrb_state* mrb, Invocation& in) {
 }
 
 // From the config file to the last accept. Every step here refuses by
-// raising since #33, so it runs inside run_guarded's frame.
+// raising, and main's catch is the frame it lands in.
 int serve(mrb_state* mrb, Invocation& in) {
   webmachine::ServerOptions& opts = in.opts;
   webmachine::Config& fc = in.fc;
@@ -383,46 +385,58 @@ int serve(mrb_state* mrb, Invocation& in) {
   return webmachine::server_run(mrb);
 }
 
-// run_guarded's shape: the step it protects takes what it needs as void*.
-// Reading the command line is inside the frame because the parser is the
-// VM's, and a malformed flag comes back as a raise like every other
-// start-up refusal (#33).
-int serve_body(mrb_state* mrb, void* ud) {
-  Invocation& in = *static_cast<Invocation*>(ud);
-  if (!parse_argv(mrb, in)) return 2;
-  return serve(mrb, in);
-}
-
-// `main` states what is served, and owns the VM and the pidfile: both
-// outlive the step that raised, and both are cleaned up here.
+// main owns the VM and the pidfile. Every step after mrb_open raises to
+// refuse, and a raise is a C++ throw: mrb->jmp names the frame it lands
+// in, and the catch below is that frame. What was refused goes to stderr,
+// because a process that does not come up has no log yet.
 int main(int argc, char** argv) {
   Invocation in;
+  sigset_t stop_signals;
+  mrb_state* mrb = nullptr;
+  mrb_jmpbuf frame;
+  int rc = 0;
+
   in.argc = argc;
   in.argv = argv;
 
   // A signalfd reads TERM and INT. Nothing else does, and this process
-  // installs no signal handler.
-  //
-  // The block belongs here, before the first thread. A thread inherits
-  // the mask of the thread that makes it, and mrb_open() below makes one:
-  // the task HAL's ticker. The kernel gives a signal to any thread that
-  // does not block it. With the block set later, the ticker was that
-  // thread, it had no handler, and TERM killed the process at 143 with
-  // the unix socket still on disk.
-  //
-  // pthread_sigmask and not sigprocmask: sigprocmask is unspecified once
-  // a process has threads.
-  sigset_t stop_signals;
+  // installs no signal handler. The block comes before the first thread:
+  // a thread inherits the mask of the thread that makes it, mrb_open
+  // makes one (the task HAL's ticker), and the kernel gives a signal to
+  // any thread that does not block it. pthread_sigmask, not sigprocmask:
+  // sigprocmask is unspecified once a process has threads.
   sigemptyset(&stop_signals);
   sigaddset(&stop_signals, SIGTERM);
   sigaddset(&stop_signals, SIGINT);
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
-  mrb_state* mrb = webmachine::open_vm_or_say("webmachine");
+  mrb = mrb_open();
   if (mrb == nullptr) {
+    std::fprintf(stderr, "webmachine: mrb_open failed\n");
     return 1;
   }
-  const int rc = webmachine::run_guarded(mrb, {serve_body, &in});
+  mrb->jmp = &frame;
+  try {
+    // A gem init that raised leaves its exception in mrb->exc and the VM
+    // standing. Such a VM serves nothing.
+    if (mrb->exc != nullptr) mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+    if (!parse_argv(mrb, in)) {
+      rc = 1;
+    } else {
+      rc = serve(mrb, in);
+    }
+  } catch (mrb_jmpbuf*) {
+    mrb_print_error(mrb);
+    mrb->exc = nullptr;
+    rc = 1;
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "webmachine: %s\n", e.what());
+    rc = 1;
+  } catch (...) {
+    std::fprintf(stderr, "webmachine: an unknown exception ended the start\n");
+    rc = 1;
+  }
+  mrb->jmp = nullptr;
   mrb_close(mrb);
   if (in.pidfile != nullptr) ::unlink(in.pidfile);
   return rc;

@@ -89,7 +89,7 @@ assert('a bad config refuses the start by name') do
     cfg = cfg_write(toml)
     pid = cfg_spawn(["--config=#{cfg.path}"], err)
     Process.waitpid(pid)
-    assert_equal 2, $?.exitstatus
+    assert_equal 1, $?.exitstatus
     assert_include File.read(err), named
     cfg.unlink
   end
