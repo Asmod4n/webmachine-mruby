@@ -29,6 +29,9 @@ MRuby::Build.new('debug') do |conf|
   # the debug build carries an interpreter to probe itself with.
   conf.gem core: 'mruby-bin-mrbc'
   conf.gem core: 'mruby-bin-mruby'
+  # mruby-config, which mruby-lsp-setup asks for when it builds the VM
+  # the language server reads.
+  conf.gem core: 'mruby-bin-config'
 
   conf.enable_debug
 
