@@ -40,6 +40,7 @@ jobs:
           path: |
             test.log
             mruby/build/debug/bin/webmachine-server
+            mruby/build/debug/bin/webmachine-logd
             mruby/build/debug/bin/mrbc
 
   # The external oracles, against the debug binary the suite job made:
@@ -61,7 +62,7 @@ jobs:
         with:
           name: debug-build
       - name: make the binaries runnable again
-        run: chmod +x mruby/build/debug/bin/webmachine-server mruby/build/debug/bin/mrbc
+        run: chmod +x mruby/build/debug/bin/webmachine-server mruby/build/debug/bin/webmachine-logd mruby/build/debug/bin/mrbc
       - name: h2spec
         env:
           BIN: mruby/build/debug/bin/webmachine-server
