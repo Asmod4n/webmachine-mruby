@@ -75,7 +75,10 @@ start_server() {
   # app's source line, and only a debug section carries it.
   "$MRBC" -g -o "$OUT/app.mrb" "$1"
   rm -f "$PIDFILE"
+  # Both logs, so a handshake the suite never saw answered is in the
+  # access log, and a raise is in the error log.
   setsid "$BIN" --app="$OUT/app.mrb" --port="$PORT" --pidfile="$PIDFILE" \
+    --log="$OUT/access.log" --log-privacy=none --error-log="$OUT/error.log" \
     > "$OUT/server.log" 2>&1 &
   i=0
   while [ ! -f "$PIDFILE" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
