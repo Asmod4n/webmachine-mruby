@@ -104,6 +104,9 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # message, a backtrace or a fingerprint, the 500s, is rendered when it
   # is sent.
   spec.add_dependency 'mruby-mustache', github: 'Asmod4n/mruby-mustache', branch: 'main'
+  # RFC 9457: the problem document an error resource answers with is a
+  # Hash, and this gem spells it - the escaping (RFC 8259 7) is its job.
+  spec.add_dependency 'mruby-fast-json'
 
   # TLS: the handshake is this process's, the record layer is the
   # kernel's (.DESIGN.md "TLS"). The gem brings ktls.h and links the

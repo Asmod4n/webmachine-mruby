@@ -1362,3 +1362,38 @@ assert('compute: a worker that cannot build its registry answers 503, not silenc
     assert_true err.include?('no handle here'), err
   end
 end
+
+# RFC 9457: a client that asks for JSON gets a problem document, spelled
+# by mruby-fast-json. It parses, it carries type, title, status and the
+# detail, and a quote or a newline in the message survives the escaping.
+assert('error page: the JSON problem document parses, with its fields escaped') do
+  require 'json'
+  src = <<~'APP'
+    class Broken < Webmachine::Resource
+      # Before the negotiation, so the Accept below picks the page's
+      # type and not the resource's.
+      def service_available?
+        raise "bad \"quote\"\nsecond line"
+      end
+      def to_html
+        'never'
+      end
+    end
+  APP
+  wm_server(wm_app('Broken', src)) do |sock|
+    wm_conn(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 500'), head.lines.first.to_s
+      # RFC 6839 3.1: a client that asked for application/json gets it as
+      # that; one that asked for problem+json gets problem+json.
+      assert_true head.match?(%r{^Content-Type: application/(problem\+)?json}i), head
+      doc = JSON.parse(body)
+      assert_equal 'about:blank', doc['type']
+      assert_equal 500, doc['status']
+      assert_equal 'Internal Server Error', doc['title']
+      assert_true doc['detail'].include?("bad \"quote\"\nsecond line"), doc.inspect
+      assert_true doc.key?('id'), doc.inspect
+    end
+  end
+end

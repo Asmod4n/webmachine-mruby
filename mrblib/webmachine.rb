@@ -223,14 +223,19 @@ module Webmachine
     WM_HTML
 
     # RFC 9457 problem details: type, title, status, and nothing invented.
-    # No cat - whatever reads JSON wants the status, not a picture.
-    # {{{ }}} is raw on purpose: mustache escapes for HTML, and &amp;
-    # inside a JSON string would be wrong. json_escape below does the job
-    # this format actually needs.
-    JSON = Mustache::Template.compile(<<~'WM_JSON')
-      {"type":"about:blank","title":"{{{title}}}","status":{{status}}{{#id}},"id":"{{{id}}}"{{/id}}{{#message}},"detail":"{{{message}}}"{{/message}}{{#backtrace}},"backtrace":"{{{backtrace}}}"{{/backtrace}}}
-
-    WM_JSON
+    # No cat - whatever reads JSON wants the status, not a picture. The
+    # document is a Hash, and mruby-fast-json spells it (RFC 8259 7: the
+    # escaping is its job).
+    # RFC 9457 names an "instance" member for the specific occurrence. It
+    # would be the request target, and an error page carries nothing the
+    # client sent - the access log is where a request is named.
+    def self.problem_document(e)
+      out = { 'type' => 'about:blank', 'title' => e['title'].to_s, 'status' => e['status'] }
+      out['id'] = e['id'] if e['id']
+      out['detail'] = e['message'].to_s if e['message']
+      out['backtrace'] = e['backtrace'].to_s if e['backtrace']
+      out
+    end
 
     # RFC 2046 4.1: when a client will take neither of the first two, it
     # still gets something it can read. No escaping - text/plain
@@ -276,41 +281,13 @@ module Webmachine
     end
 
     def to_json_error(e)
-      JSON.render(json_escaped(e))
+      self.class.problem_document(e).to_json
     end
 
     def to_text_error(e)
       TEXT.render(e)
     end
 
-    private
-
-    # RFC 8259 7: the characters a JSON string may not carry raw. The
-    # template takes these values through {{{ }}}, so the encoding is this
-    # method's job.
-    JSON_ESCAPES = {
-      '"' => '\\"', '\\' => '\\\\', "\b" => '\\b', "\f" => '\\f',
-      "\n" => '\\n', "\r" => '\\r', "\t" => '\\t'
-    }.freeze
-
-    def json_escape(s)
-      out = ''
-      s.each_char do |c|
-        out << (JSON_ESCAPES[c] || (c.ord < 0x20 ? format('\\u%04x', c.ord) : c))
-      end
-      out
-    end
-
-    # RFC 9457 names an "instance" member for the specific occurrence. It
-    # would be the request target, and an error page carries nothing the
-    # client sent - the access log is where a request is named.
-    def json_escaped(e)
-      out = { 'status' => e['status'], 'title' => json_escape(e['title'].to_s) }
-      out['id'] = e['id'] if e['id']
-      out['message'] = json_escape(e['message'].to_s) if e['message']
-      out['backtrace'] = json_escape(e['backtrace'].to_s) if e['backtrace']
-      out
-    end
   end
 
 end
