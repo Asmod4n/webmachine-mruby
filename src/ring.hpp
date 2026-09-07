@@ -131,8 +131,6 @@ class Ring {
     }
     io_uring_buf_ring_advance(buf_ring_, kBufCount);
 
-    bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
-
     if (cfg.nlisteners == 0 || cfg.nlisteners > kMaxListeners) {
       mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener count %d out of range (1..%d)",
                  static_cast<int>(cfg.nlisteners), static_cast<int>(kMaxListeners));
@@ -769,8 +767,11 @@ class Ring {
   // Room for the one cmsg an offloaded socket carries, TLS_GET_RECORD_TYPE.
   static constexpr size_t kTlsCmsgSpace = CMSG_SPACE(sizeof(unsigned char));
 
-  // Multishot recv out of the buffer ring, bundles where the kernel offers
-  // them - and two other shapes for a connection that is doing TLS.
+  // Multishot recv out of the buffer ring, one buffer per completion,
+  // and two other shapes for a connection that is doing TLS. Recv
+  // bundles are not asked for: on kernel 6.17 a bundle handed one
+  // buffer to two receives, and a handshake arrived as the bytes of
+  // another connection's message.
   void arm_recv(uint32_t idx) {
     Conn& c = conns_[idx];
     struct io_uring_sqe* s = sqe();
@@ -804,7 +805,6 @@ class Ring {
     io_uring_prep_recv_multishot(s, static_cast<int>(idx), nullptr, 0, 0);
     s->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
     s->buf_group = kBufGroup;
-    if (bundles_) s->ioprio |= IORING_RECVSEND_BUNDLE;
     io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
   }
 
@@ -2303,7 +2303,6 @@ class Ring {
   struct io_uring ring_ {};
   bool ring_up_ = false;
   bool stop_ = false;
-  bool bundles_ = false;
   int log_fd_ = -1;
   int err_fd_ = -1;
   unsigned sq_entries_ = 0;
