@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <mruby.h>
 #include <mruby/array.h>
 #include <mruby/hash.h>

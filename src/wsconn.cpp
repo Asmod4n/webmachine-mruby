@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "http1.hpp"
 
 #include <mruby/class.h>

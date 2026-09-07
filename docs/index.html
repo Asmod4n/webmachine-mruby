@@ -108,7 +108,6 @@ footer .bar { display: block; }
     <a class="name" href="./">webmachine-mruby</a>
     <a href="https://github.com/Asmod4n/webmachine-mruby">GitHub</a>
     <a href="https://github.com/Asmod4n/webmachine-mruby/tree/next/examples">Examples</a>
-    <a href="https://github.com/Asmod4n/webmachine-mruby/blob/next/.DESIGN.md">Design</a>
   </nav>
 </header>
 
@@ -198,7 +197,15 @@ end</code></pre>
   so its documentation applies here.</p>
 
   <h2>Work that must not block</h2>
-  <p>The server is one thread. Two declarations keep a callback from stopping it.</p>
+  <p>The server is one thread. Two declarations keep a callback from
+  stopping it, and they differ in where the work runs, which decides how
+  you write the callback. <code>compute</code> sends a block to a worker
+  thread; a worker has its own VM and sees nothing of your app, so the
+  callback is written <code>def self.x</code> and builds the task, nothing
+  else. <code>watch</code> waits on a descriptor in the server's own
+  thread; the block runs inside the request, with <code>request</code>
+  and <code>response</code> in reach, so the callback is written
+  <code>def x</code>.</p>
   <p><strong><code>compute</code></strong> sends a block to a worker thread with a deadline. The flow waits at that node and goes on with the block&#x27;s answer. Password hashing is the typical case:</p>
 <pre><code>Webmachine::Workers::Registry[:passwords] = proc do
   { &#x27;ada&#x27; =&gt; Argon2.hash(&#x27;secret&#x27;)[:encoded] }   # built once per worker
@@ -222,7 +229,7 @@ end</code></pre>
 class Article &lt; Webmachine::Resource
   watch :generate_etag
 
-  def self.generate_etag
+  def generate_etag
     conn = DB_IDLE.pop || Pq.new(DB_URL).tap { |c| c.nonblocking = true }
     conn.send_query(&#x27;select etag from articles where id = 7&#x27;)
     Webmachine::Watcher.new(conn.socket, :r, timeout: 2.s) do |ready, w|

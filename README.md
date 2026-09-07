@@ -1,20 +1,19 @@
 # webmachine-mruby
 
-webmachine-mruby is a small, fast HTTP server for Ruby. You write
-resources, and it runs them from one binary.
+webmachine-mruby runs your Ruby web app as one binary. You write a class
+per resource and answer a few questions in it: which media types, which
+ETag, which body. The server does the rest of HTTP for you, the way
+webmachine-ruby taught it: content negotiation, conditional requests,
+`Allow`, 304, 406, 412. HTTP/1.1, HTTP/2, WebSocket, server-sent events,
+static files and TLS are on board. There is nothing to install beside
+the binary.
 
-- **The HTTP model comes with it.** Conditional requests, content
-  negotiation, `Allow`, 304, 406, 412: webmachine's flow answers them
-  from what your resource declares. You do not write that logic again
-  for every route, as you do on every other server.
-- **Everything on board.** HTTP/1.1, HTTP/2, WebSocket, server-sent
-  events, static files, TLS.
-- **Fast by design.** `def self.x` runs once, when the server starts,
-  and its answer is kept as bytes. `def x` runs per request. You choose
-  per method.
-- **Runs everywhere.** io_uring where the kernel allows it. slipstreamIO
-  carries the same rings to Linux without io_uring, to macOS, the BSDs,
-  and Windows.
+It is fast because you decide, per method, what runs when. A method
+written as `def self.x` runs once, when the server starts, and its
+answer is kept as bytes. A method written as `def x` runs per request.
+
+It runs on io_uring where the kernel allows it. slipstreamIO carries the
+same rings to Linux without io_uring, to macOS, the BSDs, and Windows.
 
 ## Hello, World
 
@@ -105,7 +104,17 @@ htmx site served from an asset pack.
 ## Work that must not block
 
 The server is one thread. Two declarations keep a callback from
-stopping it.
+stopping it, and they differ in where the work runs, which decides how
+you write the callback:
+
+- `compute` sends a block to a worker thread. A worker has its own VM
+  and sees nothing of your app, so the block can carry no instance. The
+  callback is written `def self.x`: it builds the task, and nothing
+  else.
+- `watch` waits on a descriptor in the server's own thread. The block
+  runs inside the request, with `request` and `response` in reach, so
+  the callback is written `def x`, like any other callback that runs
+  per request.
 
 **`compute`** sends a block to a worker thread with a deadline. The
 flow waits at that node and goes on with the block's answer. Password
@@ -144,7 +153,7 @@ DB_IDLE = []   # one thread, so an Array is a pool
 class Article < Webmachine::Resource
   watch :generate_etag
 
-  def self.generate_etag
+  def generate_etag
     conn = DB_IDLE.pop || Pq.new(DB_URL).tap { |c| c.nonblocking = true }
     conn.send_query('select etag from articles where id = 7')
     Webmachine::Watcher.new(conn.socket, :r, timeout: 2.s) do |ready, w|
@@ -170,6 +179,10 @@ connection is served in between.
                       [--app=FILE.mrb] [--assets=FILE.zip] [--docroot=DIR]
                       [--standalone] [--log=FILE] [--error-log=FILE]
 
+A pack is a zip of your site's files, built once with
+`rake pack[DIR,OUT.zip]`. The server maps the archive and answers every
+file in it from memory, with its ETag and its compressed form ready.
+`--assets` names a pack, `--docroot` names a directory of files instead.
 `--standalone` serves a pack or a directory with no app at all.
 `--write-config` writes a `webmachine.toml` with every setting and what
 it does. `webmachine.toml.example` is that file. Without `--config` the
@@ -196,12 +209,6 @@ server speaks plain HTTP, and a proxy in front of it does TLS.
 
 - To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers.
 - To run: OpenSSL 3, and for TLS a kernel with the tls module loaded.
-
-## Where the reasoning is
-
-Every source file starts with the same line, and it points at
-[`.DESIGN.md`](.DESIGN.md). That file holds every decision this tree
-made, with the measurement behind it.
 
 ## Credit
 

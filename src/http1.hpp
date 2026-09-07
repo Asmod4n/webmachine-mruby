@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 //
 // The connection layer: the h2 stream and connection state, the
 // WebSocket and event-stream carriers, and class Http1, the application
@@ -1043,7 +1042,7 @@ class Http1 {
       // #30: the watcher slot each job of this round waits on, or -1.
       int w_slot[kValueJobs] = {-1, -1, -1, -1};
       // The pool had no slot: load, and load passes. 429 with a
-      // Retry-After of a few seconds (.DESIGN.md #compute-task-bound).
+      // Retry-After of a few seconds.
       bool compute_task_full = false;
       // The worker ended the task at its max_runtime. Not load: a second
       // attempt costs the same, so 500 and no Retry-After.
@@ -1463,7 +1462,7 @@ class Http1 {
     r->compute_task_full = true;
   }
   // The three refusals a stopped run can meet, told apart here so no
-  // call site has to (.DESIGN.md #compute-task-bound). Status 0 means the
+  // call site has to. Status 0 means the
   // worker answered and the run reads the answer.
   //
   // Retry-After holds a whole header line, ready to append: these are
@@ -2278,7 +2277,7 @@ class Http1 {
   };
   // The whole compute round, OUT of feed_parse. It is cold: a resource
   // that never said `compute` does not reach it, and feed_parse is the
-  // hottest function in the server (.DESIGN.md #cold-paths). Inlined
+  // hottest function in the server. Inlined
   // here it was paid for by every request that never
   // ran a compute task.
   __attribute__((noinline)) ComputeRound start_compute_round(Conn& st, const BoundStart& s,

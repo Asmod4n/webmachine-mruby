@@ -62,24 +62,20 @@ so it is written here as well.
 No methods with `!`. Public capability questions are `?` predicates
 (pattern: `KTLS::Socket#ktls_available?`).
 
-## The rules are in .DESIGN.md, not here
+## Three rules of the code
 
-The commandments are at the top of `.DESIGN.md`, from the founding
-commit, and the sections under them carry the reasoning:
+The design file that carried the reasoning is kept outside the
+repository. The rules it carried:
 
-- `#cold-paths` - the happy path is the straight line, nothing is
-  annotated, and `nm -S` decides whether a hint helped. It already
-  names the problem: feed_parse, run_engine and h2_answer are ~14 KB
-  of machine code each and one h1 request walks two of them, against a
-  32 KiB L1i.
-- `#mruby-raises` - mruby here is built with `MRB_USE_CXX_EXCEPTION`,
+- Cold paths: the happy path is the straight line, and `nm -S` on the
+  host build decides whether a hint or a split helped. feed_parse,
+  run_engine and h2_dispatch are 11 to 15 KB of machine code each, one
+  h1 request walks two of them, and the L1i is 32 KiB.
+- mruby raises: mruby here is built with `MRB_USE_CXX_EXCEPTION`,
   always. A raise is a C++ throw, destructors run, and a failure is
   raised rather than reported through `char* err` and `return false`.
-- `#decide-then-do` - compute the round as a value, perform it in one
+- Decide, then do: compute the round as a value, perform it in one
   place.
-
-Read them before adding a rule. Two sources for one fact is one too
-many, which is itself one of them.
 
 ## What is only true of the build
 
@@ -131,5 +127,3 @@ of the flow table: `to(Node::kG9)` became `ComputeJobAsk:kG9)`. The
 compiler would have caught that one, but a rename that stays
 type-correct would go through. So: rename with the tool, then read what
 it changed, then build.
-Which tool answers what, the invocations, what clang-refactor cannot do,
-and what no tool can answer about an mruby method: `.DESIGN.md#tooling`.

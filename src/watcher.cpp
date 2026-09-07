@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <cstdio>
 
 #include "http1.hpp"
@@ -564,7 +563,7 @@ Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
   // The block hears :timeout and answers whether the wait goes on. A
   // watcher over its deadline is usually the world - the peer said
   // nothing - and that is a fact the application has to learn, not a
-  // failure of its own (.DESIGN.md #compute-task-bound).
+  // failure of its own.
   mrb_value said = mrb_nil_value();
   bool again;
   {

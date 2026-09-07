@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 //
 // webmachine-passwd - the password database the server verifies against.
 // htpasswd's job, with LMDB where htpasswd has a text file, and argon2id

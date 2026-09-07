@@ -23,7 +23,7 @@ post-loop check that names `M == 35` explicitly shows the sixth octet is
 intended - it is the arithmetic that is wrong, not the bound.
 
 It is not preventable at our handover, which is what makes it different
-from the five in .DESIGN.md's RFC 7541 section: a six-octet HPACK integer
+from the five the design notes list for RFC 7541: a six-octet HPACK integer
 is legal wire input that a decoder has to reject cleanly, and we cannot
 pre-validate one without decoding HPACK ourselves.
 

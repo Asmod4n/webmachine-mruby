@@ -109,7 +109,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-fast-json'
 
   # TLS: the handshake is this process's, the record layer is the
-  # kernel's (.DESIGN.md "TLS"). The gem brings ktls.h and links the
+  # kernel's. The gem brings ktls.h and links the
   # machine's OpenSSL 3, which also gives SHA1() to the WebSocket
   # handshake.
   spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'master'

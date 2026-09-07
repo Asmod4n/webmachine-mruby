@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include "ring.hpp"
@@ -1506,7 +1505,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       watch_run_is(st, mine_round, nullptr);
       // Three refusals, and they must not be confused: a full pool is
       // load and passes, a deadline the author got wrong does not, and
-      // a handle that died may come back (.DESIGN.md #compute-task-bound).
+      // a handle that died may come back.
       // A refused run does not walk on - there is no answer to walk to.
       const ComputeRefusal refused = compute_task_refusal(mine_round);
       if (mrb_unlikely(refused.status != 0)) {

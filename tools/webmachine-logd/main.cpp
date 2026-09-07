@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -710,7 +710,7 @@ class Ring {
                  static_cast<int>(li), ktls_last_error());
     }
     // AES first where the machine has the instructions, ChaCha first
-    // otherwise (.DESIGN.md "Two suites, and why not three"). Said out
+    // otherwise (two suites, and why not three). Said out
     // loud because it decides whether a NIC can ever take the record
     // layer over, and because it is not otherwise visible from outside.
     const bool aes_is_fast = ktls_aes_is_fast();
@@ -788,7 +788,7 @@ class Ring {
         io_uring_sqe_set_data64(s, detail::tag(detail::kRecv, c.gen, idx));
         return;
       }
-      // Offloaded: never a plain recv (.DESIGN.md "Never a plain recv on an
+      // Offloaded: never a plain recv ("Never a plain recv on an
       // offloaded socket"). A record that is not application data is EIO on
       // recv and a control message on recvmsg. The kernel sizes what it
       // writes into each buffer from these two lengths, so the msghdr has to
@@ -1449,7 +1449,7 @@ class Ring {
       conn_failed("tls: a record too large for one buffer");
     }
     // An alert or a post-handshake record reaches a plain recv as EIO and
-    // nothing else; here it says which it is (.DESIGN.md "Never a plain
+    // nothing else; here it says which it is ("Never a plain
     // recv on an offloaded socket").
     ktls_record record = KTLS_RECORD_UNKNOWN;
     for (struct cmsghdr* cm = io_uring_recvmsg_cmsg_firsthdr(o, &c.tls->recv_msg); cm != nullptr;

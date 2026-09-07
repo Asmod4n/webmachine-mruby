@@ -1,6 +1,6 @@
 #!/bin/bash
 # A comment carries an anchor - an RFC clause, an issue, a file:line, a
-# measurement, a proper name - or it does not exist (.DESIGN.md,
+# measurement, a proper name - or it does not exist (the design notes,
 # commandment 2). This counts the ones that do not.
 cd "$(dirname "$0")/.."
 out=$(mktemp)

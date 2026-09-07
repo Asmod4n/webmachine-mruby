@@ -456,3 +456,38 @@ assert('watcher: :in, :out and :inout are the same orders as :r, :w and :rw') do
   assert_true out.include?('inout:rw'), out
   assert_true out.include?('changed:r'), out
 end
+
+# A watcher's block runs inside the request, in this VM. A callback
+# written on the class has no request, so `watch` refuses it by name.
+assert('watcher: a class-level callback is refused at the start') do
+  src = Tempfile.new(['wm-wa', '.rb'])
+  src.write(<<~RUBY_SRC)
+    class WatchOnClass < Webmachine::Resource
+      watch :generate_etag
+      def self.generate_etag
+        r, _w = IO.pipe
+        Webmachine::Watcher.new(r, :r, timeout: 1.s) { |_ev, w| w.abort; 'x' }
+      end
+      def to_html
+        'body'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], WatchOnClass }
+      end
+    end
+  RUBY_SRC
+  src.close
+  mrbc = ENV['MRBCFILE'] or raise 'MRBCFILE not set - bintest must run under rake bintest'
+  mrb = Tempfile.new(['wm-wa', '.mrb'])
+  mrb.close
+  raise 'mrbc failed' unless system(mrbc, '-g', '-o', mrb.path, src.path)
+  out = `#{WM_BIN} --unix=/tmp/wm-wa-refused-#{$$}.sock --app=#{mrb.path} 2>&1`
+  assert_false $?.success?, out
+  assert_true out.include?('defined on the class'), out
+  assert_true out.include?('write def generate_etag'), out
+  src.unlink
+  mrb.unlink
+end

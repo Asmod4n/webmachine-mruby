@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #include "webmachine.hpp"
 
 #include <mruby/proc_irep_ext.h>
@@ -2142,6 +2141,15 @@ void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
                      "%n is declared both `compute` and `watch` - it answers one way or the other",
                      want);
         }
+        // A watcher's block runs inside the request, in this VM, with
+        // request and response in reach. That is the instance's, so the
+        // callback is written on the instance.
+        if (mrb_unlikely(cb->on_class)) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "watch :%n, but %n is defined on the class - a watcher runs inside the "
+                     "request, so write def %n",
+                     want, want, want);
+        }
         out.value_watch |= static_cast<uint8_t>(1u << what);
         continue;
       }
@@ -2150,6 +2158,12 @@ void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
                    "watch :%n, but %n is not defined - write it and answer with a "
                    "Webmachine::Watcher",
                    want, want);
+      }
+      if (mrb_unlikely((out.node_on_class & (uint64_t{1} << at)) != 0)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "watch :%n, but %n is defined on the class - a watcher runs inside the "
+                   "request, so write def %n",
+                   want, want, want);
       }
       out.watch |= uint64_t{1} << at;
     }

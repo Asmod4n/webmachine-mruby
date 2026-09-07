@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 //
 // What the reactor is set up with: the descriptor budget, the listener
 // spelling, RingConfig, and the tags a completion carries. Read by

@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 //
 // #80: the compute pool that answers a ComputeTask.
 //
@@ -70,7 +69,7 @@ struct Slot {
   bool raised = false;
   // The task was ended because it passed its deadline. A different
   // answer from a raise: the author's number was wrong, and a retry
-  // would take just as long (.DESIGN.md #compute-task-bound).
+  // would take just as long.
   bool over_deadline = false;
   // What the worker raised, as CBOR (mrblib registers Exception), and
   // the step of the job it raised in. The reactor decodes the same
@@ -747,7 +746,7 @@ mrb_value job_body(mrb_state* mrb, void* ud) {
 //
 // Under Ruby there is C, and a C function stops for nothing the VM
 // can do. So the deadline holds for what mruby executes, and
-// admission holds for the rest (.DESIGN.md #compute-task-bound).
+// admission holds for the rest.
 void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
   mrb_state* const mrb = vm.mrb;
   const int ai = mrb_gc_arena_save(mrb);

@@ -40,7 +40,7 @@ MRuby::Build.new do |conf|
   # only url_search_params keeps 13 KB of it and one that calls only
   # percent_decode keeps 6 KB. That difference is the whole question of
   # whether such a dependency is affordable on the request path at all
-  # (.DESIGN.md #cold-paths: ~14 KB per big function against a 32 KiB
+  # (cold paths: ~14 KB per big function against a 32 KiB
   # L1i), and it costs one flag pair to have.
   section_flags = %w[-ffunction-sections -fdata-sections]
   conf.cc.flags.concat(section_flags)

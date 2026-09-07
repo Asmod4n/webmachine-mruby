@@ -1,4 +1,3 @@
-// Design decisions live in .DESIGN.md, filed under what each comment names.
 #ifndef WEBMACHINE_HPP
 #define WEBMACHINE_HPP
 
@@ -3086,7 +3085,7 @@ struct ComputeAnswer {
   bool raised = false;
   // The task ran past its max_runtime and the worker ended it. Not a
   // raise: the author's number was wrong, and a retry costs the same
-  // (.DESIGN.md #compute-task-bound).
+  //.
   bool over_deadline = false;
   // What the worker raised, as CBOR, decoded on the reactor to the same
   // exception; and the step of the job it raised in.
