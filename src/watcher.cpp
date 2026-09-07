@@ -111,6 +111,7 @@ mrb_value sym_of(mrb_state* mrb, unsigned mask) {
 
 // Watcher.new(source, :r, timeout: 5.0) { |revents, watcher| ... } - a
 // description. Arming happens when a resource hands one back; see #30.
+//: (untyped, ?untyped) { (Webmachine::Watcher) -> void } -> Webmachine::Watcher
 mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
   mrb_value source;
   mrb_value events = mrb_symbol_value(MRB_SYM(r));
@@ -163,15 +164,18 @@ mrb_value watcher_source(mrb_state* mrb, mrb_value self) {
   return mrb_iv_get(mrb, self, MRB_IVSYM(source));
 }
 
+//: () -> Proc
 mrb_value watcher_block(mrb_state* mrb, mrb_value self) {
   return mrb_iv_get(mrb, self, MRB_IVSYM(block));
 }
 
+//: () -> Symbol
 mrb_value watcher_events(mrb_state* mrb, mrb_value self) {
   return sym_of(mrb, live(mrb, self)->events);
 }
 
 // IORING_POLL_UPDATE_EVENTS on the armed poll; no re-registration.
+//: (Symbol) -> Symbol
 mrb_value watcher_events_set(mrb_state* mrb, mrb_value self) {
   mrb_value v;
   mrb_get_args(mrb, "o", &v);
@@ -179,15 +183,18 @@ mrb_value watcher_events_set(mrb_state* mrb, mrb_value self) {
   return v;
 }
 
+//: () -> Webmachine::Watcher
 mrb_value watcher_abort(mrb_state* mrb, mrb_value self) {
   live(mrb, self)->aborted = true;
   return self;
 }
 
+//: () -> (TrueClass | FalseClass)
 mrb_value watcher_aborted(mrb_state* mrb, mrb_value self) {
   return mrb_bool_value(live(mrb, self)->aborted);
 }
 
+//: () -> Float
 mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
   return mrb_float_value(mrb, live(mrb, self)->timeout);
 }
@@ -200,6 +207,7 @@ mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
 //
 // The block answers with what it does: it calls abort to give up, or it
 // returns and waits again. The reactor reads that answer here.
+//: () -> (TrueClass | FalseClass)
 mrb_value watcher_deadline_passed_m(mrb_state* mrb, mrb_value self) {
   live(mrb, self);
   const mrb_value blk = mrb_iv_get(mrb, self, MRB_IVSYM(block));

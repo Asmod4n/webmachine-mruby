@@ -23,6 +23,7 @@ module Webmachine
       attr_accessor :userdata
     end
 
+    #: () -> Webmachine::Workers::Response
     def self.response
       @response ||= Response.new
     end
@@ -74,41 +75,49 @@ module Webmachine
     # The numbers are not written down here: PORT_MAX, FILE_MAP_MAX and
     # ZERO_COPY_MAX come from application.cpp, which is where the code
     # that honours them lives.
+    #: (Integer) -> Integer
     def port=(v)
       Config.check_whole_number(v, PORT_MAX, 'port', '')
       self[:port] = v
     end
 
+    #: (Integer) -> Integer
     def file_map_threshold=(v)
       Config.check_whole_number(v, FILE_MAP_MAX, 'file_map_threshold', ' bytes')
       self[:file_map_threshold] = v
     end
 
+    #: (Integer) -> Integer
     def zero_copy_threshold=(v)
       Config.check_whole_number(v, ZERO_COPY_MAX, 'zero_copy_threshold', ' bytes')
       self[:zero_copy_threshold] = v
     end
 
+    #: (String) -> String
     def unix_path=(v)
       Config.check_text(v, 'unix_path')
       self[:unix_path] = v
     end
 
+    #: (String) -> String
     def docroot=(v)
       Config.check_text(v, 'docroot')
       self[:docroot] = v
     end
 
+    #: (String) -> String
     def assets=(v)
       Config.check_text(v, 'assets')
       self[:assets] = v
     end
 
+    #: (String) -> String
     def certificate=(v)
       Config.check_text(v, 'certificate')
       self[:certificate] = v
     end
 
+    #: (String) -> String
     def private_key=(v)
       Config.check_text(v, 'private_key')
       self[:private_key] = v
@@ -164,6 +173,7 @@ module Webmachine
     # RFC 9457 3: a problem document is application/problem+json, which is
     # not what the MIME database says .json is. That is why the list is
     # written out rather than derived from a file extension.
+    #: () -> Array
     def self.content_types_provided
       [['text/html; charset=utf-8', :to_html_error],
        ['application/problem+json', :to_json_error],
@@ -234,6 +244,7 @@ module Webmachine
     # RFC 9457 names an "instance" member for the specific occurrence. It
     # would be the request target, and an error page carries nothing the
     # client sent - the access log is where a request is named.
+    #: (Hash) -> Hash
     def self.problem_document(e)
       out = { 'type' => 'about:blank', 'title' => e['title'].to_s, 'status' => e['status'] }
       out['id'] = e['id'] if e['id']
@@ -277,18 +288,22 @@ module Webmachine
     #   end
     #
     # Answer nil and a 500 is just "500".
+    #: (Exception) -> String
     def handle_exception(e)
       "#{e.class}: #{e.message}"
     end
 
+    #: (Hash) -> String
     def to_html_error(e)
       HTML.render(e)
     end
 
+    #: (Hash) -> String
     def to_json_error(e)
       self.class.problem_document(e).to_json
     end
 
+    #: (Hash) -> String
     def to_text_error(e)
       TEXT.render(e)
     end

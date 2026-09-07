@@ -35,6 +35,7 @@ const ReqView* request_being_answered(mrb_state* mrb) {
 
 
 // RFC 9110 9.1: the method, by name.
+//: () -> (String | NilClass)
 mrb_value req_method(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   switch (v->method) {
@@ -54,12 +55,14 @@ mrb_value req_method(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 4.2.1: the request-target as it arrived, query and all.
+//: () -> String
 mrb_value req_uri(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   return mrb_str_new(mrb, v->request_target, v->request_target_len);
 }
 
 // RFC 9110 4.2.1: the target up to '?'.
+//: () -> String
 mrb_value req_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   return mrb_str_new(mrb, v->request_target, v->path_len);
@@ -67,6 +70,7 @@ mrb_value req_path(mrb_state* mrb, mrb_value) {
 
 // RFC 9110 4.2.1: what is left of the path for the resource to dispatch
 // on - n11's create_path override wins when this run set one.
+//: () -> String
 mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (disp_override_set_) return mrb_str_new(mrb, disp_override_.data(), disp_override_.size());
@@ -78,6 +82,7 @@ mrb_value req_disp_path(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 4.2.1: the Symbol tokens this route bound, by name.
+//: () -> Hash
 mrb_value req_path_info(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (v->spans == nullptr) return mrb_hash_new(mrb);
@@ -93,6 +98,7 @@ mrb_value req_path_info(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 4.2.1: the splat's segments, in order.
+//: () -> Array
 mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   mrb_value a = mrb_ary_new(mrb);
@@ -114,6 +120,7 @@ mrb_value req_path_tokens(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 4.2.1: the raw query, without the '?'.
+//: () -> String
 mrb_value req_query_string(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (v->path_len >= v->request_target_len) return mrb_str_new(mrb, "", 0);
@@ -135,6 +142,7 @@ mrb_value req_query_string(mrb_state* mrb, mrb_value) {
 //
 // ada owns the decoded pairs for the length of the call and hands out
 // views into them, so every String below is made while they are alive.
+//: () -> Hash
 mrb_value req_query(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   mrb_value h = mrb_hash_new(mrb);
@@ -162,6 +170,7 @@ mrb_value req_query(mrb_state* mrb, mrb_value) {
 // repeats joined with ", ". A request that sent none answers an empty
 // Hash. The fields live as long as the request: a parked HTTP/2 stream
 // copies them (H2Stream::field_blob), so they are never gone.
+//: () -> Hash
 mrb_value req_headers(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   const struct phr_header* hs = static_cast<const struct phr_header*>(v->fields);
@@ -189,6 +198,7 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
 
 // RFC 9110 6.4: the request body, lent like everything else here; nil
 // when none arrived.
+//: () -> (String | NilClass)
 mrb_value req_body(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (v->content == nullptr) return mrb_nil_value();
@@ -196,6 +206,7 @@ mrb_value req_body(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 6.4: is there a body worth reading? An empty body counts as none.
+//: () -> (TrueClass | FalseClass)
 mrb_value req_has_body(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->content_len > 0);
 }
@@ -239,31 +250,38 @@ mrb_value req_named(mrb_state* mrb, http::NamedField f) {
 }
 
 // RFC 9110 8.3: the entity's media type.
+//: () -> (String | NilClass)
 mrb_value req_content_type(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kContentType);
 }
 // RFC 9110 8.6: the entity's length, as webmachine-ruby hands it back -
 // a String the caller is expected to .to_i.
+//: () -> (String | NilClass)
 mrb_value req_content_length(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kContentLength);
 }
 // RFC 9110 11.6.2: the credentials, verbatim.
+//: () -> (String | NilClass)
 mrb_value req_authorization(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kAuthorization);
 }
 // RFC 9110 12.5.1: what the client would rather have.
+//: () -> (String | NilClass)
 mrb_value req_accept(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kAccept);
 }
 // RFC 9110 12.5.3: which codings it will take.
+//: () -> (String | NilClass)
 mrb_value req_accept_encoding(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kAcceptEncoding);
 }
 // RFC 9110 13.1.1: the precondition on the current representation.
+//: () -> (String | NilClass)
 mrb_value req_if_match(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kIfMatch);
 }
 // RFC 9110 13.1.2: its negation.
+//: () -> (String | NilClass)
 mrb_value req_if_none_match(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (v->values != nullptr && v->values->if_none_match_repeats) {
@@ -274,20 +292,24 @@ mrb_value req_if_none_match(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kIfNoneMatch);
 }
 // RFC 9110 13.1.3: the date form of the same question.
+//: () -> (String | NilClass)
 mrb_value req_if_modified_since(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kIfModifiedSince);
 }
 // RFC 9110 13.1.4: and its negation.
+//: () -> (String | NilClass)
 mrb_value req_if_unmodified_since(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kIfUnmodifiedSince);
 }
 
+//: () -> (String | NilClass)
 mrb_value req_host(mrb_state* mrb, mrb_value) {
   return req_named(mrb, http::NamedField::kHost);
 }
 
 // RFC 6265 5.4: the Cookie header's k=v pairs, lazily parsed into a
 // Hash. No Cookie field: an empty Hash, same as webmachine-ruby.
+//: () -> Hash
 mrb_value req_cookies(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   mrb_value h = mrb_hash_new(mrb);
@@ -325,6 +347,7 @@ mrb_value req_cookies(mrb_state* mrb, mrb_value) {
 
 // RFC 9110 4.2.1: base_uri as webmachine-ruby spells it - scheme and
 // Host only, no port/query normalization, no URI object.
+//: () -> String
 mrb_value req_base_uri(mrb_state* mrb, mrb_value) {
   const mrb_value host = req_named(mrb, http::NamedField::kHost);
   const ReqView* v = request_being_answered(mrb);
@@ -337,26 +360,32 @@ mrb_value req_base_uri(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 9.3.1: is this a GET?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_get(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kGet);
 }
 // RFC 9110 9.3.2: is this a HEAD?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_head(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kHead);
 }
 // RFC 9110 9.3.3: is this a POST?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_post(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kPost);
 }
 // RFC 9110 9.3.4: is this a PUT?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_put(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kPut);
 }
 // RFC 9110 9.3.5: is this a DELETE?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_delete(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kDelete);
 }
 // RFC 9110 9.3.7: is this an OPTIONS?
+//: () -> (TrueClass | FalseClass)
 mrb_value req_is_options(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(request_being_answered(mrb)->method == flow::Method::kOptions);
 }
@@ -365,6 +394,7 @@ mrb_value req_is_options(mrb_state* mrb, mrb_value) {
 // process keeps and hands back. What the caller does with it afterwards is
 // the caller's; the callback's own GC arena roots it, the same way Response
 // is rooted.
+//: () -> Webmachine::Request
 mrb_value resource_request(mrb_state* mrb, mrb_value) {
   request_being_answered(mrb);
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));

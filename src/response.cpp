@@ -110,6 +110,7 @@ void append_field(std::string& buf, http::Field f) {
 }
 
 // RFC 9110 6.3: Headers#[] - one field, by name, case-insensitively.
+//: (String) -> (String | NilClass)
 mrb_value hdrs_get(mrb_state* mrb, mrb_value) {
   const Resource* r = live_headers(mrb);
   const char* k;
@@ -123,6 +124,7 @@ mrb_value hdrs_get(mrb_state* mrb, mrb_value) {
 // RFC 9110 6.3: Headers#[]= - a String replaces the line of the same
 // name (cut it, append the fresh one) or appends a new one; nil deletes
 // it. Anything else is refused by type, not silently dropped.
+//: (String, String) -> String
 mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live_headers(mrb);
   const char* k;
@@ -154,6 +156,7 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 6.3: Headers#key? - is the field there at all?
+//: (String) -> (TrueClass | FalseClass)
 mrb_value hdrs_key(mrb_state* mrb, mrb_value) {
   const Resource* r = live_headers(mrb);
   const char* k;
@@ -164,6 +167,7 @@ mrb_value hdrs_key(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 6.3: Headers#delete - cut the line, hand back the value it held.
+//: (String) -> (String | NilClass)
 mrb_value hdrs_delete(mrb_state* mrb, mrb_value) {
   const Resource* r = live_headers(mrb);
   const char* k;
@@ -180,6 +184,7 @@ mrb_value hdrs_delete(mrb_state* mrb, mrb_value) {
 // RFC 9110: Response#headers - the Headers handle is built fresh on
 // Every call, never memoised: there is no Ruby Hash behind it, only
 // this view over the run's own line buffer.
+//: () -> Webmachine::Response::Headers
 mrb_value resp_headers(mrb_state* mrb, mrb_value self) {
   live(mrb);
   struct RClass* h = mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(Headers));
@@ -188,12 +193,14 @@ mrb_value resp_headers(mrb_state* mrb, mrb_value self) {
 
 // RFC 9110 15: the status a callback named, or nil while the graph
 // still owns the answer (0 = unset).
+//: () -> (Integer | NilClass)
 mrb_value resp_code(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   return r->run.resp_code == 0 ? mrb_nil_value() : mrb_fixnum_value(r->run.resp_code);
 }
 
 // RFC 9110 15: a callback naming the status itself.
+//: (Integer) -> Integer
 mrb_value resp_code_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_int v;
@@ -209,6 +216,7 @@ mrb_value resp_code_set(mrb_state* mrb, mrb_value) {
 }
 
 // RFC 9110 6.4: the representation a callback built, or nil.
+//: () -> (String | NilClass)
 mrb_value resp_body(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   if (!r->run.have_body || r->run.body == nullptr) return mrb_nil_value();
@@ -217,6 +225,7 @@ mrb_value resp_body(mrb_state* mrb, mrb_value) {
 
 // RFC 9110 6.4: a callback handing the representation over (String), or
 // clearing it (nil).
+//: (String) -> (String | NilClass)
 mrb_value resp_body_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_value v;
@@ -237,6 +246,7 @@ mrb_value resp_body_set(mrb_state* mrb, mrb_value) {
 }
 
 // The file a callback named, or nil.
+//: () -> (String | NilClass)
 mrb_value resp_file(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   if (!r->run.have_file) return mrb_nil_value();
@@ -254,6 +264,7 @@ mrb_value resp_file(mrb_state* mrb, mrb_value) {
 // earliest honest point and the cheapest one to act on: the raise carries
 // the class, the message and the app's own file and line into --error-log,
 // where a 500 spelled three ring round-trips later would name nothing.
+//: (String) -> (String | NilClass)
 mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_value v;
@@ -294,6 +305,7 @@ mrb_value resp_file_set(mrb_state* mrb, mrb_value) {
 // on h1, Content::Src::kAsset on h2. The zip is mmap'd for as long as
 // the server lives, so the handle outlives every stream that parks on
 // it.
+//: (String) -> (String | NilClass)
 mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_value v;
@@ -328,6 +340,7 @@ mrb_value resp_error_asset(mrb_state* mrb, mrb_value) {
 // RFC 9110 15.4.4: webmachine-ruby's own spelling of a redirect - an
 // optional Location plus the flag n11/p11 read back. `redirect_to`
 // below is the exact same function under its alias name.
+//: (?String) -> TrueClass
 mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   mrb_value loc = mrb_nil_value();
@@ -356,6 +369,7 @@ mrb_value resp_do_redirect(mrb_state* mrb, mrb_value) {
 // RFC 9110 15.4: has a callback already made this a redirect? A
 // predicate, not a bang-method - webmachine-ruby spells it is_redirect?
 // and so does this.
+//: () -> (TrueClass | FalseClass)
 mrb_value resp_is_redirect(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(live(mrb)->run.redirect);
 }
@@ -398,6 +412,7 @@ void add_cookie_attr(mrb_state* mrb, std::string& line, CookieAttr a) {
   line.append(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
 }
 
+//: (String, String, ?Hash) -> NilClass
 mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
   const Resource* r = live(mrb);
   if (r->run.headers == nullptr) {
@@ -470,6 +485,7 @@ mrb_value resp_userdata_set(mrb_state* mrb, mrb_value self) {
 // never memoised; whatever GC arena covers this callback's own call
 // frame is what keeps the handle alive, same as any other short-lived
 // value a cfunc returns.
+//: () -> Webmachine::Response
 mrb_value resource_response(mrb_state* mrb, mrb_value) {
   live(mrb);
   struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));

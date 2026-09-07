@@ -502,6 +502,7 @@ void walk_tokens(mrb_state* mrb, RouteTable& table, Tokens t) {
 }
 
 // route.add / app.add_route: the flow's table. Folds and freezes the class.
+//: (String, Class) -> (Webmachine::Application | Webmachine::Routes)
 mrb_value route_add(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -536,6 +537,7 @@ mrb_value route_add(mrb_state* mrb, mrb_value self) {
 }
 
 // RFC 6455: route.websocket - the app's own second table.
+//: (String, Class) -> (Webmachine::Application | Webmachine::Routes)
 mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -552,6 +554,7 @@ mrb_value route_websocket(mrb_state* mrb, mrb_value self) {
 }
 
 // WHATWG HTML: route.sse - the app's own third table.
+//: (String, Class) -> (Webmachine::Application | Webmachine::Routes)
 mrb_value route_sse(mrb_state* mrb, mrb_value self) {
   mrb_value toks, klass;
   mrb_get_args(mrb, "Ao", &toks, &klass);
@@ -569,6 +572,7 @@ mrb_value route_sse(mrb_state* mrb, mrb_value self) {
 }
 
 // A signpost: assets are configured with --assets and serve unchanged.
+//: (*untyped) -> NilClass
 mrb_value route_assets(mrb_state* mrb, mrb_value) {
   mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
          "route.assets is reserved - the asset mount is #170/#115. Assets are configured "
@@ -605,6 +609,7 @@ void register_app(mrb_state* mrb, AppSpec* s) {
 // Webmachine::Application.new { |app| ... } - the app's whole surface.
 // initialize, not a hand-rolled .new: Class#new already allocates the
 // MRB_TT_CDATA instance and forwards the block here.
+//: () { (Webmachine::Application) -> void } -> Webmachine::Application
 mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -634,6 +639,7 @@ mrb_value app_initialize(mrb_state* mrb, mrb_value self) {
 }
 
 // webmachine-ruby compatibility: configure / config yield the one conf facade.
+//: () { (Webmachine::Config) -> void } -> Webmachine::Application
 mrb_value app_configure(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -643,6 +649,7 @@ mrb_value app_configure(mrb_state* mrb, mrb_value self) {
 }
 
 // webmachine-ruby compatibility: routes yields the one route facade.
+//: () { (Webmachine::Routes) -> void } -> Webmachine::Application
 mrb_value app_routes(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
@@ -652,6 +659,7 @@ mrb_value app_routes(mrb_state* mrb, mrb_value self) {
 }
 
 // The hook that runs after the bind and before the first accept.
+//: () { (Webmachine::Application) -> void } -> Webmachine::Application
 mrb_value app_ready(mrb_state* mrb, mrb_value self) {
   mrb_value blk = mrb_nil_value();
   mrb_get_args(mrb, "&", &blk);
