@@ -1,7 +1,7 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 #include <cstdio>
 
-#include "webmachine.hpp"
+#include "http1.hpp"
 
 #include <mruby/class.h>
 #include <mruby/data.h>

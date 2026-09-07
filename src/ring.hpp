@@ -7,7 +7,8 @@
 #ifndef WEBMACHINE_RING_HPP
 #define WEBMACHINE_RING_HPP
 
-#include "webmachine.hpp"
+#include "http1.hpp"
+#include "ring_setup.hpp"
 
 namespace webmachine {
 

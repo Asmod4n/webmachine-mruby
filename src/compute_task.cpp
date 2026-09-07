@@ -13,7 +13,8 @@
 //
 // Watcher is this file's sibling: it answers the same question again,
 // and it watches a descriptor.
-#include "webmachine.hpp"
+#include "http1.hpp"
+#include "ring_setup.hpp"
 
 
 

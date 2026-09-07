@@ -1,7 +1,7 @@
 // Design decisions live in .DESIGN.md, filed under what each comment names.
 // SHA-1 and base64 come from libraries.
 #define OPENSSL_SUPPRESS_DEPRECATED 1
-#include "webmachine.hpp"
+#include "http1.hpp"
 
 #include <openssl/sha.h>
 #include <simdutf.h>
