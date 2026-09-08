@@ -49,6 +49,18 @@ request. Four do work and must stay `def`: `process_post`,
 refuses a class-level one of those at start, by name, because it would
 run once at setup and never again.
 
+`request.body` is an IO, not a String, and `nil` when no body arrived.
+Today it is a `StringIO` over the bytes. It is an IO because a body is
+not always going to be in memory: a resource reads it with `read`,
+`gets`, `getc`, `each`, `pos`, `seek`, `rewind`, `size` and `eof?`,
+which is what a `File` answers as well. It is one object for the whole
+run, so a loop that reads it goes forward.
+
+    def process_post
+      response.body = request.body.read
+      true
+    end
+
 On one core, over a unix socket, the server answers about one million
 HTTP/1.1 requests a second. Every run is in `bench/results/` with the
 command that made it.

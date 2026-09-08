@@ -612,7 +612,7 @@ H2_FIELDS_APP = <<~RUBY unless defined?(H2_FIELDS_APP)
     end
 
     def process_post
-      response.body = request.headers.keys.sort.join(',') + '|' + request.body.to_s +
+      response.body = request.headers.keys.sort.join(',') + '|' + request.body.read.to_s +
                       '|type=' + request.content_type.to_s
       true
     end

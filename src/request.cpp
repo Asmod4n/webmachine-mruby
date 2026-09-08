@@ -22,6 +22,20 @@ const struct mrb_data_type request_type = {"webmachine.request", nullptr};
 std::string disp_override_;
 bool disp_override_set_ = false;
 
+// RFC 9110 6.4: the StringIO request.body answered with, for this run.
+// One object per run and not one per call: a resource that reads the
+// body in a loop asks for it more than once, and an IO that starts over
+// each time is not an IO. request_bind drops it.
+//
+// It is GC-registered rather than kept in the arena: the memo outlives
+// the callback that built it, and every later callback in the same run
+// gets the same object back.
+mrb_value body_io_ = mrb_nil_value();
+// The VM the memo was registered in, so request_bind can unregister it
+// without every caller having to hand one over. Set with body_io_ and
+// cleared with it.
+mrb_state* body_io_mrb_ = nullptr;
+
 // The request being answered. Outside a resource callback there is none,
 // and that is a refusal with a name.
 const ReqView* request_being_answered(mrb_state* mrb) {
@@ -196,13 +210,29 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
-// RFC 9110 6.4: the request body, lent like everything else here; nil
-// when none arrived.
-//: () -> (String | NilClass)
+// RFC 9110 6.4: the request body, as an IO; nil when none arrived.
+//
+// An IO and not a String, because a body is not always in memory: over
+// conf.max_body's in-memory size it lives in a file, and a resource that
+// reads it must not care which. What it can do is what both answer -
+// read, gets, getc, each, pos, seek, rewind, size, eof?.
+//
+// The bytes are copied into the String the StringIO holds. The wire
+// buffer they came from is the connection's, and it is refilled by the
+// next read; a body that a resource keeps has to be its own.
+//: () -> (StringIO | NilClass)
 mrb_value req_body(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
   if (v->content == nullptr) return mrb_nil_value();
-  return mrb_str_new(mrb, v->content, v->content_len);
+  if (!mrb_nil_p(body_io_)) return body_io_;
+
+  struct RClass* const sio = mrb_class_get_id(mrb, MRB_SYM(StringIO));
+  const mrb_value bytes = mrb_str_new(mrb, v->content, v->content_len);
+  const mrb_value io = mrb_obj_new(mrb, sio, 1, &bytes);
+  mrb_gc_register(mrb, io);
+  body_io_ = io;
+  body_io_mrb_ = mrb;
+  return body_io_;
 }
 
 // RFC 9110 6.4: is there a body worth reading? An empty body counts as none.
@@ -410,6 +440,11 @@ void request_bind(const ReqView* view) {
   view_ = view;
   disp_override_.clear();
   disp_override_set_ = false;
+  if (body_io_mrb_ != nullptr) {
+    mrb_gc_unregister(body_io_mrb_, body_io_);
+    body_io_ = mrb_nil_value();
+    body_io_mrb_ = nullptr;
+  }
 }
 
 // RFC 9110 9.3.3: n11's create_path names a new disp_path for this run;

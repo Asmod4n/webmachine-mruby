@@ -108,6 +108,11 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # Hash, and this gem spells it - the escaping (RFC 8259 7) is its job.
   spec.add_dependency 'mruby-fast-json'
 
+  # RFC 9110 6.4: request.body is an IO, not a String - a resource reads
+  # it, seeks in it, and asks it how long it is, the same way whether the
+  # bytes are in memory or in a file. This is the in-memory half.
+  spec.add_dependency 'mruby-stringio', github: 'ksss/mruby-stringio'
+
   # TLS: the handshake is this process's, the record layer is the
   # kernel's. The gem brings ktls.h and links the
   # machine's OpenSSL 3, which also gives SHA1() to the WebSocket

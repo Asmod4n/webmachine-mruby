@@ -378,7 +378,7 @@ class ReadsRequest < Webmachine::Resource
     parts = [
       r.method, r.uri, r.path, r.disp_path, r.path_info.size.to_s,
       r.path_tokens.size.to_s, r.query.size.to_s, r.query_string,
-      r.headers.size.to_s, r.body.to_s.size.to_s, r.has_body?.to_s,
+      r.headers.size.to_s, (r.body ? r.body.size : 0).to_s, r.has_body?.to_s,
       r.content_type.to_s, r.content_length.to_s, r.authorization.to_s,
       r.accept.to_s, r.accept_encoding.to_s, r.if_match.to_s,
       r.if_none_match.to_s, r.if_modified_since.to_s,

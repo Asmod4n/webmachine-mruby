@@ -785,11 +785,11 @@ assert('application: request.headers are the head, lowercased; request.body is t
       end
 
       def to_html
-        request.has_body? ? request.body : 'none'
+        request.has_body? ? request.body.read : 'none'
       end
 
       def process_post
-        response.body = request.body
+        response.body = request.body.read
         true
       end
     end
@@ -815,6 +815,80 @@ assert('application: request.headers are the head, lowercased; request.body is t
     _, body3 = wm_read(s)
     assert_equal 'ding', body3
     s.close
+  end
+end
+
+# RFC 9110 6.4: request.body is an IO. It is one object per run, not one
+# per call, or a resource that reads the body in a loop would start over
+# every time it asked.
+assert('application: request.body is an IO, and the same IO all run') do
+  src = <<~RUBY
+    class BodyIO < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        b = request.body
+        # Two calls, one object: the second read carries on where the
+        # first stopped, and both names point at it.
+        first = b.read(2)
+        rest = request.body.read
+        response.body = [
+          b.class.to_s, b.size.to_s, first, rest,
+          request.body.eof?.to_s, request.body.equal?(b).to_s,
+        ].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_route [:*], BodyIO
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-bodyio') do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")
+      _, body = wm_read(s)
+      assert_equal 'StringIO|5|he|llo|true|true', body
+    end
+  end
+  # A second request gets its own IO, at the start of its own bytes.
+  wm_server(src, tag: 'wm-bodyio2') do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nfirst")
+      _, one = wm_read(s)
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n\r\nsecond")
+      _, two = wm_read(s)
+      assert_equal 'StringIO|5|fi|rst|true|true', one
+      assert_equal 'StringIO|6|se|cond|true|true', two
+    end
+  end
+end
+
+# RFC 9110 6.4: no body, no IO. has_body? is the question to ask first.
+assert('application: request.body is nil when no body arrived') do
+  src = <<~RUBY
+    class NoBody < Webmachine::Resource
+      def to_html
+        "\#{request.has_body?}|\#{request.body.inspect}"
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_route [:*], NoBody
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-nobody') do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, body = wm_read(s)
+      assert_equal 'false|nil', body
+    end
   end
 end
 

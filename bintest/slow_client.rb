@@ -20,7 +20,7 @@ SLOW_APP = <<~RUBY unless defined?(SLOW_APP)
     end
 
     def process_post
-      response.body = "got \#{request.body.length}"
+      response.body = "got \#{request.body.size}"
       true
     end
 

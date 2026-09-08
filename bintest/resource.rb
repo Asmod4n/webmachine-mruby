@@ -269,7 +269,7 @@ assert('compute: a parked run reads its own request after it resumes (#80)') do
         "\#{request.path}|\#{request.headers['x-probe']}|\#{request.query['q']}"
       end
       def process_post
-        response.body = "\#{request.path}|\#{request.headers['x-probe']}|\#{request.body}"
+        response.body = "\#{request.path}|\#{request.headers['x-probe']}|\#{request.body.read}"
         true
       end
     end
