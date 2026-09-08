@@ -12,13 +12,6 @@
 #include <cstdio>
 #include <cstring>
 
-// mruby's internal header, not a copy of one line out of it - see the
-// note in resource.cpp. A copied signature keeps compiling after mruby
-// changes it; an included one does not.
-extern "C" {
-#include <mruby/internal.h>
-}
-
 namespace webmachine {
 namespace wsdeflate {
 // RFC 7692 7.2.2: where inflated bytes go. False stops the pump, which is
@@ -229,22 +222,14 @@ struct Method {
   mrb_sym sym;
 };
 
-// The callbacks of a websocket resource have one shape each: on_data
-// takes the message and whether it is binary, on_close takes the code and
-// the reason. A resource that declares fewer parameters cannot receive
-// what it is sent, so the route refuses it here, at fold time, rather
-// than raising ArgumentError at the first frame. A method written in C
-// declares its own aspec and is taken as it is.
-bool method_arity_ok(mrb_state* mrb, Method want, int argc, bool* found) {
+// A websocket resource answers on_data(data, binary), and may answer
+// on_close(code, reason). The call passes both arguments and asks
+// nothing about the method: how many arguments a method takes is a
+// question for mrb_get_args, and a resource of another shape raises
+// ArgumentError when the callback runs.
+bool method_defined(mrb_state* mrb, Method want) {
   struct RClass* owner = want.klass;
-  mrb_method_t m = mrb_method_search_vm(mrb, &owner, want.sym);
-  *found = !MRB_METHOD_UNDEF_P(m);
-  if (!*found) return true;
-  if (MRB_METHOD_FUNC_P(m)) return true;
-  const struct RProc* pr = MRB_METHOD_PROC(m);
-  if (pr == nullptr) return true;
-  const mrb_int ar = mrb_proc_arity(pr);
-  return ar < 0 || ar == argc;  /* an optional or rest parameter answers -1 */
+  return !MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, want.sym));
 }
 
 // RFC 7692 7.2.2: inflated bytes onto the message being assembled, up to
@@ -621,22 +606,12 @@ void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
 
-  bool found = false;
-  if (!method_arity_ok(mrb, {out.klass, MRB_SYM(on_data)}, 2, &found)) {
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
-              "route.websocket: on_data takes the message and whether it is binary - "
-              "def on_data(data, binary)");
-  }
-  if (!found) {
+  if (!method_defined(mrb, {out.klass, MRB_SYM(on_data)})) {
     mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
               "route.websocket: the resource defines no on_data - that is the one method a "
               "websocket resource is (on_data(data, binary))");
   }
-  if (!method_arity_ok(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.have_close)) {
-    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
-              "route.websocket: on_close takes the code and the reason - "
-              "def on_close(code, reason)");
-  }
+  out.have_close = method_defined(mrb, {out.klass, MRB_SYM(on_close)});
 
   {
     struct RClass* meta = mrb_class(mrb, klass);

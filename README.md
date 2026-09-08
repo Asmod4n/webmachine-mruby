@@ -75,11 +75,11 @@ app.add_sse       ['events'],          Clock        # text/event-stream
 A String is a literal segment, a Symbol binds one, and `:*` takes the
 rest of the path.
 
-A websocket resource has two callbacks, and each has one shape:
-`on_data(data, binary)`, which every websocket resource defines, and
-`on_close(code, reason)`, which is optional. A route refuses a resource
-that declares other parameters. To ignore an argument, give it a default
-value or take `(*)`.
+A websocket resource has two callbacks, and each gets the same arguments
+every time: `on_data(data, binary)`, which every websocket resource
+defines, and `on_close(code, reason)`, which is optional. A resource that
+declares other parameters raises ArgumentError when the callback runs. To
+ignore an argument, give it a default value or take `(*)`.
 
 A resource declares what it knows, and the flow does the rest:
 

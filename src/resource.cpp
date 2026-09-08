@@ -19,26 +19,6 @@
 #include <string>
 #include <vector>
 
-
-// mrb_proc_arity lives in mruby's internal header, which a gem may use -
-// a gem is compiled together with mruby, so there is no ABI boundary here
-// of the kind an outside consumer would face.
-//
-// What a gem may not do is copy the declarations out. A hand-written
-// `extern "C" mrb_int mrb_proc_arity(const struct RProc*)` is a private
-// second opinion about a signature nobody promised to keep: mruby is
-// cloned fresh from master by the Rakefile, and if it changes shape, a
-// copied declaration still compiles, still links, and calls with the
-// wrong signature - corruption with no diagnostic anywhere.
-// Including the header means the compiler checks, and a change upstream
-// stops the build instead of the server.
-//
-// The wrapper is needed because internal.h carries no extern "C" guard
-// of its own.
-extern "C" {
-#include <mruby/internal.h>
-}
-
 namespace webmachine {
 namespace {
 using flow::Node;
@@ -137,19 +117,6 @@ bool instance_defined(mrb_state* mrb, mrb_value klass, mrb_sym sym) {
   return resolve(mrb, mrb_class_ptr(klass), sym).defined;
 }
 
-// mruby: how many arguments the method declared, capped at what its node offers.
-uint8_t argc_of(mrb_method_t m, uint8_t most) {
-  int a = most;
-  if (!MRB_METHOD_FUNC_P(m)) {
-    const struct RProc* p = MRB_METHOD_PROC(m);
-    if (p != nullptr) {
-      const mrb_int ar = mrb_proc_arity(p);
-      if (ar >= 0) a = static_cast<int>(ar) < most ? static_cast<int>(ar) : most;
-    }
-  }
-  return static_cast<uint8_t>(a);
-}
-
 // cb.rb: what to look for - the name, and whether a `def self.` with no
 // instance method beside it counts as an answer.
 struct Wanted {
@@ -170,7 +137,6 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, Wanted w) {
     cb.m = inst.m;
     cb.irep = inst.irep;
     cb.native = inst.native;
-    cb.argc = argc_of(inst.m, 0);
     return cb;
   }
   if (!class_fallback) return cb;
@@ -181,7 +147,6 @@ Resource::ValueCb value_cb(mrb_state* mrb, mrb_value klass, Wanted w) {
     cb.irep = meta.irep;
     cb.native = meta.native;
     cb.on_class = true;
-    cb.argc = argc_of(meta.m, 0);
   }
   return cb;
 }
@@ -1954,7 +1919,7 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
       out.node_m[at] = inst.m;
       out.node_irep[at] = inst.irep;
       out.node_native[at] = inst.native;
-      out.node_argc[at] = argc_of(inst.m, cb.maxargs);
+      out.node_argc[at] = cb.maxargs;
       continue;
     }
     if ((declared >> at) & 1) {
@@ -1965,7 +1930,7 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
         out.node_m[at] = meta.m;
         out.node_irep[at] = meta.irep;
         out.node_on_class |= uint64_t{1} << at;
-        out.node_argc[at] = argc_of(meta.m, cb.maxargs);
+        out.node_argc[at] = cb.maxargs;
         continue;
       }
     }
@@ -1983,7 +1948,7 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
       out.node_m[at] = inst.m;
       out.node_irep[at] = inst.irep;
       out.node_native[at] = inst.native;
-      out.node_argc[at] = argc_of(inst.m, cb.maxargs);
+      out.node_argc[at] = cb.maxargs;
       continue;
     }
     const Resolved meta = resolve(mrb, mrb_class(mrb, klass), cb.sym);
@@ -1993,7 +1958,7 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
       out.node_m[at] = meta.m;
       out.node_irep[at] = meta.irep;
       out.node_on_class |= uint64_t{1} << at;
-      out.node_argc[at] = argc_of(meta.m, cb.maxargs);
+      out.node_argc[at] = cb.maxargs;
     }
   }
 

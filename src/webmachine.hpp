@@ -2654,7 +2654,6 @@ struct Resource {
     // undefined m used to be the marker for "class-only", and it cost a
     // full mrb_funcall_argv every time it was read.
     bool on_class = false;
-    uint8_t argc = 0;
   };
   ValueCb cb_known_methods;   // instance-level; class-level folds konst
   ValueCb cb_allowed_methods;

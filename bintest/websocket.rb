@@ -836,7 +836,7 @@ assert('ws: two data frames may not interleave (5.4)') do
   end
 end
 
-assert('ws: a callback of the wrong shape is refused at route time') do
+assert('ws: a callback of the wrong shape raises when the message arrives') do
   src = <<~APP
     class Short < Webmachine::WebsocketResource
       def on_data(data)
@@ -846,49 +846,18 @@ assert('ws: a callback of the wrong shape is refused at route time') do
 
     def main
       Webmachine::Application.new do |app|
-        app.conf.port = 8080
-        begin
-          app.routes { |route| route.websocket ['ws'], Short }
-        rescue Webmachine::RouteError => e
-          puts "on_data=\#{e.message}"
-        end
+        app.routes { |route| route.websocket ['ws'], Short }
       end
     end
   APP
-  wm_server(src, tag: 'wm-ws') do |_sock, _pid, _err, out|
-    20.times { break if (File.read(out) rescue '').include?('on_data='); sleep 0.1 }
-    text = File.read(out)
-    assert_true text.include?('def on_data(data, binary)'), text
-  end
-end
-
-assert('ws: an on_close of the wrong shape is refused as well') do
-  src = <<~APP
-    class Half < Webmachine::WebsocketResource
-      def on_data(data, binary)
-        data
-      end
-
-      def on_close
-        nil
-      end
-    end
-
-    def main
-      Webmachine::Application.new do |app|
-        app.conf.port = 8080
-        begin
-          app.routes { |route| route.websocket ['ws'], Half }
-        rescue Webmachine::RouteError => e
-          puts "on_close=\#{e.message}"
-        end
-      end
-    end
-  APP
-  wm_server(src, tag: 'wm-ws') do |_sock, _pid, _err, out|
-    20.times { break if (File.read(out) rescue '').include?('on_close='); sleep 0.1 }
-    text = File.read(out)
-    assert_true text.include?('def on_close(code, reason)'), text
+  ws_server(src) do |sock|
+    s = UNIXSocket.new(sock)
+    ws_handshake(s)
+    s.write(ws_frame(0x1, 'hi'))
+    op, _, payload = ws_read_frame(s)
+    assert_equal 0x8, op
+    assert_equal 1011, (payload.getbyte(0) << 8) | payload.getbyte(1)
+    s.close
   end
 end
 

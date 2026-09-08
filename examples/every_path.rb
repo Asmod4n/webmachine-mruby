@@ -83,7 +83,7 @@ end
 
 # --- 401 b8 is_authorized? --------------------------------------------
 class Unauthorized < Webmachine::Resource
-  def self.is_authorized?
+  def self.is_authorized?(_header)
     false
   end
 
