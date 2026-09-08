@@ -46,5 +46,11 @@ MRuby::Build.new('example') do |conf|
   conf.cc.defines  << 'WM_EXAMPLES'
   conf.cxx.defines << 'WM_EXAMPLES'
 
+  # mruby-fast-json is a dependency of this gem, and it stops the build
+  # if MRB_UTF8_STRING is not set. The define changes what String#length
+  # and String#[] count, so every config here sets it.
+  conf.cc.defines  << 'MRB_UTF8_STRING'
+  conf.cxx.defines << 'MRB_UTF8_STRING'
+
   conf.gem File.expand_path(File.dirname(__FILE__))
 end
