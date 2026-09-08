@@ -2502,6 +2502,11 @@ struct ReqView {
   // 413) and it dies with the dispatch. Null = no content arrived.
   const char* content = nullptr;
   size_t content_len = 0;
+  // RFC 9110 6.4: a body of kBodySpill or more is in a file, not in the
+  // connection's buffer, so `content` is null and this names it instead.
+  // -1 says the body is where `content` points. content_len is the
+  // length either way.
+  int content_fd = -1;
 };
 
 // RFC 9110 5.3: every line of one field, joined with `sep`, in the

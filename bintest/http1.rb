@@ -166,6 +166,76 @@ assert('h1: HTTP/1.0 closes by default, persists only when asked (RFC 9112 C.2.2
   end
 end
 
+# RFC 9110 6.4: a body of 256 KiB or more does not stay in the
+# connection's buffer - it goes to a file, and request.body reads that
+# file. A resource cannot tell which half it got: both answer read,
+# size, seek and the rest.
+assert('h1: a large body is a File, a small one is a StringIO') do
+  src = <<~RUBY
+    class Upload < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        b = request.body
+        bytes = b.read
+        response.body = [
+          b.class.to_s, b.size.to_s, bytes.bytesize.to_s,
+          bytes[0, 4], bytes[-4, 4], b.eof?.to_s,
+        ].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.add_route [:*], Upload
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-spill') do |sock|
+    # One byte under the threshold stays in memory.
+    small = 'ab' + ('s' * ((256 * 1024) - 5)) + 'yz'
+    # And one megabyte goes to a file.
+    big = 'AB' + ('L' * ((1024 * 1024) - 4)) + 'YZ'
+    [[small, 'StringIO'], [big, 'File']].each do |(payload, want)|
+      UNIXSocket.open(sock) do |s|
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{payload.bytesize}\r\n\r\n")
+        # In pieces, so the body arrives over several reads and the
+        # spill has to take them one at a time.
+        payload.scan(/.{1,65536}/m).each { |chunk| s.write(chunk) }
+        _, body = wm_read(s)
+        got = body.split('|')
+        assert_equal want, got[0]
+        assert_equal payload.bytesize.to_s, got[1]
+        assert_equal payload.bytesize.to_s, got[2]
+        assert_equal payload[0, 4], got[3]
+        assert_equal payload[-4, 4], got[4]
+        assert_equal 'true', got[5]
+      end
+    end
+
+    # Three large bodies on one connection. Each round gives its file
+    # back before the next head is parsed, so the descriptors do not
+    # pile up and no round reads the one before it.
+    UNIXSocket.open(sock) do |s|
+      3.times do |i|
+        payload = i.to_s + ('R' * ((512 * 1024) - 2)) + i.to_s
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{payload.bytesize}\r\n\r\n")
+        s.write(payload)
+        _, body = wm_read(s)
+        got = body.split('|')
+        assert_equal 'File', got[0]
+        assert_equal payload.bytesize.to_s, got[1]
+        assert_equal payload[0, 4], got[3], "round #{i} read the wrong body"
+        assert_equal payload[-4, 4], got[4], "round #{i} read the wrong body"
+      end
+    end
+  end
+end
+
 # RFC 9110 15.5.14: conf.max_body is what this application accepts, and
 # the refusal reads the declared Content-Length - no body is read for it.
 # The default is 1 MiB, which the refusals test above stands on.

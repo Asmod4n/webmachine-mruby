@@ -4,6 +4,11 @@
 
 #include <picohttpparser.h>
 
+/* RFC 9110 6.4: a request body of kBodySpill or more goes to a file
+ * rather than into the connection's buffer. slipstreamIO makes it, so
+ * one call answers on every platform this server builds for. */
+#include <slipstream_tmpfile.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1061,7 +1066,9 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
   rv.fields = fields.get();
   rv.spans = from.spans != nullptr ? &spans : nullptr;
   // The body too: it lies in the same buffer as the head, and the run
-  // reads request.body after it resumes.
+  // reads request.body after it resumes. A body in a file needs none of
+  // this - rv = from carried its descriptor, and the file outlives every
+  // buffer the kernel takes back.
   if (from.content != nullptr && from.content_len != 0) {
     content.assign(from.content, from.content_len);
     rv.content = content.data();
@@ -1145,8 +1152,16 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   rv.field_count = num_headers;
   rv.values = &vals;
   if (r.content_length != 0) {
-    rv.content = view + off + head_len;
-    rv.content_len = r.content_length;
+    if (st.spill_fd >= 0) {
+      // RFC 9110 6.4: this body is a file. request.body reads it from
+      // offset 0, and spill_written is how far the octets go.
+      rv.content_fd = st.spill_fd;
+      rv.content_len = st.spill_written;
+      st.spill_bound = true;
+    } else {
+      rv.content = view + off + head_len;
+      rv.content_len = r.content_length;
+    }
   }
   prep.accept_gzip = !facts.has_accept_encoding ||
                 http::gzip_acceptable(vals.accept_encoding, vals.accept_encoding_len);
@@ -1734,12 +1749,22 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   // body is here - the run reads the body, so it cannot answer before the
   // last byte. Nothing is parsed again until body_need is paid off.
   if (mrb_unlikely(st.content_need != 0)) {
-    if (len < st.content_need) {
+    const size_t take = len < st.content_need ? len : st.content_need;
+    if (st.spill_fd >= 0) {
+      // RFC 9110 6.4: this body is a file. Only the head waits in the
+      // carry, so the octets go straight through.
+      if (mrb_unlikely(!st.spill_take(data, take))) return false;
+      st.content_need -= take;
+      if (st.content_need != 0) return true;
+      data += take;
+      len -= take;
+    } else if (len < st.content_need) {
       st.content_need -= len;
       st.carry.append(data, len);
       return true;
+    } else {
+      st.content_need = 0;
     }
-    st.content_need = 0;
   }
 
   if (mrb_unlikely(st.asset != nullptr)) {
@@ -1782,6 +1807,16 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
 
   size_t off = 0;
   while (off < viewlen) {
+    // RFC 9110 6.4: the body file of the request that just finished goes
+    // back here. This connection answers one request at a time - a run
+    // that parks stops this loop until it is resumed - so a new head at
+    // the top of the loop says the last body has been read for the last
+    // time.
+    //
+    // Only a file a round already took: an unbound one is this request's
+    // body still arriving, and the loop runs again for it once the last
+    // octet lands.
+    if (mrb_unlikely(st.spill_bound)) st.spill_close();
     const char* method;
     size_t method_len;
     const char* path;
@@ -1880,8 +1915,42 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       idx = &b->index;
       if (mrb_likely(b->bound)) {
         const size_t head_len = static_cast<size_t>(ret);
-        if (w.content_length != 0 && viewlen - off - head_len < w.content_length) {
-          st.content_need = w.content_length - (viewlen - off - head_len);
+        const size_t body_here = viewlen - off - head_len;
+        // What is already in hand: the octets behind the head, or - once
+        // this body went to a file - what reached the file. The second
+        // re-parse of a spilled request finds an empty carry behind the
+        // head, and the body is complete all the same.
+        const size_t body_have = st.spill_fd >= 0 ? st.spill_written : body_here;
+        if (w.content_length != 0 && body_have < w.content_length) {
+          st.content_need = w.content_length - body_have;
+          // RFC 9110 6.4: a large body goes to a file, so the connection
+          // holds the head and not the upload. The length is declared -
+          // this server refuses a chunked request body - so the choice
+          // is made once, here, and never part way through.
+          if (w.content_length >= kBodySpill && st.spill_fd < 0) {
+            st.spill_fd = slipstream_tmpfile(nullptr);
+            if (mrb_unlikely(st.spill_fd < 0)) {
+              st.spill_fd = -1;
+              return fail(st, 500, sink, lflags);
+            }
+            if (mrb_unlikely(!st.spill_take(view + off + head_len, body_here))) {
+              st.spill_close();
+              return fail(st, 500, sink, lflags);
+            }
+            // Only the head waits in the carry now. The body that
+            // already arrived is in the file, and the rest goes there
+            // as it comes.
+            if (in_place) {
+              st.carry.assign(view + off, head_len);
+            } else {
+              // The front goes first and the tail second: erase(0, off)
+              // drops what came before this request, and only then is
+              // head_len an index into this request's own head.
+              st.carry.erase(0, off);
+              st.carry.erase(head_len);
+            }
+            return true;
+          }
           const size_t rest = viewlen - off;
           if (in_place) st.carry.assign(view + off, rest);
           else st.carry.erase(0, off);
@@ -1972,7 +2041,11 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     }
 
     off += static_cast<size_t>(ret);
-    if (w.content_length != 0) {
+    // RFC 9110 6.4: step over the body this round did not read. A body
+    // that went to a file is already off the wire and out of the buffer,
+    // so there is nothing here to step over - counting it again would
+    // make the next request's head look like this request's body.
+    if (w.content_length != 0 && st.spill_fd < 0) {
       const size_t avail = viewlen - off;
       const size_t skip = w.content_length < avail ? w.content_length : avail;
       off += skip;

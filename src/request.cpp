@@ -223,12 +223,32 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
 //: () -> (StringIO | NilClass)
 mrb_value req_body(mrb_state* mrb, mrb_value) {
   const ReqView* v = request_being_answered(mrb);
-  if (v->content == nullptr) return mrb_nil_value();
+  if (v->content == nullptr && v->content_fd < 0) return mrb_nil_value();
   if (!mrb_nil_p(body_io_)) return body_io_;
 
-  struct RClass* const sio = mrb_class_get_id(mrb, MRB_SYM(StringIO));
-  const mrb_value bytes = mrb_str_new(mrb, v->content, v->content_len);
-  const mrb_value io = mrb_obj_new(mrb, sio, 1, &bytes);
+  mrb_value io;
+  if (v->content_fd >= 0) {
+    // RFC 9110 6.4: a large body is a file, and the resource reads it
+    // like any other. The descriptor is duplicated first: the connection
+    // owns the one it wrote, and a File that closes with the run must
+    // not take it. The copy starts at the first octet, because the write
+    // left the connection's own offset at the last.
+    const int fd = ::dup(v->content_fd);
+    if (mrb_unlikely(fd < 0)) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "request.body cannot be opened for reading");
+    }
+    if (mrb_unlikely(::lseek(fd, 0, SEEK_SET) != 0)) {
+      ::close(fd);
+      mrb_raise(mrb, E_RUNTIME_ERROR, "request.body cannot be rewound");
+    }
+    mrb_value argv[2] = {mrb_int_value(mrb, fd), mrb_str_new_lit(mrb, "r")};
+    io = mrb_funcall_argv(mrb, mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(File))),
+                          MRB_SYM(for_fd), 2, argv);
+  } else {
+    struct RClass* const sio = mrb_class_get_id(mrb, MRB_SYM(StringIO));
+    const mrb_value bytes = mrb_str_new(mrb, v->content, v->content_len);
+    io = mrb_obj_new(mrb, sio, 1, &bytes);
+  }
   mrb_gc_register(mrb, io);
   body_io_ = io;
   body_io_mrb_ = mrb;

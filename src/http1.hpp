@@ -727,6 +727,17 @@ struct AssetEntry;
 // operator's own tree can never collide with it.
 inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
+// RFC 9110 6.4: from this size up a request body goes to a file rather
+// than into the connection's carry. Under it the bytes stay where the
+// parser left them, and request.body is a StringIO over a copy.
+//
+// The number is one response window (kResponseFileWindow), which is what
+// this server already calls "more than one read of a file". Below it a
+// body is one allocation the connection reuses; above it the connection
+// would hold every byte of every upload at once, and one client decides
+// how many that is.
+inline constexpr size_t kBodySpill = 256u * 1024;
+
 inline constexpr size_t kMaxHeaders = 64;
 static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
 inline constexpr size_t kCompressFloor = 1280;
@@ -946,6 +957,20 @@ class Http1 {
     // the bytes themselves collect in `carry` behind the head, which
     // keeps the hand-off zero-copy. A konst route keeps skipping.
     size_t content_need = 0;
+    // RFC 9110 6.4: a body of kBodySpill or more, in a file instead.
+    // slipstream_tmpfile made it, so it has no name: nothing to clean up
+    // and nothing another process can open. -1 says this request's body
+    // is in the carry, which is every request under the threshold.
+    //
+    // spill_written counts what reached the file. It is the body's whole
+    // length once content_need reaches 0, and request.body reads that
+    // many bytes from offset 0.
+    int spill_fd = -1;
+    size_t spill_written = 0;
+    // Whether a round has taken the file into its request view. Until it
+    // has, the file is this request's body still arriving, and closing it
+    // would throw away what the run is about to read.
+    bool spill_bound = false;
     // No RFC: a half-open span into the wire body of an asset (see
     // Assets::wire_iov), not into the file - a gzip member's octets are
     // not the stored ones.
@@ -1206,6 +1231,35 @@ class Http1 {
     // The address space goes back. Called from zc_release once the round
     // that borrowed the mapping has drained, and unconditionally when the
     // connection itself ends - a mapping nobody borrowed still has to go.
+    // RFC 9110 6.4: the body file goes back. The descriptor holds the
+    // last reference to it, so closing it frees the blocks - there is no
+    // name to unlink, because slipstream_tmpfile already did.
+    void spill_close() {
+      if (spill_fd < 0) return;
+      ::close(spill_fd);
+      spill_fd = -1;
+      spill_written = 0;
+      spill_bound = false;
+    }
+    // RFC 9110 6.4: take body octets, wherever this body lives. One
+    // function for both protocols: h1 calls it from feed, h2 from the
+    // DATA frame, and neither has to know which half is in use.
+    //
+    // Answers false when the file refuses the bytes, which is a 500 -
+    // the request cannot be answered without its body.
+    bool spill_take(const char* p, size_t n) {
+      while (n != 0) {
+        const ssize_t w = ::write(spill_fd, p, n);
+        if (w <= 0) {
+          if (w < 0 && errno == EINTR) continue;
+          return false;
+        }
+        p += static_cast<size_t>(w);
+        n -= static_cast<size_t>(w);
+        spill_written += static_cast<size_t>(w);
+      }
+      return true;
+    }
     void map_release() {
       if (file == nullptr || file->map_addr == nullptr) return;
       ::munmap(const_cast<char*>(file->map_addr), file->map_length);
@@ -1308,6 +1362,7 @@ class Http1 {
       carry.clear();
       content_skip = 0;
       content_need = 0;
+      spill_close();
       listener = li;
       packetized = pkt;
       fresh = true;
