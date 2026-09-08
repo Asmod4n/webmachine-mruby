@@ -77,6 +77,7 @@ enum class Setting : uint8_t {
   kFileMapThreshold,
   kZeroCopyThreshold,
   kDisableHttpCats,
+  kMaxBody,
   kUnknown,
 };
 
@@ -88,6 +89,7 @@ Setting setting_for(std::string_view k) {
   if (k == "file_map_threshold") return Setting::kFileMapThreshold;
   if (k == "zero_copy_threshold") return Setting::kZeroCopyThreshold;
   if (k == "disable_http_cats") return Setting::kDisableHttpCats;
+  if (k == "max_body") return Setting::kMaxBody;
   return Setting::kUnknown;
 }
 
@@ -122,8 +124,8 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
   if (what == Setting::kUnknown) {
     mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                "conf.url: %s is not a setting - a URL may name docroot, assets, certificate, "
-               "private_key, file_map_threshold, zero_copy_threshold or "
-               "disable_http_cats, and routes stay in Ruby",
+               "private_key, file_map_threshold, zero_copy_threshold, "
+               "disable_http_cats or max_body, and routes stay in Ruby",
                std::string(key).c_str());
   }
   long long n = 0;
@@ -178,6 +180,17 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
         mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: zero_copy_threshold was already named");
       }
       s->zero_copy_threshold = n;
+      return;
+    case Setting::kMaxBody:
+      if (!whole_number(val, &n) || n > static_cast<long long>(kMaxBodyMax)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                   "conf.url: max_body = %s is outside 0..%i bytes",
+                   std::string(val).c_str(), static_cast<mrb_int>(kMaxBodyMax));
+      }
+      if (s->max_body >= 0) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: max_body was already named");
+      }
+      s->max_body = n;
       return;
     case Setting::kDisableHttpCats:
       if (!whole_flag(val, &flag)) {
@@ -314,6 +327,7 @@ enum ConfIdx {
   kConfFileMapThreshold,
   kConfZeroCopyThreshold,
   kConfDisableHttpCats,
+  kConfMaxBody,
   kConfMax,
 };
 
@@ -413,6 +427,13 @@ void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
       mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: zero_copy_threshold was already named");
     }
     s->zero_copy_threshold = n;
+  }
+  if (conf_int(mrb, conf, kConfMaxBody, "max_body",
+               static_cast<mrb_int>(kMaxBodyMax), " bytes", &n)) {
+    if (s->max_body >= 0) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: max_body was already named");
+    }
+    s->max_body = n;
   }
   const mrb_value cats = mrb_ary_entry(conf, kConfDisableHttpCats);
   if (!mrb_nil_p(cats)) {
@@ -684,6 +705,8 @@ void application_init(mrb_state* mrb, struct RClass* wm) {
   mrb_define_const_id(mrb, wm, MRB_SYM(PORT_MAX), mrb_fixnum_value(65535));
   mrb_define_const_id(mrb, wm, MRB_SYM(FILE_MAP_MAX),
                       mrb_fixnum_value(static_cast<mrb_int>(kFileMapMax)));
+  mrb_define_const_id(mrb, wm, MRB_SYM(MAX_BODY_MAX),
+                      mrb_fixnum_value(static_cast<mrb_int>(kMaxBodyMax)));
   mrb_define_const_id(mrb, wm, MRB_SYM(ZERO_COPY_MAX),
                       mrb_fixnum_value(static_cast<mrb_int>(kZeroCopyMax)));
 

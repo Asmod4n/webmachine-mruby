@@ -727,7 +727,6 @@ struct AssetEntry;
 // operator's own tree can never collide with it.
 inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
-inline constexpr size_t kMaxBody = 1u << 20;
 inline constexpr size_t kMaxHeaders = 64;
 static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
 inline constexpr size_t kCompressFloor = 1280;
@@ -1361,6 +1360,9 @@ class Http1 {
     const SseResource* const* sse_resources = nullptr;
     size_t sse_nroutes = 0;
     bool tls = false;
+    // RFC 9110 15.5.14: conf.max_body, in octets. What this application
+    // accepts as a request body before it answers 413.
+    size_t max_body = kMaxBodyDefault;
   };
 
   Http1(const AppInput* apps, size_t napps, Assets* assets = nullptr);
@@ -2633,6 +2635,8 @@ class Http1 {
     uint16_t sse_base = 0;
     // The listener serves TLS: request.base_uri says https.
     bool tls = false;
+    // RFC 9110 15.5.14: conf.max_body, in octets.
+    size_t max_body = kMaxBodyDefault;
   };
 
   time_t sec_ = 0;

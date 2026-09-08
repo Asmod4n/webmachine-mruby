@@ -25,8 +25,9 @@ WORKDIR /src
 COPY . .
 
 # Not -march=native: this binary leaves the machine that built it. See
-# build_config.rb - x86-64-v3 is AVX2 and later, the usual fleet floor.
-# Override at build time for a different baseline.
+# build_config_host.rb, which reads WM_MARCH for exactly this case -
+# x86-64-v3 is AVX2 and later, the usual fleet floor. Override at build
+# time for a different baseline.
 ARG WM_MARCH=x86-64-v3
 ENV WM_MARCH=${WM_MARCH}
 # The context carries no .git (see .containerignore), so the submodule

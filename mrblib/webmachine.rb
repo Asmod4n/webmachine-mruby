@@ -58,7 +58,7 @@ module Webmachine
   # Ruby code; nothing a URL or a config file says can reach them.
   class Config < Struct.new(:port, :unix_path, :url, :docroot, :assets, :certificate,
                             :private_key, :file_map_threshold, :zero_copy_threshold,
-                            :disable_http_cats)
+                            :disable_http_cats, :max_body)
     # A refusal belongs where it was caused. bintest calls this "catchable
     # by class, not by luck": an app may write
     #
@@ -72,9 +72,9 @@ module Webmachine
     # again on the way out - Struct#[]= reaches a member without passing
     # a writer, so this is not the last word on any of it.
     #
-    # The numbers are not written down here: PORT_MAX, FILE_MAP_MAX and
-    # ZERO_COPY_MAX come from application.cpp, which is where the code
-    # that honours them lives.
+    # The numbers are not written down here: PORT_MAX, FILE_MAP_MAX,
+    # ZERO_COPY_MAX and MAX_BODY_MAX come from application.cpp, which is
+    # where the code that honours them lives.
     #: (Integer) -> Integer
     def port=(v)
       Config.check_whole_number(v, PORT_MAX, 'port', '')
@@ -85,6 +85,16 @@ module Webmachine
     def file_map_threshold=(v)
       Config.check_whole_number(v, FILE_MAP_MAX, 'file_map_threshold', ' bytes')
       self[:file_map_threshold] = v
+    end
+
+    # RFC 9110 15.5.14: what this application accepts as a request body,
+    # in octets. A larger declared Content-Length gets 413 before one
+    # byte of the body is read. The default is 1 MiB, which is what
+    # nginx's client_max_body_size defaults to.
+    #: (Integer) -> Integer
+    def max_body=(v)
+      Config.check_whole_number(v, MAX_BODY_MAX, 'max_body', ' bytes')
+      self[:max_body] = v
     end
 
     #: (Integer) -> Integer

@@ -388,7 +388,10 @@ void build(mrb_state* mrb) {
                                 &specs_[i]->sse_table,
                                 sse_resources_[i].data(),
                                 sse_resources_[i].size(),
-                                specs_[i]->tls};
+                                specs_[i]->tls,
+                                specs_[i]->max_body >= 0
+                                    ? static_cast<size_t>(specs_[i]->max_body)
+                                    : kMaxBodyDefault};
   }
   http_.reset(new Http1(inputs.data(), inputs.size(),
                         assets_path != nullptr ? &assets_ : nullptr));

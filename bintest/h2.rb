@@ -114,7 +114,7 @@ assert('h2: PING echoes, unknown frame types are ignored, oversize dies with GOA
 end
 
 assert('h2: a resource answers typed bodies, HEAD sends no DATA, POST is 405') do
-  h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
+  h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       s.write(h2_frame(1, 0x05, 1, h2_get_block))
@@ -217,7 +217,7 @@ assert('h2: a request body is counted, credited and discarded; END_STREAM dispat
 end
 
 assert('h2: an exhausted window parks DATA, WINDOW_UPDATE drains it (9113 6.9)') do
-  h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
+  h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
       t, f, = h2_next(s)
@@ -242,7 +242,7 @@ assert('h2: an exhausted window parks DATA, WINDOW_UPDATE drains it (9113 6.9)')
 end
 
 assert('h2: a drained stream is debited for what it already sent (9113 6.9.1)') do
-  h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
+  h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
     UNIXSocket.open(sock) do |s|
       s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, [4, 20].pack('nN')))
       t, f, = h2_next(s)
@@ -308,7 +308,7 @@ end
 
 if `curl --version 2>/dev/null`.include?('HTTP2')
   assert('h2: curl --http2-prior-knowledge round-trips against the same listener') do
-    h2_server(File.read(File.expand_path('../bench/apps/hello.rb', __dir__))) do |sock|
+    h2_server(File.read(File.expand_path('../examples/hello.rb', __dir__))) do |sock|
       body = `curl -sS --max-time 10 --http2-prior-knowledge --unix-socket #{sock} http://localhost/`
       assert_equal '<html><body>Hello, World!</body></html>', body
     end
@@ -1237,7 +1237,7 @@ assert('h2: a refused DATA frame is credited on the connection (RFC 9113 6.9)') 
       rescue StandardError
         nil
       end
-      # One frame past kMaxBody (1 MiB): the last one is refused.
+      # One frame past conf.max_body (1 MiB by default): the last one is refused.
       chunk = 16_384
       sent = 0
       s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))

@@ -166,6 +166,31 @@ assert('h1: HTTP/1.0 closes by default, persists only when asked (RFC 9112 C.2.2
   end
 end
 
+# RFC 9110 15.5.14: conf.max_body is what this application accepts, and
+# the refusal reads the declared Content-Length - no body is read for it.
+# The default is 1 MiB, which the refusals test above stands on.
+assert('h1: conf.max_body is what an application accepts, and 413 is per app') do
+  app = H1_APP.sub("Webmachine::Application.new do |app|\n",
+                   "Webmachine::Application.new do |app|\n      app.conf.max_body = 8\n")
+  wm_server(app, tag: 'wm-maxbody') do |sock, _|
+    checks = [
+      # 405, not 413: the body fits, so the flow runs and refuses the
+      # method instead. Floor names no process_post.
+      ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n12345678", '405'],
+      ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 9\r\n\r\n123456789", '413'],
+      # Declared but never sent: the refusal comes from the field alone.
+      ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1048576\r\n\r\n", '413'],
+    ]
+    checks.each do |(wire, code)|
+      UNIXSocket.open(sock) do |s|
+        s.write(wire)
+        head, = wm_read(s)
+        assert_true head.start_with?("HTTP/1.1 #{code}"), "expected #{code}, got: #{head.lines.first}"
+      end
+    end
+  end
+end
+
 assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body, 411 chunked') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
     checks = [

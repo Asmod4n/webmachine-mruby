@@ -191,6 +191,11 @@ An application names its own listener, in its conf: `app.conf.port`,
 applications, each on its own. `--unix` and `--port` are a standalone
 server's, which has no app to name one.
 
+An application says what it accepts as a request body with
+`app.conf.max_body`, in octets. The default is 1 MiB, which is what
+nginx's `client_max_body_size` defaults to. A larger declared
+`Content-Length` gets 413 before one byte of the body is read.
+
 A pack is a zip of your site's files, built once with
 `rake pack[DIR,OUT.zip]`. The server maps the archive and answers every
 file in it from memory, with its ETag and its compressed form ready.

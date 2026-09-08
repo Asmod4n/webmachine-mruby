@@ -42,7 +42,7 @@ MRBC=mruby/build/libfuzzer/bin/mrbc
 mkdir -p build/fuzz
 if [ -z "${WM_FUZZ_APP:-}" ]; then
   WM_FUZZ_APP=build/fuzz/hello.mrb
-  [ "$WM_FUZZ_APP" -nt bench/apps/hello.rb ] || "$MRBC" -o "$WM_FUZZ_APP" bench/apps/hello.rb
+  [ "$WM_FUZZ_APP" -nt examples/hello.rb ] || "$MRBC" -o "$WM_FUZZ_APP" examples/hello.rb
 fi
 export WM_FUZZ_APP
 

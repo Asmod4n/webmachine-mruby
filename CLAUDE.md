@@ -95,8 +95,13 @@ Only the debug config is built while developing:
     MRUBY_CONFIG=build_config_debug.rb rake compile
     MRUBY_CONFIG=build_config_debug.rb rake test
 
-`portable_smoke` failing at the end of a debug `rake test` is expected -
-there is no portable binary. Nothing else may fail.
+Nothing in that run may fail.
+
+The release build has to work as well, always. `rake test` never
+touches it: the suite is the debug build's, and a debug run cannot
+answer for a binary it never made. `rake ship_smoke` is what does -
+it builds the host config and checks that the binary starts and
+answers 200. CI runs it on every push, beside the suite.
 
 ## Kill a process by its pid, never by a pattern
 

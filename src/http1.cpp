@@ -398,6 +398,7 @@ void Http1::build(const AppInput* apps, size_t napps) {
     apps_[a].sse_table = apps[a].sse_nroutes != 0 ? apps[a].sse_table : nullptr;
     apps_[a].sse_base = static_cast<uint16_t>(sse_at);
     apps_[a].tls = apps[a].tls;
+    apps_[a].max_body = apps[a].max_body;
     for (size_t i = 0; i < apps[a].sse_nroutes; i++) {
       sse_res_.push_back(apps[a].sse_resources[i]);
     }
@@ -1815,7 +1816,9 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     if (mrb_unlikely(w.err != 0)) return fail(st, w.err, sink, lflags);
     if (mrb_unlikely(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
     if (mrb_unlikely(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
-    if (mrb_unlikely(w.content_length > kMaxBody)) return fail(st, 413, sink, lflags);
+    if (mrb_unlikely(w.content_length > apps_[st.listener].max_body)) {
+      return fail(st, 413, sink, lflags);
+    }
 
     const bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;

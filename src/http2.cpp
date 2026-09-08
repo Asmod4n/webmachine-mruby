@@ -1911,7 +1911,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           }
           break;
         }
-        if (stp->content_received + dlen > kMaxBody) {
+        if (stp->content_received + dlen > apps_[st0.listener].max_body) {
           h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2RefusedStream, sink);
           break;

@@ -26,9 +26,7 @@ jobs:
         run: |
           MRUBY_CONFIG=build_config_debug.rb rake test 2>&1 | tee test.log
           test "${PIPESTATUS[0]}" -eq 0
-          # The totals are the record. portable_smoke at the end of a
-          # debug run is expected to fail (there is no portable binary);
-          # nothing else may.
+          # The totals are the record: no KO and no crash, anywhere.
           if grep -Eq '^ *(KO|Crash): [1-9]' test.log; then
             echo 'a test failed or crashed' >&2
             exit 1
@@ -42,6 +40,30 @@ jobs:
             mruby/build/debug/bin/webmachine-server
             mruby/build/debug/bin/webmachine-logd
             mruby/build/debug/bin/mrbc
+
+  # The release build, which the suite never makes: `rake test` is the
+  # debug build's, and a debug run cannot answer for a binary it never
+  # made. ship_smoke builds the host config and checks that the binary
+  # starts and answers 200. It runs beside the suite, not after it - a
+  # release build that does not compile is its own failure.
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: install what a build needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ruby git pkg-config zlib1g-dev libssl-dev
+      - name: build the host config and smoke the binary
+        # The runner is a shared machine and migrates between hosts, so
+        # -march=native would compile for one and run on another. The
+        # host config asks WM_MARCH for exactly this case.
+        env:
+          WM_MARCH: x86-64-v2
+        run: rake ship_smoke
 
   # The external oracles, against the debug binary the suite job made:
   # h2spec for RFC 9113 and RFC 7541, the Autobahn fuzzingclient for

@@ -36,7 +36,7 @@ if [ -z "$APP" ]; then
   [ -x "$MRBC" ] || MRBC=mruby/bin/mrbc
   APP=build/fuzz/hello.mrb
   mkdir -p build/fuzz
-  [ "$APP" -nt bench/apps/hello.rb ] || "$MRBC" -o "$APP" bench/apps/hello.rb
+  [ "$APP" -nt examples/hello.rb ] || "$MRBC" -o "$APP" examples/hello.rb
 fi
 export WM_FUZZ_APP="$APP"
 

@@ -3575,6 +3575,17 @@ inline constexpr size_t kFileMapDefault = kResponseFileWindow;
 // an mrb_int on a 32-bit-integer build or the range check refuses everything.
 inline constexpr size_t kFileMapMax = 1u << 30;
 
+// RFC 9110 15.5.14: what an application accepts as a request body, in
+// octets. A larger declared Content-Length gets 413 before one byte of
+// the body is read.
+//
+// 1 MiB is what nginx's client_max_body_size defaults to, and Tomcat's
+// maxPostSize is 2 MiB. An operator who serves uploads raises it. The
+// ceiling is the one kZeroCopyMax and kFileMapMax carry, for the same
+// reason: it has to fit an mrb_int on a 32-bit-integer build.
+inline constexpr size_t kMaxBodyDefault = 1u << 20;
+inline constexpr size_t kMaxBodyMax = 1u << 30;
+
 // The WebSocket and event-stream resources are the connection layer's
 // (http1.hpp). An application folds them and holds them, through these.
 struct WsResource;
@@ -3618,6 +3629,8 @@ struct AppSpec {
   long long zero_copy_threshold = -1;
   // conf.file_map_threshold = N; -1 = this app said nothing.
   long long file_map_threshold = -1;
+  // conf.max_body = N; -1 = this app said nothing, so kMaxBodyDefault.
+  long long max_body = -1;
   // conf.docroot = PATH; empty = this app said nothing. The docroot is
   // one anchor for the process, so the first app that names one decides.
   std::string docroot;
