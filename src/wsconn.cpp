@@ -150,8 +150,6 @@ struct WsResource {
   mrb_state* mrb = nullptr;
   struct RClass* klass = nullptr;
   bool have_close = false;
-  int data_argc = 1;
-  int close_argc = 0;
   size_t max_message = kMaxWsMessageDefault;
   bool validate_text = true;
   bool want_deflate = false;
@@ -231,20 +229,22 @@ struct Method {
   mrb_sym sym;
 };
 
-bool method_argc(mrb_state* mrb, Method want, int most, int* out_argc) {
+// The callbacks of a websocket resource have one shape each: on_data
+// takes the message and whether it is binary, on_close takes the code and
+// the reason. A resource that declares fewer parameters cannot receive
+// what it is sent, so the route refuses it here, at fold time, rather
+// than raising ArgumentError at the first frame. A method written in C
+// declares its own aspec and is taken as it is.
+bool method_arity_ok(mrb_state* mrb, Method want, int argc, bool* found) {
   struct RClass* owner = want.klass;
   mrb_method_t m = mrb_method_search_vm(mrb, &owner, want.sym);
-  if (MRB_METHOD_UNDEF_P(m)) return false;
-  int a = most;
-  if (!MRB_METHOD_FUNC_P(m)) {
-    const struct RProc* pr = MRB_METHOD_PROC(m);
-    if (pr != nullptr) {
-      const mrb_int ar = mrb_proc_arity(pr);
-      if (ar >= 0) a = static_cast<int>(ar) < most ? static_cast<int>(ar) : most;
-    }
-  }
-  *out_argc = a;
-  return true;
+  *found = !MRB_METHOD_UNDEF_P(m);
+  if (!*found) return true;
+  if (MRB_METHOD_FUNC_P(m)) return true;
+  const struct RProc* pr = MRB_METHOD_PROC(m);
+  if (pr == nullptr) return true;
+  const mrb_int ar = mrb_proc_arity(pr);
+  return ar < 0 || ar == argc;  /* an optional or rest parameter answers -1 */
 }
 
 // RFC 7692 7.2.2: inflated bytes onto the message being assembled, up to
@@ -348,7 +348,7 @@ void report_close(WsConn* c, ws::Close close) {
   mrb_value argv[2];
   argv[0] = mrb_fixnum_value(code);
   argv[1] = mrb_str_new(mrb, reason == nullptr ? "" : reason, reason_len);
-  mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), c->res->close_argc, argv);
+  mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), 2, argv);
   if (mrb->exc != nullptr) {
     report_raise(c->elog, mrb, 0);
   }
@@ -372,7 +372,7 @@ bool deliver(WsConn* c, std::string& sink) {
   mrb_value argv[2];
   argv[0] = c->msg;
   argv[1] = mrb_bool_value(binary);
-  const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), r->data_argc, argv);
+  const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), 2, argv);
   drop_msg(c);
   if (mrb->exc != nullptr) {
     report_raise(c->elog, mrb, 0);
@@ -621,13 +621,22 @@ void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out) {
   out.mrb = mrb;
   out.klass = mrb_class_ptr(klass);
 
-  if (!method_argc(mrb, {out.klass, MRB_SYM(on_data)}, 2, &out.data_argc)) {
+  bool found = false;
+  if (!method_arity_ok(mrb, {out.klass, MRB_SYM(on_data)}, 2, &found)) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "route.websocket: on_data takes the message and whether it is binary - "
+              "def on_data(data, binary)");
+  }
+  if (!found) {
     mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
               "route.websocket: the resource defines no on_data - that is the one method a "
-              "websocket resource is (on_data(data) or on_data(data, binary))");
+              "websocket resource is (on_data(data, binary))");
   }
-  out.have_close =
-      method_argc(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.close_argc);
+  if (!method_arity_ok(mrb, {out.klass, MRB_SYM(on_close)}, 2, &out.have_close)) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "route.websocket: on_close takes the code and the reason - "
+              "def on_close(code, reason)");
+  }
 
   {
     struct RClass* meta = mrb_class(mrb, klass);

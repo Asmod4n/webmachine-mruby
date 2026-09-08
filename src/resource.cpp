@@ -20,16 +20,16 @@
 #include <vector>
 
 
-// mrb_exc_backtrace and mrb_proc_arity live in mruby's internal header,
-// which a gem may use - a gem is compiled together with mruby, so there
-// is no ABI boundary here of the kind an outside consumer would face.
+// mrb_proc_arity lives in mruby's internal header, which a gem may use -
+// a gem is compiled together with mruby, so there is no ABI boundary here
+// of the kind an outside consumer would face.
 //
 // What a gem may not do is copy the declarations out. A hand-written
 // `extern "C" mrb_int mrb_proc_arity(const struct RProc*)` is a private
 // second opinion about a signature nobody promised to keep: mruby is
-// cloned fresh from master by the Rakefile, and if one of these changes
-// shape, a copied declaration still compiles, still links, and calls
-// with the wrong signature - corruption with no diagnostic anywhere.
+// cloned fresh from master by the Rakefile, and if it changes shape, a
+// copied declaration still compiles, still links, and calls with the
+// wrong signature - corruption with no diagnostic anywhere.
 // Including the header means the compiler checks, and a change upstream
 // stops the build instead of the server.
 //
@@ -2703,9 +2703,19 @@ void exception_facts(mrb_state* mrb, Raised out) {
     f.message = RSTRING_PTR(mesg);
     f.message_len = static_cast<size_t>(RSTRING_LEN(mesg));
   }
+  // Exception#backtrace answers the array; mrb_exc_backtrace is the same
+  // function under its Ruby name. A call does not run with a raise
+  // pending, so the exception moves out of mrb->exc for the length of it
+  // and goes back afterwards: it is still the caller's to report. The
+  // protect is because clearing mrb->exc unroots it.
   const int ai = mrb_gc_arena_save(mrb);
-  const mrb_value bt = mrb_exc_backtrace(mrb, exc);
-  if (mrb_array_p(bt)) {
+  struct RObject* const pending = mrb->exc;
+  mrb->exc = nullptr;
+  mrb_gc_protect(mrb, exc);
+  const mrb_value bt = mrb_funcall_argv(mrb, exc, MRB_SYM(backtrace), 0, nullptr);
+  const bool answered = mrb->exc == nullptr;
+  mrb->exc = pending;
+  if (answered && mrb_array_p(bt)) {
     const mrb_int n = RARRAY_LEN(bt);
     for (mrb_int i = 0; i < n; i++) {
       const mrb_value f = RARRAY_PTR(bt)[i];
