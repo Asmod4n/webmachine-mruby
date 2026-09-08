@@ -52,37 +52,27 @@ BIN=mruby/build/host/bin/webmachine-server
 . "$(dirname "$0")/priority.sh"
 bench_priority
 . "$(dirname "$0")/htgen.sh"
+. "$(dirname "$0")/_app.sh"
 HTGEN=$(bench_htgen) || exit 1
 
-# The server loads bytecode only (#100). A .rb APP is compiled here
-# with the tree's own mrbc into a scratch .mrb; the harness line keeps
-# naming the .rb source. An .mrb APP (or none) passes through as-is.
 # Everything this run writes lives here: the compiled app, the socket
 # and the server's stderr. A fixed name under /tmp is a name somebody
 # else's run - or somebody else's user - already owns.
 WORK=$(mktemp -d)
 
-APP_ARGS=()
-if [ -n "${APP:-}" ]; then
-  case "$APP" in
-    *.rb)
-      MRBC="${MRBC:-mruby/bin/mrbc}"
-      [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB="$WORK/app.mrb"
-      "$MRBC" -o "$APP_MRB" "$APP" || exit 1
-      APP_ARGS=(--app="$APP_MRB")
-      ;;
-    *) APP_ARGS=(--app="$APP") ;;
-  esac
-fi
-
 SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
+  bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
+  BIND_ARGS=(--unix="$SOCK")
 else
-  "$BIN" --port="$PORT" "${APP_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
+  bench_app "$WORK" "{ port: $PORT }"
+  BIND_ARGS=(--port="$PORT")
 fi
+# An app names its own listener, and the server refuses a second one on
+# the command line. bench_app wrote the one above into the app source.
+[ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
+"$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }

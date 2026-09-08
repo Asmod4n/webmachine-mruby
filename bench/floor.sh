@@ -91,6 +91,7 @@ PIPELINE="${PIPELINE:-1}"
 . "$(dirname "$0")/priority.sh"
 bench_priority
 . "$(dirname "$0")/htgen.sh"
+. "$(dirname "$0")/_app.sh"
 HTGEN=$(bench_htgen) || exit 1
 [ -z "${CLIENT:-}" ] || {
   echo "CLIENT= is gone: htgen is the only generator this tree measures with." >&2
@@ -144,25 +145,9 @@ parse_child_cpu() {
                printf "%.2f %.2f", u[1]*60 + u[2], sy[1]*60 + sy[2] }' "$WORK/.times"
 }
 
-# The server loads bytecode only (#100). A .rb APP is compiled here
-# with the tree's own mrbc into a scratch .mrb; the harness line keeps
-# naming the .rb source. An .mrb APP (or none) passes through as-is.
 LOG="${LOG:-0}"
 LOG_ARGS=()
 [ "$LOG" = 1 ] && LOG_ARGS=(--log="$WORK/access.log")
-APP_ARGS=()
-if [ -n "${APP:-}" ]; then
-  case "$APP" in
-    *.rb)
-      MRBC="${MRBC:-mruby/bin/mrbc}"
-      [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB="$WORK/app.mrb"
-      "$MRBC" -o "$APP_MRB" "$APP" || exit 1
-      APP_ARGS=(--app="$APP_MRB")
-      ;;
-    *) APP_ARGS=(--app="$APP") ;;
-  esac
-fi
 
 # BROWSER=1 sends what a browser sends. It is not decoration: Accept,
 # Accept-Encoding and Accept-Language are three of the eight headers
@@ -200,10 +185,16 @@ fi
 SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
-  "${SRV_PIN[@]}" "$BIN" --unix="$SOCK" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
+  bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
+  BIND_ARGS=(--unix="$SOCK")
 else
-  "${SRV_PIN[@]}" "$BIN" --port="$PORT" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
+  bench_app "$WORK" "{ port: $PORT }"
+  BIND_ARGS=(--port="$PORT")
 fi
+# An app names its own listener, and the server refuses a second one on
+# the command line. bench_app wrote the one above into the app source.
+[ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
+"${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 

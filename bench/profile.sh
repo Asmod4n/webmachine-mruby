@@ -248,32 +248,16 @@ esac
 . "$(dirname "$0")/priority.sh"
 bench_priority
 . "$(dirname "$0")/htgen.sh"
+. "$(dirname "$0")/_app.sh"
 HTGEN=$(bench_htgen) || exit 1
 [ -z "${THREADS:-}" ] || {
   echo "THREADS= is gone: both ends are one thread (#120, #196)." >&2
   exit 2
 }
 
-# The server loads bytecode only (#100). A .rb APP is compiled here
-# with the tree's own mrbc into a scratch .mrb; the harness line keeps
-# naming the .rb source. An .mrb APP (or none) passes through as-is.
 # Everything this run writes lives here. A fixed name under /tmp is a
 # name somebody else's run - or somebody else's user - already owns.
 WORK=$(mktemp -d)
-
-APP_ARGS=()
-if [ -n "${APP:-}" ]; then
-  case "$APP" in
-    *.rb)
-      MRBC="${MRBC:-mruby/bin/mrbc}"
-      [ -x "$MRBC" ] || { echo "mrbc not found at $MRBC - rake compile builds it, or set MRBC=" >&2; exit 1; }
-      APP_MRB="$WORK/app.mrb"
-      "$MRBC" -o "$APP_MRB" "$APP" || exit 1
-      APP_ARGS=(--app="$APP_MRB")
-      ;;
-    *) APP_ARGS=(--app="$APP") ;;
-  esac
-fi
 
 ASSET_ARGS=()
 # The same field, spelled for two tools: curl proves the target, htgen
@@ -323,6 +307,7 @@ fi
 OUT=bench/profile
 mkdir -p "$OUT"
 WM_SOCK="$WORK/bench.sock"
+bench_app "$WORK" "{ unix_path: \"$WM_SOCK\" }"
 echo "profiling: ${APP:-no app}${ASSETS:+ + assets $ZIP} path $REQPATH coding ${ASSETS:+$ASSET_CODING}"
 # Which binary, built with what, running on what. A profile without this
 # is a share of a machine nobody wrote down.
@@ -366,7 +351,10 @@ leg() {
   # One bind for both protocols: the client speaks h2 over AF_UNIX, so
   # there is no reason left to put the TCP stack in the profile.
   rm -f "$WM_SOCK"
+  # An app names its own listener, and the server refuses a second one
+  # on the command line. bench_app wrote this socket into the app source.
   local bindargs=(--unix="$WM_SOCK")
+  [ ${#APP_ARGS[@]} -eq 0 ] || bindargs=()
   "$PERF" record "${EVENT_ARGS[@]}" -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
     "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >"$WORK/srv.log" 2>&1 &
