@@ -1922,7 +1922,12 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
       out.node_argc[at] = cb.maxargs;
       continue;
     }
-    if ((declared >> at) & 1) {
+    // A callback that carries an argument asks about this request - the
+    // URI, the fields, the type, the length - so it can never be konst:
+    // the fold has no request to ask it about. It rides the node tables
+    // instead, on the class where that is where it lives, the same as a
+    // callback a worker answers.
+    if (((declared >> at) & 1) || cb.maxargs > 0) {
       const Resolved meta = resolve(mrb, mrb_class(mrb, klass), cb.sym);
       if (meta.defined) {
         out.dynamic |= uint64_t{1} << at;

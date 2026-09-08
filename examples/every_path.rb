@@ -50,7 +50,7 @@ end
 
 # --- 414 b11 uri_too_long? --------------------------------------------
 class UriTooLong < Webmachine::Resource
-  def self.uri_too_long?
+  def self.uri_too_long?(_uri)
     true
   end
 
@@ -105,7 +105,7 @@ end
 
 # --- 501 b6 valid_content_headers? ------------------------------------
 class BadContentHeaders < Webmachine::Resource
-  def self.valid_content_headers?
+  def self.valid_content_headers?(_headers)
     false
   end
 
@@ -116,7 +116,7 @@ end
 
 # --- 415 b5 known_content_type? ---------------------------------------
 class BadType < Webmachine::Resource
-  def self.known_content_type?
+  def self.known_content_type?(_type)
     false
   end
 
@@ -127,7 +127,7 @@ end
 
 # --- 413 b4 valid_entity_length? --------------------------------------
 class TooLarge < Webmachine::Resource
-  def self.valid_entity_length?
+  def self.valid_entity_length?(_length)
     false
   end
 

@@ -1395,3 +1395,34 @@ assert('error page: the JSON problem document parses, with its fields escaped') 
     end
   end
 end
+
+# A callback that carries an argument asks about this request, so it can
+# never be konst-folded, however it is defined. Two requests to one
+# server, one long path and one short: a folded answer would give both
+# the same status.
+assert('resource: a class-level uri_too_long? is asked per request') do
+  src = <<~RUBY
+    class LongPath < Webmachine::Resource
+      def self.uri_too_long?(uri)
+        uri.length > 20
+      end
+
+      def self.to_html
+        'short enough'
+      end
+    end
+  RUBY
+  wm_server(wm_app('LongPath', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /short HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal 'short enough', body
+    end
+    UNIXSocket.open(sock) do |s|
+      s.write("GET /a-path-that-is-longer-than-twenty HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 414'), head
+    end
+  end
+end
