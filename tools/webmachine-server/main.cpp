@@ -188,9 +188,9 @@ bool parse_argv(mrb_state* mrb, Invocation& in) {
   if (in.write_config == nullptr && flag_of(mrb, h, "write-config")) {
     in.write_config = "webmachine.toml";
   }
-  opts.assets_path = text_of(mrb, h, "assets");
+  opts.standalone_assets_path = text_of(mrb, h, "assets");
   opts.error_assets_path = text_of(mrb, h, "error-assets");
-  opts.docroot_path = text_of(mrb, h, "docroot");
+  opts.standalone_docroot_path = text_of(mrb, h, "docroot");
   opts.mime_types_path = text_of(mrb, h, "mime-types");
   in.log_path = text_of(mrb, h, "log");
   in.log_privacy = text_of(mrb, h, "log-privacy");
@@ -262,9 +262,11 @@ int serve(mrb_state* mrb, Invocation& in) {
       else if (fc.port != 0) cli_port = fc.port;
     }
     if (opts.app_path == nullptr && !fc.app.empty()) opts.app_path = fc.app.c_str();
-    if (opts.assets_path == nullptr && !fc.assets.empty()) opts.assets_path = fc.assets.c_str();
-    if (opts.docroot_path == nullptr && !fc.docroot.empty()) {
-      opts.docroot_path = fc.docroot.c_str();
+    if (opts.standalone_assets_path == nullptr && !fc.assets.empty()) {
+      opts.standalone_assets_path = fc.assets.c_str();
+    }
+    if (opts.standalone_docroot_path == nullptr && !fc.docroot.empty()) {
+      opts.standalone_docroot_path = fc.docroot.c_str();
     }
     if (opts.mime_types_path == nullptr && !fc.mime_types.empty()) {
       opts.mime_types_path = fc.mime_types.c_str();
@@ -294,8 +296,8 @@ int serve(mrb_state* mrb, Invocation& in) {
     opts.idle_timeout = fc.idle_timeout;
   }
 
-  opts.cli_unix = cli_unix;
-  opts.cli_port = cli_port;
+  opts.standalone_unix_path = cli_unix;
+  opts.standalone_port = cli_port;
 
   if (pidfile != nullptr) {
     FILE* pf = std::fopen(pidfile, "we");
@@ -338,8 +340,8 @@ int serve(mrb_state* mrb, Invocation& in) {
     const char* taken = nullptr;
     if (cli_unix != nullptr) taken = "--unix";
     else if (cli_port != 0) taken = "--port";
-    else if (opts.assets_path != nullptr) taken = "--assets";
-    else if (opts.docroot_path != nullptr) taken = "--docroot";
+    else if (opts.standalone_assets_path != nullptr) taken = "--assets";
+    else if (opts.standalone_docroot_path != nullptr) taken = "--docroot";
     if (taken != nullptr) {
       std::fprintf(stderr,
                    "webmachine: %s (and its line in the config's [server]) is a standalone "
@@ -363,7 +365,8 @@ int serve(mrb_state* mrb, Invocation& in) {
     // Standalone: a pack, a docroot, or both, and no app. There is no
     // resource to enter, so the folded graph answers on its own - the
     // pack from its mapping, the docroot from disk, everything else 404.
-    if (opts.assets_path == nullptr && opts.docroot_path == nullptr) {
+    if (opts.standalone_assets_path == nullptr &&
+        opts.standalone_docroot_path == nullptr) {
       std::fprintf(stderr, "webmachine: --standalone serves files, so it needs some: "
                            "--assets=FILE.zip, --docroot=DIR, or both\n");
       return 1;
@@ -375,7 +378,8 @@ int serve(mrb_state* mrb, Invocation& in) {
     std::fprintf(stderr,
                  "webmachine: nothing to serve - name an application with --app=FILE.mrb "
                  "(or app = in the config)%s\n",
-                 (opts.assets_path != nullptr || opts.docroot_path != nullptr)
+                 (opts.standalone_assets_path != nullptr ||
+                  opts.standalone_docroot_path != nullptr)
                      ? ", or add --standalone to serve the files you named without one"
                      : ", or serve files with --standalone and --assets/--docroot");
     return 1;

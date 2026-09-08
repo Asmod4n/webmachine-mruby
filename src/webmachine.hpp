@@ -3686,25 +3686,31 @@ const struct open_how* docroot_how();
 // What main() resolved: the CLI flags and the [server]/[log]/[tune]
 // sections, merged, with the CLI winning. cli_* keeps its prefix on
 // purpose - it is the reason those two beat the file.
+// What one process is set to, from the command line and the config
+// file. Two kinds live here, and the names say which is which.
+//
+// Most of it is the process's: the log, the timeouts, the ring, the
+// media types, the error pages. Every application in the process gets
+// the same answer.
+//
+// The four standalone_* are not. They are one application's - the one
+// app_assets_only makes, which serves files and enters no VM. Every
+// other application names its own listener, pack and docroot in its
+// conf, so the command line names none for it: main.cpp refuses
+// --unix, --port, --assets and --docroot beside --app, which is why
+// these four are null in every run that loads one.
 struct ServerOptions {
-  const char* assets_path = nullptr;
   // #210: the file an error answer may hand over - the shipped one by
   // default, or the operator's, in which case whatever they put in it is
   // what response.error_asset can name.
   const char* error_assets_path = nullptr;
-  const char* docroot_path = nullptr;
   const char* mime_types_path = nullptr;
   const char* log_path = nullptr;
   const char* log_privacy = nullptr;
   const char* error_log_path = nullptr;
   unsigned long long log_max_bytes = 500ull * 1024 * 1024;
   int stop_fd = -1;
-  const char* cli_unix = nullptr;
-  int cli_port = 0;
   const char* app_path = nullptr;
-  // --standalone: files only. No app is loaded, no route table exists,
-  // and no request enters the VM.
-  bool standalone = false;
   unsigned sq_entries = 0;
   int backlog = 0;
   int header_timeout = 0;
@@ -3714,6 +3720,15 @@ struct ServerOptions {
   long long zero_copy_threshold = -1;
   // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
   long long file_map_threshold = -1;
+
+  // --standalone: files only. No app is loaded, no route table exists,
+  // and no request enters the VM. The four below are that application's
+  // listener, pack and docroot, and they are set in no other run.
+  bool standalone = false;
+  const char* standalone_unix_path = nullptr;
+  int standalone_port = 0;
+  const char* standalone_assets_path = nullptr;
+  const char* standalone_docroot_path = nullptr;
 };
 
 

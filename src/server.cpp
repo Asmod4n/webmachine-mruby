@@ -183,12 +183,12 @@ void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
 void build_listeners(mrb_state* mrb, RingConfig& cfg) {
   cfg.nlisteners = static_cast<uint32_t>(specs_.size());
   cfg.stop_fd = opts_.stop_fd;
-  if (opts_.cli_unix != nullptr) {
-    cfg.listeners[0].unix_path = opts_.cli_unix;
+  if (opts_.standalone_unix_path != nullptr) {
+    cfg.listeners[0].unix_path = opts_.standalone_unix_path;
     return;
   }
-  if (opts_.cli_port != 0) {
-    cfg.listeners[0].port = opts_.cli_port;
+  if (opts_.standalone_port != 0) {
+    cfg.listeners[0].port = opts_.standalone_port;
     return;
   }
   for (size_t i = 0; i < specs_.size(); i++) {
@@ -279,7 +279,7 @@ void build(mrb_state* mrb) {
   // anchor RESOLVE_BENEATH measures against. A docroot that is missing or
   // is not a directory refuses the start by name.
   {
-    const char* dr = opts_.docroot_path;
+    const char* dr = opts_.standalone_docroot_path;
     for (size_t i = 0; dr == nullptr && i < specs_.size(); i++) {
       if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
     }
@@ -299,7 +299,7 @@ void build(mrb_state* mrb) {
   const std::string error_assets_file =
       no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
   const bool standalone = opts_.standalone;
-  const char* assets_path = opts_.assets_path;
+  const char* assets_path = opts_.standalone_assets_path;
   for (size_t i = 0; assets_path == nullptr && i < specs_.size(); i++) {
     if (!specs_[i]->assets.empty()) assets_path = specs_[i]->assets.c_str();
   }
