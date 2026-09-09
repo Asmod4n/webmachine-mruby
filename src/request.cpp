@@ -229,10 +229,10 @@ mrb_value req_body(mrb_state* mrb, mrb_value) {
   mrb_value io;
   if (v->content_fd >= 0) {
     // RFC 9110 6.4: a large body is a file, and the resource reads it
-    // like any other. The descriptor is duplicated first: the connection
-    // owns the one it wrote, and a File that closes with the run must
-    // not take it. The copy starts at the first octet, because the write
-    // left the connection's own offset at the last.
+    // like any other. The descriptor is duplicated first: the h1
+    // connection or the h2 stream owns the one it wrote, and a File that
+    // closes with the run must not take it. The copy starts at the first
+    // octet, because the write left the owner's offset at the last.
     const int fd = ::dup(v->content_fd);
     if (mrb_unlikely(fd < 0)) {
       mrb_raise(mrb, E_RUNTIME_ERROR, "request.body cannot be opened for reading");

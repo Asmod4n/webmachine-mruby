@@ -1543,3 +1543,111 @@ assert('h2: split cookie fields reach request.cookies as one (RFC 9113 8.2.3)') 
     end
   end
 end
+
+# RFC 9110 6.4: an h2 request body of 256 KiB or more leaves memory and
+# goes to a file, the same as h1's. h2 cannot decide on the declared
+# length - a stream may send DATA without content-length - so it decides
+# on what has arrived, and moves what arrived before it into the file.
+def h2_post_block(len)
+  block = "\x02\x04POST\x86\x84\x41\x0bexample.com".b
+  block + h2_lit('content-length', len.to_s)
+end
+
+# Writes DATA in frames the peer's SETTINGS allow, and reads what the
+# server sends back between them - the server credits both windows per
+# frame, and a full socket buffer would stop the write half way. Every
+# frame read is kept in `seen`, because an answer to an earlier stream
+# arrives while a later one is still sending.
+def h2_write_body(s, id, body, seen)
+  off = 0
+  while off < body.bytesize
+    chunk = body.byteslice(off, 16_384)
+    off += chunk.bytesize
+    last = off >= body.bytesize
+    s.write(h2_frame(0, last ? 0x01 : 0x00, id, chunk))
+    seen << h2_next(s) while IO.select([s], nil, nil, 0)
+  end
+end
+
+# Reads until every stream in `ids` has ended, then answers the DATA
+# octets of each. `seen` holds what the write half already read.
+def h2_bodies(s, ids, seen)
+  ended = seen.select { |t, f, st, _| (t == 0 || t == 1) && (f & 0x01) != 0 }
+              .map { |_, _, st, _| st }
+  while (ids - ended).any?
+    frame = h2_next(s)
+    seen << frame
+    t, f, st, = frame
+    ended << st if (t == 0 || t == 1) && (f & 0x01) != 0
+  end
+  ids.map do |id|
+    seen.select { |t, _, st, _| t == 0 && st == id }.map { |_, _, _, p| p }.join
+  end
+end
+
+assert('h2: a large request body is a File, a small one is a StringIO') do
+  src = <<~RUBY
+    class H2Upload < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        b = request.body
+        bytes = b.read
+        response.body = [
+          b.class.to_s, b.size.to_s, bytes.bytesize.to_s,
+          bytes[0, 4], bytes[-4, 4],
+        ].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.add_route [:*], H2Upload
+      end
+    end
+  RUBY
+  h2_server(src) do |sock|
+    small = 'ab' + ('s' * ((256 * 1024) - 5)) + 'yz'
+    big = 'AB' + ('L' * ((1024 * 1024) - 4)) + 'YZ'
+    [[small, 'StringIO'], [big, 'File']].each_with_index do |(payload, want), i|
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        id = 1
+        seen = []
+        s.write(h2_frame(1, 0x04, id, h2_post_block(payload.bytesize)))
+        h2_write_body(s, id, payload, seen)
+        got = h2_bodies(s, [id], seen)[0].split('|')
+        assert_equal want, got[0], "round #{i}"
+        assert_equal payload.bytesize.to_s, got[1]
+        assert_equal payload.bytesize.to_s, got[2]
+        assert_equal payload[0, 4], got[3]
+        assert_equal payload[-4, 4], got[4]
+      end
+    end
+
+    # Two large uploads at once on one connection. Each stream owns its
+    # file, so neither reads the other's octets.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      a = 'AA' + ('x' * ((512 * 1024) - 4)) + 'ZZ'
+      b = 'BB' + ('y' * ((512 * 1024) - 4)) + 'WW'
+      seen = []
+      s.write(h2_frame(1, 0x04, 1, h2_post_block(a.bytesize)))
+      s.write(h2_frame(1, 0x04, 3, h2_post_block(b.bytesize)))
+      h2_write_body(s, 1, a, seen)
+      h2_write_body(s, 3, b, seen)
+      answers = h2_bodies(s, [1, 3], seen)
+      {1 => a, 3 => b}.each_with_index do |(id, payload), i|
+        got = answers[i].split('|')
+        assert_equal 'File', got[0], "stream #{id}"
+        assert_equal payload.bytesize.to_s, got[1], "stream #{id}"
+        assert_equal payload[0, 4], got[3], "stream #{id} read the wrong body"
+        assert_equal payload[-4, 4], got[4], "stream #{id} read the wrong body"
+      end
+    end
+  end
+end

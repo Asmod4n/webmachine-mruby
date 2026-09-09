@@ -11,9 +11,98 @@
 
 #include "h2_wire.hpp"
 
+#include <slipstream_tmpfile.h>
+
 namespace webmachine {
 
 struct AssetEntry;
+
+// RFC 9110 6.4: from this size up a request body goes to a file rather
+// than into memory. Under it the bytes stay where the framing left them,
+// and request.body is a StringIO over a copy.
+//
+// The number is one response window (kResponseFileWindow), which is what
+// this server already calls "more than one read of a file". Below it a
+// body is one allocation the carrier reuses; above it the carrier would
+// hold every byte of every upload at once, and one client decides how
+// many that is.
+inline constexpr size_t kBodySpill = 256u * 1024;
+
+// RFC 9110 6.4: a request body that lives in a file. Both protocols use
+// it: an h1 connection carries one, an h2 stream carries one each,
+// because h2 uploads on many streams at the same time.
+//
+// slipstream_tmpfile made the file, so it has no name: nothing to clean
+// up, and nothing another process can open. `fd` of -1 says this body is
+// in memory, which is every body under kBodySpill.
+struct BodySpill {
+  int fd = -1;
+  // What reached the file. It is the body's whole length once the body
+  // is complete, and request.body reads that many bytes from offset 0.
+  size_t written = 0;
+  // Whether a run has taken the file into its request view. Until it
+  // has, the file is a body still arriving, and closing it would throw
+  // away what the run is about to read.
+  bool bound = false;
+
+  // The file goes back. The descriptor holds the last reference to it,
+  // so the close frees the blocks - there is no name to unlink.
+  void close_file() {
+    if (fd < 0) return;
+    ::close(fd);
+    fd = -1;
+    written = 0;
+    bound = false;
+  }
+  // Answers false when the file cannot be made, which is a 500: the
+  // request cannot be answered without its body.
+  bool open_file() {
+    fd = slipstream_tmpfile(nullptr);
+    if (mrb_unlikely(fd < 0)) {
+      fd = -1;
+      return false;
+    }
+    return true;
+  }
+  // Take body octets. h1 calls it from feed, h2 from the DATA frame.
+  // Answers false when the file refuses the bytes, which is a 500.
+  // The file dies with the carrier that holds it, however that carrier
+  // ends. A move steals the descriptor and leaves the source at -1, so
+  // an H2Stream the stream table moves cannot close a file twice.
+  BodySpill() = default;
+  ~BodySpill() { close_file(); }
+  BodySpill(const BodySpill&) = delete;
+  BodySpill& operator=(const BodySpill&) = delete;
+  BodySpill(BodySpill&& o) noexcept : fd(o.fd), written(o.written), bound(o.bound) {
+    o.fd = -1;
+    o.written = 0;
+    o.bound = false;
+  }
+  BodySpill& operator=(BodySpill&& o) noexcept {
+    if (this == &o) return *this;
+    close_file();
+    fd = o.fd;
+    written = o.written;
+    bound = o.bound;
+    o.fd = -1;
+    o.written = 0;
+    o.bound = false;
+    return *this;
+  }
+  bool take(const char* p, size_t n) {
+    while (n != 0) {
+      const ssize_t w = ::write(fd, p, n);
+      if (w <= 0) {
+        if (w < 0 && errno == EINTR) continue;
+        return false;
+      }
+      p += static_cast<size_t>(w);
+      n -= static_cast<size_t>(w);
+      written += static_cast<size_t>(w);
+    }
+    return true;
+  }
+};
 
 // RFC 9113 5.1: one entry per stream in a non-idle state. The fields are
 // what that state machine names and nothing else: what the stream has
@@ -33,6 +122,11 @@ struct H2Stream {
   // request.body reads it at END_STREAM (RFC 9113 6.1).
   size_t content_received = 0;
   std::string request_content;
+  // RFC 9110 6.4: a body of kBodySpill or more, in a file instead of in
+  // request_content. One file per stream, because an h2 connection
+  // carries many uploads at the same time. The stream table moves an
+  // entry when a stream closes, and BodySpill moves with it.
+  BodySpill spill;
   // RFC 9110 8.6: what the sender said it would send, and whether it said.
   size_t content_length = 0;
   bool content_length_given = false;
@@ -727,17 +821,6 @@ struct AssetEntry;
 // operator's own tree can never collide with it.
 inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
-// RFC 9110 6.4: from this size up a request body goes to a file rather
-// than into the connection's carry. Under it the bytes stay where the
-// parser left them, and request.body is a StringIO over a copy.
-//
-// The number is one response window (kResponseFileWindow), which is what
-// this server already calls "more than one read of a file". Below it a
-// body is one allocation the connection reuses; above it the connection
-// would hold every byte of every upload at once, and one client decides
-// how many that is.
-inline constexpr size_t kBodySpill = 256u * 1024;
-
 inline constexpr size_t kMaxHeaders = 64;
 static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
 inline constexpr size_t kCompressFloor = 1280;
@@ -957,20 +1040,10 @@ class Http1 {
     // the bytes themselves collect in `carry` behind the head, which
     // keeps the hand-off zero-copy. A konst route keeps skipping.
     size_t content_need = 0;
-    // RFC 9110 6.4: a body of kBodySpill or more, in a file instead.
-    // slipstream_tmpfile made it, so it has no name: nothing to clean up
-    // and nothing another process can open. -1 says this request's body
-    // is in the carry, which is every request under the threshold.
-    //
-    // spill_written counts what reached the file. It is the body's whole
-    // length once content_need reaches 0, and request.body reads that
-    // many bytes from offset 0.
-    int spill_fd = -1;
-    size_t spill_written = 0;
-    // Whether a round has taken the file into its request view. Until it
-    // has, the file is this request's body still arriving, and closing it
-    // would throw away what the run is about to read.
-    bool spill_bound = false;
+    // RFC 9110 6.4: a body of kBodySpill or more, in a file instead of
+    // in the carry. The file is this connection's, because h1 answers
+    // one request at a time.
+    BodySpill spill;
     // No RFC: a half-open span into the wire body of an asset (see
     // Assets::wire_iov), not into the file - a gzip member's octets are
     // not the stored ones.
@@ -1231,35 +1304,6 @@ class Http1 {
     // The address space goes back. Called from zc_release once the round
     // that borrowed the mapping has drained, and unconditionally when the
     // connection itself ends - a mapping nobody borrowed still has to go.
-    // RFC 9110 6.4: the body file goes back. The descriptor holds the
-    // last reference to it, so closing it frees the blocks - there is no
-    // name to unlink, because slipstream_tmpfile already did.
-    void spill_close() {
-      if (spill_fd < 0) return;
-      ::close(spill_fd);
-      spill_fd = -1;
-      spill_written = 0;
-      spill_bound = false;
-    }
-    // RFC 9110 6.4: take body octets, wherever this body lives. One
-    // function for both protocols: h1 calls it from feed, h2 from the
-    // DATA frame, and neither has to know which half is in use.
-    //
-    // Answers false when the file refuses the bytes, which is a 500 -
-    // the request cannot be answered without its body.
-    bool spill_take(const char* p, size_t n) {
-      while (n != 0) {
-        const ssize_t w = ::write(spill_fd, p, n);
-        if (w <= 0) {
-          if (w < 0 && errno == EINTR) continue;
-          return false;
-        }
-        p += static_cast<size_t>(w);
-        n -= static_cast<size_t>(w);
-        spill_written += static_cast<size_t>(w);
-      }
-      return true;
-    }
     void map_release() {
       if (file == nullptr || file->map_addr == nullptr) return;
       ::munmap(const_cast<char*>(file->map_addr), file->map_length);
@@ -1362,7 +1406,7 @@ class Http1 {
       carry.clear();
       content_skip = 0;
       content_need = 0;
-      spill_close();
+      spill.close_file();
       listener = li;
       packetized = pkt;
       fresh = true;

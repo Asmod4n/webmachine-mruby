@@ -340,6 +340,11 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
   }
   std::string body;
   body.swap(stp.request_content);
+  // RFC 9110 6.4: a spilled body reaches request.body as a descriptor.
+  // The file stays this stream's until close_stream drops the entry, so
+  // a parked run still finds it when it asks.
+  const int body_fd = stp.spill.fd;
+  const size_t body_fd_len = stp.spill.written;
   struct phr_header hv[kH2MaxFields];
   const size_t nh = h2_fields_of_parked(stp, hv);
   http::ReqValues pvals;
@@ -348,8 +353,14 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
   rv.tls = apps_[st0.listener].tls;
   RouteSpans pspans;
   rv.method = facts.method;
-  rv.content = body.empty() ? nullptr : body.data();
-  rv.content_len = body.size();
+  if (body_fd >= 0) {
+    rv.content_fd = body_fd;
+    rv.content_len = body_fd_len;
+    stp.spill.bound = true;
+  } else {
+    rv.content = body.empty() ? nullptr : body.data();
+    rv.content_len = body.size();
+  }
   rv.fields = hv;
   rv.field_count = nh;
   rv.values = &pvals;
@@ -1922,7 +1933,38 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // streams cannot hold megabytes nobody will ever ask for.
         if (stp->route != kNoRoute &&
             bundles_[apps_[st0.listener].base + stp->route].bound) {
-          stp->request_content.append(reinterpret_cast<const char*>(dp), dlen);
+          const char* const bp = reinterpret_cast<const char*>(dp);
+          // RFC 9110 6.4: from kBodySpill up the body goes to a file, so
+          // the connection holds its streams and not their uploads. h1
+          // decides once on the declared length; h2 cannot, because a
+          // stream may send DATA without content-length. So the choice
+          // is made on what has arrived, and what arrived before it goes
+          // to the file first.
+          if (stp->spill.fd < 0 && stp->content_received >= kBodySpill) {
+            if (mrb_unlikely(!stp->spill.open_file())) {
+              h2_credit_connection(sink, flen);
+              h2_rst(st0, stream, kH2InternalError, sink);
+              break;
+            }
+            if (mrb_unlikely(!stp->spill.take(stp->request_content.data(),
+                                              stp->request_content.size()))) {
+              stp->spill.close_file();
+              h2_credit_connection(sink, flen);
+              h2_rst(st0, stream, kH2InternalError, sink);
+              break;
+            }
+            std::string().swap(stp->request_content);
+          }
+          if (stp->spill.fd >= 0) {
+            if (mrb_unlikely(!stp->spill.take(bp, dlen))) {
+              stp->spill.close_file();
+              h2_credit_connection(sink, flen);
+              h2_rst(st0, stream, kH2InternalError, sink);
+              break;
+            }
+          } else {
+            stp->request_content.append(bp, dlen);
+          }
         }
         if (flen != 0) {
           unsigned char inc[4];
