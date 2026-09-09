@@ -92,6 +92,11 @@ assert('resource: allowed_methods widens and the flow obeys, Allow speaks the li
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 500'), "POST expected 500, got #{head.lines.first}"
+      # RFC 9112 6.6: this resource reads no body, so the answer ended
+      # the connection and the rest of this test needs a new one.
+      assert_true head.match?(/^Connection: close\r$/i), head
+    end
+    UNIXSocket.open(sock) do |s|
       # RFC 9110 15.3.5 / fsm.rb o20: nothing set a body, so no entity.
       s.write("DELETE / HTTP/1.1\r\nHost: x\r\n\r\n")
       head2 = +''

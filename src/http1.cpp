@@ -1146,7 +1146,11 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   rv.fields = headers;
   rv.field_count = num_headers;
   rv.values = &vals;
-  if (r.content_length != 0) {
+  // RFC 9110 6.4: the view carries a body only where a node of this
+  // resource can read one. A resource without those callbacks never
+  // waited for the body, so what sits behind the head is a part of it -
+  // and request.body must answer nothing rather than that part.
+  if (r.content_length != 0 && b->res->takes_body) {
     if (st.spill.fd >= 0) {
       // RFC 9110 6.4: this body is a file. request.body reads it from
       // offset 0, and spill_written is how far the octets go.
@@ -1850,8 +1854,30 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       return fail(st, 413, sink, lflags);
     }
 
-    const bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
+    bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
+    // RFC 9112 6.6: this connection ends when the request carries
+    // content that no node will read. The answer has to say so, and the
+    // head is spelled from `persist`, so the decision belongs here -
+    // ahead of every tier that can answer.
+    //
+    // Only a request with content pays for the extra match, and the
+    // match is pure: the route table answers the same both times.
+    bool body_read = w.content_length == 0;
+    if (mrb_unlikely(!body_read)) {
+      // Only a request that carries content pays for this second
+      // match, and the route table is pure: it answers the same both
+      // times. Measured: out of line it cost 16 bytes more here and
+      // another 515 of its own, so it stays where it is read.
+      const AppSlot& probe_slot = apps_[st.listener];
+      RouteSpans probe_spans;
+      const int probe = probe_slot.table->match(path, path_len, probe_spans);
+      if (probe >= 0) {
+        const Bundle& pb = bundles_[probe_slot.base + static_cast<size_t>(probe)];
+        body_read = pb.bound && pb.res->takes_body;
+      }
+      if (!body_read) persist = false;
+    }
 
     if (mrb_unlikely((w.up_ws && w.conn_upgrade) || apps_[st.listener].sse_table != nullptr)) {
       const H1Head head = {{method, method_len}, {path, path_len}, minor,   headers,
@@ -1916,7 +1942,18 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // re-parse of a spilled request finds an empty carry behind the
         // head, and the body is complete all the same.
         const size_t body_have = st.spill.fd >= 0 ? st.spill.written : body_here;
-        if (w.content_length != 0 && body_have < w.content_length) {
+        // RFC 9110 6.4: only three callbacks read a request body -
+        // content_types_accepted, create_path and process_post. A
+        // resource that declares none of them has no node that can ask
+        // for one, so this connection waits for nothing and keeps
+        // nothing: the octets are stepped over below.
+        //
+        // Before this, every bound route held the whole upload while
+        // the flow walked, and a body of kBodySpill or more went to a
+        // file first. A route that never reads a body could be made to
+        // do both.
+        if (w.content_length != 0 && body_have < w.content_length &&
+            mrb_likely(b->res->takes_body)) {
           st.content_need = w.content_length - body_have;
           // RFC 9110 6.4: a large body goes to a file, so the connection
           // holds the head and not the upload. The length is declared -
@@ -2032,6 +2069,23 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     }
 
     off += static_cast<size_t>(ret);
+    // RFC 9112 6.6: this request carried content and no node of the flow
+    // asked for it. A route that does not exist, a method that is not
+    // allowed, a resource that declares none of the three callbacks that
+    // read a body - each answers before any node wants content.
+    //
+    // The answer is already in the sink and goes out. The connection
+    // ends behind it, because reading the rest to stay alive would read
+    // exactly what the flow refused. RFC 9110 9.3.1 names the risk:
+    // content behind a request nobody parsed is where request smuggling
+    // lives. A GET carries none of it - RFC 10008 QUERY is the method
+    // for a safe request that needs content.
+    if (mrb_unlikely(!body_read)) {
+      st.carry.clear();
+      st.content_skip = 0;
+      st.content_need = 0;
+      return false;
+    }
     // RFC 9110 6.4: step over the body this round did not read. A body
     // that went to a file is already off the wire and out of the buffer,
     // so there is nothing here to step over - counting it again would

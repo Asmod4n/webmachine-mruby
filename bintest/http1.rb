@@ -77,23 +77,34 @@ assert('h1: a head trickled byte by byte still parses (carry across receives)') 
   end
 end
 
-assert('h1: a Content-Length body is skipped and framing holds') do
+# RFC 9112 6.6: this resource reads no body - it declares none of
+# content_types_accepted, create_path or process_post - so the flow
+# answers on the head and the connection ends. The octets of the body are
+# never read, whether they all arrived or not.
+assert('h1: a body no node reads is answered, then the connection closes') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
     UNIXSocket.open(sock) do |s|
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world")
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 405')
       assert_true head.match?(/^Allow: GET, HEAD\r$/i)
-      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head2, = wm_read(s)
-      assert_true head2.start_with?('HTTP/1.1 200 OK')
+      assert_true head.match?(/^Connection: close\r$/i), head
+      assert_equal '', s.read.to_s
     end
+    # And the same when the body is still arriving: the answer does not
+    # wait for the rest, because nothing was ever going to read it.
     UNIXSocket.open(sock) do |s|
       s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nhell")
-      sleep 0.02
-      s.write('o worl')
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 405')
+      assert_true head.match?(/^Connection: close\r$/i), head
+    end
+    # A request with no body keeps the connection, as it always did.
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK')
+      assert_false head.match?(/^Connection: close\r$/i), head
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 200 OK')
@@ -302,6 +313,50 @@ assert('h1: random garbage kills connections, never the process') do
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 200 OK')
+    end
+  end
+end
+
+# RFC 9110 6.4: only three callbacks read the request body -
+# content_types_accepted, create_path and process_post. A resource that
+# defines none of them has no node that can ask for one, so the server
+# steps over the octets instead of keeping them. No file opens, and
+# request.body answers nothing rather than a part of the body.
+#
+# A GET that carries a body is what shows it: the flow answers it, and
+# before this the connection held the whole megabyte to hand over.
+assert('h1: a resource that reads no body keeps none of it') do
+  src = <<~RUBY
+    class Peek < Webmachine::Resource
+      def to_html
+        b = request.body
+        b.nil? ? 'none' : "held:\#{b.size}"
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.add_route [:*], Peek
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-nobody') do |sock|
+    # A megabyte announced to a resource that reads no body. The answer
+    # comes back without the server waiting for the octets, and the
+    # connection ends - so the upload is never read and never held.
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: #{1024 * 1024}\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_true head.match?(/^Connection: close\r$/i), head
+      assert_equal 'none', body, 'the resource was handed a body'
+    end
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal 'none', body
     end
   end
 end

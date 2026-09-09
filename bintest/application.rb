@@ -60,15 +60,21 @@ end
 
 assert('application: a router miss is 404 before B13 - POST on an unknown path is not 405') do
   wm_server(AP_FIZZ, tag: 'wm-ap') do |sock|
+    # RFC 9112 6.6: neither resource reads a body, so each answer ends
+    # its connection and each request needs one of its own.
     UNIXSocket.open(sock) do |s|
       s.write("POST /nowhere HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 404'), head.lines.first.to_s
       assert_false head.match?(/^Allow:/i), head
+      assert_true head.match?(/^Connection: close\r$/i), head
+    end
+    UNIXSocket.open(sock) do |s|
       s.write("POST /fizz/one HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi")
       head2, = wm_read(s)
       assert_true head2.start_with?('HTTP/1.1 405'), head2.lines.first.to_s
       assert_true head2.match?(/^Allow: GET, HEAD\r$/i), head2
+      assert_true head2.match?(/^Connection: close\r$/i), head2
     end
   end
 end

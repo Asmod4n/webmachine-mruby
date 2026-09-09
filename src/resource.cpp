@@ -2191,6 +2191,10 @@ void fold_caching_and_mask(const Folding& fold, Resource& out) {
   if (out.cb_base_uri.has) out.cb_mask |= Resource::kCbBaseUri;
   if (out.cb_process_post.has) out.cb_mask |= Resource::kCbProcessPost;
   if (out.cb_finish_request.has) out.cb_mask |= Resource::kCbFinishRequest;
+  // RFC 9110 6.4: only these three callbacks read the request body, so a
+  // resource without them never asks for one. Both writers read this to
+  // step over a body rather than keep it.
+  out.takes_body = (out.cb_mask & Resource::kCbBodyReaders) != 0;
   // kC3 is a request-kind node: its dynamic bit forces the run tier without
   // touching any konst answer.
   if (out.cb_mask != 0) out.dynamic |= uint64_t{1} << static_cast<size_t>(Node::kC3);

@@ -2703,6 +2703,17 @@ struct Resource {
     kCbFinishRequest = 1u << 15,
   };
   uint32_t cb_mask = 0;
+  // The mask of the three callbacks that read the request body. A
+  // resource reaches the body through kN11 (post_is_create? ->
+  // create_path or process_post) or through kO14 and kP3 (is_conflict?
+  // -> content_types_accepted). A resource that defines none of them
+  // has no node that can ask for the body.
+  static constexpr uint32_t kCbBodyReaders =
+      kCbContentTypesAccepted | kCbCreatePath | kCbProcessPost;
+  // Can any node of this resource read the request body? Folded once,
+  // so both writers can decide on the head alone whether to keep the
+  // octets of a body or to step over them.
+  bool takes_body = false;
 
   // Konst-folded content_types_provided: [type, handler] in the
   // resource's own order, [0] the default choice (c3 with no Accept).
