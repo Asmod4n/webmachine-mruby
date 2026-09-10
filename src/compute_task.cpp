@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -491,6 +492,14 @@ struct ComputePool::Impl {
   // shortest-queue choice would compute an answer the caller already
   // knows - the counts would differ by at most one.
   unsigned next = 0;
+  // The pool starts one worker at a time. A worker opens its own fresh
+  // VM, and the gems in this build write file-scope statics while they
+  // initialise: a second mrb_open that runs beside the first one writes
+  // what a running VM reads. So the starter waits here until worker A
+  // says its VM stands, and only then makes worker B.
+  std::mutex boot_lock;
+  std::condition_variable boot_ready;
+  unsigned booted = 0;
   struct io_uring* home = nullptr;
   bool up = false;
 };
@@ -822,13 +831,8 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // exist in this worker and in no other.
   worker_builds_close();
 
-  // One VM at a time, whatever the pool's size. mrb_open is safe per VM,
-  // but the gems in this build are not all safe against each other:
-  // some keep file-scope statics and take a process-wide lock while
-  // they initialise, so two VMs opening at once can abort.
-  //
-  // This costs startup time once per worker and nothing afterwards: a
-  // worker opens its VM before it takes its first job.
+  // This worker's own VM. The pool makes one worker at a time, so no
+  // other mrb_open runs while this one does.
   WorkerVm vm;
   // A worker whose VM did not open stays at its ring and answers every
   // job it is sent as a fault, so the run behind it gets its 503 and
@@ -836,18 +840,22 @@ void ComputePool::worker(Impl* impl, unsigned me) {
   // sent here with no answer and no deadline, because the clock starts
   // when a job starts.
   bool boot_failed = false;
-  {
-    static std::mutex opening;
-    const std::lock_guard<std::mutex> hold(opening);
-    if (!vm.open()) {
-      vm.close();
-      boot_failed = true;
-    }
+  if (!vm.open()) {
+    vm.close();
+    boot_failed = true;
   }
   // The address the reactor interrupts. It is published only after the
   // VM stands, and taken back before it closes, so the reactor never
   // holds a pointer to a VM that is being built or torn down.
   if (!boot_failed) impl->vms[me].store(vm.mrb, std::memory_order_release);
+
+  // The starter waits for this word. It comes after a good open and
+  // after a bad one, so a worker that has no VM does not hold the pool.
+  {
+    const std::lock_guard<std::mutex> hold(impl->boot_lock);
+    impl->booted++;
+  }
+  impl->boot_ready.notify_all();
 
   for (;;) {
     struct io_uring_cqe* first = nullptr;
@@ -958,8 +966,12 @@ const char* ComputePool::start(unsigned workers, unsigned depth, struct io_uring
       return std::strerror(-rc);
     }
   }
+  // One thread at a time: make worker i, wait until its VM stands, then
+  // make worker i + 1.
   for (unsigned i = 0; i < workers; i++) {
     impl->threads.emplace_back([impl, i] { ComputePool::worker(impl, i); });
+    std::unique_lock<std::mutex> hold(impl->boot_lock);
+    impl->boot_ready.wait(hold, [impl, i] { return impl->booted > i; });
   }
   impl->up = true;
   impl_ = impl;
