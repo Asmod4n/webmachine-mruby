@@ -132,11 +132,31 @@ JSON
   # only appears at the end is indistinguishable from a suite that
   # hung. That mistake cost half an hour of waiting on a run that was
   # working the whole time. With this, the case it is on is on screen.
-  "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
-    -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
-    -v "$PWD/$OUT/reports:/reports:z" \
-    crossbario/autobahn-testsuite \
-    wstest -m fuzzingclient -s /fuzzingclient.json 2>&1 | tee "$OUT/autobahn.log"
+  # The status has to be wstest's, not tee's. A POSIX pipeline answers
+  # with its last command, so `wstest | tee` reported success for a
+  # wstest the runner had killed, and the failure surfaced later and
+  # somewhere else - as a report file that was not there. `set -o
+  # pipefail` is not POSIX, so the code travels through a file, and -e
+  # goes off around it or the shell would leave before it is written.
+  set +e
+  { "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
+      -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
+      -v "$PWD/$OUT/reports:/reports:z" \
+      crossbario/autobahn-testsuite \
+      wstest -m fuzzingclient -s /fuzzingclient.json 2>&1
+    echo $? > "$OUT/wstest.rc"
+  } | tee "$OUT/autobahn.log"
+  set -e
+  ws_rc=$(cat "$OUT/wstest.rc" 2>/dev/null || echo 1)
+  # wstest writes its report after the last case, so a run that ends
+  # without one died in between - which the log alone cannot say.
+  if [ "$ws_rc" -ne 0 ] || [ ! -f "$OUT/reports/index.json" ]; then
+    echo "wstest ended with status $ws_rc and $([ -f "$OUT/reports/index.json" ] \
+      && echo 'a report' || echo 'no report')" >&2
+    echo "the last case it named: $(grep 'Running test case' "$OUT/autobahn.log" \
+      | tail -1)" >&2
+    exit 1
+  fi
   echo "report: $OUT/reports/index.html"
   ;;
 ws-h2)
