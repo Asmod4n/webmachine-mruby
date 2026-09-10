@@ -441,6 +441,10 @@ int main(int argc, char** argv) {
     rc = 1;
   }
   mrb->jmp = nullptr;
+  // Before the VM goes: the server holds GC roots in it, and a raise
+  // that ended the run carried the stack past the release inside
+  // server_run.
+  webmachine::server_release();
   mrb_close(mrb);
   if (in.pidfile != nullptr) ::unlink(in.pidfile);
   return rc;

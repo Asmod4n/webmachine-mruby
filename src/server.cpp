@@ -538,11 +538,19 @@ int server_run(mrb_state* mrb) {
   build(mrb);
   entered_ = true;
   ring_->run();
-  // Both die here, while the VM lives: the error pages hold a root in
-  // it, and a connection's watchers do, and mrb_close comes after this
-  // returns. A file-scope object dies at exit, which is too late.
+  server_release();
+  return 0;
+}
+
+// Both die here, while the VM stands: the error pages hold a root in it,
+// and a connection's watchers do. A file scope object dies at exit,
+// after mrb_close, and its destructor then reads a state that is freed.
+// The thread sanitizer named that on a run whose server raised: the
+// raise carried the stack past the line above, main closed the VM, and
+// ~ErrorPages called mrb_gc_unregister on it. The owner of the VM calls
+// this before mrb_close, on every way out.
+void server_release() {
   ring_.reset();
   http_.reset();
-  return 0;
 }
 }

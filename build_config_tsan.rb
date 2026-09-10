@@ -8,9 +8,12 @@
 # One known source of noise: the reactor shares memory with the kernel -
 # the completion ring and the provided buffer pool are written on one
 # side and read on the other, and TSan sees only this side. Anything it
-# says about those is its own blind spot, not a race. Nothing is
-# suppressed here yet, so the first run says what it says and the
-# suppressions come from reading it.
+# says about those is its own blind spot, not a race.
+#
+# Nothing is suppressed. src/compute_task.cpp tells the sanitizer where
+# the io_uring handover of a compute slot begins and ends, with
+# __tsan_release and __tsan_acquire, so the sanitizer knows the order
+# the kernel gives and still reports every race in the pool.
 MRuby::Lockfile.disable
 
 MRuby::Build.new('tsan') do |conf|

@@ -28,9 +28,14 @@ MRuby::Build.new('asan') do |conf|
 
   # -O1 and a frame pointer: the sanitizers ask for both, and a trace
   # without frame pointers names the wrong function.
-  ignore = File.expand_path('sanitizer-ignore.txt', File.dirname(__FILE__))
-  san = %W[-fsanitize=address,undefined -fno-omit-frame-pointer
-           -fno-sanitize-recover=all -fsanitize-ignorelist=#{ignore}
+  # Nothing is hidden here. Two carried sources read a struct off a
+  # boundary the check wants: LMDB reads its page headers out of a
+  # memory map, and xxhash reads four octets from a pointer it
+  # advances by one. Both are correct, and neither is this tree's to
+  # change. So the alignment check reports and the run carries on,
+  # while every other check still ends the run at the first fault.
+  san = %w[-fsanitize=address,undefined -fno-omit-frame-pointer
+           -fno-sanitize-recover=all -fsanitize-recover=alignment
            -O1 -g3 -ggdb]
   conf.cc.flags.concat(san)
   conf.cxx.flags.concat(san + %w[-std=c++20])

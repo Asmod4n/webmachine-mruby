@@ -3770,6 +3770,12 @@ void server_init(mrb_state* mrb, struct RClass* wm);
 int server_run(mrb_state* mrb);
 
 bool server_entered();
+
+// The server, and everything it holds in the VM, released while the VM
+// still stands. The error pages hold a GC root, and a connection's
+// watchers hold one. A file scope object dies at exit, and mrb_close
+// runs before that, so the owner of the VM calls this first.
+void server_release();
 }
 
 namespace webmachine {

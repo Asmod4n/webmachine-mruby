@@ -40,6 +40,32 @@
 #include <unordered_map>
 #include <vector>
 
+// The thread sanitizer models pthreads, and this file hands a slot from
+// one thread to another through io_uring. The sanitizer sees a write on
+// one thread and a read on another with nothing between them, and calls
+// it a race. The order is real: the sender writes the slot, then makes a
+// syscall that gives the message to the kernel, and the reader takes it
+// out of the kernel and only then reads the slot.
+//
+// The two calls below say that to the sanitizer, and to nobody else.
+// Without -fsanitize=thread they compile to nothing.
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define WM_TSAN_ON 1
+#endif
+#endif
+#if defined(WM_TSAN_ON)
+extern "C" void __tsan_acquire(void* addr);
+extern "C" void __tsan_release(void* addr);
+// The slot goes to the other thread after this line.
+#define WM_HANDOVER_SEND(p) __tsan_release(p)
+// The slot came from the other thread before this line.
+#define WM_HANDOVER_TAKE(p) __tsan_acquire(p)
+#else
+#define WM_HANDOVER_SEND(p) ((void)(p))
+#define WM_HANDOVER_TAKE(p) ((void)(p))
+#endif
+
 namespace webmachine {
 namespace {
 
@@ -850,6 +876,7 @@ void ComputePool::worker(Impl* impl, unsigned me) {
       if (job >= impl->slots.size()) continue;
 
       Slot& s = impl->slots[static_cast<size_t>(job)];
+      WM_HANDOVER_TAKE(&s);
       // The reader of an error record asks where it ran before anything
       // else, so the name goes in beside the answer.
       s.worker_name = thread_name;
@@ -882,7 +909,11 @@ void ComputePool::worker(Impl* impl, unsigned me) {
       // because no two threads touch anything at the same time.
       struct io_uring_sqe* sqe = nullptr;
       while ((sqe = io_uring_get_sqe(ring)) == nullptr) io_uring_submit(ring);
-      io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, s.answer, 0);
+      // The name of the answer is read before the handover, because the
+      // handover is the last thing this thread does with the slot.
+      const uint64_t answer_name = s.answer;
+      WM_HANDOVER_SEND(&s);
+      io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, answer_name, 0);
       io_uring_sqe_set_data64(sqe, kSent);
       answers++;
     }
@@ -1041,6 +1072,7 @@ bool ComputePool::submit(mrb_state* mrb, unsigned code_id, std::string_view arg,
     throw;
   }
   s.worker = to;
+  WM_HANDOVER_SEND(&s);
   io_uring_prep_msg_ring(sqe, impl->rings[to].ring_fd, 0, static_cast<uint64_t>(at), 0);
   // The submission itself owes no completion to anyone: the answer comes
   // from the worker, not from the act of sending.
@@ -1055,6 +1087,7 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer* out) {
   if (impl_ == nullptr) return false;
   for (Slot& s : impl_->slots) {
     if (s.busy && s.answer == answer) {
+      WM_HANDOVER_TAKE(&s);
       out->bytes.swap(s.out);
       out->user_bytes.swap(s.user_out);
       out->user_changed = s.user_changed;
