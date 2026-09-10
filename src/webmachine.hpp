@@ -2507,6 +2507,11 @@ struct ReqView {
   // -1 says the body is where `content` points. content_len is the
   // length either way.
   int content_fd = -1;
+  // RFC 9110 6.4: is the whole body here? False says the client declared
+  // content that has not all arrived. The flow walks the head either
+  // way, and the three nodes that read content stop rather than ask a
+  // callback about a body that is still coming.
+  bool content_ready = true;
 };
 
 // RFC 9110 5.3: every line of one field, joined with `sep`, in the
@@ -2756,6 +2761,14 @@ struct Resource {
     bool can_park = false;
     // It stopped, and the reactor has the job now.
     bool stopped = false;
+    // #36: the third reason a run stops, beside a worker and a watcher.
+    // This one owes nothing to the reactor: the connection is already
+    // reading the body, and the run goes on when the last octet lands.
+    bool wants_body = false;
+    // #36: the walk asked about content once. Set at the first of the
+    // three nodes that read it, so a walk that comes back to that node
+    // does not stop on it a second time.
+    bool content_seen = false;
     // The worker answered, and the answer is `answer`. The node the run
     // re-enters reads this instead of calling its callback - that is the
     // whole of "the graph carries on from B8".

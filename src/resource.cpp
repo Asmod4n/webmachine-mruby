@@ -1446,6 +1446,34 @@ mrb_value run_engine(mrb_state* mrb, const Resource& res, bool resuming) {
   bool halted = false;
   int& chosen = r.chosen;
   while (!halted) {
+    // RFC 9110 6.4: kN11 runs create_path or process_post, and kO14 and
+    // kP3 run content_types_accepted. Those three read the request
+    // content, and no node above them does - so the walk reaches here
+    // on the head alone, and a request refused above never had its body
+    // read.
+    //
+    // #36: the walk stops here while content is still arriving. This
+    // stop owes nothing to a worker or to the ring: the connection is
+    // already taking the octets, and it makes the round ready again
+    // when the last one lands. `resuming` above brings the walk back to
+    // this same node.
+    //
+    // A run that cannot park walks on and reads what arrived - that is
+    // the konst tier and the error resource, and neither is called
+    // through a frame that could hold a stopped run.
+    if (mrb_unlikely(!res.run.content_seen &&
+                     (n == Node::kN11 || n == Node::kO14 || n == Node::kP3))) {
+      res.run.content_seen = true;
+      if (mrb_unlikely(res.run.req != nullptr && !res.run.req->content_ready &&
+                       res.run.can_park)) {
+        res.run.stop_node = n;
+        res.run.stop_status = status;
+        res.run.chosen = chosen;
+        res.run.wants_body = true;
+        res.run.stopped = true;
+        return mrb_nil_value();
+      }
+    }
     switch (n) {
       case Node::kB12: {
         if (!res.cb_known_methods.has) break;
