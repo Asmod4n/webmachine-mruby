@@ -1151,7 +1151,15 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   // waited for the body, so what sits behind the head is a part of it -
   // and request.body must answer nothing rather than that part.
   if (r.content_length != 0 && b->res->takes_body) {
-    if (st.spill.fd >= 0) {
+    // #36: is the whole body here? The walk reads this at kN11, kO14
+    // and kP3 and stops there while octets are still coming. Every node
+    // above them decided on the head alone.
+    rv.content_ready = st.content_need == 0;
+    if (!rv.content_ready) {
+      // Nothing is bound while octets are still coming. The walk stops
+      // at the first node that reads content, and the resume binds the
+      // whole body - a part of one is never handed to a callback.
+    } else if (st.spill.fd >= 0) {
       // RFC 9110 6.4: this body is a file. request.body reads it from
       // offset 0, and spill_written is how far the octets go.
       rv.content_fd = st.spill.fd;
@@ -1324,7 +1332,10 @@ Http1::ComputeRound Http1::start_compute_round(Conn& st, const BoundStart& s, st
   // outlives it. BoundStart::off is already past the head, which is
   // what the parse has to carry on from.
   off = s.off;
-  if (s.content_length != 0) {
+  // #36: a run that waits for the body is not stepping over it - the
+  // octets are in the connection's hold and the run reads them when the
+  // last one lands. BoundStart::off is already past what arrived.
+  if (s.content_length != 0 && !st.run_wants_body) {
     const size_t avail = s.viewlen - off;
     const size_t skip = s.content_length < avail ? s.content_length : avail;
     off += skip;
@@ -1446,6 +1457,14 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         park = st.park_take(&mine_round);
         me.park = park;
       }
+      // #36: a run waiting for the body owes nothing to a worker and
+      // nothing to the ring. The connection is already taking the
+      // octets, and the last one makes this round ready - so there is
+      // no crossing to make and no descriptor to arm.
+      if (mrb_unlikely(res.run.wants_body)) {
+        mine_round.wants_body = true;
+        mine_round.jobs_owed = 0;
+      } else {
       compute_task_hand_over(st, mine_round, park, res);
       // #30: the same moment for a watcher. It is a value of the
       // reactor's VM and it must reach the connection's hash before the
@@ -1457,6 +1476,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         mine_round.answer_value[0] = mrb_nil_value();
         mine_round.jobs_owed = 0;
         mine_round.answer_ready = true;
+      }
       }
 
       // The walk's own state travels with the frame. res.run belongs to
@@ -1533,6 +1553,31 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         have_body = false;
         body.clear();
         rhdrs.assign(refused.retry_after);
+      } else if (mrb_unlikely(mine_round.wants_body)) {
+        // #36: the body is whole. Nothing answered for this run - it
+        // waited on octets, not on a worker - so the round carries no
+        // job and the walk runs the node itself, with the content in
+        // reach. `content_seen` is already set, so it does not stop on
+        // that node a second time.
+        //
+        // res.run.req points at prep.rv, which the hold re-pointed at
+        // the copied head. So the body binds here, in the frame that
+        // outlives the parse.
+        if (st.spill.fd >= 0) {
+          prep.rv.content_fd = st.spill.fd;
+          prep.rv.content_len = st.spill.written;
+          st.spill.bound = true;
+        } else {
+          prep.rv.content = st.body_hold.empty() ? nullptr : st.body_hold.data();
+          prep.rv.content_len = st.body_hold.size();
+        }
+        prep.rv.content_ready = true;
+        res.run.wants_body = false;
+        mine_round.wants_body = false;
+        st.run_wants_body = false;
+        status = resource_resume(res, {&body, &have_body, &rhdrs},
+                                 {mine_round.answer_value, mine_round.job_what,
+                                  mine_round.user_value, mine_round.user_have, 0});
       } else {
         // #30: the whole round, in the order the stop handed it over.
         // A watcher and a single task are one entry of it.
@@ -1744,25 +1789,31 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     if (len == 0) return true;
   }
 
-  // RFC 9110 6.4: a bound route's head waits in the carry until the whole
-  // body is here - the run reads the body, so it cannot answer before the
-  // last byte. Nothing is parsed again until body_need is paid off.
+  // RFC 9110 6.4: the octets of a body a run is waiting for. The run
+  // already walked the head and stopped at kN11, kO14 or kP3; these go
+  // to the hold it will read, and the last one makes its round ready.
+  // Nothing behind them is parsed until content_need is paid off.
   if (mrb_unlikely(st.content_need != 0)) {
     const size_t take = len < st.content_need ? len : st.content_need;
     if (st.spill.fd >= 0) {
-      // RFC 9110 6.4: this body is a file. Only the head waits in the
-      // carry, so the octets go straight through.
       if (mrb_unlikely(!st.spill.take(data, take))) return false;
-      st.content_need -= take;
-      if (st.content_need != 0) return true;
-      data += take;
-      len -= take;
-    } else if (len < st.content_need) {
-      st.content_need -= len;
-      st.carry.append(data, len);
-      return true;
     } else {
-      st.content_need = 0;
+      st.body_hold.append(data, take);
+    }
+    st.content_need -= take;
+    data += take;
+    len -= take;
+    if (st.content_need != 0) return true;
+    // #36: the body is whole. The run stopped on it owes nothing to a
+    // worker, so this is what answers it: the round is ready, and
+    // spell_next_round resumes the walk at the node it stopped on.
+    if (mrb_unlikely(st.run_wants_body)) {
+      Conn::Round* const r = st.park_at(st.parked.co ? st.parked.co.promise().park : -1);
+      if (r != nullptr) r->answer_ready = true;
+      // No return: what came behind the last octet is a pipelined
+      // request, and the guard below puts it in the carry. RFC 9112
+      // 9.3.2 answers in the order the requests came, so it may not be
+      // parsed while this run is still stopped.
     }
   }
 
@@ -1965,24 +2016,21 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
               st.spill.close_file();
               return fail(st, 500, sink, lflags);
             }
-            // Only the head waits in the carry now. The body that
-            // already arrived is in the file, and the rest goes there
-            // as it comes.
-            if (in_place) {
-              st.carry.assign(view + off, head_len);
-            } else {
-              // The front goes first and the tail second: erase(0, off)
-              // drops what came before this request, and only then is
-              // head_len an index into this request's own head.
-              st.carry.erase(0, off);
-              st.carry.erase(head_len);
-            }
-            return true;
+          } else {
+            // #36: a body under kBodySpill waits in body_hold. It cannot
+            // stay behind the head in the carry: the run is about to
+            // read that head, and the carry is where a pipelined
+            // request waits.
+            st.body_hold.assign(view + off + head_len, body_here);
           }
-          const size_t rest = viewlen - off;
-          if (in_place) st.carry.assign(view + off, rest);
-          else st.carry.erase(0, off);
-          return true;
+          // #36: the walk starts now, on the head. It stops at kN11,
+          // kO14 or kP3 - the three nodes that read content - and the
+          // last octet of the body makes its round ready again.
+          //
+          // Before this the head waited in the carry until the whole
+          // body had arrived, so is_authorized? and forbidden? were
+          // asked after the upload rather than before it.
+          st.run_wants_body = true;
         }
         // #80: a resource that declared a compute task is answered inside a
         // frame that can stop. The frame spells the whole answer,
@@ -1994,10 +2042,16 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // declaration of its own before it can reach this path.
         // #30: a value round stops the run as much as a node does, and
         // a resource may declare only values.
+        // #36: a run that waits for the body stops as much as a compute
+        // task does, so it needs the same frame. Its BoundStart::off is
+        // past the octets that already arrived - they are in the hold,
+        // and nothing steps over them.
         if (mrb_unlikely(b->res->compute != 0 || b->res->watch != 0 ||
-                           b->res->value_jobs != 0 || b->res->value_watch != 0)) {
+                           b->res->value_jobs != 0 || b->res->value_watch != 0 ||
+                           st.run_wants_body)) {
+          const size_t past = head_len + (st.run_wants_body ? body_here : 0);
           const BoundStart start = {b,        view + off, view,       viewlen,
-                                    off + head_len,       head_len,   method,
+                                    off + past,           head_len,   method,
                                     method_len,           path,       path_len,
                                     w.content_length,     headers,    num_headers,
                                     spans,    slot.table, facts,      vals,

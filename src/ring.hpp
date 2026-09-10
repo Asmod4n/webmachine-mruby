@@ -1356,7 +1356,10 @@ class Ring {
     // Unless the name never reached the kernel at all - a refusal this
     // process spelled itself owes no completion, so nothing else would
     // ever come back to collect it.
-    if (mrb_unlikely(App::file_answerable(c.app)) && !c.sending) continue_conn(idx);
+    if (mrb_unlikely(App::file_answerable(c.app) || App::run_resumable(c.app)) &&
+        !c.sending) {
+      continue_conn(idx);
+    }
     if (mrb_unlikely(closing)) {
       round_closed(idx, c);
       if (!c.live) return;

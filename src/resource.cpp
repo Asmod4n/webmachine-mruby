@@ -2614,6 +2614,11 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out) {
   resource_forget_userdata(res);
   res.run.stopped = false;
   res.run.answered = false;
+  // #36: both belong to one walk. Left set, the next request on this
+  // resource would skip the question at the nodes that read content and
+  // reach one of them with nothing bound.
+  res.run.wants_body = false;
+  res.run.content_seen = false;
   res.run.headers = out.headers;
   out.headers->clear();
   res.run.body = out.body;

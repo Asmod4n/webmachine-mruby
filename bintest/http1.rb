@@ -360,3 +360,105 @@ assert('h1: a resource that reads no body keeps none of it') do
     end
   end
 end
+
+# #36: the flow walks the head, and only kN11, kO14 and kP3 read the
+# body. So a request the flow refuses above those nodes is answered
+# while the client is still sending, and its octets are never read.
+assert('h1: a refused upload is answered before its body arrives') do
+  src = <<~RUBY
+    class Guarded < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def is_authorized?(header)
+        header.to_s == 'letmein'
+      end
+
+      def process_post
+        response.body = "took \#{request.body.size}"
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 8 * 1024 * 1024
+        app.add_route [:*], Guarded
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-early') do |sock|
+    # No credentials. is_authorized? is asked at kB8, far above the
+    # nodes that read content, so the 401 comes back before the body
+    # has been sent - the server never reads those octets.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{4 * 1024 * 1024}\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 401'), head.lines.first.to_s
+    end
+
+    # With credentials the walk reaches kN11, stops there, and goes on
+    # when the last octet lands. The handler sees the whole body.
+    UNIXSocket.open(sock) do |s|
+      payload = 'p' * (512 * 1024)
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nAuthorization: letmein\r\n" \
+              "Content-Length: #{payload.bytesize}\r\n\r\n")
+      payload.scan(/.{1,65536}/m).each { |chunk| s.write(chunk) }
+      _, body = wm_read(s)
+      assert_equal "took #{payload.bytesize}", body
+    end
+
+    # And a small body, which never reaches a file.
+    UNIXSocket.open(sock) do |s|
+      payload = 'q' * 1000
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nAuthorization: letmein\r\n" \
+              "Content-Length: #{payload.bytesize}\r\n\r\n")
+      s.write(payload)
+      _, body = wm_read(s)
+      assert_equal "took #{payload.bytesize}", body
+    end
+  end
+end
+
+# RFC 9112 9.3.2: a request pipelined behind an upload waits its turn.
+# Its head can land in the same receive as the upload's last octet, and
+# it must not be parsed while the run that reads the body is stopped.
+assert('h1: a request pipelined behind an upload is answered after it') do
+  src = <<~RUBY
+    class Sink < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        response.body = "took \#{request.body.size}"
+        true
+      end
+
+      def to_html
+        'plain'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 8 * 1024 * 1024
+        app.add_route [:*], Sink
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-pipe') do |sock|
+    UNIXSocket.open(sock) do |s|
+      payload = 'z' * (400 * 1024)
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{payload.bytesize}\r\n\r\n")
+      s.write(payload[0, payload.bytesize - 16])
+      # The last octets and the next request's head, in one write.
+      s.write(payload[-16, 16] + "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      _, first = wm_read(s)
+      assert_equal "took #{payload.bytesize}", first
+      _, second = wm_read(s)
+      assert_equal 'plain', second
+    end
+  end
+end

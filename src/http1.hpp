@@ -1040,6 +1040,15 @@ class Http1 {
     // the bytes themselves collect in `carry` behind the head, which
     // keeps the hand-off zero-copy. A konst route keeps skipping.
     size_t content_need = 0;
+    // RFC 9110 6.4: a body under kBodySpill, while the run that asked
+    // for it waits. It cannot stay in `carry`: the run already read its
+    // head from there, and a pipelined request behind it wants that
+    // buffer. A body of kBodySpill or more is in `spill` instead.
+    std::string body_hold;
+    // #36: a run of this connection stopped at kN11, kO14 or kP3 and
+    // waits for the rest of the body. The last octet makes its round
+    // ready, and spell_next_round resumes it.
+    bool run_wants_body = false;
     // RFC 9110 6.4: a body of kBodySpill or more, in a file instead of
     // in the carry. The file is this connection's, because h1 answers
     // one request at a time.
@@ -1132,6 +1141,11 @@ class Http1 {
       // How many jobs this stop handed over, and how many answered. The
       // run goes on when the two are equal.
       uint8_t jobs_owed = 0;
+      // #36: this round's run stopped at a node that reads content, and
+      // the body is still arriving. Nothing was handed to a worker or
+      // to the ring - the connection makes the round ready when the
+      // last octet lands.
+      bool wants_body = false;
       uint8_t jobs_answered = 0;
       // Whose VM the answer is decoded back into. It outlives the
       // crossing, because the answer comes long after.
@@ -1406,6 +1420,8 @@ class Http1 {
       carry.clear();
       content_skip = 0;
       content_need = 0;
+      body_hold.clear();
+      run_wants_body = false;
       spill.close_file();
       listener = li;
       packetized = pkt;
@@ -1713,6 +1729,16 @@ class Http1 {
   static bool file_answerable(const Conn& st) {
     return st.file != nullptr &&
            (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone);
+  }
+  // #36: a run of this connection stopped for the request body, and the
+  // body is whole. Its answer owes the ring no completion - the octets
+  // came in on the receive that just fed the parser - so nothing else
+  // would ever come back to collect it. The reactor asks this instead,
+  // the way it asks file_answerable.
+  static bool run_resumable(const Conn& st) {
+    if (mrb_likely(!st.run_parked())) return false;
+    const Conn::Round* const r = st.park_at(st.parked.co.promise().park);
+    return r != nullptr && r->answer_ready;
   }
   // 0 = do not map; otherwise the exact length to map. One question, one
   // answer - the split that made the read path ask "map?" and then use the
