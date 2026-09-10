@@ -584,6 +584,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
   bool started_xfer = false;
   if (step.sends_content) {
     r.st.asset = ae;
+    r.st.become(ConnMode::kAsset);
     r.st.asset_off = step.first_byte_pos;
     r.st.asset_end = step.first_byte_pos + step.content_length;
     started_xfer = true;
@@ -634,6 +635,7 @@ Http1::Took Http1::answer_from_assets(Round& r, std::string& sink, Plan* plan) {
         r.st.asset_off += take;
         if (r.st.asset_off == r.st.asset_end) {
           r.st.asset = nullptr;
+          r.st.become(ConnMode::kHead);
           r.st.asset_off = 0;
           r.st.asset_end = 0;
         }
@@ -1824,11 +1826,21 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       break;
   }
 
+  // The state and the pointers must say the same thing. The debug
+  // build is what every test in this tree runs, so a drift fails the
+  // suite instead of answering a request from a state nobody declared.
+  if (kDebugBuild && mrb_unlikely(!st.mode_agrees())) {
+    std::fprintf(stderr, "webmachine: a connection says it is %s, and its pointers do not\n",
+                 conn_mode_name(st.mode));
+    std::abort();
+  }
+
   if (mrb_unlikely(st.asset != nullptr)) {
     if (mrb_unlikely(st.carry.size() + len > kMaxHead)) {
       st.carry.clear();
       st.content_skip = 0;
       st.asset = nullptr;
+      st.become(ConnMode::kHead);
       return false;
     }
     st.carry.append(data, len);
@@ -2229,6 +2241,7 @@ bool Http1::ws_upgrade(Conn& st, const WsUpgrade& up, std::string& sink) {
 
   ws_open(wsc, dparams);
   st.ws = wsc;
+  st.become(ConnMode::kWs);
   st.carry.clear();
   st.content_skip = 0;
   if (!up.rest.empty()) return ws_feed(st.ws, up.rest, sink);
@@ -2312,6 +2325,7 @@ bool Http1::sse_begin(Conn& st, const SseBegin& req, std::string& sink) {
       "\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
       "Transfer-Encoding: chunked\r\n\r\n");
   st.sse = s;
+  st.become(ConnMode::kSse);
   st.carry.clear();
   st.content_skip = 0;
   return true;

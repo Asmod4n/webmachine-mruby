@@ -1920,6 +1920,7 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
     st.asset_off += take;
     if (st.asset_off == lim) {
       st.asset = nullptr;
+      st.become(ConnMode::kHead);
       st.asset_off = 0;
       st.asset_end = 0;
     }

@@ -129,6 +129,56 @@ struct FileWriter {
   bool put(const char* p, size_t n) const { return spill->take(p, n); }
 };
 
+// What a connection is, named. The state is implied today by which of
+// four pointers is not null, and nothing says that they are one
+// another's alternatives or that a WebSocket never parses a head again.
+// This says it.
+//
+// It is not the dispatch. nm -S on the host build says a switch on this
+// costs 87 bytes in feed_parse and saves nothing - the four pointers
+// are adjacent members, so the chain the feed walks is one cache line
+// and three predicted tests. The feed keeps them. What this carries is
+// the name, the rule about which move is legal, and the check that the
+// two agree.
+enum class ConnMode : uint8_t { kHead, kAsset, kWs, kSse };
+
+inline constexpr const char* conn_mode_name(ConnMode m) {
+  switch (m) {
+    case ConnMode::kHead: return "reading request heads";
+    case ConnMode::kAsset: return "sending an asset";
+    case ConnMode::kWs: return "a WebSocket";
+    case ConnMode::kSse: return "an event stream";
+  }
+  return "unknown";
+}
+
+// Which move is legal. A connection reads heads until it becomes
+// something else, and only an asset comes back - an upgrade and an
+// event stream end with the connection.
+inline constexpr bool conn_move_ok(ConnMode from, ConnMode to) {
+  if (from == to) return true;
+  switch (from) {
+    case ConnMode::kHead: return true;
+    case ConnMode::kAsset: return to == ConnMode::kHead;
+    case ConnMode::kWs: return false;
+    case ConnMode::kSse: return false;
+  }
+  return false;
+}
+
+// The machine, proved where it is written rather than where it runs.
+static_assert(conn_move_ok(ConnMode::kHead, ConnMode::kWs));
+static_assert(conn_move_ok(ConnMode::kHead, ConnMode::kSse));
+static_assert(conn_move_ok(ConnMode::kHead, ConnMode::kAsset));
+static_assert(conn_move_ok(ConnMode::kAsset, ConnMode::kHead));
+// An upgraded connection is that protocol until it closes.
+static_assert(!conn_move_ok(ConnMode::kWs, ConnMode::kHead));
+static_assert(!conn_move_ok(ConnMode::kSse, ConnMode::kHead));
+static_assert(!conn_move_ok(ConnMode::kWs, ConnMode::kSse));
+// Every state reaches kHead again, or ends the connection.
+static_assert(conn_move_ok(ConnMode::kAsset, ConnMode::kHead) &&
+              !conn_move_ok(ConnMode::kWs, ConnMode::kHead));
+
 // What one buffer of octets did to a body: there was no body to fill,
 // it is still short, it finished it, or the write failed.
 enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed };
@@ -1095,6 +1145,32 @@ class Http1 {
     // the one the feed could not have skipped.
     enum class Body : uint8_t { kNone, kMem, kFile };
     Body body_to = Body::kNone;
+    // What this connection is. See ConnMode: the feed still reads the
+    // pointers, and this is what a reader, a log line and the debug
+    // build's check read instead of guessing from them.
+    ConnMode mode = ConnMode::kHead;
+    // The only way the state changes. The debug build refuses a move
+    // the machine does not have; the ship build stores the byte.
+    void become(ConnMode to) {
+      if (kDebugBuild && !conn_move_ok(mode, to)) {
+        std::fprintf(stderr, "webmachine: a connection went from %s to %s, which it cannot\n",
+                     conn_mode_name(mode), conn_mode_name(to));
+        std::abort();
+      }
+      mode = to;
+    }
+    // Do the pointers say what the mode says? The debug build asks once
+    // per buffer, so a state that drifted fails a test rather than
+    // answering a request wrongly.
+    bool mode_agrees() const {
+      switch (mode) {
+        case ConnMode::kHead: return asset == nullptr && ws == nullptr && sse == nullptr;
+        case ConnMode::kAsset: return asset != nullptr && ws == nullptr && sse == nullptr;
+        case ConnMode::kWs: return ws != nullptr && asset == nullptr && sse == nullptr;
+        case ConnMode::kSse: return sse != nullptr && asset == nullptr && ws == nullptr;
+      }
+      return false;
+    }
     // No RFC: a half-open span into the wire body of an asset (see
     // Assets::wire_iov), not into the file - a gzip member's octets are
     // not the stored ones.
@@ -1463,6 +1539,7 @@ class Http1 {
       content_skip = 0;
       content_need = 0;
       body_to = Body::kNone;
+      mode = ConnMode::kHead;
       body_hold.clear();
       run_wants_body = false;
       spill.close_file();
