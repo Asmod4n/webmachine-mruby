@@ -632,6 +632,16 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     return true;
   }
   H2Stream& stx = h2.open(stream_id);
+  // Decide, then do: what every DATA frame of this stream earns, worked
+  // out once here instead of per frame in the feed.
+  if (!claimed.have) {
+    stx.data = H2Stream::Data::kRefuse;
+  } else if (asset != nullptr || route == kNoRoute) {
+    stx.data = H2Stream::Data::kDrop;
+  } else {
+    const Bundle& db = bundles_[apps_[st0.listener].base + route];
+    stx.data = db.bound && db.res->takes_body ? H2Stream::Data::kKeep : H2Stream::Data::kDrop;
+  }
   stx.end_headers = true;
   stx.facts = facts;
   stx.head_method = head_only;
@@ -2000,7 +2010,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // RFC 9110 8.6: content with no declared length is refused here,
         // at its first octet and before it is read. h2_refuse_unsized
         // says why the head is not the place for it.
-        if (mrb_unlikely(dlen != 0 && !stp->content_length_given)) {
+        if (mrb_unlikely(stp->data == H2Stream::Data::kRefuse && dlen != 0)) {
           h2_credit_connection(sink, flen);
           if (!h2_refuse_unsized(st0, *stp, sink)) return false;
           h2.close_stream(stream);
@@ -2012,19 +2022,14 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           break;
         }
         stp->content_received += dlen;
-        // Stored only where a bound resource will read them - a konst
-        // route's or a miss's bytes are counted and dropped, so idle
-        // streams cannot hold megabytes nobody will ever ask for.
-        // RFC 9110 6.4: kept only where a node of this resource can read
-        // them. Only content_types_accepted, create_path and process_post
-        // do, and the fold wrote the answer on the resource. A konst
-        // route's octets, a miss's, and now a resource that reads no
-        // body at all: counted and dropped, so an idle stream cannot
-        // hold megabytes nobody will ever ask for.
-        const Bundle* const db =
-            stp->route == kNoRoute ? nullptr
-                                   : &bundles_[apps_[st0.listener].base + stp->route];
-        if (db != nullptr && db->bound && db->res->takes_body) {
+        // RFC 9110 6.4: stored only where a node of this resource can
+        // read them. Only content_types_accepted, create_path and
+        // process_post do, and the fold wrote that answer on the
+        // resource; the head wrote it on the stream. A konst route's
+        // octets, a miss's, and a resource that reads no body at all
+        // are counted and dropped, so an idle stream cannot hold
+        // megabytes nobody will ever ask for.
+        if (stp->data == H2Stream::Data::kKeep) {
           const char* const bp = reinterpret_cast<const char*>(dp);
           // RFC 9110 6.4: from kBodySpill up the body goes to a file, so
           // the connection holds its streams and not their uploads. The

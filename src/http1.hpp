@@ -130,6 +130,18 @@ struct H2Stream {
   // RFC 9110 8.6: what the sender said it would send, and whether it said.
   size_t content_length = 0;
   bool content_length_given = false;
+  // What a DATA frame on this stream earns, decided once at the head.
+  // The DATA path is per frame, and the answer is the same for every
+  // frame of one stream: whether the client declared a length, whether
+  // a route matched, and whether that route's resource reads content.
+  // Reading it out of the route table again per frame was two loads
+  // that always answered the same.
+  //
+  //   kKeep    - a bound resource reads this content, so it is stored.
+  //   kDrop    - nothing reads it: counted, credited and discarded.
+  //   kRefuse  - no length was declared, so the first octet earns 411.
+  enum class Data : uint8_t { kKeep, kDrop, kRefuse };
+  Data data = Data::kDrop;
   // RFC 9113 8.3: a parked request is answered after hdrbuf has been
   // reused by the next dispatch, so its fields cannot be lent.
   //
