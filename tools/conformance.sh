@@ -6,6 +6,19 @@
 #   tools/conformance.sh h2         h2spec, RFC 9113 + 7541 (146 cases)
 #   tools/conformance.sh ws         Autobahn fuzzingserver, RFC 6455
 #   tools/conformance.sh ws-h2      the same suite through the h2 bridge
+#   tools/conformance.sh ws-serve   the echo server alone, and it stays up
+#   tools/conformance.sh ws-client  the suite alone, against WS_HOST
+#
+# The last two are one run on two machines. The Autobahn image is built
+# for amd64 and for nothing else, so a machine of another architecture
+# cannot run the suite at all. Such a machine serves, and an amd64
+# machine asks:
+#
+#   on the arm64 box:  tools/conformance.sh ws-serve
+#   on an amd64 box:   WS_HOST=<the other box> tools/conformance.sh ws-client
+#
+# The server binds every address, so the second machine reaches it by
+# name or by number.
 #
 # Both suites are containers (podman), both talk TCP to a server this
 # script starts and stops. The server is found and killed through its
@@ -26,6 +39,9 @@ cd "$(dirname "$0")/.."
 
 SUITE="${1:-}"
 PORT="${PORT:-9977}"
+# Which server the suite asks. It is this machine, unless a caller on
+# another machine names the one that serves.
+WS_HOST="${WS_HOST:-127.0.0.1}"
 CASES="${CASES:-\"*\"}"
 # The ship build's binary, unless the caller names another: CI runs the
 # suites against the debug build it already made.
@@ -34,8 +50,11 @@ MRBC="${MRBC:-mruby/build/host/mrbc/bin/mrbc}"
 OUT=build/conformance
 PIDFILE="$OUT/server.pid"
 
-[ -x "$BIN" ] || { echo "$BIN missing - run: rake" >&2; exit 1; }
-[ -x "$MRBC" ] || { echo "$MRBC missing - run: rake" >&2; exit 1; }
+# ws-client starts no server, so it needs neither binary.
+if [ "$SUITE" != "ws-client" ]; then
+  [ -x "$BIN" ] || { echo "$BIN missing - run: rake" >&2; exit 1; }
+  [ -x "$MRBC" ] || { echo "$MRBC missing - run: rake" >&2; exit 1; }
+fi
 # Both suites ship as containers, and which runtime a machine has is not
 # something either suite cares about: podman where there is one, docker
 # where there is not. Named in one variable so the two call sites cannot
@@ -113,45 +132,10 @@ merge_reports() {
   ' "$OUT"
 }
 
-case "$SUITE" in
-h2)
-  start_server examples/hello.rb
-  trap stop_server EXIT INT TERM
-  if [ -n "${H2SPEC:-}" ]; then
-    "$H2SPEC" -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
-  else
-    "$OCI" run --rm --network host summerwind/h2spec \
-      -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
-  fi
-  ;;
-ws)
-  [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
-  start_server test/conformance/ws_echo.rb
-  trap stop_server EXIT INT TERM
-  # How long it takes, measured, because it looks like a stall twice
-  # otherwise: 517 cases in 735 s, of which 12.x and 13.x are 713 s.
-  # Every other case together is 13 s. wstest writes its report at the
-  # end, and a deflate case takes up to 14 s, so a screen that shows
-  # 13.3.9 for a quarter of a minute is a suite that is working. The
-  # cost is the suite's, not this server's: during the run wstest holds
-  # 66% of a core and the server 33%, and a 1 MiB deflate echo measures
-  # 96 MiB/s here against 112 MiB/s without the extension.
-  #
-  # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
-  # answers in seconds where the full suite answers in minutes, which is
-  # the difference between finding a stall and waiting one out.
-  #
-  # One wstest per chunk, not one for all 517 cases. The runner killed a
-  # whole-suite wstest twice with SIGKILL, both times about 450 cases in
-  # and inside the deflate group, and a killed client writes no report.
-  # A chunk is a fresh Python process, so what the client holds goes back
-  # between chunks, and a failure names a group of cases rather than the
-  # suite. What is covered does not change: the chunks are every case.
-  #
-  # CASES overrides the split, so one group can still be asked for on its
-  # own. The suite has no section 8 and no section 11, so neither is
-  # named here - a glob that matches nothing is what makes wstest wait
-  # for ever, and the deadline below is what catches one.
+# The suite itself: the chunks, their reports, and the merge. Two
+# commands call it - `ws`, which starts a server first, and
+# `ws-client`, which asks a server on another machine.
+run_suite() {
   if [ "$CASES" = '"*"' ]; then
     CHUNKS='"1.*","2.*","3.*","4.*","5.*"
 "6.*","7.*","9.*","10.*"
@@ -183,7 +167,7 @@ ws)
     rdir="reports-$chunk_no"
     mkdir -p "$OUT/$rdir"
     cat > "$OUT/fuzzingclient.json" <<JSON
-{ "servers": [{ "url": "ws://127.0.0.1:$PORT/echo" }],
+{ "servers": [{ "url": "ws://$WS_HOST:$PORT/echo" }],
   "outdir": "/reports",
   "cases": [$chunk],
   "exclude-cases": [],
@@ -223,6 +207,63 @@ JSON
   done || exit 1
   merge_reports
   echo "report: $OUT/reports/index.html"
+}
+
+case "$SUITE" in
+h2)
+  start_server examples/hello.rb
+  trap stop_server EXIT INT TERM
+  if [ -n "${H2SPEC:-}" ]; then
+    "$H2SPEC" -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
+  else
+    "$OCI" run --rm --network host summerwind/h2spec \
+      -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
+  fi
+  ;;
+ws)
+  [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
+  start_server test/conformance/ws_echo.rb
+  trap stop_server EXIT INT TERM
+  # How long it takes, measured, because it looks like a stall twice
+  # otherwise: 517 cases in 735 s, of which 12.x and 13.x are 713 s.
+  # Every other case together is 13 s. wstest writes its report at the
+  # end, and a deflate case takes up to 14 s, so a screen that shows
+  # 13.3.9 for a quarter of a minute is a suite that is working. The
+  # cost is the suite's, not this server's: during the run wstest holds
+  # 66% of a core and the server 33%, and a 1 MiB deflate echo measures
+  # 96 MiB/s here against 112 MiB/s without the extension.
+  #
+  # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
+  # answers in seconds where the full suite answers in minutes, which is
+  # the difference between finding a stall and waiting one out.
+  #
+  # One wstest per chunk, not one for all 517 cases. The runner killed a
+  # whole-suite wstest twice with SIGKILL, both times about 450 cases in
+  # and inside the deflate group, and a killed client writes no report.
+  # A chunk is a fresh Python process, so what the client holds goes back
+  # between chunks, and a failure names a group of cases rather than the
+  # suite. What is covered does not change: the chunks are every case.
+  #
+  # CASES overrides the split, so one group can still be asked for on its
+  # own. The suite has no section 8 and no section 11, so neither is
+  # named here - a glob that matches nothing is what makes wstest wait
+  # for ever, and the deadline below is what catches one.
+  run_suite
+  ;;
+ws-serve)
+  # The server alone, so a machine that cannot run the suite can still
+  # be the one under test. It stays up until this command is stopped.
+  start_server test/conformance/ws_echo.rb
+  trap stop_server EXIT INT TERM
+  echo "serving ws://0.0.0.0:$PORT/echo - stop with ctrl-c"
+  while [ -f "$PIDFILE" ]; do sleep 1; done
+  ;;
+ws-client)
+  # The suite alone, against the server WS_HOST names. Nothing is
+  # started here and nothing is stopped.
+  [ -n "$OCI" ] || { echo 'the Autobahn suite is a container only - podman or docker' >&2; exit 1; }
+  [ "$WS_HOST" != "127.0.0.1" ] || echo 'WS_HOST is this machine - name the one that serves' >&2
+  run_suite
   ;;
 ws-h2)
   # RFC 8441: the same WebSocket, reached through an h2 extended
