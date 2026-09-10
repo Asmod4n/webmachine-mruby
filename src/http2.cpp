@@ -640,7 +640,23 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     stx.data = H2Stream::Data::kDrop;
   } else {
     const Bundle& db = bundles_[apps_[st0.listener].base + route];
-    stx.data = db.bound && db.res->takes_body ? H2Stream::Data::kKeep : H2Stream::Data::kDrop;
+    const bool reads = db.bound && db.res->takes_body;
+    // RFC 9110 6.4: the declared length picks where the octets land,
+    // here, before the first one arrives. A body of kBodySpill or more
+    // opens its file now, so no octet is ever moved from memory into it
+    // part way through; a smaller one takes its buffer once.
+    if (!reads) {
+      stx.data = H2Stream::Data::kDrop;
+    } else if (claimed.value >= kBodySpill) {
+      if (mrb_unlikely(!stx.spill.open_file())) {
+        h2_rst(st0, stream_id, kH2InternalError, sink);
+        return true;
+      }
+      stx.data = H2Stream::Data::kFile;
+    } else {
+      stx.request_content.reserve(claimed.value);
+      stx.data = H2Stream::Data::kMem;
+    }
   }
   stx.end_headers = true;
   stx.facts = facts;
@@ -2010,7 +2026,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // RFC 9110 8.6: content with no declared length is refused here,
         // at its first octet and before it is read. h2_refuse_unsized
         // says why the head is not the place for it.
-        if (mrb_unlikely(stp->data == H2Stream::Data::kRefuse && dlen != 0)) {
+        if (mrb_unlikely(dlen != 0 && stp->data == H2Stream::Data::kRefuse)) {
           h2_credit_connection(sink, flen);
           if (!h2_refuse_unsized(st0, *stp, sink)) return false;
           h2.close_stream(stream);
@@ -2023,44 +2039,30 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         }
         stp->content_received += dlen;
         // RFC 9110 6.4: stored only where a node of this resource can
-        // read them. Only content_types_accepted, create_path and
-        // process_post do, and the fold wrote that answer on the
-        // resource; the head wrote it on the stream. A konst route's
-        // octets, a miss's, and a resource that reads no body at all
-        // are counted and dropped, so an idle stream cannot hold
+        // read them, and in the place the head chose. Only
+        // content_types_accepted, create_path and process_post read a
+        // body, and the fold wrote that answer on the resource; the
+        // head wrote it and the destination on the stream. A konst
+        // route's octets, a miss's, and a resource that reads no body
+        // at all are counted and dropped, so an idle stream cannot hold
         // megabytes nobody will ever ask for.
-        if (stp->data == H2Stream::Data::kKeep) {
+        //
+        // Neither writer below tests where the octets belong. That is
+        // the same switch the frame already needed.
+        {
           const char* const bp = reinterpret_cast<const char*>(dp);
-          // RFC 9110 6.4: from kBodySpill up the body goes to a file, so
-          // the connection holds its streams and not their uploads. The
-          // choice is made on what has arrived, and what arrived before
-          // it goes to the file first. The declared length could decide
-          // it once, as h1 does - every stream with content declares one
-          // now - and that is the next step, not this one.
-          if (stp->spill.fd < 0 && stp->content_received >= kBodySpill) {
-            if (mrb_unlikely(!stp->spill.open_file())) {
-              h2_credit_connection(sink, flen);
-              h2_rst(st0, stream, kH2InternalError, sink);
-              break;
-            }
-            if (mrb_unlikely(!stp->spill.take(stp->request_content.data(),
-                                              stp->request_content.size()))) {
-              stp->spill.close_file();
-              h2_credit_connection(sink, flen);
-              h2_rst(st0, stream, kH2InternalError, sink);
-              break;
-            }
-            std::string().swap(stp->request_content);
+          bool wrote = true;
+          switch (stp->data) {
+            case H2Stream::Data::kMem: wrote = MemWriter{&stp->request_content}.put(bp, dlen); break;
+            case H2Stream::Data::kFile: wrote = FileWriter{&stp->spill}.put(bp, dlen); break;
+            case H2Stream::Data::kDrop: break;
+            case H2Stream::Data::kRefuse: break;
           }
-          if (stp->spill.fd >= 0) {
-            if (mrb_unlikely(!stp->spill.take(bp, dlen))) {
-              stp->spill.close_file();
-              h2_credit_connection(sink, flen);
-              h2_rst(st0, stream, kH2InternalError, sink);
-              break;
-            }
-          } else {
-            stp->request_content.append(bp, dlen);
+          if (mrb_unlikely(!wrote)) {
+            stp->spill.close_file();
+            h2_credit_connection(sink, flen);
+            h2_rst(st0, stream, kH2InternalError, sink);
+            break;
           }
         }
         if (flen != 0) {

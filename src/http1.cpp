@@ -1792,30 +1792,36 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
 
   // RFC 9110 6.4: the octets of a body a run is waiting for. The run
   // already walked the head and stopped at kN11, kO14 or kP3; these go
-  // to the hold it will read, and the last one makes its round ready.
+  // where the head decided, and the last one makes its round ready.
   // Nothing behind them is parsed until content_need is paid off.
-  if (mrb_unlikely(st.content_need != 0)) {
-    const size_t take = len < st.content_need ? len : st.content_need;
-    if (st.spill.fd >= 0) {
-      if (mrb_unlikely(!st.spill.take(data, take))) return false;
-    } else {
-      st.body_hold.append(data, take);
-    }
-    st.content_need -= take;
-    data += take;
-    len -= take;
-    if (st.content_need != 0) return true;
-    // #36: the body is whole. The run stopped on it owes nothing to a
-    // worker, so this is what answers it: the round is ready, and
-    // spell_next_round resumes the walk at the node it stopped on.
-    if (mrb_unlikely(st.run_wants_body)) {
-      Conn::Round* const r = st.park_at(st.parked.co ? st.parked.co.promise().park : -1);
-      if (r != nullptr) r->answer_ready = true;
-      // No return: what came behind the last octet is a pipelined
-      // request, and the guard below puts it in the carry. RFC 9112
-      // 9.3.2 answers in the order the requests came, so it may not be
-      // parsed while this run is still stopped.
-    }
+  //
+  // One switch, and it is the question this function had to ask anyway:
+  // are these octets a body or the head of a request. The two body arms
+  // name a writer, and each writer's code holds no test about where the
+  // octets go, because the head answered that before they arrived.
+  BodyTake took = BodyTake::kNone;
+  switch (st.body_to) {
+    case Conn::Body::kNone: break;
+    case Conn::Body::kMem: took = take_body(st, MemWriter{&st.body_hold}, data, len); break;
+    case Conn::Body::kFile: took = take_body(st, FileWriter{&st.spill}, data, len); break;
+  }
+  switch (took) {
+    case BodyTake::kNone: break;
+    case BodyTake::kFailed: return false;
+    case BodyTake::kMore: return true;
+    case BodyTake::kWhole:
+      // #36: the body is whole. The run stopped on it owes nothing to a
+      // worker, so this is what answers it: the round is ready, and
+      // spell_next_round resumes the walk at the node it stopped on.
+      if (mrb_unlikely(st.run_wants_body)) {
+        Conn::Round* const r = st.park_at(st.parked.co ? st.parked.co.promise().park : -1);
+        if (r != nullptr) r->answer_ready = true;
+        // No return: what came behind the last octet is a pipelined
+        // request, and the guard below puts it in the carry. RFC 9112
+        // 9.3.2 answers in the order the requests came, so it may not
+        // be parsed while this run is still stopped.
+      }
+      break;
   }
 
   if (mrb_unlikely(st.asset != nullptr)) {
@@ -2011,18 +2017,24 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // holds the head and not the upload. The length is declared -
           // this server refuses a chunked request body - so the choice
           // is made once, here, and never part way through.
-          if (w.content_length >= kBodySpill && st.spill.fd < 0) {
+          if (w.content_length >= kBodySpill) {
             if (mrb_unlikely(!st.spill.open_file())) return fail(st, 500, sink, lflags);
             if (mrb_unlikely(!st.spill.take(view + off + head_len, body_here))) {
               st.spill.close_file();
               return fail(st, 500, sink, lflags);
             }
+            st.body_to = Conn::Body::kFile;
           } else {
             // #36: a body under kBodySpill waits in body_hold. It cannot
             // stay behind the head in the carry: the run is about to
             // read that head, and the carry is where a pipelined
             // request waits.
+            //
+            // The declared length is the whole size, so the buffer is
+            // taken once and never grows again.
+            st.body_hold.reserve(w.content_length);
             st.body_hold.assign(view + off + head_len, body_here);
+            st.body_to = Conn::Body::kMem;
           }
           // #36: the walk starts now, on the head. It stops at kN11,
           // kO14 or kP3 - the three nodes that read content - and the

@@ -112,6 +112,27 @@ void sse_free(SseStream* s);
 struct WsConn;
 void ws_free(WsConn* c);
 
+// RFC 9110 6.4: where the octets of a request body go. Two types, one
+// API, so the code that fills a body is written once and instantiated
+// twice. Neither instantiation tests where the octets belong - the head
+// answered that before the first one arrived.
+struct MemWriter {
+  std::string* mem;
+  bool put(const char* p, size_t n) const {
+    mem->append(p, n);
+    return true;
+  }
+};
+
+struct FileWriter {
+  BodySpill* spill;
+  bool put(const char* p, size_t n) const { return spill->take(p, n); }
+};
+
+// What one buffer of octets did to a body: there was no body to fill,
+// it is still short, it finished it, or the write failed.
+enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed };
+
 struct H2Stream {
   // RFC 9113 5.1.1: the Stream Identifier every frame carries.
   uint32_t id = 0;
@@ -137,10 +158,11 @@ struct H2Stream {
   // Reading it out of the route table again per frame was two loads
   // that always answered the same.
   //
-  //   kKeep    - a bound resource reads this content, so it is stored.
+  //   kMem     - a bound resource reads it, and it fits in memory.
+  //   kFile    - the same, and the declared length sends it to a file.
   //   kDrop    - nothing reads it: counted, credited and discarded.
   //   kRefuse  - no length was declared, so the first octet earns 411.
-  enum class Data : uint8_t { kKeep, kDrop, kRefuse };
+  enum class Data : uint8_t { kMem, kFile, kDrop, kRefuse };
   Data data = Data::kDrop;
   // RFC 9113 8.3: a parked request is answered after hdrbuf has been
   // reused by the next dispatch, so its fields cannot be lent.
@@ -1065,6 +1087,14 @@ class Http1 {
     // in the carry. The file is this connection's, because h1 answers
     // one request at a time.
     BodySpill spill;
+    // Where the octets of a body go, decided at the head from the
+    // declared length. The feed must ask "is this a head or a body" of
+    // every buffer that arrives, and this is the answer to that same
+    // question: kNone is a head, kMem and kFile are a body and where it
+    // lands. So the destination costs no test of its own - it rides in
+    // the one the feed could not have skipped.
+    enum class Body : uint8_t { kNone, kMem, kFile };
+    Body body_to = Body::kNone;
     // No RFC: a half-open span into the wire body of an asset (see
     // Assets::wire_iov), not into the file - a gzip member's octets are
     // not the stored ones.
@@ -1432,6 +1462,7 @@ class Http1 {
       carry.clear();
       content_skip = 0;
       content_need = 0;
+      body_to = Body::kNone;
       body_hold.clear();
       run_wants_body = false;
       spill.close_file();
@@ -1738,6 +1769,22 @@ class Http1 {
   // Is a round waiting for `spell_next_round` to run? kDone counts: it puts nothing on
   // the wire, but it is the round that hands the mapping back and writes
   // the access line, so nothing may go idle in front of it.
+  // RFC 9110 6.4: one buffer of a body into the place the head chose.
+  // W is MemWriter or FileWriter, and this is the only code either one
+  // ever runs - which is why it holds no test about where the octets
+  // belong.
+  template <class W>
+  static BodyTake take_body(Conn& st, W w, const char*& data, size_t& len) {
+    const size_t take = len < st.content_need ? len : st.content_need;
+    if (mrb_unlikely(!w.put(data, take))) return BodyTake::kFailed;
+    st.content_need -= take;
+    data += take;
+    len -= take;
+    if (st.content_need != 0) return BodyTake::kMore;
+    st.body_to = Conn::Body::kNone;
+    return BodyTake::kWhole;
+  }
+
   static bool file_answerable(const Conn& st) {
     return st.file != nullptr &&
            (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone);
