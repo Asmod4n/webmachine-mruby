@@ -216,7 +216,7 @@ h2)
   if [ -n "${H2SPEC:-}" ]; then
     "$H2SPEC" -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
   else
-    "$OCI" run --rm --network host summerwind/h2spec \
+    "$OCI" run --rm --network host docker.io/summerwind/h2spec \
       -h 127.0.0.1 -p "$PORT" --timeout 5 2>&1 | tee "$OUT/h2spec.log"
   fi
   ;;

@@ -2512,6 +2512,12 @@ struct ReqView {
   // way, and the three nodes that read content stop rather than ask a
   // callback about a body that is still coming.
   bool content_ready = true;
+  // RFC 9110 8.6: how many octets the client declared, which is not the
+  // same number as content_len. content_len is what is bound and
+  // readable now, and it is zero while the body is still coming. B4
+  // asks valid_entity_length? about the declared number, at the head,
+  // before one octet of content is read.
+  size_t declared_len = 0;
 };
 
 // RFC 9110 5.3: every line of one field, joined with `sep`, in the

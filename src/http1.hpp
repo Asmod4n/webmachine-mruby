@@ -2698,6 +2698,10 @@ class Http1 {
   void h2_produce(Conn& st, const H2Request& q, bool can_park, H2Produced& p);
   void h2_after_run(Conn& st, const H2Request& q, H2Produced& p, uint16_t status);
   bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
+  // RFC 9110 15.5.12: the 411 itself, and the stream that earns one -
+  // content whose length the client did not declare.
+  bool h2_length_required(Conn& st, const H2Request& q, std::string& sink);
+  bool h2_refuse_unsized(Conn& st, H2Stream& stp, std::string& sink);
   // #30: which of the two an h2 request takes - the straight answer, or
   // a run that may stop. The resource decides: only one that declared
   // `compute` or `watch` can stop, and only that one pays for a frame.

@@ -896,8 +896,11 @@ mrb_value arg_for(Run& r, Node nd) {
                    ? mrb_str_new(r.mrb, r.vals->content_type, r.vals->content_type_len)
                    : mrb_nil_value();
       case Node::kB4:
+        // The declared length, not the bound one: B4 runs at the head,
+        // and the body may still be on the wire there.
         return mrb_int_value(
-            r.mrb, static_cast<mrb_int>(r.res.run.req != nullptr ? r.res.run.req->content_len : 0));
+            r.mrb,
+            static_cast<mrb_int>(r.res.run.req != nullptr ? r.res.run.req->declared_len : 0));
       default:
         return mrb_nil_value();
     }

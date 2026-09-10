@@ -199,6 +199,9 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   if (mrb_string_p(rbody)) {
     rv.content = RSTRING_PTR(rbody);
     rv.content_len = static_cast<size_t>(RSTRING_LEN(rbody));
+    // The declared length is what B4 asks about. A caller here hands the
+    // whole body over at once, so the two numbers are the same.
+    rv.declared_len = rv.content_len;
   }
 
   std::string body;

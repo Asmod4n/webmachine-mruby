@@ -360,6 +360,10 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool co
   RouteSpans pspans;
   rv.method = facts.method;
   rv.content_ready = body_whole;
+  // What the client declared. A stream with content declares it or it
+  // is refused at the head, so this is the number B4 asks about even
+  // while the octets are still coming.
+  rv.declared_len = stp.content_length_given ? stp.content_length : body.size();
   if (!body_whole) {
     // Nothing is bound while octets are still coming. The walk stops at
     // the first node that reads content, and the resume binds the whole
@@ -614,6 +618,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.table = apps_[st0.listener].table;
     rv.route = r;
     rv.spans = &spans;
+    rv.declared_len = claimed.have ? claimed.value : 0;
     // hdrbuf is still the block this dispatch decoded, so the fields can
     // be lent for the length of the answer.
     rv.fields = hv;
@@ -1161,6 +1166,65 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
   keep.half_closed_remote = true;
   st0.h2_parked.push_back({q.stream_id, std::move(r)});
   return H2Served::kParked;
+}
+
+// RFC 9110 15.5.12: the stream sent content and declared no length. The
+// answer is the head's, not a run's: the request view carries the head
+// and no content, because none of it may be read.
+//
+// The refusal waits for the first DATA octet rather than answering at
+// the head. A stream without END_STREAM has not promised content - it
+// may still send an empty DATA frame and nothing else - and h2spec
+// 6.9.1 opens exactly such a stream to test the flow-control window.
+bool Http1::h2_refuse_unsized(Conn& st0, H2Stream& stp, std::string& sink) {
+  struct phr_header hv[kH2MaxFields];
+  const size_t nh = h2_fields_of_parked(stp, hv);
+  http::ReqValues pvals;
+  values_of_copied_fields({hv, nh}, pvals);
+  RouteSpans pspans;
+  ReqView rv;
+  rv.tls = apps_[st0.listener].tls;
+  rv.method = stp.facts.method;
+  rv.fields = hv;
+  rv.field_count = nh;
+  rv.values = &pvals;
+  const std::string target = stp.request_target;
+  const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
+  const H2Request q{stp.id,  stp.facts, &pvals, rvp,
+                    target, stp.route, stp.head_method};
+  if (!h2_length_required(st0, q, sink)) return false;
+  // RFC 9113 8.1: the answer is whole and the request is not, so the
+  // client is told to stop sending. NO_ERROR, because the stream ends
+  // by its answer and not by a fault.
+  h2_rst(st0, stp.id, kH2NoError, sink);
+  h2_log(st0, {stp.facts, target});
+  return true;
+}
+
+// RFC 9110 15.5.12: content whose length the client did not declare is
+// refused with 411. HTTP/2 has no chunked encoding, so a stream that
+// carries DATA and no content-length names no size at all, and a size
+// that is not named cannot be checked: not against conf.max_body, not
+// by valid_entity_length?, and not by the read regime that picks a file
+// over memory. h1 refuses the same request for the same reason - a
+// transfer-encoding with no content-length is 411 there.
+//
+// The flow does not run. This is the head's own answer, before a route
+// is asked anything, so no resource sees a request it could not have
+// read.
+bool Http1::h2_length_required(Conn& st0, const H2Request& q, std::string& sink) {
+  body_.clear();
+  rhdrs_.clear();
+  H2Produced p;
+  p.body = &body_;
+  p.rhdrs = &rhdrs_;
+  p.idx = &index_;
+  p.status = 411;
+  if (q.route != kNoRoute) {
+    p.b = &bundles_[apps_[st0.listener].base + q.route];
+    p.idx = &p.b->index;
+  }
+  return h2_frame(st0, q, sink, p);
 }
 
 bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
@@ -1933,6 +1997,15 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           }
           break;
         }
+        // RFC 9110 8.6: content with no declared length is refused here,
+        // at its first octet and before it is read. h2_refuse_unsized
+        // says why the head is not the place for it.
+        if (mrb_unlikely(dlen != 0 && !stp->content_length_given)) {
+          h2_credit_connection(sink, flen);
+          if (!h2_refuse_unsized(st0, *stp, sink)) return false;
+          h2.close_stream(stream);
+          break;
+        }
         if (stp->content_received + dlen > apps_[st0.listener].max_body) {
           h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2RefusedStream, sink);
@@ -1954,11 +2027,11 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         if (db != nullptr && db->bound && db->res->takes_body) {
           const char* const bp = reinterpret_cast<const char*>(dp);
           // RFC 9110 6.4: from kBodySpill up the body goes to a file, so
-          // the connection holds its streams and not their uploads. h1
-          // decides once on the declared length; h2 cannot, because a
-          // stream may send DATA without content-length. So the choice
-          // is made on what has arrived, and what arrived before it goes
-          // to the file first.
+          // the connection holds its streams and not their uploads. The
+          // choice is made on what has arrived, and what arrived before
+          // it goes to the file first. The declared length could decide
+          // it once, as h1 does - every stream with content declares one
+          // now - and that is the next step, not this one.
           if (stp->spill.fd < 0 && stp->content_received >= kBodySpill) {
             if (mrb_unlikely(!stp->spill.open_file())) {
               h2_credit_connection(sink, flen);

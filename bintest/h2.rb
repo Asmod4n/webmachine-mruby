@@ -40,6 +40,10 @@ def h2_get_block
   "\x82\x86\x84\x41\x0fwww.example.com".b
 end
 
+def h2_lit(name, value)
+  "\x00".b + name.bytesize.chr + name.b + value.bytesize.chr + value.b
+end
+
 def h2_method_block(method)
   "\x02#{method.bytesize.chr}#{method}\x86\x84\x41\x0bexample.com".b
 end
@@ -198,7 +202,7 @@ assert('h2: a request body is counted, credited and discarded; END_STREAM dispat
   h2_server(h2_app('WideResource', src)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST') + h2_lit('content-length', '150')))
       s.write(h2_frame(0, 0x00, 1, 'a' * 100))
       s.write(h2_frame(0, 0x01, 1, 'b' * 50))
       frames = []
@@ -422,7 +426,8 @@ assert('h2: a parked request still names what its route captured') do
   h2_server(app) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      s.write(h2_frame(1, 0x04, 1, h2_method_path_block('POST', '/thing/42/tail')))
+      s.write(h2_frame(1, 0x04, 1, h2_method_path_block('POST', '/thing/42/tail') +
+                                   h2_lit('content-length', '4')))
       s.write(h2_frame(0, 0x01, 1, 'body'))
       frames = []
       4.times { frames << h2_next(s) }
@@ -587,10 +592,6 @@ assert('h2: CONTINUATION with no HEADERS before it is a connection error') do
   end
 end
 
-def h2_lit(name, value)
-  "\x00".b + name.bytesize.chr + name.b + value.bytesize.chr + value.b
-end
-
 # A DATA frame is answered with WINDOW_UPDATE first (RFC 9113 6.9), so a
 # parked stream's HEADERS is not the next frame on the wire.
 def h2_until(s, type)
@@ -638,7 +639,8 @@ assert('h2: a parked request keeps its fields - headers and body both answer') d
   h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      blk = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('x-probe', 'two')
+      blk = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('x-probe', 'two') +
+            h2_lit('content-length', '7')
       s.write(h2_frame(1, 0x04, 1, blk))
       s.write(h2_frame(0, 0x01, 1, 'hello=1'))
       h2_until(s, 1)
@@ -660,7 +662,8 @@ assert('h2: a parked request answers its named fields too (RFC 9113 8.3)') do
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       blk = "\x83\x86\x84\x41\x0bexample.com".b +
-            h2_lit('content-type', 'application/x-www-form-urlencoded')
+            h2_lit('content-type', 'application/x-www-form-urlencoded') +
+            h2_lit('content-length', '3')
       s.write(h2_frame(1, 0x04, 1, blk))
       s.write(h2_frame(0, 0x01, 1, 'a=1'))
       h2_until(s, 1)
@@ -680,7 +683,8 @@ assert('h2: a parked request negotiates on the Accept it actually sent') do
   h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      ok = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'text/html')
+      ok = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'text/html') +
+           h2_lit('content-length', '3')
       s.write(h2_frame(1, 0x04, 1, ok))
       s.write(h2_frame(0, 0x01, 1, 'a=1'))
       _, _, _, block = h2_until(s, 1)
@@ -688,7 +692,8 @@ assert('h2: a parked request negotiates on the Accept it actually sent') do
     end
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      no = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'application/json')
+      no = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('accept', 'application/json') +
+           h2_lit('content-length', '3')
       s.write(h2_frame(1, 0x04, 1, no))
       s.write(h2_frame(0, 0x01, 1, 'a=1'))
       _, _, _, block = h2_until(s, 1)
@@ -1240,7 +1245,9 @@ assert('h2: a refused DATA frame is credited on the connection (RFC 9113 6.9)') 
       # One frame past conf.max_body (1 MiB by default): the last one is refused.
       chunk = 16_384
       sent = 0
-      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      declared = chunk * (1 + (1 << 20) / chunk)
+      s.write(h2_frame(1, 0x04, 1,
+                       h2_method_block('POST') + h2_lit('content-length', declared.to_s)))
       (1 + (1 << 20) / chunk).times do
         s.write(h2_frame(0, 0x00, 1, 'a' * chunk))
         sent += chunk
@@ -1253,7 +1260,7 @@ assert('h2: a refused DATA frame is credited on the connection (RFC 9113 6.9)') 
           raise 'the server credited nothing for 5 seconds' if waited > 1000
         end
       end
-      s.write(h2_frame(1, 0x04, 3, h2_method_block('POST')))
+      s.write(h2_frame(1, 0x04, 3, h2_method_block('POST') + h2_lit('content-length', '100')))
       s.write(h2_frame(0, 0x01, 3, 'b' * 100))
       sent += 100
       reader.join(10) or raise "no answer for the second upload; frames: #{frames.map { |f| f[0..2] }.inspect}"
@@ -1545,9 +1552,8 @@ assert('h2: split cookie fields reach request.cookies as one (RFC 9113 8.2.3)') 
 end
 
 # RFC 9110 6.4: an h2 request body of 256 KiB or more leaves memory and
-# goes to a file, the same as h1's. h2 cannot decide on the declared
-# length - a stream may send DATA without content-length - so it decides
-# on what has arrived, and moves what arrived before it into the file.
+# goes to a file, the same as h1's. h2 decides on what has arrived, and
+# moves what arrived before it into the file.
 def h2_post_block(len)
   block = "\x02\x04POST\x86\x84\x41\x0bexample.com".b
   block + h2_lit('content-length', len.to_s)
@@ -1648,6 +1654,55 @@ assert('h2: a large request body is a File, a small one is a StringIO') do
         assert_equal payload[0, 4], got[3], "stream #{id} read the wrong body"
         assert_equal payload[-4, 4], got[4], "stream #{id} read the wrong body"
       end
+    end
+  end
+end
+
+assert('h2: a body with no declared length is refused with 411') do
+  src = <<~RUBY_SRC
+    class NeedsLength < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+      def process_post
+        response.body = 'taken'
+        true
+      end
+    end
+  RUBY_SRC
+  h2_server(h2_app('NeedsLength', src)) do |sock|
+    # RFC 9110 15.5.12: HTTP/2 has no chunked encoding, so a stream that
+    # carries DATA and declares no length names no size at all. Nothing
+    # can check a size that is not named, so the head answers 411 and
+    # the resource never runs.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      # The refusal waits for the first octet: a stream that has not
+      # ended has promised no content yet.
+      s.write(h2_frame(0, 0x00, 1, 'a' * 16))
+      # RFC 7541 B: the static table has no 411, so the status is a
+      # literal with the indexed name :status and the three digits
+      # after it, unencoded.
+      _, _, _, block = h2_until(s, 1)
+      assert_equal 0x08, block.getbyte(0), 'the status is a literal with name index 8'
+      assert_equal 3, block.getbyte(1)
+      assert_equal '411', block[2, 3]
+      # RFC 9113 8.1: the answer is whole and the request is not, so the
+      # client is told to stop sending. NO_ERROR, not a fault.
+      t, _, st, pay = h2_until(s, 3)
+      assert_equal 3, t
+      assert_equal 1, st
+      assert_equal 0, pay.unpack1('N')
+    end
+
+    # The same request with the length named is served.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST') + h2_lit('content-length', '4')))
+      s.write(h2_frame(0, 0x01, 1, 'body'))
+      _, _, _, block = h2_until(s, 1)
+      assert_equal 0x88, block.getbyte(0), 'a body with a length must be served'
     end
   end
 end

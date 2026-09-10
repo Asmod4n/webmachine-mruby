@@ -462,3 +462,51 @@ assert('h1: a request pipelined behind an upload is answered after it') do
     end
   end
 end
+
+assert('h1: valid_entity_length? is asked the declared length, before the body') do
+  src = <<~RUBY
+    class Sized < Webmachine::Resource
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      # RFC 9110 15.5.14: the declared number decides, and it decides at
+      # the head. The body has not arrived when this is asked.
+      def valid_entity_length?(length)
+        @asked = length
+        length <= 64
+      end
+
+      def process_post
+        response.body = "took \#{request.body.size} after \#{@asked}"
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 8 * 1024 * 1024
+        app.add_route [:*], Sized
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-b4') do |sock|
+    # The head names a million octets and not one of them is sent. The
+    # answer is 413 all the same, so the number B4 saw was the declared
+    # one and not the nothing that had arrived.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 413'), head.lines.first.to_s
+    end
+
+    # And a body the resource allows is read whole, after the same node
+    # let it through on the same number.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n")
+      s.write('abcdefgh')
+      _, body = wm_read(s)
+      assert_equal 'took 8 after 8', body
+    end
+  end
+end

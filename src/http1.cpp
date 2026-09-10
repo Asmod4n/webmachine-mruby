@@ -1150,6 +1150,7 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   // resource can read one. A resource without those callbacks never
   // waited for the body, so what sits behind the head is a part of it -
   // and request.body must answer nothing rather than that part.
+  rv.declared_len = r.content_length;
   if (r.content_length != 0 && b->res->takes_body) {
     // #36: is the whole body here? The walk reads this at kN11, kO14
     // and kP3 and stops there while octets are still coming. Every node
