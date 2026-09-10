@@ -114,7 +114,7 @@ jobs:
           # cases 12.x and 13.x are almost all of it. wstest does not
           # exit when its report step raises, so a run past this budget
           # ends, and the log says which case it was on.
-          if ! timeout 1800 tools/conformance.sh ws; then
+          if ! timeout 3600 tools/conformance.sh ws; then
             echo '--- the server log ---'
             tail -50 build/conformance/server.log || true
             echo '--- the last case ---'

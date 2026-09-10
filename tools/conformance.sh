@@ -88,6 +88,31 @@ start_server() {
   echo "server pid $(cat "$PIDFILE") on port $PORT"
 }
 
+# The chunks answer one report each. This joins them into the single
+# index.json every caller reads, and gathers the per-case files beside
+# it so the artifact holds the whole run.
+merge_reports() {
+  for d in "$OUT"/reports-*; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+      case "$f" in *"/index.json"|*"/index.html") continue ;; esac
+      [ -f "$f" ] && cp "$f" "$OUT/reports/" 2>/dev/null || true
+    done
+  done
+  ruby -rjson -e '
+    out = {}
+    Dir[File.join(ARGV[0], "reports-*", "index.json")].sort.each do |path|
+      JSON.parse(File.read(path)).each do |agent, cases|
+        (out[agent] ||= {}).merge!(cases)
+      end
+    end
+    abort "no chunk wrote a report" if out.empty?
+    File.write(File.join(ARGV[0], "reports", "index.json"), JSON.pretty_generate(out))
+    n = out.values.map(&:size).sum
+    puts "merged #{n} cases from #{Dir[File.join(ARGV[0], "reports-*")].size} chunks"
+  ' "$OUT"
+}
+
 case "$SUITE" in
 h2)
   start_server examples/hello.rb
@@ -115,48 +140,88 @@ ws)
   # CASES narrows the run: CASES='"12.*"' tools/conformance.sh ws
   # answers in seconds where the full suite answers in minutes, which is
   # the difference between finding a stall and waiting one out.
-  cat > "$OUT/fuzzingclient.json" <<JSON
-{ "servers": [{ "url": "ws://127.0.0.1:$PORT/echo" }],
-  "outdir": "/reports",
-  "cases": [$CASES],
-  "exclude-cases": [],
-  "exclude-agent-cases": {} }
-JSON
+  #
+  # One wstest per chunk, not one for all 517 cases. The runner killed a
+  # whole-suite wstest twice with SIGKILL, both times about 450 cases in
+  # and inside the deflate group, and a killed client writes no report.
+  # A chunk is a fresh Python process, so what the client holds goes back
+  # between chunks, and a failure names a group of cases rather than the
+  # suite. What is covered does not change: the chunks are every case.
+  #
+  # CASES overrides the split, so one group can still be asked for on its
+  # own. The suite has no section 8 and no section 11, so neither is
+  # named here - a glob that matches nothing is what makes wstest wait
+  # for ever, and the deadline below is what catches one.
+  if [ "$CASES" = '"*"' ]; then
+    CHUNKS='"1.*","2.*","3.*","4.*","5.*"
+"6.*","7.*","9.*","10.*"
+"12.*"
+"13.1.*","13.2.*","13.3.*"
+"13.4.*","13.5.*","13.6.*","13.7.*"'
+  else
+    CHUNKS="$CASES"
+  fi
   # Everything, 12.x and 13.x included: those are permessage-deflate
   # (RFC 7692), which round two of #175 negotiates and speaks. The
   # fixture (test/conformance/ws_echo.rb) is what turns it on - the
   # tree's default is off, and wsconn.hpp says why in bytes.
   mkdir -p "$OUT/reports"
+  : > "$OUT/autobahn.log"
+  chunk_no=0
+  CHUNK_TIMEOUT=""
+  command -v timeout >/dev/null && CHUNK_TIMEOUT="timeout ${WS_CHUNK_TIMEOUT:-600}"
   # PYTHONUNBUFFERED is not cosmetic: wstest is Python, Python
   # block-buffers stdout when it is a pipe, and a suite whose progress
   # only appears at the end is indistinguishable from a suite that
   # hung. That mistake cost half an hour of waiting on a run that was
   # working the whole time. With this, the case it is on is on screen.
-  # The status has to be wstest's, not tee's. A POSIX pipeline answers
-  # with its last command, so `wstest | tee` reported success for a
-  # wstest the runner had killed, and the failure surfaced later and
-  # somewhere else - as a report file that was not there. `set -o
-  # pipefail` is not POSIX, so the code travels through a file, and -e
-  # goes off around it or the shell would leave before it is written.
-  set +e
-  { "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
-      -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
-      -v "$PWD/$OUT/reports:/reports:z" \
-      crossbario/autobahn-testsuite \
-      wstest -m fuzzingclient -s /fuzzingclient.json 2>&1
-    echo $? > "$OUT/wstest.rc"
-  } | tee "$OUT/autobahn.log"
-  set -e
-  ws_rc=$(cat "$OUT/wstest.rc" 2>/dev/null || echo 1)
-  # wstest writes its report after the last case, so a run that ends
-  # without one died in between - which the log alone cannot say.
-  if [ "$ws_rc" -ne 0 ] || [ ! -f "$OUT/reports/index.json" ]; then
-    echo "wstest ended with status $ws_rc and $([ -f "$OUT/reports/index.json" ] \
-      && echo 'a report' || echo 'no report')" >&2
-    echo "the last case it named: $(grep 'Running test case' "$OUT/autobahn.log" \
-      | tail -1)" >&2
-    exit 1
-  fi
+  # One chunk at a time. Each writes its own report directory, and they
+  # are merged at the end into the single index.json the caller reads.
+  echo "$CHUNKS" | while IFS= read -r chunk; do
+    [ -n "$chunk" ] || continue
+    chunk_no=$((chunk_no + 1))
+    rdir="reports-$chunk_no"
+    mkdir -p "$OUT/$rdir"
+    cat > "$OUT/fuzzingclient.json" <<JSON
+{ "servers": [{ "url": "ws://127.0.0.1:$PORT/echo" }],
+  "outdir": "/reports",
+  "cases": [$chunk],
+  "exclude-cases": [],
+  "exclude-agent-cases": {} }
+JSON
+    echo "--- chunk $chunk_no: $chunk"
+    # The status has to be wstest's, not tee's. A POSIX pipeline answers
+    # with its last command, so `wstest | tee` reported success for a
+    # wstest the runner had killed, and the failure surfaced later and
+    # somewhere else - as a report file that was not there. `set -o
+    # pipefail` is not POSIX, so the code travels through a file, and -e
+    # goes off around it or the shell would leave before it is written.
+    # A chunk gets a deadline of its own. wstest waits for ever when its
+    # case list matches nothing - "will run 0 test cases" and then
+    # silence - so a glob that names no case would otherwise hang the
+    # whole job. Measured: the slowest chunk here is the deflate group at
+    # about 4 minutes, so 15 is room and not a wait.
+    set +e
+    { $CHUNK_TIMEOUT "$OCI" run --rm --network host -e PYTHONUNBUFFERED=1 \
+        -v "$PWD/$OUT/fuzzingclient.json:/fuzzingclient.json:z" \
+        -v "$PWD/$OUT/$rdir:/reports:z" \
+        crossbario/autobahn-testsuite \
+        wstest -m fuzzingclient -s /fuzzingclient.json 2>&1
+      echo $? > "$OUT/wstest.rc"
+    } | tee -a "$OUT/autobahn.log"
+    set -e
+    ws_rc=$(cat "$OUT/wstest.rc" 2>/dev/null || echo 1)
+    # wstest writes its report after the last case, so a chunk that ends
+    # without one died in between - which the log alone cannot say.
+    if [ "$ws_rc" -ne 0 ] || [ ! -f "$OUT/$rdir/index.json" ]; then
+      echo "wstest ended with status $ws_rc and $([ -f "$OUT/$rdir/index.json" ] \
+        && echo 'a report' || echo 'no report') on chunk $chunk_no ($chunk)" >&2
+      echo "the last case it named: $(grep 'Running test case' "$OUT/autobahn.log" \
+        | tail -1)" >&2
+      exit 1
+    fi
+  done || exit 1
+  merge_reports
   echo "report: $OUT/reports/index.html"
   ;;
 ws-h2)
