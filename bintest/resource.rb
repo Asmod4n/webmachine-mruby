@@ -388,9 +388,28 @@ assert('http1: buffers of a closed slot go back to the pool') do
     end
   RUBY
   wm_server(wm_app('Buffers', src)) do |sock|
+    wrote = 0
+    refused = 0
     5000.times do
-      UNIXSocket.open(sock) { |s| s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
+      begin
+        UNIXSocket.open(sock) do |s|
+          s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+          wrote += 1
+        end
+      rescue Errno::ENOTCONN, Errno::EPIPE, Errno::ECONNRESET
+        # A client that connects and leaves at once, faster than the
+        # server reads, can have its socket reset before the write
+        # lands: the listen backlog is finite and the kernel refuses
+        # the rest. That is this loop's own doing and not the server's,
+        # and it is what a sanitizer build on a two core runner meets.
+        # What the case measures is the buffer a closed slot gives
+        # back, and the request below is what reads it.
+        refused += 1
+      end
     end
+    # Not all of them, but not none either: a server that refused every
+    # connection would otherwise pass this case by answering one.
+    assert_true wrote > 2500, "only #{wrote} of 5000 connections wrote, #{refused} were refused"
     UNIXSocket.open(sock) do |s|
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = wm_read(s)
