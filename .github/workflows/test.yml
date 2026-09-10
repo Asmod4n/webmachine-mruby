@@ -21,7 +21,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential ruby git pkg-config zlib1g-dev libssl-dev
+            build-essential ruby git pkg-config zlib1g-dev libssl-dev libnghttp2-dev
       - name: build the debug config and run every test
         run: |
           MRUBY_CONFIG=build_config_debug.rb rake test 2>&1 | tee test.log
@@ -56,7 +56,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential ruby git pkg-config zlib1g-dev libssl-dev
+            build-essential ruby git pkg-config zlib1g-dev libssl-dev libnghttp2-dev
       - name: build the host config and smoke the binary
         # The runner is a shared machine and migrates between hosts, so
         # -march=native would compile for one and run on another. The
@@ -90,7 +90,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang ruby git pkg-config zlib1g-dev libssl-dev
+            build-essential clang ruby git pkg-config zlib1g-dev libssl-dev libnghttp2-dev
       - name: build with the sanitizer and run every test
         env:
           # detect_leaks is off: mruby frees its heap at exit, and the

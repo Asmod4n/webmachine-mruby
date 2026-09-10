@@ -21,7 +21,7 @@ MRuby::Build.new('fuzz') do |conf|
 
   # -Wundef is mruby's own default (mruby/tasks/toolchains/gcc.rake). It
   # finds nothing in this tree and hundreds of lines in the vendored
-  # sources every gem here carries - simdutf, ada, lmdb, ls-hpack - which
+  # sources every gem here carries - simdutf, ada, lmdb, miniz - which
   # belong to other people and are not ours to fix. A build whose real
   # warnings scroll off the screen has no warnings. The last flag wins.
   conf.cc.flags  << '-Wno-undef'
@@ -42,9 +42,9 @@ MRuby::Build.new('fuzz') do |conf|
   conf.enable_sanitizer 'address', 'undefined'
 
   # After enable_sanitizer, because a -fno-sanitize= only subtracts from
-  # an -fsanitize= to its left. ls-hpack and phr read unaligned on
-  # purpose; that is not what this campaign is about, and it fires on the
-  # first frame otherwise.
+  # an -fsanitize= to its left. phr reads unaligned on purpose; that is
+  # not what this campaign is about, and it fires on the first frame
+  # otherwise.
   tuning = %w[-fno-sanitize-recover=undefined -fno-omit-frame-pointer
               -fno-sanitize=alignment]
   tuning.each { |f| conf.cc.flags << f }

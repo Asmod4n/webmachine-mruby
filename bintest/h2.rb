@@ -1107,7 +1107,7 @@ assert('h2: permessage-deflate is negotiated on the CONNECT (RFC 7692)') do
       assert_equal 1, type
       assert_equal 0x88, block.getbyte(0), 'RFC 8441 answers 200'
       # The answer names the extension, but the block is HPACK and
-      # ls-hpack Huffman-codes the value, so the bytes are not readable
+      # The encoder Huffman-codes the value, so the bytes are not readable
       # here. What proves the negotiation is the exchange below: the
       # server sets RSV1 only on a connection where deflate is on.
 
@@ -1163,7 +1163,7 @@ end
 
 # RFC 8441 5: what a websocket needs from the handshake, h2 carries in
 # the CONNECT's fields. The subprotocol is one of those. The answer
-# names it in HPACK, and ls-hpack Huffman-codes the value, so what this
+# names it in HPACK, and the encoder Huffman-codes the value, so what this
 # pins is the half that is h2's own: the client's offer reaches
 # initialize. bintest/websocket.rb pins the answer field over h1, and
 # the code that writes it is the same code.

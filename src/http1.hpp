@@ -330,8 +330,11 @@ struct H2Stream {
 };
 
 struct H2State {
-  struct lshpack_enc enc;
-  struct lshpack_dec dec;
+  // RFC 7541: the encoder and the decoder of this connection. nghttp2's
+  // HPACK, which is the one curl and Apache use and the one OSS-Fuzz
+  // fuzzes with three engines under two sanitizers.
+  nghttp2_hd_deflater* enc = nullptr;
+  nghttp2_hd_inflater* dec = nullptr;
 
   // RFC 9113 6.9.1: the connection's half of the flow-control window.
   int64_t flow_window = kH2DefaultWindow;
@@ -389,36 +392,13 @@ struct H2State {
   };
   std::vector<Lend> retired;
 
-  // ls-hpack: lshpack_enc_init allocates and returns -1 when it could
-  // not - the one call of the four that can fail. Ignoring it left an
-  // encoder that was never built, to be handed to lshpack_enc_encode on
-  // the first answer. A constructor cannot refuse, so it records, and
-  // h2_begin refuses.
+  // Both allocate, and either can fail. A constructor cannot refuse, so
+  // it records, and h2_begin refuses.
   bool hpack_ready = false;
   // RFC 9113: allocated only when the preface was spoken, never before.
   H2State() {
-    hpack_ready = lshpack_enc_init(&enc) == 0;
-    lshpack_dec_init(&dec);
-    lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
-    // ls-hpack leaves the dynamic table's array NULL, and its first
-    // growth does memcpy(new, NULL + 0, 0) - undefined, and two UBSan
-    // reports on the first h2 request this server ever answers.
-    //
-    // No caller can avoid it, so the decoder is handed a table instead
-    // and that growth never runs. 64 is the size upstream would have
-    // chosen, and lshpack_dec_cleanup frees it. A failed malloc leaves
-    // things exactly as ls-hpack would have.
-    //
-    // Pinned at v2.3.5 (cf0f70d). This goes when a release grows the
-    // array before its first push.
-    if (dec.hpd_dyn_table.els == nullptr) {
-      constexpr unsigned kFirstTableSlots = 64;
-      void* const mem = std::malloc(kFirstTableSlots * sizeof(uintptr_t));
-      if (mem != nullptr) {
-        dec.hpd_dyn_table.els = static_cast<uintptr_t*>(mem);
-        dec.hpd_dyn_table.nalloc = kFirstTableSlots;
-      }
-    }
+    hpack_ready = nghttp2_hd_deflate_new(&enc, kH2DecTableSize) == 0 &&
+                  nghttp2_hd_inflate_new(&dec) == 0;
   }
   // RFC 9113: the decoder dies with the connection - and so does every
   // lend the streams still hold. h1's ~Conn, one tier down: unconditional,
@@ -426,8 +406,8 @@ struct H2State {
   ~H2State() {
     for (H2Stream& s : streams) content_retire(s);
     content_drain();
-    lshpack_enc_cleanup(&enc);
-    lshpack_dec_cleanup(&dec);
+    if (enc != nullptr) nghttp2_hd_deflate_del(enc);
+    if (dec != nullptr) nghttp2_hd_inflate_del(dec);
   }
   H2State(const H2State&) = delete;
   H2State& operator=(const H2State&) = delete;

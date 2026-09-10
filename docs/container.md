@@ -33,9 +33,9 @@ readiness plus a classic syscall.
 ## Packages
 
 Build: `build-essential ruby git pkg-config zlib1g-dev libssl-dev
-ca-certificates` (no liburing-dev - the gem builds it).
+libnghttp2-dev ca-certificates` (no liburing-dev - the gem builds it).
 
-Runtime: `libz1 libssl3 libstdc++6`.
+Runtime: `libz1 libssl3 libnghttp2-14 libstdc++6`.
 
 ## Knobs
 

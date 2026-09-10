@@ -128,14 +128,27 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-proc-irep-ext'
   spec.add_dependency 'mruby-cbor'
 
-  lshp = "#{dir}/deps/ls-hpack"
-  spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
-  spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"
+  # RFC 7541: HPACK is nghttp2's. It is the implementation curl, Apache
+  # httpd and Node.js use, it is fuzzed by OSS-Fuzz with libFuzzer, AFL
+  # and honggfuzz under the address and undefined sanitizers, and it
+  # comes from the distribution, so its security updates are the
+  # distribution's. Only nghttp2_hd_* is used here - no session, no
+  # framing, no callbacks.
+  unless spec.cc.search_header('nghttp2/nghttp2.h')
+    abort <<~MSG
+      webmachine-mruby: nghttp2 headers not found.
 
-  spec.cc.defines << 'XXH_HEADER_NAME=\"xxhash.h\"'
-  spec.objs += %W(#{lshp}/lshpack.c #{lshp}/deps/xxhash/xxhash.c).map { |f|
-    f.relative_path_from(dir).pathmap("#{build_dir}/%X#{spec.exts.object}")
-  }
+      This tree links the SYSTEM nghttp2 for HPACK (RFC 7541). The
+      library is on every server distribution; only its headers are a
+      separate package:
+
+        Debian/Ubuntu   apt install libnghttp2-dev
+        RHEL/Fedora     dnf install libnghttp2-devel
+        Alpine          apk add nghttp2-dev
+        macOS           brew install nghttp2
+    MSG
+  end
+  spec.linker.libraries << 'nghttp2'
 
   unless spec.cc.search_header('zlib.h')
     abort <<~MSG

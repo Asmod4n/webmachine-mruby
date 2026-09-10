@@ -15,10 +15,11 @@ FROM debian:trixie AS build
 #   git              the tree's submodule (ls-hpack) and every mrbgem
 #   pkg-config       mruby-io-uring asks it for liburing's cflags
 #   zlib1g-dev       the system zlib this tree links (#147 gzip)
+#   libnghttp2-dev   the system nghttp2, for HPACK (RFC 7541)
 #   libssl-dev       libcrypto, for the websocket handshake's SHA1()
 #   ca-certificates  git over https
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential ruby git pkg-config zlib1g-dev libssl-dev ca-certificates \
+      build-essential ruby git pkg-config zlib1g-dev libssl-dev libnghttp2-dev ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -50,10 +51,11 @@ FROM debian:trixie-slim AS runtime
 # The whole runtime dependency list, and it is this short because
 # liburing is linked statically and everything else is the tree's own:
 #   libz1        zlib      (#147)
+#   libnghttp2-14 HPACK    (RFC 7541)
 #   libssl3      libcrypto (the handshake's SHA1)
 #   libstdc++6   pulls libgcc-s1 and libc6 with it
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libz1 libssl3 libstdc++6 \
+      libz1 libssl3 libnghttp2-14 libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/mruby/build/host/bin/webmachine-server /usr/local/bin/
