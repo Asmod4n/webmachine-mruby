@@ -410,12 +410,30 @@ assert('http1: buffers of a closed slot go back to the pool') do
     # Not all of them, but not none either: a server that refused every
     # connection would otherwise pass this case by answering one.
     assert_true wrote > 2500, "only #{wrote} of 5000 connections wrote, #{refused} were refused"
-    UNIXSocket.open(sock) do |s|
-      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-      head, body = wm_read(s)
-      assert_true head.start_with?('HTTP/1.1 200'), head
-      assert_equal 'buffers', body
+    # The loop leaves the accept queue full, and the server is one
+    # thread. The next connection can meet a reset while the server
+    # still walks the 5000 that came before it, and a sanitizer build
+    # on a two core runner walks them slowly. So the request that
+    # measures the pool waits for the server to catch up, rather than
+    # counting the queue it filled itself as a failure.
+    head = nil
+    body = nil
+    tries = 0
+    while head.nil? && tries < 200
+      tries += 1
+      begin
+        UNIXSocket.open(sock) do |s|
+          s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+          head, body = wm_read(s)
+        end
+      rescue Errno::ENOTCONN, Errno::EPIPE, Errno::ECONNRESET
+        head = nil
+        sleep 0.05
+      end
     end
+    assert_false head.nil?, "the server did not answer in #{tries} tries after the loop"
+    assert_true head.start_with?('HTTP/1.1 200'), head
+    assert_equal 'buffers', body
   end
 end
 
