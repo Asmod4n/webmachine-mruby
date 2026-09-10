@@ -98,8 +98,12 @@ jobs:
           # rather than this server. halt_on_error stops the process at
           # the first report, so the test that was running fails and
           # says which one it was.
-          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1
+          # log_path, because a report on stderr is lost: the bintests
+          # give every server the same log file per tag, and the next
+          # server with that tag writes over it. log_path gives each
+          # process a file of its own, named by its pid.
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:log_path=/tmp/asan-report
+          TSAN_OPTIONS: halt_on_error=1:log_path=/tmp/tsan-report
         run: |
           rake "san_test[${{ matrix.san }}]" 2>&1 | tee "${{ matrix.san }}.log"
           test "${PIPESTATUS[0]}" -eq 0
@@ -115,7 +119,13 @@ jobs:
         run: |
           mkdir -p san-logs
           cp /tmp/wm*-stderr-*.log san-logs/ 2>/dev/null || true
-          grep -l 'Sanitizer' san-logs/*.log 2>/dev/null || echo 'no sanitizer report in any server log'
+          cp /tmp/*san-report.* san-logs/ 2>/dev/null || true
+          for f in san-logs/*san-report.*; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"
+            head -60 "$f"
+          done
+          ls san-logs/*san-report.* >/dev/null 2>&1 || echo 'no sanitizer report'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
