@@ -93,11 +93,23 @@ def wm_smoke(build_name, label)
   end
 end
 
+desc 'build and run every test under a sanitizer: rake san_test[asan] or [tsan]'
+task :san_test, %i[which] => MRUBY_DIR do |_t, args|
+  which = san_config(args[:which])
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{which} rake all test"
+end
+
+# The path of a sanitizer config, and a refusal for any other name.
+def san_config(which)
+  which ||= 'asan'
+  raise "a sanitizer is asan or tsan, not #{which}" unless %w[asan tsan].include?(which)
+  File.expand_path("build_config_#{which}.rb", __dir__)
+end
+
 desc 'a sanitizer build starts and answers: rake san_smoke[asan] or [tsan]'
 task :san_smoke, %i[which] do |_t, args|
   which = args[:which] || 'asan'
-  raise "san_smoke takes asan or tsan, not #{which}" unless %w[asan tsan].include?(which)
-  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{File.expand_path("build_config_#{which}.rb", __dir__)} rake"
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{san_config(which)} rake"
   wm_smoke(which, which)
 end
 

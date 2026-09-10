@@ -101,11 +101,9 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1
         run: |
-          cd mruby
-          MRUBY_CONFIG="$GITHUB_WORKSPACE/build_config_${{ matrix.san }}.rb" \
-            rake all test 2>&1 | tee "$GITHUB_WORKSPACE/${{ matrix.san }}.log"
+          rake "san_test[${{ matrix.san }}]" 2>&1 | tee "${{ matrix.san }}.log"
           test "${PIPESTATUS[0]}" -eq 0
-          if grep -Eq '^ *(KO|Crash): [1-9]' "$GITHUB_WORKSPACE/${{ matrix.san }}.log"; then
+          if grep -Eq '^ *(KO|Crash): [1-9]' "${{ matrix.san }}.log"; then
             echo 'a test failed or crashed' >&2
             exit 1
           fi
