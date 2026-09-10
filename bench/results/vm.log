@@ -1555,3 +1555,15 @@ harness: htgen -c16 -d3s PIPELINED depth=16 transport=unix app=examples/hello.rb
 responses=7024800 bad=0 seconds=3.000 rps=2341561 bytes=1088844000 MB/s=346.13 conns=16 streams=1 pipeline=16 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=245868000 tx_MB/s=78.16
   server: 80% of one core (24u/56s)   client: 84% of one core (24u/61s)
   bytes/response: 155.0 (must equal the response size - a batch that lost answers still reports throughput)
+==== 2026-09-10T19:42Z repo=447d40c mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring nice=-10 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/122 busy=1% (200ms sample)
+responses=24820385 bad=0 seconds=10.000 rps=2481951 bytes=2084913124 MB/s=198.83 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=322667853 tx_MB/s=30.77
+server: 89% of one core (60u/28s)   client: 51% of one core (40u/12s)   other: 8% of one core
+==== 2026-09-10T19:43Z repo=2249ff2 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring nice=-10 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/124 busy=0% (200ms sample)
+responses=32543735 bad=0 seconds=10.000 rps=3254364 bytes=2733674524 MB/s=260.70 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=423096363 tx_MB/s=40.35
+server: 85% of one core (48u/36s)   client: 64% of one core (48u/16s)   other: 7% of one core
