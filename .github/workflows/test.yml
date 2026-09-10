@@ -130,9 +130,10 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     needs: suite
-    # Autobahn takes 9 minutes on the runner. The step is bounded below
-    # so the report and the server's logs still reach the artifact; this
-    # is the ceiling for the whole job.
+    # h2spec on every push, Autobahn on a release tag alone - the step
+    # below says why. The Autobahn step is bounded on its own as well,
+    # so the report and the server's logs still reach the artifact;
+    # this is the ceiling for the whole job.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +162,11 @@ jobs:
             puts "h2spec: #{m[2]} passed, #{failed} failed (#{known} known)"
           '
       - name: Autobahn
+        # Only on a release tag. The 517 cases take 9 minutes, and they
+        # answer for the WebSocket layer, which one push in fifty
+        # touches. h2spec above stays on every push - it takes 11
+        # seconds.
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           BIN: mruby/build/debug/bin/webmachine-server
           MRBC: mruby/build/debug/bin/mrbc
