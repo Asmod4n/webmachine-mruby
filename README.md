@@ -36,6 +36,11 @@ end
     mruby/bin/mrbc -g -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb
 
+A gem this tree tracks by branch is cloned by mruby once and never
+pulled again, so a header added upstream is missing here with no sign
+of why. `rake deps_update` pulls them; a gem pinned to a commit is
+left where it is.
+
 `self.to_html` is the whole trick. The server calls it once at start
 and keeps the answer, with its status line, its head, its ETag and its
 HTTP/2 header block, as bytes. A request against this resource never

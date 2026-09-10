@@ -113,6 +113,35 @@ task :san_smoke, %i[which] do |_t, args|
   wm_smoke(which, which)
 end
 
+desc 'pull every gem this tree tracks by branch (mruby clones once and never updates)'
+task :deps_update do
+  # mruby clones a git gem the first time it builds and never looks at
+  # it again: lib/mruby/build/command.rb has run_pull and nothing calls
+  # it. A gem named by `branch:` therefore stays at the commit it was
+  # first fetched at, and a header added upstream is missing here with
+  # no sign of why. That cost a build twice.
+  #
+  # A gem pinned to a commit is checked out detached, and `git pull`
+  # refuses a detached HEAD, so this leaves those alone by itself - the
+  # branch name is the test.
+  Dir[File.join(MRUBY_DIR, 'build', 'repos', '*', '*')].sort.each do |dir|
+    next unless File.directory?(File.join(dir, '.git'))
+    branch = `git -C #{dir} rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
+    next if branch.empty? || branch == 'HEAD'
+    before = `git -C #{dir} rev-parse --short HEAD`.strip
+    ok = system("git -C #{dir} pull --ff-only --quiet")
+    after = `git -C #{dir} rev-parse --short HEAD`.strip
+    name = File.basename(dir)
+    if !ok
+      puts "#{name}: pull refused - left at #{before}"
+    elsif before == after
+      puts "#{name}: #{branch} is current at #{after}"
+    else
+      puts "#{name}: #{branch} #{before} -> #{after}"
+    end
+  end
+end
+
 desc 'the bintests against the ship binary, not the debug one'
 task ship_test: MRUBY_DIR do
   # What ship_smoke could not answer. The suite is the debug build's,
