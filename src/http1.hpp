@@ -2659,7 +2659,7 @@ class Http1 {
     const http::ReqValues* vals;
   };
   static size_t h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv);
-  bool h2_serve_parked(Conn& st, H2Stream& stp, std::string& sink);
+  bool h2_serve_parked(Conn& st, H2Stream& stp, std::string& sink, bool complete);
   bool h2_extended_connect(Conn& st, const H2Connect& ask, std::string& sink);
   // A parked stream's request as a view: the target it named, and the
   // ReqView the caller owns for it to point into.

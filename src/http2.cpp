@@ -321,9 +321,11 @@ size_t Http1::h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv) {
 // values negotiation reads point into the decode buffer this stream no
 // longer owns, so they are derived again from the copied fields, which
 // are the only place they still exist.
-bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
+bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool complete) {
   const uint32_t stream_id = stp.id;
-  stp.half_closed_remote = true;
+  // RFC 9113 5.1: only the end of the request closes this half. A stream
+  // served while its body is still arriving is not half closed yet.
+  if (complete) stp.half_closed_remote = true;
   const flow::ReqFacts facts = stp.facts;
   const bool head_only = stp.head_method;
   const AssetEntry* asset = stp.parked_asset;
@@ -345,6 +347,10 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
   // a parked run still finds it when it asks.
   const int body_fd = stp.spill.fd;
   const size_t body_fd_len = stp.spill.written;
+  // #36: is the whole body here? A stream served while its DATA is
+  // still coming says no, and the walk stops at the first node that
+  // reads content.
+  const bool body_whole = complete;
   struct phr_header hv[kH2MaxFields];
   const size_t nh = h2_fields_of_parked(stp, hv);
   http::ReqValues pvals;
@@ -353,7 +359,12 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink) {
   rv.tls = apps_[st0.listener].tls;
   RouteSpans pspans;
   rv.method = facts.method;
-  if (body_fd >= 0) {
+  rv.content_ready = body_whole;
+  if (!body_whole) {
+    // Nothing is bound while octets are still coming. The walk stops at
+    // the first node that reads content, and the resume binds the whole
+    // body - a part of one never reaches a callback.
+  } else if (body_fd >= 0) {
     rv.content_fd = body_fd;
     rv.content_len = body_fd_len;
     stp.spill.bound = true;
@@ -433,7 +444,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (!end_stream || existing->half_closed_remote) {
       return h2_error(st0, kH2ProtocolError, sink);
     }
-    return h2_serve_parked(st0, *existing, sink);
+    return h2_serve_parked(st0, *existing, sink, true);
   }
 
   flow::ReqFacts facts;
@@ -1931,8 +1942,16 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         // Stored only where a bound resource will read them - a konst
         // route's or a miss's bytes are counted and dropped, so idle
         // streams cannot hold megabytes nobody will ever ask for.
-        if (stp->route != kNoRoute &&
-            bundles_[apps_[st0.listener].base + stp->route].bound) {
+        // RFC 9110 6.4: kept only where a node of this resource can read
+        // them. Only content_types_accepted, create_path and process_post
+        // do, and the fold wrote the answer on the resource. A konst
+        // route's octets, a miss's, and now a resource that reads no
+        // body at all: counted and dropped, so an idle stream cannot
+        // hold megabytes nobody will ever ask for.
+        const Bundle* const db =
+            stp->route == kNoRoute ? nullptr
+                                   : &bundles_[apps_[st0.listener].base + stp->route];
+        if (db != nullptr && db->bound && db->res->takes_body) {
           const char* const bp = reinterpret_cast<const char*>(dp);
           // RFC 9110 6.4: from kBodySpill up the body goes to a file, so
           // the connection holds its streams and not their uploads. h1
@@ -1977,7 +1996,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
             h2_rst(st0, stream, kH2ProtocolError, sink);
             break;
           }
-          if (!h2_serve_parked(st0, *stp, sink)) return false;
+          if (!h2_serve_parked(st0, *stp, sink, true)) return false;
         }
         break;
       }
