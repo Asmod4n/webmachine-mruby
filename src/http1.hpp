@@ -1171,6 +1171,31 @@ class Http1 {
       }
       return false;
     }
+
+    // What must be true of a connection between two buffers, whatever
+    // it is doing. The mode machine says what this connection is; these
+    // say how its parts stand to one another. The debug build asks all
+    // of them once per buffer.
+    //
+    // What is not here, and why: a parked run is read from the
+    // coroutine itself and a file transfer carries its own FileStage,
+    // so neither has a second copy that could drift from the first.
+    // Only a fact stored twice needs a check that the two agree.
+    const char* invariant_broken() const {
+      // A body is owed exactly while a destination is named for it.
+      if ((content_need != 0) != (body_to != Body::kNone)) {
+        return "octets are owed and no destination is named, or the other way round";
+      }
+      // The file was opened before the first octet, at the head.
+      if (body_to == Body::kFile && spill.fd < 0) return "a body goes to a file that is not open";
+      // An upgraded connection has no request body left to read: the
+      // upgrade is the end of the request that carried it.
+      if ((mode == ConnMode::kWs || mode == ConnMode::kSse) &&
+          (content_need != 0 || content_skip != 0)) {
+        return "an upgraded connection still owes octets of a request body";
+      }
+      return nullptr;
+    }
     // No RFC: a half-open span into the wire body of an asset (see
     // Assets::wire_iov), not into the file - a gzip member's octets are
     // not the stored ones.

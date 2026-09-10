@@ -1784,6 +1784,26 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       case Preface::kH1: break;
     }
   }
+  // The state and the pointers must say the same thing, and the parts
+  // must stand to one another the way Conn::invariant_broken says. This
+  // is the top of the feed on purpose: the paths below return as soon
+  // as they have taken their octets, so a check under them would never
+  // see a connection with a body in flight. The debug build is what
+  // every test in this tree runs, so a drift fails the suite instead of
+  // answering a request from a state nobody declared.
+  if (kDebugBuild) {
+    if (mrb_unlikely(!st.mode_agrees())) {
+      std::fprintf(stderr, "webmachine: a connection says it is %s, and its pointers do not\n",
+                   conn_mode_name(st.mode));
+      std::abort();
+    }
+    if (const char* const broken = st.invariant_broken(); mrb_unlikely(broken != nullptr)) {
+      std::fprintf(stderr, "webmachine: a connection that is %s broke a rule: %s\n",
+                   conn_mode_name(st.mode), broken);
+      std::abort();
+    }
+  }
+
   if (st.content_skip != 0) {
     const size_t take = st.content_skip < len ? st.content_skip : len;
     st.content_skip -= take;
@@ -1824,15 +1844,6 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // be parsed while this run is still stopped.
       }
       break;
-  }
-
-  // The state and the pointers must say the same thing. The debug
-  // build is what every test in this tree runs, so a drift fails the
-  // suite instead of answering a request from a state nobody declared.
-  if (kDebugBuild && mrb_unlikely(!st.mode_agrees())) {
-    std::fprintf(stderr, "webmachine: a connection says it is %s, and its pointers do not\n",
-                 conn_mode_name(st.mode));
-    std::abort();
   }
 
   if (mrb_unlikely(st.asset != nullptr)) {
