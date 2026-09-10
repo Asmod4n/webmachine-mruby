@@ -12,13 +12,13 @@
 // one place.
 //
 // Header-only and free of everything else in this tree: no mruby, no
-// io_uring, no Conn, no state. Only <cstddef>/<cstdint> and nghttp2.
+// io_uring, no Conn, no state. Only <cstddef>/<cstdint> and ls-hpack.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
-#include <nghttp2/nghttp2.h>
+#include "lshpack.h"
 
 namespace webmachine {
 enum : uint8_t {
@@ -84,7 +84,7 @@ inline constexpr uint32_t kH2EncTableMax = 65536;
 // RFC 7541 4.2: the decoder's table size is whatever this side announced
 // in SETTINGS_HEADER_TABLE_SIZE. We announce nothing, so RFC 9113 6.5.2's
 // default stands - and it is stated to the decoder here rather than left
-// to agree with the encoder's own default by luck. One number, one place;
+// to agree with ls-hpack's own default by luck. One number, one place;
 // if the SETTINGS frame ever names a size, it names this.
 inline constexpr uint32_t kH2DecTableSize = 4096;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
@@ -141,13 +141,12 @@ inline uint16_t h2_u16(const unsigned char* p) {
 // The cursor is a reference - encoding a field advances it, and what the
 // caller wrote is `at` minus where it started.
 struct H2BlockOut {
-  nghttp2_hd_deflater* enc;
+  struct lshpack_enc* enc;
   unsigned char*& at;
   unsigned char* end;
 };
 
-// RFC 7541 6.2: one field line to encode. `index` says whether the
-// encoder
+// RFC 7541 6.2: one field line to encode. `index` says whether ls-hpack
 // may put it in the dynamic table (6.2.1) or must spell it without one
 // (6.2.2). It matters for any block that is cached and replayed: HPACK is
 // stateful, so replaying an insert makes the peer insert - and evict -
@@ -160,19 +159,15 @@ struct H2Field {
   bool index = true;
 };
 
-// Lane 2 - one per-request field through the encoder. nghttp2 takes the
-// name and the value as they are, so nothing is copied to spell the pair
-// out. Returns false when the field would not fit - the caller then has
-// an error to name, not a truncated block. Shared: the server encodes
-// its response fields with this, the load generator its request
-// pseudo-fields.
-//
-// One field per call, not the whole block at once: the callers build
-// their blocks a line at a time and mix in blocks that were spelled by
-// hand. nghttp2_hd_deflate_hd appends the field's representation and
-// adds no framing of its own, so a block built by many calls is the
-// same octets as one built by a single call with every field in it.
+// Lane 2 - one per-request field through ls-hpack's encoder. ls-hpack
+// wants name and value in one buffer with the offsets named, so the pair
+// is spelled out here first. Returns false when the field would not fit -
+// the caller then has an error to name, not a truncated block. Shared: the
+// server encodes its response fields with this, the load generator its
+// request pseudo-fields.
 inline bool h2_enc_field(H2BlockOut out, const H2Field& f) {
+  const size_t nlen = f.name.size();
+  const size_t vlen = f.value.size();
   // Nothing is checked here, and that is deliberate: what an app can
   // shape is checked where it enters the header buffer - http::
   // field_name_ok / field_value_ok, at response.cpp's Headers#[]= and at
@@ -180,19 +175,22 @@ inline bool h2_enc_field(H2BlockOut out, const H2Field& f) {
   // has already passed that gate, so a second check would guard against
   // something no user can reach. The pointers cannot be null either:
   // they are our own literals and std::string::data().
-  nghttp2_nv nv;
-  nv.name = reinterpret_cast<uint8_t*>(const_cast<char*>(f.name.data()));
-  nv.namelen = f.name.size();
-  nv.value = reinterpret_cast<uint8_t*>(const_cast<char*>(f.value.data()));
-  nv.valuelen = f.value.size();
-  // RFC 7541 6.2.2: without indexing, for a block this server sends more
-  // than once. NGHTTP2_NV_FLAG_NO_INDEX is that, and not 6.2.3's "never
-  // indexed", which would say the field is sensitive - a Date is not.
-  nv.flags = f.index ? NGHTTP2_NV_FLAG_NONE : NGHTTP2_NV_FLAG_NO_INDEX;
-  const ssize_t n =
-      nghttp2_hd_deflate_hd(out.enc, out.at, static_cast<size_t>(out.end - out.at), &nv, 1);
-  if (n <= 0) return false;
-  out.at += n;
+  char hbuf[512];
+  if (nlen + 2 + vlen > sizeof(hbuf)) return false;
+  std::memcpy(hbuf, f.name.data(), nlen);
+  hbuf[nlen] = ':';
+  hbuf[nlen + 1] = ' ';
+  std::memcpy(hbuf + nlen + 2, f.value.data(), vlen);
+  lsxpack_header_t xh;
+  lsxpack_header_set_offset2(&xh, hbuf, 0, nlen, nlen + 2, vlen);
+  // lshpack.c: indexed_type 0 = with incremental indexing, 1 = without,
+  // 2 = never indexed. 1 is the one RFC 7541 6.2.2 describes and the one
+  // a replayed block needs; NEVER_INDEX (6.2.3) would say "sensitive",
+  // which a Date is not.
+  if (!f.index) xh.indexed_type = 1;
+  unsigned char* np = lshpack_enc_encode(out.enc, out.at, out.end, &xh);
+  if (np == out.at) return false;
+  out.at = np;
   return true;
 }
 }  // namespace webmachine

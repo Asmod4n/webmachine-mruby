@@ -420,45 +420,26 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   size_t used = 0;
   const unsigned char* p = blk;
   const unsigned char* end = p + blk_len;
-  // RFC 7541: one field per call, and the call says which. nghttp2 hands
-  // back pointers into its own memory, valid until the next call or
-  // until end_headers, so each pair is copied into hdrbuf - which is
-  // what the fields are lent from for the length of the answer.
-  size_t left = blk_len;
-  for (;;) {
-    nghttp2_nv nv;
-    int flags = 0;
-    const ssize_t rv = nghttp2_hd_inflate_hd2(h2.dec, &nv, &flags, p, left, 1);
-    if (rv < 0) {
-      nghttp2_hd_inflate_end_headers(h2.dec);
+  while (p < end) {
+    if (nq + 4 > 4 * kH2MaxFields) return h2_error(st0, kH2EnhanceYourCalm, sink);
+    if (used > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
+    if (h2.hdrbuf.size() < used + 4096) h2.hdrbuf.resize(used + 4096);
+    lsxpack_header_t xh;
+    lsxpack_header_prepare_decode(&xh, &h2.hdrbuf[used], 0, 4096);
+    if (lshpack_dec_decode(&h2.dec, &p, end, &xh) != 0) {
       return h2_error(st0, kH2CompressionError, sink);
     }
-    p += rv;
-    left -= static_cast<size_t>(rv);
-    if ((flags & NGHTTP2_HD_INFLATE_EMIT) != 0) {
-      if (nq + 4 > 4 * kH2MaxFields) {
-        nghttp2_hd_inflate_end_headers(h2.dec);
-        return h2_error(st0, kH2EnhanceYourCalm, sink);
-      }
-      if (used > kH2FragBudget) {
-        nghttp2_hd_inflate_end_headers(h2.dec);
-        return h2_error(st0, kH2EnhanceYourCalm, sink);
-      }
-      const size_t need = nv.namelen + nv.valuelen;
-      if (h2.hdrbuf.size() < used + need) h2.hdrbuf.resize(used + need + 4096);
-      std::memcpy(&h2.hdrbuf[used], nv.name, nv.namelen);
-      quads[nq++] = static_cast<uint32_t>(used);
-      quads[nq++] = static_cast<uint32_t>(nv.namelen);
-      std::memcpy(&h2.hdrbuf[used + nv.namelen], nv.value, nv.valuelen);
-      quads[nq++] = static_cast<uint32_t>(used + nv.namelen);
-      quads[nq++] = static_cast<uint32_t>(nv.valuelen);
-      used += need;
-    }
-    if ((flags & NGHTTP2_HD_INFLATE_FINAL) != 0) {
-      nghttp2_hd_inflate_end_headers(h2.dec);
-      break;
-    }
-    if (left == 0 && (flags & NGHTTP2_HD_INFLATE_EMIT) == 0) break;
+    quads[nq++] = static_cast<uint32_t>(used + xh.name_offset);
+    quads[nq++] = xh.name_len;
+    quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
+    quads[nq++] = xh.val_len;
+    // lshpack.h states what one decode writes into the buffer we lent:
+    // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
+    // val_offset + val_len is short by exactly those extra bytes (the
+    // HTTP/1.x CRLF the decoder appends), so the next field's window
+    // began inside bytes this one had just written. Their number, not
+    // ours.
+    used += static_cast<size_t>(xh.name_len) + xh.val_len + lshpack_dec_extra_bytes(&h2.dec);
   }
   h2.frag.clear();
 
@@ -824,7 +805,7 @@ bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
   // konst head holds, and nothing counts it there.
   unsigned char dbuf[64];
   unsigned char* dp = dbuf;
-  if (!h2_enc_field({h2.enc, dp, dbuf + sizeof(dbuf)},
+  if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
                     {"date", {date_, sizeof(date_)}, false})) {
     return h2_error(st0, kH2InternalError, sink);
   }
@@ -1035,15 +1016,15 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
   unsigned char ebuf[256];
   unsigned char* ep = ebuf;
   unsigned char* const eend = ebuf + sizeof(ebuf);
-  bool enc_ok = h2_enc_field({h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}});
+  bool enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}});
   h2.enc_ins++;
   if (enc_ok && !proto.empty()) {
-    enc_ok = h2_enc_field({h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
+    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
     h2.enc_ins++;
   }
   if (enc_ok && dparams.on) {
     // RFC 9113 8.2: a field name on the wire is lower case, always.
-    enc_ok = h2_enc_field({h2.enc, ep, eend}, {"sec-websocket-extensions", ext_answer});
+    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-extensions", ext_answer});
     h2.enc_ins++;
   }
   if (!enc_ok) {
@@ -1125,8 +1106,8 @@ bool Http1::h2_sse_begin(Conn& st0, const H2SseAsk& ask, std::string& sink) {
   unsigned char ebuf[256];
   unsigned char* ep = ebuf;
   unsigned char* const eend = ebuf + sizeof(ebuf);
-  if (!h2_enc_field({h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}}) ||
-      !h2_enc_field({h2.enc, ep, eend}, {"cache-control", "no-store"})) {
+  if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}}) ||
+      !h2_enc_field({&h2.enc, ep, eend}, {"cache-control", "no-store"})) {
     sse_free(s);
     return h2_error(st0, kH2InternalError, sink);
   }
@@ -1460,7 +1441,7 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
     // thrown away, so an insert here costs nothing to replay - but it
     // does move every index a cached head may be holding, which is what
     // enc_ins counts.
-    if (!h2_enc_field({h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}})) {
+    if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}})) {
       return h2_error(st0, kH2InternalError, sink);
     }
     h2.enc_ins++;
@@ -1477,7 +1458,7 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
         for (char& c : name) {
           if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
         }
-        if (!h2_enc_field({h2.enc, ep, eend}, {name, {(*p.rhdrs).data() + vs, eol - vs}})) {
+        if (!h2_enc_field({&h2.enc, ep, eend}, {name, {(*p.rhdrs).data() + vs, eol - vs}})) {
           return h2_error(st0, kH2InternalError, sink);
         }
         h2.enc_ins++;
@@ -1498,8 +1479,8 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
       // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
       // answer this route ever gives, so it goes into the peer's p.dynamic
       // table once and is a one-byte reference after that. Encoded
-      // twice: the encoder answers the first call with the insert and
-      // the second with the index it just made, which is exactly the two
+      // twice: ls-hpack answers the first call with the insert and the
+      // second with the index it just made, which is exactly the two
       // forms this cache needs. Only the 200 has one - the shared p.status
       // blocks carry no content-type, and a bound route never reaches
       // this branch.
@@ -1514,8 +1495,8 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
       if (ct != nullptr) {
         unsigned char* pp = pbuf;
         unsigned char* rp = rbuf;
-        if (!h2_enc_field({h2.enc, pp, pbuf + sizeof(pbuf)}, {"content-type", *ct}) ||
-            !h2_enc_field({h2.enc, rp, rbuf + sizeof(rbuf)}, {"content-type", *ct})) {
+        if (!h2_enc_field({&h2.enc, pp, pbuf + sizeof(pbuf)}, {"content-type", *ct}) ||
+            !h2_enc_field({&h2.enc, rp, rbuf + sizeof(rbuf)}, {"content-type", *ct})) {
           return h2_error(st0, kH2InternalError, sink);
         }
         plen = static_cast<size_t>(pp - pbuf);
@@ -1532,7 +1513,7 @@ bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produce
       // peer performs again each time. content-type above may be
       // indexed for the opposite reason - it is inserted once and the
       // cache then replays the reference, never the insert.
-      if (!h2_enc_field({h2.enc, dp, dbuf + sizeof(dbuf)},
+      if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
                         {"date", {date_, sizeof(date_)}, false})) {
         return h2_error(st0, kH2InternalError, sink);
       }
@@ -2188,8 +2169,8 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
               // 32-bit number and neither RFC 9113 6.5.2 nor RFC 7541
               // 4.2 bounds it. Encoding with a smaller table than the
               // peer permits is always legal, so the ceiling is ours.
-              nghttp2_hd_deflate_change_table_size(
-                  h2.enc, v > kH2EncTableMax ? kH2EncTableMax : v);
+              lshpack_enc_set_max_capacity(&h2.enc,
+                                           v > kH2EncTableMax ? kH2EncTableMax : v);
               break;
             case kH2SettingsEnablePush:
               if (v > 1) return h2_error(st0, kH2ProtocolError, sink);

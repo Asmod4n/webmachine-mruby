@@ -330,11 +330,8 @@ struct H2Stream {
 };
 
 struct H2State {
-  // RFC 7541: the encoder and the decoder of this connection. nghttp2's
-  // HPACK, which is the one curl and Apache use and the one OSS-Fuzz
-  // fuzzes with three engines under two sanitizers.
-  nghttp2_hd_deflater* enc = nullptr;
-  nghttp2_hd_inflater* dec = nullptr;
+  struct lshpack_enc enc;
+  struct lshpack_dec dec;
 
   // RFC 9113 6.9.1: the connection's half of the flow-control window.
   int64_t flow_window = kH2DefaultWindow;
@@ -392,13 +389,25 @@ struct H2State {
   };
   std::vector<Lend> retired;
 
-  // Both allocate, and either can fail. A constructor cannot refuse, so
-  // it records, and h2_begin refuses.
+  // ls-hpack: lshpack_enc_init allocates and returns -1 when it could
+  // not - the one call of the four that can fail. Ignoring it left an
+  // encoder that was never built, to be handed to lshpack_enc_encode on
+  // the first answer. A constructor cannot refuse, so it records, and
+  // h2_begin refuses.
   bool hpack_ready = false;
   // RFC 9113: allocated only when the preface was spoken, never before.
   H2State() {
-    hpack_ready = nghttp2_hd_deflate_new(&enc, kH2DecTableSize) == 0 &&
-                  nghttp2_hd_inflate_new(&dec) == 0;
+    hpack_ready = lshpack_enc_init(&enc) == 0;
+    lshpack_dec_init(&dec);
+    lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
+    // The dynamic table needs nothing done to it here any more. This
+    // used to hand the decoder an array, because ls-hpack left it NULL
+    // and the first growth did memcpy(new, NULL + 0, 0) - undefined
+    // twice over, and two UBSan reports on the first h2 request this
+    // server ever answered. deps/ls-hpack is pinned at the fork's
+    // fix-undefined-behaviour branch, where lshpack_arr_push guards the
+    // copy on nelem. The pin moves to a release when upstream takes the
+    // three fixes (tools/webmachine-fuzz/ls-hpack).
   }
   // RFC 9113: the decoder dies with the connection - and so does every
   // lend the streams still hold. h1's ~Conn, one tier down: unconditional,
@@ -406,8 +415,8 @@ struct H2State {
   ~H2State() {
     for (H2Stream& s : streams) content_retire(s);
     content_drain();
-    if (enc != nullptr) nghttp2_hd_deflate_del(enc);
-    if (dec != nullptr) nghttp2_hd_inflate_del(dec);
+    lshpack_enc_cleanup(&enc);
+    lshpack_dec_cleanup(&dec);
   }
   H2State(const H2State&) = delete;
   H2State& operator=(const H2State&) = delete;
