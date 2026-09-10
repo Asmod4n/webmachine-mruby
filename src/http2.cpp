@@ -416,6 +416,9 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   H2State& h2 = *st0.h2;
 
   uint32_t quads[4 * kH2MaxFields];
+  // RFC 7541 B: which static entry each name came from, or 0. One byte
+  // per field, beside the four offsets.
+  uint8_t hidx[kH2MaxFields];
   size_t nq = 0;
   size_t used = 0;
   const unsigned char* p = blk;
@@ -429,6 +432,11 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (lshpack_dec_decode(&h2.dec, &p, end, &xh) != 0) {
       return h2_error(st0, kH2CompressionError, sink);
     }
+    // RFC 7541 B: the decoder resolved this name out of the static
+    // table and says which entry it was. That integer is the name, so
+    // the scan below does not spell it out of the buffer again. A
+    // literal name says LSHPACK_HDR_UNKNOWN and is compared as before.
+    hidx[nq / 4] = xh.hpack_index;
     quads[nq++] = static_cast<uint32_t>(used + xh.name_offset);
     quads[nq++] = xh.name_len;
     quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
@@ -481,29 +489,44 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       ok = false;
       break;
     }
+    // RFC 8441 4 / RFC 9113 8.3: the colon says a field is a
+    // pseudo-header, and nothing else may. The static index says which
+    // one it is, and that is all it is used for below - a name the
+    // decoder resolved is not spelled out of the buffer again. It may
+    // not stand in for the colon: :status is a static entry too, and a
+    // request that carries one is refused by the arm at the end.
+    const uint8_t known = hidx[i / 4];
     if (name[0] == ':') {
       if (saw_regular) {
         ok = false;
         break;
       }
-      if (nlen == 7 && std::memcmp(name, ":method", 7) == 0) {
+      if (known == LSHPACK_HDR_METHOD_GET || known == LSHPACK_HDR_METHOD_POST ||
+          (known == LSHPACK_HDR_UNKNOWN && nlen == 7 && std::memcmp(name, ":method", 7) == 0)) {
         if (have_method) { ok = false; break; }
         have_method = true;
         method_val = val;
         method_vlen = vlen;
         facts.method = http::parse_method(val, vlen);
-      } else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) {
+      } else if (known == LSHPACK_HDR_PATH || known == LSHPACK_HDR_PATH_INDEX_HTML ||
+                 (known == LSHPACK_HDR_UNKNOWN && nlen == 5 &&
+                  std::memcmp(name, ":path", 5) == 0)) {
         if (path_val != nullptr) { ok = false; break; }
         have_path = vlen != 0;
         path_val = val;
         path_vlen = vlen;
-      } else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0) {
+      } else if (known == LSHPACK_HDR_SCHEME_HTTP || known == LSHPACK_HDR_SCHEME_HTTPS ||
+                 (known == LSHPACK_HDR_UNKNOWN && nlen == 7 &&
+                  std::memcmp(name, ":scheme", 7) == 0)) {
         if (have_scheme) { ok = false; break; }
         have_scheme = true;
-      } else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) {
+      } else if (known == LSHPACK_HDR_AUTHORITY ||
+                 (known == LSHPACK_HDR_UNKNOWN && nlen == 10 &&
+                  std::memcmp(name, ":authority", 10) == 0)) {
         if (have_authority) { ok = false; break; }
         have_authority = true;
-      } else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0) {
+      } else if (known == LSHPACK_HDR_UNKNOWN && nlen == 9 &&
+                 std::memcmp(name, ":protocol", 9) == 0) {
         // RFC 8441 4: only an extended CONNECT carries it, and only once.
         if (protocol_val != nullptr) { ok = false; break; }
         protocol_val = val;
