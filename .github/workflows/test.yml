@@ -65,6 +65,67 @@ jobs:
           WM_MARCH: x86-64-v2
         run: rake ship_smoke
 
+  # The same tests, with the sanitizers watching. The address and
+  # undefined behaviour sanitizers are one build, the thread sanitizer
+  # is the other - the two refuse each other in one binary. Both are
+  # clang builds, and both run the whole suite: mruby's own tests, the
+  # unit tests and the bintests.
+  #
+  # What each one answers: ASan says a use after free or an overflow at
+  # the moment it happens, and TSan names a race whether or not it
+  # fired. A run that stops on a runner and never on a workstation is
+  # what both are here for.
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        san: [asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: install what a build needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang ruby git pkg-config zlib1g-dev libssl-dev
+      - name: build with the sanitizer and run every test
+        env:
+          # detect_leaks is off: mruby frees its heap at exit, and the
+          # gems it loads do not, so the leak check reports the gems
+          # rather than this server. halt_on_error stops the process at
+          # the first report, so the test that was running fails and
+          # says which one it was.
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          cd mruby
+          MRUBY_CONFIG="$GITHUB_WORKSPACE/build_config_${{ matrix.san }}.rb" \
+            rake all test 2>&1 | tee "$GITHUB_WORKSPACE/${{ matrix.san }}.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -Eq '^ *(KO|Crash): [1-9]' "$GITHUB_WORKSPACE/${{ matrix.san }}.log"; then
+            echo 'a test failed or crashed' >&2
+            exit 1
+          fi
+      - name: collect the server logs
+        if: always()
+        # A sanitizer writes its report to the server's stderr, and the
+        # bintests keep that in /tmp. The report says more than the
+        # failed assertion does.
+        run: |
+          mkdir -p san-logs
+          cp /tmp/wm*-stderr-*.log san-logs/ 2>/dev/null || true
+          grep -l 'Sanitizer' san-logs/*.log 2>/dev/null || echo 'no sanitizer report in any server log'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.san }}
+          path: |
+            ${{ matrix.san }}.log
+            san-logs
+
   # The external oracles, against the debug binary the suite job made:
   # h2spec for RFC 9113 and RFC 7541, the Autobahn fuzzingclient for
   # RFC 6455. Both are containers; the runner has docker.

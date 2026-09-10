@@ -11,7 +11,10 @@
 MRuby::Lockfile.disable
 
 MRuby::Build.new('asan') do |conf|
-  conf.toolchain
+  # clang, as in the thread build: the ignore list below is a clang
+  # feature, and one compiler for both sanitizer builds is one thing
+  # to keep working.
+  conf.toolchain :clang
 
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
@@ -25,8 +28,10 @@ MRuby::Build.new('asan') do |conf|
 
   # -O1 and a frame pointer: the sanitizers ask for both, and a trace
   # without frame pointers names the wrong function.
-  san = %w[-fsanitize=address,undefined -fno-omit-frame-pointer
-           -fno-sanitize-recover=all -O1 -g3 -ggdb]
+  ignore = File.expand_path('sanitizer-ignore.txt', File.dirname(__FILE__))
+  san = %W[-fsanitize=address,undefined -fno-omit-frame-pointer
+           -fno-sanitize-recover=all -fsanitize-ignorelist=#{ignore}
+           -O1 -g3 -ggdb]
   conf.cc.flags.concat(san)
   conf.cxx.flags.concat(san + %w[-std=c++20])
   # The runtime is linked, not just compiled in.

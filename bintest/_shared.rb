@@ -16,6 +16,16 @@ require 'tempfile'
 WM_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-server') unless defined?(WM_BIN)
 WM_H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b unless defined?(WM_H2_PREFACE)
 
+# Is this binary a sanitizer build? A sanitizer changes what the
+# process does with memory: the address sanitizer reserves terabytes
+# of address space for its shadow map, and it holds freed blocks in a
+# quarantine. A case that measures address space or resident memory
+# measures the sanitizer then, and not the server. Such a case says
+# `skip` on this.
+unless defined?(WM_SANITIZER_BUILD)
+  WM_SANITIZER_BUILD = %w[asan tsan].include?(File.basename(ENV['BUILD_DIR'] || ''))
+end
+
 unless defined?(wm_compile)
   # Compiles an app source with mrbc -g. Returns the closed Tempfile that
   # holds the .mrb; the caller unlinks it.

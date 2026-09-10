@@ -373,6 +373,7 @@ end
 # asking for the whole file - that allocation threw std::bad_alloc and took
 # the process down, every connection on it with one request.
 assert('response.file survives an mmap it cannot make, and still serves') do
+  skip 'the case caps address space, and a sanitizer needs terabytes of it' if WM_SANITIZER_BUILD
   base, root = rf_tree
   app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-nomap-#{$$}-#{rand(1 << 30)}.sock"

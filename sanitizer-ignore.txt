@@ -1,0 +1,18 @@
+# What the undefined behaviour sanitizer must not report, and why.
+#
+# LMDB reads its pages out of a memory map. A page header sits where
+# the file puts it, so a struct pointer into the map is often not on
+# an 8 byte boundary. The read is correct on every machine this runs
+# on, and the check has no other way to see that. The rule names the
+# alignment check and the LMDB sources alone, so a misaligned access
+# anywhere else is still reported.
+[alignment]
+src:*/mruby-lmdb/*
+src:*/liblmdb/*
+
+# xxhash reads four octets at a time from a pointer it advances by
+# one. The code says so and picks that path only where the machine
+# permits it. ls-hpack carries xxhash and hashes header names with
+# it, so every header field the server reads raises this report.
+src:*/xxhash/*
+src:*xxhash.c

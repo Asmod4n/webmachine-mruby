@@ -669,6 +669,7 @@ assert('run frame: a raise right after GC still answers 500 with its message') d
 end
 
 assert('run frame: RSS stays flat across 8000 runtime requests') do
+  skip 'a sanitizer keeps freed blocks, so resident memory grows by design' if WM_SANITIZER_BUILD
   src = File.read(File.expand_path('../examples/counter.rb', __dir__))
   wm_server(src) do |sock, pid|
     rss = -> { File.read("/proc/#{pid}/status")[/^VmRSS:\s*(\d+)/, 1].to_i }

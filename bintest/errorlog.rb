@@ -4,7 +4,9 @@ require 'tempfile'
 
 # mruby's enable_debug is what build/debug has and the ship builds do not
 # - the same line the server reads as kDebugBuild.
-ELOG_DEBUG_BUILD = (ENV['BUILD_DIR'] || 'build/host').include?('debug')
+# The sanitizer builds ask for enable_debug as well, so they answer
+# like the debug build and not like a ship build.
+ELOG_DEBUG_BUILD = %w[debug asan tsan].include?(File.basename(ENV['BUILD_DIR'] || 'build/host'))
 
 ELOG_APP = <<~APP
   class Boom < Webmachine::Resource
