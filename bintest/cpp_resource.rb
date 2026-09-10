@@ -14,8 +14,12 @@ CPPR_BIN = File.join(ENV['BUILD_DIR'] || 'build/host', 'bin', 'webmachine-exampl
 CPPR_APP = File.expand_path('../examples/cpp_resource.rb', __dir__)
 
 def cppr_server(&block)
-  raise "no #{CPPR_BIN} - the example binary needs WM_EXAMPLES (build_config_debug.rb)" \
-    unless File.executable?(CPPR_BIN)
+  # The example binary is the debug config's: WM_EXAMPLES builds it and
+  # the ship configs do not. A run against a build without it says so
+  # and moves on, because these cases are about the C++ resource and
+  # not about which build made the binary.
+  skip 'this build has no webmachine-example - it needs WM_EXAMPLES' unless
+    File.executable?(CPPR_BIN)
 
   wm_server(File.read(CPPR_APP), bin: CPPR_BIN, tag: 'wm-cppr', &block)
 end

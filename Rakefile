@@ -113,6 +113,21 @@ task :san_smoke, %i[which] do |_t, args|
   wm_smoke(which, which)
 end
 
+desc 'the bintests against the ship binary, not the debug one'
+task ship_test: MRUBY_DIR do
+  # What ship_smoke could not answer. The suite is the debug build's,
+  # and that build carries checks the shipped binary does not have -
+  # kDebugBuild is true there and false here. So the tests run again
+  # against the binary a user gets, and the cases that need the debug
+  # build's own example binary say skip.
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{HOST_CONFIG} rake"
+  host = File.join(MRUBY_DIR, 'build', 'host')
+  mrbc = File.join(host, 'mrbc', 'bin', 'mrbc')
+  raise "no mrbc at #{mrbc}" unless File.executable?(mrbc)
+  sh({'BUILD_DIR' => host, 'MRBCFILE' => mrbc, 'EXECUTABLE_EXT' => ''},
+     "ruby #{File.join(MRUBY_DIR, 'test', 'bintest.rb')} #{__dir__}")
+end
+
 desc 'the ship binary starts and answers - what the suite (debug) never checks'
 task ship_smoke: MRUBY_DIR do
   # The shipped binary is the host build's, so this builds that one and
