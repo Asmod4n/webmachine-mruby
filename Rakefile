@@ -93,6 +93,14 @@ def wm_smoke(build_name, label)
   end
 end
 
+desc 'a sanitizer build starts and answers: rake san_smoke[asan] or [tsan]'
+task :san_smoke, %i[which] do |_t, args|
+  which = args[:which] || 'asan'
+  raise "san_smoke takes asan or tsan, not #{which}" unless %w[asan tsan].include?(which)
+  sh "cd #{MRUBY_DIR} && MRUBY_CONFIG=#{File.expand_path("build_config_#{which}.rb", __dir__)} rake"
+  wm_smoke(which, which)
+end
+
 desc 'the ship binary starts and answers - what the suite (debug) never checks'
 task ship_smoke: MRUBY_DIR do
   # The shipped binary is the host build's, so this builds that one and

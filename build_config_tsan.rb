@@ -14,7 +14,11 @@
 MRuby::Lockfile.disable
 
 MRuby::Build.new('tsan') do |conf|
-  conf.toolchain
+  # clang, not the default: GCC cannot keep the 'always_inline'
+  # promise in the vendored ada.cpp under -fsanitize=thread, and it
+  # stops with an error. clang is the reference for TSan and compiles
+  # the same file.
+  conf.toolchain :clang
 
   conf.cc.flags  << '-Wno-undef'
   conf.cxx.flags << '-Wno-undef'
@@ -26,7 +30,14 @@ MRuby::Build.new('tsan') do |conf|
   conf.enable_bintest
   conf.enable_test
 
-  san = %w[-fsanitize=thread -fno-omit-frame-pointer -O1 -g3 -ggdb]
+  # One string, and the sanitizer flag is not at its front. The
+  # slipstreamIO gem reads the flag list and configures the carried
+  # liburing with --enable-sanitizer when an entry starts with
+  # '-fsanitize='. That switch means address and undefined for
+  # liburing, always, so a thread build would link an address runtime
+  # into a thread binary and the link fails. The compiler reads the
+  # string as two flags, so the build gets what it asks for.
+  san = ['-fno-omit-frame-pointer -fsanitize=thread', '-O1', '-g3', '-ggdb']
   conf.cc.flags.concat(san)
   conf.cxx.flags.concat(san + %w[-std=c++20])
   conf.linker.flags.concat(%w[-fsanitize=thread])
