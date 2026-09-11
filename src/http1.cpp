@@ -1850,11 +1850,6 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       took = take_chunked(st, FileWriter{&st.spill}, data, len);
       break;
   }
-  // The reader moved this body from memory into a file, and the rest of
-  // the buffer is the file's now.
-  if (mrb_unlikely(took == BodyTake::kMore && st.body_to == Conn::Body::kChunkFile && len != 0)) {
-    took = take_chunked(st, FileWriter{&st.spill}, data, len);
-  }
   switch (took) {
     case BodyTake::kNone: break;
     case BodyTake::kFailed: return false;
@@ -2090,7 +2085,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // first buffer. It begins in memory and moves to a file when
         // the count says so - the head cannot know which it will be.
         if (mrb_unlikely(w.have_te) && mrb_likely(b->res->takes_body)) {
-          st.chunk.reset();
+          st.chunk = {};
+          // RFC 9112 7.1.2: the decoder reads the trailer section and
+          // drops it. No node of this server reads a trailer field.
+          st.chunk.consume_trailer = 1;
           st.body_count = 0;
           st.body_hold.clear();
           st.body_to = Conn::Body::kChunkMem;
