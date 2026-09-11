@@ -173,17 +173,33 @@ if [ -n "$PIN" ]; then
   SRV_PIN=(taskset -c "$SRV_CPU")
   CLI_PIN=(taskset -c "$CLI_CPU")
 else
-  # The bench takes every cpu back, whatever its caller holds. An agent
-  # that works in this tree can put itself on one cpu, and a child of
-  # that shell inherits the one cpu with it. A server on one cpu is a
-  # different measurement, and the log would not say so.
+  # The bench takes the cpus its caller does not hold. An agent that
+  # works in this tree puts its own processes on one cpu, so its builds
+  # and greps stay out of a measurement. A child of that shell inherits
+  # the one cpu, and the bench is such a child: a server on the agent's
+  # cpu measures the agent as well.
+  #
+  # So the run asks which cpus this shell holds, and takes the rest. It
+  # is not the PIN knob: the two processes still share every cpu they
+  # get, and the scheduler still places them.
   ALL_CPUS=$(getconf _NPROCESSORS_CONF 2>/dev/null || echo 1)
   if [ "$ALL_CPUS" -gt 1 ] && command -v taskset >/dev/null; then
-    HAVE_CPUS=$(nproc 2>/dev/null || echo "$ALL_CPUS")
-    if [ "$HAVE_CPUS" -lt "$ALL_CPUS" ]; then
-      SRV_PIN=(taskset -c "0-$((ALL_CPUS - 1))")
-      CLI_PIN=(taskset -c "0-$((ALL_CPUS - 1))")
-      WIDENED=1
+    MINE=",$(taskset -pc $$ 2>/dev/null | sed 's/.*list: //' |
+             awk -F, '{for (i = 1; i <= NF; i++) {
+                         n = index($i, "-")
+                         if (n) { for (c = substr($i, 1, n - 1) + 0; c <= substr($i, n + 1) + 0; c++) printf "%d,", c }
+                         else printf "%d,", $i + 0 } }')"
+    FREE=""
+    c=0
+    while [ "$c" -lt "$ALL_CPUS" ]; do
+      case "$MINE" in *",$c,"*) ;; *) FREE="$FREE,$c" ;; esac
+      c=$((c + 1))
+    done
+    FREE="${FREE#,}"
+    if [ -n "$FREE" ]; then
+      SRV_PIN=(taskset -c "$FREE")
+      CLI_PIN=(taskset -c "$FREE")
+      FREE_LINE="$FREE"
     fi
   fi
 fi
@@ -315,7 +331,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}${WIDENED:+ cpus=all}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
