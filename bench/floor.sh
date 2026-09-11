@@ -380,6 +380,12 @@ OUT=$(mktemp)
   # so a rate taken with it is not a rate taken without it - read the
   # two from separate runs. htgen refuses it with --pipeline above 1,
   # because a batch carries one timestamp for all of its answers.
+  # METHOD=POST BODY_FILE=path: an upload instead of a GET. It is the
+  # only shape that walks the body path - the spill file, its writes
+  # through the ring, and the reader that fills it - and no other knob
+  # here reaches that code at all.
+  [ -n "${METHOD:-}" ] && HTGEN_SHAPE+=(--method "$METHOD")
+  [ -n "${BODY_FILE:-}" ] && HTGEN_SHAPE+=(--body-file "$BODY_FILE")
   if [ "${LATENCY:-0}" = 1 ]; then
     if [ "$PIPELINE" != 1 ]; then
       echo "LATENCY=1 needs PIPELINE=1: a batch has one timestamp for every answer in it" >&2
