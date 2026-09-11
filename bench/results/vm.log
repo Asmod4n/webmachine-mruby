@@ -1783,3 +1783,27 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.
 env: runnable=3/112 busy=0% (200ms sample)
 responses=39257925 bad=0 seconds=10.000 rps=3925779 bytes=3297666484 MB/s=314.49 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=510379169 tx_MB/s=48.67
 server: 71% of one core (50u/20s)   client: 73% of one core (56u/18s)   other: 2% of one core
+==== 2026-09-11T03:22Z repo=978feea mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/110 busy=0% (200ms sample)
+responses=29910217 bad=0 seconds=10.000 rps=2991020 bytes=2512459012 MB/s=239.61 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=388858965 tx_MB/s=37.08
+server: 61% of one core (40u/20s)   client: 59% of one core (44u/16s)   other: 4% of one core
+==== 2026-09-11T03:22Z repo=978feea mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/110 busy=0% (200ms sample)
+responses=38288709 bad=0 seconds=10.000 rps=3828832 bytes=3216252340 MB/s=306.72 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=497762721 tx_MB/s=47.47
+server: 75% of one core (51u/23s)   client: 73% of one core (54u/18s)   other: 4% of one core
+==== 2026-09-11T03:22Z repo=978feea mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/109 busy=1% (200ms sample)
+responses=31461957 bad=0 seconds=10.000 rps=3146135 bytes=2642805172 MB/s=252.03 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=409006625 tx_MB/s=39.01
+server: 72% of one core (42u/30s)   client: 61% of one core (46u/16s)   other: 4% of one core
+==== 2026-09-11T03:23Z repo=978feea mruby=de9b589 ====
+harness: /usr/local/bin/htgen(197209da-dirty) -c16 -d10s h2 -m128 (one ring, one thread) impl=uring cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/110 busy=0% (200ms sample)
+responses=37240309 bad=0 seconds=10.000 rps=3724025 bytes=3128186740 MB/s=298.33 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=484150161 tx_MB/s=46.17
+server: 69% of one core (49u/20s)   client: 72% of one core (54u/18s)   other: 4% of one core

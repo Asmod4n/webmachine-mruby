@@ -327,7 +327,7 @@ OUT=$(mktemp)
   # whose user may not take -10, and a row must not claim a priority it
   # did not have.
   NICE_LINE=""
-  [ "${BENCH_NICE:-0}" = 1 ] && NICE_LINE=" nice=-10"
+  [ "${BENCH_NICE:-0}" = 1 ] && NICE_LINE=" nice=-15"
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
