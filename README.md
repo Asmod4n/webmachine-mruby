@@ -208,10 +208,28 @@ An application names its own listener, in its conf: `app.conf.port`,
 applications, each on its own. `--unix` and `--port` are a standalone
 server's, which has no app to name one.
 
-An application says what it accepts as a request body with
-`app.conf.max_body`, in octets. The default is 1 MiB, which is what
-nginx's `client_max_body_size` defaults to. A larger declared
-`Content-Length` gets 413 before one byte of the body is read.
+Three levels say what a request body may hold, and the nearest one
+answers: the resource, then the application, then the default of 1 MiB,
+which is what nginx's `client_max_body_size` defaults to. A larger
+declared `Content-Length` gets 413 before one byte of the body is read,
+and HTTP/2 refuses the stream at the frame that crosses the limit.
+
+An application names its number with `app.conf.max_body`, in octets. A
+resource names its own with `def self.max_body`, and the fold asks it
+once:
+
+```ruby
+class Uploads < Webmachine::Resource
+  def self.max_body
+    64 * 1024 * 1024
+  end
+end
+```
+
+So a route that takes uploads raises its limit and leaves every other
+route of the application where it was. `max_body` on the instance is
+refused by name: the head decides where the octets land before a
+request object exists.
 
 A pack is a zip of your site's files, built once with
 `rake pack[DIR,OUT.zip]`. The server maps the archive and answers every

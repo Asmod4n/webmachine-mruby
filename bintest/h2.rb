@@ -1706,3 +1706,71 @@ assert('h2: a body with no declared length is refused with 411') do
     end
   end
 end
+
+# RFC 9110 15.5.14: the same three levels as HTTP/1, and the stream
+# carries the answer the head worked out.
+assert('h2: max_body - the resource answers before the application does') do
+  src = <<~RUBY_APP
+    class H2Uploads < Webmachine::Resource
+      def self.max_body
+        4096
+      end
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    class H2Small < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 64
+        app.routes do |route|
+          route.add ['uploads'], H2Uploads
+          route.add [:*], H2Small
+        end
+      end
+    end
+  RUBY_APP
+  h2_server(src) do |sock|
+    # The resource says 4096, so 1024 octets pass where the
+    # application's 64 would have refused them.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      seen = []
+      block = "\x02\x04POST\x86\x04\x08/uploads\x41\x0bexample.com".b +
+              h2_lit('content-length', '1024')
+      s.write(h2_frame(1, 0x04, 1, block))
+      h2_write_body(s, 1, 'u' * 1024, seen)
+      assert_equal '1024', h2_bodies(s, [1], seen)[0]
+    end
+    # The same size on a route that named nothing: the application's 64
+    # refuses the stream.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      block = "\x02\x04POST\x86\x04\x06/small\x41\x0bexample.com".b +
+              h2_lit('content-length', '1024')
+      s.write(h2_frame(1, 0x04, 3, block))
+      s.write(h2_frame(0, 0x01, 3, 'u' * 1024))
+      rst = nil
+      deadline = Time.now + 5
+      while Time.now < deadline
+        f = h2_next(s)
+        break rst = f if f[0] == 3 && f[2] == 3
+      end
+      assert_true rst != nil, 'the oversize upload must be RST_STREAM'
+    end
+  end
+end

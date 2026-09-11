@@ -419,6 +419,7 @@ const NamedSym kUnhonored[] = {
 };
 const NamedSym kKonstOnly[] = {
     {MRB_SYM(encodings_provided), "encodings_provided"},
+    {MRB_SYM(max_body), "max_body"},
 };
 
 // The mirror of kKonstOnly. `def self.x` means, everywhere in this tree,
@@ -2174,6 +2175,35 @@ void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
 
 // The class forms of the caching answers, the remaining value callbacks,
 // and the one mask every run reads instead of sixteen structs.
+// RFC 9110 15.5.14: what this resource accepts as a request body. The
+// class answers with `def self.max_body`, and the fold asks once.
+//
+// Three levels hold a limit, and the nearest one answers: this
+// resource, then conf.max_body of the application, then
+// kMaxBodyDefault. A resource that takes uploads raises its own number
+// and leaves every other route of the application where it was.
+//
+// An instance method of the same name is refused by kKonstOnly: a limit
+// asked per request would be read after the head already decided where
+// the octets land.
+void fold_body_limit(const Folding& fold, Resource& out) {
+  mrb_state* const mrb = fold.mrb;
+  const mrb_value klass = fold.klass;
+  const Resolved meta = resolve(mrb, mrb_class(mrb, klass), MRB_SYM(max_body));
+  if (!meta.defined) return;
+  const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(max_body), 0, nullptr);
+  if (mrb_unlikely(!mrb_fixnum_p(v))) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "max_body answers a whole number of octets");
+  }
+  const mrb_int n = mrb_fixnum(v);
+  if (mrb_unlikely(n < 0 || static_cast<long long>(n) > static_cast<long long>(kMaxBodyMax))) {
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "max_body = %i is outside 0..%i octets", n,
+               static_cast<mrb_int>(kMaxBodyMax));
+  }
+  out.max_body = static_cast<long long>(n);
+}
+
 void fold_caching_and_mask(const Folding& fold, Resource& out) {
   mrb_state* const mrb = fold.mrb;
   const mrb_value klass = fold.klass;
@@ -2414,6 +2444,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   fold_compute_declarations(mrb, klass, out);
   fold_watch_declarations(mrb, klass, out);
   fold_caching_and_mask(fold, out);
+  fold_body_limit(fold, out);
   fold_content_types(mrb, klass, out);
   fold_methods_and_tables(fold, out, ans);
 

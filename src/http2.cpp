@@ -657,6 +657,15 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   H2Stream& stx = h2.open(stream_id);
   // Decide, then do: what every DATA frame of this stream earns, worked
   // out once here instead of per frame in the feed.
+  //
+  // RFC 9110 15.5.14: the nearest limit answers. The application's
+  // number holds until this route's resource names its own with
+  // `def self.max_body`.
+  stx.max_body = apps_[st0.listener].max_body;
+  if (route != kNoRoute) {
+    const Bundle& lb = bundles_[apps_[st0.listener].base + route];
+    if (lb.bound && lb.res->max_body >= 0) stx.max_body = static_cast<size_t>(lb.res->max_body);
+  }
   if (!claimed.have) {
     stx.data = H2Stream::Data::kRefuse;
   } else if (asset != nullptr || route == kNoRoute) {
@@ -668,7 +677,10 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     // here, before the first one arrives. A body of kBodySpill or more
     // opens its file now, so no octet is ever moved from memory into it
     // part way through; a smaller one takes its buffer once.
-    if (!reads) {
+    if (!reads || claimed.value > stx.max_body) {
+      // A declared length above the limit opens no file and reserves no
+      // buffer. The first DATA frame crosses the limit and the stream
+      // is refused there, before an octet is stored.
       stx.data = H2Stream::Data::kDrop;
     } else if (claimed.value >= kBodySpill) {
       if (mrb_unlikely(!stx.spill.open_file())) {
@@ -2056,7 +2068,7 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           h2.close_stream(stream);
           break;
         }
-        if (stp->content_received + dlen > apps_[st0.listener].max_body) {
+        if (stp->content_received + dlen > stp->max_body) {
           h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2RefusedStream, sink);
           break;

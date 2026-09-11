@@ -1931,10 +1931,6 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     if (mrb_unlikely(w.err != 0)) return fail(st, w.err, sink, lflags);
     if (mrb_unlikely(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
     if (mrb_unlikely(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
-    if (mrb_unlikely(w.content_length > apps_[st.listener].max_body)) {
-      return fail(st, 413, sink, lflags);
-    }
-
     bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
     // RFC 9112 6.6: this connection ends when the request carries
@@ -1945,6 +1941,8 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     // Only a request with content pays for the extra match, and the
     // match is pure: the route table answers the same both times.
     bool body_read = w.content_length == 0;
+    // The application's number, until the route names a nearer one.
+    size_t limit = apps_[st.listener].max_body;
     if (mrb_unlikely(!body_read)) {
       // Only a request that carries content pays for this second
       // match, and the route table is pure: it answers the same both
@@ -1956,8 +1954,20 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       if (probe >= 0) {
         const Bundle& pb = bundles_[probe_slot.base + static_cast<size_t>(probe)];
         body_read = pb.bound && pb.res->takes_body;
+        // RFC 9110 15.5.14: the nearest limit answers. This route's
+        // resource holds one when it said `def self.max_body`, and the
+        // application's number answers for every route that did not.
+        if (pb.bound && pb.res->max_body >= 0) {
+          limit = static_cast<size_t>(pb.res->max_body);
+        }
       }
       if (!body_read) persist = false;
+    }
+    // RFC 9110 15.5.14: a declared length above the limit is 413, and
+    // no octet of the body is read. The check waits for the route
+    // probe above, because the route is what can name a nearer limit.
+    if (mrb_unlikely(w.content_length > limit)) {
+      return fail(st, 413, sink, lflags);
     }
 
     if (mrb_unlikely((w.up_ws && w.conn_upgrade) || apps_[st.listener].sse_table != nullptr)) {

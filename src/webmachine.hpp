@@ -2725,6 +2725,14 @@ struct Resource {
   // so both writers can decide on the head alone whether to keep the
   // octets of a body or to step over them.
   bool takes_body = false;
+  // RFC 9110 15.5.14: what this resource accepts as a request body, in
+  // octets, from `def self.max_body`. -1 means this resource said
+  // nothing, and the application's number answers instead.
+  //
+  // The nearest answer wins: the resource, then conf.max_body, then
+  // kMaxBodyDefault. A resource that serves uploads raises its own
+  // limit without raising it for every route of the application.
+  long long max_body = -1;
 
   // Konst-folded content_types_provided: [type, handler] in the
   // resource's own order, [0] the default choice (c3 with no Accept).

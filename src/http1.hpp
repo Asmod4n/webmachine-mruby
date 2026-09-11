@@ -214,6 +214,10 @@ struct H2Stream {
   //   kRefuse  - no length was declared, so the first octet earns 411.
   enum class Data : uint8_t { kMem, kFile, kDrop, kRefuse };
   Data data = Data::kDrop;
+  // RFC 9110 15.5.14: what this stream may carry, in octets. The head
+  // wrote it, from the nearest of three limits: the resource, the
+  // application, the default. A DATA frame reads it and asks nothing.
+  size_t max_body = 0;
   // RFC 9113 8.3: a parked request is answered after hdrbuf has been
   // reused by the next dispatch, so its fields cannot be lent.
   //

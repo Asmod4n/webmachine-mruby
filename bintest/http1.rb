@@ -510,3 +510,102 @@ assert('h1: valid_entity_length? is asked the declared length, before the body')
     end
   end
 end
+
+# RFC 9110 15.5.14: three levels hold a body limit and the nearest one
+# answers - the resource, then conf.max_body, then the default of 1 MiB.
+assert('h1: max_body - the resource answers before the application does') do
+  app = <<~RUBY_APP
+    class Uploads < Webmachine::Resource
+      def self.max_body
+        64
+      end
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = 'took'
+        true
+      end
+      def self.to_html
+        'uploads'
+      end
+    end
+
+    class Small < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = 'took'
+        true
+      end
+      def self.to_html
+        'small'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 16
+        app.routes do |route|
+          route.add ['uploads'], Uploads
+          route.add [:*], Small
+        end
+      end
+    end
+  RUBY_APP
+  wm_server(app, tag: 'wm-maxbody-levels') do |sock, _|
+    checks = [
+      # The resource says 64, so 32 octets pass where the application's
+      # 16 would have refused them.
+      ['/uploads', 32, '200'],
+      ['/uploads', 65, '413'],
+      # This route says nothing, so the application's 16 answers.
+      ['/small', 16, '200'],
+      ['/small', 17, '413'],
+    ]
+    checks.each do |(path, len, code)|
+      UNIXSocket.open(sock) do |s|
+        s.write("POST #{path} HTTP/1.1\r\nHost: x\r\nContent-Length: #{len}\r\n\r\n#{'a' * len}")
+        head, = wm_read(s)
+        assert_true head.start_with?("HTTP/1.1 #{code}"),
+                    "#{path} with #{len} octets: expected #{code}, got #{head.lines.first}"
+      end
+    end
+  end
+end
+
+assert('h1: max_body on the instance is refused by name') do
+  src = <<~RUBY_APP
+    class Wrong < Webmachine::Resource
+      def max_body
+        64
+      end
+      def self.to_html
+        'no'
+      end
+    end
+
+    class Right < Webmachine::Resource
+      def self.to_html
+        'yes'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        begin
+          app.add_route [:*], Wrong
+        rescue Webmachine::RouteError => e
+          puts "refused=\#{e.message}"
+        end
+        app.add_route [:*], Right
+      end
+    end
+  RUBY_APP
+  wm_server(src, tag: 'wm-maxbody-instance') do |_sock, _pid, _err, out|
+    text = File.read(out)
+    assert_true text.include?('refused='), text
+    assert_true text.include?('max_body'), text
+  end
+end
