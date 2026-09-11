@@ -1581,6 +1581,14 @@ inline size_t spell_content_length(char (&buf)[40], size_t len) {
   return at;
 }
 
+// RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
+inline int hex_digit(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+  return -1;
+}
+
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
 inline ClStatus parse_content_length(std::string_view v, size_t* out) {

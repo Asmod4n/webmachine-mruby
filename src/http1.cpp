@@ -38,6 +38,7 @@ struct WireFacts {
   uint16_t err = 0;
   bool have_cl = false;
   bool have_te = false;
+  bool te_chunked = false;
   bool have_host = false;
   bool conn_close = false;
   bool conn_keep = false;
@@ -88,7 +89,12 @@ void read_wire_header(WireSink into, http::Field f) {
       }
       break;
     case 17:
-      if (http::tok_eq({n, nl}, "transfer-encoding")) w.have_te = true;
+      if (http::tok_eq({n, nl}, "transfer-encoding")) {
+        w.have_te = true;
+        // RFC 9112 6.1: chunked is the only coding this server reads,
+        // and it has to be the last one. Anything else is 501.
+        w.te_chunked = http::tok_eq({v, vl}, "chunked");
+      }
       else if (http::tok_eq({n, nl}, "sec-websocket-key")) {
         w.ws_key = v;
         w.ws_key_len = vl;
@@ -1152,12 +1158,16 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
   // resource can read one. A resource without those callbacks never
   // waited for the body, so what sits behind the head is a part of it -
   // and request.body must answer nothing rather than that part.
-  rv.declared_len = r.content_length;
-  if (r.content_length != 0 && b->res->takes_body) {
+  // RFC 9112 7.1: a chunked body declares nothing, so what it holds is
+  // what has arrived. The count is the length the flow is told about.
+  const bool chunked = st.body_to == Conn::Body::kChunkMem ||
+                       st.body_to == Conn::Body::kChunkFile || st.body_count != 0;
+  rv.declared_len = chunked ? st.body_count : r.content_length;
+  if ((r.content_length != 0 || chunked) && b->res->takes_body) {
     // #36: is the whole body here? The walk reads this at kN11, kO14
     // and kP3 and stops there while octets are still coming. Every node
     // above them decided on the head alone.
-    rv.content_ready = st.content_need == 0;
+    rv.content_ready = chunked ? st.body_to == Conn::Body::kNone : st.content_need == 0;
     if (!rv.content_ready) {
       // Nothing is bound while octets are still coming. The walk stops
       // at the first node that reads content, and the resume binds the
@@ -1168,6 +1178,11 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
       rv.content_fd = st.spill.fd;
       rv.content_len = st.spill.written;
       st.spill.bound = true;
+    } else if (chunked) {
+      // The reader wrote it into the hold, chunk by chunk, and the
+      // framing octets are not in it.
+      rv.content = st.body_hold.empty() ? nullptr : st.body_hold.data();
+      rv.content_len = st.body_hold.size();
     } else {
       rv.content = view + off + head_len;
       rv.content_len = r.content_length;
@@ -1826,6 +1841,19 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     case Conn::Body::kNone: break;
     case Conn::Body::kMem: took = take_body(st, MemWriter{&st.body_hold}, data, len); break;
     case Conn::Body::kFile: took = take_body(st, FileWriter{&st.spill}, data, len); break;
+    // RFC 9112 7.1: the same two writers, behind a reader that has to
+    // find the octets first.
+    case Conn::Body::kChunkMem:
+      took = take_chunked(st, MemWriter{&st.body_hold}, data, len);
+      break;
+    case Conn::Body::kChunkFile:
+      took = take_chunked(st, FileWriter{&st.spill}, data, len);
+      break;
+  }
+  // The reader moved this body from memory into a file, and the rest of
+  // the buffer is the file's now.
+  if (mrb_unlikely(took == BodyTake::kMore && st.body_to == Conn::Body::kChunkFile && len != 0)) {
+    took = take_chunked(st, FileWriter{&st.spill}, data, len);
   }
   switch (took) {
     case BodyTake::kNone: break;
@@ -1929,7 +1957,14 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     }
     const uint8_t lflags = facts.no_track ? kLogNoTrack : 0;
     if (mrb_unlikely(w.err != 0)) return fail(st, w.err, sink, lflags);
-    if (mrb_unlikely(w.have_te)) return fail(st, w.have_cl ? 400 : 411, sink, lflags);
+    // RFC 9112 6.1: a request that names both framings is a smuggling
+    // attempt, and a coding this server cannot read is 501. Chunked
+    // alone is read: the octets arrive without a length and the count
+    // is what holds them to a limit.
+    if (mrb_unlikely(w.have_te)) {
+      if (mrb_unlikely(w.have_cl)) return fail(st, 400, sink, lflags);
+      if (mrb_unlikely(!w.te_chunked)) return fail(st, 501, sink, lflags);
+    }
     if (mrb_unlikely(minor >= 1 && !w.have_host)) return fail(st, 400, sink, lflags);
     bool persist = minor >= 1 ? !w.conn_close : w.conn_keep;
     const bool head_only = facts.method == flow::Method::kHead;
@@ -1940,9 +1975,12 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     //
     // Only a request with content pays for the extra match, and the
     // match is pure: the route table answers the same both times.
-    bool body_read = w.content_length == 0;
+    bool body_read = w.content_length == 0 && !w.have_te;
     // The application's number, until the route names a nearer one.
     size_t limit = apps_[st.listener].max_body;
+    // RFC 9112 7.1: what the chunked reader took out of this buffer,
+    // framing and all. The cursor steps over it after the answer.
+    size_t chunk_used = 0;
     if (mrb_unlikely(!body_read)) {
       // Only a request that carries content pays for this second
       // match, and the route table is pure: it answers the same both
@@ -1969,6 +2007,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     if (mrb_unlikely(w.content_length > limit)) {
       return fail(st, 413, sink, lflags);
     }
+    // A chunked body declares nothing, so the limit has to travel with
+    // the connection: the reader holds the count against it, buffer by
+    // buffer.
+    st.body_limit = limit;
 
     if (mrb_unlikely((w.up_ws && w.conn_upgrade) || apps_[st.listener].sse_table != nullptr)) {
       const H1Head head = {{method, method_len}, {path, path_len}, minor,   headers,
@@ -2043,7 +2085,30 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // the flow walked, and a body of kBodySpill or more went to a
         // file first. A route that never reads a body could be made to
         // do both.
-        if (w.content_length != 0 && body_have < w.content_length &&
+        // RFC 9112 7.1: a chunked body has no length to compare, so the
+        // reader starts here and the octets behind the head are its
+        // first buffer. It begins in memory and moves to a file when
+        // the count says so - the head cannot know which it will be.
+        if (mrb_unlikely(w.have_te) && mrb_likely(b->res->takes_body)) {
+          st.chunk.reset();
+          st.body_count = 0;
+          st.body_hold.clear();
+          st.body_to = Conn::Body::kChunkMem;
+          st.run_wants_body = true;
+          const char* cp = view + off + head_len;
+          size_t clen = body_here;
+          const BodyTake got = take_chunked(st, MemWriter{&st.body_hold}, cp, clen);
+          chunk_used = body_here - clen;
+          if (mrb_unlikely(got == BodyTake::kFailed)) {
+            st.body_to = Conn::Body::kNone;
+            st.body_hold.clear();
+            st.spill.close_file();
+            return fail(st, 400, sink, lflags);
+          }
+          // What the reader did not read is a pipelined request, and it
+          // waits behind a run that has not answered yet.
+          st.run_wants_body = got != BodyTake::kWhole;
+        } else if (w.content_length != 0 && body_have < w.content_length &&
             mrb_likely(b->res->takes_body)) {
           st.content_need = w.content_length - body_have;
           // RFC 9110 6.4: a large body goes to a file, so the connection
@@ -2095,7 +2160,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         if (mrb_unlikely(b->res->compute != 0 || b->res->watch != 0 ||
                            b->res->value_jobs != 0 || b->res->value_watch != 0 ||
                            st.run_wants_body)) {
-          const size_t past = head_len + (st.run_wants_body ? body_here : 0);
+          const size_t past = head_len + (st.run_wants_body ? body_here : chunk_used);
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + past,           head_len,   method,
                                     method_len,           path,       path_len,
@@ -2196,6 +2261,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
       off += skip;
       st.content_skip = w.content_length - skip;
     }
+    // RFC 9112 7.1: the chunked reader took its own octets out of this
+    // buffer, framing and all, so the cursor steps over exactly what it
+    // read and the next head starts where the body ended.
+    off += chunk_used;
     if (mrb_unlikely(!persist)) {
       st.carry.clear();
       st.content_skip = 0;

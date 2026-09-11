@@ -208,6 +208,13 @@ An application names its own listener, in its conf: `app.conf.port`,
 applications, each on its own. `--unix` and `--port` are a standalone
 server's, which has no app to name one.
 
+A request body may arrive with a `Content-Length` or with
+`Transfer-Encoding: chunked`, and HTTP/2 may send one with no length at
+all. A declared length picks the destination at the head. A body with
+no length starts in memory and moves into a file when it grows past
+256 KiB. Any other transfer coding is 501, and a request that names
+both framings is 400.
+
 Three levels say what a request body may hold, and the nearest one
 answers: the resource, then the application, then the default of 1 MiB,
 which is what nginx's `client_max_body_size` defaults to. A larger

@@ -1146,8 +1146,43 @@ class Http1 {
     // question: kNone is a head, kMem and kFile are a body and where it
     // lands. So the destination costs no test of its own - it rides in
     // the one the feed could not have skipped.
-    enum class Body : uint8_t { kNone, kMem, kFile };
+    enum class Body : uint8_t { kNone, kMem, kFile, kChunkMem, kChunkFile };
     Body body_to = Body::kNone;
+    // RFC 9112 7.1: where a chunked body stands between two buffers.
+    // A declared length needs no state of its own - content_need is the
+    // whole of it - but a chunked body is a small machine, and this is
+    // what it remembers.
+    //
+    //   kSize     - reading the hexadecimal size, and its extensions.
+    //   kData     - inside a chunk, `remain` octets still to take.
+    //   kDataCrLf - the CRLF that closes a chunk.
+    //   kTrailer  - the fields after the last chunk, up to an empty line.
+    struct Chunk {
+      enum class Phase : uint8_t { kSize, kData, kDataCrLf, kTrailer };
+      Phase phase = Phase::kSize;
+      size_t remain = 0;
+      // What the size line has spelled so far. It lives here because a
+      // buffer may end inside it.
+      size_t size = 0;
+      // How many octets of the current line were read. A line that
+      // never ends is a client holding the connection open with
+      // nothing, so the parser refuses one longer than kMaxChunkLine.
+      uint32_t line = 0;
+      bool size_digits = false;
+      bool in_ext = false;
+      bool saw_cr = false;
+      // Whether the trailer section has seen a field on the line it is
+      // reading. An empty line ends the body.
+      bool trailer_field = false;
+      void reset() { *this = Chunk{}; }
+    };
+    Chunk chunk;
+    // RFC 9110 15.5.14: how many octets of this body have arrived. A
+    // chunked body has no declared length, so this count is what the
+    // limit is held against, and what picks the moment memory becomes
+    // a file.
+    size_t body_count = 0;
+    size_t body_limit = 0;
     // What this connection is. See ConnMode: the feed still reads the
     // pointers, and this is what a reader, a log line and the debug
     // build's check read instead of guessing from them.
@@ -1185,12 +1220,20 @@ class Http1 {
     // so neither has a second copy that could drift from the first.
     // Only a fact stored twice needs a check that the two agree.
     const char* invariant_broken() const {
-      // A body is owed exactly while a destination is named for it.
-      if ((content_need != 0) != (body_to != Body::kNone)) {
+      // A body with a declared length is owed exactly while a
+      // destination is named for it. A chunked body owes octets until
+      // its own machine says the last chunk came, so content_need says
+      // nothing about it.
+      const bool chunked = body_to == Body::kChunkMem || body_to == Body::kChunkFile;
+      if (!chunked && (content_need != 0) != (body_to != Body::kNone)) {
         return "octets are owed and no destination is named, or the other way round";
       }
+      if (chunked && content_need != 0) return "a chunked body counts octets it did not declare";
       // The file was opened before the first octet, at the head.
       if (body_to == Body::kFile && spill.fd < 0) return "a body goes to a file that is not open";
+      if (body_to == Body::kChunkFile && spill.fd < 0) {
+        return "a chunked body goes to a file that is not open";
+      }
       // An upgraded connection has no request body left to read: the
       // upgrade is the end of the request that carried it.
       if ((mode == ConnMode::kWs || mode == ConnMode::kSse) &&
@@ -1567,6 +1610,9 @@ class Http1 {
       content_skip = 0;
       content_need = 0;
       body_to = Body::kNone;
+      chunk.reset();
+      body_count = 0;
+      body_limit = 0;
       mode = ConnMode::kHead;
       body_hold.clear();
       run_wants_body = false;
@@ -1878,6 +1924,139 @@ class Http1 {
   // W is MemWriter or FileWriter, and this is the only code either one
   // ever runs - which is why it holds no test about where the octets
   // belong.
+  // RFC 9112 7.1: a size line longer than this is a client that holds
+  // the connection open and sends nothing that can be used. 64 octets
+  // hold a 16 digit size and an extension of any shape this server has
+  // a use for.
+  static constexpr uint32_t kMaxChunkLine = 64;
+
+  // RFC 9112 7.1: one buffer of a chunked body, into the place the head
+  // chose. W is MemWriter or FileWriter, the same two the declared-length
+  // reader uses.
+  //
+  // The machine is in Conn::Chunk, because a buffer may end anywhere -
+  // inside the size, inside the data, between the CR and the LF. What
+  // this function holds is the walk, not the state.
+  //
+  // kFailed is a fault of the client, and the caller answers 400. A
+  // writer that refuses its octets is the other kFailed, and the caller
+  // cannot tell them apart, so both end the connection.
+  template <class W>
+  static BodyTake take_chunked(Conn& st, W w, const char*& data, size_t& len) {
+    Conn::Chunk& c = st.chunk;
+    while (len != 0) {
+      switch (c.phase) {
+        case Conn::Chunk::Phase::kSize: {
+          const char ch = *data;
+          data++;
+          len--;
+          if (++c.line > kMaxChunkLine) return BodyTake::kFailed;
+          if (c.saw_cr) {
+            if (ch != '\n') return BodyTake::kFailed;
+            if (!c.size_digits) return BodyTake::kFailed;
+            c.saw_cr = false;
+            c.line = 0;
+            c.in_ext = false;
+            c.size_digits = false;
+            if (c.size == 0) {
+              c.phase = Conn::Chunk::Phase::kTrailer;
+              c.trailer_field = false;
+              break;
+            }
+            c.remain = c.size;
+            c.size = 0;
+            c.phase = Conn::Chunk::Phase::kData;
+            break;
+          }
+          if (ch == '\r') {
+            c.saw_cr = true;
+            break;
+          }
+          if (c.in_ext) break;
+          if (ch == ';') {
+            c.in_ext = true;
+            break;
+          }
+          const int d = http::hex_digit(ch);
+          if (d < 0) return BodyTake::kFailed;
+          // A size that cannot be held is a size this server will not
+          // read. The limit below refuses the body anyway.
+          if (c.size > (static_cast<size_t>(-1) >> 4)) return BodyTake::kFailed;
+          c.size = (c.size << 4) | static_cast<size_t>(d);
+          c.size_digits = true;
+          break;
+        }
+        case Conn::Chunk::Phase::kData: {
+          const size_t take = len < c.remain ? len : c.remain;
+          // RFC 9110 15.5.14: the count is the only length a chunked
+          // body has, so the limit is held against it, here.
+          if (st.body_count + take > st.body_limit) return BodyTake::kFailed;
+          if (mrb_unlikely(!w.put(data, take))) return BodyTake::kFailed;
+          st.body_count += take;
+          data += take;
+          len -= take;
+          c.remain -= take;
+          if (c.remain == 0) c.phase = Conn::Chunk::Phase::kDataCrLf;
+          // The one move: this body has outgrown memory. What memory
+          // holds goes to the file, and every octet after it is a file
+          // write. Once per body, never per buffer.
+          if (mrb_unlikely(st.body_to == Conn::Body::kChunkMem &&
+                           st.body_hold.size() >= kBodySpill)) {
+            if (!st.spill.open_file()) return BodyTake::kFailed;
+            if (!st.spill.take(st.body_hold.data(), st.body_hold.size())) return BodyTake::kFailed;
+            st.body_hold.clear();
+            st.body_hold.shrink_to_fit();
+            st.body_to = Conn::Body::kChunkFile;
+            return BodyTake::kMore;
+          }
+          break;
+        }
+        case Conn::Chunk::Phase::kDataCrLf: {
+          const char ch = *data;
+          data++;
+          len--;
+          if (!c.saw_cr) {
+            if (ch != '\r') return BodyTake::kFailed;
+            c.saw_cr = true;
+            break;
+          }
+          if (ch != '\n') return BodyTake::kFailed;
+          c.saw_cr = false;
+          c.phase = Conn::Chunk::Phase::kSize;
+          break;
+        }
+        case Conn::Chunk::Phase::kTrailer: {
+          const char ch = *data;
+          data++;
+          len--;
+          if (++c.line > kMaxHead) return BodyTake::kFailed;
+          if (c.saw_cr) {
+            if (ch != '\n') return BodyTake::kFailed;
+            c.saw_cr = false;
+            c.line = 0;
+            // RFC 9112 7.1.2: an empty line ends the trailer section,
+            // and the body with it. The fields themselves are read and
+            // dropped: no node of this server reads a trailer.
+            if (!c.trailer_field) {
+              st.body_to = Conn::Body::kNone;
+              c.reset();
+              return BodyTake::kWhole;
+            }
+            c.trailer_field = false;
+            break;
+          }
+          if (ch == '\r') {
+            c.saw_cr = true;
+            break;
+          }
+          c.trailer_field = true;
+          break;
+        }
+      }
+    }
+    return BodyTake::kMore;
+  }
+
   template <class W>
   static BodyTake take_body(Conn& st, W w, const char*& data, size_t& len) {
     const size_t take = len < st.content_need ? len : st.content_need;

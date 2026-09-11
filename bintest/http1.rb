@@ -272,14 +272,15 @@ assert('h1: conf.max_body is what an application accepts, and 413 is per app') d
   end
 end
 
-assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body, 411 chunked') do
+assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body, 501 gzip framing') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
     checks = [
       ["GET / HTTP/1.1\r\n\r\n", '400'],
       ["GARBAGE\r\n\r\n", '400'],
       ["GET / HTTP/1.1\r\nHost: x\r\nX-Big: #{'a' * 9000}\r\n\r\n", '431'],
       ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2097152\r\n\r\n", '413'],
-      ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", '411'],
+      # RFC 9112 6.1: chunked is read, and every other coding is 501.
+      ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n", '501'],
       ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\nab", '400'],
       ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nab", '400'],
       ["GET / HTTP/1.1\r\nHost: x\r\nHost: y\r\n\r\n", '400'],
@@ -607,5 +608,126 @@ assert('h1: max_body on the instance is refused by name') do
     text = File.read(out)
     assert_true text.include?('refused='), text
     assert_true text.include?('max_body'), text
+  end
+end
+
+# RFC 9112 7.1: a chunked request body is read. It declares no length,
+# so the count of octets that arrive is what conf.max_body holds, and
+# what moves the body from memory into a file.
+assert('h1: a chunked body is read, counted, and grows into a file') do
+  app = <<~RUBY_APP
+    class Chunks < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        b = request.body
+        bytes = b.read
+        response.body = [b.class.to_s, bytes.bytesize.to_s, bytes[0, 2], bytes[-2, 2]].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.routes { |route| route.add [:*], Chunks }
+      end
+    end
+  RUBY_APP
+  wm_server(app, tag: 'wm-chunked') do |sock, _|
+    # One chunk, then the last chunk and an empty trailer section.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" \
+              "4\r\nabcd\r\n0\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'StringIO|4|ab|cd', body
+    end
+    # Several chunks, a chunk extension, and a trailer field. The
+    # extension and the trailer are read and dropped.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" \
+              "3;name=value\r\nabc\r\n3\r\ndef\r\n0\r\nX-Checksum: 1\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'StringIO|6|ab|ef', body
+    end
+    # The octets arrive in pieces, so the reader stops inside a size
+    # line, inside a chunk and between the CR and the LF.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      # 10 in hexadecimal is sixteen octets, and the writes stop inside
+      # the size, inside the data, and between the CR and the LF.
+      ["1", "0\r\n0123456789", "abcdef", "\r\n", "0\r", "\n\r\n"].each do |piece|
+        s.write(piece)
+        sleep 0.02
+      end
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'StringIO|16|01|ef', body
+    end
+    # Past the spill mark: what memory holds moves into the file, and
+    # the body reads back whole and in order.
+    UNIXSocket.open(sock) do |s|
+      payload = 'ab' + ('L' * ((512 * 1024) - 4)) + 'yz'
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      off = 0
+      while off < payload.bytesize
+        piece = payload.byteslice(off, 64 * 1024)
+        off += piece.bytesize
+        s.write(format("%x\r\n", piece.bytesize) + piece + "\r\n")
+      end
+      s.write("0\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      got = body.split('|')
+      assert_equal 'File', got[0], 'a chunked body that outgrows memory moves to a file'
+      assert_equal payload.bytesize.to_s, got[1]
+      assert_equal 'ab', got[2], 'the octets written before the move must be first'
+      assert_equal 'yz', got[3]
+    end
+    # A size that is not hexadecimal is a client fault.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n")
+      assert_true h1_expect_eof(s)
+    end
+  end
+end
+
+assert('h1: a chunked body is held to max_body by its count alone') do
+  app = <<~RUBY_APP
+    class SmallChunks < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = 'took'
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 32
+        app.routes { |route| route.add [:*], SmallChunks }
+      end
+    end
+  RUBY_APP
+  wm_server(app, tag: 'wm-chunked-limit') do |sock, _|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" \
+              "10\r\n0123456789abcdef\r\n0\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'took', body
+    end
+    # 64 octets against a limit of 32: the connection ends at the octet
+    # that passes the limit.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" \
+              "40\r\n#{'a' * 64}\r\n0\r\n\r\n")
+      assert_true h1_expect_eof(s)
+    end
   end
 end
