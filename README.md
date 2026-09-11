@@ -9,8 +9,12 @@ static files and TLS are on board. At run time it needs OpenSSL 3 on
 the machine, and nothing else.
 
 It is fast because you decide, per method, what runs when. A method
-written as `def self.x` runs once, when the server starts, and its
-answer is kept as bytes. A method written as `def x` runs per request.
+written as `def self.x` with no argument runs once, when the server
+starts, and its answer is kept as bytes. A method written as `def x`
+runs per request, with `request` and `response` in reach. A class
+method with an argument, like `is_authorized?(header)`, is the third
+kind: it runs per request too, on the class, and sees only what it was
+given.
 
 It runs on io_uring where the kernel allows it. slipstreamIO carries the
 same rings to Linux without io_uring, to macOS, the BSDs, and Windows.
@@ -43,9 +47,13 @@ lookup and a write. Write `def to_html` when the answer changes from
 request to request, and the method runs per request.
 
 Any callback can be `def self.` when its answer is the same for every
-request. Four do work per request and stay `def`: `process_post`,
-`create_path`, `delete_resource` and `finish_request`. The server
-says so at start if one of them is written the other way.
+request. A callback the flow calls with an argument, `is_authorized?`
+with the Authorization header or `known_content_type?` with the
+Content-Type, can be `def self.` as well: it runs per request and
+answers from its argument, which is what `compute` needs. Four do work
+per request and stay `def`: `process_post`, `create_path`,
+`delete_resource` and `finish_request`. The server says so at start if
+one of them is written the other way.
 
 On one core, over a unix socket, the server answers about one million
 HTTP/1.1 requests a second and ten million HTTP/2 requests a second.
