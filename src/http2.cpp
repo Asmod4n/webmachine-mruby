@@ -2,6 +2,7 @@
 
 #include "ring.hpp"
 
+#include <optional>
 #include <picohttpparser.h>
 
 #include <cstring>
@@ -410,9 +411,10 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool co
   rv.field_count = nh;
   rv.values = &pvals;
   const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-  const H2Request q{stream_id, facts,    &pvals,
-                    rvp,       target,   route,
-                    head_only, stp.field_blob.data(), stp.field_blob.size()};
+  H2Request q{stream_id, facts,    &pvals,
+              rvp,       target,   route,
+              head_only, stp.field_blob.data(), stp.field_blob.size()};
+  q.bundle = route == kNoRoute ? nullptr : &bundles_[apps_[st0.listener].base + route];
   const H2Served served = h2_serve(st0, q, sink);
   if (served == H2Served::kClosed) return false;
   // A parked run logs from its own tail, with its own status.
@@ -533,32 +535,47 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
         ok = false;
         break;
       }
-      if (known == LSHPACK_HDR_METHOD_GET || known == LSHPACK_HDR_METHOD_POST ||
-          (known == LSHPACK_HDR_UNKNOWN && nlen == 7 && std::memcmp(name, ":method", 7) == 0)) {
+      // One switch on the index, and the memcmp chain only for a name
+      // the decoder did not resolve. The chain that tested the index
+      // and the name together cost more than the memcmp it replaced:
+      // a field low in the chain paid every compare above it.
+      enum : uint8_t { kNone, kMethod, kPath, kScheme, kAuthority, kProtocol };
+      uint8_t which = kNone;
+      switch (known) {
+        case LSHPACK_HDR_METHOD_GET:
+        case LSHPACK_HDR_METHOD_POST: which = kMethod; break;
+        case LSHPACK_HDR_PATH:
+        case LSHPACK_HDR_PATH_INDEX_HTML: which = kPath; break;
+        case LSHPACK_HDR_SCHEME_HTTP:
+        case LSHPACK_HDR_SCHEME_HTTPS: which = kScheme; break;
+        case LSHPACK_HDR_AUTHORITY: which = kAuthority; break;
+        case LSHPACK_HDR_UNKNOWN:
+          if (nlen == 7 && std::memcmp(name, ":method", 7) == 0) which = kMethod;
+          else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) which = kPath;
+          else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0) which = kScheme;
+          else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) which = kAuthority;
+          else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0) which = kProtocol;
+          break;
+        default: break;
+      }
+      if (which == kMethod) {
         if (have_method) { ok = false; break; }
         have_method = true;
         method_val = val;
         method_vlen = vlen;
         facts.method = http::parse_method(val, vlen);
-      } else if (known == LSHPACK_HDR_PATH || known == LSHPACK_HDR_PATH_INDEX_HTML ||
-                 (known == LSHPACK_HDR_UNKNOWN && nlen == 5 &&
-                  std::memcmp(name, ":path", 5) == 0)) {
+      } else if (which == kPath) {
         if (path_val != nullptr) { ok = false; break; }
         have_path = vlen != 0;
         path_val = val;
         path_vlen = vlen;
-      } else if (known == LSHPACK_HDR_SCHEME_HTTP || known == LSHPACK_HDR_SCHEME_HTTPS ||
-                 (known == LSHPACK_HDR_UNKNOWN && nlen == 7 &&
-                  std::memcmp(name, ":scheme", 7) == 0)) {
+      } else if (which == kScheme) {
         if (have_scheme) { ok = false; break; }
         have_scheme = true;
-      } else if (known == LSHPACK_HDR_AUTHORITY ||
-                 (known == LSHPACK_HDR_UNKNOWN && nlen == 10 &&
-                  std::memcmp(name, ":authority", 10) == 0)) {
+      } else if (which == kAuthority) {
         if (have_authority) { ok = false; break; }
         have_authority = true;
-      } else if (known == LSHPACK_HDR_UNKNOWN && nlen == 9 &&
-                 std::memcmp(name, ":protocol", 9) == 0) {
+      } else if (which == kProtocol) {
         // RFC 8441 4: only an extended CONNECT carries it, and only once.
         if (protocol_val != nullptr) { ok = false; break; }
         protocol_val = val;
@@ -652,6 +669,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   }
   const int r = apps_[st0.listener].table->match(path_val, path_vlen, spans);
   const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
+  const Bundle* b = r < 0 ? nullptr : &bundles_[apps_[st0.listener].base + route];
 
   if (end_stream) {
     if (claimed.have && claimed.value != 0) {
@@ -664,33 +682,48 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       h2_log(st0, {facts, {path_val, path_vlen}});
       return true;
     }
+    // Only a bound resource reads a request view: a konst route answers
+    // from the flow table and the head alone, so nothing is filled for it.
+    const bool bound = b != nullptr && b->bound;
     ReqView rv;
-    rv.tls = apps_[st0.listener].tls;
-    rv.request_target = path_val;
-    rv.request_target_len = path_vlen;
-    rv.path_len = http::path_only(path_val, path_vlen);
-    rv.method = facts.method;
-    rv.table = apps_[st0.listener].table;
-    rv.route = r;
-    rv.spans = &spans;
-    rv.declared_len = claimed.have ? claimed.value : 0;
-    // hdrbuf is still the block this dispatch decoded, so the fields can
-    // be lent for the length of the answer.
-    rv.fields = hv;
-    rv.field_count = nh;
-    rv.values = &vals;
-    const H2Request q{stream_id,
-                      facts,
-                      &vals,
-                      r < 0 ? nullptr : &rv,
-                      {path_val, path_vlen},
-                      route,
-                      head_only,
-                      h2.hdrbuf.data(),
-                      h2.hdrbuf.size()};
-    const H2Served served = h2_serve(st0, q, sink);
-    if (served == H2Served::kClosed) return false;
-    if (served == H2Served::kAnswered) h2_log(st0, {facts, {path_val, path_vlen}});
+    if (bound) {
+      rv.tls = apps_[st0.listener].tls;
+      rv.request_target = path_val;
+      rv.request_target_len = path_vlen;
+      rv.path_len = http::path_only(path_val, path_vlen);
+      rv.method = facts.method;
+      rv.table = apps_[st0.listener].table;
+      rv.route = r;
+      rv.spans = &spans;
+      rv.declared_len = claimed.have ? claimed.value : 0;
+      // hdrbuf is still the block this dispatch decoded, so the fields can
+      // be lent for the length of the answer.
+      rv.fields = hv;
+      rv.field_count = nh;
+      rv.values = &vals;
+    }
+    H2Request q{stream_id,
+                facts,
+                &vals,
+                bound ? &rv : nullptr,
+                {path_val, path_vlen},
+                route,
+                head_only,
+                h2.hdrbuf.data(),
+                h2.hdrbuf.size()};
+    q.bundle = b;
+    // The straight line: a run that cannot stop needs no frame and no
+    // held head, so it skips h2_serve and what h2_serve computes for one.
+    bool answered;
+    if (!h2_can_stop(b)) {
+      if (!h2_answer(st0, q, sink)) return false;
+      answered = true;
+    } else {
+      const H2Served served = h2_serve(st0, q, sink);
+      if (served == H2Served::kClosed) return false;
+      answered = served == H2Served::kAnswered;
+    }
+    if (answered) h2_log(st0, {facts, {path_val, path_vlen}});
     return true;
   }
   H2Stream& stx = h2.open(stream_id);
@@ -978,7 +1011,7 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
   if (route == kNoRoute) {
     status = 404;
   } else {
-    b = &bundles_[apps_[st0.listener].base + route];
+    b = q.bundle != nullptr ? q.bundle : &bundles_[apps_[st0.listener].base + route];
     p.idx = &b->index;
     if (b->bound) {
       // The Values die with the frame that carried them, so a run reached
@@ -1004,18 +1037,24 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
       // A stream reached from a parked frame carries facts but no Values -
       // the bytes died with the frame. No Accept bytes, nothing to weigh,
       // and c3 already sent this request the way it went before.
-      flow::ReqFacts cf = facts;
+      // The copy is made only for a request that sent an Accept: every
+      // other one answers on the facts as they stand. One call to
+      // flow::answer, because it is inlined at each call it has.
+      const flow::ReqFacts* use = &facts;
+      std::optional<flow::ReqFacts> cf;
       if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
+        cf.emplace(facts);
         if (http::accept_is_exact({vals->accept, vals->accept_len}, b->accept_type)) {
-          cf.has_accept = false;
+          cf->has_accept = false;
         } else {
-          cf.plain = false;
-          cf.accept_ok =
+          cf->plain = false;
+          cf->accept_ok =
               http::choose_media_type({{&b->accept_type, 1}, {vals->accept, vals->accept_len}}) >= 0;
         }
+        use = &*cf;
       }
-      const size_t mi = static_cast<size_t>(cf.method);
-      status = flow::answer(cf, {b->konst.per_method[mi], b->konst.shortcut[mi]});
+      const size_t mi = static_cast<size_t>(use->method);
+      status = flow::answer(*use, {b->konst.per_method[mi], b->konst.shortcut[mi]});
     }
   }
   p.b = b;
@@ -1236,12 +1275,8 @@ void Http1::h2_sse_second(Conn& st0, std::string& sink) {
 }
 
 Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
-  const Bundle* b = nullptr;
-  if (q.route != kNoRoute) b = &bundles_[apps_[st0.listener].base + q.route];
-  const bool can_stop = b != nullptr && b->bound && b->res != nullptr &&
-                        ((b->res->compute | b->res->watch) != 0 ||
-                         (b->res->value_jobs | b->res->value_watch) != 0);
-  if (!can_stop) return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
+  const Bundle* b = q.bundle;
+  if (!h2_can_stop(b)) return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
   // A connection holds as many stopped runs as a tag can name. Past
   // that the request is answered the straight way: it cannot stop, so a
   // compute task runs here and a watcher is refused by name.

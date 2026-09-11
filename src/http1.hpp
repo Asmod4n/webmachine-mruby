@@ -3059,7 +3059,18 @@ class Http1 {
     // then a run that stops answers from the head alone.
     const char* head_at = nullptr;
     size_t head_len = 0;
+    // The route's bundle, looked up once by whoever built this. Null
+    // for kNoRoute. h2_serve and h2_produce read it instead of asking
+    // bundles_ a second and a third time per request.
+    const Bundle* bundle = nullptr;
   };
+  // Whether a run on this bundle can stop: it declared compute or
+  // watch, or a value round. Only such a run pays for a frame.
+  static bool h2_can_stop(const Bundle* b) {
+    return b != nullptr && b->bound && b->res != nullptr &&
+           ((b->res->compute | b->res->watch) != 0 ||
+            (b->res->value_jobs | b->res->value_watch) != 0);
+  }
   // #30: the walk, and the framing, are two functions - a run can stop
   // between them. One framer serves both paths.
   struct H2Produced;

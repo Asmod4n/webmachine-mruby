@@ -1457,13 +1457,16 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // binding or its own body.
     const bool h2_held = !h1 && start.h2.view != nullptr && start.h2.head_at != nullptr;
     if (h2_held) held.hold(start.h2.head_at, start.h2.head_len, *start.h2.view);
-    const H2Request hq = {start.h2.stream_id,
-                          start.h2.facts,
-                          h2_held ? &held.vals : nullptr,
-                          h2_held ? &held.rv : nullptr,
-                          start.h2.target,
-                          start.h2.route,
-                          start.h2.head_only};
+    H2Request hq = {start.h2.stream_id,
+                    start.h2.facts,
+                    h2_held ? &held.vals : nullptr,
+                    h2_held ? &held.rv : nullptr,
+                    start.h2.target,
+                    start.h2.route,
+                    start.h2.head_only};
+    hq.bundle = start.h2.route == kNoRoute
+                    ? nullptr
+                    : &bundles_[apps_[st.listener].base + start.h2.route];
     uint16_t status = 0;
     if (h1) {
       Round r{st,          b,           s.view,      s.viewlen,    s.off,
