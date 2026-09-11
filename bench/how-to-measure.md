@@ -145,6 +145,33 @@ records each one.
 - It bakes the commit of the server, the commit of the client and the
   compiler flags into the line, so a row can be repeated.
 
+## Instructions per response
+
+A clock cannot see a change of 5 percent on a shared host, and it took
+a day to see a change of 10. An instruction count can. `valgrind
+--tool=callgrind` counts what the server executes for one run of the
+client, and the count of one binary does not move between runs.
+
+    WM_MARCH=x86-64-v3 CFLAGS=-g1 CXXFLAGS=-g1 rake compile
+    BIN=mruby/build/host/bin/webmachine-server bench/instructions.sh
+
+valgrind does not decode AVX-512, so the build leaves `-march=native`
+for this one measurement. `-g1` is a line table, which the host config
+lets through where it strips `-g`, and `callgrind_annotate --auto=yes`
+on the profile then says what each line cost.
+
+The number is per response, with the start-up subtracted. On the h2
+floor app it read 1780 at 0e2d541, 1912 at 7b907fe and 2025 at
+29a6ecd, and forgecore's clock read the same three trees as 10.1M,
+8.8M and 9.0M requests per second. The count found what the clock
+could not: a walk split into four functions, and a classification
+chain that tested an index and a name together.
+
+It counts instructions and not time. A cache miss, a branch the
+predictor did not see, a syscall's cost inside the kernel - none of
+them are in it. A number from here is a reason to run the floor, not
+a floor.
+
 ## Latency
 
 `LATENCY=1` makes the client time every answer and print one line of
