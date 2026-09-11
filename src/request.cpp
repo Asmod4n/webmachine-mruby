@@ -286,6 +286,11 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
 // request that saves pays for it - a server that never calls this
 // never hashes anything.
 
+// #54: did the resource that is running say this callback may save?
+// The fold wrote the answer on the Resource, and response.cpp is what
+// knows which resource is live.
+bool save_declared(mrb_state* mrb) { return response_saves_body(mrb); }
+
 // What one save was asked for, and what became of it. `dir` is the
 // directory the content lives in once this returns, and `err` is what
 // stopped it - exactly one of the two is filled.
@@ -383,6 +388,15 @@ void save_body(mrb_state* mrb, SaveAsk& ask) {
   const ReqView* const v = request_being_answered(mrb);
   if (v->content == nullptr && v->content_fd < 0) {
     ask.err = "this request carried no body";
+    return;
+  }
+  // #54: every stop is declared, and so is this. A callback that did
+  // not say `save: true` got its body in memory when it was small, so
+  // a save here would be a second write of every octet - the cost the
+  // declaration exists to remove. The refusal names the line to write.
+  if (!save_declared(mrb)) {
+    ask.err =
+        "this callback did not say it saves - write `reads_body :<callback>, save: true`";
     return;
   }
   char hex[SHA256_DIGEST_LENGTH * 2 + 1];

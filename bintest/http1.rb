@@ -184,6 +184,7 @@ end
 assert('h1: a large body is a File, a small one is a StringIO') do
   src = <<~RUBY
     class Upload < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -368,6 +369,7 @@ end
 assert('h1: a refused upload is answered before its body arrives') do
   src = <<~RUBY
     class Guarded < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -428,6 +430,7 @@ end
 assert('h1: a request pipelined behind an upload is answered after it') do
   src = <<~RUBY
     class Sink < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -467,6 +470,7 @@ end
 assert('h1: valid_entity_length? is asked the declared length, before the body') do
   src = <<~RUBY
     class Sized < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -517,6 +521,7 @@ end
 assert('h1: max_body - the resource answers before the application does') do
   app = <<~RUBY_APP
     class Uploads < Webmachine::Resource
+      reads_body :process_post
       def self.max_body
         64
       end
@@ -533,6 +538,7 @@ assert('h1: max_body - the resource answers before the application does') do
     end
 
     class Small < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         %w[GET POST]
       end
@@ -617,6 +623,7 @@ end
 assert('h1: a chunked body is read, counted, and grows into a file') do
   app = <<~RUBY_APP
     class Chunks < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         %w[GET POST]
       end
@@ -698,6 +705,7 @@ end
 assert('h1: a chunked body is held to max_body by its count alone') do
   app = <<~RUBY_APP
     class SmallChunks < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         %w[GET POST]
       end
@@ -739,6 +747,7 @@ end
 assert('h1: sniff refuses a body that is not what its head declared') do
   app = <<~RUBY_APP
     class Sniffed < Webmachine::Resource
+      reads_body :content_types_accepted
       def self.allowed_methods
         %w[GET PUT]
       end
@@ -812,6 +821,7 @@ assert('h1: request.body.save is content addressed, and the second upload of the
   Dir.mkdir(root) unless Dir.exist?(root)
   app = <<~RUBY_APP
     class Saved < Webmachine::Resource
+      reads_body :content_types_accepted, save: true
       def self.allowed_methods
         %w[GET PUT]
       end
@@ -889,5 +899,84 @@ assert('h1: request.body.save is content addressed, and the second upload of the
     Dir.glob(File.join(root, '*', '*')).each { |d| Dir.rmdir(d) rescue nil }
     Dir.glob(File.join(root, '*')).each { |d| Dir.rmdir(d) rescue nil }
     Dir.rmdir(root) rescue nil
+  end
+end
+
+# #54: a save is a stop's worth of promise too. Without `save: true` the
+# body of a small request is in memory, and saving it there would be a
+# second write of every octet - so it is refused by name.
+assert('h1: request.body.save is refused when the callback did not declare it') do
+  root = "/tmp/wm-nosave-#{$$}"
+  Dir.mkdir(root) unless Dir.exist?(root)
+  app = <<~RUBY_APP
+    class Undeclared < Webmachine::Resource
+      reads_body :content_types_accepted
+      def self.allowed_methods
+        %w[GET PUT]
+      end
+      def self.content_types_accepted
+        [['application/octet-stream', :take]]
+      end
+      def take
+        request.body.save('#{root}', 'blob.bin') { |dir, _err| dir }
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [:*], Undeclared }
+      end
+    end
+  RUBY_APP
+  begin
+    wm_server(app, tag: 'wm-nosave') do |sock, _|
+      UNIXSocket.open(sock) do |s|
+        body = 'a body nobody promised to save'
+        s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n" \
+                "Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+        head, page = wm_read(s)
+        assert_true head.start_with?('HTTP/1.1 500'), head
+        assert_true page.include?('save: true'), page
+      end
+      assert_true Dir.glob(File.join(root, '*')).empty?
+    end
+  ensure
+    Dir.rmdir(root) rescue nil
+  end
+end
+
+# #54: and with the declaration the head puts even a small body in a
+# file, so the save is a link and not a second write.
+assert('h1: a declared saver gets a file, whatever the size') do
+  app = <<~RUBY_APP
+    class Declared < Webmachine::Resource
+      reads_body :content_types_accepted, save: true
+      def self.allowed_methods
+        %w[GET PUT]
+      end
+      def self.content_types_accepted
+        [['application/octet-stream', :take]]
+      end
+      def take
+        response.body = request.body.class.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [:*], Declared }
+      end
+    end
+  RUBY_APP
+  wm_server(app, tag: 'wm-declared-save') do |sock, _|
+    UNIXSocket.open(sock) do |s|
+      body = 'small enough to have stayed in memory'
+      s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n" \
+              "Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+      head, got = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'File', got
+    end
   end
 end

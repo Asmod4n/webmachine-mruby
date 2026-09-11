@@ -400,6 +400,7 @@ end
 assert('h2: a parked request still names what its route captured') do
   src = <<~RUBY
     class Parked < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -604,6 +605,7 @@ end
 
 H2_FIELDS_APP = <<~RUBY unless defined?(H2_FIELDS_APP)
   class Fields < Webmachine::Resource
+    reads_body :process_post
     def self.allowed_methods
       'GET HEAD POST'
     end
@@ -1219,6 +1221,7 @@ end
 assert('h2: a refused DATA frame is credited on the connection (RFC 9113 6.9)') do
   src = <<~RUBY_SRC
     class TakesPosts < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -1594,6 +1597,7 @@ end
 assert('h2: a large request body is a File, a small one is a StringIO') do
   src = <<~RUBY
     class H2Upload < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -1661,6 +1665,7 @@ end
 assert('h2: a body with no declared length is read, and it grows into a file') do
   src = <<~RUBY_SRC
     class NoLength < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -1736,6 +1741,7 @@ end
 assert('h2: max_body - the resource answers before the application does') do
   src = <<~RUBY_APP
     class H2Uploads < Webmachine::Resource
+      reads_body :process_post
       def self.max_body
         4096
       end
@@ -1749,6 +1755,7 @@ assert('h2: max_body - the resource answers before the application does') do
     end
 
     class H2Small < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         %w[GET POST]
       end
@@ -1805,6 +1812,7 @@ end
 assert('h2: a body that breaks its declared length ends the stream, and a run of them ends the connection') do
   src = <<~RUBY_APP
     class H2Liar < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         %w[GET POST]
       end
@@ -1882,6 +1890,7 @@ end
 assert('h2: a parked run still has its headers, its bindings and its body') do
   src = <<~RUBY_SRC
     class H2Parked < Webmachine::Resource
+      reads_body :process_post
       compute :is_authorized?
       def self.is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }

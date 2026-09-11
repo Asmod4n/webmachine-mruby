@@ -1,6 +1,7 @@
 
 def wm_res_accept_none
   Class.new(WmSpecResource) do
+    reads_body :content_types_accepted
     def allowed_methods
       %w[GET HEAD PUT]
     end
@@ -13,6 +14,7 @@ end
 
 def wm_res_accept_json
   Class.new(WmSpecResource) do
+    reads_body :content_types_accepted
     def allowed_methods
       %w[GET HEAD PUT]
     end
@@ -30,6 +32,7 @@ end
 
 def wm_res_accept_params
   Class.new(WmSpecResource) do
+    reads_body :content_types_accepted
     def allowed_methods
       %w[GET HEAD PUT]
     end

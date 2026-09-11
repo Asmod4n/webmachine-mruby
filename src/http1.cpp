@@ -2213,20 +2213,31 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // What the reader did not read is a pipelined request, and it
           // waits behind a run that has not answered yet.
           st.run_wants_body = got != BodyTake::kWhole;
-        } else if (w.content_length != 0 && body_have < w.content_length &&
-            mrb_likely(b->res->takes_body)) {
+        } else if (w.content_length != 0 && mrb_likely(b->res->takes_body) &&
+                   (body_have < w.content_length || b->res->saves_body)) {
           st.content_need = w.content_length - body_have;
           // RFC 9110 6.4: a large body goes to a file, so the connection
           // holds the head and not the upload. The length is declared -
           // this server refuses a chunked request body - so the choice
           // is made once, here, and never part way through.
-          if (w.content_length >= kBodySpill) {
+          // #54: a callback that declared `save: true` gets its body in
+          // a file whatever the size, so request.body.save is a link and
+          // never a second write of the octets. The resource said so
+          // before the first one arrived, which is the only moment this
+          // can be decided.
+          if (w.content_length >= kBodySpill || b->res->saves_body) {
             if (mrb_unlikely(!st.spill.open_file())) return fail(st, 500, sink, lflags);
             if (mrb_unlikely(!st.spill.take(view + off + head_len, body_here))) {
               st.spill.close_file();
               return fail(st, 500, sink, lflags);
             }
-            st.body_to = Conn::Body::kFile;
+            // A body that arrived whole with its head owes no more
+            // octets, and a destination is named exactly while octets
+            // are owed. What it still owes is the write: the run reads
+            // the descriptor, so it waits for the last one to land, and
+            // spill_wrote is what says it did.
+            if (st.content_need != 0) st.body_to = Conn::Body::kFile;
+            else st.spill.ended = true;
           } else {
             // #36: a body under kBodySpill waits in body_hold. It cannot
             // stay behind the head in the carry: the run is about to

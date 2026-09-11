@@ -15,6 +15,7 @@ SLOW_APP = <<~RUBY unless defined?(SLOW_APP)
   end
 
   class SlowEcho < Webmachine::Resource
+    reads_body :process_post
     def self.allowed_methods
       'GET HEAD POST'
     end

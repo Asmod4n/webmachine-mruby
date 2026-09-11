@@ -182,6 +182,7 @@ end
 
 def wm_res_b5
   Class.new(WmSpecResource) do
+    reads_body :process_post
     def known_content_type?(type)
       type.nil? || !type.include?('unknown')
     end
@@ -210,6 +211,7 @@ end
 
 def wm_res_b4
   Class.new(WmSpecResource) do
+    reads_body :process_post
     def allowed_methods
       %w[POST]
     end
@@ -397,6 +399,7 @@ end
 
 def wm_res_inm
   Class.new(WmSpecResource) do
+    reads_body :process_post
     def generate_etag
       'etag'
     end
@@ -504,6 +507,7 @@ end
 
 def wm_res_i7
   Class.new(WmSpecMissing) do
+    reads_body :process_post
     def allowed_methods
       %w[GET HEAD PUT POST]
     end
@@ -555,6 +559,7 @@ end
 
 def wm_res_gone
   Class.new(WmSpecMissing) do
+    reads_body :process_post
     def previously_existed?
       true
     end
@@ -639,6 +644,7 @@ end
 
 def wm_res_l7
   Class.new(WmSpecMissing) do
+    reads_body :process_post
     def allowed_methods
       %w[GET POST]
     end
@@ -700,6 +706,7 @@ end
 
 def wm_res_n11
   Class.new(WmSpecResource) do
+    reads_body :process_post
     def allowed_methods
       %w[POST]
     end
@@ -743,6 +750,9 @@ end
 
 def wm_res_p11
   Class.new(WmSpecResource) do
+    reads_body :process_post
+    reads_body :create_path
+    reads_body :content_types_accepted
     def allowed_methods
       %w[PUT POST]
     end
@@ -890,6 +900,8 @@ end
 
 def wm_res_o18
   Class.new(WmSpecResource) do
+    reads_body :process_post
+    reads_body :content_types_accepted
     def allowed_methods
       %w[GET HEAD PUT POST DELETE]
     end
@@ -953,6 +965,8 @@ end
 
 def wm_res_o20
   Class.new(WmSpecResource) do
+    reads_body :process_post
+    reads_body :content_types_accepted
     def allowed_methods
       %w[GET PUT POST DELETE]
     end

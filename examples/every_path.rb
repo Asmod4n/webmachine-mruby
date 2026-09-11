@@ -294,6 +294,8 @@ end
 
 # --- 201 n11 post_is_create? + create_path (ask with POST) ------------
 class Created < Webmachine::Resource
+  reads_body :create_path
+  reads_body :content_types_accepted
   def self.allowed_methods
     %w[GET HEAD POST]
   end
@@ -321,6 +323,7 @@ end
 
 # --- 303 n11 process_post + do_redirect (ask with POST) ---------------
 class SeeOther < Webmachine::Resource
+  reads_body :process_post
   def self.allowed_methods
     %w[GET HEAD POST]
   end
@@ -341,6 +344,7 @@ end
 
 # --- 409 o14/p3 is_conflict? (ask with PUT) ---------------------------
 class Conflict < Webmachine::Resource
+  reads_body :content_types_accepted
   def self.allowed_methods
     %w[GET HEAD PUT]
   end

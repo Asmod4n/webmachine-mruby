@@ -719,12 +719,12 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       // buffer. The first DATA frame crosses the limit and the stream
       // is refused there, before an octet is stored.
       stx.data = H2Stream::Data::kDrop;
-    } else if (!claimed.have) {
+    } else if (!claimed.have && !db.res->saves_body) {
       // RFC 9110 8.6: nothing was declared, so nothing is known. The
       // body starts in memory and the count moves it to a file when it
       // grows. No reserve: the size is what arrives.
       stx.data = H2Stream::Data::kMem;
-    } else if (claimed.value >= kBodySpill) {
+    } else if (claimed.value >= kBodySpill || db.res->saves_body) {
       if (mrb_unlikely(!stx.spill.open_file())) {
         h2_rst(st0, stream_id, kH2InternalError, sink);
         return true;

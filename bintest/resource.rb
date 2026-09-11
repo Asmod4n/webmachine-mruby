@@ -259,6 +259,7 @@ end
 assert('compute: a parked run reads its own request after it resumes (#80)') do
   src = <<~RUBY
     class ParkedReads < Webmachine::Resource
+      reads_body :process_post
       compute :is_authorized?
       def self.is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
@@ -1467,5 +1468,90 @@ assert('resource: a class-level uri_too_long? is asked per request') do
       head, = wm_read(s)
       assert_true head.start_with?('HTTP/1.1 414'), head
     end
+  end
+end
+
+# #54: every stop this server makes is declared. compute names the
+# callbacks a worker answers, watch the ones a descriptor answers, and
+# reads_body the ones that wait for octets.
+assert('resource: a callback that reads the body must say so') do
+  src = <<~RUBY_APP
+    class Undeclared < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        true
+      end
+    end
+
+    class Fine < Webmachine::Resource
+      def self.to_html
+        'fine'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        begin
+          app.add_route [:*], Undeclared
+        rescue Webmachine::RouteError => e
+          puts "refused=\#{e.message}"
+        end
+        app.add_route [:*], Fine
+      end
+    end
+  RUBY_APP
+  wm_server(src, tag: 'wm-declare') do |_sock, _pid, _err, out|
+    text = File.read(out)
+    assert_true text.include?('refused='), text
+    assert_true text.include?('reads_body :process_post'), text
+  end
+end
+
+assert('resource: reads_body refuses a name that reads no body, and one that is not defined') do
+  src = <<~RUBY_APP
+    class NotAReader < Webmachine::Resource
+      reads_body :is_authorized?
+      def self.to_html
+        'no'
+      end
+    end
+
+    class NotDefined < Webmachine::Resource
+      reads_body :process_post
+      def self.to_html
+        'no'
+      end
+    end
+
+    class Fine < Webmachine::Resource
+      def self.to_html
+        'fine'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        begin
+          app.add_route ['a'], NotAReader
+        rescue Webmachine::RouteError => e
+          puts "one=\#{e.message}"
+        end
+        begin
+          app.add_route ['b'], NotDefined
+        rescue Webmachine::RouteError => e
+          puts "two=\#{e.message}"
+        end
+        app.add_route [:*], Fine
+      end
+    end
+  RUBY_APP
+  wm_server(src, tag: 'wm-declare-bad') do |_sock, _pid, _err, out|
+    text = File.read(out)
+    assert_true text.include?('one='), text
+    assert_true text.include?('reads no request body'), text
+    assert_true text.include?('two='), text
+    assert_true text.include?('does not define it'), text
   end
 end

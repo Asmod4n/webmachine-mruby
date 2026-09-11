@@ -2259,6 +2259,73 @@ void fold_sniff_types(const Folding& fold, Resource& out) {
   }
 }
 
+// #54: `reads_body`, read once while the app is set up.
+//
+// Three callbacks can reach the request body, and a resource that
+// defines one of them without naming it here is refused by name: the
+// stop it would make is undeclared, and every other stop in this tree
+// is declared. The refusal names the line to write.
+//
+// `save: true` on the declaration is what puts a small body in a file
+// as well, so request.body.save is a link. The head reads it before
+// the first octet arrives.
+void fold_body_readers(const Folding& fold, Resource& out) {
+  mrb_state* const mrb = fold.mrb;
+  const mrb_value klass = fold.klass;
+  const mrb_value named = mrb_iv_get(mrb, klass, MRB_IVSYM(body_readers));
+  const mrb_value savers = mrb_iv_get(mrb, klass, MRB_IVSYM(body_savers));
+  const mrb_int n = mrb_array_p(named) ? RARRAY_LEN(named) : 0;
+
+  struct Reader {
+    mrb_sym sym;
+    const char* name;
+    uint32_t bit;
+  };
+  const Reader kReaders[] = {
+      {MRB_SYM(process_post), "process_post", Resource::kCbProcessPost},
+      {MRB_SYM(create_path), "create_path", Resource::kCbCreatePath},
+      {MRB_SYM(content_types_accepted), "content_types_accepted",
+       Resource::kCbContentTypesAccepted},
+  };
+
+  // Every name has to be one of the three, and it has to be defined.
+  for (mrb_int i = 0; i < n; i++) {
+    const mrb_sym want = mrb_symbol(RARRAY_PTR(named)[i]);
+    bool known = false;
+    for (const Reader& r : kReaders) {
+      if (r.sym != want) continue;
+      known = true;
+      if ((out.cb_mask & r.bit) == 0) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "reads_body names %s, and this resource does not define it", r.name);
+      }
+    }
+    if (!known) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "reads_body names %n, which reads no request body - only process_post, "
+                 "create_path and content_types_accepted do",
+                 want);
+    }
+  }
+
+  // And every callback that can read a body has to have been named.
+  for (const Reader& r : kReaders) {
+    if ((out.cb_mask & r.bit) == 0) continue;
+    bool said = false;
+    for (mrb_int i = 0; i < n; i++) {
+      if (mrb_symbol(RARRAY_PTR(named)[i]) == r.sym) said = true;
+    }
+    if (!said) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "%s reads the request body, so the run stops for it - say `reads_body :%s`",
+                 r.name, r.name);
+    }
+  }
+
+  const mrb_int sn = mrb_array_p(savers) ? RARRAY_LEN(savers) : 0;
+  out.saves_body = sn != 0;
+}
+
 void fold_body_limit(const Folding& fold, Resource& out) {
   mrb_state* const mrb = fold.mrb;
   const mrb_value klass = fold.klass;
@@ -2328,6 +2395,11 @@ void fold_caching_and_mask(const Folding& fold, Resource& out) {
   // RFC 9110 6.4: only these three callbacks read the request body, so a
   // resource without them never asks for one. Both writers read this to
   // step over a body rather than keep it.
+  //
+  // #54: and the resource has to have said so. A run that waits for
+  // octets is a stop like any other, and every stop is declared -
+  // fold_body_readers refuses a callback that reads a body it never
+  // named.
   out.takes_body = (out.cb_mask & Resource::kCbBodyReaders) != 0;
   // kC3 is a request-kind node: its dynamic bit forces the run tier without
   // touching any konst answer.
@@ -2518,6 +2590,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   fold_watch_declarations(mrb, klass, out);
   fold_caching_and_mask(fold, out);
   fold_body_limit(fold, out);
+  fold_body_readers(fold, out);
   fold_sniff_types(fold, out);
   fold_content_types(mrb, klass, out);
   fold_methods_and_tables(fold, out, ans);
@@ -2885,6 +2958,66 @@ mrb_value resource_compute(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
+// #54: `reads_body :process_post` - the resource naming the callbacks
+// that get the request body.
+//
+// Every stop this server makes is declared. `compute` names the
+// callbacks a worker answers, `watch` the ones a descriptor answers,
+// and this one the callbacks that wait for octets to arrive. Before
+// it, a run stopped for the body whenever the fold found one of the
+// three callbacks that can read one, and nothing in the resource said
+// so.
+//
+// `save: true` says this callback may call request.body.save. The head
+// reads it before the first octet and puts the body in a file even
+// when it is small, so the save is a link and never a second write of
+// the octets. Without it the save still works and a small body is
+// copied, which is the cost this declaration exists to remove.
+//
+//   reads_body :process_post
+//   reads_body :take, save: true
+//
+// Only the names are written here. The fold reads them, for the reason
+// compute has: refusing here would mean resolving the method before
+// the class is finished.
+mrb_value resource_reads_body(mrb_state* mrb, mrb_value self) {
+  const mrb_value* argv = nullptr;
+  mrb_int n = 0;
+  mrb_get_args(mrb, "*", &argv, &n);
+  // `save: true` arrives as a Hash in the last place. mruby's keyword
+  // form wants a table of the names it will accept, and this accepts
+  // one, so reading the last argument is the smaller thing.
+  bool saves = false;
+  if (n != 0 && mrb_hash_p(argv[n - 1])) {
+    saves = mrb_test(mrb_hash_get(mrb, argv[n - 1], mrb_symbol_value(MRB_SYM(save))));
+    n--;
+  }
+  if (n == 0) {
+    mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+              "reads_body wants the name of a callback, and got none");
+  }
+  mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(body_readers));
+  if (!mrb_array_p(list)) {
+    list = mrb_ary_new_capa(mrb, n);
+    mrb_iv_set(mrb, self, MRB_IVSYM(body_readers), list);
+  }
+  for (mrb_int i = 0; i < n; i++) {
+    if (mrb_unlikely(!mrb_symbol_p(argv[i]))) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "reads_body wants a symbol, and got %v", argv[i]);
+    }
+    mrb_ary_push(mrb, list, argv[i]);
+    if (saves) {
+      mrb_value sl = mrb_iv_get(mrb, self, MRB_IVSYM(body_savers));
+      if (!mrb_array_p(sl)) {
+        sl = mrb_ary_new_capa(mrb, n);
+        mrb_iv_set(mrb, self, MRB_IVSYM(body_savers), sl);
+      }
+      mrb_ary_push(mrb, sl, argv[i]);
+    }
+  }
+  return self;
+}
+
 // #30: `watch :is_authorized?` - the resource naming the callbacks that
 // answer with a Webmachine::Watcher. It only writes the names here; the
 // fold reads them, for the same reason `compute` does: refusing here
@@ -2947,6 +3080,8 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   mrb_define_class_method_id(mrb, res_class, MRB_SYM(compute), resource_compute,
                              MRB_ARGS_ANY());
   mrb_define_class_method_id(mrb, res_class, MRB_SYM(watch), resource_watch, MRB_ARGS_ANY());
+  mrb_define_class_method_id(mrb, res_class, MRB_SYM(reads_body), resource_reads_body,
+                             MRB_ARGS_ANY());
   webmachine::ws_init(mrb, wm);
   webmachine::sse_init(mrb, wm);
   webmachine::application_init(mrb, wm);

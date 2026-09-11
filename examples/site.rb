@@ -73,6 +73,7 @@ end
 # every one of the three answers the number as htmx wants it: as the new
 # content of the element that asked.
 class CountFragment < Webmachine::Resource
+  reads_body :process_post
   COUNT = [0]
 
   def self.allowed_methods

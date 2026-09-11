@@ -215,6 +215,25 @@ no length starts in memory and moves into a file when it grows past
 256 KiB. Any other transfer coding is 501, and a request that names
 both framings is 400.
 
+A run that waits is declared, always. `compute` names the callbacks a
+worker answers, `watch` the ones a descriptor answers, and `reads_body`
+the ones that wait for the octets of a request body:
+
+```ruby
+class Upload < Webmachine::Resource
+  reads_body :content_types_accepted, save: true
+end
+```
+
+Only `process_post`, `create_path` and `content_types_accepted` can
+reach a body, and a resource that defines one without naming it is
+refused when the route is added - the refusal names the line to write.
+
+`save: true` says the callback may call `request.body.save`. The head
+reads it before the first octet and puts the body in a file whatever
+its size, so every save is a link and never a second write of the
+octets. A save from a callback that did not say it is refused by name.
+
 `request.body.save` puts an upload in the filesystem. The application
 names a directory it chose and the name the user gave; everything
 between them is the digest of the octets:

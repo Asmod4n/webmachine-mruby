@@ -11,6 +11,8 @@ end
 
 WMR_APP = <<~'RUBY' unless defined?(WMR_APP)
   class OracleDoc < Webmachine::Resource
+    reads_body :create_path
+    reads_body :content_types_accepted
     ETAG = 'v1-oracle'
     STAMP = 1000000000  # Sun, 09 Sep 2001 01:46:40 GMT
 

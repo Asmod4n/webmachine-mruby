@@ -2733,6 +2733,14 @@ struct Resource {
   // so both writers can decide on the head alone whether to keep the
   // octets of a body or to step over them.
   bool takes_body = false;
+  // #54: the callbacks `reads_body` named, and the ones it named with
+  // `save: true`. Every stop this server makes is declared, and waiting
+  // for octets is a stop.
+  //
+  // A body that a callback may save goes to a file whatever its size,
+  // so request.body.save is a link and never a second write. That is
+  // what the head reads this for, before the first octet.
+  bool saves_body = false;
   // RFC 9110 15.5.14: what this resource accepts as a request body, in
   // octets, from `def self.max_body`. -1 means this resource said
   // nothing, and the application's number answers instead.
@@ -3729,6 +3737,8 @@ Verdict check(std::string_view declared, std::string_view head);
 // The answer's body, set by something that is not a callback of the
 // resource. See response.cpp.
 bool response_take_body(mrb_state* mrb, std::string_view s);
+// Did the resource being answered declare `reads_body ..., save: true`?
+bool response_saves_body(mrb_state* mrb);
 
 void application_init(mrb_state* mrb, struct RClass* wm);
 

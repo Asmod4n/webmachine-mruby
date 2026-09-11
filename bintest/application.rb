@@ -786,6 +786,7 @@ assert('application: request.headers are the head, lowercased; request.body is t
     end
 
     class AsksBody < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end
@@ -830,6 +831,7 @@ end
 assert('application: request.body is an IO, and the same IO all run') do
   src = <<~RUBY
     class BodyIO < Webmachine::Resource
+      reads_body :process_post
       def self.allowed_methods
         'GET HEAD POST'
       end

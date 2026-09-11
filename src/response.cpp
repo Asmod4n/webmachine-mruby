@@ -502,6 +502,12 @@ mrb_value resource_response(mrb_state* mrb, mrb_value) {
 //
 // False when this run has no body buffer bound, which is the caller's
 // error rather than a raise from here.
+// #54: whether the resource being answered declared that it saves the
+// request body. request.body.save asks it, and refuses when it is
+// false: a body that was not promised to a save is in memory when it
+// is small, and saving it there is a second write of every octet.
+bool response_saves_body(mrb_state* mrb) { return live(mrb)->saves_body; }
+
 bool response_take_body(mrb_state* mrb, std::string_view s) {
   const Resource* r = live(mrb);
   if (r->run.body == nullptr) return false;
