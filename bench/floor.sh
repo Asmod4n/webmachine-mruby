@@ -375,6 +375,18 @@ OUT=$(mktemp)
   HTGEN_SHAPE=()
   [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$STREAMS")
   [ "$PIPELINE" != 1 ] && HTGEN_SHAPE=(--pipeline "$PIPELINE")
+  # LATENCY=1: the client times every answer and prints one line of
+  # percentiles beside the counts. It costs two clock reads per answer,
+  # so a rate taken with it is not a rate taken without it - read the
+  # two from separate runs. htgen refuses it with --pipeline above 1,
+  # because a batch carries one timestamp for all of its answers.
+  if [ "${LATENCY:-0}" = 1 ]; then
+    if [ "$PIPELINE" != 1 ]; then
+      echo "LATENCY=1 needs PIPELINE=1: a batch has one timestamp for every answer in it" >&2
+      exit 2
+    fi
+    HTGEN_SHAPE+=(--latency)
+  fi
   if [ "$TRANSPORT" = unix ]; then
     "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
       --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.out" 2>&1 &
@@ -391,6 +403,7 @@ OUT=$(mktemp)
   read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
   CLIOUT=$(cat "$WORK/cli.out")
   echo "$CLIOUT" | grep -E "^responses="
+  echo "$CLIOUT" | grep -E "^latency_us" || true
   sysc_wait
   NSYSC=$(sysc_read)
   NDONE=$(echo "$CLIOUT" | grep -o 'responses=[0-9]*' | cut -d= -f2)

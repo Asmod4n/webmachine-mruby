@@ -2401,3 +2401,101 @@ build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692c
 env: runnable=1/121 busy=0% (200ms sample)
 responses=6131115 bad=0 seconds=10.000 rps=613111 bytes=950322825 MB/s=90.63 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=214623465 tx_MB/s=20.47
 server: 99% of one core (11u/88s)   client: 99% of one core (8u/92s)   other: 7% of one core
+==== 2026-09-11T05:44Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=5844895 bad=0 seconds=10.000 rps=584486 bytes=905958725 MB/s=86.40 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=204605765 tx_MB/s=19.51
+latency_us p50=1705 p90=1854 p99=2882 p999=3231 max=29456 over65ms=0 n=5844895
+server: 99% of one core (10u/88s)   client: 100% of one core (13u/87s)   other: 6% of one core
+==== 2026-09-11T05:44Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=5993068 bad=0 seconds=10.000 rps=599303 bytes=928925540 MB/s=88.59 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=209791820 tx_MB/s=20.01
+latency_us p50=1682 p90=1793 p99=2412 p999=3122 max=11614 over65ms=0 n=5993068
+server: 99% of one core (11u/88s)   client: 100% of one core (11u/89s)   other: 7% of one core
+==== 2026-09-11T05:44Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=1% (200ms sample)
+responses=5916989 bad=0 seconds=10.000 rps=591696 bytes=917133295 MB/s=87.46 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=207129055 tx_MB/s=19.75
+latency_us p50=1692 p90=1828 p99=2881 p999=3217 max=7940 over65ms=0 n=5916989
+server: 100% of one core (12u/88s)   client: 99% of one core (13u/87s)   other: 6% of one core
+==== 2026-09-11T05:45Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=5923139 bad=0 seconds=10.000 rps=592312 bytes=918086545 MB/s=87.56 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=207344305 tx_MB/s=19.77
+latency_us p50=1694 p90=1797 p99=2835 p999=3061 max=8202 over65ms=0 n=5923139
+server: 99% of one core (11u/88s)   client: 100% of one core (12u/88s)   other: 5% of one core
+==== 2026-09-11T05:45Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/121 busy=0% (200ms sample)
+responses=6089990 bad=0 seconds=10.000 rps=608998 bytes=943948450 MB/s=90.02 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=213184090 tx_MB/s=20.33
+latency_us p50=1665 p90=1754 p99=2091 p999=3166 max=7992 over65ms=0 n=6089990
+server: 99% of one core (10u/89s)   client: 100% of one core (12u/88s)   other: 6% of one core
+==== 2026-09-11T05:45Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1024 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=6062034 bad=0 seconds=10.000 rps=606201 bytes=939615270 MB/s=89.61 conns=1024 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=212205630 tx_MB/s=20.24
+latency_us p50=1666 p90=1776 p99=2309 p999=2774 max=8025 over65ms=0 n=6062034
+server: 99% of one core (11u/88s)   client: 100% of one core (13u/87s)   other: 5% of one core
+==== 2026-09-11T05:45Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=1% (200ms sample)
+responses=353827 bad=0 seconds=10.000 rps=35383 bytes=54843185 MB/s=5.23 conns=1 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=12383945 tx_MB/s=1.18
+latency_us p50=26 p90=32 p99=53 p999=91 max=4069 over65ms=0 n=353827
+server: 51% of one core (5u/46s)   client: 50% of one core (3u/47s)   other: 0% of one core
+==== 2026-09-11T05:45Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=350428 bad=0 seconds=10.000 rps=35043 bytes=54316340 MB/s=5.18 conns=1 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=12265015 tx_MB/s=1.17
+latency_us p50=26 p90=33 p99=53 p999=85 max=2596 over65ms=0 n=350428
+server: 51% of one core (4u/47s)   client: 50% of one core (4u/46s)   other: 0% of one core
+==== 2026-09-11T05:46Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c8 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=5/121 busy=0% (200ms sample)
+responses=1873914 bad=0 seconds=10.000 rps=187391 bytes=290456670 MB/s=27.70 conns=8 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=65587235 tx_MB/s=6.25
+latency_us p50=48 p90=61 p99=85 p999=120 max=502 over65ms=0 n=1873914
+server: 69% of one core (7u/61s)   client: 66% of one core (6u/61s)   other: 0% of one core
+==== 2026-09-11T05:46Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c8 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=1909188 bad=0 seconds=10.000 rps=190919 bytes=295924140 MB/s=28.22 conns=8 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=66821860 tx_MB/s=6.37
+latency_us p50=48 p90=61 p99=85 p999=119 max=745 over65ms=0 n=1909188
+server: 69% of one core (8u/61s)   client: 67% of one core (7u/60s)   other: 0% of one core
+==== 2026-09-11T05:46Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h1 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=1% (200ms sample)
+responses=5416163 bad=0 seconds=10.000 rps=541616 bytes=839505265 MB/s=80.06 conns=62 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=189566685 tx_MB/s=18.08
+latency_us p50=105 p90=146 p99=211 p999=267 max=1536 over65ms=0 n=5416163
+server: 98% of one core (10u/87s)   client: 98% of one core (11u/87s)   other: 7% of one core
+==== 2026-09-11T05:46Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h1 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=5053596 bad=0 seconds=10.000 rps=505358 bytes=783307380 MB/s=74.70 conns=62 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=176876700 tx_MB/s=16.87
+latency_us p50=111 p90=160 p99=252 p999=510 max=1106 over65ms=0 n=5053596
+server: 95% of one core (9u/85s)   client: 98% of one core (9u/89s)   other: 6% of one core
+==== 2026-09-11T05:46Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1 -d10s h2 -m128 (one ring, one thread) impl=bin:wm-base nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-base cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/121 busy=0% (200ms sample)
+responses=13123767 bad=0 seconds=10.000 rps=1312373 bytes=1102396477 MB/s=105.13 conns=1 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=170609045 tx_MB/s=16.27
+latency_us p50=92 p90=121 p99=170 p999=424 max=15121 over65ms=0 n=13123767
+server: 45% of one core (20u/24s)   client: 68% of one core (49u/20s)   other: 5% of one core
+==== 2026-09-11T05:47Z repo=6ef8ad4 mruby=de9b589 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c1 -d10s h2 -m128 (one ring, one thread) impl=bin:wm-head nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/-home-user-webmachine-mruby/20b01345-41c2-53f0-8486-6ef692cec5f6/scratchpad/wm-head cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/122 busy=0% (200ms sample)
+responses=13537269 bad=0 seconds=10.000 rps=1353716 bytes=1137130645 MB/s=108.44 conns=1 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=175984571 tx_MB/s=16.78
+latency_us p50=92 p90=117 p99=151 p999=293 max=1665 over65ms=0 n=13537269
+server: 43% of one core (22u/21s)   client: 70% of one core (52u/18s)   other: 6% of one core

@@ -93,6 +93,40 @@ records each one.
 - It bakes the commit of the server, the commit of the client and the
   compiler flags into the line, so a row can be repeated.
 
+## Latency
+
+`LATENCY=1` makes the client time every answer and print one line of
+percentiles beside the counts. It needs `PIPELINE=1`, because a batch
+carries one timestamp for every answer in it, and htgen refuses the
+pair.
+
+    LATENCY=1 CONNS=8 DURATION=10 APP=bench/apps/hello.rb bench/floor.sh
+
+Read a latency at the concurrency you mean, and never at the one that
+gives the best rate. At the rate's plateau the number is the queue and
+not the server: 1024 connections at 0.6M requests per second is 1.7 ms
+of waiting by Little's law, and the measurement agrees - p50 = 1690 us.
+
+The same binary on the host named `vm`, microseconds:
+
+| Floor | conns | rate | p50 | p99 | p99.9 |
+| --- | --- | --- | --- | --- | --- |
+| h1 | 1 | 0.035M | 26 | 53 | 85 |
+| h1 | 8 | 0.19M | 48 | 85 | 119 |
+| h1 | 62 | 0.51M | 111 | 252 | 510 |
+| h1 | 1024 | 0.60M | 1682 | 2412 | 3122 |
+| h2, 128 streams | 1 | 1.35M | 92 | 151 | 293 |
+| h2, 128 streams | 62 | 2.44M | 3143 | 5914 | 9789 |
+
+One connection and one request in flight is the closest this harness
+comes to the service time: 26 us for an h1 request, and 92 us for an
+h2 request that shares its connection with 127 others.
+
+Timing costs two clock reads per answer, so a rate taken with
+`LATENCY=1` is not a rate taken without it. Take the two from separate
+runs. The h2 rate at 62 connections reads 2.44M here against 5.5M
+without the timing, which is what that costs.
+
 ## What a rate cannot answer
 
 A rate says that something changed. It does not say where.
