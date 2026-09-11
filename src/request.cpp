@@ -228,6 +228,58 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
+// RFC 9110 6.4: put this body in the filesystem, under a directory
+// named for what is in it.
+//
+//   request.body.save("/var/uploads", "photo.png") do |dir, err|
+//     response.body = dir
+//   end
+//
+// The block is told where the content landed, or what stopped it. It
+// does not answer a status and it cannot: a save that failed is this
+// server's fault, so this server spells the 500 and the error log
+// names the reason. The block is where an application does its own
+// bookkeeping, not where a code is chosen.
+//
+// It is a block and not a return value for the reason `watch` is one:
+// a call site that yields can be resumed later, so when the link and
+// the copy move through the ring, no resource has to be rewritten.
+// Without a block the path is answered, and a failure raises just the
+// same.
+//
+// This is a method of the object request.body answers and of that
+// object only - it is defined on that object's singleton class, so
+// File and StringIO are untouched for everyone else.
+//
+// The application names a directory it chose and the name the user
+// gave. Everything between them is the digest of the octets, and that
+// is what makes the rest of this safe:
+//
+//   - Two uploads of the same octets get the same directory, because
+//     they are the same file. mkdir is the atomic claim, so there is
+//     no window between asking whether a name is free and taking it.
+//   - A directory that is already there means this server already
+//     holds exactly these octets. Nothing is written and nothing is
+//     read: the block is told the directory at once.
+//   - The same octets under a second name find that directory and get
+//     a second link inside it. One inode, two names, no copy.
+//   - Nothing the client sent reaches a path component except the
+//     leaf, and the leaf may hold no slash, no "..", and nothing
+//     empty.
+//
+// Where the octets come from. A body that went to a file is linked
+// into place: they are already on the disk, written as they arrived,
+// so the whole upload ends with one link. A link only works inside one
+// filesystem, so when conf.spill_dir and this directory are on
+// different ones the kernel copies with copy_file_range and no octet
+// passes through this process. A body in memory is written out; it is
+// under the in-memory limit by definition.
+//
+// The digest is taken here rather than while the body arrives. It
+// costs one pass over octets that are in the page cache, and only a
+// request that saves pays for it - a server that never calls this
+// never hashes anything.
+
 // What one save was asked for, and what became of it. `dir` is the
 // directory the content lives in once this returns, and `err` is what
 // stopped it - exactly one of the two is filled.
@@ -389,7 +441,13 @@ mrb_value body_save(mrb_state* mrb, mrb_value) {
       ask.err.empty() ? mrb_str_new(mrb, ask.out.data(), ask.out.size()) : mrb_nil_value(),
       ask.err.empty() ? mrb_nil_value()
                       : mrb_exc_new(mrb, E_WM_ERROR(mrb), ask.err.data(), ask.err.size())};
-  return mrb_yield_argv(mrb, blk, 2, argv);
+  const mrb_value said = mrb_yield_argv(mrb, blk, 2, argv);
+  // The block has been told. The status is not its business: a save
+  // that failed is this server's fault, and this server says 500.
+  if (!ask.err.empty()) {
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "request.body.save: %s", ask.err.c_str());
+  }
+  return said;
 }
 
 // RFC 9110 6.4: the request body, as an IO; nil when none arrived.
@@ -431,11 +489,6 @@ mrb_value req_body(mrb_state* mrb, mrb_value) {
     const mrb_value bytes = mrb_str_new(mrb, v->content, v->content_len);
     io = mrb_obj_new(mrb, sio, 1, &bytes);
   }
-  // The one method this object has that its class does not: see
-  // body_save. It is defined on the singleton, so no other File or
-  // StringIO in this VM grows a save.
-  mrb_define_method_id(mrb, mrb_singleton_class_ptr(mrb, io), MRB_SYM(save), body_save,
-                       MRB_ARGS_REQ(2));
   // The one method this object has that its class does not: see
   // body_save. It is defined on the singleton, so no other File or
   // StringIO in this VM grows a save.

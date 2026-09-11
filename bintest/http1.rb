@@ -822,7 +822,7 @@ assert('h1: request.body.save is content addressed, and the second upload of the
 
       def take
         request.body.save('#{root}', request.headers['x-name'] || 'blob.bin') do |dir, err|
-          response.body = err ? "error \#{err.message}" : dir
+          response.body = dir if dir
         end
         true
       end
@@ -878,9 +878,10 @@ assert('h1: request.body.save is content addressed, and the second upload of the
       landed = File.join(dir4, 'big.bin')
       assert_equal big.bytesize, File.size(landed)
       assert_equal big, File.read(landed)
-      # A name with a directory in it never reaches the filesystem.
-      _, err = put.call(sock, small, '../escaped.bin')
-      assert_true err.start_with?('error'), err
+      # A name with a directory in it never reaches the filesystem, and
+      # the server spells the status for it - the resource does not.
+      head5, = put.call(sock, small, '../escaped.bin')
+      assert_true head5.start_with?('HTTP/1.1 500'), head5
       assert_false File.exist?('/tmp/escaped.bin')
     end
   ensure

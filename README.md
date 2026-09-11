@@ -221,7 +221,6 @@ between them is the digest of the octets:
 
 ```ruby
 request.body.save('/var/uploads', 'photo.png') do |dir, err|
-  next 500 if err
   response.body = dir     # /var/uploads/3f/3fa7c9...d21e
 end
 ```
@@ -243,9 +242,11 @@ ones the kernel copies with `copy_file_range`, and no octet passes
 through the server. Naming `conf.spill_dir` on the filesystem the
 uploads live on is what keeps every save a link.
 
-The block is told where the content landed or what stopped it, and its
-value is the call's value. Without a block the path is answered and a
-failure raises.
+The block is told where the content landed or what stopped it. It does
+not answer a status and it cannot: a save that failed is the server's
+fault, so the server spells the 500 and the error log names the reason.
+The block is where an application does its own bookkeeping. Without a
+block the path is answered, and a failure raises just the same.
 
 A resource that accepts uploads can ask the server to check the octets
 against the type the head declared. `sniff: true` on a
