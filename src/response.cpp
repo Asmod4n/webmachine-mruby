@@ -495,6 +495,22 @@ mrb_value resource_response(mrb_state* mrb, mrb_value) {
 
 }  // namespace
 
+// RFC 9110 6.4: the representation, handed over by something that is
+// not a callback of the resource. request.body.save uses it: the value
+// of its block is the answer's body, the same way the value of
+// to_html is.
+//
+// False when this run has no body buffer bound, which is the caller's
+// error rather than a raise from here.
+bool response_take_body(mrb_state* mrb, std::string_view s) {
+  const Resource* r = live(mrb);
+  if (r->run.body == nullptr) return false;
+  r->run.body->assign(s.data(), s.size());
+  r->run.have_body = true;
+  return true;
+}
+
+
 // RFC 9110: point the response surface at this run's Resource, or at
 // nothing. Same pattern as request_bind, so a stray handle from an
 // ended run reads as "outside a run frame" rather than touching

@@ -3726,6 +3726,10 @@ size_t bytes_wanted();
 Verdict check(std::string_view declared, std::string_view head);
 }
 
+// The answer's body, set by something that is not a callback of the
+// resource. See response.cpp.
+bool response_take_body(mrb_state* mrb, std::string_view s);
+
 void application_init(mrb_state* mrb, struct RClass* wm);
 
 void app_load(mrb_state* mrb, const char* path);

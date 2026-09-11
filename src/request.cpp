@@ -231,15 +231,21 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
 // RFC 9110 6.4: put this body in the filesystem, under a directory
 // named for what is in it.
 //
-//   request.body.save("/var/uploads", "photo.png") do |dir, err|
-//     response.body = dir
+//   def take
+//     request.body.save("/var/uploads", "photo.png") { |dir, err| dir }
 //   end
 //
-// The block is told where the content landed, or what stopped it. It
-// does not answer a status and it cannot: a save that failed is this
+// The block is told where the content landed, or what stopped it.
+// Whatever it answers is the answer's body, spelled with to_s the way
+// Ruby spells anything - the same shape as to_html, whose value is the
+// body as well. So nothing in the block reaches for the response
+// object, and a resource that only wants to say where the file went
+// says it in one line. nil and false keep the value to the block, and
+// then the resource spells the answer itself.
+//
+// It answers no status and it cannot: a save that failed is this
 // server's fault, so this server spells the 500 and the error log
-// names the reason. The block is where an application does its own
-// bookkeeping, not where a code is chosen.
+// names the reason.
 //
 // It is a block and not a return value for the reason `watch` is one:
 // a call site that yields can be resumed later, so when the link and
@@ -446,6 +452,13 @@ mrb_value body_save(mrb_state* mrb, mrb_value) {
   // that failed is this server's fault, and this server says 500.
   if (!ask.err.empty()) {
     mrb_raisef(mrb, E_WM_ERROR(mrb), "request.body.save: %s", ask.err.c_str());
+  }
+  // Whatever the block answers is the answer's body, spelled with to_s
+  // the way Ruby spells anything. nil and false are the block keeping
+  // its value to itself, and then the resource spells the answer.
+  if (mrb_test(said)) {
+    const mrb_value text = mrb_obj_as_string(mrb, said);
+    response_take_body(mrb, {RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))});
   }
   return said;
 }

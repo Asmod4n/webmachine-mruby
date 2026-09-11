@@ -220,8 +220,9 @@ names a directory it chose and the name the user gave; everything
 between them is the digest of the octets:
 
 ```ruby
-request.body.save('/var/uploads', 'photo.png') do |dir, err|
-  response.body = dir     # /var/uploads/3f/3fa7c9...d21e
+def take
+  # the block's String is the answer's body: /var/uploads/3f/3fa7c9...d21e
+  request.body.save('/var/uploads', 'photo.png') { |dir, err| dir }
 end
 ```
 
@@ -242,10 +243,13 @@ ones the kernel copies with `copy_file_range`, and no octet passes
 through the server. Naming `conf.spill_dir` on the filesystem the
 uploads live on is what keeps every save a link.
 
-The block is told where the content landed or what stopped it. It does
-not answer a status and it cannot: a save that failed is the server's
-fault, so the server spells the 500 and the error log names the reason.
-The block is where an application does its own bookkeeping. Without a
+The block is told where the content landed or what stopped it, and
+whatever it answers is the answer's body, spelled with `to_s` - the
+same shape as `to_html`, whose value is the body as well. So nothing in
+it reaches for the response object; `nil` and `false` keep the value to
+the block and let the resource spell the answer itself. It answers no
+status and it cannot: a save that failed is the server's fault, so the
+server spells the 500 and the error log names the reason. Without a
 block the path is answered, and a failure raises just the same.
 
 A resource that accepts uploads can ask the server to check the octets

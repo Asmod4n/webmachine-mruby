@@ -822,7 +822,7 @@ assert('h1: request.body.save is content addressed, and the second upload of the
 
       def take
         request.body.save('#{root}', request.headers['x-name'] || 'blob.bin') do |dir, err|
-          response.body = dir if dir
+          dir
         end
         true
       end
