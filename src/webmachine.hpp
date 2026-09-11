@@ -3685,6 +3685,16 @@ struct AppSpec {
   // conf.docroot = PATH; empty = this app said nothing. The docroot is
   // one anchor for the process, so the first app that names one decides.
   std::string docroot;
+  // conf.spill_dir = PATH; empty = this app said nothing, so the
+  // platform decides (TMPDIR, then /tmp).
+  //
+  // RFC-free, and it decides one thing that shows: a body that is
+  // placed by request_body_path is linked when its temporary file and
+  // its destination share a filesystem, and copied when they do not.
+  // /tmp is tmpfs on most machines, so a body spilled there is memory
+  // and every placement is a copy. Naming a directory on the disk the
+  // uploads live on makes every placement a link.
+  std::string spill_dir;
   // conf.assets = FILE.zip; empty = this app said nothing. The pack is
   // one mapping for the process, so the first app that names one decides.
   std::string assets;
@@ -3727,6 +3737,11 @@ bool docroot_ready();
 
 // The dirfd every per-request openat2 resolves relative to; -1 when unset.
 int docroot_fd();
+// RFC-free: the directory a request body spills into, or nullptr for
+// the platform's own choice. One directory for the process, settled
+// before the first accept, the way the docroot is.
+const char* spill_dir();
+void spill_dir_set(const char* path);
 
 // The canonical absolute path, for the refusals that have to name it.
 const char* docroot_path();

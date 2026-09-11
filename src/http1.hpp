@@ -74,7 +74,7 @@ struct BodySpill {
   // Answers false when the file cannot be made, which is a 500: the
   // request cannot be answered without its body.
   bool open_file() {
-    fd = slipstream_tmpfile(nullptr);
+    fd = slipstream_tmpfile(spill_dir());
     if (mrb_unlikely(fd < 0)) {
       fd = -1;
       return false;

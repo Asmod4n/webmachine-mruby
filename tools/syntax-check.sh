@@ -11,6 +11,10 @@
 # dependency files, so it cannot drift from what the build uses. Run
 # rake compile once before the first check, so that tree exists.
 #
+# One thing it cannot answer: a symbol that is new. MRB_SYM(x) resolves
+# through a table mruby generates from the sources at build time, so the
+# first use of a name needs a real compile. Every later check sees it.
+#
 #   tools/syntax-check.sh src/http1.cpp src/http2.cpp
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)

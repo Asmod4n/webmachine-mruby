@@ -54,5 +54,13 @@ int docroot_fd() { return fd_; }
 
 const char* docroot_path() { return root_.c_str(); }
 
+// RFC-free: where a request body spills. Empty means nobody named one,
+// and slipstream_tmpfile asks the platform instead - TMPDIR, then /tmp.
+std::string spill_;
+
+const char* spill_dir() { return spill_.empty() ? nullptr : spill_.c_str(); }
+
+void spill_dir_set(const char* path) { spill_.assign(path == nullptr ? "" : path); }
+
 const struct open_how* docroot_how() { return &how_; }
 }

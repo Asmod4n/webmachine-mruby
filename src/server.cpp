@@ -289,6 +289,20 @@ void build(mrb_state* mrb) {
     }
   }
 
+  // conf.spill_dir: where a request body that outgrows memory is
+  // written. The first application that names one decides, the same
+  // rule the docroot keeps. Nobody naming one leaves the platform's
+  // own choice, which is TMPDIR and then /tmp - and /tmp is tmpfs on
+  // most machines, so a large upload is memory there.
+  {
+    for (size_t i = 0; i < specs_.size(); i++) {
+      if (specs_[i]->spill_dir.empty()) continue;
+      spill_dir_set(specs_[i]->spill_dir.c_str());
+      std::fprintf(stderr, "webmachine: request bodies spill into %s\n", spill_dir());
+      break;
+    }
+  }
+
   // conf.disable_http_cats: the first app with an opinion decides, the way
   // every other conf answer is taken. Asked before the pack is looked for,
   // because "off" means it is never opened, not opened and ignored.

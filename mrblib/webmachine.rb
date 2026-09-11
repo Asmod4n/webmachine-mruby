@@ -58,7 +58,7 @@ module Webmachine
   # Ruby code; nothing a URL or a config file says can reach them.
   class Config < Struct.new(:port, :unix_path, :url, :docroot, :assets, :certificate,
                             :private_key, :file_map_threshold, :zero_copy_threshold,
-                            :disable_http_cats, :max_body)
+                            :disable_http_cats, :max_body, :spill_dir)
     # A refusal belongs where it was caused. bintest calls this "catchable
     # by class, not by luck": an app may write
     #
@@ -113,6 +113,17 @@ module Webmachine
     def docroot=(v)
       Config.check_text(v, 'docroot')
       self[:docroot] = v
+    end
+
+    # RFC-free: the directory a request body spills into when it
+    # outgrows memory. The default is the platform's own - TMPDIR, then
+    # /tmp - and /tmp is tmpfs on most machines, so a large upload is
+    # memory there. A directory on the disk the uploads live on makes
+    # request_body_path a link instead of a copy.
+    #: (String) -> String
+    def spill_dir=(v)
+      Config.check_text(v, 'spill_dir')
+      self[:spill_dir] = v
     end
 
     #: (String) -> String

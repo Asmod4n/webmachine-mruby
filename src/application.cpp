@@ -71,6 +71,7 @@ void claim_form(mrb_state* mrb, AppSpec* s, Form want) {
 // reachable from here because they are not in it.
 enum class Setting : uint8_t {
   kDocroot,
+  kSpillDir,
   kAssets,
   kCertificate,
   kPrivateKey,
@@ -83,6 +84,7 @@ enum class Setting : uint8_t {
 
 Setting setting_for(std::string_view k) {
   if (k == "docroot") return Setting::kDocroot;
+  if (k == "spill_dir") return Setting::kSpillDir;
   if (k == "assets") return Setting::kAssets;
   if (k == "certificate") return Setting::kCertificate;
   if (k == "private_key") return Setting::kPrivateKey;
@@ -137,6 +139,13 @@ void apply_setting(mrb_state* mrb, AppSpec* s, std::string_view key, std::string
         mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
       }
       s->docroot.assign(val);
+      return;
+    case Setting::kSpillDir:
+      if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: spill_dir is empty");
+      if (!s->spill_dir.empty()) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: spill_dir was already named");
+      }
+      s->spill_dir.assign(val);
       return;
     case Setting::kAssets:
       if (val.empty()) mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: assets is empty");
@@ -328,6 +337,7 @@ enum ConfIdx {
   kConfZeroCopyThreshold,
   kConfDisableHttpCats,
   kConfMaxBody,
+  kConfSpillDir,
   kConfMax,
 };
 
@@ -390,6 +400,12 @@ void read_config(mrb_state* mrb, mrb_value conf, AppSpec* s) {
   }
   if (conf_str(mrb, conf, kConfUrl, "url", &text)) apply_url(mrb, s, text);
 
+  if (conf_str(mrb, conf, kConfSpillDir, "spill_dir", &text)) {
+    if (!s->spill_dir.empty()) {
+      mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: spill_dir was already named");
+    }
+    s->spill_dir.assign(text);
+  }
   if (conf_str(mrb, conf, kConfDocroot, "docroot", &text)) {
     if (!s->docroot.empty()) {
       mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url: docroot was already named");
