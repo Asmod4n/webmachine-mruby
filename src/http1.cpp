@@ -896,6 +896,46 @@ const char* Http1::file_take(Conn& st) {
 // miss and probe the filesystem through the difference.
 void Http1::file_reject(Conn& st) { file_prebuilt(st, 404); }
 
+// RFC 9110 6.4: what the ring answered for one spill write. The octets
+// are in the file now, or the write failed and the body can never be
+// read.
+//
+// The body being whole on the wire is not the same as the body being
+// whole in its file, and a run reads the file. So this is where a run
+// that stopped for its body learns that it may go on.
+void Http1::spill_wrote(Conn& st, ssize_t res, const std::string& out) {
+  BodySpill* sp = nullptr;
+  if (st.spill.in_flight) {
+    sp = &st.spill;
+  } else if (st.h2 != nullptr) {
+    for (H2Stream& s : st.h2->streams) {
+      if (s.spill.in_flight) {
+        sp = &s.spill;
+        break;
+      }
+    }
+  }
+  if (sp == nullptr) return;
+  sp->wrote(res, out);
+  // The body is whole on the wire and whole in the file now, so the run
+  // that stopped for it may walk on.
+  if (sp == &st.spill && sp->ended && sp->drained() && st.run_wants_body) {
+    Conn::Round* const r = st.park_at(st.parked.co ? st.parked.co.promise().park : -1);
+    if (r != nullptr) r->answer_ready = true;
+  }
+  if (mrb_unlikely(sp->failed)) {
+    // The file cannot hold this body, so the request cannot be
+    // answered from it. h1 ends the connection; an h2 stream ends on
+    // its own below, through the round the reactor spells.
+    if (sp == &st.spill) {
+      st.body_to = Conn::Body::kNone;
+      st.content_need = 0;
+      st.run_wants_body = false;
+    }
+    return;
+  }
+}
+
 // The server's own fault: named in the error log, never in the answer.
 void Http1::file_error(Conn& st, const char* why) {
   log_internal_error(elog_, {{static_cast<const char*>(st.peer), st.peer_len},
@@ -1855,6 +1895,13 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     case BodyTake::kFailed: return false;
     case BodyTake::kMore: return true;
     case BodyTake::kWhole:
+      // RFC 9110 6.4: whole on the wire is not whole in the file. The
+      // run reads the file, so the last write has to land first. The
+      // reactor makes the round ready when it does - see spill_wrote.
+      if (st.spill.fd >= 0) {
+        st.spill.ended = true;
+        if (!st.spill.drained()) break;
+      }
       // #36: the body is whole. The run stopped on it owes nothing to a
       // worker, so this is what answers it: the round is ready, and
       // spell_next_round resumes the walk at the node it stopped on.

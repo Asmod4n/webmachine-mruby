@@ -339,6 +339,18 @@ size_t Http1::h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv) {
 // values negotiation reads point into the decode buffer this stream no
 // longer owns, so they are derived again from the copied fields, which
 // are the only place they still exist.
+// RFC 9110 6.4: which stream of this connection still owes octets to
+// its file. One write flies per connection, because the ring answers
+// with a connection and a generation and has no field for a stream.
+// An upload is a run of large frames, so the streams take turns at the
+// rate the disk allows rather than each waiting for its own turn.
+BodySpill* Http1::spill_waiting_h2(Conn& st) {
+  for (H2Stream& s : st.h2->streams) {
+    if (s.spill.owes_write()) return &s.spill;
+  }
+  return nullptr;
+}
+
 bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool complete) {
   const uint32_t stream_id = stp.id;
   // RFC 9113 5.1: only the end of the request closes this half. A stream
@@ -1881,6 +1893,16 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
     // WHATWG HTML: every event stream this connection carries, asked
     // once per second, before the frames go out.
     h2_sse_second(st, sink);
+    // RFC 9110 6.4: a stream whose body is whole on the wire and whole
+    // in its file as well. The DATA frame that ended it could not
+    // answer, because the last octets were still on their way to the
+    // disk. `ended` is cleared here, so a stream is served once.
+    for (size_t i = 0; i < st.h2->streams.size(); i++) {
+      H2Stream& s = st.h2->streams[i];
+      if (!s.spill.ended || s.spill.fd < 0 || !s.spill.drained()) continue;
+      s.spill.ended = false;
+      if (!h2_serve_parked(st, s, sink, true)) return false;
+    }
     // #30: every run this connection stopped whose round is done. Each
     // one frames its own stream, so several may go out in one round.
     for (size_t i = 0; i < st.h2_parked.size();) {
@@ -2094,6 +2116,12 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
             if (!h2_count_lie(st0, stream, sink)) return false;
             break;
           }
+          // RFC 9110 6.4: the body is whole on the wire, and it may not
+          // be whole in its file. The descriptor a run reads from must
+          // hold every octet, so the answer waits for the last write.
+          // The reactor serves this stream when the file is drained.
+          stp->spill.ended = true;
+          if (mrb_unlikely(stp->spill.fd >= 0 && !stp->spill.drained())) break;
           if (!h2_serve_parked(st0, *stp, sink, true)) return false;
         }
         break;

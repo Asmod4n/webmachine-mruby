@@ -45,6 +45,17 @@ struct BodySpill {
   // has, the file is a body still arriving, and closing it would throw
   // away what the run is about to read.
   bool bound = false;
+  // RFC-free, this server's own: the octets queued and not yet handed
+  // to the ring. The ones the kernel holds are in the reactor's own
+  // buffer, not here - this object dies with its connection or its
+  // stream, and the kernel writes from the memory it was given.
+  std::string pending;
+  bool in_flight = false;
+  size_t offset = 0;
+  bool failed = false;
+  // The last octet of this body has been queued. The reactor reads it
+  // to know that a drained file is a whole body and not a pause.
+  bool ended = false;
 
   // The file goes back. The descriptor holds the last reference to it,
   // so the close frees the blocks - there is no name to unlink.
@@ -54,6 +65,11 @@ struct BodySpill {
     fd = -1;
     written = 0;
     bound = false;
+    pending.clear();
+    in_flight = false;
+    offset = 0;
+    failed = false;
+    ended = false;
   }
   // Answers false when the file cannot be made, which is a 500: the
   // request cannot be answered without its body.
@@ -65,8 +81,14 @@ struct BodySpill {
     }
     return true;
   }
-  // Take body octets. h1 calls it from feed, h2 from the DATA frame.
-  // Answers false when the file refuses the bytes, which is a 500.
+  // Queue body octets. h1 calls it from the feed, h2 from the DATA
+  // frame, and neither one writes: the reactor arms the write through
+  // the ring, and the octets wait here until it does.
+  //
+  // A blocking write(2) on this thread was what this replaces. The file
+  // is an O_TMPFILE, so on tmpfs it returned at once and on a disk it
+  // did not - and every other connection of this process waited for it.
+  //
   // The file dies with the carrier that holds it, however that carrier
   // ends. A move steals the descriptor and leaves the source at -1, so
   // an H2Stream the stream table moves cannot close a file twice.
@@ -74,10 +96,16 @@ struct BodySpill {
   ~BodySpill() { close_file(); }
   BodySpill(const BodySpill&) = delete;
   BodySpill& operator=(const BodySpill&) = delete;
-  BodySpill(BodySpill&& o) noexcept : fd(o.fd), written(o.written), bound(o.bound) {
+  BodySpill(BodySpill&& o) noexcept
+      : fd(o.fd), written(o.written), bound(o.bound), pending(std::move(o.pending)),
+        in_flight(o.in_flight), offset(o.offset), failed(o.failed), ended(o.ended) {
     o.fd = -1;
     o.written = 0;
     o.bound = false;
+    o.in_flight = false;
+    o.offset = 0;
+    o.failed = false;
+    o.ended = false;
   }
   BodySpill& operator=(BodySpill&& o) noexcept {
     if (this == &o) return *this;
@@ -85,23 +113,56 @@ struct BodySpill {
     fd = o.fd;
     written = o.written;
     bound = o.bound;
+    pending = std::move(o.pending);
+    in_flight = o.in_flight;
+    offset = o.offset;
+    failed = o.failed;
+    ended = o.ended;
     o.fd = -1;
     o.written = 0;
     o.bound = false;
+    o.in_flight = false;
+    o.offset = 0;
+    o.failed = false;
+    o.ended = false;
     return *this;
   }
+  // Answers false when an earlier write failed, which is a 500: the
+  // request cannot be answered without its body.
   bool take(const char* p, size_t n) {
-    while (n != 0) {
-      const ssize_t w = ::write(fd, p, n);
-      if (w <= 0) {
-        if (w < 0 && errno == EINTR) continue;
-        return false;
-      }
-      p += static_cast<size_t>(w);
-      n -= static_cast<size_t>(w);
-      written += static_cast<size_t>(w);
-    }
+    if (mrb_unlikely(failed)) return false;
+    pending.append(p, n);
     return true;
+  }
+  // Is there a write for the reactor to arm? One at a time: the file
+  // has one offset, and a second write in flight would need a second.
+  bool owes_write() const { return fd >= 0 && !failed && !in_flight && !pending.empty(); }
+  // Everything this body queued is in the file. A run that reads the
+  // body waits for this, because a descriptor that still owes octets
+  // answers a short read.
+  bool drained() const { return !in_flight && pending.empty(); }
+  // The octets the reactor hands the ring. They move into the
+  // reactor's own buffer, so the writer may queue more while these
+  // fly, and so the kernel never writes from memory this object owns.
+  void fly_into(std::string& out) {
+    out.swap(pending);
+    pending.clear();
+    in_flight = true;
+  }
+  // What the ring answered, and the buffer it wrote from. A short write
+  // leaves the rest at the front of the queue, so the next arm carries
+  // it.
+  void wrote(ssize_t res, const std::string& out) {
+    in_flight = false;
+    if (mrb_unlikely(res <= 0)) {
+      failed = true;
+      pending.clear();
+      return;
+    }
+    const size_t n = static_cast<size_t>(res);
+    offset += n;
+    written += n;
+    if (n < out.size()) pending.insert(0, out, n, out.size() - n);
   }
 };
 
@@ -1897,6 +1958,23 @@ class Http1 {
     *park = slot;
     return true;
   }
+  // RFC 9110 6.4: the request body of this connection that still owes
+  // octets to its file. h1 has one spill; an h2 connection has one per
+  // stream, and one write flies at a time because the answer names a
+  // connection and not a stream.
+  //
+  // The reactor asks this on every recv and every round, the same way
+  // it asks file_waiting, and the answer is no for every connection
+  // that is not taking an upload.
+  static BodySpill* spill_waiting(Conn& st) {
+    if (st.spill.owes_write()) return &st.spill;
+    if (mrb_likely(st.h2 == nullptr)) return nullptr;
+    return spill_waiting_h2(st);
+  }
+  static BodySpill* spill_waiting_h2(Conn& st);
+  // What the ring answered for the write it armed. The body may be
+  // whole now, and then the run that stopped for it is ready.
+  void spill_wrote(Conn& st, ssize_t res, const std::string& out);
   void file_reject(Conn& st);
   void file_error(Conn& st, const char* why);
   bool file_stat(Conn& st, const struct statx& stx, size_t* want);

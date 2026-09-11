@@ -154,7 +154,11 @@ enum : uint8_t {
   kPollRemove = 23,
   // #80: a worker began a job. The reactor arms the job's deadline
   // from here, so the deadline is execution time and not queue time.
-  kComputeStarted = 24
+  kComputeStarted = 24,
+  // RFC 9110 6.4: one write of a request body into its spill file. The
+  // tag is the connection's, and one write of this kind flies per
+  // connection, so no second field is needed to say which body it is.
+  kSpillWrite = 25
 };
 
 

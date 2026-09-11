@@ -437,6 +437,16 @@ class Ring {
       struct statx stx {};
     };
     std::unique_ptr<FileIo> file_io;
+    // RFC 9110 6.4: the octets of a request body that the kernel is
+    // writing into a spill file right now. They live here, in the
+    // reactor's own memory, and not on the connection object the
+    // application holds: a stream or a connection may end while a write
+    // is in flight, and the kernel writes from the memory it was given.
+    std::string spill_out;
+    // One spill write flies per connection. The buffer above is the one
+    // the kernel is reading from, so a second write would have to swap
+    // it out from under the first.
+    bool spill_writing = false;
 
     // Not ABI: our own ceiling, one segment more than a Plan can hold, for
     // the head that rides in front of it - and the kernel's own UIO_MAXIOV.
@@ -1351,6 +1361,7 @@ class Ring {
     // A run that named a file answered nothing yet: the open is the
     // reactor's, and its result reaches the wire through continue_conn.
     arm_file_open(idx);
+    arm_spill_write(idx);
     arm_compute_task(idx);
     arm_watchers(idx);
     // Unless the name never reached the kernel at all - a refusal this
@@ -1766,6 +1777,43 @@ class Ring {
     if (!conns_[idx].sending) continue_conn(idx);
   }
 
+  // RFC 9110 6.4: one write of a request body into its spill file. The
+  // reactor asks on every recv and every round, and the answer is no
+  // for every connection that is not taking a large upload.
+  //
+  // A blocking write(2) on this thread is what this replaces. One write
+  // flies per connection: the file has one offset, and the answer
+  // carries a connection and a generation with no field for a second
+  // body.
+  void arm_spill_write(uint32_t idx) {
+    Conn& c = conns_[idx];
+    if (c.spill_writing) return;
+    BodySpill* const sp = App::spill_waiting(c.app);
+    if (mrb_likely(sp == nullptr)) return;
+    sp->fly_into(c.spill_out);
+    c.spill_writing = true;
+    struct io_uring_sqe* s = sqe();
+    io_uring_prep_write(s, sp->fd, c.spill_out.data(), static_cast<unsigned>(c.spill_out.size()),
+                        sp->offset);
+    io_uring_sqe_set_data64(s, detail::tag(detail::kSpillWrite, c.gen, idx));
+  }
+
+  // The write landed, or it failed. The application counts the octets,
+  // and a run that stopped for this body learns whether it may go on.
+  void on_spill_write(Completed done) {
+    const uint32_t idx = done.idx;
+    if (mrb_unlikely(idx >= max_conns_)) return;
+    Conn& c = conns_[idx];
+    // A connection that died under the write: the octets were written
+    // from this reactor's buffer, so there is nothing to hand back.
+    c.spill_writing = false;
+    if (!c.live || c.gen != done.gen) return;
+    app_.spill_wrote(c.app, done.cqe->res, c.spill_out);
+    c.spill_out.clear();
+    arm_spill_write(idx);
+    if (!c.sending) continue_conn(idx);
+  }
+
   // #80: a worker answered. The tag is the connection's, so the same
   // generation guard every other op relies on discards an answer whose
   // connection is already gone - the run died with the slot, and its
@@ -2064,6 +2112,7 @@ class Ring {
     req.byte_cap = c.round_cap;
     if (!app_.spell_next_round(c.app, c.out, req)) c.close_after_send = true;
     arm_file_open(idx);
+    arm_spill_write(idx);
     arm_compute_task(idx);
     arm_watchers(idx);
     if (req.iovlen != 0) {
@@ -2119,6 +2168,7 @@ class Ring {
         case detail::kFileStat: on_file_stat({idx, gen, cqe}); break;
         case detail::kFileRead: on_file_read({idx, gen, cqe}); break;
         case detail::kFileClose: break;
+        case detail::kSpillWrite: on_spill_write({idx, gen, cqe}); break;
         case detail::kLog: on_log(gen, idx, cqe); break;
         case detail::kPeer: on_peer(idx, gen, cqe); break;
         case detail::kClose:
