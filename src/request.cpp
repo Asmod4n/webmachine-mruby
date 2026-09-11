@@ -8,6 +8,24 @@
 #include <mruby/string.h>
 
 #include <picohttpparser.h>
+#include <slipstream_tmpfile.h>
+
+#include <openssl/sha.h>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
+#include <slipstream_tmpfile.h>
+
+#include <openssl/sha.h>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 #include <ada.h>
 
@@ -210,6 +228,170 @@ mrb_value req_headers(mrb_state* mrb, mrb_value) {
   return h;
 }
 
+// What one save was asked for, and what became of it. `dir` is the
+// directory the content lives in once this returns, and `err` is what
+// stopped it - exactly one of the two is filled.
+struct SaveAsk {
+  std::string_view dir;
+  std::string_view name;
+  std::string out;
+  std::string err;
+};
+
+// The digest of what arrived, as lowercase hex. False when the body
+// cannot be read, which is the caller's error line.
+bool body_digest(const ReqView* v, char (&hex)[SHA256_DIGEST_LENGTH * 2 + 1], std::string& err) {
+  unsigned char sum[SHA256_DIGEST_LENGTH];
+  if (v->content_fd >= 0) {
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    char buf[64 * 1024];
+    off_t at = 0;
+    for (;;) {
+      const ssize_t got = ::pread(v->content_fd, buf, sizeof(buf), at);
+      if (got < 0) {
+        if (errno == EINTR) continue;
+        err = std::strerror(errno);
+        return false;
+      }
+      if (got == 0) break;
+      SHA256_Update(&ctx, buf, static_cast<size_t>(got));
+      at += got;
+    }
+    SHA256_Final(sum, &ctx);
+  } else {
+    SHA256(reinterpret_cast<const unsigned char*>(v->content), v->content_len, sum);
+  }
+  static const char kHex[] = "0123456789abcdef";
+  for (size_t i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    hex[i * 2] = kHex[sum[i] >> 4];
+    hex[i * 2 + 1] = kHex[sum[i] & 0x0f];
+  }
+  hex[SHA256_DIGEST_LENGTH * 2] = 0;
+  return true;
+}
+
+// Write the octets out, for the two cases a link cannot serve: a body
+// that is in memory, and a file on another filesystem. The kernel does
+// the copying in the second one - no octet passes through this process.
+bool body_copy(const ReqView* v, const std::string& path, std::string& err) {
+  const int out = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+  if (out < 0) {
+    if (errno == EEXIST) return true;
+    err = path + ": " + std::strerror(errno);
+    return false;
+  }
+  bool ok = true;
+  if (v->content_fd >= 0) {
+    off_t from = 0;
+    size_t left = v->content_len;
+    while (left != 0) {
+      const ssize_t n = ::copy_file_range(v->content_fd, &from, out, nullptr, left, 0);
+      if (n <= 0) {
+        if (n < 0 && errno == EINTR) continue;
+        err = std::strerror(errno);
+        ok = false;
+        break;
+      }
+      left -= static_cast<size_t>(n);
+    }
+  } else {
+    const char* p = v->content;
+    size_t left = v->content_len;
+    while (left != 0) {
+      const ssize_t n = ::write(out, p, left);
+      if (n <= 0) {
+        if (errno == EINTR) continue;
+        err = std::strerror(errno);
+        ok = false;
+        break;
+      }
+      p += static_cast<size_t>(n);
+      left -= static_cast<size_t>(n);
+    }
+  }
+  ::close(out);
+  if (!ok) ::unlink(path.c_str());
+  return ok;
+}
+
+// One save, start to end. Everything it can answer is in the ask.
+void save_body(mrb_state* mrb, SaveAsk& ask) {
+  if (ask.name.empty() || ask.name.find('/') != std::string_view::npos || ask.name == "." ||
+      ask.name == "..") {
+    ask.err = "the name is one file name, with no directory in it";
+    return;
+  }
+  const ReqView* const v = request_being_answered(mrb);
+  if (v->content == nullptr && v->content_fd < 0) {
+    ask.err = "this request carried no body";
+    return;
+  }
+  char hex[SHA256_DIGEST_LENGTH * 2 + 1];
+  if (!body_digest(v, hex, ask.err)) return;
+
+  // Two octets of the digest make the first level, so one directory
+  // never holds every upload this server ever took.
+  std::string path(ask.dir);
+  while (path.size() > 1 && path.back() == '/') path.pop_back();
+  path.push_back('/');
+  path.append(hex, 2);
+  if (::mkdir(path.c_str(), 0700) < 0 && errno != EEXIST) {
+    ask.err = path + ": " + std::strerror(errno);
+    return;
+  }
+  path.push_back('/');
+  path.append(hex, SHA256_DIGEST_LENGTH * 2);
+  if (::mkdir(path.c_str(), 0700) < 0 && errno != EEXIST) {
+    ask.err = path + ": " + std::strerror(errno);
+    return;
+  }
+  ask.out = path;
+  path.push_back('/');
+  path.append(ask.name);
+
+  // Already here, under this very name: nothing to write and nothing
+  // to read.
+  if (::access(path.c_str(), F_OK) == 0) return;
+
+  if (v->content_fd >= 0) {
+    const int rc = slipstream_tmpfile_link(v->content_fd, path.c_str());
+    if (rc == 0 || rc == -EEXIST) return;
+    // -ENOENT is a temporary file the mkstemp arm made, which has no
+    // name to link from; -EXDEV is another filesystem. Both are a copy.
+    if (rc != -ENOENT && rc != -EXDEV && rc != -EOPNOTSUPP) {
+      ask.err = std::strerror(-rc);
+      return;
+    }
+  }
+  if (!body_copy(v, path, ask.err)) ask.out.clear();
+}
+
+//: (String, String) { (String?, Webmachine::Error?) -> untyped } -> untyped
+mrb_value body_save(mrb_state* mrb, mrb_value) {
+  const char* dir = nullptr;
+  mrb_int dlen = 0;
+  const char* leaf = nullptr;
+  mrb_int llen = 0;
+  mrb_value blk = mrb_nil_value();
+  mrb_get_args(mrb, "ss&", &dir, &dlen, &leaf, &llen, &blk);
+  SaveAsk ask;
+  ask.dir = {dir, static_cast<size_t>(dlen)};
+  ask.name = {leaf, static_cast<size_t>(llen)};
+  save_body(mrb, ask);
+  if (mrb_nil_p(blk)) {
+    if (!ask.err.empty()) {
+      mrb_raisef(mrb, E_WM_ERROR(mrb), "request.body.save: %s", ask.err.c_str());
+    }
+    return mrb_str_new(mrb, ask.out.data(), ask.out.size());
+  }
+  mrb_value argv[2] = {
+      ask.err.empty() ? mrb_str_new(mrb, ask.out.data(), ask.out.size()) : mrb_nil_value(),
+      ask.err.empty() ? mrb_nil_value()
+                      : mrb_exc_new(mrb, E_WM_ERROR(mrb), ask.err.data(), ask.err.size())};
+  return mrb_yield_argv(mrb, blk, 2, argv);
+}
+
 // RFC 9110 6.4: the request body, as an IO; nil when none arrived.
 //
 // An IO and not a String, because a body is not always in memory: over
@@ -249,6 +431,16 @@ mrb_value req_body(mrb_state* mrb, mrb_value) {
     const mrb_value bytes = mrb_str_new(mrb, v->content, v->content_len);
     io = mrb_obj_new(mrb, sio, 1, &bytes);
   }
+  // The one method this object has that its class does not: see
+  // body_save. It is defined on the singleton, so no other File or
+  // StringIO in this VM grows a save.
+  mrb_define_method_id(mrb, mrb_singleton_class_ptr(mrb, io), MRB_SYM(save), body_save,
+                       MRB_ARGS_REQ(2));
+  // The one method this object has that its class does not: see
+  // body_save. It is defined on the singleton, so no other File or
+  // StringIO in this VM grows a save.
+  mrb_define_method_id(mrb, mrb_singleton_class_ptr(mrb, io), MRB_SYM(save), body_save,
+                       MRB_ARGS_REQ(2) | MRB_ARGS_BLOCK());
   mrb_gc_register(mrb, io);
   body_io_ = io;
   body_io_mrb_ = mrb;

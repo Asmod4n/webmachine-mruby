@@ -215,6 +215,38 @@ no length starts in memory and moves into a file when it grows past
 256 KiB. Any other transfer coding is 501, and a request that names
 both framings is 400.
 
+`request.body.save` puts an upload in the filesystem. The application
+names a directory it chose and the name the user gave; everything
+between them is the digest of the octets:
+
+```ruby
+request.body.save('/var/uploads', 'photo.png') do |dir, err|
+  next 500 if err
+  response.body = dir     # /var/uploads/3f/3fa7c9...d21e
+end
+```
+
+The digest is what makes the rest safe. Two uploads of the same octets
+get the same directory, because they are the same file, and `mkdir` is
+the atomic claim - there is no window between asking whether a name is
+free and taking it. A directory that is already there means the server
+holds exactly those octets: nothing is read, nothing is written, and
+the block is told the directory at once. The same octets under a second
+name get a second link in that directory - one inode, two names. And
+nothing the client sent reaches a path component except the leaf, which
+may hold no slash and no `..`.
+
+A body that went to a file is linked into place, so the upload ends
+with one link and no second write of the octets. A link cannot cross a
+filesystem, so when `conf.spill_dir` and the directory are on different
+ones the kernel copies with `copy_file_range`, and no octet passes
+through the server. Naming `conf.spill_dir` on the filesystem the
+uploads live on is what keeps every save a link.
+
+The block is told where the content landed or what stopped it, and its
+value is the call's value. Without a block the path is answered and a
+failure raises.
+
 A resource that accepts uploads can ask the server to check the octets
 against the type the head declared. `sniff: true` on a
 `content_types_accepted` row is the whole of it - the type is already

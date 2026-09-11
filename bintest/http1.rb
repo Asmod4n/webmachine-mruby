@@ -803,3 +803,90 @@ assert('h1: sniff refuses a body that is not what its head declared') do
     end
   end
 end
+
+# RFC 9110 6.4: request.body.save puts an upload in the filesystem under
+# a directory named for its own octets, and tells the block where it
+# landed or what stopped it.
+assert('h1: request.body.save is content addressed, and the second upload of the same octets is free') do
+  root = "/tmp/wm-save-#{$$}"
+  Dir.mkdir(root) unless Dir.exist?(root)
+  app = <<~RUBY_APP
+    class Saved < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET PUT]
+      end
+
+      def self.content_types_accepted
+        [['application/octet-stream', :take]]
+      end
+
+      def take
+        request.body.save('#{root}', request.headers['x-name'] || 'blob.bin') do |dir, err|
+          response.body = err ? "error \#{err.message}" : dir
+        end
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.routes { |route| route.add [:*], Saved }
+      end
+    end
+  RUBY_APP
+  put = lambda do |sock, body, name|
+    UNIXSocket.open(sock) do |s|
+      extra = name ? "X-Name: #{name}\r\n" : ''
+      s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n" \
+              "#{extra}Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+      head, got = wm_read(s)
+      [head, got]
+    end
+  end
+  begin
+    wm_server(app, tag: 'wm-save') do |sock, _|
+      small = 'a body that stays in memory'
+      big = 'AB' + ('L' * ((512 * 1024) - 4)) + 'YZ'
+      # A body in memory: written out, under the digest of itself.
+      head, dir = put.call(sock, small, nil)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_true dir.start_with?(root), dir
+      assert_true File.exist?(File.join(dir, 'blob.bin')), dir
+      assert_equal small, File.read(File.join(dir, 'blob.bin'))
+      # Two octets of the digest are the first level, the whole digest
+      # the second.
+      rest = dir[(root.size + 1)..]
+      assert_equal 2, rest.split('/')[0].size
+      assert_equal 64, rest.split('/')[1].size
+      assert_true rest.split('/')[1].start_with?(rest.split('/')[0])
+      # The same octets again: the same directory, and nothing written.
+      head2, dir2 = put.call(sock, small, nil)
+      assert_true head2.start_with?('HTTP/1.1 200'), head2
+      assert_equal dir, dir2
+      # The same octets under another name: one more link in the same
+      # directory.
+      _, dir3 = put.call(sock, small, 'copy.bin')
+      assert_equal dir, dir3
+      assert_true File.exist?(File.join(dir, 'copy.bin'))
+      assert_equal File.size(File.join(dir, 'blob.bin')), File.size(File.join(dir, 'copy.bin'))
+      # A body that went to a file is linked into place, whole and in
+      # order.
+      head4, dir4 = put.call(sock, big, 'big.bin')
+      assert_true head4.start_with?('HTTP/1.1 200'), head4
+      assert_true dir4 != dir
+      landed = File.join(dir4, 'big.bin')
+      assert_equal big.bytesize, File.size(landed)
+      assert_equal big, File.read(landed)
+      # A name with a directory in it never reaches the filesystem.
+      _, err = put.call(sock, small, '../escaped.bin')
+      assert_true err.start_with?('error'), err
+      assert_false File.exist?('/tmp/escaped.bin')
+    end
+  ensure
+    Dir.glob(File.join(root, '*', '*', '*')).each { |f| File.unlink(f) rescue nil }
+    Dir.glob(File.join(root, '*', '*')).each { |d| Dir.rmdir(d) rescue nil }
+    Dir.glob(File.join(root, '*')).each { |d| Dir.rmdir(d) rescue nil }
+    Dir.rmdir(root) rescue nil
+  end
+end
