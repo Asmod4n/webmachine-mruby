@@ -165,7 +165,11 @@ floor app it read 1780 at 0e2d541, 1912 at 7b907fe and 2025 at
 29a6ecd, and forgecore's clock read the same three trees as 10.1M,
 8.8M and 9.0M requests per second. The count found what the clock
 could not: a walk split into four functions, and a classification
-chain that tested an index and a name together.
+chain that tested an index and a name together. With both fixed the
+count read 1905, and forgecore's clock read 10.0M on the same tree,
+with a game running beside it. The count said 6 percent and the clock
+said 11: a call that is gone takes its cache misses with it, and the
+count never saw those.
 
 It counts instructions and not time. A cache miss, a branch the
 predictor did not see, a syscall's cost inside the kernel - none of
