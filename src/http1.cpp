@@ -1207,7 +1207,15 @@ void Http1::bound_prepare(Round& r, const BoundAsk& ask, BoundPrep& prep) {
     // #36: is the whole body here? The walk reads this at kN11, kO14
     // and kP3 and stops there while octets are still coming. Every node
     // above them decided on the head alone.
-    rv.content_ready = chunked ? st.body_to == Conn::Body::kNone : st.content_need == 0;
+    //
+    // Whole on the wire is not whole in the file. A body that arrived
+    // with its head owes no octets, but its spill write may still be in
+    // the queue or in flight, and a run handed the descriptor now reads
+    // an empty file - and request.body.save links that empty file. So
+    // a file body is ready only once the last write landed, and
+    // spill_wrote is what makes the round ready when it does.
+    const bool on_wire = chunked ? st.body_to == Conn::Body::kNone : st.content_need == 0;
+    rv.content_ready = on_wire && (st.spill.fd < 0 || st.spill.drained());
     if (!rv.content_ready) {
       // Nothing is bound while octets are still coming. The walk stops
       // at the first node that reads content, and the resume binds the
