@@ -48,6 +48,47 @@ before you read the rate.
    0.57M to 0.60M. The rate stops climbing at about 768, and 1024 and
    1536 are one measurement - their medians differ by 1.1 percent.
 
+   The counts above are the counts of a fast `vm`. The same host is
+   sometimes half as fast: `sysbench cpu --threads=1` reads 2450 events
+   per second in one container and 1100 in the next. Sweep again when
+   that number falls, because the best count moves with it.
+
+   A sweep on the slow `vm`, four runs of five seconds for each count,
+   with the median and the spread (max minus min, over the median):
+
+   | Floor | count | median | spread |
+   | --- | --- | --- | --- |
+   | h1 | 256 | 0.44M | 20% |
+   | h1 | 512 | 0.26M | 84% |
+   | h1 | 1024 | 0.40M | 42% |
+   | h1 | 2048 | 0.24M | 23% |
+   | h2, 128 streams | 8 | 3.04M | 17% |
+   | h2, 128 streams | 16 | 3.12M | 9% |
+   | h2, 128 streams | 32 | 3.28M | 7% |
+   | h2, 128 streams | 62 | 3.65M | 19% |
+
+   Five runs of ten seconds for the two best counts of each floor:
+
+   | Floor | count | median | spread |
+   | --- | --- | --- | --- |
+   | h1 | 256 | 0.38M | 45% |
+   | h1 | 1024 | 0.27M | 55% |
+   | h2, 128 streams | 32 | 3.34M | 14% |
+   | h2, 128 streams | 62 | 3.61M | 19% |
+
+   So the best run on the slow `vm` is `PROTO=h2 STREAMS=128
+   CONNS=32`. It is the only count that stays under 15 percent, and
+   its median is 8 percent under the best rate. Take a difference of
+   15 percent or more, and nothing smaller.
+
+   The h1 floor is not measurable on the slow `vm` at all. Every count
+   reads 40 percent or more, and ten seconds reads worse than five,
+   which says the spread is not the sample size. `PIPELINE=8` raises
+   the rate to 2.1M and cuts the spread to 31 percent, but the five
+   runs fall in two groups, near 1.5M and near 2.1M. A bimodal run
+   measures where the scheduler put the two processes. Use h2 for a
+   comparison here, and take the h1 floor on `forgecore`.
+
 2. Check that the client is not the limit. `bench/floor.sh` refuses a
    run when the client is pegged and the server is 15 or more points
    under it. A run near that edge still measures the client in part.
