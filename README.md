@@ -9,12 +9,8 @@ static files and TLS are on board. At run time it needs OpenSSL 3 on
 the machine, and nothing else.
 
 It is fast because you decide, per method, what runs when. A method
-written as `def self.x` with no argument runs once, when the server
-starts, and its answer is kept as bytes. A method written as `def x`
-runs per request, with `request` and `response` in reach. A class
-method with an argument, like `is_authorized?(header)`, is the third
-kind: it runs per request too, on the class, and sees only what it was
-given.
+written as `def self.x` runs once, when the server starts, and its
+answer is kept as bytes. A method written as `def x` runs per request.
 
 It runs on io_uring where the kernel allows it. slipstreamIO carries the
 same rings to Linux without io_uring, to macOS, the BSDs, and Windows.
@@ -47,13 +43,11 @@ lookup and a write. Write `def to_html` when the answer changes from
 request to request, and the method runs per request.
 
 Any callback can be `def self.` when its answer is the same for every
-request. A callback the flow calls with an argument, `is_authorized?`
-with the Authorization header or `known_content_type?` with the
-Content-Type, can be `def self.` as well: it runs per request and
-answers from its argument, which is what `compute` needs. Four do work
-per request and stay `def`: `process_post`, `create_path`,
-`delete_resource` and `finish_request`. The server says so at start if
-one of them is written the other way.
+request. A callback that asks about a request is `def`: the four that
+do work, `process_post`, `create_path`, `delete_resource` and
+`finish_request`, and every one the flow calls with an argument, like
+`is_authorized?(header)`. The server says so at start if one of them
+is written the other way.
 
 On one core, over a unix socket, the server answers about one million
 HTTP/1.1 requests a second and ten million HTTP/2 requests a second.
@@ -126,17 +120,15 @@ htmx site served from an asset pack.
 ## Work that must not block
 
 The server is one thread. Two declarations keep a callback from
-stopping it, and they differ in where the work runs, which decides how
-you write the callback:
+stopping it. Both are written `def`, like every callback that runs per
+request, and they differ in where the block runs:
 
-- `compute` sends a block to a worker thread. A worker has its own VM
-  and sees nothing of your app, so the block carries no instance. The
-  callback is written `def self.x`: it builds the task, and nothing
-  else.
+- `compute` sends the block to a worker thread. The block is dumped
+  once and every worker keeps it, so per request only its arguments
+  and its answer cross. A worker has its own VM, so the block sees its
+  arguments and nothing else.
 - `watch` waits on a descriptor in the server's own thread. The block
-  runs inside the request, with `request` and `response` in reach, so
-  the callback is written `def x`, like any other callback that runs
-  per request.
+  runs inside the request, with `request` and `response` in reach.
 
 **`compute`** sends a block to a worker thread with a deadline. The
 flow waits at that node and goes on with the block's answer. Password
@@ -150,7 +142,7 @@ end
 class Login < Webmachine::Resource
   compute :is_authorized?
 
-  def self.is_authorized?(header)
+  def is_authorized?(header)
     Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
       user, pass = h.to_s.split(':', 2)
       stored = Webmachine::Workers::Registry[:passwords][user]

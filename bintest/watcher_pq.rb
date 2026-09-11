@@ -47,7 +47,7 @@ assert('watcher: libpq drives a stopped run, and changes what it waits for mid-w
     class PqWatch < Webmachine::Resource
       watch :is_authorized?
 
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         conn = Pq.connect_start(#{WPQ_URL.inspect})
         # The loop libpq documents asks first and waits second. A watcher
         # waits first, so the first answer is taken here and it decides

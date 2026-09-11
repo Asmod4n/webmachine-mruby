@@ -895,7 +895,7 @@ assert('h2: a compute task parks the stream (#30)') do
   src = <<~RUBY_SRC
     class H2Compute < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def to_html
@@ -1439,7 +1439,7 @@ assert('h2: RST_STREAM on a parked stream ends it, and its answer stays silent')
   src = <<~RUBY_SRC
     class H2ParkThenReset < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
           t0 = Chrono::Steady.now
           nil while Chrono::Steady.now - t0 < 0.3
@@ -1484,7 +1484,7 @@ assert('h2: a parked request logs its own status and bytes') do
   src = <<~RUBY_SRC
     class H2LoggedPark < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 2.s) { true }
       end
       def to_html
@@ -1892,7 +1892,7 @@ assert('h2: a parked run still has its headers, its bindings and its body') do
     class H2Parked < Webmachine::Resource
       reads_body :process_post
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def self.allowed_methods

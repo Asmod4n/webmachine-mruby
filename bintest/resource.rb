@@ -179,19 +179,25 @@ assert('compute: a callback that is not defined is refused at the start (#80)') 
   RUBY
   out = resource_refused(wm_app('ComputeUndefined', src))
   assert_true out.include?('is_authorized')
-  assert_true out.include?('def self.')
+  assert_true out.include?('write def ')
 end
 
-assert('compute: a callback on the instance is refused at the start (#80)') do
+# A class method runs once at start and sees no request. A task is
+# built per request, so the callback that builds it is an instance
+# method, and the class form is refused by name.
+assert('compute: a callback on the class is refused at the start') do
   src = <<~RUBY
-    class ComputeOnInstance < Webmachine::Resource
+    class ComputeOnClass < Webmachine::Resource
       compute :is_authorized?
-      def is_authorized?(_h); true; end
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
       def to_html; 'x'; end
     end
   RUBY
-  out = resource_refused(wm_app('ComputeOnInstance', src))
-  assert_true out.include?('carries no environment')
+  out = resource_refused(wm_app('ComputeOnClass', src))
+  assert_true out.include?('defined on the class'), out
+  assert_true out.include?('Write def is_authorized?'), out
 end
 
 assert('compute: it wants a symbol, and at least one (#80)') do
@@ -216,7 +222,7 @@ assert('ComputeTask wants a block and a deadline that is a time (#80)') do
   src = <<~RUBY
     class ComputeNoBlock < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 50.ms)
       end
       def to_html; 'x'; end
@@ -235,7 +241,7 @@ assert('compute: a worker answers the node, and the graph carries on (#80)') do
   src = <<~RUBY
     class ComputeAuth < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(header)
+      def is_authorized?(header)
         Webmachine::ComputeTask.new(header, max_runtime: 500.ms) { |h| !h.nil? }
       end
       def to_html; 'answered by a worker'; end
@@ -261,7 +267,7 @@ assert('compute: a parked run reads its own request after it resumes (#80)') do
     class ParkedReads < Webmachine::Resource
       reads_body :process_post
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
           t = Time.now
           nil while Time.now - t < 0.3
@@ -314,7 +320,7 @@ assert('compute: a peer that leaves mid-park frees its park slot (#80)') do
   src = <<~RUBY
     class ParkLeave < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
           t = Time.now
           nil while Time.now - t < 0.05
@@ -352,7 +358,7 @@ assert('compute: userdata set before a park is the same run\'s after it (#30)') 
         response.userdata = request.headers['x-who']
         true
       end
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
           t = Time.now
           nil while Time.now - t < 0.3
@@ -442,7 +448,7 @@ assert('compute: the second request on a server is answered like the first (#80)
   src = <<~RUBY
     class ComputeTwice < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(header)
+      def is_authorized?(header)
         Webmachine::ComputeTask.new(header, max_runtime: 500.ms) { |h| !h.nil? }
       end
       def to_html; 'again'; end
@@ -464,7 +470,7 @@ assert('compute: a task over its max_runtime answers 500 and no Retry-After (#80
   src = <<~RUBY
     class ComputeTooSlow < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 20.ms) { loop { } }
       end
       def to_html; 'x'; end
@@ -486,7 +492,7 @@ assert('compute: a worker that raises answers 503 and Retry-After: 60 (#80)') do
   src = <<~RUBY
     class ComputeRaises < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { raise 'the handle is gone' }
       end
       def to_html; 'x'; end
@@ -844,7 +850,7 @@ WM_CLASS_CB = <<~RUBY_SRC unless defined?(WM_CLASS_CB)
       ['Accept-Language']
     end
 
-    def self.is_authorized?(header)
+    def is_authorized?(header)
       header != 'no'
     end
 
@@ -1055,10 +1061,10 @@ assert('compute: a round answers ETag and Last-Modified at one stop (#30)') do
   src = <<~RUBY_SRC
     class ComputeRound < Webmachine::Resource
       compute :generate_etag, :last_modified
-      def self.generate_etag
+      def generate_etag
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'from-a-worker' }
       end
-      def self.last_modified
+      def last_modified
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { 1_000_000_000 }
       end
       def to_html; 'body'; end
@@ -1082,7 +1088,7 @@ assert('compute: a value round starts on every request, not on the first only (#
   src = <<~RUBY
     class EtagEveryTime < Webmachine::Resource
       compute :generate_etag
-      def self.generate_etag
+      def generate_etag
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'every-time' }
       end
       def to_html; 'x'; end
@@ -1103,7 +1109,7 @@ assert('compute: a round answers a conditional request (#30)') do
   src = <<~RUBY_SRC
     class ComputeRoundCond < Webmachine::Resource
       compute :generate_etag
-      def self.generate_etag
+      def generate_etag
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { 'w-etag' }
       end
       def to_html; 'body'; end
@@ -1176,7 +1182,7 @@ assert('compute: the worker reads response.userdata and leaves something else (#
         response.userdata = 'from the run'
         true
       end
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) do
           response.userdata = "worker saw \#{response.userdata}"
           true
@@ -1205,7 +1211,7 @@ assert('compute: a job queued behind a long one keeps its own deadline (#80)') d
   src = <<~RUBY_SRC
     class ComputeQueued < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 250.ms) do
           t0 = Chrono::Steady.now
           nil while Chrono::Steady.now - t0 < 0.15
@@ -1235,7 +1241,7 @@ assert('compute: a request received behind a parked run is answered after it (#8
   src = <<~RUBY_SRC
     class ComputeThenNext < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_header)
+      def is_authorized?(_header)
         Webmachine::ComputeTask.new(max_runtime: 2.s) do
           t0 = Chrono::Steady.now
           nil while Chrono::Steady.now - t0 < 0.2
@@ -1333,7 +1339,7 @@ assert('application: the routes object is a Webmachine::Routes, and compute keep
   src = <<~RUBY_SRC
     class RoutesNamed < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def to_html
@@ -1353,13 +1359,14 @@ assert('application: the routes object is a Webmachine::Routes, and compute keep
   end
 end
 
-# #80: a node callback named in `compute` and written on the class is
-# asked per request, through a worker, and never folded at start.
-assert('compute: a class-level node callback is not folded, and answers per request') do
+# #80: a node callback named in `compute` is asked per request, through
+# a worker, and never folded at start - also one that takes no argument
+# and would be folded without the declaration.
+assert('compute: a declared node callback is not folded, and answers per request') do
   src = <<~RUBY_SRC
     class ComputeNode < Webmachine::Resource
       compute :service_available?
-      def self.service_available?
+      def service_available?
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def to_html; 'up'; end
@@ -1386,7 +1393,7 @@ assert('compute: a worker that cannot build its registry answers 503, not silenc
 
     class ComputeNoWorker < Webmachine::Resource
       compute :is_authorized?
-      def self.is_authorized?(_h)
+      def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def to_html; 'x'; end
@@ -1440,14 +1447,27 @@ assert('error page: the JSON problem document parses, with its fields escaped') 
   end
 end
 
-# A callback that carries an argument asks about this request, so it can
-# never be konst-folded, however it is defined. Two requests to one
-# server, one long path and one short: a folded answer would give both
-# the same status.
-assert('resource: a class-level uri_too_long? is asked per request') do
+# A callback that carries an argument asks about this request. A class
+# method runs once at start and sees none, so the class form is refused
+# when the route is added, and the instance form is asked per request.
+assert('resource: a class-level uri_too_long? is refused at the start') do
+  src = <<~RUBY
+    class LongPathOnClass < Webmachine::Resource
+      def self.uri_too_long?(uri)
+        uri.length > 20
+      end
+      def self.to_html; 'x'; end
+    end
+  RUBY
+  out = resource_refused(wm_app('LongPathOnClass', src))
+  assert_true out.include?('takes an argument'), out
+  assert_true out.include?('Write def uri_too_long?'), out
+end
+
+assert('resource: uri_too_long? is asked per request') do
   src = <<~RUBY
     class LongPath < Webmachine::Resource
-      def self.uri_too_long?(uri)
+      def uri_too_long?(uri)
         uri.length > 20
       end
 

@@ -2016,21 +2016,20 @@ void fold_node_callbacks(const Folding& fold, Resource& out, bool (&ans)[kBoolCo
       out.node_argc[at] = cb.maxargs;
       continue;
     }
-    // A callback that carries an argument asks about this request - the
-    // URI, the fields, the type, the length - so it can never be konst:
-    // the fold has no request to ask it about. It rides the node tables
-    // instead, on the class where that is where it lives, the same as a
-    // callback a worker answers.
-    if (((declared >> at) & 1) || cb.maxargs > 0) {
+    // The contract: a class method runs once, at start, and never sees
+    // a request. A callback that carries an argument asks about one -
+    // the URI, the fields, the type, the length - so it is an instance
+    // method, and a class-level one is refused here rather than asked
+    // once with nothing in hand. A callback a worker or a descriptor
+    // answers runs per request as well, and the compute and watch
+    // checks below say so by name.
+    if (cb.maxargs > 0 && ((declared >> at) & 1) == 0) {
       const Resolved meta = resolve(mrb, mrb_class(mrb, klass), cb.sym);
-      if (meta.defined) {
-        out.dynamic |= uint64_t{1} << at;
-        out.node_sym[at] = cb.sym;
-        out.node_m[at] = meta.m;
-        out.node_irep[at] = meta.irep;
-        out.node_on_class |= uint64_t{1} << at;
-        out.node_argc[at] = cb.maxargs;
-        continue;
+      if (mrb_unlikely(meta.defined)) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "def self.%n takes an argument, so it asks about a request - a class method "
+                   "runs once at start and sees none. Write def %n",
+                   cb.sym, cb.sym);
       }
     }
     ask(fold, {cb.sym, cb.name}, cb.defv, &ans[i]);
@@ -2126,33 +2125,45 @@ void fold_compute_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
         }
         if (mrb_unlikely(!cb->has)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                     "compute :%n, but %n is not defined - write it as def self.%n and answer "
-                     "with a Webmachine::ComputeTask",
+                     "compute :%n, but %n is not defined - write def %n and answer with a "
+                     "Webmachine::ComputeTask",
                      want, want, want);
         }
-        if (mrb_unlikely(!cb->on_class)) {
+        // The task is built per request, on the instance, with request
+        // in reach. Only its block crosses to a worker, dumped once and
+        // reused, and the block sees its arguments and nothing else.
+        if (mrb_unlikely(cb->on_class)) {
           mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                     "compute :%n, but %n is defined on the instance - a declared block carries "
-                     "no environment, so it can use nothing of an instance. Write def self.%n",
+                     "compute :%n, but %n is defined on the class - a class method runs once at "
+                     "start, and a task is built per request. Write def %n",
                      want, want, want);
         }
         out.value_jobs |= static_cast<uint8_t>(1u << what);
         continue;
       }
-      // A declared callback answers on the class. The block it hands
-      // over carries no environment - a dumped proc cannot - so it
-      // needs nothing of an instance, and an instance form would only
-      // promise state the worker can never see.
+      // A declared callback is an instance method: it builds the task
+      // per request, with request in reach, and only the block crosses
+      // to a worker. The block is dumped once and reused, and it sees
+      // its arguments and nothing else. A class-level one never reached
+      // the node tables, so it reads as not defined here, and the
+      // message names the form to write.
       if (mrb_unlikely((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        const Resolved meta = resolve(mrb, mrb_class(mrb, klass), want);
+        if (meta.defined) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "compute :%n, but %n is defined on the class - a class method runs once "
+                     "at start, and a task is built per request. Write def %n",
+                     want, want, want);
+        }
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "compute :%n, but %n is not defined - write it as def self.%n and answer "
-                   "with a Webmachine::ComputeTask",
+                   "compute :%n, but %n is not defined - write def %n and answer with a "
+                   "Webmachine::ComputeTask",
                    want, want, want);
       }
-      if (mrb_unlikely((out.node_on_class & (uint64_t{1} << at)) == 0)) {
+      if (mrb_unlikely((out.node_on_class & (uint64_t{1} << at)) != 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "compute :%n, but %n is defined on the instance - a declared block carries "
-                   "no environment, so it can use nothing of an instance. Write def self.%n",
+                   "compute :%n, but %n is defined on the class - a class method runs once at "
+                   "start, and a task is built per request. Write def %n",
                    want, want, want);
       }
       out.compute |= uint64_t{1} << at;
@@ -2218,10 +2229,17 @@ void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
         continue;
       }
       if (mrb_unlikely((out.dynamic & (uint64_t{1} << at)) == 0)) {
+        const Resolved meta = resolve(mrb, mrb_class(mrb, klass), want);
+        if (meta.defined) {
+          mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                     "watch :%n, but %n is defined on the class - a watcher runs inside the "
+                     "request, so write def %n",
+                     want, want, want);
+        }
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "watch :%n, but %n is not defined - write it and answer with a "
+                   "watch :%n, but %n is not defined - write def %n and answer with a "
                    "Webmachine::Watcher",
-                   want, want);
+                   want, want, want);
       }
       if (mrb_unlikely((out.node_on_class & (uint64_t{1} << at)) != 0)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
