@@ -410,7 +410,9 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool co
   rv.field_count = nh;
   rv.values = &pvals;
   const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-  const H2Request q{stream_id, facts, &pvals, rvp, target, route, head_only};
+  const H2Request q{stream_id, facts,    &pvals,
+                    rvp,       target,   route,
+                    head_only, stp.field_blob.data(), stp.field_blob.size()};
   const H2Served served = h2_serve(st0, q, sink);
   if (served == H2Served::kClosed) return false;
   // A parked run logs from its own tail, with its own status.
@@ -677,8 +679,15 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     rv.fields = hv;
     rv.field_count = nh;
     rv.values = &vals;
-    const H2Request q{stream_id, facts, &vals, r < 0 ? nullptr : &rv,
-                      {path_val, path_vlen}, route, head_only};
+    const H2Request q{stream_id,
+                      facts,
+                      &vals,
+                      r < 0 ? nullptr : &rv,
+                      {path_val, path_vlen},
+                      route,
+                      head_only,
+                      h2.hdrbuf.data(),
+                      h2.hdrbuf.size()};
     const H2Served served = h2_serve(st0, q, sink);
     if (served == H2Served::kClosed) return false;
     if (served == H2Served::kAnswered) h2_log(st0, {facts, {path_val, path_vlen}});
@@ -1246,6 +1255,11 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
   start.h2.head_only = q.head_only;
   start.h2.facts = q.facts;
   start.h2.target.assign(q.target);
+  // #54: the request, and the bytes it points into. The run holds both
+  // before it can stop.
+  start.h2.view = q.req;
+  start.h2.head_at = q.head_at;
+  start.h2.head_len = q.head_len;
   Run r = run_parkable(st0, std::move(start), &sink, nullptr);
   if (r.done()) {
     // It never stopped. The answer is already in the sink.

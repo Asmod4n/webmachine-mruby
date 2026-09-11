@@ -1447,8 +1447,22 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // Did this run stop? A stopped one logs its own answer from the
     // tail, because the caller logged nothing for it.
     bool stopped = false;
-    const H2Request hq = {start.h2.stream_id, start.h2.facts, nullptr,
-                          nullptr,            start.h2.target, start.h2.route,
+    // #54: a run that can stop reads its request from its own frame.
+    // The dispatch's decode buffer is gone by the time a stopped run
+    // answers, so the head is copied here - the same hold h1 does, and
+    // for the same reason.
+    //
+    // Before this, a parked h2 run was given no view and no values at
+    // all: a resource that stopped could not read a header, a path
+    // binding or its own body.
+    const bool h2_held = !h1 && start.h2.view != nullptr && start.h2.head_at != nullptr;
+    if (h2_held) held.hold(start.h2.head_at, start.h2.head_len, *start.h2.view);
+    const H2Request hq = {start.h2.stream_id,
+                          start.h2.facts,
+                          h2_held ? &held.vals : nullptr,
+                          h2_held ? &held.rv : nullptr,
+                          start.h2.target,
+                          start.h2.route,
                           start.h2.head_only};
     uint16_t status = 0;
     if (h1) {

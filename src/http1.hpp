@@ -2739,6 +2739,16 @@ class Http1 {
       bool head_only = false;
       flow::ReqFacts facts{};
       std::string target;
+      // #54: the request as the dispatch saw it, and the bytes its
+      // fields point into. The run copies both into its own frame
+      // before it can stop, the same way h1 holds its head, and after
+      // that the decode buffer may be reused by the next dispatch.
+      //
+      // Null = a konst route or an asset: nothing that can stop, and
+      // nothing that reads a field.
+      const ReqView* view = nullptr;
+      const char* head_at = nullptr;
+      size_t head_len = 0;
     };
     H2Start h2{};
   };
@@ -3039,6 +3049,14 @@ class Http1 {
     std::string_view target;
     uint16_t route;
     bool head_only;
+    // #54: the bytes every field of this request points into - the
+    // dispatch's decode buffer, or a parked stream's own copy of it.
+    // A run that can stop copies this range into its frame and rebases
+    // the view onto the copy, so it still has a request after the
+    // buffer is reused. Null for a caller that has no such range, and
+    // then a run that stops answers from the head alone.
+    const char* head_at = nullptr;
+    size_t head_len = 0;
   };
   // #30: the walk, and the framing, are two functions - a run can stop
   // between them. One framer serves both paths.

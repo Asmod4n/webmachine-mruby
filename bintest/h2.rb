@@ -1875,3 +1875,82 @@ assert('h2: a body that breaks its declared length ends the stream, and a run of
     end
   end
 end
+
+# #54: a run that stops keeps its request. The dispatch's decode buffer
+# is reused by the next stream, so a parked run reads a copy it holds
+# itself - and before this it was given no view and no values at all.
+assert('h2: a parked run still has its headers, its bindings and its body') do
+  src = <<~RUBY_SRC
+    class H2Parked < Webmachine::Resource
+      compute :is_authorized?
+      def self.is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def to_html
+        [request.headers['x-mark'].to_s,
+         request.path_info[:name].to_s,
+         request.query['q'].to_s].join('|')
+      end
+      def process_post
+        response.body = [request.headers['x-mark'].to_s, request.body.read].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['files', :name], H2Parked
+          route.add [:*], H2Parked
+        end
+      end
+    end
+  RUBY_SRC
+  h2_server(src) do |sock|
+    # A parked GET reads a field, a path binding and the query.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      block = "\x82\x86".b + h2_lit(':path', '/files/report.txt?q=deep') +
+              h2_lit(':authority', 'example.com') + h2_lit('x-mark', 'kept')
+      s.write(h2_frame(1, 0x05, 1, block))
+      _, _, _, hblock = h2_until(s, 1)
+      assert_equal 0x88, hblock.getbyte(0)
+      _, _, _, data = h2_until(s, 0)
+      assert_equal 'kept|report.txt|deep', data
+    end
+    # Two streams in one dispatch: the second overwrites the decode
+    # buffer while the first is parked, which is the case this holds
+    # the head for.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      first = "\x82\x86".b + h2_lit(':path', '/files/one.txt') +
+              h2_lit(':authority', 'example.com') + h2_lit('x-mark', 'first')
+      second = "\x82\x86".b + h2_lit(':path', '/files/two.txt') +
+               h2_lit(':authority', 'example.com') + h2_lit('x-mark', 'second')
+      s.write(h2_frame(1, 0x05, 1, first) + h2_frame(1, 0x05, 3, second))
+      seen = {}
+      deadline = Time.now + 10
+      while seen.size < 2 && Time.now < deadline
+        t, _, st, payload = h2_next(s)
+        seen[st] = payload if t == 0 && !payload.empty?
+      end
+      assert_equal 'first|one.txt|', seen[1]
+      assert_equal 'second|two.txt|', seen[3]
+    end
+    # A parked run reads its own body.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      body = 'the body a stopped run still owns'
+      block = "\x02\x04POST\x86".b + h2_lit(':path', '/files/upload.bin') +
+              h2_lit(':authority', 'example.com') + h2_lit('x-mark', 'body') +
+              h2_lit('content-length', body.bytesize.to_s)
+      s.write(h2_frame(1, 0x04, 1, block))
+      s.write(h2_frame(0, 0x01, 1, body))
+      _, _, _, data = h2_until(s, 0)
+      assert_equal "body|#{body}", data
+    end
+  end
+end
