@@ -5,8 +5,8 @@ per resource and answer a few questions in it: which media types, which
 ETag, which body. The server does the rest of HTTP for you, the way
 webmachine-ruby taught it: content negotiation, conditional requests,
 `Allow`, 304, 406, 412. HTTP/1.1, HTTP/2, WebSocket, server-sent events,
-static files and TLS are on board. There is nothing to install beside
-the binary.
+static files and TLS are on board. At run time it needs OpenSSL 3 on
+the machine, and nothing else.
 
 It is fast because you decide, per method, what runs when. A method
 written as `def self.x` runs once, when the server starts, and its
