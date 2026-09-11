@@ -152,6 +152,21 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
     MSG
   end
   spec.linker.libraries << 'z'
+
+  unless spec.cc.search_header('openssl/ssl.h')
+    abort <<~MSG
+      webmachine-mruby: OpenSSL headers not found.
+
+      This tree links the machine's OpenSSL 3, for the TLS handshake and
+      the websocket handshake's SHA1. The library is on every server
+      distribution, and its headers are a package of their own:
+
+        Debian/Ubuntu   apt install libssl-dev
+        RHEL/Fedora     dnf install openssl-devel
+        Alpine          apk add openssl-dev
+        macOS           brew install openssl@3
+    MSG
+  end
   mnz = "#{dir}/deps/miniz"
   abort 'webmachine-mruby: deps/miniz is empty - run: git submodule update --init' unless File.exist?("#{mnz}/miniz_zip.h")
   mnz_gen = "#{build_dir}/miniz"

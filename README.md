@@ -349,10 +349,20 @@ that. `rake deps_update` pulls mruby and every gem tracked by branch,
 which is the step to take when a build asks for a symbol the clone does
 not have yet.
 
-A C or C++ toolchain is all the build takes for granted. When a header
-it needs is not on the machine, the build stops and names the package
-to install, for your distribution. TLS wants a kernel with the tls
-module loaded; without it the server speaks plain HTTP.
+What a build needs, and what the binary needs where it runs, in
+Debian's package names. The Containerfile installs the same two lists.
+
+| | |
+|---|---|
+| build | `build-essential ruby git pkg-config zlib1g-dev libssl-dev` |
+| run | `libz1 libssl3 libstdc++6` |
+
+The same packages elsewhere: `zlib-devel` and `openssl-devel` on RHEL
+and Fedora, `zlib-dev` and `openssl-dev` on Alpine, and
+`xcode-select --install` plus Homebrew's `openssl@3` on macOS. When a
+header is missing the build stops and names the package for your
+distribution. TLS wants a kernel with the tls module loaded; without
+it the server speaks plain HTTP.
 
 ## Credit
 
