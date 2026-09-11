@@ -2587,8 +2587,10 @@ class Http1 {
     // The bytes. Everything below points into this string, so it must
     // not move once hold() has run - no append, no reserve, no swap.
     std::string head;
-    // The body, when the request carried one in the same buffer. Copied
-    // for the same reason as the head: the buffer goes back to the kernel.
+    // The body, when the request carried one in the same buffer and a
+    // callback declared that it reads one. A resource that declared no
+    // reader is given a view with no content at all, so this stays
+    // empty and nothing is copied - see bound_prepare.
     std::string content;
     http::ReqValues vals{};
     RouteSpans spans{};

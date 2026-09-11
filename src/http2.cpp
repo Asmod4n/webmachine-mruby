@@ -1248,6 +1248,36 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
   if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
     return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
   }
+  // #54: the range this request's fields sit in, and not one octet
+  // more. The decode buffer holds every field of every stream this
+  // dispatch read, and a run that stops copies what it is given - so
+  // it is given this request's own span. A HEADERS block decodes in
+  // one run, so the span is contiguous.
+  const char* head_at = q.head_at;
+  size_t head_len = q.head_len;
+  if (q.req != nullptr && q.req->field_count != 0 && q.head_at != nullptr) {
+    const auto* h = static_cast<const struct phr_header*>(q.req->fields);
+    const char* lo = nullptr;
+    const char* hi = nullptr;
+    for (size_t i = 0; i < q.req->field_count; i++) {
+      if (h[i].name != nullptr && (lo == nullptr || h[i].name < lo)) lo = h[i].name;
+      if (h[i].value != nullptr && (hi == nullptr || h[i].value + h[i].value_len > hi)) {
+        hi = h[i].value + h[i].value_len;
+      }
+    }
+    // The target is read beside the fields and lands in the same
+    // buffer, so the span has to hold it as well.
+    if (!q.target.empty()) {
+      if (lo == nullptr || q.target.data() < lo) lo = q.target.data();
+      if (hi == nullptr || q.target.data() + q.target.size() > hi) {
+        hi = q.target.data() + q.target.size();
+      }
+    }
+    if (lo != nullptr && hi != nullptr && lo >= q.head_at && hi <= q.head_at + q.head_len) {
+      head_at = lo;
+      head_len = static_cast<size_t>(hi - lo);
+    }
+  }
   RunStart start;
   start.proto = RunStart::Proto::kH2;
   start.h2.stream_id = q.stream_id;
@@ -1258,8 +1288,8 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
   // #54: the request, and the bytes it points into. The run holds both
   // before it can stop.
   start.h2.view = q.req;
-  start.h2.head_at = q.head_at;
-  start.h2.head_len = q.head_len;
+  start.h2.head_at = head_at;
+  start.h2.head_len = head_len;
   Run r = run_parkable(st0, std::move(start), &sink, nullptr);
   if (r.done()) {
     // It never stopped. The answer is already in the sink.
