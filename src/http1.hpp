@@ -2605,10 +2605,34 @@ class Http1 {
     Held(const Held&) = delete;
     Held& operator=(const Held&) = delete;
 
+    // One run of bytes the copy replaces, and how far it moved. A view
+    // can point into two of them: the head, and - h2 only - the request
+    // target, which a parked stream keeps apart from its fields.
+    struct Span {
+      const char* at = nullptr;
+      size_t len = 0;
+      ptrdiff_t delta = 0;
+      // True when this span owned the pointer and moved it. One past the
+      // end belongs to the span as well: an empty piece at the end of it
+      // is spelled that way.
+      bool move(const char*& p) const {
+        if (at == nullptr || p == nullptr || p < at || p > at + len) return false;
+        p += delta;
+        return true;
+      }
+    };
+
     // Copy the head and re-point `from` at the copy. After this the
     // provided buffer may go back to the kernel, which is the whole
     // point - see Run.
-    void hold(const char* head_at, size_t head_len, const ReqView& from);
+    //
+    // `target` is the request target this frame owns, for a caller whose
+    // view points at a target outside the head: h2 gives a parked stream
+    // its fields from one buffer and its target from another, and the
+    // route captures point into the target. Null says the target lies in
+    // the head, which is h1 and an h2 head this dispatch decoded.
+    void hold(const char* head_at, size_t head_len, const ReqView& from,
+              const std::string* target);
   };
 
   // What one request round already knows by the time the head is parsed.

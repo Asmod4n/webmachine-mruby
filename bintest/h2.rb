@@ -1904,7 +1904,10 @@ assert('h2: a parked run still has its headers, its bindings and its body') do
          request.query['q'].to_s].join('|')
       end
       def process_post
-        response.body = [request.headers['x-mark'].to_s, request.body.read].join('|')
+        response.body = [request.headers['x-mark'].to_s,
+                         request.path_info[:name].to_s,
+                         request.query['q'].to_s,
+                         request.body.read].join('|')
         true
       end
     end
@@ -1953,13 +1956,16 @@ assert('h2: a parked run still has its headers, its bindings and its body') do
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
       body = 'the body a stopped run still owns'
-      block = "\x02\x04POST\x86".b + h2_lit(':path', '/files/upload.bin') +
+      block = "\x02\x04POST\x86".b + h2_lit(':path', '/files/upload.bin?q=deep') +
               h2_lit(':authority', 'example.com') + h2_lit('x-mark', 'body') +
               h2_lit('content-length', body.bytesize.to_s)
       s.write(h2_frame(1, 0x04, 1, block))
       s.write(h2_frame(0, 0x01, 1, body))
       _, _, _, data = h2_until(s, 0)
-      assert_equal "body|#{body}", data
+      # The binding and the query point into the target, which a parked
+      # stream keeps apart from its fields. A hold that moved them by the
+      # fields' own delta would answer bytes of somewhere else.
+      assert_equal "body|upload.bin|deep|#{body}", data
     end
   end
 end

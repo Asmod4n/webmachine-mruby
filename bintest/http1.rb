@@ -982,3 +982,53 @@ assert('h1: a declared saver gets a file, whatever the size') do
     end
   end
 end
+
+# A body a run asked for and never read is that request's, and it ends
+# with it. Before this the file and the flag stayed on the connection:
+# the next request was handed the old octets as its body, and its own
+# octets were stepped over as though a run had taken them.
+assert('h1: a body no run read ends with its request, not with the next one') do
+  app = <<~RUBY_APP
+    class Gate < Webmachine::Resource
+      reads_body :process_post, save: true
+
+      def self.allowed_methods
+        %w[GET POST]
+      end
+
+      # Above the three nodes that read content, so a refusal here
+      # answers while the body is still nobody's.
+      def forbidden?
+        request.headers['x-open'].nil?
+      end
+
+      def process_post
+        response.body = request.body.read
+        true
+      end
+
+      def to_html
+        'get'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [:*], Gate }
+      end
+    end
+  RUBY_APP
+  wm_server(app, tag: 'wm-stale-body') do |sock, _|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n" \
+              "Content-Length: 5\r\n\r\nfirst")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 403'), head
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nX-Open: 1\r\n" \
+              "Content-Type: application/octet-stream\r\nContent-Length: 6\r\n\r\nsecond")
+      head2, body2 = wm_read(s)
+      assert_true head2.start_with?('HTTP/1.1 200'), head2
+      assert_equal 'second', body2
+    end
+  end
+end

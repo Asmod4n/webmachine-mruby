@@ -393,7 +393,12 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  log_fd = ::open(argv[2], O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  // The error log carries what a request sent, up to kBodyKept octets, so
+  // a form login's password is in it. The file this creates is the
+  // owner's to read and nobody else's. O_NOFOLLOW on both: a log
+  // directory other users can write is a directory where a symlink
+  // decides what this process writes over.
+  log_fd = ::open(argv[2], O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, err_mode ? 0600 : 0644);
   if (log_fd < 0) {
     std::fprintf(stderr, "webmachine-logd: %s: %s\n", argv[2], std::strerror(errno));
     return 1;

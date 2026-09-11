@@ -500,6 +500,11 @@ class Ring {
     bool live = false;
     bool sending = false;
     bool close_after_send = false;
+    // The close this connection owes once its file read lands. The
+    // kernel is writing into the App's own buffer, and close_direct
+    // would free the slot for the next accept, whose reset deletes
+    // that buffer under the read.
+    bool close_owed = false;
     bool idle = false;
 
     typename App::Conn app;
@@ -1200,6 +1205,25 @@ class Ring {
     c.live = false;
     live_clear(idx);
     if (live_ != 0) live_--;
+    // A read of this connection's own buffer is with the kernel. Freeing
+    // the slot now lets the next accept have it, and that accept's reset
+    // deletes the buffer the read is still writing into. So the close
+    // waits for the read; on_file_read finishes it. A read of a regular
+    // file ends, and the slot is held only that long.
+    if (c.file_io != nullptr && c.file_io->reading) {
+      c.close_owed = true;
+      return;
+    }
+    finish_close(idx);
+  }
+
+  // The three ops that end a slot: the TLS alert, the shutdown, and the
+  // close that frees the fixed-table entry. begin_close submits them
+  // unless a file read holds this connection's buffer, and on_file_read
+  // submits them when that read lands.
+  void finish_close(uint32_t idx) {
+    Conn& c = conns_[idx];
+    c.close_owed = false;
     if (io_uring_sq_space_left(&ring_) < 3) io_uring_submit(&ring_);
     arm_close_notify(idx);
     struct io_uring_sqe* s = sqe();
@@ -1224,6 +1248,7 @@ class Ring {
     live_++;
     c.sending = false;
     c.close_after_send = false;
+    c.close_owed = false;
     c.idle = false;
     c.deadline_s = now_s_ + header_timeout_;
     c.listener = static_cast<uint8_t>(li);
@@ -1979,6 +2004,12 @@ class Ring {
     if (!c.live || c.gen != gen) {
       c.file_io->fd = -1;
       arm_file_close(idx, fd, gen);
+      // The connection ended under this read and its close waited for
+      // it. Nothing writes that buffer now, so the slot may go back.
+      if (c.close_owed && c.gen == gen) {
+        finish_close(idx);
+        return;
+      }
       arm_file_open(idx);
       return;
     }

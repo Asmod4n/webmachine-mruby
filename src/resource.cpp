@@ -2712,6 +2712,14 @@ uint16_t run_settle(const Resource& res, RunAnswer out, Thrown t) {
       mrb_gc_register(mrb, res.run.compute_task[i].block);
       mrb_gc_register(mrb, res.run.compute_task[i].args);
     }
+    // #30: a watcher waits for its hash. The connection's hash is what
+    // roots it, and the caller fills that hash after this returns -
+    // with a CBOR encode and a hash that may grow in between, either of
+    // which can run the collector. The root is given back where the
+    // task's roots are, in resource_resume and resource_abandon.
+    for (uint8_t i = 0; i < res.run.watch_count; i++) {
+      mrb_gc_register(mrb, res.run.watch[i]);
+    }
     // The two bindings are the process's "which request is speaking".
     // The reactor answers other connections while this one waits, so
     // they go now and come back in resource_resume.
@@ -2770,6 +2778,9 @@ void resource_abandon(const Resource& res, Resource::RunState& state) {
       mrb_gc_unregister(mrb, state.compute_task[i].block);
       mrb_gc_unregister(mrb, state.compute_task[i].args);
     }
+    for (uint8_t i = 0; i < state.watch_count; i++) {
+      mrb_gc_unregister(mrb, state.watch[i]);
+    }
   }
   if (state.userdata_held) mrb_gc_unregister(mrb, state.userdata);
   if (state.zc_have) resource_body_unlend(mrb, state.zc);
@@ -2789,6 +2800,12 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& rou
     mrb_gc_unregister(mrb, res.run.compute_task[i].args);
   }
   res.run.compute_task_count = 0;
+  // #30: the hash holds the watcher now, so the root run_settle took
+  // for the crossing goes back here.
+  for (uint8_t i = 0; i < res.run.watch_count; i++) {
+    mrb_gc_unregister(mrb, res.run.watch[i]);
+  }
+  res.run.watch_count = 0;
   for (Resource::RunState::HeldTask& t : res.run.compute_task) {
     t.block = mrb_nil_value();
     t.args = mrb_nil_value();

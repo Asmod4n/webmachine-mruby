@@ -1072,9 +1072,26 @@ Http1::Held::~Held() = default;
 Http1::Held::Held(Held&&) noexcept = default;
 Http1::Held& Http1::Held::operator=(Held&&) noexcept = default;
 
-void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from) {
+void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from,
+                       const std::string* target) {
+  // The same head, held twice. A run that stops a second time already
+  // reads this copy: copying it onto itself would read the buffer the
+  // kernel has back, and free the fields array it is reading from.
+  if (!head.empty() && head_at == head.data()) return;
   head.assign(head_at, head_len);
   const ptrdiff_t delta = head.data() - head_at;
+  // The two runs of bytes a view can point into, and one mover for them.
+  // A pointer in neither is left where it is - hold owns what it copied
+  // and nothing else.
+  const Span head_span{head_at, head_len, delta};
+  Span target_span{};
+  if (target != nullptr && from.request_target != nullptr) {
+    target_span = {from.request_target, from.request_target_len,
+                   target->data() - from.request_target};
+  }
+  const auto move = [&](const char*& p) {
+    if (!head_span.move(p)) target_span.move(p);
+  };
 
   vals = *from.values;
   http::rebase(vals, delta);
@@ -1097,14 +1114,14 @@ void Http1::Held::hold(const char* head_at, size_t head_len, const ReqView& from
   if (from.spans != nullptr) {
     spans = *from.spans;
     for (uint8_t i = 0; i < spans.nbind; i++) {
-      if (spans.bind[i].p != nullptr) spans.bind[i].p += delta;
+      move(spans.bind[i].p);
     }
-    if (spans.has_splat && spans.splat.p != nullptr) spans.splat.p += delta;
+    if (spans.has_splat) move(spans.splat.p);
   }
 
   rv = from;
-  if (rv.request_target != nullptr) rv.request_target += delta;
-  if (rv.method_token != nullptr) rv.method_token += delta;
+  move(rv.request_target);
+  move(rv.method_token);
   rv.values = &vals;
   rv.fields = fields.get();
   rv.spans = from.spans != nullptr ? &spans : nullptr;
@@ -1464,7 +1481,13 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // all: a resource that stopped could not read a header, a path
     // binding or its own body.
     const bool h2_held = !h1 && start.h2.view != nullptr && start.h2.head_at != nullptr;
-    if (h2_held) held.hold(start.h2.head_at, start.h2.head_len, *start.h2.view);
+    // #54: the target is the run's own copy. A parked stream's view
+    // points at a target beside its fields, not inside them, so the
+    // target says where those pointers go and the head says where the
+    // fields go.
+    if (h2_held) {
+      held.hold(start.h2.head_at, start.h2.head_len, *start.h2.view, &start.h2.target);
+    }
     H2Request hq = {start.h2.stream_id,
                     start.h2.facts,
                     h2_held ? &held.vals : nullptr,
@@ -1517,7 +1540,10 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // carries the facts and the target - because the dispatch buffers
       // die with the round that read them.
       if (h1) {
-        held.hold(s.head_at, s.head_len, prep.rv);
+        held.hold(s.head_at, s.head_len, prep.rv, nullptr);
+        // The head this run reads from here on. A second stop holds the
+        // copy rather than the buffer the kernel has back.
+        s.head_at = held.head.data();
         // The view the run bound (res.run.req is &prep.rv) reads the copy
         // from here on, not the buffer the kernel has back.
         prep.rv = held.rv;
@@ -1688,6 +1714,15 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
     // The run is done stopping. The slot goes back, and nothing in the
     // table names this frame any more.
     if (park >= 0) {
+      // #30: a watcher this round armed and never heard from. A refused
+      // round answers at once, and a hand-over that ran out of slots
+      // stops half way - either way what is left points at this frame,
+      // and this frame ends on the next line. The connection stops
+      // naming it, so the poll that fires later finds an empty slot and
+      // answers nobody.
+      for (const int slot : mine_round.w_slot) {
+        if (slot >= 0) watchers_drop_slot(st, slot);
+      }
       st.park_drop(park);
       me.park = -1;
     }
@@ -2013,7 +2048,18 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     // Only a file a round already took: an unbound one is this request's
     // body still arriving, and the loop runs again for it once the last
     // octet lands.
-    if (mrb_unlikely(st.spill.bound)) st.spill.close_file();
+    if (mrb_unlikely(st.spill.bound || st.run_wants_body)) st.spill.close_file();
+    // #36: the run before this one asked for a body and answered without
+    // it - a 401, a 403, a 404 or a 405 stands above the three nodes that
+    // read content. Its file, its hold and its flag are the connection's
+    // until something ends them, and a head parsed here is what says the
+    // last request is over. Left standing they reach the next request:
+    // body_have would read the old file, bound_prepare would hand those
+    // octets over as this request's body, and the flag would make the
+    // parse step over bytes that are a request of their own.
+    st.run_wants_body = false;
+    st.body_hold.clear();
+    st.body_count = 0;
     const char* method;
     size_t method_len;
     const char* path;
