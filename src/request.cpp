@@ -10,15 +10,7 @@
 #include <picohttpparser.h>
 #include <slipstream_tmpfile.h>
 
-#include <openssl/sha.h>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <cerrno>
-#include <cstring>
-#include <slipstream_tmpfile.h>
-
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 #include <fcntl.h>
@@ -306,22 +298,31 @@ struct SaveAsk {
 bool body_digest(const ReqView* v, char (&hex)[SHA256_DIGEST_LENGTH * 2 + 1], std::string& err) {
   unsigned char sum[SHA256_DIGEST_LENGTH];
   if (v->content_fd >= 0) {
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
+    // The EVP form: OpenSSL 3.0 deprecated SHA256_Init and its two
+    // companions, and the one-shot SHA256 below is the only low-level
+    // call it kept.
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (ctx == nullptr || EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1) {
+      EVP_MD_CTX_free(ctx);
+      err = "EVP_DigestInit_ex failed";
+      return false;
+    }
     char buf[64 * 1024];
     off_t at = 0;
     for (;;) {
       const ssize_t got = ::pread(v->content_fd, buf, sizeof(buf), at);
       if (got < 0) {
         if (errno == EINTR) continue;
+        EVP_MD_CTX_free(ctx);
         err = std::strerror(errno);
         return false;
       }
       if (got == 0) break;
-      SHA256_Update(&ctx, buf, static_cast<size_t>(got));
+      EVP_DigestUpdate(ctx, buf, static_cast<size_t>(got));
       at += got;
     }
-    SHA256_Final(sum, &ctx);
+    EVP_DigestFinal_ex(ctx, sum, nullptr);
+    EVP_MD_CTX_free(ctx);
   } else {
     SHA256(reinterpret_cast<const unsigned char*>(v->content), v->content_len, sum);
   }
