@@ -38,8 +38,9 @@ end
 
 A gem this tree tracks by branch is cloned by mruby once and never
 pulled again, so a header added upstream is missing here with no sign
-of why. `rake deps_update` pulls them; a gem pinned to a commit is
-left where it is.
+of why. The same holds for the mruby tree itself, which the Rakefile
+clones once. `rake deps_update` pulls mruby and the gems; a gem pinned
+to a commit is left where it is.
 
 `self.to_html` is the whole trick. The server calls it once at start
 and keeps the answer, with its status line, its head, its ETag and its

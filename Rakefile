@@ -113,7 +113,7 @@ task :san_smoke, %i[which] do |_t, args|
   wm_smoke(which, which)
 end
 
-desc 'pull every gem this tree tracks by branch (mruby clones once and never updates)'
+desc 'pull mruby and every gem this tree tracks by branch (a clone is made once and never updated)'
 task :deps_update do
   # mruby clones a git gem the first time it builds and never looks at
   # it again: lib/mruby/build/command.rb has run_pull and nothing calls
@@ -124,7 +124,12 @@ task :deps_update do
   # A gem pinned to a commit is checked out detached, and `git pull`
   # refuses a detached HEAD, so this leaves those alone by itself - the
   # branch name is the test.
-  Dir[File.join(MRUBY_DIR, 'build', 'repos', '*', '*')].sort.each do |dir|
+  #
+  # mruby itself goes first. It is a clone of master that this Rakefile
+  # made once, and a gem pulled here can call into an mruby API that is
+  # newer than that clone. That cost a build once as well.
+  trees = [MRUBY_DIR] + Dir[File.join(MRUBY_DIR, 'build', 'repos', '*', '*')].sort
+  trees.each do |dir|
     next unless File.directory?(File.join(dir, '.git'))
     branch = `git -C #{dir} rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
     next if branch.empty? || branch == 'HEAD'
