@@ -31,10 +31,22 @@ before you read the rate.
            APP=bench/apps/hello.rb bench/floor.sh
        done
 
-   Take the lowest count where the server and the client both pass 85
-   percent. On `vm` that is 64. Below it the run measures wait time.
-   Above it the rate falls again, because the machine now pays for the
-   connections.
+   Take the lowest count where the rate stops climbing and both sides
+   stay above 85 percent. Below that count the run measures wait time.
+
+   The two floors of this tree want different counts, because a
+   connection carries one request at a time in HTTP/1 and 128 streams
+   in HTTP/2. On the host named `vm`:
+
+   | Floor | count | rate | server | client |
+   | --- | --- | --- | --- | --- |
+   | h2, 128 streams | 62 | 5.5M | 89-91% | 94-99% |
+   | h1 | 1024 | 0.61M | 98-99% | 99-100% |
+
+   The h1 sweep that found 1024: 128 gives 0.535M, 256 gives 0.581M,
+   768 gives 0.587M, 1024 gives 0.602M, and 1536 to 4096 give the same
+   0.57M to 0.60M. The rate stops climbing at about 768, and 1024 and
+   1536 are one measurement - their medians differ by 1.1 percent.
 
 2. Check that the client is not the limit. `bench/floor.sh` refuses a
    run when the client is pegged and the server is 15 or more points
@@ -43,6 +55,12 @@ before you read the rate.
 
 3. Run five times for each arm of a comparison, and write down the
    median and the spread. One run is not a measurement.
+
+   Compare the medians. Do not compare the spreads: five runs at 62
+   connections read 3.4 percent one hour and 6.0 the next, on the same
+   binary and the same count. A spread of five runs is itself a number
+   with a wide error, and a claim that one setup repeats better than
+   another needs many more runs than five.
 
 4. Interleave the arms: A B A B A B, never five of A and then five of
    B. The machine drifts, and an interleaved order spreads that drift
