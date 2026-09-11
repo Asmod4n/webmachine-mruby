@@ -10,6 +10,11 @@ namespace webmachine {
 namespace {
 constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 constexpr size_t kH2FragBudget = kMaxHead * 2;
+// RFC 9113 8.1.1: how many streams one connection may lose to a request
+// that breaks its own Content-Length before the connection itself ends.
+// Four leaves room for a client with a defect and ends a client that
+// makes the defect its method.
+constexpr uint32_t kH2LieBudget = 4;
 constexpr size_t kH2MergeBody = 1024;
 
 // RFC 9113 8.2.1: a field name carrying an uppercase letter is malformed.
@@ -264,6 +269,19 @@ void Http1::cache_headers(std::string& out, const CachedHead& head) {
   out.append(head.block.bytes);
   if (clen != 0) out.append(reinterpret_cast<const char*>(head.fields.data()), clen);
   out.append(reinterpret_cast<const char*>(head.date.data()), dlen);
+}
+
+// RFC 9113 8.1.2.6: one request said one length and sent another. The
+// stream dies for it. A connection that does it kH2LieBudget times is
+// not a client with a defect, and it ends: every such stream costs a
+// route match, a buffer or a file, and the octets already read.
+//
+// False = the connection is going away, and the caller stops feeding it.
+bool Http1::h2_count_lie(Conn& st, uint32_t id, std::string& sink) {
+  h2_rst(st, id, kH2ProtocolError, sink);
+  st.h2->lies++;
+  if (st.h2->lies < kH2LieBudget) return true;
+  return h2_error(st, kH2EnhanceYourCalm, sink);
 }
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
@@ -2073,6 +2091,15 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           h2_rst(st0, stream, kH2RefusedStream, sink);
           break;
         }
+        // RFC 9113 8.1.2.6: the octets that arrive are counted against
+        // the length the request declared, and the frame that passes it
+        // is the frame that ends the stream. Waiting for END_STREAM
+        // would store a body the request already disowned.
+        if (stp->content_length_given && stp->content_received + dlen > stp->content_length) {
+          h2_credit_connection(sink, flen);
+          if (!h2_count_lie(st0, stream, sink)) return false;
+          break;
+        }
         stp->content_received += dlen;
         // RFC 9110 6.4: stored only where a node of this resource can
         // read them, and in the place the head chose. Only
@@ -2108,8 +2135,10 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
         }
         if (flags & kH2FlagEndStream) {
+          // The other half of the same rule: a body that ends short of
+          // what it declared.
           if (stp->content_length_given && stp->content_received != stp->content_length) {
-            h2_rst(st0, stream, kH2ProtocolError, sink);
+            if (!h2_count_lie(st0, stream, sink)) return false;
             break;
           }
           if (!h2_serve_parked(st0, *stp, sink, true)) return false;

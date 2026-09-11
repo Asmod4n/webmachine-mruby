@@ -346,6 +346,12 @@ struct H2State {
   size_t flush_cursor = 0;
   bool goaway_sent = false;
   bool goaway_recv = false;
+  // RFC 9113 8.1.1: how many streams this connection lost to a request
+  // that did not keep its own word - a body longer or shorter than the
+  // Content-Length it declared. One is an error and costs one stream.
+  // A run of them is a peer that spends the server's time on purpose,
+  // and the connection ends.
+  uint32_t lies = 0;
 
   std::string frag;
   uint32_t frag_stream = 0;
@@ -2786,6 +2792,7 @@ class Http1 {
   bool h2_feed(Conn& st, std::string_view data, Sink out);
   bool h2_error(Conn& st, uint32_t code, std::string& sink);
   void h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink);
+  bool h2_count_lie(Conn& st, uint32_t id, std::string& sink);
   // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
   // named one is refused rather than served the empty body it never meant
   // to send. Its own function because those fifteen lines are not part of

@@ -1774,3 +1774,80 @@ assert('h2: max_body - the resource answers before the application does') do
     end
   end
 end
+
+# RFC 9113 8.1.2.6: a request that sends more or less than its own
+# Content-Length loses its stream, at the frame that breaks the word. A
+# connection that keeps doing it ends with ENHANCE_YOUR_CALM.
+assert('h2: a body that breaks its declared length ends the stream, and a run of them ends the connection') do
+  src = <<~RUBY_APP
+    class H2Liar < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 1024 * 1024
+        app.add_route [:*], H2Liar
+      end
+    end
+  RUBY_APP
+  h2_server(src) do |sock|
+    # One stream, one lie: 10 declared, 40 sent. The stream dies and the
+    # connection stays, so the next request is answered.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_post_block(10)))
+      s.write(h2_frame(0, 0x01, 1, 'a' * 40))
+      rst = nil
+      deadline = Time.now + 5
+      while Time.now < deadline && rst.nil?
+        f = h2_next(s)
+        rst = f if f[0] == 3 && f[2] == 1
+      end
+      assert_true rst != nil, 'the oversize body must be RST_STREAM'
+      assert_equal 1, rst[3].unpack1('N'), 'the code must be PROTOCOL_ERROR'
+    end
+    # A body that stops short of what it declared is the same rule.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      s.write(h2_frame(1, 0x04, 1, h2_post_block(40)))
+      s.write(h2_frame(0, 0x01, 1, 'a' * 10))
+      rst = nil
+      deadline = Time.now + 5
+      while Time.now < deadline && rst.nil?
+        f = h2_next(s)
+        rst = f if f[0] == 3 && f[2] == 1
+      end
+      assert_true rst != nil, 'the short body must be RST_STREAM'
+      assert_equal 1, rst[3].unpack1('N')
+    end
+    # Four lies on one connection: the fourth ends it.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      id = 1
+      4.times do
+        s.write(h2_frame(1, 0x04, id, h2_post_block(10)))
+        s.write(h2_frame(0, 0x01, id, 'a' * 40))
+        id += 2
+      end
+      goaway = nil
+      deadline = Time.now + 5
+      while Time.now < deadline && goaway.nil?
+        begin
+          f = h2_next(s)
+        rescue EOFError
+          break
+        end
+        goaway = f if f[0] == 7
+      end
+      assert_true goaway != nil, 'the fourth lie must end the connection'
+      assert_equal 11, goaway[3][4, 4].unpack1('N'), 'the code must be ENHANCE_YOUR_CALM'
+    end
+  end
+end
