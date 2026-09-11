@@ -172,6 +172,20 @@ if [ -n "$PIN" ]; then
   command -v taskset >/dev/null || { echo "PIN needs taskset (util-linux)" >&2; exit 2; }
   SRV_PIN=(taskset -c "$SRV_CPU")
   CLI_PIN=(taskset -c "$CLI_CPU")
+else
+  # The bench takes every cpu back, whatever its caller holds. An agent
+  # that works in this tree can put itself on one cpu, and a child of
+  # that shell inherits the one cpu with it. A server on one cpu is a
+  # different measurement, and the log would not say so.
+  ALL_CPUS=$(getconf _NPROCESSORS_CONF 2>/dev/null || echo 1)
+  if [ "$ALL_CPUS" -gt 1 ] && command -v taskset >/dev/null; then
+    HAVE_CPUS=$(nproc 2>/dev/null || echo "$ALL_CPUS")
+    if [ "$HAVE_CPUS" -lt "$ALL_CPUS" ]; then
+      SRV_PIN=(taskset -c "0-$((ALL_CPUS - 1))")
+      CLI_PIN=(taskset -c "0-$((ALL_CPUS - 1))")
+      WIDENED=1
+    fi
+  fi
 fi
 
 BROWSER="${BROWSER:-0}"
@@ -301,7 +315,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}${WIDENED:+ cpus=all}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
