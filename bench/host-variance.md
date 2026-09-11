@@ -1,5 +1,9 @@
 # What a host adds to a bench number
 
+`bench/how-to-measure.md` says how to run a bench so that a change in
+the code is visible. This file answers the question it starts with:
+what does this host add?
+
 A bench number holds two parts: what the code does, and what the host
 does. This file says how to measure the second part, and what the
 answer was on the host named `vm`.
