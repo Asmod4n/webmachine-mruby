@@ -1509,10 +1509,10 @@ assert('resource: a callback that reads the body must say so') do
   end
 end
 
-assert('resource: reads_body refuses a name that reads no body, and one that is not defined') do
+assert('resource: reads_body refuses the mapping callback, and a name that is not defined') do
   src = <<~RUBY_APP
     class NotAReader < Webmachine::Resource
-      reads_body :is_authorized?
+      reads_body :content_types_accepted
       def self.to_html
         'no'
       end
@@ -1550,7 +1550,7 @@ assert('resource: reads_body refuses a name that reads no body, and one that is 
   wm_server(src, tag: 'wm-declare-bad') do |_sock, _pid, _err, out|
     text = File.read(out)
     assert_true text.include?('one='), text
-    assert_true text.include?('reads no request body'), text
+    assert_true text.include?('answers the mapping'), text
     assert_true text.include?('two='), text
     assert_true text.include?('does not define it'), text
   end

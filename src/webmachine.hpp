@@ -2741,6 +2741,12 @@ struct Resource {
   // so request.body.save is a link and never a second write. That is
   // what the head reads this for, before the first octet.
   bool saves_body = false;
+  // The callbacks `reads_body` named. One of process_post and
+  // create_path, or a handler that content_types_accepted points at -
+  // that callback is the one a body reaches, and the mapping itself
+  // never sees one.
+  std::vector<mrb_sym> body_readers;
+  std::vector<mrb_sym> body_savers;
   // RFC 9110 15.5.14: what this resource accepts as a request body, in
   // octets, from `def self.max_body`. -1 means this resource said
   // nothing, and the application's number answers instead.

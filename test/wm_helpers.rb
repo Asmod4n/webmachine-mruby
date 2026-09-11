@@ -1,11 +1,12 @@
 
 def wm_res_accept_none
   Class.new(WmSpecResource) do
-    reads_body :content_types_accepted
     def allowed_methods
       %w[GET HEAD PUT]
     end
 
+    # It accepts nothing, so no callback of it ever gets a body and
+    # there is nothing to declare.
     def content_types_accepted
       []
     end
@@ -14,7 +15,7 @@ end
 
 def wm_res_accept_json
   Class.new(WmSpecResource) do
-    reads_body :content_types_accepted
+    reads_body :accept_doc
     def allowed_methods
       %w[GET HEAD PUT]
     end
@@ -32,7 +33,8 @@ end
 
 def wm_res_accept_params
   Class.new(WmSpecResource) do
-    reads_body :content_types_accepted
+    reads_body :accept_doc
+    reads_body :other
     def allowed_methods
       %w[GET HEAD PUT]
     end

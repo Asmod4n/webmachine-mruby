@@ -8,6 +8,8 @@
 #include <mruby/hash.h>
 
 #include <unistd.h>
+
+#include <algorithm>
 #include <mruby/object.h>
 #include <mruby/proc.h>
 #include <mruby/presym.h>
@@ -1301,6 +1303,17 @@ int accept_helper(Run& r) {
     // earns, because that is what this is.
     if (mrb_unlikely(row_wants_sniff(mrb, pair)) && !sniff_agrees(r, arrived)) return 415;
     const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
+    // #54: this callback is about to get the request body, so it has to
+    // have said so. The fold checks every handler a class-level
+    // content_types_accepted names; an instance-level one is only
+    // readable here, and this is where it is refused.
+    if (mrb_unlikely(std::find(r.res.body_readers.begin(), r.res.body_readers.end(), hs) ==
+                     r.res.body_readers.end())) {
+      mrb_raisef(mrb, E_WM_ERROR(mrb),
+                 "content_types_accepted names %n, and that callback gets the request body - say "
+                 "`reads_body :%n`",
+                 hs, hs);
+    }
     const mrb_value answer = mrb_funcall_argv(mrb, r.res.run.live, hs, 0, nullptr);
     if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
     return -1;
@@ -2261,69 +2274,85 @@ void fold_sniff_types(const Folding& fold, Resource& out) {
 
 // #54: `reads_body`, read once while the app is set up.
 //
-// Three callbacks can reach the request body, and a resource that
-// defines one of them without naming it here is refused by name: the
-// stop it would make is undeclared, and every other stop in this tree
-// is declared. The refusal names the line to write.
+// Every stop this server makes is declared, and waiting for octets is
+// a stop. What may be named is the callback a body reaches:
+// process_post, create_path, or a handler that content_types_accepted
+// points at. The mapping itself never gets a body - it answers which
+// handler does - so naming it is refused with the line to write
+// instead.
 //
-// `save: true` on the declaration is what puts a small body in a file
-// as well, so request.body.save is a link. The head reads it before
-// the first octet arrives.
+// `save: true` says the callback may call request.body.save, and the
+// head reads that before the first octet: the body goes to a file
+// whatever its size, so the save is a link.
+//
+// What the fold can check, it checks here. A handler that
+// content_types_accepted names is only visible when that callback is
+// on the class; when it is on the instance, the handler is checked at
+// the moment the flow would hand it a body - see accept_helper.
 void fold_body_readers(const Folding& fold, Resource& out) {
   mrb_state* const mrb = fold.mrb;
   const mrb_value klass = fold.klass;
   const mrb_value named = mrb_iv_get(mrb, klass, MRB_IVSYM(body_readers));
   const mrb_value savers = mrb_iv_get(mrb, klass, MRB_IVSYM(body_savers));
   const mrb_int n = mrb_array_p(named) ? RARRAY_LEN(named) : 0;
+  const mrb_int sn = mrb_array_p(savers) ? RARRAY_LEN(savers) : 0;
 
-  struct Reader {
+  for (mrb_int i = 0; i < n; i++) {
+    const mrb_sym want = mrb_symbol(RARRAY_PTR(named)[i]);
+    if (want == MRB_SYM(content_types_accepted)) {
+      mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+                "content_types_accepted answers the mapping and never gets a body - name the "
+                "handler it points at");
+    }
+    if (!instance_defined(mrb, klass, want)) {
+      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                 "reads_body names %n, and this resource does not define it", want);
+    }
+    out.body_readers.push_back(want);
+  }
+  for (mrb_int i = 0; i < sn; i++) {
+    out.body_savers.push_back(mrb_symbol(RARRAY_PTR(savers)[i]));
+  }
+  out.saves_body = !out.body_savers.empty();
+
+  // The two that are callbacks of the flow itself: a resource that
+  // defines one and named nothing gets the line to write.
+  struct Node {
     mrb_sym sym;
     const char* name;
     uint32_t bit;
   };
-  const Reader kReaders[] = {
-      {MRB_SYM(process_post), "process_post", Resource::kCbProcessPost},
-      {MRB_SYM(create_path), "create_path", Resource::kCbCreatePath},
-      {MRB_SYM(content_types_accepted), "content_types_accepted",
-       Resource::kCbContentTypesAccepted},
-  };
-
-  // Every name has to be one of the three, and it has to be defined.
-  for (mrb_int i = 0; i < n; i++) {
-    const mrb_sym want = mrb_symbol(RARRAY_PTR(named)[i]);
-    bool known = false;
-    for (const Reader& r : kReaders) {
-      if (r.sym != want) continue;
-      known = true;
-      if ((out.cb_mask & r.bit) == 0) {
-        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "reads_body names %s, and this resource does not define it", r.name);
-      }
+  const Node kOwn[] = {{MRB_SYM(process_post), "process_post", Resource::kCbProcessPost},
+                       {MRB_SYM(create_path), "create_path", Resource::kCbCreatePath}};
+  for (const Node& d : kOwn) {
+    if ((out.cb_mask & d.bit) == 0) continue;
+    if (std::find(out.body_readers.begin(), out.body_readers.end(), d.sym) !=
+        out.body_readers.end()) {
+      continue;
     }
-    if (!known) {
-      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                 "reads_body names %n, which reads no request body - only process_post, "
-                 "create_path and content_types_accepted do",
-                 want);
-    }
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "%s gets the request body, so the run stops for it - say `reads_body :%s`",
+               d.name, d.name);
   }
 
-  // And every callback that can read a body has to have been named.
-  for (const Reader& r : kReaders) {
-    if ((out.cb_mask & r.bit) == 0) continue;
-    bool said = false;
-    for (mrb_int i = 0; i < n; i++) {
-      if (mrb_symbol(RARRAY_PTR(named)[i]) == r.sym) said = true;
+  // And every handler the class form of content_types_accepted names.
+  // An instance-level one is checked per request instead: the fold
+  // cannot call it, because it has no request to call it about.
+  if (!resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_types_accepted)).defined) return;
+  const mrb_value rows = mrb_funcall_argv(mrb, klass, MRB_SYM(content_types_accepted), 0, nullptr);
+  if (!mrb_array_p(rows)) return;
+  for (mrb_int j = 0; j < RARRAY_LEN(rows); j++) {
+    const mrb_value pair = RARRAY_PTR(rows)[j];
+    if (!mrb_array_p(pair) || RARRAY_LEN(pair) < 2 || !mrb_symbol_p(RARRAY_PTR(pair)[1])) continue;
+    const mrb_sym h = mrb_symbol(RARRAY_PTR(pair)[1]);
+    if (std::find(out.body_readers.begin(), out.body_readers.end(), h) != out.body_readers.end()) {
+      continue;
     }
-    if (!said) {
-      mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                 "%s reads the request body, so the run stops for it - say `reads_body :%s`",
-                 r.name, r.name);
-    }
+    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+               "content_types_accepted names %n, and that callback gets the request body - say "
+               "`reads_body :%n`",
+               h, h);
   }
-
-  const mrb_int sn = mrb_array_p(savers) ? RARRAY_LEN(savers) : 0;
-  out.saves_body = sn != 0;
 }
 
 void fold_body_limit(const Folding& fold, Resource& out) {

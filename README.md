@@ -221,13 +221,25 @@ the ones that wait for the octets of a request body:
 
 ```ruby
 class Upload < Webmachine::Resource
-  reads_body :content_types_accepted, save: true
+  reads_body :take, save: true
+
+  def self.content_types_accepted
+    [['application/octet-stream', :take]]
+  end
+
+  def take
+    request.body.save('/var/uploads', 'photo.png') { |dir, err| dir }
+  end
 end
 ```
 
-Only `process_post`, `create_path` and `content_types_accepted` can
-reach a body, and a resource that defines one without naming it is
-refused when the route is added - the refusal names the line to write.
+The name is the callback a body reaches: `process_post`, `create_path`,
+or a handler `content_types_accepted` points at. The mapping itself
+never gets a body - it answers which handler does - so naming it is
+refused, with the line to write instead. A callback that gets a body
+and was not named is refused when the route is added, or, for a handler
+an instance-level `content_types_accepted` names, at the moment the
+flow would hand it one.
 
 `save: true` says the callback may call `request.body.save`. The head
 reads it before the first octet and puts the body in a file whatever

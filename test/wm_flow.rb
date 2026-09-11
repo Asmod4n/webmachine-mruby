@@ -752,7 +752,7 @@ def wm_res_p11
   Class.new(WmSpecResource) do
     reads_body :process_post
     reads_body :create_path
-    reads_body :content_types_accepted
+    reads_body :accept_text
     def allowed_methods
       %w[PUT POST]
     end
@@ -901,7 +901,7 @@ end
 def wm_res_o18
   Class.new(WmSpecResource) do
     reads_body :process_post
-    reads_body :content_types_accepted
+    reads_body :accept_all
     def allowed_methods
       %w[GET HEAD PUT POST DELETE]
     end
@@ -966,7 +966,7 @@ end
 def wm_res_o20
   Class.new(WmSpecResource) do
     reads_body :process_post
-    reads_body :content_types_accepted
+    reads_body :accept_all
     def allowed_methods
       %w[GET PUT POST DELETE]
     end

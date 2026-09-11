@@ -747,7 +747,9 @@ end
 assert('h1: sniff refuses a body that is not what its head declared') do
   app = <<~RUBY_APP
     class Sniffed < Webmachine::Resource
-      reads_body :content_types_accepted
+      reads_body :from_png
+      reads_body :from_text
+      reads_body :from_json
       def self.allowed_methods
         %w[GET PUT]
       end
@@ -821,7 +823,7 @@ assert('h1: request.body.save is content addressed, and the second upload of the
   Dir.mkdir(root) unless Dir.exist?(root)
   app = <<~RUBY_APP
     class Saved < Webmachine::Resource
-      reads_body :content_types_accepted, save: true
+      reads_body :take, save: true
       def self.allowed_methods
         %w[GET PUT]
       end
@@ -910,7 +912,7 @@ assert('h1: request.body.save is refused when the callback did not declare it') 
   Dir.mkdir(root) unless Dir.exist?(root)
   app = <<~RUBY_APP
     class Undeclared < Webmachine::Resource
-      reads_body :content_types_accepted
+      reads_body :take
       def self.allowed_methods
         %w[GET PUT]
       end
@@ -950,7 +952,7 @@ end
 assert('h1: a declared saver gets a file, whatever the size') do
   app = <<~RUBY_APP
     class Declared < Webmachine::Resource
-      reads_body :content_types_accepted, save: true
+      reads_body :take, save: true
       def self.allowed_methods
         %w[GET PUT]
       end
