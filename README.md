@@ -349,8 +349,10 @@ that. `rake deps_update` pulls mruby and every gem tracked by branch,
 which is the step to take when a build asks for a symbol the clone does
 not have yet.
 
-- To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers.
-- To run: OpenSSL 3, and for TLS a kernel with the tls module loaded.
+A C or C++ toolchain is all the build takes for granted. When a header
+it needs is not on the machine, the build stops and names the package
+to install, for your distribution. TLS wants a kernel with the tls
+module loaded; without it the server speaks plain HTTP.
 
 ## Credit
 
