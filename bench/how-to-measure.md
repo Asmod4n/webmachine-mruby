@@ -53,6 +53,17 @@ before you read the rate.
    per second in one container and 1100 in the next. Sweep again when
    that number falls, because the best count moves with it.
 
+   The cpu that gave the numbers below, from `lscpu`:
+
+       Intel(R) Xeon(R) Processor @ 2.10GHz   family 6, stepping 2
+       GenuineIntel, KVM guest, 4 cpus
+       L1d 192 KiB (4)   L1i 128 KiB (4)   L2 8 MiB (4)   L3 260 MiB (1)
+       amx_tile, amx_int8, avx512_fp16, avx_vnni  -> Sapphire Rapids
+
+   The model name carries no number, because the hypervisor hides it.
+   Read the flags instead. `L1i 128 KiB (4)` is 32 KiB for each core,
+   which is the number CLAUDE.md asks `nm -S` about.
+
    A sweep on the slow `vm`, four runs of five seconds for each count,
    with the median and the spread (max minus min, over the median):
 
