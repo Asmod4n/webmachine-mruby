@@ -63,6 +63,37 @@ four shared cpus. A change of a few percent is not visible here.
 `bench/priority.sh` already gives the run a nice value of -10, and that
 does not remove the spread.
 
+## Why neither side reached a full cpu
+
+The load was too small. 16 connections do not keep two processes busy
+at the same time. The client sends, then waits for the answers. The
+server answers, then waits for the next requests. Each side works for
+part of the time and sleeps for the rest, and the sleep is the wait
+for the other side.
+
+A sweep of the connection count says it plainly. Same binary, same
+host, 128 streams for each connection:
+
+| Connections | rate | server | client |
+| --- | --- | --- | --- |
+| 16 | 3.77M | 67% | 71% |
+| 32 | 4.78M | 82% | 86% |
+| 64 | 5.72M | 90% | 99% |
+| 128 | 5.41M | 91% | 98% |
+
+At 64 connections both processes are busy, and the rate is 50 percent
+above the rate at 16. The spread falls with it: five runs at 64 give
+5.00M, 5.45M, 5.61M, 5.63M and 5.71M. That is 14 percent for all five
+and 4.7 percent for the four where the client held 97 percent or more.
+
+So the 38 percent spread is the shape of a bench that waits, not a
+property of this host.
+
+At 64 connections the client is the busier of the two, at 97 to 99
+percent against the server's 88 to 90. `bench/floor.sh` refuses a run
+when the client is pegged and the server is 15 or more points under
+it. This run stays inside that rule, and it is close to the edge.
+
 The way to a number you can compare is a machine with more cpus and the
 client on a second machine. `bench/results/forgecore.log` is taken that
 way.
