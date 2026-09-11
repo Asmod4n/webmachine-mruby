@@ -264,6 +264,32 @@ mrb_value fsm_run(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+// The sniff table, driven from Ruby. It answers a Symbol so a case
+// reads as the three words the table uses: agrees, contradicts,
+// unknown.
+mrb_value spec_sniff(mrb_state* mrb, mrb_value) {
+  const char* type = nullptr;
+  mrb_int tlen = 0;
+  const char* head = nullptr;
+  mrb_int hlen = 0;
+  mrb_get_args(mrb, "ss", &type, &tlen, &head, &hlen);
+  switch (webmachine::sniff::check({type, static_cast<size_t>(tlen)}, {head, static_cast<size_t>(hlen)})) {
+    case webmachine::sniff::Verdict::kAgrees: return mrb_symbol_value(mrb_intern_lit(mrb, "agrees"));
+    case webmachine::sniff::Verdict::kContradicts:
+      return mrb_symbol_value(mrb_intern_lit(mrb, "contradicts"));
+    case webmachine::sniff::Verdict::kUnknown: break;
+  }
+  return mrb_symbol_value(mrb_intern_lit(mrb, "unknown"));
+}
+
+// Whether the table holds a pattern for a type. The fold asks this.
+mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
+  const char* type = nullptr;
+  mrb_int tlen = 0;
+  mrb_get_args(mrb, "s", &type, &tlen);
+  return mrb_bool_value(webmachine::sniff::known({type, static_cast<size_t>(tlen)}));
+}
+
 }  // namespace
 
 // The gem's one gem_test entry point - mruby calls this once when mrbtest
@@ -276,4 +302,9 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
   mrb_define_method_id(mrb, fsm, mrb_intern_lit(mrb, "initialize"), fsm_init, MRB_ARGS_REQ(3));
   mrb_define_method_id(mrb, fsm, mrb_intern_lit(mrb, "run"), fsm_run, MRB_ARGS_NONE());
 
+  struct RClass* sn = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecSniff"));
+  mrb_define_module_function_id(mrb, sn, mrb_intern_lit(mrb, "check"), spec_sniff,
+                                MRB_ARGS_REQ(2));
+  mrb_define_module_function_id(mrb, sn, mrb_intern_lit(mrb, "known?"), spec_sniff_known,
+                                MRB_ARGS_REQ(1));
 }

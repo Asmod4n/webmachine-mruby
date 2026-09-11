@@ -732,3 +732,74 @@ assert('h1: a chunked body is held to max_body by its count alone') do
   end
 end
 
+
+# RFC 9110 8.3: `sniff: true` on a content_types_accepted row asks the
+# server to check the octets against the type the head declared, and to
+# refuse at the first buffer rather than after the whole upload.
+assert('h1: sniff refuses a body that is not what its head declared') do
+  app = <<~RUBY_APP
+    class Sniffed < Webmachine::Resource
+      def self.allowed_methods
+        %w[GET PUT]
+      end
+
+      def self.content_types_accepted
+        [['image/png', :from_png, { sniff: true }],
+         ['text/plain', :from_text, { sniff: true }],
+         ['application/json', :from_json]]
+      end
+
+      def from_png
+        response.body = "png \#{request.body.read.bytesize}"
+        true
+      end
+
+      def from_text
+        response.body = "text \#{request.body.read.bytesize}"
+        true
+      end
+
+      def from_json
+        response.body = "json \#{request.body.read.bytesize}"
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.routes { |route| route.add [:*], Sniffed }
+      end
+    end
+  RUBY_APP
+  png = "\x89PNG\r\n\x1a\n".b + ("\x00" * 64)
+  mp4 = ("\x00\x00\x00\x18" + 'ftypisom').b + ("\x00" * 64)
+  wm_server(app, tag: 'wm-sniff') do |sock, _|
+    checks = [
+      # The octets are what the head said: served.
+      ['image/png', png, '200', 'png'],
+      # A PNG declared as text: the table cannot confirm text/plain, so
+      # it asks what the octets are, and they name another family.
+      ['text/plain', png, '415', nil],
+      # Your case: an mp4 that says it is a text file.
+      ['text/plain', mp4, '415', nil],
+      # An mp4 that says it is a PNG: a type the table knows, with the
+      # wrong octets.
+      ['image/png', mp4, '415', nil],
+      # Text that says it is text: nothing to contradict.
+      ['text/plain', 'the quick brown fox', '200', 'text'],
+      # A row without sniff: true is not checked at all.
+      ['application/json', mp4, '200', 'json'],
+    ]
+    checks.each do |(type, body, code, want)|
+      UNIXSocket.open(sock) do |s|
+        s.write("PUT / HTTP/1.1\r\nHost: x\r\nContent-Type: #{type}\r\n" \
+                "Content-Length: #{body.bytesize}\r\n\r\n#{body}")
+        head, got = wm_read(s)
+        assert_true head.start_with?("HTTP/1.1 #{code}"),
+                    "#{type} with those octets: expected #{code}, got #{head.lines.first}"
+        assert_true got.start_with?(want), got if want
+      end
+    end
+  end
+end

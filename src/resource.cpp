@@ -6,6 +6,8 @@
 #include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
+
+#include <unistd.h>
 #include <mruby/object.h>
 #include <mruby/proc.h>
 #include <mruby/presym.h>
@@ -1226,6 +1228,48 @@ bool params_agree(std::string_view offered, std::string_view arrived) {
   return true;
 }
 
+// `sniff: true` on a content_types_accepted row: do the octets agree
+// with the type the head declared? See src/sniff.cpp for the table and
+// the rule.
+//
+// This is the late check, and it is the one that always runs: the row
+// is only visible here, when content_types_accepted has answered. A
+// resource that writes content_types_accepted on the class gets the
+// early check as well, at the first buffer of the body, and that one is
+// what saves reading half a gigabyte of a lie.
+//
+// The first 512 octets are what the table reads. A body in memory has
+// them at hand; a body in a file is read once with pread, which is the
+// only read this path makes and it is of half a page.
+bool sniff_agrees(Run& r, std::string_view declared) {
+  const ReqView* const q = r.res.run.req;
+  if (q == nullptr) return true;
+  char buf[512];
+  std::string_view head;
+  if (q->content != nullptr) {
+    head = {q->content, q->content_len < sizeof(buf) ? q->content_len : sizeof(buf)};
+  } else if (q->content_fd >= 0) {
+    const ssize_t got = ::pread(q->content_fd, buf, sizeof(buf), 0);
+    if (got <= 0) return true;
+    head = {buf, static_cast<size_t>(got)};
+  } else {
+    return true;
+  }
+  return sniff::check(declared, head) != sniff::Verdict::kContradicts;
+}
+
+// Does this row ask for the check? The row is [type, handler] and may
+// carry a third member, {sniff: true}. Anything else in that place is
+// refused by the shape check below, so this only has to read the one
+// key it knows.
+bool row_wants_sniff(mrb_state* mrb, mrb_value pair) {
+  if (RARRAY_LEN(pair) < 3) return false;
+  const mrb_value opt = RARRAY_PTR(pair)[2];
+  if (!mrb_hash_p(opt)) return false;
+  const mrb_value want = mrb_hash_get(mrb, opt, mrb_symbol_value(MRB_SYM(sniff)));
+  return mrb_test(want);
+}
+
 int accept_helper(Run& r) {
   mrb_state* mrb = r.mrb;
   std::string_view arrived = "application/octet-stream";
@@ -1251,6 +1295,11 @@ int accept_helper(Run& r) {
         static_cast<size_t>(RSTRING_LEN(RARRAY_PTR(pair)[0]))};
     if (!type_matches(media_base(offered), arrived_base)) continue;
     if (!params_agree(offered, arrived)) continue;
+    // RFC 9110 8.3: the type is what the head claimed. `sniff: true`
+    // asks whether the octets agree with the claim, and 415 is the
+    // answer when they do not - the same status an unacceptable type
+    // earns, because that is what this is.
+    if (mrb_unlikely(row_wants_sniff(mrb, pair)) && !sniff_agrees(r, arrived)) return 415;
     const mrb_sym hs = mrb_symbol(RARRAY_PTR(pair)[1]);
     const mrb_value answer = mrb_funcall_argv(mrb, r.res.run.live, hs, 0, nullptr);
     if (mrb_integer_p(answer)) return halt_of(r, answer, hs);
@@ -2186,6 +2235,30 @@ void fold_watch_declarations(mrb_state* mrb, mrb_value klass, Resource& out) {
 // An instance method of the same name is refused by kKonstOnly: a limit
 // asked per request would be read after the head already decided where
 // the octets land.
+// `sniff: true`, read once while the app is set up.
+//
+// Only the class form of content_types_accepted can be read here: the
+// fold has no request, so an instance method cannot be called. What
+// this finds lets the body path refuse a lie at its first buffer. A
+// resource that writes content_types_accepted on the instance keeps the
+// check - accept_helper runs it - but pays for the whole body first.
+void fold_sniff_types(const Folding& fold, Resource& out) {
+  mrb_state* const mrb = fold.mrb;
+  const mrb_value klass = fold.klass;
+  if (!resolve(mrb, mrb_class(mrb, klass), MRB_SYM(content_types_accepted)).defined) return;
+  const mrb_value v =
+      mrb_funcall_argv(mrb, klass, MRB_SYM(content_types_accepted), 0, nullptr);
+  if (!mrb_array_p(v)) return;
+  for (mrb_int j = 0; j < RARRAY_LEN(v); j++) {
+    const mrb_value pair = RARRAY_PTR(v)[j];
+    if (!mrb_array_p(pair) || RARRAY_LEN(pair) < 3) continue;
+    if (!mrb_string_p(RARRAY_PTR(pair)[0])) continue;
+    if (!row_wants_sniff(mrb, pair)) continue;
+    const mrb_value type = RARRAY_PTR(pair)[0];
+    out.sniff_types.emplace_back(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type)));
+  }
+}
+
 void fold_body_limit(const Folding& fold, Resource& out) {
   mrb_state* const mrb = fold.mrb;
   const mrb_value klass = fold.klass;
@@ -2445,6 +2518,7 @@ void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out) {
   fold_watch_declarations(mrb, klass, out);
   fold_caching_and_mask(fold, out);
   fold_body_limit(fold, out);
+  fold_sniff_types(fold, out);
   fold_content_types(mrb, klass, out);
   fold_methods_and_tables(fold, out, ans);
 

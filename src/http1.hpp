@@ -1229,6 +1229,16 @@ class Http1 {
     // a file.
     size_t body_count = 0;
     size_t body_limit = 0;
+    // RFC 9110 8.3: what this body's head declared, kept while the
+    // first octets arrive, because the check that reads it happens
+    // after the head is gone from the buffer. Empty = this route asked
+    // for no check.
+    std::string sniff_type;
+    // The first octets of the body, up to what the table reads. They
+    // are kept apart from the body itself: the body may be going to a
+    // file, and the check must not read it back.
+    std::string sniff_head;
+    bool sniff_done = false;
     // What this connection is. See ConnMode: the feed still reads the
     // pointers, and this is what a reader, a log line and the debug
     // build's check read instead of guessing from them.
@@ -1660,6 +1670,9 @@ class Http1 {
       chunk_buf.clear();
       body_count = 0;
       body_limit = 0;
+      sniff_type.clear();
+      sniff_head.clear();
+      sniff_done = false;
       mode = ConnMode::kHead;
       body_hold.clear();
       run_wants_body = false;

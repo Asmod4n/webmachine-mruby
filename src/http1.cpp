@@ -1876,6 +1876,28 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   // are these octets a body or the head of a request. The two body arms
   // name a writer, and each writer's code holds no test about where the
   // octets go, because the head answered that before they arrived.
+  // RFC 9110 8.3: the octets against the claim the head made. The first
+  // 512 of them are kept aside - the body itself may be on its way to a
+  // file - and the table reads them once. A contradiction is 415 at the
+  // first buffer, so a half gigabyte behind a lie never arrives.
+  if (mrb_unlikely(!st.sniff_type.empty() && !st.sniff_done && len != 0)) {
+    const size_t want = sniff::bytes_wanted();
+    if (st.sniff_head.size() < want) {
+      const size_t room = want - st.sniff_head.size();
+      st.sniff_head.append(data, len < room ? len : room);
+    }
+    const sniff::Verdict v = sniff::check(st.sniff_type, st.sniff_head);
+    if (mrb_unlikely(v == sniff::Verdict::kContradicts)) {
+      st.body_to = Conn::Body::kNone;
+      st.content_need = 0;
+      st.body_hold.clear();
+      st.spill.close_file();
+      st.run_wants_body = false;
+      return fail(st, 415, sink);
+    }
+    if (v == sniff::Verdict::kAgrees || st.sniff_head.size() >= want) st.sniff_done = true;
+  }
+
   BodyTake took = BodyTake::kNone;
   switch (st.body_to) {
     case Conn::Body::kNone: break;
@@ -2127,6 +2149,30 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // the flow walked, and a body of kBodySpill or more went to a
         // file first. A route that never reads a body could be made to
         // do both.
+        // RFC 9110 8.3: this route asked for the octets of some types to
+        // be checked against the claim. The claim is here, at the head;
+        // the octets arrive after it. So the type is kept and the check
+        // runs on the first buffer, in sniff_body below.
+        if (mrb_unlikely(!b->res->sniff_types.empty()) && vals.content_type != nullptr) {
+          const std::string_view claim{vals.content_type, vals.content_type_len};
+          if (sniff::wants(b->res->sniff_types, claim)) {
+            st.sniff_type.assign(claim);
+            st.sniff_head.clear();
+            st.sniff_done = false;
+            // The first octets of a body usually arrive in the buffer
+            // that carried the head, and those never pass the feed's
+            // body switch. So the check starts here, on them.
+            const size_t want = sniff::bytes_wanted();
+            st.sniff_head.assign(view + off + head_len, body_here < want ? body_here : want);
+            const sniff::Verdict v = sniff::check(st.sniff_type, st.sniff_head);
+            if (mrb_unlikely(v == sniff::Verdict::kContradicts)) {
+              return fail(st, 415, sink, lflags);
+            }
+            if (v == sniff::Verdict::kAgrees || st.sniff_head.size() >= want) {
+              st.sniff_done = true;
+            }
+          }
+        }
         // RFC 9112 7.1: a chunked body has no length to compare, so the
         // reader starts here and the octets behind the head are its
         // first buffer. It begins in memory and moves to a file when

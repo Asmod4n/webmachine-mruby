@@ -215,6 +215,35 @@ no length starts in memory and moves into a file when it grows past
 256 KiB. Any other transfer coding is 501, and a request that names
 both framings is 400.
 
+A resource that accepts uploads can ask the server to check the octets
+against the type the head declared. `sniff: true` on a
+`content_types_accepted` row is the whole of it - the type is already
+on that line, so nothing names a magic number or an offset:
+
+```ruby
+def self.content_types_accepted
+  [['image/png',  :from_png,  { sniff: true }],
+   ['text/plain', :from_text, { sniff: true }]]
+end
+```
+
+A request that declares `text/plain` and sends an mp4 gets 415 at the
+first buffer of the body, and the rest of the upload never arrives.
+The table is the WHATWG MIME Sniffing Standard's, in `src/sniff.cpp`.
+
+It refuses only a certain contradiction. A type the table knows must
+match its own octets - a JPEG declared as a PNG is refused. A type the
+table cannot confirm, like `text/plain` or `application/json`, is
+refused only when the octets name a concrete format of another family.
+A container never contradicts, because every docx, epub and jar is a
+zip. Anything else is accepted: a check that guesses would refuse
+honest clients.
+
+Written on the class, `content_types_accepted` is read once while the
+app starts, and that is what lets the check run at the first buffer. On
+the instance it is read per request, so the check runs when the flow
+reaches it - the same answer, after the whole body has arrived.
+
 Three levels say what a request body may hold, and the nearest one
 answers: the resource, then the application, then the default of 1 MiB,
 which is what nginx's `client_max_body_size` defaults to. A larger

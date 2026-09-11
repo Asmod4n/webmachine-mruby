@@ -2741,6 +2741,16 @@ struct Resource {
   // kMaxBodyDefault. A resource that serves uploads raises its own
   // limit without raising it for every route of the application.
   long long max_body = -1;
+  // The media types this resource asked to sniff, from `sniff: true` on
+  // a content_types_accepted row. Only the class form of that callback
+  // can be read at fold time, and only what is read here can refuse a
+  // body at its first buffer; the row is checked again when the flow
+  // reaches accept_helper, which is what an instance-level
+  // content_types_accepted gets instead.
+  //
+  // A resource accepts a handful of types, so this is a short list and
+  // a walk over it is cheaper than anything with a hash in it.
+  std::vector<std::string> sniff_types;
 
   // Konst-folded content_types_provided: [type, handler] in the
   // resource's own order, [0] the default choice (c3 with no Accept).
@@ -3705,6 +3715,16 @@ struct AppSpec {
   std::string key_path;
   bool tls = false;
 };
+
+// The octets a body begins with, against the type its head declared.
+// See src/sniff.cpp: the table is the WHATWG MIME Sniffing Standard's.
+namespace sniff {
+enum class Verdict : uint8_t { kAgrees, kContradicts, kUnknown };
+bool known(std::string_view declared);
+bool wants(const std::vector<std::string>& types, std::string_view declared);
+size_t bytes_wanted();
+Verdict check(std::string_view declared, std::string_view head);
+}
 
 void application_init(mrb_state* mrb, struct RClass* wm);
 
