@@ -684,9 +684,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     const Bundle& lb = bundles_[apps_[st0.listener].base + route];
     if (lb.bound && lb.res->max_body >= 0) stx.max_body = static_cast<size_t>(lb.res->max_body);
   }
-  if (!claimed.have) {
-    stx.data = H2Stream::Data::kRefuse;
-  } else if (asset != nullptr || route == kNoRoute) {
+  if (asset != nullptr || route == kNoRoute) {
     stx.data = H2Stream::Data::kDrop;
   } else {
     const Bundle& db = bundles_[apps_[st0.listener].base + route];
@@ -695,11 +693,16 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     // here, before the first one arrives. A body of kBodySpill or more
     // opens its file now, so no octet is ever moved from memory into it
     // part way through; a smaller one takes its buffer once.
-    if (!reads || claimed.value > stx.max_body) {
+    if (!reads || (claimed.have && claimed.value > stx.max_body)) {
       // A declared length above the limit opens no file and reserves no
       // buffer. The first DATA frame crosses the limit and the stream
       // is refused there, before an octet is stored.
       stx.data = H2Stream::Data::kDrop;
+    } else if (!claimed.have) {
+      // RFC 9110 8.6: nothing was declared, so nothing is known. The
+      // body starts in memory and the count moves it to a file when it
+      // grows. No reserve: the size is what arrives.
+      stx.data = H2Stream::Data::kMem;
     } else if (claimed.value >= kBodySpill) {
       if (mrb_unlikely(!stx.spill.open_file())) {
         h2_rst(st0, stream_id, kH2InternalError, sink);
@@ -1251,61 +1254,6 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
 // answer is the head's, not a run's: the request view carries the head
 // and no content, because none of it may be read.
 //
-// The refusal waits for the first DATA octet rather than answering at
-// the head. A stream without END_STREAM has not promised content - it
-// may still send an empty DATA frame and nothing else - and h2spec
-// 6.9.1 opens exactly such a stream to test the flow-control window.
-bool Http1::h2_refuse_unsized(Conn& st0, H2Stream& stp, std::string& sink) {
-  struct phr_header hv[kH2MaxFields];
-  const size_t nh = h2_fields_of_parked(stp, hv);
-  http::ReqValues pvals;
-  values_of_copied_fields({hv, nh}, pvals);
-  RouteSpans pspans;
-  ReqView rv;
-  rv.tls = apps_[st0.listener].tls;
-  rv.method = stp.facts.method;
-  rv.fields = hv;
-  rv.field_count = nh;
-  rv.values = &pvals;
-  const std::string target = stp.request_target;
-  const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-  const H2Request q{stp.id,  stp.facts, &pvals, rvp,
-                    target, stp.route, stp.head_method};
-  if (!h2_length_required(st0, q, sink)) return false;
-  // RFC 9113 8.1: the answer is whole and the request is not, so the
-  // client is told to stop sending. NO_ERROR, because the stream ends
-  // by its answer and not by a fault.
-  h2_rst(st0, stp.id, kH2NoError, sink);
-  h2_log(st0, {stp.facts, target});
-  return true;
-}
-
-// RFC 9110 15.5.12: content whose length the client did not declare is
-// refused with 411. HTTP/2 has no chunked encoding, so a stream that
-// carries DATA and no content-length names no size at all, and a size
-// that is not named cannot be checked: not against conf.max_body, not
-// by valid_entity_length?, and not by the read regime that picks a file
-// over memory. h1 refuses the same request for the same reason - a
-// transfer-encoding with no content-length is 411 there.
-//
-// The flow does not run. This is the head's own answer, before a route
-// is asked anything, so no resource sees a request it could not have
-// read.
-bool Http1::h2_length_required(Conn& st0, const H2Request& q, std::string& sink) {
-  body_.clear();
-  rhdrs_.clear();
-  H2Produced p;
-  p.body = &body_;
-  p.rhdrs = &rhdrs_;
-  p.idx = &index_;
-  p.status = 411;
-  if (q.route != kNoRoute) {
-    p.b = &bundles_[apps_[st0.listener].base + q.route];
-    p.idx = &p.b->index;
-  }
-  return h2_frame(st0, q, sink, p);
-}
-
 bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
   H2Produced p;
   p.body = &body_;
@@ -2077,15 +2025,6 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           }
           break;
         }
-        // RFC 9110 8.6: content with no declared length is refused here,
-        // at its first octet and before it is read. h2_refuse_unsized
-        // says why the head is not the place for it.
-        if (mrb_unlikely(dlen != 0 && stp->data == H2Stream::Data::kRefuse)) {
-          h2_credit_connection(sink, flen);
-          if (!h2_refuse_unsized(st0, *stp, sink)) return false;
-          h2.close_stream(stream);
-          break;
-        }
         if (stp->content_received + dlen > stp->max_body) {
           h2_credit_connection(sink, flen);
           h2_rst(st0, stream, kH2RefusedStream, sink);
@@ -2119,7 +2058,21 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
             case H2Stream::Data::kMem: wrote = MemWriter{&stp->request_content}.put(bp, dlen); break;
             case H2Stream::Data::kFile: wrote = FileWriter{&stp->spill}.put(bp, dlen); break;
             case H2Stream::Data::kDrop: break;
-            case H2Stream::Data::kRefuse: break;
+          }
+          // The one move: a body that named no length has outgrown
+          // memory. What memory holds goes to the file now, and every
+          // frame after this one is a file write. The count decides, so
+          // the test is a comparison the frame already loaded.
+          if (mrb_unlikely(wrote && stp->data == H2Stream::Data::kMem &&
+                           stp->request_content.size() >= kBodySpill)) {
+            wrote = stp->spill.open_file() &&
+                    FileWriter{&stp->spill}.put(stp->request_content.data(),
+                                                stp->request_content.size());
+            if (wrote) {
+              stp->request_content.clear();
+              stp->request_content.shrink_to_fit();
+              stp->data = H2Stream::Data::kFile;
+            }
           }
           if (mrb_unlikely(!wrote)) {
             stp->spill.close_file();

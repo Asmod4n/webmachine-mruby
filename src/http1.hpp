@@ -208,11 +208,15 @@ struct H2Stream {
   // Reading it out of the route table again per frame was two loads
   // that always answered the same.
   //
-  //   kMem     - a bound resource reads it, and it fits in memory.
-  //   kFile    - the same, and the declared length sends it to a file.
+  //   kMem     - a bound resource reads it, and it is still small.
+  //   kFile    - the same, and the octets go to a file.
   //   kDrop    - nothing reads it: counted, credited and discarded.
-  //   kRefuse  - no length was declared, so the first octet earns 411.
-  enum class Data : uint8_t { kMem, kFile, kDrop, kRefuse };
+  //
+  // A request that declared its length picks kMem or kFile at the head
+  // and never changes. A request that declared nothing starts at kMem
+  // and moves to kFile at the frame that carries it past kBodySpill.
+  // That move happens once per stream, not once per frame.
+  enum class Data : uint8_t { kMem, kFile, kDrop };
   Data data = Data::kDrop;
   // RFC 9110 15.5.14: what this stream may carry, in octets. The head
   // wrote it, from the nearest of three limits: the resource, the
@@ -2861,8 +2865,6 @@ class Http1 {
   bool h2_answer(Conn& st, const H2Request& q, std::string& sink);
   // RFC 9110 15.5.12: the 411 itself, and the stream that earns one -
   // content whose length the client did not declare.
-  bool h2_length_required(Conn& st, const H2Request& q, std::string& sink);
-  bool h2_refuse_unsized(Conn& st, H2Stream& stp, std::string& sink);
   // #30: which of the two an h2 request takes - the straight answer, or
   // a run that may stop. The resource decides: only one that declared
   // `compute` or `watch` can stop, and only that one pays for a frame.

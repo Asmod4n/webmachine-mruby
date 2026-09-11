@@ -1658,51 +1658,75 @@ assert('h2: a large request body is a File, a small one is a StringIO') do
   end
 end
 
-assert('h2: a body with no declared length is refused with 411') do
+assert('h2: a body with no declared length is read, and it grows into a file') do
   src = <<~RUBY_SRC
-    class NeedsLength < Webmachine::Resource
+    class NoLength < Webmachine::Resource
       def self.allowed_methods
         'GET HEAD POST'
       end
       def process_post
-        response.body = 'taken'
+        b = request.body
+        bytes = b.read
+        response.body = [b.class.to_s, bytes.bytesize.to_s, bytes[0, 2], bytes[-2, 2]].join('|')
         true
       end
     end
   RUBY_SRC
-  h2_server(h2_app('NeedsLength', src)) do |sock|
-    # RFC 9110 15.5.12: HTTP/2 has no chunked encoding, so a stream that
-    # carries DATA and declares no length names no size at all. Nothing
-    # can check a size that is not named, so the head answers 411 and
-    # the resource never runs.
+  h2_server(h2_app('NoLength', src)) do |sock|
+    # RFC 9110 8.6: nothing is declared, so the count is the only thing
+    # that knows. A small body stays in memory.
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
+      seen = []
       s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
-      # The refusal waits for the first octet: a stream that has not
-      # ended has promised no content yet.
-      s.write(h2_frame(0, 0x00, 1, 'a' * 16))
-      # RFC 7541 B: the static table has no 411, so the status is a
-      # literal with the indexed name :status and the three digits
-      # after it, unencoded.
-      _, _, _, block = h2_until(s, 1)
-      assert_equal 0x08, block.getbyte(0), 'the status is a literal with name index 8'
-      assert_equal 3, block.getbyte(1)
-      assert_equal '411', block[2, 3]
-      # RFC 9113 8.1: the answer is whole and the request is not, so the
-      # client is told to stop sending. NO_ERROR, not a fault.
-      t, _, st, pay = h2_until(s, 3)
-      assert_equal 3, t
-      assert_equal 1, st
-      assert_equal 0, pay.unpack1('N')
+      s.write(h2_frame(0, 0x01, 1, 'ab' + ('s' * 12) + 'yz'))
+      got = h2_bodies(s, [1], seen)[0].split('|')
+      assert_equal 'StringIO', got[0]
+      assert_equal '16', got[1]
+      assert_equal 'ab', got[2]
+      assert_equal 'yz', got[3]
     end
 
-    # The same request with the length named is served.
+    # The same request, past the spill mark: the octets already in
+    # memory move to the file, and the body reads back whole and in
+    # order.
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST') + h2_lit('content-length', '4')))
-      s.write(h2_frame(0, 0x01, 1, 'body'))
-      _, _, _, block = h2_until(s, 1)
-      assert_equal 0x88, block.getbyte(0), 'a body with a length must be served'
+      seen = []
+      payload = 'ab' + ('L' * ((512 * 1024) - 4)) + 'yz'
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      h2_write_body(s, 1, payload, seen)
+      got = h2_bodies(s, [1], seen)[0].split('|')
+      assert_equal 'File', got[0], 'a body that outgrows memory moves to a file'
+      assert_equal payload.bytesize.to_s, got[1]
+      assert_equal 'ab', got[2], 'the octets written before the move must be first'
+      assert_equal 'yz', got[3]
+    end
+
+    # A body with no length is still held to conf.max_body, by the count
+    # alone. The default is 1 MiB and h2_app names nothing else.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      seen = []
+      s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+      rst = nil
+      chunk = 'x' * 16_384
+      sent = 0
+      while sent < (2 << 20) && rst.nil?
+        s.write(h2_frame(0, 0x00, 1, chunk))
+        sent += chunk.bytesize
+        while IO.select([s], nil, nil, 0)
+          f = h2_next(s)
+          rst = f if f[0] == 3 && f[2] == 1
+          break if rst
+        end
+      end
+      deadline = Time.now + 5
+      while Time.now < deadline && rst.nil?
+        f = h2_next(s)
+        rst = f if f[0] == 3 && f[2] == 1
+      end
+      assert_true rst != nil, 'a body past conf.max_body must be refused by its count'
     end
   end
 end
