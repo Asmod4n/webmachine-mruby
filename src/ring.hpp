@@ -35,15 +35,32 @@ class Ring {
     }
     if (ring_up_) {
       close_listeners();
+      // Each unlink is waited for by its own completion. A count alone
+      // is wrong here: the listener closes submitted just above complete
+      // too, and a wait that took those for the unlinks returned before
+      // the unlink ran. The ring exit then cancelled the queued unlink,
+      // and the path stayed - which is what the floor bintest saw under
+      // the sanitizer.
+      const uint64_t unlink_tag = detail::tag(detail::kSetup, 0, detail::kStUnlink);
       unsigned n = 0;
       for (const std::string& path : unix_paths_) {
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
-        if (s == nullptr) break;
+        if (s == nullptr) {
+          io_uring_submit(&ring_);
+          s = io_uring_get_sqe(&ring_);
+          if (s == nullptr) break;
+        }
         io_uring_prep_unlink(s, path.c_str(), 0);
-        io_uring_sqe_set_data64(s, detail::tag(detail::kSetup, 0, 0));
+        io_uring_sqe_set_data64(s, unlink_tag);
         n++;
       }
-      if (n != 0) io_uring_submit_and_wait(&ring_, n);
+      if (n != 0) io_uring_submit(&ring_);
+      while (n != 0) {
+        struct io_uring_cqe* cqe = nullptr;
+        if (io_uring_wait_cqe(&ring_, &cqe) != 0) break;
+        if (io_uring_cqe_get_data64(cqe) == unlink_tag) n--;
+        io_uring_cqe_seen(&ring_, cqe);
+      }
     }
     if (buf_ring_ != nullptr) io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
     if (pool_ != nullptr) ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);

@@ -195,7 +195,16 @@ inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8
   return tag(kComputeTask, gen, word) | (static_cast<uint64_t>(both) << 48);
 }
 
-enum : uint32_t { kStSocket = 1, kStSockopt = 2, kStBind = 3, kStListen = 4, kStName = 5 };
+enum : uint32_t {
+  kStSocket = 1,
+  kStSockopt = 2,
+  kStBind = 3,
+  kStListen = 4,
+  kStName = 5,
+  // The unlink of a unix path at the ring exit, so the exit can tell
+  // its completion from a listener close ahead of it.
+  kStUnlink = 6
+};
 
 // Which stage of the setup chain a failing CQE belongs to.
 inline const char* stage_name(uint32_t st) {
@@ -205,6 +214,7 @@ inline const char* stage_name(uint32_t st) {
     case kStBind: return "bind";
     case kStListen: return "listen";
     case kStName: return "getsockname";
+    case kStUnlink: return "unlink";
   }
   return "?";
 }
