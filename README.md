@@ -36,47 +36,28 @@ end
     mruby/bin/mrbc -g -o hello.mrb hello.rb
     mruby/bin/webmachine-server --app=hello.mrb
 
-A gem this tree tracks by branch is cloned by mruby once and never
-pulled again, so a header added upstream is missing here with no sign
-of why. The same holds for the mruby tree itself, which the Rakefile
-clones once. `rake deps_update` pulls mruby and the gems; a gem pinned
-to a commit is left where it is.
-
 `self.to_html` is the whole trick. The server calls it once at start
 and keeps the answer, with its status line, its head, its ETag and its
-HTTP/2 header block, as bytes. A request against this resource never
-enters the VM. It is a lookup and a write. Write `def to_html` only when
-the answer changes from request to request. Then the method runs per
-request.
+HTTP/2 header block, as bytes. A request against this resource is a
+lookup and a write. Write `def to_html` when the answer changes from
+request to request, and the method runs per request.
 
-Any callback can be `def self.`, when its answer is the same for every
-request. Four do work and must stay `def`: `process_post`,
+Any callback can be `def self.` when its answer is the same for every
+request. Four do work per request and stay `def`: `process_post`,
 `create_path`, `delete_resource` and `finish_request`. The server
-refuses a class-level one of those at start, by name, because it would
-run once at setup and never again.
-
-`request.body` is an IO, not a String, and `nil` when no body arrived.
-Today it is a `StringIO` over the bytes. It is an IO because a body is
-not always going to be in memory: a resource reads it with `read`,
-`gets`, `getc`, `each`, `pos`, `seek`, `rewind`, `size` and `eof?`,
-which is what a `File` answers as well. It is one object for the whole
-run, so a loop that reads it goes forward.
-
-    def process_post
-      response.body = request.body.read
-      true
-    end
+says so at start if one of them is written the other way.
 
 On one core, over a unix socket, the server answers about one million
-HTTP/1.1 requests a second. Every run is in `bench/results/` with the
-command that made it.
+HTTP/1.1 requests a second and ten million HTTP/2 requests a second.
+Every run is in `bench/results/` with the command that made it, and
+`bench/how-to-measure.md` says how to get a number you can trust.
 
 The build makes four programs:
 
 | | |
 |---|---|
 | `webmachine-server` | runs your app, one process, one thread |
-| `mrbc` | compiles your Ruby to bytecode, the only form the server runs |
+| `mrbc` | compiles your Ruby to bytecode, the form the server runs |
 | `webmachine-logd` | writes the access log and the error log, as its own process |
 | `webmachine-passwd` | keeps the password database, argon2id in LMDB |
 
@@ -92,12 +73,6 @@ app.add_sse       ['events'],          Clock        # text/event-stream
 
 A String is a literal segment, a Symbol binds one, and `:*` takes the
 rest of the path.
-
-A websocket resource has two callbacks, and each gets the same arguments
-every time: `on_data(data, binary)`, which every websocket resource
-defines, and `on_close(code, reason)`, which is optional. A resource that
-declares other parameters raises ArgumentError when the callback runs. To
-ignore an argument, give it a default value or take `(*)`.
 
 A resource declares what it knows, and the flow does the rest:
 
@@ -122,6 +97,21 @@ and `OPTIONS` correctly, and you wrote none of it. The callback names
 are [webmachine-ruby](https://github.com/webmachine/webmachine-ruby)'s,
 so its documentation applies here.
 
+A websocket resource has two callbacks, and each gets the same
+arguments every time: `on_data(data, binary)`, which every websocket
+resource defines, and `on_close(code, reason)`, which is optional.
+
+`request.body` is an IO, and `nil` when no body arrived. A resource
+reads it with `read`, `gets`, `getc`, `each`, `pos`, `seek`, `rewind`,
+`size` and `eof?`, which is what a `File` answers as well:
+
+```ruby
+def process_post
+  response.body = request.body.read
+  true
+end
+```
+
 `examples/` has one file per kind. `examples/site/` is a four-page
 htmx site served from an asset pack.
 
@@ -132,7 +122,7 @@ stopping it, and they differ in where the work runs, which decides how
 you write the callback:
 
 - `compute` sends a block to a worker thread. A worker has its own VM
-  and sees nothing of your app, so the block can carry no instance. The
+  and sees nothing of your app, so the block carries no instance. The
   callback is written `def self.x`: it builds the task, and nothing
   else.
 - `watch` waits on a descriptor in the server's own thread. The block
@@ -162,10 +152,9 @@ class Login < Webmachine::Resource
 end
 ```
 
-A worker has its own VM, so the block sees nothing of your app. What
-it needs is built in every worker through the registry. A task over
-its deadline answers 500. A worker that raises answers 503 with
-`Retry-After`.
+What a worker needs is built in every worker through the registry. A
+task over its deadline answers 500. A worker that raises answers 503
+with `Retry-After`.
 
 **`watch`** waits on a descriptor. The block runs each time the
 descriptor is ready, until it says `abort`, and its last value is the
@@ -197,28 +186,18 @@ end
 Nothing else on the server waits while this does. Every other
 connection is served in between.
 
-## Running it
+## Request bodies
 
-    webmachine-server --app=FILE.mrb [--config=FILE.toml]
-                      [--log=FILE] [--error-log=FILE]
-    webmachine-server --standalone [--unix=PATH | --port=N]
-                      [--assets=FILE.zip] [--docroot=DIR]
+A body may arrive with a `Content-Length`, with
+`Transfer-Encoding: chunked`, or over HTTP/2 with no length at all. A
+declared length picks where the body lands before the first octet
+arrives. A body with no length starts in memory and moves into a file
+when it grows past 256 KiB.
 
-An application names its own listener, in its conf: `app.conf.port`,
-`app.conf.unix_path`, or `app.conf.url`. One process serves any number of
-applications, each on its own. `--unix` and `--port` are a standalone
-server's, which has no app to name one.
-
-A request body may arrive with a `Content-Length` or with
-`Transfer-Encoding: chunked`, and HTTP/2 may send one with no length at
-all. A declared length picks the destination at the head. A body with
-no length starts in memory and moves into a file when it grows past
-256 KiB. Any other transfer coding is 501, and a request that names
-both framings is 400.
-
-A run that waits is declared, always. `compute` names the callbacks a
-worker answers, `watch` the ones a descriptor answers, and `reads_body`
-the ones that wait for the octets of a request body:
+A run that waits is declared, and there are three declarations:
+`compute` names the callbacks a worker answers, `watch` the ones a
+descriptor answers, and `reads_body` the ones that wait for the octets
+of a request body:
 
 ```ruby
 class Upload < Webmachine::Resource
@@ -235,21 +214,18 @@ end
 ```
 
 The name is the callback a body reaches: `process_post`, `create_path`,
-or a handler `content_types_accepted` points at. The mapping itself
-never gets a body - it answers which handler does - so naming it is
-refused, with the line to write instead. A callback that gets a body
-and was not named is refused when the route is added, or, for a handler
-an instance-level `content_types_accepted` names, at the moment the
-flow would hand it one.
+or a handler that `content_types_accepted` points at. The server checks
+the declaration when the route is added, so a body only ever reaches a
+callback that asked for one, and a missing declaration is a message at
+start with the line to write.
 
 `save: true` says the callback may call `request.body.save`. The head
 reads it before the first octet and puts the body in a file whatever
-its size, so every save is a link and never a second write of the
-octets. A save from a callback that did not say it is refused by name.
+its size, so every save is a link and no octet is written twice.
 
-`request.body.save` puts an upload in the filesystem. The application
-names a directory it chose and the name the user gave; everything
-between them is the digest of the octets:
+**Uploads.** `request.body.save` puts an upload in the filesystem. The
+application names a directory it chose and the name the user gave, and
+everything between them is the digest of the octets:
 
 ```ruby
 def take
@@ -258,36 +234,29 @@ def take
 end
 ```
 
-The digest is what makes the rest safe. Two uploads of the same octets
-get the same directory, because they are the same file, and `mkdir` is
-the atomic claim - there is no window between asking whether a name is
-free and taking it. A directory that is already there means the server
-holds exactly those octets: nothing is read, nothing is written, and
-the block is told the directory at once. The same octets under a second
-name get a second link in that directory - one inode, two names. And
-nothing the client sent reaches a path component except the leaf, which
-may hold no slash and no `..`.
+The digest is what makes the rest simple. Two uploads of the same
+octets get the same directory, because they are the same file, and
+`mkdir` is the atomic claim. A directory that is already there means
+the server holds those octets, so nothing is read or written, and the
+block is told the directory at once. The same octets under a second
+name get a second link in that directory: one inode, two names. Of
+what the client sent, only the leaf reaches a path component.
 
-A body that went to a file is linked into place, so the upload ends
-with one link and no second write of the octets. A link cannot cross a
+A body that went to a file is linked into place. A link cannot cross a
 filesystem, so when `conf.spill_dir` and the directory are on different
 ones the kernel copies with `copy_file_range`, and no octet passes
-through the server. Naming `conf.spill_dir` on the filesystem the
-uploads live on is what keeps every save a link.
+through the server. Name `conf.spill_dir` on the filesystem the uploads
+live on, and every save is a link.
 
 The block is told where the content landed or what stopped it, and
-whatever it answers is the answer's body, spelled with `to_s` - the
-same shape as `to_html`, whose value is the body as well. So nothing in
-it reaches for the response object; `nil` and `false` keep the value to
-the block and let the resource spell the answer itself. It answers no
-status and it cannot: a save that failed is the server's fault, so the
-server spells the 500 and the error log names the reason. Without a
-block the path is answered, and a failure raises just the same.
+whatever it answers is the answer's body, spelled with `to_s`, the same
+shape as `to_html`. `nil` and `false` keep the value to the block and
+let the resource spell the answer itself. A save that failed is the
+server's to report: it answers 500 and the error log names the reason.
 
-A resource that accepts uploads can ask the server to check the octets
-against the type the head declared. `sniff: true` on a
-`content_types_accepted` row is the whole of it - the type is already
-on that line, so nothing names a magic number or an offset:
+**Checking the octets.** A resource that accepts uploads can ask the
+server to check the octets against the type the head declared.
+`sniff: true` on a `content_types_accepted` row is the whole of it:
 
 ```ruby
 def self.content_types_accepted
@@ -297,31 +266,29 @@ end
 ```
 
 A request that declares `text/plain` and sends an mp4 gets 415 at the
-first buffer of the body, and the rest of the upload never arrives.
-The table is the WHATWG MIME Sniffing Standard's, in `src/sniff.cpp`.
-
-It refuses only a certain contradiction. A type the table knows must
-match its own octets - a JPEG declared as a PNG is refused. A type the
-table cannot confirm, like `text/plain` or `application/json`, is
-refused only when the octets name a concrete format of another family.
-A container never contradicts, because every docx, epub and jar is a
-zip. Anything else is accepted: a check that guesses would refuse
-honest clients.
+first buffer of the body, and the rest of the upload never has to
+arrive. The table is the WHATWG MIME Sniffing Standard's, in
+`src/sniff.cpp`. It acts only on a certain contradiction: a type the
+table knows must match its own octets, a type it cannot confirm is
+accepted unless the octets name a concrete format of another family,
+and a container never contradicts, because every docx, epub and jar is
+a zip. Honest clients pass.
 
 Written on the class, `content_types_accepted` is read once while the
 app starts, and that is what lets the check run at the first buffer. On
 the instance it is read per request, so the check runs when the flow
-reaches it - the same answer, after the whole body has arrived.
+reaches it, with the same answer after the body has arrived.
 
-Three levels say what a request body may hold, and the nearest one
-answers: the resource, then the application, then the default of 1 MiB,
-which is what nginx's `client_max_body_size` defaults to. A larger
-declared `Content-Length` gets 413 before one byte of the body is read,
-and HTTP/2 refuses the stream at the frame that crosses the limit.
+**Size.** Three levels say what a request body may hold, and the
+nearest one answers: the resource, then the application, then the
+default of 1 MiB, which is nginx's `client_max_body_size` default. A
+larger declared `Content-Length` gets 413 before one byte of the body
+is read, and HTTP/2 refuses the stream at the frame that crosses the
+limit.
 
 An application names its number with `app.conf.max_body`, in octets. A
-resource names its own with `def self.max_body`, and the fold asks it
-once:
+resource names its own with `def self.max_body`, and raises its limit
+while every other route of the application stays where it was:
 
 ```ruby
 class Uploads < Webmachine::Resource
@@ -331,31 +298,41 @@ class Uploads < Webmachine::Resource
 end
 ```
 
-So a route that takes uploads raises its limit and leaves every other
-route of the application where it was. `max_body` on the instance is
-refused by name: the head decides where the octets land before a
-request object exists.
+## Running it
 
-A pack is a zip of your site's files, built once with
+    webmachine-server --app=FILE.mrb [--config=FILE.toml]
+                      [--log=FILE] [--error-log=FILE]
+    webmachine-server --standalone [--unix=PATH | --port=N]
+                      [--assets=FILE.zip] [--docroot=DIR]
+
+An application names its own listener in its conf: `app.conf.port`,
+`app.conf.unix_path`, or `app.conf.url`. One process serves any number
+of applications, each on its own. `--unix` and `--port` are for the
+standalone server, which has no app to name one.
+
+**Static files.** A pack is a zip of your site's files, built once with
 `rake pack[DIR,OUT.zip]`. The server maps the archive and answers every
-file in it from memory, with its ETag and its compressed form ready.
-An application names its pack with `app.conf.assets`, and a directory of
-files with `app.conf.docroot`, the only directory `response.file` may
-reach. `--assets` and `--docroot` are the standalone server's, which
-serves a pack or a directory with no app at all.
-`--write-config` writes a `webmachine.toml` with every setting and what
-it does. `webmachine.toml.example` is that file. Without `--config` the
-server reads `webmachine.toml` in the start directory, then
-`/usr/local/etc/webmachine/webmachine.toml`, then the same under `/etc`.
+file in it from memory, with its ETag and its compressed form ready. An
+application names its pack with `app.conf.assets`, and a directory of
+files with `app.conf.docroot`, which is the directory `response.file`
+serves from. `--assets` and `--docroot` give the standalone server a
+pack or a directory to serve with no app at all.
 
-`rake install[PREFIX]` puts the four programs under `PREFIX/bin`, the
-error pages' pictures under `PREFIX/share/webmachine-mruby`, and a
-config that names them under `PREFIX/etc/webmachine`. `PREFIX` is
-`/usr/local` when not given.
+**Configuration.** `--write-config` writes a `webmachine.toml` with
+every setting and what it does. `webmachine.toml.example` is that file.
+Without `--config` the server reads `webmachine.toml` in the start
+directory, then `/usr/local/etc/webmachine/webmachine.toml`, then the
+same under `/etc`.
 
-Both logs are off until you name a file. The access log anonymizes
-addresses by default. Every error record carries a fingerprint, and the
-500 page shows the same fingerprint, so `grep` finds the record.
+**Installing.** `rake install[PREFIX]` puts the four programs under
+`PREFIX/bin`, the error pages' pictures under
+`PREFIX/share/webmachine-mruby`, and a config that names them under
+`PREFIX/etc/webmachine`. `PREFIX` is `/usr/local` when not given.
+
+**Logs.** Both logs are off until you name a file. The access log
+anonymizes addresses by default. Every error record carries a
+fingerprint, and the 500 page shows the same fingerprint, so `grep`
+finds the record.
 
 ## TLS
 
@@ -364,7 +341,13 @@ gives the keys to the kernel. After that, a plain `send` is a TLS
 record. Linux and FreeBSD offer this. On a kernel without kTLS the
 server speaks plain HTTP, and a proxy in front of it does TLS.
 
-## What you need
+## Building
+
+`rake` builds everything. It clones mruby and the gems this tree
+tracks on the first run, and it keeps those clones as they are after
+that. `rake deps_update` pulls mruby and every gem tracked by branch,
+which is the step to take when a build asks for a symbol the clone does
+not have yet.
 
 - To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers.
 - To run: OpenSSL 3, and for TLS a kernel with the tls module loaded.
