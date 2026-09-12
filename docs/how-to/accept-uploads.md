@@ -43,7 +43,7 @@ class Upload < Webmachine::Resource
     true
   end
 
-  def self.to_html
+  def to_html
     'upload'
   end
 end

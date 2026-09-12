@@ -36,7 +36,7 @@ class Clock < Webmachine::SseResource
 end
 
 class Page < Webmachine::Resource
-  def self.to_html
+  def to_html
     '<html><body><script>' \
       "new EventSource('/events').addEventListener('tick', e => " \
       'document.body.append(e.data, document.createElement("br")))' \

@@ -33,7 +33,7 @@ class Echo < Webmachine::WebsocketResource
 end
 
 class Page < Webmachine::Resource
-  def self.to_html
+  def to_html
     '<html><body>curl ws://127.0.0.1:8080/ws</body></html>'
   end
 end
