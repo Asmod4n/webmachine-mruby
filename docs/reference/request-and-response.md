@@ -130,12 +130,21 @@ end
 ### userdata across a compute worker
 
 The run's `response.userdata` slot survives a `compute` or `watch` stop.
-Before a job is sent to a compute worker, `response.userdata` is
-CBOR-encoded and carried with the job; a value CBOR cannot carry raises
-`Webmachine::Error`. In the worker, every object answers `response`,
-which returns an object with an `attr_accessor :userdata`, so the block
-reads and writes it with the same name. After the block runs, the
-worker sends the value back only when it changed.
+
+Inside a compute block, `response` is not the run's response. The
+block runs in a worker VM with no environment, and in that VM
+`response` is a method on `Object` that answers
+`Webmachine::Workers.response`: an object with one member, `userdata`,
+and nothing else. `response.body`, `response.code` and the headers do
+not exist there.
+
+The slot crosses in both directions. Before the job is sent, the run's
+`response.userdata` is encoded as CBOR and carried with the job; a
+value CBOR cannot carry raises `Webmachine::Error`. The worker decodes
+it into its own `response.userdata` before the block runs. After the
+block, the worker sends the value back only when it changed, and the
+run's slot takes it. So the next callback of the run reads what the
+block left.
 
 ```ruby
 class ComputeUser < Webmachine::Resource
