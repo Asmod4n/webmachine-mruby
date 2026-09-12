@@ -1,8 +1,17 @@
 name: test
 
+# A push that changes only documentation runs nothing: the suite
+# answers for the code, and the docs are not read by it. A tag push
+# ignores the path filter, so a release still runs everything.
 on:
   push:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
 
 permissions:
   contents: read
