@@ -134,9 +134,34 @@ task :deps_update do
     branch = `git -C #{dir} rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
     next if branch.empty? || branch == 'HEAD'
     before = `git -C #{dir} rev-parse --short HEAD`.strip
-    ok = system("git -C #{dir} pull --ff-only --quiet")
-    after = `git -C #{dir} rev-parse --short HEAD`.strip
     name = File.basename(dir)
+    ok = system("git -C #{dir} pull --ff-only --quiet")
+    # A pull can fail because the branch is gone from the remote. mruby
+    # clones a gem once, so the checkout keeps the branch the
+    # declaration named on the day it was made. When the declaration
+    # moves to another branch and the old one is deleted, every pull
+    # after that fails and the gem is frozen at the commit it holds.
+    # A new clone is not affected, which is what makes this hard to see:
+    # the machine that has built before is the only one that is wrong.
+    if !ok && `git -C #{dir} ls-remote --heads origin #{branch}`.strip.empty?
+      head = `git -C #{dir} ls-remote --symref origin HEAD`[%r{refs/heads/(\S+)\s+HEAD}, 1]
+      # mruby clones a gem with --single-branch, so the remote keeps a
+      # fetch refspec that names only the branch of that day. Moving the
+      # checkout is not enough: every later pull reads that refspec and
+      # asks for the branch that is gone. The refspec is rewritten first,
+      # then the branch is made from origin/<head>, which also sets the
+      # upstream. After this the next run pulls like any other gem.
+      if head &&
+         system("git -C #{dir} config remote.origin.fetch " \
+                "+refs/heads/#{head}:refs/remotes/origin/#{head}") &&
+         system("git -C #{dir} fetch --quiet origin") &&
+         system("git -C #{dir} checkout --quiet -B #{head} origin/#{head}")
+        after = `git -C #{dir} rev-parse --short HEAD`.strip
+        puts "#{name}: #{branch} is gone from the remote - now on #{head} #{before} -> #{after}"
+        next
+      end
+    end
+    after = `git -C #{dir} rev-parse --short HEAD`.strip
     if !ok
       puts "#{name}: pull refused - left at #{before}"
     elsif before == after
