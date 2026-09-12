@@ -2079,7 +2079,7 @@ class Http1
         mime_ = mime;
     }
 
-    void on_tick();
+    void clock_tick();
 
     bool pending(const Conn &st) const;
 
@@ -2157,7 +2157,7 @@ class Http1
         std::string &bytes;
         Plan *plan;
     };
-    bool feed(Conn &st, std::string_view data, Sink out);
+    bool connection_feed(Conn &st, std::string_view data, Sink out);
 
     // The sink has drained, and this connection may still owe bytes: a
     // stopped run, a file transfer, an event stream, an h2 frame, an
@@ -3068,7 +3068,7 @@ class Http1
         std::string h2_data200;
     };
 
-    void build(const AppInput *apps, size_t napps);
+    void http1_build_all(const AppInput *apps, size_t napps);
     // RFC 9112 9.3: one status prebuilt - the code, the fields that always go
     // with it, the body it carries where it carries one, the Date bytes laid
     // down (a placeholder at boot; the second's own from then on), and the
@@ -3120,7 +3120,7 @@ class Http1
         const char *body;
     };
     void build_status(uint16_t status, StatusText t);
-    void stock_status(bool have[600], uint16_t s);
+    void status_line_is_stocked(bool have[600], uint16_t s);
     void build_bundle(Bundle &b, const Resource *res);
     static void patch_date(Variants &v, const char *core);
     // RFC 9112: one prebuilt head and the body behind it - a HEAD request
@@ -3130,7 +3130,7 @@ class Http1
         std::string_view body;
         bool head_only;
     };
-    static void assemble(std::string &sink, const Assembled &a);
+    static void answer_assemble(std::string &sink, const Assembled &a);
     bool feed_parse(Conn &st, std::string_view data, Sink out);
     // The cold branches of feed_parse, out of line: the protocol decision
     // on a fresh connection, and a head that upgrades or opens a stream.
@@ -3153,14 +3153,14 @@ class Http1
         size_t rest_len;
     };
     bool h1_upgrade_or_stream(Conn &st, const H1Head &h, std::string &sink, bool *lives);
-    static void claim_sink(Conn &st, const std::string &sink, Plan &plan);
+    static void sink_claim(Conn &st, const std::string &sink, Plan &plan);
     // The bytes one answer lends rather than copies, and the plan they are
     // lent into.
     struct Lending {
         std::string_view body;
         Plan &plan;
     };
-    static void lend_body(Conn &st, std::string &sink, Lending lend);
+    static void body_lend(Conn &st, std::string &sink, Lending lend);
     // RFC 9110 12.5.3/12.5.5: what a dynamic 200 chooses between - the two
     // prebuilt prefixes, whether gzip is on the table at all (the peer
     // accepts it and this connection is packetized), and whether the request
@@ -3531,7 +3531,7 @@ class Http1
                 sink.append(pfx.bytes);
                 char cl[40];
                 sink.append(cl, http::spell_content_length(cl, lent_len));
-                lend_body(st, sink, {{lent, lent_len}, *plan});
+                body_lend(st, sink, {{lent, lent_len}, *plan});
                 break;
             }
             case AnswerStep::Shape::kGzip: {
@@ -3549,7 +3549,7 @@ class Http1
                 const Resp &prefix = minor >= 1
                                          ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                          : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-                assemble(sink, {prefix, sp.body, head_only});
+                answer_assemble(sink, {prefix, sp.body, head_only});
                 break;
             }
             case AnswerStep::Shape::kException: {
@@ -3612,7 +3612,7 @@ class Http1
                     sink.append(pfx.bytes);
                     char cl[40];
                     sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
-                    lend_body(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
+                    body_lend(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
                 } else {
                     sink.append(bodyless.bytes);
                 }
@@ -3634,7 +3634,7 @@ class Http1
     Took answer_from_docroot(Round &r);
     void file_named_tail(Round &r);
 
-    bool fail(Conn &st, uint16_t code, std::string &out, uint8_t log = 0);
+    bool connection_fail(Conn &st, uint16_t code, std::string &out, uint8_t log = 0);
     // response.file's answer, head only - the bytes ride after it as a lent
     // segment. `prebuilt` takes the status straight out of the shared store.
     // The head a served file wears: the status it carries, how many octets
@@ -3663,7 +3663,7 @@ class Http1
     bool h2_begin(Conn &st, std::string &sink);
     bool h2_feed(Conn &st, std::string_view data, Sink out);
     bool h2_error(Conn &st, uint32_t code, std::string &sink);
-    void h2_rst(Conn &st, uint32_t id, uint32_t code, std::string &sink);
+    void h2_reset_stream(Conn &st, uint32_t id, uint32_t code, std::string &sink);
     bool h2_count_lie(Conn &st, uint32_t id, std::string &sink);
     // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
     // named one is refused rather than served the empty body it never meant

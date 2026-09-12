@@ -93,7 +93,7 @@ bool event_spell(mrb_state *mrb, const mrb_value &event, std::string &out_text)
     }
     if (mrb_array_p(data_field)) {
         const size_t count = ruby_array_length(data_field);
-        for (mrb_int i = 0; i < count; i++)
+        for (size_t i = 0; i < count; i++)
             field(out_text, "data", mrb_ary_entry(data_field, i));
     } else {
         field(out_text, "data", data_field);
@@ -279,7 +279,7 @@ bool sse_tick(SseStream *stream, int64_t now_s, std::string &body)
         go_on = false;
     } else if (mrb_array_p(answer)) {
         const size_t count = ruby_array_length(answer);
-        for (mrb_int i = 0; i < count && go_on; i++) {
+        for (size_t i = 0; i < count && go_on; i++) {
             if (!event_spell(mrb, mrb_ary_entry(answer, i), body)) {
                 std::fprintf(stderr, "webmachine: SSE on_tick answered an Array holding something "
                                      "that is neither a String nor a Hash\n");

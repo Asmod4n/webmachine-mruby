@@ -1617,7 +1617,7 @@ template <class App> class Ring
             const bool last = left <= kBufSize;
             typename App::Plan *plan = (last && !c.sending) ? &req : nullptr;
             if (!closing)
-                closing = !app_.feed(c.app, {pool_ + off, n}, {sink, plan});
+                closing = !app_.connection_feed(c.app, {pool_ + off, n}, {sink, plan});
             // The peer stopped reading and keeps sending. Multishot recv
             // delivers while a send is in flight, so a websocket handler's
             // answers pile up in `next` for as long as the send timeout
@@ -1716,7 +1716,7 @@ template <class App> class Ring
         req.byte_cap = c.round_cap;
         typename App::Plan *plan = (last && !c.sending) ? &req : nullptr;
         std::string &sink = c.sending ? c.next : c.out;
-        const bool closing = !app_.feed(c.app, {data, len}, {sink, plan});
+        const bool closing = !app_.connection_feed(c.app, {data, len}, {sink, plan});
         finish_round(idx, req, closing);
     }
 
@@ -2715,7 +2715,7 @@ template <class App> class Ring
             ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
             now_s_ = static_cast<int64_t>(now.tv_sec);
         }
-        app_.on_tick();
+        app_.clock_tick();
         // #shed: how much work arrived that we have not answered yet. One
         // load of a u32 out of the shared ring - no syscall, current as of
         // this instant - and the only number that says whether this core is
