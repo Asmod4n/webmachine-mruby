@@ -556,13 +556,13 @@ void Http1::spell_error(const ErrorAnswer &e, std::string &sink)
 {
     std::string body;
     size_t dlen = 0;
-    const char *data = err_pages_.body_for({e.status, e.media, e.fields}, body, &dlen);
+    const char *data = err_pages_.body_of_page({e.status, e.media, e.fields}, body, &dlen);
     if (data == nullptr) {
         sink.append(e.bodyless.bytes);
         return;
     }
     sink.append(e.prefix.bytes);
-    sink.append("Content-Type: ").append(err_pages_.media_type(e.media)).append("\r\n");
+    sink.append("Content-Type: ").append(err_pages_.media_type_of_slot(e.media)).append("\r\n");
     char cl[40];
     sink.append(cl, http::spell_content_length(cl, dlen));
     if (!e.head_only)
@@ -595,7 +595,7 @@ Http1::Took Http1::answer_from_assets(Round &r, std::string &sink, Plan *plan)
     AssetEntry *ae = tier->find(apath, alen);
     if (ae == nullptr)
         return Took::kNo;
-    const uint16_t as = tier->verdict(*ae, {r.facts, r.vals});
+    const uint16_t as = tier->entry_verdict(*ae, {r.facts, r.vals});
     const AssetStep step = asset_step(*ae, {as, r.head_only, r.facts.method, r.vals});
     const Assets::ConnectionOption conn =
         r.minor >= 1 ? (r.persist ? Assets::kNoConnectionField : Assets::kConnClose)
@@ -610,11 +610,12 @@ Http1::Took Http1::answer_from_assets(Round &r, std::string &sink, Plan *plan)
     const char *ebody = nullptr;
     const char *ectype = nullptr;
     if (step.status_code >= 400 && step.head != AssetStep::HeadKind::kRefusal) {
-        const int em = err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len);
+        const int em =
+            err_pages_.media_pick_for_status(step.status_code, r.vals.accept, r.vals.accept_len);
         const ErrorPages::Fields none;
-        ebody = err_pages_.body_for({step.status_code, em, none}, epage, &eblen);
+        ebody = err_pages_.body_of_page({step.status_code, em, none}, epage, &eblen);
         if (ebody != nullptr)
-            ectype = err_pages_.media_type(em);
+            ectype = err_pages_.media_type_of_slot(em);
         else
             eblen = 0;
     }
@@ -640,7 +641,8 @@ Http1::Took Http1::answer_from_assets(Round &r, std::string &sink, Plan *plan)
             const Resp &bodyless =
                 plain ? (r.persist ? sv.plain : sv.close) : (r.persist ? sv.keep : sv.close);
             spell_error({prefix, bodyless, step.status_code,
-                         err_pages_.media_for(step.status_code, r.vals.accept, r.vals.accept_len),
+                         err_pages_.media_pick_for_status(step.status_code, r.vals.accept,
+                                                          r.vals.accept_len),
                          none, r.head_only},
                         sink);
             break;
@@ -652,7 +654,7 @@ Http1::Took Http1::answer_from_assets(Round &r, std::string &sink, Plan *plan)
             tier->answer_206_head(head, sink);
             break;
         case AssetStep::HeadKind::kNormal:
-            tier->answer_head(head, sink);
+            tier->head_answer(head, sink);
             break;
     }
     const bool sent_page = ebody != nullptr && !r.head_only;
@@ -706,7 +708,7 @@ Http1::Took Http1::answer_from_assets(Round &r, std::string &sink, Plan *plan)
             if (take > 0) {
                 claim_sink(r.st, sink, *plan);
                 struct iovec iv[3];
-                const unsigned k = Assets::wire_iov(*r.st.asset, {r.st.asset_off, take}, iv);
+                const unsigned k = Assets::entry_wire_iov(*r.st.asset, {r.st.asset_off, take}, iv);
                 for (unsigned i = 0; i < k; i++) {
                     plan->iov[plan->iovlen++] =
                         Plan::Seg{static_cast<const char *>(iv[i].iov_base), 0, iv[i].iov_len};
@@ -764,7 +766,7 @@ bool Http1::answer_from_file(Round &r, uint16_t status, const std::string &rhdrs
     // RFC 9110 12.5.1: which form a refusal takes is the caller's Accept,
     // and a refusal can land long after this round - so it is decided here,
     // while the request is still in hand.
-    st.file->err_media = err_pages_.media_for(404, r.vals.accept, r.vals.accept_len);
+    st.file->err_media = err_pages_.media_pick_for_status(404, r.vals.accept, r.vals.accept_len);
     st.file->stage = FileStage::kNamed;
     if (wanted.bad)
         file_reject(st);
@@ -858,7 +860,7 @@ Http1::Took Http1::answer_from_docroot(Round &r)
     st.file->request_target.assign(r.path, r.path_len);
     st.file->referer.assign(r.vals.log_ref != nullptr ? r.vals.log_ref : "", r.vals.log_ref_len);
     st.file->user_agent.assign(r.vals.log_ua != nullptr ? r.vals.log_ua : "", r.vals.log_ua_len);
-    st.file->err_media = err_pages_.media_for(404, r.vals.accept, r.vals.accept_len);
+    st.file->err_media = err_pages_.media_pick_for_status(404, r.vals.accept, r.vals.accept_len);
     st.file->stage = FileStage::kNamed;
     if (!readable)
         file_prebuilt(st, r.facts.method == flow::Method::kOther ? 501 : 405);
@@ -879,7 +881,7 @@ bool Http1::fail(Conn &st, uint16_t code, std::string &out, uint8_t log)
     // target to name: the page for the status, and that is all it can say.
     const ErrorPages::Fields f;
     spell_error({prefixes(code).close, variants(code).close, code,
-                 err_pages_.media_for(code, nullptr, 0), f, false},
+                 err_pages_.media_pick_for_status(code, nullptr, 0), f, false},
                 out);
     st.carry.clear();
     st.content_skip = 0;
@@ -1428,7 +1430,7 @@ Http1::Took Http1::bound_finish(Round &r, const BoundAsk &ask, BoundOut &out)
         const size_t n = Assets::wire_len(ae);
         if (plan != nullptr) {
             struct iovec iv[3];
-            const unsigned k = Assets::wire_iov(ae, {0, n}, iv);
+            const unsigned k = Assets::entry_wire_iov(ae, {0, n}, iv);
             // One segment for a stored entry; a deflated one would be
             // three, and response.error_asset refuses those - the head
             // spelled here carries no Content-Encoding to declare them.
@@ -1437,7 +1439,7 @@ Http1::Took Http1::bound_finish(Round &r, const BoundAsk &ask, BoundOut &out)
         }
         if (lent == nullptr) {
             ask.body.clear();
-            Assets::copy_wire(ae, {0, n}, ask.body);
+            Assets::entry_copy_wire(ae, {0, n}, ask.body);
         }
     }
     // response.file: the run named a file instead of spelling a body,
@@ -1485,14 +1487,14 @@ Http1::Took Http1::bound_finish(Round &r, const BoundAsk &ask, BoundOut &out)
         // goes out as the bare status: the same answer the prebuilt one
         // gives, minus the page the prebuilt one has.
         if (status >= 400 && !bodyless && !have_body && lent == nullptr) {
-            const int em = err_pages_.media_for(status, vals.accept, vals.accept_len);
+            const int em = err_pages_.media_pick_for_status(status, vals.accept, vals.accept_len);
             size_t elen = 0;
             const ErrorPages::Fields none;
-            const char *ep = err_pages_.body_for({status, em, none}, epage, &elen);
+            const char *ep = err_pages_.body_of_page({status, em, none}, epage, &elen);
             if (ep != nullptr) {
                 ask.body.assign(ep, elen);
                 have_body = true;
-                ctype = err_pages_.media_type(em);
+                ctype = err_pages_.media_type_of_slot(em);
             }
         }
         if (!bodyless && ctype.empty()) {

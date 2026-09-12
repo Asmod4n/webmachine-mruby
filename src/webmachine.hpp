@@ -3852,7 +3852,7 @@ class Assets
         const flow::ReqFacts &facts;
         const http::ReqValues &vals;
     };
-    uint16_t verdict(const AssetEntry &e, const AssetRequest &r) const;
+    uint16_t entry_verdict(const AssetEntry &e, const AssetRequest &r) const;
 
     // Everything this tier needs to spell one head: the entry it describes,
     // the status it carries, whether the connection stays open, the Date
@@ -3873,7 +3873,7 @@ class Assets
         size_t body_len = 0;
     };
 
-    void answer_head(const HeadAsk &ask, std::string &sink);
+    void head_answer(const HeadAsk &ask, std::string &sink);
     void answer_206_head(const HeadAsk &ask, std::string &sink);
     void answer_416_head(const HeadAsk &ask, std::string &sink);
 
@@ -3894,8 +3894,8 @@ class Assets
         size_t off;
         size_t n;
     };
-    static unsigned wire_iov(const AssetEntry &e, Window w, iovec *iov);
-    static void copy_wire(const AssetEntry &e, Window w, std::string &out);
+    static unsigned entry_wire_iov(const AssetEntry &e, Window w, iovec *iov);
+    static void entry_copy_wire(const AssetEntry &e, Window w, std::string &out);
 
     // ZIP (APPNOTE): the entry table, for the h2 setup half.
     std::vector<AssetEntry> &entries()
@@ -3911,7 +3911,7 @@ class Assets
         const char *line;
         time_t unix_seconds;
     };
-    static void patch_date(AssetEntry::Head &h, DateStamp when);
+    static void head_patch_date(AssetEntry::Head &h, DateStamp when);
 
     // munmap(addr, length) - the names of the arguments they become.
     const char *map_addr_ = nullptr;
@@ -3961,20 +3961,20 @@ class ErrorPages
 
     // RFC 9110 12.5.1: which form this client can read, as an index into
     // what the error resource offers. -1 when it offers nothing.
-    int media_for(uint16_t status, const char *accept, size_t len) const;
+    int media_pick_for_status(uint16_t status, const char *accept, size_t len) const;
     // The picture is the answer for an image form: not rendered, lent out
     // of the error assets's mapping. nullptr when this slot is not one, or when
     // this status has no cat.
-    const char *pack_body(uint16_t status, int slot, size_t *len) const;
+    const char *pack_body_of_status(uint16_t status, int slot, size_t *len) const;
     // #210: the page for a status in a form, rendered once at boot and
     // lent from there. Every 4xx is one of these - it names no failure and
     // repeats nothing the client sent, so two answers with the same status
     // are the same bytes. Null for a status no page was prepared for, and
     // for any answer that has something of its own to say.
     const char *prepared_body(uint16_t status, int slot, size_t *len) const;
-    const char *media_type(int slot) const;
-    bool named_ours(const char *accept, size_t len) const;
-    static bool names_anything(const char *accept, size_t len);
+    const char *media_type_of_slot(int slot) const;
+    bool accept_names_one_of_ours(const char *accept, size_t len) const;
+    static bool accept_names_anything(const char *accept, size_t len);
 
     // fsm.rb handle_exception, on the error resource and nowhere else.
     bool exception_text(mrb_value exc, std::string &out);
@@ -4011,7 +4011,7 @@ class ErrorPages
     // it does. `held` is the caller's storage and is used for that last
     // case only - the other two are lent where they lie. Null when this
     // build can spell no page at all.
-    const char *body_for(const Page &p, std::string &held, size_t *len);
+    const char *body_of_page(const Page &p, std::string &held, size_t *len);
 
   private:
     struct Handler {
@@ -4024,8 +4024,8 @@ class ErrorPages
     struct Cat {
         const AssetEntry *entry = nullptr;
     };
-    void read_cats(Assets &assets);
-    void read_prepared();
+    void cats_read(Assets &assets);
+    void prepared_pages_read();
 
     mrb_state *mrb_ = nullptr;
     mrb_value res_ = mrb_nil_value();

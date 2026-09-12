@@ -3573,7 +3573,8 @@ class Http1
                 const Resp &bodyless =
                     minor >= 1 ? (persist ? bv.plain : bv.close) : (persist ? bv.keep : bv.close);
                 spell_error({prefix, bodyless, 500,
-                             err_pages_.media_for(500, vals.accept, vals.accept_len), f, head_only},
+                             err_pages_.media_pick_for_status(500, vals.accept, vals.accept_len), f,
+                             head_only},
                             sink);
                 break;
             }
@@ -3589,10 +3590,11 @@ class Http1
                     const ErrorPages::Fields f;
                     const Resp &prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
                                                     : (persist ? pv.keep : pv.close);
-                    spell_error({prefix, bodyless, status,
-                                 err_pages_.media_for(status, vals.accept, vals.accept_len), f,
-                                 head_only},
-                                sink);
+                    spell_error(
+                        {prefix, bodyless, status,
+                         err_pages_.media_pick_for_status(status, vals.accept, vals.accept_len), f,
+                         head_only},
+                        sink);
                 } else if (status == 200 && !head_only && plan != nullptr &&
                            b->konst.body.size() >= kLendFloor) {
                     // The konst body is a std::string built at setup and immortal.

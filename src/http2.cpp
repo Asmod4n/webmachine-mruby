@@ -461,13 +461,13 @@ __attribute__((noinline)) bool Http1::h2_body_file_open(Conn &st0, H2Stream &stx
 bool Http1::h2_error_page(const H2ErrorAsk &a, H2ErrorPage &p, H2Answer &out)
 {
     const http::ReqValues *vals = a.vals;
-    const int m = err_pages_.media_for(a.status, vals != nullptr ? vals->accept : nullptr,
-                                       vals != nullptr ? vals->accept_len : 0);
+    const int m = err_pages_.media_pick_for_status(
+        a.status, vals != nullptr ? vals->accept : nullptr, vals != nullptr ? vals->accept_len : 0);
     size_t plen = 0;
-    const char *pbody = err_pages_.body_for({a.status, m, a.fields}, p.rendered, &plen);
+    const char *pbody = err_pages_.body_of_page({a.status, m, a.fields}, p.rendered, &plen);
     if (pbody == nullptr)
         return false;
-    const std::string ctype(err_pages_.media_type(m));
+    const std::string ctype(err_pages_.media_type_of_slot(m));
     // RFC 9110 15.5.6: a 405 says which methods it would take, and the page
     // it now carries must not cost it that field.
     const Bundle *b = a.bundle;
@@ -917,7 +917,7 @@ bool Http1::h2_dispatch(Conn &st0, const H2Headers &h, std::string &sink)
     if (assets_ != nullptr) {
         if (AssetEntry *ae = assets_->find(path_val, path_vlen)) {
             asset = ae;
-            asset_status = assets_->verdict(*ae, {facts, vals});
+            asset_status = assets_->entry_verdict(*ae, {facts, vals});
             asset_end = Assets::wire_len(*ae);
             if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
                 vals.range != nullptr &&
@@ -1804,15 +1804,16 @@ bool Http1::h2_frame(Conn &st0, const H2Request &q, std::string &sink, H2Produce
         // its own never reaches h2_error_page, and would go out as a bare
         // p.status with the page missing.
         if (p.status >= 400 && !bodyless && !p.have_body && !p.lent_have && run_asset == nullptr) {
-            const int em = err_pages_.media_for(p.status, vals != nullptr ? vals->accept : nullptr,
-                                                vals != nullptr ? vals->accept_len : 0);
+            const int em =
+                err_pages_.media_pick_for_status(p.status, vals != nullptr ? vals->accept : nullptr,
+                                                 vals != nullptr ? vals->accept_len : 0);
             size_t elen = 0;
             const ErrorPages::Fields none;
-            const char *ep = err_pages_.body_for({p.status, em, none}, epage, &elen);
+            const char *ep = err_pages_.body_of_page({p.status, em, none}, epage, &elen);
             if (ep != nullptr) {
                 (*p.body).assign(ep, elen);
                 p.have_body = true;
-                ctype = err_pages_.media_type(em);
+                ctype = err_pages_.media_type_of_slot(em);
             }
         }
         if (!bodyless && ctype.empty()) {
@@ -2181,13 +2182,13 @@ struct RoundOut {
     void span(const AssetEntry &e, size_t off, size_t n)
     {
         if (plan == nullptr) {
-            Assets::copy_wire(e, {off, n}, sink);
+            Assets::entry_copy_wire(e, {off, n}, sink);
             emitted += n;
             return;
         }
         prime();
         struct iovec iv[3];
-        const unsigned k = Assets::wire_iov(e, {off, n}, iv);
+        const unsigned k = Assets::entry_wire_iov(e, {off, n}, iv);
         for (unsigned i = 0; i < k; i++) {
             if (iv[i].iov_len < kCopyFloor) {
                 bytes(static_cast<const char *>(iv[i].iov_base), iv[i].iov_len);
@@ -2498,7 +2499,7 @@ bool Http1::spell_next_round(Conn &st, std::string &sink, Plan &plan)
         if (plan.byte_cap != 0 && take > plan.byte_cap)
             take = plan.byte_cap;
         struct iovec iv[3];
-        const unsigned k = Assets::wire_iov(e, {st.asset_off, take}, iv);
+        const unsigned k = Assets::entry_wire_iov(e, {st.asset_off, take}, iv);
         for (unsigned i = 0; i < k; i++) {
             plan.iov[plan.iovlen++] =
                 Plan::Seg{static_cast<const char *>(iv[i].iov_base), 0, iv[i].iov_len};

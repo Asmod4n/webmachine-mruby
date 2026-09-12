@@ -1,4 +1,4 @@
-#include "webmachine.hpp"
+#include "ruby_value.hpp"
 
 #include <mruby/array.h>
 #include <mruby/class.h>
@@ -90,46 +90,46 @@ constexpr Face kFaces[] = {
 constexpr uint16_t kFaceFirst = 400;
 constexpr uint16_t kFacePast = 600;
 struct FaceIndex {
-    const Face *at[kFacePast - kFaceFirst] = {};
+    const Face *status[kFacePast - kFaceFirst] = {};
     constexpr FaceIndex()
     {
         for (const Face &f : kFaces)
-            at[f.status - kFaceFirst] = &f;
+            status[f.status - kFaceFirst] = &f;
     }
 };
 constexpr FaceIndex kFaceIndex;
 
-const Face *face_for(uint16_t status)
+const Face *face_of_status(uint16_t status)
 {
     if (status < kFaceFirst || status >= kFacePast)
         return nullptr;
-    return kFaceIndex.at[status - kFaceFirst];
+    return kFaceIndex.status[status - kFaceFirst];
 }
 
 // mruby: the handler call, under mrb_protect_error - it is app code from
 // the moment somebody reopens the class, and app code raises.
 struct HandlerCall {
     mrb_value self;
-    mrb_sym sym;
-    mrb_value arg;
+    mrb_sym method_name;
+    mrb_value argument;
 };
 // The same call with no arguments at all - a class body, a declaration.
-mrb_value handler_no_args(mrb_state *mrb, void *ud)
+mrb_value handler_call_with_no_args(mrb_state *mrb, void *user_data)
 {
-    const HandlerCall *c = static_cast<const HandlerCall *>(ud);
-    return mrb_funcall_argv(mrb, c->self, c->sym, 0, nullptr);
+    const HandlerCall *call = static_cast<const HandlerCall *>(user_data);
+    return mrb_funcall_argv(mrb, call->self, call->method_name, 0, nullptr);
 }
 
 // One instance of the handler class, under the same protection.
-mrb_value handler_new(mrb_state *mrb, void *ud)
+mrb_value handler_build(mrb_state *mrb, void *user_data)
 {
-    return mrb_obj_new(mrb, static_cast<struct RClass *>(ud), 0, nullptr);
+    return mrb_obj_new(mrb, static_cast<struct RClass *>(user_data), 0, nullptr);
 }
 
-mrb_value handler_body(mrb_state *mrb, void *ud)
+mrb_value handler_call_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    const HandlerCall *c = static_cast<const HandlerCall *>(ud);
-    return mrb_funcall_argv(mrb, c->self, c->sym, 1, &c->arg);
+    const HandlerCall *call = static_cast<const HandlerCall *>(user_data);
+    return mrb_funcall_argv(mrb, call->self, call->method_name, 1, &call->argument);
 }
 
 } // namespace
@@ -142,11 +142,11 @@ mrb_value handler_body(mrb_state *mrb, void *ud)
 // write every error page.
 namespace
 {
-bool is_regular_file(const std::string &p)
+bool path_is_regular_file(const std::string &path)
 {
     struct stat st {
     };
-    return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 } // namespace
 
@@ -159,7 +159,7 @@ std::string error_assets_path(const char *configured)
         "/usr/share/webmachine-mruby/error-assets.zip",
     };
     for (const char *p : kInstalled) {
-        if (is_regular_file(p))
+        if (path_is_regular_file(p))
             return std::string(p);
     }
     return std::string();
@@ -170,16 +170,16 @@ std::string error_assets_path(const char *configured)
 // the same set.
 const char *status_title(uint16_t status)
 {
-    const Face *f = face_for(status);
-    return f != nullptr ? f->title : http::reason(status);
+    const Face *face = face_of_status(status);
+    return face != nullptr ? face->title : http::reason(status);
 }
 
 // Who registered it. "not registered" is a fact about the code, not a
 // hedge: 15 of the 54 are vendor inventions and the page says so.
 const char *status_source(uint16_t status)
 {
-    const Face *f = face_for(status);
-    return f != nullptr ? f->source : "not registered";
+    const Face *face = face_of_status(status);
+    return face != nullptr ? face->source : "not registered";
 }
 
 ErrorPages::~ErrorPages()
@@ -195,24 +195,24 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
 {
     elog_ = elog;
     mrb_ = mrb;
-    struct RClass *wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-    if (wm == nullptr) {
+    struct RClass *webmachine_module = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    if (webmachine_module == nullptr) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "error pages: Webmachine is not defined");
     }
-    if (!mrb_const_defined_at(mrb, mrb_obj_value(wm), MRB_SYM(ErrorResource))) {
+    if (!mrb_const_defined_at(mrb, mrb_obj_value(webmachine_module), MRB_SYM(ErrorResource))) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "error pages: Webmachine::ErrorResource is not defined");
     }
-    struct RClass *klass = mrb_class_get_under_id(mrb, wm, MRB_SYM(ErrorResource));
+    struct RClass *klass = mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(ErrorResource));
     const ArenaGuard arena(mrb);
     mrb_bool raised = FALSE;
     {
         // A class body that raises (a template of its own that does not
         // parse) is a startup refusal with a name, not a crash on the first
         // 404.
-        const mrb_value obj = mrb_protect_error(mrb, handler_new, klass, &raised);
+        const mrb_value instance = mrb_protect_error(mrb, handler_build, klass, &raised);
         if (raised)
-            reraise(mrb, obj);
-        res_ = obj;
+            reraise(mrb, instance);
+        res_ = instance;
         mrb_gc_register(mrb, res_);
     }
 
@@ -222,7 +222,7 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
     // client with no opinion gets.
     {
         HandlerCall c{mrb_obj_value(klass), MRB_SYM(content_types_provided), mrb_nil_value()};
-        const mrb_value v = mrb_protect_error(mrb, handler_no_args, &c, &raised);
+        const mrb_value v = mrb_protect_error(mrb, handler_call_with_no_args, &c, &raised);
         if (raised)
             reraise(mrb, v);
         if (!mrb_array_p(v)) {
@@ -231,35 +231,35 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
                        "[[type, handler]] pairs, not %v",
                        v);
         }
-        const mrb_int n = RARRAY_LEN(v);
-        for (mrb_int i = 0; i < n; i++) {
-            const mrb_value pair = mrb_ary_ref(mrb, v, i);
-            if (!mrb_array_p(pair) || RARRAY_LEN(pair) < 2)
+        const size_t count = ruby_array_length(v);
+        for (size_t i = 0; i < count; i++) {
+            const mrb_value pair = mrb_ary_ref(mrb, v, static_cast<mrb_int>(i));
+            if (!mrb_array_p(pair) || ruby_array_length(pair) < 2)
                 continue;
             const mrb_value type = mrb_ary_ref(mrb, pair, 0);
-            const mrb_value hnd = mrb_ary_ref(mrb, pair, 1);
-            if (!mrb_string_p(type) || !mrb_symbol_p(hnd)) {
+            const mrb_value handler_name = mrb_ary_ref(mrb, pair, 1);
+            if (!mrb_string_p(type) || !mrb_symbol_p(handler_name)) {
                 mrb_raisef(
                     mrb, E_WM_ERROR(mrb),
                     "error pages: content_types_provided pairs are [String, Symbol], and %v is "
                     "not one",
                     pair);
             }
-            Handler h;
-            h.sym = mrb_symbol(hnd);
-            h.type.assign(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type)));
+            Handler handler;
+            handler.sym = mrb_symbol(handler_name);
+            handler.type.assign(ruby_string_bytes(type));
             // An image form is the error assets's picture, whole. Nothing renders it,
             // so it names no method that has to exist - and it is worth
             // offering only while there is an asset file to take it from.
-            h.from_pack = h.type.compare(0, 6, "image/") == 0;
-            if (h.from_pack) {
+            handler.from_pack = handler.type.compare(0, 6, "image/") == 0;
+            if (handler.from_pack) {
                 if (assets == nullptr)
                     continue;
-            } else if (!mrb_respond_to(mrb, res_, h.sym)) {
+            } else if (!mrb_respond_to(mrb, res_, handler.sym)) {
                 mrb_raisef(mrb, E_WM_ERROR(mrb), "error pages: %s names %n, which is not defined",
-                           h.type.c_str(), h.sym);
+                           handler.type.c_str(), handler.sym);
             }
-            have_.push_back(std::move(h));
+            have_.push_back(std::move(handler));
         }
     }
     if (have_.empty()) {
@@ -290,11 +290,11 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
     }
     exc_sym_ = MRB_SYM(handle_exception);
     if (assets != nullptr)
-        read_cats(*assets);
+        cats_read(*assets);
     ready_ = true;
     // After the cats: their URL is part of the page, so a page prepared
     // before them would be a page without one.
-    read_prepared();
+    prepared_pages_read();
 }
 
 // RFC 9110 12.5.1: which form this client can read. An error is not a
@@ -304,7 +304,8 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
 // First match in table order, which is html, then json, then the rest.
 // With three forms that is honest; the day this list is ten long, Accept
 // has to be weighed with its q-values instead.
-int ErrorPages::media_for(uint16_t status, const char *accept, size_t len) const
+int ErrorPages::media_pick_for_status(uint16_t status, const char *accept,
+                                      size_t accept_length) const
 {
     if (have_.empty())
         return -1;
@@ -317,7 +318,7 @@ int ErrorPages::media_for(uint16_t status, const char *accept, size_t len) const
     // gets an answer: an error is not a representation of the resource, so
     // there is nothing here to 406 about. text/plain is the way out,
     // because every client can read it.
-    if (accept == nullptr || len == 0)
+    if (accept == nullptr || accept_length == 0)
         return html_;
     // choose_media_type weighs the whole list, so a missing picture is
     // taken out of the list rather than out of its answer.
@@ -333,10 +334,10 @@ int ErrorPages::media_for(uint16_t status, const char *accept, size_t len) const
     }
     if (offer.empty())
         return plain_;
-    const int at = http::choose_media_type({offer, {accept, len}});
-    if (at < 0)
+    const int cursor = http::choose_media_type({offer, {accept, accept_length}});
+    if (cursor < 0)
         return plain_;
-    const int pick = slot[static_cast<size_t>(at)];
+    const int pick = slot[static_cast<size_t>(cursor)];
     // RFC 9110 12.5.1 leaves the tie to the server, and a tie is what a
     // wildcard makes of every form we have. A client that named types and
     // named none of ours has an opinion, and the honest reading of "*/*;
@@ -347,13 +348,14 @@ int ErrorPages::media_for(uint16_t status, const char *accept, size_t len) const
     // So: named nothing of ours, but named something - the cheapest form.
     // Named one of ours, or named nothing at all (curl's bare */*), the
     // negotiation above stands.
-    if (named_ours(accept, len) || !names_anything(accept, len))
+    if (accept_names_one_of_ours(accept, accept_length) ||
+        !accept_names_anything(accept, accept_length))
         return pick;
     return plain_;
 }
 
 // The picture is the answer: the error assets's bytes, lent where they lie.
-const char *ErrorPages::pack_body(uint16_t status, int slot, size_t *len) const
+const char *ErrorPages::pack_body_of_status(uint16_t status, int slot, size_t *out_length) const
 {
     if (slot < 0 || static_cast<size_t>(slot) >= have_.size())
         return nullptr;
@@ -361,38 +363,38 @@ const char *ErrorPages::pack_body(uint16_t status, int slot, size_t *len) const
         return nullptr;
     if (status < kFirstError || status >= kPastLastError)
         return nullptr;
-    const int16_t at = cat_index_[status - kFirstError];
-    if (at <= 0)
+    const int16_t cursor = cat_index_[status - kFirstError];
+    if (cursor <= 0)
         return nullptr;
-    const Cat &c = cats_[static_cast<size_t>(at)];
-    if (c.entry == nullptr)
+    const Cat &cat_row = cats_[static_cast<size_t>(cursor)];
+    if (cat_row.entry == nullptr)
         return nullptr;
-    *len = c.entry->uncompressed_size;
-    return c.entry->file_data;
+    *out_length = cat_row.entry->uncompressed_size;
+    return cat_row.entry->file_data;
 }
 
 // The bytes `t` anywhere in the first `len` of `accept`.
 // RFC 9110 12.5.1: Accept is a list, and one member of it ends at a comma
 // or a semicolon. A type has to fill a whole member: `text/html` inside
 // `application/text/htmlx` names nothing of ours.
-bool member_edge(char c)
+bool accept_member_edge(char character)
 {
-    return c == ',' || c == ';' || c == ' ' || c == '\t';
+    return character == ',' || character == ';' || character == ' ' || character == '\t';
 }
 
-bool contains(std::string_view accept, std::string_view t)
+bool accept_holds_media_type(std::string_view accept, std::string_view media_type)
 {
-    const size_t len = accept.size();
-    const size_t tlen = t.size();
+    const size_t media_type_length = accept.size();
+    const size_t tlen = media_type.size();
     if (tlen == 0)
         return false;
-    for (size_t i = 0; i + tlen <= len; i++) {
-        if (std::memcmp(accept.data() + i, t.data(), tlen) != 0)
+    for (size_t i = 0; i + tlen <= media_type_length; i++) {
+        if (std::memcmp(accept.data() + i, media_type.data(), tlen) != 0)
             continue;
-        if (i != 0 && !member_edge(accept[i - 1]))
+        if (i != 0 && !accept_member_edge(accept[i - 1]))
             continue;
         const size_t after = i + tlen;
-        if (after != len && !member_edge(accept[after]))
+        if (after != media_type_length && !accept_member_edge(accept[after]))
             continue;
         return true;
     }
@@ -401,38 +403,38 @@ bool contains(std::string_view accept, std::string_view t)
 
 // One key of the mustache context and the bytes behind it.
 struct CtxEntry {
-    const char *key;
+    const char *key_name;
     std::string_view value;
 };
 
 // Both halves as Strings.
-void hash_put_str(mrb_state *mrb, mrb_value ctx, CtxEntry e)
+void hash_put_string(mrb_state *mrb, mrb_value context, CtxEntry entry)
 {
-    mrb_hash_set(mrb, ctx, mrb_str_new_cstr(mrb, e.key),
-                 mrb_str_new(mrb, e.value.data(), static_cast<mrb_int>(e.value.size())));
+    mrb_hash_set(mrb, context, mrb_str_new_cstr(mrb, entry.key_name),
+                 mrb_str_new(mrb, entry.value.data(), static_cast<mrb_int>(entry.value.size())));
 }
 
 // RFC 9110 12.5.1: does this Accept name one of the forms we offer, as a
 // type and subtype rather than through a range?
-bool ErrorPages::named_ours(const char *accept, size_t len) const
+bool ErrorPages::accept_names_one_of_ours(const char *accept, size_t accept_length) const
 {
     for (const Handler &h : have_) {
-        const char *t = h.type.c_str();
-        const char *semi = std::strchr(t, ';');
-        const size_t tlen = semi != nullptr ? static_cast<size_t>(semi - t) : h.type.size();
-        if (contains({accept, len}, {t, tlen}))
+        const char *our_type = h.type.c_str();
+        const char *semi = std::strchr(our_type, ';');
+        const size_t tlen = semi != nullptr ? static_cast<size_t>(semi - our_type) : h.type.size();
+        if (accept_holds_media_type({accept, accept_length}, {our_type, tlen}))
             return true;
         // RFC 9110 12.5.1: "image/*" is a preference for every image type,
         // and it carries its own q - a browser fetching a picture writes
         // image/*;q=0.8 above */*;q=0.5 precisely to say which it would
         // rather have. That is naming us, and it is not the same as the
         // */* that means "if you must".
-        const char *slash = std::strchr(t, '/');
+        const char *slash = std::strchr(our_type, '/');
         if (slash == nullptr)
             continue;
-        std::string range(t, static_cast<size_t>(slash - t) + 1);
+        std::string range(our_type, static_cast<size_t>(slash - our_type) + 1);
         range += '*';
-        if (contains({accept, len}, range))
+        if (accept_holds_media_type({accept, accept_length}, range))
             return true;
     }
     return false;
@@ -440,24 +442,26 @@ bool ErrorPages::named_ours(const char *accept, size_t len) const
 
 // Does it name any concrete type at all, or is it wildcards only? A
 // client with no opinion is not a client to be given the cheap answer.
-bool ErrorPages::names_anything(const char *accept, size_t len)
+bool ErrorPages::accept_names_anything(const char *accept, size_t accept_length)
 {
-    size_t at = 0;
-    while (at < len) {
-        while (at < len && (accept[at] == ' ' || accept[at] == '\t' || accept[at] == ','))
-            at++;
-        size_t end = at;
-        while (end < len && accept[end] != ',' && accept[end] != ';')
-            end++;
-        if (end > at && !(end - at == 3 && std::memcmp(accept + at, "*/*", 3) == 0))
+    size_t cursor = 0;
+    while (cursor < accept_length) {
+        while (cursor < accept_length &&
+               (accept[cursor] == ' ' || accept[cursor] == '\t' || accept[cursor] == ','))
+            cursor++;
+        size_t accept_end = cursor;
+        while (accept_end < accept_length && accept[accept_end] != ',' && accept[accept_end] != ';')
+            accept_end++;
+        if (accept_end > cursor &&
+            !(accept_end - cursor == 3 && std::memcmp(accept + cursor, "*/*", 3) == 0))
             return true;
-        while (at < len && accept[at] != ',')
-            at++;
+        while (cursor < accept_length && accept[cursor] != ',')
+            cursor++;
     }
     return false;
 }
 
-const char *ErrorPages::media_type(int slot) const
+const char *ErrorPages::media_type_of_slot(int slot) const
 {
     if (slot < 0 || static_cast<size_t>(slot) >= have_.size())
         return "text/plain; charset=utf-8";
@@ -467,50 +471,50 @@ const char *ErrorPages::media_type(int slot) const
 // mruby: what a resource that raised has to say. fsm.rb's handle_exception,
 // on the error resource and nowhere else - how an exception becomes text
 // is one decision for the server, not a per-route one.
-bool ErrorPages::exception_text(mrb_value exc, std::string &out)
+bool ErrorPages::exception_text(mrb_value exception, std::string &out_text)
 {
     if (!ready_)
         return false;
-    const int ai = mrb_gc_arena_save(mrb_);
-    HandlerCall c{res_, exc_sym_, exc};
+    const int arena = mrb_gc_arena_save(mrb_);
+    HandlerCall c{res_, exc_sym_, exception};
     mrb_bool raised = FALSE;
-    const mrb_value v = mrb_protect_error(mrb_, handler_body, &c, &raised);
+    const mrb_value answer = mrb_protect_error(mrb_, handler_call_in_protected_call, &c, &raised);
     if (raised) {
         mrb_->exc = nullptr;
-        mrb_gc_arena_restore(mrb_, ai);
+        mrb_gc_arena_restore(mrb_, arena);
         return false;
     }
     // The one thing this server fixes about handle_exception is the shape
     // of its answer: a String, or an Array joined with CRLF. What goes in
     // it - a backtrace included - is the app's call, not this layer's.
-    if (mrb_string_p(v)) {
-        out.assign(RSTRING_PTR(v), RSTRING_LEN(v));
-    } else if (mrb_array_p(v)) {
-        const mrb_int n = RARRAY_LEN(v);
-        for (mrb_int i = 0; i < n; i++) {
-            const mrb_value e = mrb_ary_ref(mrb_, v, i);
-            if (!out.empty())
-                out.append("\r\n");
-            if (mrb_string_p(e)) {
-                out.append(RSTRING_PTR(e), static_cast<size_t>(RSTRING_LEN(e)));
+    if (mrb_string_p(answer)) {
+        out_text.assign(ruby_string_bytes(answer));
+    } else if (mrb_array_p(answer)) {
+        const size_t count = ruby_array_length(answer);
+        for (size_t i = 0; i < count; i++) {
+            const mrb_value entry = mrb_ary_ref(mrb_, answer, static_cast<mrb_int>(i));
+            if (!out_text.empty())
+                out_text.append("\r\n");
+            if (mrb_string_p(entry)) {
+                out_text.append(ruby_string_bytes(entry));
             } else {
-                const mrb_value st = mrb_obj_as_string(mrb_, e);
-                if (mrb_string_p(st))
-                    out.append(RSTRING_PTR(st), static_cast<size_t>(RSTRING_LEN(st)));
+                const mrb_value as_string = mrb_obj_as_string(mrb_, entry);
+                if (mrb_string_p(as_string))
+                    out_text.append(ruby_string_bytes(as_string));
             }
         }
     } else {
         // nil is an answer: "this 500 says nothing but 500".
-        mrb_gc_arena_restore(mrb_, ai);
+        mrb_gc_arena_restore(mrb_, arena);
         return false;
     }
-    mrb_gc_arena_restore(mrb_, ai);
+    mrb_gc_arena_restore(mrb_, arena);
     return true;
 }
 
 // A picture per status, named by it: 404.jpg is the one a 404 gets. The
 // archive holds nothing else, so its own entry list is the index.
-void ErrorPages::read_cats(Assets &assets)
+void ErrorPages::cats_read(Assets &assets)
 {
     // Slot 0 is "no picture", the way index_ reserves its own zero.
     cats_.emplace_back();
@@ -534,10 +538,10 @@ void ErrorPages::read_cats(Assets &assets)
         // Nothing but the entry: the <img> it carries is the whole answer.
         if (e.img_tag == nullptr)
             continue;
-        Cat c;
-        c.entry = &e;
+        Cat cat_row;
+        cat_row.entry = &e;
         cat_index_[status - kFirstError] = static_cast<int16_t>(cats_.size());
-        cats_.push_back(std::move(c));
+        cats_.push_back(std::move(cat_row));
     }
 }
 
@@ -546,42 +550,43 @@ void ErrorPages::read_cats(Assets &assets)
 // and for a 500 the fingerprint, the message and the backtrace.
 // read_prepared runs this once per status at boot; body_for runs it
 // again only for a page that carries one of those three.
-bool ErrorPages::render(const Page &p, std::string &out)
+bool ErrorPages::render(const Page &page, std::string &out_page)
 {
-    const uint16_t status = p.status;
-    const int slot = p.slot;
-    const Fields &f = p.fields;
+    const uint16_t status = page.status;
+    const int slot = page.slot;
+    const Fields &face = page.fields;
     if (!ready_ || slot < 0 || static_cast<size_t>(slot) >= have_.size())
         return false;
     mrb_state *mrb = mrb_;
-    const int ai = mrb_gc_arena_save(mrb);
-    mrb_value ctx = mrb_hash_new(mrb);
-    mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
-    hash_put_str(mrb, ctx, {"title", status_title(status)});
-    hash_put_str(mrb, ctx, {"source", status_source(status)});
-    if (f.fingerprint != nullptr) {
-        hash_put_str(mrb, ctx, {"id", {f.fingerprint, kFingerprintLen}});
+    const int arena = mrb_gc_arena_save(mrb);
+    mrb_value context = mrb_hash_new(mrb);
+    mrb_hash_set(mrb, context, mrb_str_new_lit(mrb, "status"), mrb_fixnum_value(status));
+    hash_put_string(mrb, context, {"title", status_title(status)});
+    hash_put_string(mrb, context, {"source", status_source(status)});
+    if (face.fingerprint != nullptr) {
+        hash_put_string(mrb, context, {"id", {face.fingerprint, kFingerprintLen}});
     }
-    if (f.message != nullptr && f.message_len != 0) {
-        hash_put_str(mrb, ctx, {"message", {f.message, f.message_len}});
+    if (face.message != nullptr && face.message_len != 0) {
+        hash_put_string(mrb, context, {"message", {face.message, face.message_len}});
     }
-    if (f.backtrace != nullptr && f.backtrace_len != 0) {
-        hash_put_str(mrb, ctx, {"backtrace", {f.backtrace, f.backtrace_len}});
+    if (face.backtrace != nullptr && face.backtrace_len != 0) {
+        hash_put_string(mrb, context, {"backtrace", {face.backtrace, face.backtrace_len}});
     }
     const int16_t cslot =
         status >= kFirstError && status < kPastLastError ? cat_index_[status - kFirstError] : 0;
     if (cslot > 0) {
-        const Cat &c = cats_[static_cast<size_t>(cslot)];
-        mrb_value cat = mrb_hash_new(mrb);
+        const Cat &cat_row = cats_[static_cast<size_t>(cslot)];
+        mrb_value cat_entry = mrb_hash_new(mrb);
         // The pack carries the <img> finished - src, size and alt - so the
         // page lends it out and joins nothing.
-        hash_put_str(mrb, cat, {"cat_tag", {c.entry->img_tag, c.entry->img_tag_len}});
-        mrb_hash_set(mrb, ctx, mrb_str_new_lit(mrb, "cat"), cat);
+        hash_put_string(mrb, cat_entry,
+                        {"cat_tag", {cat_row.entry->img_tag, cat_row.entry->img_tag_len}});
+        mrb_hash_set(mrb, context, mrb_str_new_lit(mrb, "cat"), cat_entry);
     }
 
-    HandlerCall c{res_, have_[static_cast<size_t>(slot)].sym, ctx};
+    HandlerCall c{res_, have_[static_cast<size_t>(slot)].sym, context};
     mrb_bool raised = FALSE;
-    const mrb_value body = mrb_protect_error(mrb, handler_body, &c, &raised);
+    const mrb_value body = mrb_protect_error(mrb, handler_call_in_protected_call, &c, &raised);
     if (raised || !mrb_string_p(body)) {
         // A handler that raises has no page to offer, and the caller still
         // owes the client an answer - it falls back to the bodyless status.
@@ -591,11 +596,11 @@ bool ErrorPages::render(const Page &p, std::string &out)
             report_raise(elog_, mrb, 500);
         }
         mrb->exc = nullptr;
-        mrb_gc_arena_restore(mrb, ai);
+        mrb_gc_arena_restore(mrb, arena);
         return false;
     }
-    out.assign(RSTRING_PTR(body), RSTRING_LEN(body));
-    mrb_gc_arena_restore(mrb, ai);
+    out_page.assign(ruby_string_bytes(body));
+    mrb_gc_arena_restore(mrb, arena);
     return true;
 }
 
@@ -603,63 +608,63 @@ bool ErrorPages::render(const Page &p, std::string &out)
 // names no failure carries nothing a request could have changed, so the
 // bytes it sends are decided here and lent from here - the template runs
 // at boot, and a 404 costs a memcpy.
-void ErrorPages::read_prepared()
+void ErrorPages::prepared_pages_read()
 {
     const size_t width = have_.size();
     const Fields nothing;
     std::string page;
     size_t slot = 0;
-    size_t row = 0;
+    size_t prepared_row = 0;
 
     // Row 0 is the one prep_index_ names when a status has none.
     prepared_.assign(width, std::string());
     for (const Face &face : kFaces) {
-        row = prepared_.size() / width;
+        prepared_row = prepared_.size() / width;
         prepared_.resize(prepared_.size() + width);
-        prep_index_[face.status - kFirstError] = static_cast<int16_t>(row);
+        prep_index_[face.status - kFirstError] = static_cast<int16_t>(prepared_row);
         for (slot = 0; slot < width; slot++) {
             if (have_[slot].from_pack)
                 continue;
             if (render({face.status, static_cast<int>(slot), nothing}, page)) {
-                prepared_[row * width + slot] = page;
+                prepared_[prepared_row * width + slot] = page;
             }
         }
     }
 }
 
-const char *ErrorPages::body_for(const Page &p, std::string &held, size_t *len)
+const char *ErrorPages::body_of_page(const Page &page, std::string &held, size_t *out_length)
 {
-    const uint16_t status = p.status;
-    const int slot = p.slot;
-    const Fields &f = p.fields;
-    const char *lent = pack_body(status, slot, len);
+    const uint16_t status = page.status;
+    const int slot = page.slot;
+    const Fields &face = page.fields;
+    const char *lent = pack_body_of_status(status, slot, out_length);
     if (lent != nullptr)
         return lent;
     // An answer with nothing of its own to say is the page this status
     // always sends.
-    if (f.message_len == 0 && f.backtrace_len == 0 && f.fingerprint == nullptr) {
-        lent = prepared_body(status, slot, len);
+    if (face.message_len == 0 && face.backtrace_len == 0 && face.fingerprint == nullptr) {
+        lent = prepared_body(status, slot, out_length);
         if (lent != nullptr)
             return lent;
     }
-    if (!render({status, slot, f}, held))
+    if (!render({status, slot, face}, held))
         return nullptr;
-    *len = held.size();
+    *out_length = held.size();
     return held.data();
 }
 
-const char *ErrorPages::prepared_body(uint16_t status, int slot, size_t *len) const
+const char *ErrorPages::prepared_body(uint16_t status, int slot, size_t *out_length) const
 {
     if (!ready_ || status < kFirstError || status >= kPastLastError || slot < 0)
         return nullptr;
-    const int16_t row = prep_index_[status - kFirstError];
-    if (row <= 0)
+    const int16_t prepared_row = prep_index_[status - kFirstError];
+    if (prepared_row <= 0)
         return nullptr;
     const std::string &page =
-        prepared_[static_cast<size_t>(row) * have_.size() + static_cast<size_t>(slot)];
+        prepared_[static_cast<size_t>(prepared_row) * have_.size() + static_cast<size_t>(slot)];
     if (page.empty())
         return nullptr;
-    *len = page.size();
+    *out_length = page.size();
     return page.data();
 }
 
