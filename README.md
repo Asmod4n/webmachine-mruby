@@ -126,7 +126,10 @@ request, and they differ in where the block runs:
 - `compute` sends the block to a worker thread. The block is dumped
   once and every worker keeps it, so per request only its arguments
   and its answer cross. A worker has its own VM, so the block sees its
-  arguments and nothing else.
+  arguments and nothing else: a dumped block carries no environment, so
+  a local from around it and an instance variable both read as `nil`
+  there, with nothing to say so. Pass what the block needs as an
+  argument, or build it in every worker through the registry.
 - `watch` waits on a descriptor in the server's own thread. The block
   runs inside the request, with `request` and `response` in reach.
 
