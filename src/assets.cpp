@@ -31,6 +31,39 @@ struct NameBeforeKey {
   }
 };
 
+// APPNOTE 4.4.7: the CRC-32 the pack stored against the octets it holds.
+// A gzip answer ships that number as its trailer and the ETag spells it,
+// so a pack that disagrees with itself makes every client throw the body
+// away. The check reads each asset once at start and never again.
+bool asset_crc_ok(const char* data, size_t comp, size_t uncomp, bool deflated, uint32_t want) {
+  if (comp > 0xffffffffu || uncomp > 0xffffffffu) return false;
+  const unsigned char* const in = reinterpret_cast<const unsigned char*>(data);
+  if (!deflated) {
+    if (comp != uncomp) return false;
+    return static_cast<uint32_t>(mz_crc32(MZ_CRC32_INIT, in, comp)) == want;
+  }
+  mz_stream zs = {};
+  if (mz_inflateInit2(&zs, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK) return false;
+  unsigned char scratch[16u * 1024u];
+  mz_ulong crc = MZ_CRC32_INIT;
+  size_t out_total = 0;
+  zs.next_in = in;
+  zs.avail_in = static_cast<unsigned int>(comp);
+  int rc = MZ_OK;
+  for (;;) {
+    zs.next_out = scratch;
+    zs.avail_out = static_cast<unsigned int>(sizeof(scratch));
+    rc = mz_inflate(&zs, MZ_SYNC_FLUSH);
+    const size_t got = sizeof(scratch) - zs.avail_out;
+    crc = mz_crc32(crc, scratch, got);
+    out_total += got;
+    if (rc != MZ_OK) break;
+    if (got == 0 && zs.avail_in == 0) break;
+  }
+  mz_inflateEnd(&zs);
+  return rc == MZ_STREAM_END && out_total == uncomp && static_cast<uint32_t>(crc) == want;
+}
+
 // RFC 9110 5.6.7: the archive's mtime as Last-Modified; 0 serves none.
 bool mtime_to_imf(time_t t, char out[http::kDateLen]) {
   if (t <= 0) return false;
@@ -229,6 +262,10 @@ void Assets::open(mrb_state* mrb, const char* zip_path, const MimeDb& mime) {
     e.uncompressed_size = static_cast<size_t>(st.m_uncomp_size);
     e.crc32 = st.m_crc32;
     e.deflated = st.m_method == MZ_DEFLATED;
+    if (!asset_crc_ok(e.file_data, e.compressed_size, e.uncompressed_size, e.deflated, e.crc32)) {
+      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s does not hold the octets the pack claims",
+                 zip_path, st.m_filename);
+    }
     e.last_modified_valid = mtime_to_imf(st.m_time, e.last_modified);
     e.etag[0] = '"';
     spell_hex8(e.etag + 1, st.m_crc32);

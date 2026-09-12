@@ -28,6 +28,11 @@ struct AssetEntry;
 // hold every byte of every upload at once, and one client decides how
 // many that is.
 inline constexpr size_t kBodySpill = 256u * 1024;
+// RFC 9112 7.1: the framing a chunked body may spend. 64 KiB covers any
+// head of a body, and one octet of framing per eight of content covers a
+// client that chunks small on purpose.
+inline constexpr size_t kChunkFramingFloor = 64u * 1024u;
+inline constexpr size_t kChunkFramingShare = 8u;
 
 // RFC-free, this server's own: how much answered content one connection
 // or one stream may hold for a peer that is not reading it.
@@ -254,7 +259,7 @@ static_assert(conn_move_ok(ConnMode::kAsset, ConnMode::kHead) &&
 
 // What one buffer of octets did to a body: there was no body to fill,
 // it is still short, it finished it, or the write failed.
-enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed };
+enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed, kTooLarge };
 
 struct H2Stream {
   // RFC 9113 5.1.1: the Stream Identifier every frame carries.
@@ -1242,6 +1247,11 @@ class Http1 {
     // a file.
     size_t body_count = 0;
     size_t body_limit = 0;
+    // RFC 9112 7.1: the framing octets of a chunked body - every chunk
+    // size line and every CRLF the decoder drops. They are not the body,
+    // so body_limit never sees them, and a client that sends framing and
+    // no content would send it forever.
+    size_t chunk_framing = 0;
     // RFC 9110 8.3: what this body's head declared, kept while the
     // first octets arrive, because the check that reads it happens
     // after the head is gone from the buffer. Empty = this route asked
@@ -1687,6 +1697,7 @@ class Http1 {
       chunk_buf.clear();
       body_count = 0;
       body_limit = 0;
+      chunk_framing = 0;
       sniff_type.clear();
       sniff_head.clear();
       sniff_done = false;
@@ -2060,7 +2071,7 @@ class Http1 {
     if (mrb_unlikely(rest == -1)) return BodyTake::kFailed;
     // RFC 9110 15.5.14: the count is the only length a chunked body
     // has, so the limit is held against it, here.
-    if (mrb_unlikely(st.body_count + decoded > st.body_limit)) return BodyTake::kFailed;
+    if (mrb_unlikely(st.body_count + decoded > st.body_limit)) return BodyTake::kTooLarge;
     if (mrb_unlikely(decoded != 0 && !w.put(st.chunk_buf.data(), decoded))) {
       return BodyTake::kFailed;
     }
@@ -2069,6 +2080,14 @@ class Http1 {
     // read, and the framing it dropped. What it did not read is a
     // pipelined request, and the cursor stops in front of it.
     const size_t used = rest < 0 ? len : len - static_cast<size_t>(rest);
+    // What this call used and did not deliver is framing. The budget is
+    // kChunkFramingFloor plus a share of the octets that did arrive, so a
+    // long body in small chunks passes and framing alone does not.
+    st.chunk_framing += used - decoded;
+    if (mrb_unlikely(st.chunk_framing >
+                     kChunkFramingFloor + (st.body_count + decoded) / kChunkFramingShare)) {
+      return BodyTake::kFailed;
+    }
     data += used;
     len -= used;
     // The one move: this body has outgrown memory. What memory holds

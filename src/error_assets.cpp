@@ -336,11 +336,21 @@ const char* ErrorPages::pack_body(uint16_t status, int slot, size_t* len) const 
 }
 
 // The bytes `t` anywhere in the first `len` of `accept`.
+// RFC 9110 12.5.1: Accept is a list, and one member of it ends at a comma
+// or a semicolon. A type has to fill a whole member: `text/html` inside
+// `application/text/htmlx` names nothing of ours.
+bool member_edge(char c) { return c == ',' || c == ';' || c == ' ' || c == '\t'; }
+
 bool contains(std::string_view accept, std::string_view t) {
   const size_t len = accept.size();
   const size_t tlen = t.size();
+  if (tlen == 0) return false;
   for (size_t i = 0; i + tlen <= len; i++) {
-    if (std::memcmp(accept.data() + i, t.data(), tlen) == 0) return true;
+    if (std::memcmp(accept.data() + i, t.data(), tlen) != 0) continue;
+    if (i != 0 && !member_edge(accept[i - 1])) continue;
+    const size_t after = i + tlen;
+    if (after != len && !member_edge(accept[after])) continue;
+    return true;
   }
   return false;
 }

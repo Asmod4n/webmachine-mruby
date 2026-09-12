@@ -273,6 +273,48 @@ assert('h1: conf.max_body is what an application accepts, and 413 is per app') d
   end
 end
 
+# RFC 9110 15.5.14: a chunked body declares no length, so the count is
+# the only thing the limit can hold. The refusal is 413, the same answer a
+# declared length over the limit earns.
+assert('h1: a chunked body over conf.max_body answers 413') do
+  src = <<~RUBY
+    class Taker < Webmachine::Resource
+      reads_body :process_post
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 8
+        app.add_route [:*], Taker
+      end
+    end
+  RUBY
+  wm_server(src, tag: 'wm-chunk413') do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      s.write("10\r\n0123456789abcdef\r\n0\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 413'), "expected 413, got: #{head.lines.first}"
+    end
+    # The same body inside the limit is read, and the resource answers it.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      s.write("4\r\nabcd\r\n0\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 2'), "expected 2xx, got: #{head.lines.first}"
+      assert_equal '4', body
+    end
+  end
+end
+
 assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body, 501 gzip framing') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
     checks = [

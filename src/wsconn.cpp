@@ -675,6 +675,15 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit answered) {
   }
   bool admit = true;
   if (mrb_string_p(out)) {
+    // RFC 6455 4.2.2: the answer names one subprotocol, and a subprotocol
+    // is one token. Anything else this String holds would write a field
+    // value of the server's own making - or a second field.
+    if (!http::field_name_ok(RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out)))) {
+      mrb_gc_unregister(mrb, obj);
+      mrb_gc_arena_restore(mrb, ai);
+      status = 500;
+      return nullptr;
+    }
     proto.assign(RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out)));
   } else if (mrb_symbol_p(out)) {
     const mrb_sym s = mrb_symbol(out);
