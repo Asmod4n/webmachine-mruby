@@ -1948,11 +1948,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     }
     const sniff::Verdict v = sniff::check(st.sniff_type, st.sniff_head);
     if (mrb_unlikely(v == sniff::Verdict::kContradicts)) {
-      st.body_to = Conn::Body::kNone;
-      st.content_need = 0;
-      st.body_hold.clear();
-      st.spill.close_file();
-      st.run_wants_body = false;
+      drop_body(st);
       return fail(st, 415, sink);
     }
     if (v == sniff::Verdict::kAgrees || st.sniff_head.size() >= want) st.sniff_done = true;
@@ -1974,16 +1970,18 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   }
   switch (took) {
     case BodyTake::kNone: break;
-    case BodyTake::kFailed: return false;
+    // RFC 9112 7.1: a client fault inside the body, or a file that
+    // refused its octets. The connection ends without an answer, and
+    // the body is dropped. A body that already spilled would keep
+    // its file open until the next accept into this slot.
+    case BodyTake::kFailed:
+      drop_body(st);
+      return false;
     // RFC 9110 15.5.14: a chunked body declares nothing, so this is the
     // first place its size can be refused. The client hears 413, and the
     // octets still on the way are the reason the connection ends with it.
     case BodyTake::kTooLarge:
-      st.body_to = Conn::Body::kNone;
-      st.content_need = 0;
-      st.body_hold.clear();
-      st.spill.close_file();
-      st.run_wants_body = false;
+      drop_body(st);
       return fail(st, 413, sink);
     case BodyTake::kMore: return true;
     case BodyTake::kWhole:
@@ -2271,6 +2269,10 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // drops it. No node of this server reads a trailer field.
           st.chunk.consume_trailer = 1;
           st.body_count = 0;
+          // RFC 9112 7.1: the framing budget is per body. Conn::reset
+          // zeroes it per connection, and a kept-alive connection
+          // carries many bodies.
+          st.chunk_framing = 0;
           st.body_hold.clear();
           st.body_to = Conn::Body::kChunkMem;
           st.run_wants_body = true;
@@ -2280,10 +2282,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           chunk_used = body_here - clen;
           if (mrb_unlikely(got == BodyTake::kFailed || got == BodyTake::kTooLarge)) {
             const int code = got == BodyTake::kTooLarge ? 413 : 400;
-            st.body_to = Conn::Body::kNone;
-            st.body_hold.clear();
-            st.spill.close_file();
-            st.run_wants_body = false;
+            drop_body(st);
             return fail(st, code, sink, lflags);
           }
           // What the reader did not read is a pipelined request, and it

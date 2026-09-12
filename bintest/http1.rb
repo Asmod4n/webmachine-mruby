@@ -782,6 +782,101 @@ assert('h1: a chunked body is held to max_body by its count alone') do
   end
 end
 
+# RFC 9112 7.1: a chunk of one octet is legal, so a client that chunks
+# small is legal. The framing budget is a floor of 64 KiB plus five
+# octets for every content octet, and phr_decode_chunked drops every
+# framing octet it reads. A body in 8-octet chunks spends five framing
+# octets per chunk and passes. Framing that carries no content stops at
+# the floor. The budget is per body, so a kept-alive connection carries
+# any number of small-chunked bodies.
+assert('h1: small chunks pass the framing budget, framing alone does not') do
+  app = <<~RUBY_APP
+    class TinyChunks < Webmachine::Resource
+      reads_body :process_post
+      def self.allowed_methods
+        %w[GET POST]
+      end
+      def process_post
+        b = request.body
+        bytes = b.read
+        response.body = [b.class.to_s, bytes.bytesize.to_s, bytes[0, 2], bytes[-2, 2]].join('|')
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.routes { |route| route.add [:*], TinyChunks }
+      end
+    end
+  RUBY_APP
+  # The body as chunks of eight octets, then the last chunk and an
+  # empty trailer section.
+  chunk_wire = lambda do |payload|
+    wire = +''.b
+    off = 0
+    while off < payload.bytesize
+      piece = payload.byteslice(off, 8)
+      off += piece.bytesize
+      wire << format("%x\r\n", piece.bytesize) << piece << "\r\n"
+    end
+    wire << "0\r\n\r\n"
+  end
+  wm_server(app, tag: 'wm-chunked-small') do |sock, _|
+    # 320 KiB in 40960 chunks of eight octets. Every chunk spends five
+    # framing octets, 200 KiB in all. The body crosses kBodySpill
+    # inside the small chunks, so the move from memory to the file is
+    # under test too. The old budget of one framing octet per eight
+    # content octets refused this body near 128 KiB of content.
+    UNIXSocket.open(sock) do |s|
+      payload = 'ab' + ('m' * ((320 * 1024) - 4)) + 'yz'
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      chunk_wire.call(payload).scan(/.{1,65536}/m).each { |slice| s.write(slice) }
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal "File|#{payload.bytesize}|ab|yz", body
+    end
+    # Framing that carries no content: one chunk of one octet with a
+    # chunk extension of 80 KiB. The decoder drops the extension. The
+    # framing crosses the floor, and one content octet allows only five
+    # octets of it. The refusal comes inside the body, where the
+    # reader ends the connection and answers no page. 80 KiB is under
+    # the decoder's own rule of 100 KiB, so the refusal is this
+    # server's. The server closes with most of the extension unread,
+    # so the peer may see a reset in place of EOF.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+      begin
+        s.write("1;" + ('x' * (80 * 1024)) + "\r\na\r\n0\r\n\r\n")
+      rescue Errno::EPIPE, Errno::ECONNRESET
+        # The server ended the connection before the write was done.
+      end
+      out = begin
+        wm_read_until_eof(s)
+      rescue Errno::ECONNRESET
+        +''.b
+      end
+      assert_false out.start_with?('HTTP/1.1 2'), out[0, 64]
+    end
+    # The budget is per body. Eighty bodies of 2 KiB in 8-octet chunks
+    # on one connection spend 1280 framing octets each, 100 KiB in all,
+    # and every one of them passes. A budget that carried over from body
+    # to body refused the 52nd against the old floor, and the 60th
+    # against the new one.
+    UNIXSocket.open(sock) do |s|
+      payload = 'ab' + ('k' * 2044) + 'yz'
+      wire = chunk_wire.call(payload)
+      80.times do |i|
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + wire)
+        head, body = wm_read(s)
+        assert_true head.start_with?('HTTP/1.1 200'), "body #{i}: #{head.lines.first}"
+        assert_equal 'StringIO|2048|ab|yz', body
+      end
+    end
+  end
+end
+
 
 # RFC 9110 8.3: `sniff: true` on a content_types_accepted row asks the
 # server to check the octets against the type the head declared, and to

@@ -28,15 +28,30 @@ struct AssetEntry;
 // hold every byte of every upload at once, and one client decides how
 // many that is.
 inline constexpr size_t kBodySpill = 256u * 1024;
-// RFC 9112 7.1: the framing a chunked body may spend. 64 KiB covers any
-// head of a body, and one octet of framing per eight of content covers a
-// client that chunks small on purpose.
 // RFC 9113 5.1.2: one h2 connection may hold this many body files open at
 // once. A body over kBodySpill takes a descriptor for as long as the
 // stream lives, and a client opens streams as fast as the settings allow.
 inline constexpr size_t kH2SpillFilesMax = 16;
+// RFC 9112 7.1: the framing a chunked body may spend, in two parts.
+//
+// The floor is what a body may spend before its content allows any
+// of it. 64 KiB covers a chunk extension, a trailer section, and the
+// size lines of any body. Framing that carries no content stops here.
+//
+// The rate is the framing one content octet allows. A chunk of one
+// octet is legal, and it spends five framing octets: the size digit,
+// CR, LF, then CR and LF after the octet. phr_decode_chunked drops all
+// five, and a larger chunk spends fewer per octet. So a rate of five
+// lets a body of one-octet chunks with no extension pass this budget.
+//
+// phr_decode_chunked has a rule of its own. When a buffer ends inside
+// the body, it adds the framing it dropped to a count. Once that count
+// is over 100 KiB it refuses a body whose content is under a quarter
+// of the wire. That rule ends a body of one-octet chunks near 20 KiB
+// of content. This budget refuses no body that the decoder accepts,
+// and the floor is what this server adds to it.
 inline constexpr size_t kChunkFramingFloor = 64u * 1024u;
-inline constexpr size_t kChunkFramingShare = 8u;
+inline constexpr size_t kChunkFramingPerOctet = 5u;
 
 // RFC-free, this server's own: how much answered content one connection
 // or one stream may hold for a peer that is not reading it.
@@ -2109,12 +2124,14 @@ class Http1 {
     // read, and the framing it dropped. What it did not read is a
     // pipelined request, and the cursor stops in front of it.
     const size_t used = rest < 0 ? len : len - static_cast<size_t>(rest);
-    // What this call used and did not deliver is framing. The budget is
-    // kChunkFramingFloor plus a share of the octets that did arrive, so a
-    // long body in small chunks passes and framing alone does not.
+    // RFC 9112 7.1: what this call used and did not deliver is framing.
+    // The budget is kChunkFramingFloor plus kChunkFramingPerOctet for
+    // every content octet of this body. body_count already holds this
+    // call's octets. A body in one-octet chunks passes, and framing
+    // that carries no content stops at the floor.
     st.chunk_framing += used - decoded;
     if (mrb_unlikely(st.chunk_framing >
-                     kChunkFramingFloor + (st.body_count + decoded) / kChunkFramingShare)) {
+                     kChunkFramingFloor + st.body_count * kChunkFramingPerOctet)) {
       return BodyTake::kFailed;
     }
     data += used;
@@ -2144,6 +2161,21 @@ class Http1 {
     if (st.content_need != 0) return BodyTake::kMore;
     st.body_to = Conn::Body::kNone;
     return BodyTake::kWhole;
+  }
+
+  // RFC 9110 6.4: a body this connection stops reading at a refusal.
+  // The destination is forgotten, the memory is freed, and the file
+  // is closed here and not at the next accept into this slot. A body
+  // that already spilled would keep its descriptor open until then.
+  //
+  // Out of line on purpose: four refusal arms in feed_parse spell these
+  // five stores, and feed_parse is the function every request walks.
+  __attribute__((noinline)) static void drop_body(Conn& st) {
+    st.body_to = Conn::Body::kNone;
+    st.content_need = 0;
+    st.body_hold.clear();
+    st.spill.close_file();
+    st.run_wants_body = false;
   }
 
   static bool file_answerable(const Conn& st) {
