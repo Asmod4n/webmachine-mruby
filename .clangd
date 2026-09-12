@@ -1,0 +1,10 @@
+# mruby writes the compile database, from the rules of the build:
+#
+#     MRUBY_CONFIG=$PWD/build_config_debug.rb \
+#       rake -f mruby/Rakefile --rakelibdir mruby/rakelib compile_commands.json
+#
+# It lands in mruby/, because that is the directory the build runs in.
+# This points clangd at it, so a rename in src/ is an AST question that
+# clangd can answer.
+CompileFlags:
+  CompilationDatabase: mruby
