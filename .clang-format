@@ -1,0 +1,28 @@
+# K&R, as the Linux kernel codifies it, with four spaces instead of tabs.
+#
+# A function puts its opening brace on its own line. Every other brace
+# stays on the line that opens the block. A keyword is followed by a
+# space. A pointer star belongs to the name, not to the type.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+
+BreakBeforeBraces: Linux
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+PointerAlignment: Right
+DerivePointerAlignment: false
+ReferenceAlignment: Pointer
+
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+IndentCaseLabels: true
+SpaceAfterCStyleCast: false
+SortIncludes: Never

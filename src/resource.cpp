@@ -18,16 +18,32 @@
 
 #include <simdutf.h>
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace webmachine {
 namespace {
 using flow::Node;
 
-constexpr const char* kMethodName[6] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
+// RFC 9110 9.1: the name of every flow::Method the parse can settle on.
+// kOther is the method this server did not compile, and it has no name of
+// its own, so the table stops before it.
+constexpr std::string_view kMethodName[] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"};
+
+// One answer per flow::Method, kOther included. The walk keeps a table of
+// this width, so a set of method answers is this wide as well.
+constexpr size_t kMethodCount = static_cast<size_t>(flow::Method::kOther) + 1;
+static_assert(std::size(kMethodName) + 1 == kMethodCount,
+              "every flow::Method but kOther has a name");
+
+// One flag per flow::Method. An array carries its own width, which a
+// `bool x[7]` parameter does not: that one decays to a pointer, and the 7
+// tells the compiler nothing.
+using MethodFlags = std::array<bool, kMethodCount>;
 
 // mruby: unwrap MRB_PROC_ALIAS once, at fold, instead of at every call.
 mrb_method_t resolve_alias(mrb_method_t m) {
@@ -308,43 +324,43 @@ void bake_value(const Folding& f, const BakedValue& bake) {
   out.present = true;
 }
 
-// One run of space- or comma-separated method tokens, marked off in seen[].
-void mark_tokens(const Folding& f, Asked a, mrb_value v, bool seen[7]) {
-  const char* p = RSTRING_PTR(v);
-  const char* const end = p + RSTRING_LEN(v);
-  while (p < end) {
-    while (p < end && (*p == ' ' || *p == ',')) p++;
-    const char* tok = p;
-    while (p < end && *p != ' ' && *p != ',') p++;
-    if (tok == p) break;
-    bool known = false;
-    for (uint8_t m = 0; m < 6; m++) {
-      const size_t n = std::strlen(kMethodName[m]);
-      if (static_cast<size_t>(p - tok) == n && std::memcmp(tok, kMethodName[m], n) == 0) {
-        seen[m] = true;
-        known = true;
-        break;
-      }
-    }
-    if (mrb_unlikely(!known)) {
+// RFC 9110 9.1: the methods that one run of space- or comma-separated
+// tokens names. http::parse_method reads one token: it switches on the
+// length and compares once. The request line reads its method with the
+// same function, so a resource's list and a request agree by construction.
+// A token that function does not know raises, because the walk answers per
+// method and this server compiles six of them.
+void mark_named_methods(const Folding& f, Asked a, mrb_value v, MethodFlags& named) {
+  std::string_view rest(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+  for (;;) {
+    const size_t from = rest.find_first_not_of(" ,");
+    if (from == std::string_view::npos) return;
+    rest.remove_prefix(from);
+    const size_t to = rest.find_first_of(" ,");
+    const std::string_view token = rest.substr(0, to);
+    const flow::Method m = http::parse_method(token.data(), token.size());
+    if (mrb_unlikely(m == flow::Method::kOther)) {
       mrb_raisef(f.mrb, E_WM_ROUTE_ERROR(f.mrb),
-                 "%s names '%l' - outside the compiled method set", a.name, tok,
-                 static_cast<size_t>(p - tok));
+                 "%s names '%l' - outside the compiled method set", a.name, token.data(),
+                 token.size());
     }
+    named[static_cast<size_t>(m)] = true;
+    if (to == std::string_view::npos) return;
+    rest.remove_prefix(to);
   }
 }
 
 // RFC 9110 9.1: known_methods / allowed_methods as one String of tokens or
 // webmachine-ruby's Array-of-Strings form.
-void ask_methods(const Folding& f, Asked a, bool seen[7]) {
+void ask_methods(const Folding& f, Asked a, MethodFlags& named) {
   mrb_state* const mrb = f.mrb;
   const Resolved r = resolve(mrb, mrb_class(mrb, f.klass), a.sym);
   if (!r.defined) return;
   const mrb_value v = call_resolved(mrb, r, {f.klass, mrb_class(mrb, f.klass)});
   if (mrb_unlikely(mrb->exc != nullptr)) rethrow(mrb);
-  for (uint8_t m = 0; m < 7; m++) seen[m] = false;
+  named.fill(false);
   if (mrb_string_p(v)) {
-    mark_tokens(f, a, v, seen);
+    mark_named_methods(f, a, v, named);
     return;
   }
   if (mrb_unlikely(!mrb_array_p(v))) {
@@ -358,7 +374,7 @@ void ask_methods(const Folding& f, Asked a, bool seen[7]) {
       mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%s must return method Strings, and %v is not one",
                  a.name, one);
     }
-    mark_tokens(f, a, one, seen);
+    mark_named_methods(f, a, one, named);
   }
 }
 
@@ -575,8 +591,9 @@ void method_name(Run& r, const char** p, size_t* len) {
     *len = r.res.run.req->method_token_len;
   } else {
     const size_t m = static_cast<size_t>(r.facts.method);
-    *p = m < 6 ? kMethodName[m] : "";
-    *len = m < 6 ? std::strlen(kMethodName[m]) : 0;
+    const bool named = m < std::size(kMethodName);
+    *p = named ? kMethodName[m].data() : "";
+    *len = named ? kMethodName[m].size() : 0;
   }
 }
 
@@ -2657,11 +2674,11 @@ void fold_content_types(mrb_state* mrb, mrb_value klass, Resource& out) {
 // tables the walk reads.
 void fold_methods_and_tables(const Folding& fold, Resource& out,
                              const bool (&ans)[kBoolCount]) {
-  bool known[7] = {true, true, true, true, true, true, false};
+  MethodFlags known = {true, true, true, true, true, true, false};
   if (!out.cb_known_methods.has) {
     ask_methods(fold, {MRB_SYM(known_methods), "known_methods"}, known);
   }
-  bool allowed[7] = {true, true, false, false, false, false, false};
+  MethodFlags allowed = {true, true, false, false, false, false, false};
   if (!out.cb_allowed_methods.has) {
     ask_methods(fold, {MRB_SYM(allowed_methods), "allowed_methods"}, allowed);
   }
@@ -2678,13 +2695,13 @@ void fold_methods_and_tables(const Folding& fold, Resource& out,
   }
 
   out.konst.allow.clear();
-  for (uint8_t m = 0; m < 6; m++) {
+  for (size_t m = 0; m < std::size(kMethodName); m++) {
     if (allowed[m]) {
       if (!out.konst.allow.empty()) out.konst.allow.append(", ");
       out.konst.allow.append(kMethodName[m]);
     }
   }
-  for (uint8_t m = 0; m < 7; m++) {
+  for (size_t m = 0; m < kMethodCount; m++) {
     flow::KonstAnswers& k = out.konst.per_method[m];
     k.ans[static_cast<size_t>(Node::kB12)] = known[m];
     k.ans[static_cast<size_t>(Node::kB10)] = allowed[m];

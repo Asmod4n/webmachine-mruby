@@ -7,16 +7,15 @@
 // preface, the nine header bytes, the big-endian reads, one HPACK field
 // encode - is the same for a server answering and a client asking.
 //
-// It lives here so the two ends cannot drift: src/http2.cpp and
-// bench/load/load.cpp both include it, and a misread length is a bug in
-// one place.
+// It lives apart so a misread length is a bug in one place.
 //
-// Header-only and free of everything else in this tree: no mruby, no
-// io_uring, no Conn, no state. Only <cstddef>/<cstdint> and ls-hpack.
+// Free of everything else in this tree: no mruby, no io_uring, no Conn,
+// no state. Only <cstddef>/<cstdint>, <string_view> and ls-hpack.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 #include "lshpack.h"
 
@@ -98,43 +97,19 @@ struct H2FrameHead {
 };
 
 // The 9 bytes they make; stream id at offset 5.
-inline void h2_put_frame_header(unsigned char* p, H2FrameHead f) {
-  const uint32_t len = f.len;
-  const uint32_t stream = f.stream;
-  p[0] = static_cast<unsigned char>(len >> 16);
-  p[1] = static_cast<unsigned char>(len >> 8);
-  p[2] = static_cast<unsigned char>(len);
-  p[3] = f.type;
-  p[4] = f.flags;
-  p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
-  p[6] = static_cast<unsigned char>(stream >> 16);
-  p[7] = static_cast<unsigned char>(stream >> 8);
-  p[8] = static_cast<unsigned char>(stream);
-}
+void h2_put_frame_header(unsigned char* p, H2FrameHead f);
 
 // RFC 9113 4.1: the 4 stream-id bytes of an already-emitted frame header.
-inline void h2_patch_stream_id(unsigned char* p, uint32_t stream) {
-  p[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
-  p[6] = static_cast<unsigned char>(stream >> 16);
-  p[7] = static_cast<unsigned char>(stream >> 8);
-  p[8] = static_cast<unsigned char>(stream);
-}
+void h2_patch_stream_id(unsigned char* p, uint32_t stream);
 
 // RFC 9113 4.1: a frame's length field.
-inline uint32_t h2_u24(const unsigned char* p) {
-  return (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2];
-}
+uint32_t h2_u24(const unsigned char* p);
 // RFC 9113 4.1: a 32-bit field, network order.
-inline uint32_t h2_u32(const unsigned char* p) {
-  return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-         (static_cast<uint32_t>(p[2]) << 8) | p[3];
-}
+uint32_t h2_u32(const unsigned char* p);
 // RFC 9113 4.1: a stream id, reserved bit masked off.
-inline uint32_t h2_u31(const unsigned char* p) { return h2_u32(p) & 0x7fffffff; }
+uint32_t h2_u31(const unsigned char* p);
 // RFC 9113 6.5.1: a settings identifier.
-inline uint16_t h2_u16(const unsigned char* p) {
-  return static_cast<uint16_t>((p[0] << 8) | p[1]);
-}
+uint16_t h2_u16(const unsigned char* p);
 
 // One HPACK block under construction: the encoder whose dynamic table it
 // moves, the cursor the next field lands at, and the end it may not pass.
@@ -162,37 +137,8 @@ struct H2Field {
 // Lane 2 - one per-request field through ls-hpack's encoder. ls-hpack
 // wants name and value in one buffer with the offsets named, so the pair
 // is spelled out here first. Returns false when the field would not fit -
-// the caller then has an error to name, not a truncated block. Shared: the
-// server encodes its response fields with this, the load generator its
-// request pseudo-fields.
-inline bool h2_enc_field(H2BlockOut out, const H2Field& f) {
-  const size_t nlen = f.name.size();
-  const size_t vlen = f.value.size();
-  // Nothing is checked here, and that is deliberate: what an app can
-  // shape is checked where it enters the header buffer - http::
-  // field_name_ok / field_value_ok, at response.cpp's Headers#[]= and at
-  // resource.cpp's `field`. By the time a line reaches this encoder it
-  // has already passed that gate, so a second check would guard against
-  // something no user can reach. The pointers cannot be null either:
-  // they are our own literals and std::string::data().
-  char hbuf[512];
-  if (nlen + 2 + vlen > sizeof(hbuf)) return false;
-  std::memcpy(hbuf, f.name.data(), nlen);
-  hbuf[nlen] = ':';
-  hbuf[nlen + 1] = ' ';
-  std::memcpy(hbuf + nlen + 2, f.value.data(), vlen);
-  lsxpack_header_t xh;
-  lsxpack_header_set_offset2(&xh, hbuf, 0, nlen, nlen + 2, vlen);
-  // lshpack.c: indexed_type 0 = with incremental indexing, 1 = without,
-  // 2 = never indexed. 1 is the one RFC 7541 6.2.2 describes and the one
-  // a replayed block needs; NEVER_INDEX (6.2.3) would say "sensitive",
-  // which a Date is not.
-  if (!f.index) xh.indexed_type = 1;
-  unsigned char* np = lshpack_enc_encode(out.enc, out.at, out.end, &xh);
-  if (np == out.at) return false;
-  out.at = np;
-  return true;
-}
+// the caller then has an error to name, not a truncated block.
+bool h2_enc_field(H2BlockOut out, const H2Field& f);
 }  // namespace webmachine
 
 #endif  // WEBMACHINE_H2_WIRE_HPP

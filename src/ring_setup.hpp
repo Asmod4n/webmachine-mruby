@@ -31,13 +31,7 @@ inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 
 // A ring's SQ/CQ pages are locked memory; failing to raise is not a
 // reason not to start.
-inline void raise_memlock() {
-  struct rlimit rl {};
-  if (::getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return;
-  if (rl.rlim_cur == rl.rlim_max) return;
-  struct rlimit want {rl.rlim_max, rl.rlim_max};
-  (void)::setrlimit(RLIMIT_MEMLOCK, &want);
-}
+void raise_memlock();
 
 // The one arithmetic with two consumers: the server sizes itself with it,
 // webmachine-tune.sh only prints it.
@@ -50,18 +44,7 @@ struct FdBudget {
   uint32_t extra_slots = 0;
 };
 
-inline uint32_t derive_max_conns(FdBudget b) {
-  const uint64_t nofile_limit = b.nofile_limit;
-  const uint32_t extra_slots = b.extra_slots;
-  const uint64_t taken =
-      static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners + extra_slots;
-  if (nofile_limit <= taken) return 0;
-  uint64_t n = nofile_limit - taken;
-  if (n + kMaxListeners + extra_slots > kFixedTableKernelMax) {
-    n = kFixedTableKernelMax - kMaxListeners - extra_slots;
-  }
-  return static_cast<uint32_t>(n);
-}
+uint32_t derive_max_conns(FdBudget b);
 
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
@@ -76,38 +59,7 @@ static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
 
 // Soft to hard, ceiling fs.nr_open, once at init - the capacity falls out
 // of whatever finally stands.
-inline uint64_t raise_nofile() {
-  struct rlimit rl {};
-  if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
-#ifdef IO_URING_FD_CEILING
-  rlim_t target = static_cast<rlim_t>(IO_URING_FD_CEILING - 1);
-  if (target > rl.rlim_max) target = rl.rlim_max;
-  if (rl.rlim_cur != target) {
-    struct rlimit want {target, rl.rlim_max};
-    (void)::setrlimit(RLIMIT_NOFILE, &want);
-    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
-  }
-  const uint64_t cur = static_cast<uint64_t>(rl.rlim_cur);
-  return cur < IO_URING_FD_CEILING ? cur : IO_URING_FD_CEILING - 1;
-#else
-  rlim_t target = rl.rlim_max;
-  if (target == RLIM_INFINITY) {
-    uint64_t nr_open = 1u << 20;
-    if (std::FILE* f = std::fopen("/proc/sys/fs/nr_open", "re")) {
-      unsigned long long v = 0;
-      if (std::fscanf(f, "%llu", &v) == 1 && v > 0) nr_open = v;
-      std::fclose(f);
-    }
-    target = static_cast<rlim_t>(nr_open);
-  }
-  if (rl.rlim_cur < target) {
-    struct rlimit want {target, rl.rlim_max};
-    (void)::setrlimit(RLIMIT_NOFILE, &want);
-    if (::getrlimit(RLIMIT_NOFILE, &rl) != 0) return 0;
-  }
-  return static_cast<uint64_t>(rl.rlim_cur);
-#endif
-}
+uint64_t raise_nofile();
 
 struct ListenerSpec {
   const char* unix_path = nullptr;
@@ -183,37 +135,25 @@ enum : uint8_t {
 
 
 // user_data: kind(8) | gen(16) | idx(32); gen guards a reused slot.
-inline uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx) {
-  return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
-}
+uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx);
 // #30: which watcher, on top of which connection - 8 bits of the tag,
 // so kMaxWatchers of them (declared further up, where Conn needs it).
-inline uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot) {
-  return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
-}
-inline uint8_t watch_slot(uint64_t ud) { return static_cast<uint8_t>(ud >> 48); }
+uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot);
+uint8_t watch_slot(uint64_t ud);
 // #30: the same 8 bits for a compute job. A value round hands over
 // several at one stop, so an answer has to say which one it is.
 // Four bits name the stopped run and four name its job, so one byte
 // carries both: a connection holds up to 16 stopped runs - one per h2
 // stream - and a run hands over up to four jobs at a stop.
 // Both name one job: the pool's slot and which taking of it.
-inline uint64_t compute_deadline_tag(unsigned slot, uint16_t gen) {
-  return tag(kComputeDeadline, gen, static_cast<uint32_t>(slot));
-}
-inline uint64_t compute_started_tag(unsigned slot, uint16_t gen) {
-  return tag(kComputeStarted, gen, static_cast<uint32_t>(slot));
-}
+uint64_t compute_deadline_tag(unsigned slot, uint16_t gen);
+uint64_t compute_started_tag(unsigned slot, uint16_t gen);
 // The connection index takes 24 bits, which is more than the fixed
 // file table allows, and the top byte of that word names which taking
 // of the park slot this job belongs to.
 static_assert(kFixedTableKernelMax <= (1u << 24), "a connection index must fit 24 bits");
-inline uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job,
-                                 uint8_t park_gen) {
-  const uint8_t both = static_cast<uint8_t>((park << 4) | (job & 0x0f));
-  const uint32_t word = (idx & 0xffffffu) | (static_cast<uint32_t>(park_gen) << 24);
-  return tag(kComputeTask, gen, word) | (static_cast<uint64_t>(both) << 48);
-}
+uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job,
+                          uint8_t park_gen);
 
 enum : uint32_t {
   kStSocket = 1,
@@ -227,17 +167,7 @@ enum : uint32_t {
 };
 
 // Which stage of the setup chain a failing CQE belongs to.
-inline const char* stage_name(uint32_t st) {
-  switch (st) {
-    case kStSocket: return "socket";
-    case kStSockopt: return "setsockopt";
-    case kStBind: return "bind";
-    case kStListen: return "listen";
-    case kStName: return "getsockname";
-    case kStUnlink: return "unlink";
-  }
-  return "?";
-}
+const char* stage_name(uint32_t st);
 }
 
 }
