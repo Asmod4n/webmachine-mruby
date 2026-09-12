@@ -1403,6 +1403,10 @@ class Http1 {
       // The worker ended the task at its max_runtime. Not load: a second
       // attempt costs the same, so 500 and no Retry-After.
       bool compute_task_over_deadline = false;
+      // The crossing raised: mruby could not dump the block, or CBOR
+      // could not carry the arguments. The round answers 500 and the
+      // error log says which.
+      bool compute_task_not_crossed = false;
       // The worker raised. The registry holds what dies - a database, a
       // connection - so 503 with a Retry-After of a minute.
       bool compute_task_raised = false;
@@ -1855,6 +1859,9 @@ class Http1 {
     // The author's number was wrong. Coming back does not make the work
     // shorter, so nothing tells the client to.
     if (round.compute_task_over_deadline) return {500, {}};
+    // The block or the arguments could not cross. Nothing a client does
+    // changes that, so nothing tells it to come back.
+    if (round.compute_task_not_crossed) return {500, {}};
     // A handle the worker needs is gone. A database that is restarted
     // comes back, and a minute is the size of that, not the seconds a
     // burst of load lives on.
@@ -1864,7 +1871,12 @@ class Http1 {
   // #80: the crossing, done by the frame at the stop. The block becomes
   // an id and the arguments become CBOR. After this nothing of the VM is
   // named, which is what lets a worker touch the result at all.
-  static bool compute_task_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res);
+  // A raise here is the application's and not the run's - the walk is
+  // over by now and nothing of it is left to answer one - so the
+  // crossing runs under a frame of its own. compute_task_cross is the
+  // half that raises.
+  bool compute_task_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res);
+  bool compute_task_cross(Conn& st, Conn::Round& round, int park, const Resource& res);
   // #30: the watcher a stopped run left, handed to the connection. The
   // connection files it under a slot and roots it; the reactor arms what
   // `w_pending` names. False when the connection can hold no more, and

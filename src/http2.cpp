@@ -487,9 +487,27 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
 
   H2Stream* existing = h2.find(stream_id);
   if (existing != nullptr && existing->end_headers) {
-    if (!end_stream || existing->half_closed_remote) {
+    // RFC 9113 8.1: a second field block on an open stream is the
+    // trailer section, and END_STREAM is the only way it comes.
+    //
+    // A stream that is not a request has none. A websocket or an event
+    // stream carries a tunnel, not a flow, and serving one here would
+    // run the route its entry never named - route 0, with facts nobody
+    // sent - and free the tunnel under the handler that is using it.
+    if (!end_stream || existing->half_closed_remote || existing->ws != nullptr ||
+        existing->sse != nullptr || existing->streaming) {
       return h2_error(st0, kH2ProtocolError, sink);
     }
+    // The two gates the last DATA frame of a body passes. A trailer
+    // section ends the body, so it answers to both: the octets have to
+    // be the number the head declared, and a body in a file is whole
+    // only once its last write has landed.
+    if (existing->content_length_given &&
+        existing->content_received != existing->content_length) {
+      return h2_count_lie(st0, stream_id, sink);
+    }
+    existing->spill.ended = true;
+    if (mrb_unlikely(existing->spill.fd >= 0 && !existing->spill.drained())) return true;
     return h2_serve_parked(st0, *existing, sink, true);
   }
 
@@ -2109,7 +2127,12 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           std::string out;
           const bool go_on = ws_feed(stp->ws, {reinterpret_cast<const char*>(dp), dlen}, out);
           if (!out.empty()) stp->response_content.append_owned(out.data(), out.size());
-          if (!go_on) {
+          // RFC 9113 5.1: END_STREAM closes the peer's half, so no more
+          // of the tunnel can arrive and this websocket is over - the
+          // same end a handler reaches when it says so. Without this the
+          // stream and its WsConn stood until the connection went, and
+          // DATA after END_STREAM was still read.
+          if (!go_on || (flags & kH2FlagEndStream) != 0) {
             // RFC 6455 7: the handler said the connection is over. What
             // it still owes leaves first, and END_STREAM rides the last
             // frame of it.

@@ -76,7 +76,11 @@ bool read_close(std::string_view payload, Close& out) {
   if (len == 1) return false;
   const uint16_t code = static_cast<uint16_t>((static_cast<unsigned char>(payload[0]) << 8) |
                                               static_cast<unsigned char>(payload[1]));
-  if (code < 1000 || code == 1004 || code == 1005 || code == 1006 ||
+  // RFC 6455 7.4.2: 1000 to 4999 name a close, and the registered ones
+  // this endpoint may be sent are a subset of those. Above 4999 is not a
+  // close code at all, and echoing one back made this server spell a
+  // number it was never allowed to.
+  if (code < 1000 || code > 4999 || code == 1004 || code == 1005 || code == 1006 ||
       (code >= 1016 && code <= 2999) || code == 1015) {
     return false;
   }

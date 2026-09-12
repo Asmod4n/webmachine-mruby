@@ -37,16 +37,20 @@ void field(std::string& out, http::Field f) {
   const size_t nlen = f.name.size();
   const char* const v = f.value.data();
   const size_t vlen = f.value.size();
+  // WHATWG HTML: a line of an event stream ends at CR, at LF, or at CR
+  // LF, and all three are this field's end. The split looked for LF
+  // alone, so a bare CR stayed inside the value and the client read it
+  // as a line of its own - an `id:` or an `event:` spelled by whatever
+  // string the application relayed.
   size_t i = 0;
-  do {
-    const char* nl = static_cast<const char*>(std::memchr(v + i, '\n', vlen - i));
-    const size_t end = nl != nullptr ? size_t(nl - v) : vlen;
-    out.append(name, nlen).append(": ", 2);
-    size_t stop = end;
-    if (stop > i && v[stop - 1] == '\r') stop--;
-    out.append(v + i, stop - i).append("\n", 1);
+  for (;;) {
+    size_t end = i;
+    while (end < vlen && v[end] != '\n' && v[end] != '\r') end++;
+    out.append(name, nlen).append(": ", 2).append(v + i, end - i).append("\n", 1);
+    if (end >= vlen) break;
     i = end + 1;
-  } while (i <= vlen && i != 0 && i - 1 < vlen);
+    if (v[end] == '\r' && i < vlen && v[i] == '\n') i++;
+  }
 }
 
 // WHATWG HTML: the same line, from a Ruby value.

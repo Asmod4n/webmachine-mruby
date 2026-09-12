@@ -1401,6 +1401,29 @@ mrb_value run_engine_body(mrb_state* mrb, void* ud) {
 // #80: the same walk, re-entered where it stopped. The instance is
 // still here and initialize has already run, so both are skipped - a
 // resumed run is the same run, not a second one.
+// #30: the answers of a round, and then the walk - both under one frame.
+// What a worker said is its own value, and making sense of it is Ruby
+// work that can raise.
+struct ResumeAsk {
+  const Resource* res;
+  const RunRound* round;
+};
+mrb_value run_resume_body(mrb_state* mrb, void* ud);
+mrb_value run_resume_answers(mrb_state* mrb, void* ud) {
+  auto* const ask = static_cast<ResumeAsk*>(ud);
+  const Resource& res = *ask->res;
+  const RunRound& round = *ask->round;
+  for (uint8_t i = 0; i < round.n; i++) {
+    if (round.what[i] == kJobNode) {
+      res.run.answer = round.answers[i];
+      res.run.answered = true;
+      continue;
+    }
+    value_answer(res, round.what[i], round.answers[i]);
+  }
+  return run_resume_body(mrb, const_cast<Resource*>(&res));
+}
+
 mrb_value run_resume_body(mrb_state* mrb, void* ud) {
   return run_engine(mrb, *static_cast<const Resource*>(ud), true);
 }
@@ -2832,19 +2855,16 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& rou
       return run_settle(res, out, {round.answers[i], TRUE});
     }
   }
-  for (uint8_t i = 0; i < round.n; i++) {
-    if (round.what[i] == kJobNode) {
-      res.run.answer = round.answers[i];
-      res.run.answered = true;
-      continue;
-    }
-    value_answer(res, round.what[i], round.answers[i]);
-  }
   res.run.stopped = false;
-
+  // The answers go in under the same frame that protects the walk.
+  // value_answer asks Ruby what a worker's word means - to_s on an ETag,
+  // an Integer for a date - and a worker is free to answer something
+  // that has no such meaning. Applied out here that raise had no frame
+  // over it: mrb->jmp belongs to main, so it ended the process instead
+  // of the request. One block answering [1] for last_modified was enough.
+  ResumeAsk ask{&res, &round};
   mrb_bool raised = FALSE;
-  const mrb_value thrown =
-      mrb_protect_error(mrb, run_resume_body, const_cast<Resource*>(&res), &raised);
+  const mrb_value thrown = mrb_protect_error(mrb, run_resume_answers, &ask, &raised);
   return run_settle(res, out, {thrown, raised});
 }
 

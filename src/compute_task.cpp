@@ -368,7 +368,45 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
 // Both halves can fail: a block mruby cannot dump, or a value CBOR
 // cannot carry. Either is the application's fault and is raised with
 // its reason, so the 500 page and the error log say what did not cross.
+namespace {
+// The trampoline mrb_protect_error takes. It carries the four arguments
+// of the crossing and the answer it gives.
+struct CrossAsk {
+  Http1* server;
+  Http1::Conn* st;
+  Http1::Conn::Round* round;
+  int park;
+  const Resource* res;
+  bool crossed;
+};
+mrb_value cross_body(mrb_state*, void* ud) {
+  auto* const a = static_cast<CrossAsk*>(ud);
+  a->crossed = a->server->compute_task_cross(*a->st, *a->round, a->park, *a->res);
+  return mrb_nil_value();
+}
+}  // namespace
+
 bool Http1::compute_task_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res) {
+  mrb_state* const mrb = res.mrb;
+  CrossAsk ask{this, &st, &round, park, &res, false};
+  mrb_bool raised = FALSE;
+  const mrb_value thrown = mrb_protect_error(mrb, cross_body, &ask, &raised);
+  if (mrb_likely(raised == FALSE)) return ask.crossed;
+  // Nothing crossed, so nothing is owed an answer. The round is refused
+  // with a 500 and the error log carries what did not cross - the same
+  // place a worker's own raise is written.
+  for (Conn::Round::Job& j : round.job) j.waiting = false;
+  round.jobs_owed = 0;
+  round.jobs_answered = 0;
+  round.compute_task_not_crossed = true;
+  round.answer_ready = true;
+  if (mrb_exception_p(thrown)) mrb->exc = mrb_obj_ptr(thrown);
+  report_compute_fault(error_log(), mrb,
+                       {{}, "the crossing into a worker", {}, {}, 500});
+  return false;
+}
+
+bool Http1::compute_task_cross(Conn& st, Conn::Round& round, int park, const Resource& res) {
   for (Conn::Round::Job& j : round.job) j.waiting = false;
   round.jobs_owed = 0;
   round.jobs_answered = 0;
