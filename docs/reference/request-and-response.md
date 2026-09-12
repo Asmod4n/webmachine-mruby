@@ -92,24 +92,24 @@ end
 | --- | --- | --- |
 | `headers` | `Webmachine::Response::Headers` | A view over the run's header buffer, built fresh on each call. |
 | `headers[name]` | String or nil | Case-insensitive lookup. |
-| `headers[name] = value` | -  | A String replaces the line of that name, or appends one. `nil` deletes it. Refuses a value that is not a String or nil, a name that is not a valid field-name token, a value with CR, LF or NUL, or a name the server spells itself (a framing or connection field). |
+| `headers[name] = value` | - | A String replaces the line of that name, or appends one. `nil` deletes it. Refuses a value that is not a String or nil, a name that is not a valid field-name token, a value with CR, LF or NUL, or a name the server spells itself (a framing or connection field). |
 | `headers.key?(name)` | true or false | Case-insensitive presence check. |
 | `headers.delete(name)` | String or nil | Removes the field and returns its old value, or nil. |
 | `code` | Integer or nil | nil until a callback sets it. |
-| `code = n` | -  | Takes an Integer. Refuses with `ArgumentError` when `n` is below 100 or above 599. |
+| `code = n` | - | Takes an Integer. Refuses with `ArgumentError` when `n` is below 100 or above 599. |
 | `body` | String or nil | The response body a callback set. |
-| `body = s` | -  | A String sets the body; `nil` clears it. Refuses a value that is not a String or nil. Raises `RuntimeError` when no body buffer is bound for this run. |
+| `body = s` | - | A String sets the body; `nil` clears it. Refuses a value that is not a String or nil. Raises `RuntimeError` when no body buffer is bound for this run. |
 | `file` | String or nil | The file name a callback set with `file=`. |
-| `file = "rel/path"` | -  | Names a file under the docroot; the reactor opens and streams it later. A String sets it, `nil` clears it. Refuses a value that is not a String or nil. Raises `Webmachine::ConfigError` when the server has no docroot. An empty name or one with a NUL is marked bad and answers 404. The resource that sets `response.file` returns `''` from its body callback. |
+| `file = "rel/path"` | - | Names a file under the docroot; the reactor opens and streams it later. A String sets it, `nil` clears it. Refuses a value that is not a String or nil. Raises `Webmachine::ConfigError` when the server has no docroot. An empty name or one with a NUL is marked bad and answers 404. The resource that sets `response.file` returns `''` from its body callback. |
 | `error_asset(name)` | the name | Makes an entry of the error assets zip the body, with the media type the zip recorded. `nil` is a no-op. Refuses a name that is not a String, refuses when the server has no error assets, refuses an empty or too-long name, and refuses a name not present in the error assets. |
 | `do_redirect(location = nil)` | true | Same function as `redirect_to`. With an argument, sets `Location` to `location.to_s`, replacing any earlier value, and marks the run a redirect. Refuses with `ArgumentError` a location carrying CR, LF or NUL. Raises `RuntimeError` without a bound header buffer. |
 | `redirect_to(location = nil)` | true | Same function as `do_redirect`, under the other name. |
 | `is_redirect?` | true or false | Whether this run was marked a redirect. |
 | `error` | any | A plain instance variable. The server never reads it. |
-| `error = v` | -  | Sets that instance variable. |
+| `error = v` | - | Sets that instance variable. |
 | `set_cookie(name, value, attrs = nil)` | nil | Appends one `Set-Cookie` line; never replaces one. `name` may be a Symbol or String. `value` must be a String. `attrs` is a Hash with keys `:path`, `:domain`, `:max_age`, `:expires`, `:secure`, `:httponly`, spelled on the wire as `Path=`, `Domain=`, `Max-Age=`, `Expires=`, `; Secure`, `; HttpOnly`. Refuses a name with `=` or `;`, a value or attribute with `;`, or any of the three with CR, LF or NUL. |
 | `userdata` | any | One slot per run. Set in one callback, read in a later callback of the same run. The server never reads it. An unset slot gives nil. |
-| `userdata = v` | -  | Sets that slot. |
+| `userdata = v` | - | Sets that slot. |
 
 ```ruby
 class WritesResponse < Webmachine::Resource
