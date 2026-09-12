@@ -833,36 +833,12 @@ namespace webmachine
 
 // An sqe from this ring, or a raise. A full submission queue is
 // submitted once, and a queue still full after that is raised.
-inline struct io_uring_sqe *sqe_or_raise(mrb_state *mrb, struct io_uring *ring)
-{
-    struct io_uring_sqe *s = io_uring_get_sqe(ring);
-    if (s != nullptr)
-        return s;
-    io_uring_submit(ring);
-    s = io_uring_get_sqe(ring);
-    if (s == nullptr)
-        mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
-    return s;
-}
+struct io_uring_sqe *sqe_or_raise(mrb_state *mrb, struct io_uring *ring);
 
 // mrb_open runs every gem init, and a gem init that raises leaves its
 // exception in mrb->exc with the VM otherwise standing. Such a VM is
 // not open: the error is printed, the VM is closed, and nullptr says so.
-inline mrb_state *open_vm_or_say(const char *who)
-{
-    mrb_state *const mrb = mrb_open();
-    if (mrb == nullptr) {
-        std::fprintf(stderr, "%s: mrb_open failed\n", who);
-        return nullptr;
-    }
-    if (mrb->exc != nullptr) {
-        std::fprintf(stderr, "%s: a gem init raised\n", who);
-        mrb_print_error(mrb);
-        mrb_close(mrb);
-        return nullptr;
-    }
-    return mrb;
-}
+mrb_state *open_vm_or_say(const char *who);
 
 class ArenaGuard
 {
@@ -1143,18 +1119,7 @@ inline constexpr size_t kLogQueueCap = 4u * 1024 * 1024;
 
 // True when this record has no room. The caller writes nothing and the
 // count carries what was lost.
-inline bool log_queue_full(Logger &lg)
-{
-    if (lg.pending.size() > kLogQueueCap) {
-        lg.dropped++;
-        return true;
-    }
-    if (lg.dropped != 0) {
-        std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n", lg.dropped);
-        lg.dropped = 0;
-    }
-    return false;
-}
+bool log_queue_full(Logger &lg);
 
 // One response as one record. The format is ours (see Logger above); the
 // fields are not:
@@ -1232,57 +1197,7 @@ struct AccessLine {
 };
 
 // Truncation caps are the wire fields' widths.
-inline void log_access(Logger &lg, const AccessLine &line)
-{
-    if (mrb_unlikely(log_queue_full(lg)))
-        return;
-    size_t peer_len = line.peer.size();
-    size_t method_token_len = line.method_token.size();
-    size_t request_target_len = line.request_target.size();
-    size_t referer_len = line.referer.size();
-    size_t user_agent_len = line.user_agent.size();
-    const uint8_t flags = line.flags;
-    const uint16_t status_code = line.status_code;
-    const size_t content_length = line.content_length;
-    const char *peer = line.peer.data();
-    const char *method_token = line.method_token.data();
-    const char *request_target = line.request_target.data();
-    const char *referer = line.referer.data();
-    const char *user_agent = line.user_agent.data();
-    if (method_token_len > 255)
-        method_token_len = 255;
-    if (peer_len > 255)
-        peer_len = 255;
-    if (request_target_len > 65535)
-        request_target_len = 65535;
-    if (referer_len > 65535)
-        referer_len = 65535;
-    if (user_agent_len > 65535)
-        user_agent_len = 65535;
-    LogRec r;
-    r.version = kLogRecVersion;
-    r.flags = flags;
-    r.status_code = status_code;
-    r.content_length =
-        content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
-    r.unix_seconds = lg.unix_seconds;
-    r.method_token_len = static_cast<uint8_t>(method_token_len);
-    r.peer_len = static_cast<uint8_t>(peer_len);
-    r.request_target_len = static_cast<uint16_t>(request_target_len);
-    r.referer_len = static_cast<uint16_t>(referer_len);
-    r.user_agent_len = static_cast<uint16_t>(user_agent_len);
-    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
-    if (method_token_len != 0)
-        lg.pending.append(method_token, method_token_len);
-    if (peer_len != 0)
-        lg.pending.append(peer, peer_len);
-    if (request_target_len != 0)
-        lg.pending.append(request_target, request_target_len);
-    if (referer_len != 0)
-        lg.pending.append(referer, referer_len);
-    if (user_agent_len != 0)
-        lg.pending.append(user_agent, user_agent_len);
-}
+void log_access(Logger &lg, const AccessLine &line);
 
 // One raise as one record. No format specifies this, and most of what is
 // in it has no RFC either - an exception class, a message and a
@@ -1358,43 +1273,19 @@ inline constexpr size_t kLendFloor = 4096;
 // yesterday can never point at a line that has moved or a method that is
 // gone. A build property, not a request's: it is the same for every
 // answer this process gives.
-inline uint64_t &app_build_hash()
-{
-    static uint64_t h = 0;
-    return h;
-}
+uint64_t &app_build_hash();
 
 // FNV-1a, 64 bit (Fowler/Noll/Vo, offset basis and prime by the reference
 // implementation). One raise's fingerprint is this over everything that
 // led to it, fed piece by piece.
 inline constexpr uint64_t kFnvBasis = 0xcbf29ce484222325ULL;
-inline uint64_t fnv1a(uint64_t h, const void *p, size_t n)
-{
-    const unsigned char *b = static_cast<const unsigned char *>(p);
-    size_t i = 0;
-    for (; i < n; i++) {
-        h ^= b[i];
-        h *= 0x100000001b3ULL;
-    }
-    return h;
-}
+uint64_t fnv1a(uint64_t h, const void *p, size_t n);
 // A length in front of every piece, so two pieces that meet cannot spell
 // what a different pair would: "/a" + "bc" and "/ab" + "c" are two
 // fingerprints, not one.
-inline uint64_t fnv1a_piece(uint64_t h, const void *p, size_t n)
-{
-    const uint32_t len = static_cast<uint32_t>(n);
-    h = fnv1a(h, &len, sizeof len);
-    return n != 0 ? fnv1a(h, p, n) : h;
-}
+uint64_t fnv1a_piece(uint64_t h, const void *p, size_t n);
 // The 16 lowercase hex digits a page shows and a log carries.
-inline void spell_fingerprint(char *out, uint64_t h)
-{
-    static const char kHex[] = "0123456789abcdef";
-    size_t i = 0;
-    for (; i < kFingerprintLen; i++)
-        out[i] = kHex[(h >> ((15 - i) * 4)) & 0xf];
-}
+void spell_fingerprint(char *out, uint64_t h);
 
 // What one failure was: the request that led there, and the raise that
 // ended it. Read, never written, by everything below - the fingerprint is
@@ -1434,75 +1325,12 @@ struct ErrFacts {
 // Everything that led here goes in, each piece behind its own length; the
 // message does not - the same fault at the same place under the same
 // request is one failure, whatever the exception chose to say about it.
-inline uint64_t fingerprint_of(const ErrFacts &f)
-{
-    uint64_t h = app_build_hash();
-    h = fnv1a_piece(h, f.method, f.method_len);
-    h = fnv1a_piece(h, f.request_target, f.request_target_len);
-    h = fnv1a_piece(h, f.steering, f.steering_len);
-    h = fnv1a_piece(h, f.exception_class, f.exception_class_len);
-    h = fnv1a_piece(h, f.backtrace, f.backtrace_len);
-    h = fnv1a_piece(h, &f.status_code, sizeof f.status_code);
-    return h;
-}
+uint64_t fingerprint_of(const ErrFacts &f);
 
 // One raise as one record: a fixed header whose last field is the size of
 // the second send, then that many bytes - peer, class, target, message,
 // backtrace, method, steering, in that order.
-inline void log_error(Logger &lg, const ErrFacts &f)
-{
-    if (mrb_unlikely(log_queue_full(lg)))
-        return;
-    // A 4xx is an answer, not a failure: the client asked for something it
-    // may not have, and the server said so. Nothing raised, so there is
-    // nothing to explain and no hash to hand out. Refused here, once, so no
-    // call site has to remember it.
-    if (f.status_code >= 400 && f.status_code < 500)
-        return;
-    const size_t peer_len = f.peer_len > 255 ? 255 : f.peer_len;
-    const size_t class_len = f.exception_class_len > 255 ? 255 : f.exception_class_len;
-    const size_t target_len = f.request_target_len > 65535 ? 65535 : f.request_target_len;
-    const size_t message_len = f.message_len > 65535 ? 65535 : f.message_len;
-    const size_t backtrace_len = f.backtrace_len > 65535 ? 65535 : f.backtrace_len;
-    const size_t method_len = f.method_len > 255 ? 255 : f.method_len;
-    const size_t steering_len = f.steering_len > 255 ? 255 : f.steering_len;
-    const size_t body_len = f.body_len > kBodyKept ? kBodyKept : f.body_len;
-    ErrRec r;
-    r.version = kErrRecVersion;
-    r.flags = 0; // no RFC, and nothing sets it yet: reserved on the wire
-    r.status_code = f.status_code;
-    r.unix_seconds = lg.unix_seconds;
-    r.peer_len = static_cast<uint8_t>(peer_len);
-    r.exception_class_len = static_cast<uint8_t>(class_len);
-    r.request_target_len = static_cast<uint16_t>(target_len);
-    r.message_len = static_cast<uint16_t>(message_len);
-    r.backtrace_len = static_cast<uint16_t>(backtrace_len);
-    r.method_len = static_cast<uint8_t>(method_len);
-    r.steering_len = static_cast<uint8_t>(steering_len);
-    r.body_len = static_cast<uint16_t>(body_len);
-    r.body_full_len = static_cast<uint32_t>(f.body_full);
-    spell_fingerprint(r.fingerprint, fingerprint_of(f));
-    spell_fingerprint(r.app_build, app_build_hash());
-    r.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
-                                          backtrace_len + method_len + steering_len + body_len);
-    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
-    if (peer_len != 0)
-        lg.pending.append(static_cast<const char *>(f.peer), peer_len);
-    if (class_len != 0)
-        lg.pending.append(f.exception_class, class_len);
-    if (target_len != 0)
-        lg.pending.append(f.request_target, target_len);
-    if (message_len != 0)
-        lg.pending.append(f.message, message_len);
-    if (backtrace_len != 0)
-        lg.pending.append(f.backtrace, backtrace_len);
-    if (method_len != 0)
-        lg.pending.append(f.method, method_len);
-    if (steering_len != 0)
-        lg.pending.append(f.steering, steering_len);
-    if (body_len != 0)
-        lg.pending.append(f.body, body_len);
-}
+void log_error(Logger &lg, const ErrFacts &f);
 
 // The server's own fault, spelled the same way at every call site: one
 // error-log record, class Webmachine::Error/17, never reaching the answer.
@@ -1515,31 +1343,7 @@ struct ErrorLine {
     uint16_t status_code = 0;        // RFC 9110 15
 };
 
-inline void log_internal_error(Logger &lg, const ErrorLine &line)
-{
-    if (mrb_unlikely(log_queue_full(lg)))
-        return;
-    if (!lg.enabled)
-        return;
-    const void *peer = line.peer.data();
-    const size_t peer_len = line.peer.size();
-    const char *request_target = line.request_target.data();
-    const size_t request_target_len = line.request_target.size();
-    const uint16_t status_code = line.status_code;
-    const char *why = line.why.data();
-    const size_t why_len = line.why.size();
-    ErrFacts f;
-    f.peer = peer;
-    f.peer_len = peer_len;
-    f.request_target = request_target;
-    f.request_target_len = request_target_len;
-    f.exception_class = "Webmachine::Error";
-    f.exception_class_len = 17;
-    f.message = why;
-    f.message_len = why_len;
-    f.status_code = status_code;
-    log_error(lg, f);
-}
+void log_internal_error(Logger &lg, const ErrorLine &line);
 
 // A raise inside a worker VM, written by the reactor. The exception
 // object itself cannot cross - an mrb_value belongs to the VM that made
@@ -1562,14 +1366,7 @@ struct ComputeFault {
 // whole. stderr gets it only when no error log was configured, because
 // then there is nothing else to read - a line printed beside a log that
 // is being read is a line nobody reads.
-inline void say_server_error(Logger *lg, std::string_view why)
-{
-    if (lg != nullptr && lg->enabled) {
-        log_internal_error(*lg, {{}, {}, why, 0});
-        return;
-    }
-    std::fprintf(stderr, "webmachine: %.*s\n", static_cast<int>(why.size()), why.data());
-}
+void say_server_error(Logger *lg, std::string_view why);
 
 // Which build this is. mruby's enable_debug defines MRB_DEBUG and the
 // ship configs do not, so this is the build's own word for itself and
@@ -1598,32 +1395,12 @@ void exception_facts(mrb_state *mrb, Raised out);
 // and is now running app code of its own (SSE, a WebSocket). There is no
 // target and no method to name, so the fingerprint is the build, the
 // class and the place - which is exactly what such a failure is.
-inline void log_raise(Logger &lg, mrb_state *mrb, uint16_t status)
-{
-    if (!lg.enabled)
-        return;
-    ErrFacts f;
-    std::string backtrace;
-    f.status_code = status;
-    exception_facts(mrb, {f, backtrace});
-    if (f.exception_class == nullptr)
-        return;
-    log_error(lg, f);
-}
+void log_raise(Logger &lg, mrb_state *mrb, uint16_t status);
 
 // Every exception the VM raised and the server does not hand back to a
 // client goes through here: into the error log when there is one, and
 // on screen in a debug build, as the VM made it. Then it is cleared.
-inline void report_raise(Logger *lg, mrb_state *mrb, uint16_t status)
-{
-    if (mrb->exc == nullptr)
-        return;
-    if (lg != nullptr)
-        log_raise(*lg, mrb, status);
-    if (kDebugBuild)
-        mrb_print_error(mrb);
-    mrb->exc = nullptr;
-}
+void report_raise(Logger *lg, mrb_state *mrb, uint16_t status);
 void fault_report(Logger *lg, mrb_state *mrb, const ComputeFault &x);
 } // namespace webmachine
 
@@ -1655,55 +1432,14 @@ constexpr bool star_value(const char *v, size_t n)
 }
 
 // RFC 9110 4.2.1: the query is not part of the path.
-inline size_t path_only(const char *p, size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        if (p[i] == '?')
-            return i;
-    }
-    return n;
-}
+size_t path_only(const char *p, size_t n);
 
 // RFC 9110 9.1: methods are case-sensitive tokens.
-inline flow::Method parse_method(const char *m, size_t n)
-{
-    switch (n) {
-        case 3:
-            if (std::memcmp(m, "GET", 3) == 0)
-                return flow::Method::kGet;
-            if (std::memcmp(m, "PUT", 3) == 0)
-                return flow::Method::kPut;
-            break;
-        case 4:
-            if (std::memcmp(m, "HEAD", 4) == 0)
-                return flow::Method::kHead;
-            if (std::memcmp(m, "POST", 4) == 0)
-                return flow::Method::kPost;
-            break;
-        case 6:
-            if (std::memcmp(m, "DELETE", 6) == 0)
-                return flow::Method::kDelete;
-            break;
-        case 7:
-            if (std::memcmp(m, "OPTIONS", 7) == 0)
-                return flow::Method::kOptions;
-            break;
-        default:
-            break;
-    }
-    return flow::Method::kOther;
-}
+flow::Method parse_method(const char *m, size_t n);
 
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and every writer goes through here.
-inline std::string with_charset(const std::string &type)
-{
-    if (type.size() < 5 || !tok_eq({type.data(), 5}, "text/"))
-        return type;
-    if (type.find(';') != std::string::npos)
-        return type;
-    return type + "; charset=utf-8";
-}
+std::string with_charset(const std::string &type);
 
 // A literal's length, at compile time.
 constexpr size_t clen(const char *s)
@@ -1737,10 +1473,7 @@ constexpr bool compressible_media_type(const char *v, size_t n)
     return false;
 }
 // RFC 6839: the same question, from a std::string.
-inline bool compressible_media_type(const std::string &v)
-{
-    return compressible_media_type(v.data(), v.size());
-}
+bool compressible_media_type(const std::string &v);
 namespace proof
 {
 // The table's own self-check, at compile time.
@@ -1830,93 +1563,20 @@ inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
 // Two digits, zero-padded, at out[0..1].
-inline void write_two_digits(char *out, int v)
-{
-    out[0] = static_cast<char>('0' + v / 10);
-    out[1] = static_cast<char>('0' + v % 10);
-}
+void write_two_digits(char *out, int v);
 
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
-inline void date_core(char out[kDateLen], const struct tm &tm)
-{
-    static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    std::memcpy(out, kDay[tm.tm_wday], 3);
-    out[3] = ',';
-    out[4] = ' ';
-    write_two_digits(out + 5, tm.tm_mday);
-    out[7] = ' ';
-    std::memcpy(out + 8, kMon[tm.tm_mon], 3);
-    out[11] = ' ';
-    const int year = tm.tm_year + 1900;
-    write_two_digits(out + 12, year / 100);
-    write_two_digits(out + 14, year % 100);
-    out[16] = ' ';
-    write_two_digits(out + 17, tm.tm_hour);
-    out[19] = ':';
-    write_two_digits(out + 20, tm.tm_min);
-    out[22] = ':';
-    write_two_digits(out + 23, tm.tm_sec);
-    out[25] = ' ';
-    std::memcpy(out + 26, "GMT", 3);
-}
+void date_core(char out[kDateLen], const struct tm &tm);
 
 // RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
-inline size_t spell_content_length(char (&buf)[40], size_t len)
-{
-    std::memcpy(buf, "Content-Length: ", 16);
-    size_t at = 16;
-    char digits[20];
-    size_t d = 0;
-    size_t v = len;
-    do {
-        digits[d++] = static_cast<char>('0' + v % 10);
-        v /= 10;
-    } while (v != 0);
-    while (d != 0)
-        buf[at++] = digits[--d];
-    buf[at++] = '\r';
-    buf[at++] = '\n';
-    buf[at++] = '\r';
-    buf[at++] = '\n';
-    return at;
-}
+size_t spell_content_length(char (&buf)[40], size_t len);
 
 // RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
-inline int hex_digit(char ch)
-{
-    if (ch >= '0' && ch <= '9')
-        return ch - '0';
-    if (ch >= 'a' && ch <= 'f')
-        return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F')
-        return ch - 'A' + 10;
-    return -1;
-}
+int hex_digit(char ch);
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
-inline ClStatus parse_content_length(std::string_view v, size_t *out)
-{
-    const char *const s = v.data();
-    const size_t n = v.size();
-    if (n == 0)
-        return ClStatus::kBad;
-    size_t acc = 0;
-    for (size_t j = 0; j < n; j++) {
-        const char ch = s[j];
-        if (ch < '0' || ch > '9')
-            return ClStatus::kBad;
-        size_t t = 0;
-        if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &t) ||
-            __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &acc)) {
-            return ClStatus::kOverflow;
-        }
-    }
-    *out = acc;
-    return ClStatus::kOk;
-}
+ClStatus parse_content_length(std::string_view v, size_t *out);
 
 // RFC 9110: the ten fields Resource#request hands back by name. The one
 // pass over the field array notes where each one sits; a later ask is a bit
@@ -2047,13 +1707,7 @@ static_assert(sizeof(ReqValues) == 224,
 // Move every span in `v` by `delta`. A null span stays null: it names no
 // bytes, so there is nothing to move and an offset from nullptr is
 // undefined besides.
-inline void rebase(ReqValues &v, ptrdiff_t delta)
-{
-    for (const char *ReqValues::*m : kReqValueSpans) {
-        if (v.*m != nullptr)
-            v.*m += delta;
-    }
-}
+void rebase(ReqValues &v, ptrdiff_t delta);
 
 // #210: the fields this request steered by, one per line, for the error
 // record and the fingerprint over it. These are the ones the server reads
@@ -2066,60 +1720,11 @@ inline void rebase(ReqValues &v, ptrdiff_t delta)
 // 7616, and whatever else the IANA registry grows). Which scheme ran
 // decides which code ran; the credential decides nothing and belongs in
 // no file. Cookie is named without its value for the same reason.
-inline void spell_steering(const ReqValues *v, std::string &out)
-{
-    out.clear();
-    if (v == nullptr)
-        return;
-    const char *p = nullptr;
-    size_t n = 0;
-    const auto put = [&out](const char *name, const char *val, size_t len) {
-        if (val == nullptr || len == 0)
-            return;
-        out.append(name);
-        out.append(": ", 2);
-        out.append(val, len);
-        out.push_back('\n');
-    };
-    put("accept", v->accept, v->accept_len);
-    put("accept-encoding", v->accept_encoding, v->accept_encoding_len);
-    put("content-type", v->content_type, v->content_type_len);
-    put("host", v->host, v->host_len);
-    put("range", v->range, v->range_len);
-    put("if-range", v->if_range, v->if_range_len);
-    put("if-match", v->if_match, v->if_match_len);
-    put("if-none-match", v->if_none_match, v->if_none_match_len);
-    // The scheme is the first token; a line with no space is a scheme on
-    // its own, which is all that goes down either way.
-    if (v->authorization != nullptr && v->authorization_len != 0) {
-        p = v->authorization;
-        n = 0;
-        while (n < v->authorization_len && p[n] != ' ' && p[n] != '\t')
-            n++;
-        put("authorization", p, n);
-    }
-    if (v->cookie != nullptr && v->cookie_len != 0)
-        put("cookie", "sent", 4);
-}
+void spell_steering(const ReqValues *v, std::string &out);
 
 // A run of digits at v[i], cursor left on the first that is not one.
 // False = none there, or the value does not fit a size_t.
-inline bool read_size(const char *v, size_t n, size_t &i, size_t *out)
-{
-    bool any = false;
-    size_t val = 0;
-    while (i < n && v[i] >= '0' && v[i] <= '9') {
-        size_t t = 0;
-        if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
-            __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
-            return false;
-        }
-        any = true;
-        i++;
-    }
-    *out = val;
-    return any;
-}
+bool read_size(const char *v, size_t n, size_t &i, size_t *out);
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // RFC 9110 14.1.2: one range over the selected representation's octets.
@@ -2137,117 +1742,14 @@ struct ByteRange {
     size_t last;
 };
 
-inline RangeParse parse_range(RangeField field, ByteRange &out)
-{
-    const char *const v = field.value.data();
-    const size_t n = field.value.size();
-    const size_t complete = field.complete;
-    size_t *const first = &out.first;
-    size_t *const last = &out.last;
-    if (n < 7 || !tok_eq({v, 6}, "bytes="))
-        return RangeParse::kNone;
-    size_t i = 6;
-    while (i < n && (v[i] == ' ' || v[i] == '\t'))
-        i++;
-    size_t a = 0, b = 0;
-    const bool have_a = read_size(v, n, i, &a);
-    if (i >= n || v[i] != '-')
-        return RangeParse::kNone;
-    i++;
-    const bool have_b = read_size(v, n, i, &b);
-    while (i < n && (v[i] == ' ' || v[i] == '\t'))
-        i++;
-    if (i != n)
-        return RangeParse::kNone;
-    if (!have_a && !have_b)
-        return RangeParse::kNone;
-    if (complete == 0)
-        return RangeParse::kUnsat;
-    if (!have_a) {
-        if (b == 0)
-            return RangeParse::kUnsat;
-        *first = b >= complete ? 0 : complete - b;
-        *last = complete - 1;
-        return RangeParse::kOne;
-    }
-    if (have_b && b < a)
-        return RangeParse::kNone;
-    if (a >= complete)
-        return RangeParse::kUnsat;
-    *first = a;
-    *last = have_b ? (b < complete - 1 ? b : complete - 1) : complete - 1;
-    return RangeParse::kOne;
-}
+RangeParse parse_range(RangeField field, ByteRange &out);
 
 // RFC 9110 14.2: one validator, compared strongly; a date reads as no match.
-inline bool if_range_matches(std::string_view v, std::string_view tag)
-{
-    const char *const p = v.data();
-    const size_t n = v.size();
-    const size_t taglen = tag.size();
-    size_t i = 0;
-    while (i < n && (p[i] == ' ' || p[i] == '\t'))
-        i++;
-    size_t e = n;
-    while (e > i && (p[e - 1] == ' ' || p[e - 1] == '\t'))
-        e--;
-    return e - i == taglen && std::memcmp(p + i, tag.data(), taglen) == 0;
-}
+bool if_range_matches(std::string_view v, std::string_view tag);
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
 // never reaches this parse.
-inline bool gzip_acceptable(const char *v, size_t n)
-{
-    bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
-    size_t i = 0;
-    while (i < n) {
-        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
-            i++;
-        const size_t ts = i;
-        while (i < n && v[i] != ',' && v[i] != ';' && v[i] != ' ' && v[i] != '\t')
-            i++;
-        const size_t tl = i - ts;
-        bool q_nonzero = true;
-        while (i < n && v[i] != ',') {
-            if (v[i] != ';') {
-                i++;
-                continue;
-            }
-            i++;
-            while (i < n && (v[i] == ' ' || v[i] == '\t'))
-                i++;
-            if (i < n && (v[i] == 'q' || v[i] == 'Q')) {
-                size_t j = i + 1;
-                while (j < n && (v[j] == ' ' || v[j] == '\t'))
-                    j++;
-                if (j < n && v[j] == '=') {
-                    j++;
-                    q_nonzero = false;
-                    while (j < n && v[j] != ',' && v[j] != ';') {
-                        if (v[j] >= '1' && v[j] <= '9')
-                            q_nonzero = true;
-                        j++;
-                    }
-                    i = j;
-                }
-            }
-        }
-        if (tl != 0) {
-            if (tok_eq({v + ts, tl}, "gzip") || tok_eq({v + ts, tl}, "x-gzip")) {
-                gz_seen = true;
-                gz_ok = q_nonzero;
-            } else if (tl == 1 && v[ts] == '*') {
-                star_seen = true;
-                star_ok = q_nonzero;
-            }
-        }
-    }
-    if (gz_seen)
-        return gz_ok;
-    if (star_seen)
-        return star_ok;
-    return false;
-}
+bool gzip_acceptable(const char *v, size_t n);
 
 // RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
 // representation's own tag, and which comparison applies - strong for
@@ -2258,67 +1760,13 @@ struct EtagMatch {
     bool weak;
 };
 
-inline bool etag_list_match(EtagMatch m)
-{
-    const char *const v = m.list.data();
-    const size_t n = m.list.size();
-    const char *const tag = m.tag.data();
-    const size_t taglen = m.tag.size();
-    const bool weak = m.weak;
-    size_t i = 0;
-    while (i < n) {
-        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
-            i++;
-        if (i >= n)
-            break;
-        bool member_weak = false;
-        if (i + 1 < n && v[i] == 'W' && v[i + 1] == '/') {
-            member_weak = true;
-            i += 2;
-        }
-        if (i >= n || v[i] != '"') {
-            while (i < n && v[i] != ',')
-                i++;
-            continue;
-        }
-        const size_t start = i;
-        i++;
-        while (i < n && v[i] != '"')
-            i++;
-        if (i >= n)
-            break;
-        i++;
-        const size_t mlen = i - start;
-        if ((weak || !member_weak) && mlen == taglen && std::memcmp(v + start, tag, taglen) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
+bool etag_list_match(EtagMatch m);
 
 // Exactly k digits at p[at], as one number. -1 = one of them is not a digit.
-inline int read_fixed_digits(const char *p, size_t at, size_t k)
-{
-    int v = 0;
-    for (size_t i = 0; i < k; i++) {
-        if (p[at + i] < '0' || p[at + i] > '9')
-            return -1;
-        v = v * 10 + (p[at + i] - '0');
-    }
-    return v;
-}
+int read_fixed_digits(const char *p, size_t at, size_t k);
 
 // The three-letter month name at p[at], 1..12. -1 = none of them.
-inline int read_month_name(const char *p, size_t at)
-{
-    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    for (int m = 0; m < 12; m++) {
-        if (std::memcmp(p + at, kMon[m], 3) == 0)
-            return m + 1;
-    }
-    return -1;
-}
+int read_month_name(const char *p, size_t at);
 
 // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
 // One civil date and time, as the fields a Date line spells.
@@ -2331,68 +1779,13 @@ struct Civil {
     int ss;
 };
 
-inline int64_t epoch_from_civil(Civil c)
-{
-    int y = c.y;
-    const int m = c.m, d = c.d, hh = c.hh, mm = c.mm, ss = c.ss;
-    y -= m <= 2;
-    const int era = (y >= 0 ? y : y - 399) / 400;
-    const int yoe = y - era * 400;
-    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const int64_t days = int64_t{era} * 146097 + doe - 719468;
-    return days * 86400 + hh * 3600 + mm * 60 + ss;
-}
+int64_t epoch_from_civil(Civil c);
 
 // RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
 // ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
 // ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
 // ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
-inline bool parse_http_date(const char *p, size_t n, int64_t *out)
-{
-    int y, mo, d, hh, mm, ss;
-    if (n == 29 && p[3] == ',' && p[4] == ' ') { // IMF-fixdate
-        d = read_fixed_digits(p, 5, 2);
-        mo = read_month_name(p, 8);
-        y = read_fixed_digits(p, 12, 4);
-        hh = read_fixed_digits(p, 17, 2);
-        mm = read_fixed_digits(p, 20, 2);
-        ss = read_fixed_digits(p, 23, 2);
-        if (std::memcmp(p + 25, " GMT", 4) != 0)
-            return false;
-    } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
-               static_cast<const char *>(std::memchr(p, ',', n)) != nullptr) { // RFC 850
-        const char *c = static_cast<const char *>(std::memchr(p, ',', n));
-        const size_t at = static_cast<size_t>(c - p) + 2;
-        if (at + 18 + 4 != n || at + 18 > n)
-            return false;
-        d = read_fixed_digits(p, at, 2);
-        if (p[at + 2] != '-' || p[at + 6] != '-')
-            return false;
-        mo = read_month_name(p, at + 3);
-        y = read_fixed_digits(p, at + 7, 2);
-        if (y >= 0)
-            y += y < 70 ? 2000 : 1900; // 5.6.7's two-digit rule
-        hh = read_fixed_digits(p, at + 10, 2);
-        mm = read_fixed_digits(p, at + 13, 2);
-        ss = read_fixed_digits(p, at + 16, 2);
-    } else if (n == 24 && p[3] == ' ' && p[7] == ' ') { // asctime
-        mo = read_month_name(p, 4);
-        d = p[8] == ' ' ? read_fixed_digits(p, 9, 1) : read_fixed_digits(p, 8, 2);
-        hh = read_fixed_digits(p, 11, 2);
-        mm = read_fixed_digits(p, 14, 2);
-        ss = read_fixed_digits(p, 17, 2);
-        y = read_fixed_digits(p, 20, 4);
-    } else {
-        return false;
-    }
-    if (y < 0 || mo < 0 || d <= 0 || d > 31 || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 ||
-        ss > 60) {
-        return false;
-    }
-    *out = epoch_from_civil({y, mo, d, hh, mm, ss});
-    return true;
-}
+bool parse_http_date(const char *p, size_t n, int64_t *out);
 
 // RFC 9110 12.5.1: choose among the provided types given an Accept
 // value - q-values and both wildcard forms, most specific match per
@@ -2414,159 +1807,14 @@ struct Conneg {
 // Deliberately narrow: a parameter on that first range, or a case that
 // does not match byte for byte, falls back to choose_media_type, which
 // is case-insensitive and weighs q properly.
-inline bool accept_is_exact(std::string_view accept, std::string_view type)
-{
-    const char *const a = accept.data();
-    const size_t n = accept.size();
-    size_t i = 0;
-    while (i < n && (a[i] == ' ' || a[i] == '\t'))
-        i++;
-    if (n - i < type.size())
-        return false;
-    if (std::memcmp(a + i, type.data(), type.size()) != 0)
-        return false;
-    i += type.size();
-    while (i < n && (a[i] == ' ' || a[i] == '\t'))
-        i++;
-    return i == n || a[i] == ',';
-}
+bool accept_is_exact(std::string_view accept, std::string_view type);
 
-inline int choose_media_type(Conneg c)
-{
-    const std::string *const types = c.provided.data();
-    const size_t ntypes = c.provided.size();
-    const char *const av = c.accept.data();
-    const size_t alen = c.accept.size();
-    struct Range {
-        const char *t;
-        size_t tn;
-        const char *sub;
-        size_t sn;
-        int q1000;
-    };
-    Range ranges[32];
-    size_t nr = 0;
-    size_t i = 0;
-    while (i < alen && nr < 32) {
-        while (i < alen && (av[i] == ' ' || av[i] == '\t' || av[i] == ','))
-            i++;
-        if (i >= alen)
-            break;
-        const size_t start = i;
-        while (i < alen && av[i] != ',')
-            i++;
-        const size_t end = i;
-        int q = 1000;
-        size_t semi = start;
-        while (semi < end && av[semi] != ';')
-            semi++;
-        size_t tend = semi;
-        while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t'))
-            tend--;
-        size_t pi = semi;
-        while (pi < end) {
-            pi++;
-            while (pi < end && (av[pi] == ' ' || av[pi] == '\t'))
-                pi++;
-            if (pi + 2 <= end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
-                size_t v = pi + 2;
-                int whole = 0, frac = 0, fdig = 0;
-                if (v < end && (av[v] >= '0' && av[v] <= '9')) {
-                    whole = av[v] - '0';
-                    v++;
-                }
-                if (v < end && av[v] == '.') {
-                    v++;
-                    while (v < end && (av[v] >= '0' && av[v] <= '9') && fdig < 3) {
-                        frac = frac * 10 + (av[v] - '0');
-                        fdig++;
-                        v++;
-                    }
-                }
-                while (fdig < 3) {
-                    frac *= 10;
-                    fdig++;
-                }
-                q = whole * 1000 + frac;
-                if (q > 1000)
-                    q = 1000;
-            }
-            while (pi < end && av[pi] != ';')
-                pi++;
-        }
-        const char *slash = static_cast<const char *>(std::memchr(av + start, '/', tend - start));
-        if (slash != nullptr) {
-            ranges[nr].t = av + start;
-            ranges[nr].tn = static_cast<size_t>(slash - (av + start));
-            ranges[nr].sub = slash + 1;
-            ranges[nr].sn = tend - static_cast<size_t>(slash + 1 - av);
-            ranges[nr].q1000 = q;
-            nr++;
-        }
-    }
-    int best = -1;
-    int best_q = 0;
-    int best_spec = -1;
-    for (size_t t = 0; t < ntypes; t++) {
-        const std::string &full = types[t];
-        size_t tn = full.find(';');
-        if (tn == std::string::npos)
-            tn = full.size();
-        while (tn > 0 && full[tn - 1] == ' ')
-            tn--;
-        const char *tp = full.data();
-        const size_t sl = full.find('/');
-        if (sl == std::string::npos || sl >= tn)
-            continue;
-        const size_t main_n = sl;
-        const char *sub_p = tp + sl + 1;
-        const size_t sub_n = tn - sl - 1;
-        int q = -1;
-        int spec = -1;
-        for (size_t r = 0; r < nr; r++) {
-            const Range &rg = ranges[r];
-            int this_spec;
-            if (rg.tn == 1 && rg.t[0] == '*') {
-                this_spec = 0;
-            } else if (!tok_eq({rg.t, rg.tn}, {tp, main_n})) {
-                continue;
-            } else if (rg.sn == 1 && rg.sub[0] == '*') {
-                this_spec = 1;
-            } else if (tok_eq({rg.sub, rg.sn}, {sub_p, sub_n})) {
-                this_spec = 2;
-            } else {
-                continue;
-            }
-            if (this_spec > spec) {
-                spec = this_spec;
-                q = rg.q1000;
-            }
-        }
-        if (spec < 0 || q == 0)
-            continue;
-        if (q > best_q || (q == best_q && spec > best_spec)) {
-            best = static_cast<int>(t);
-            best_q = q;
-            best_spec = spec;
-        }
-    }
-    return best;
-}
+int choose_media_type(Conneg c);
 
 // RFC 9110 8.8.3: spell an application-supplied ETag for the wire - an
 // already-quoted or weak form passes verbatim, bare bytes are quoted
 // (webmachine ETag.new semantics).
-inline void etag_spell(const char *raw, size_t n, std::string &out)
-{
-    out.clear();
-    if ((n >= 2 && raw[0] == '"') || (n >= 3 && raw[0] == 'W' && raw[1] == '/')) {
-        out.append(raw, n);
-        return;
-    }
-    out.push_back('"');
-    out.append(raw, n);
-    out.push_back('"');
-}
+void etag_spell(const char *raw, size_t n, std::string &out);
 
 // RFC 3986 5.3: a reference and the base it is resolved against.
 struct UriRef {
@@ -2577,43 +1825,7 @@ struct UriRef {
 // The n11 subset: join create_path onto a base. A full URI passes
 // verbatim; an absolute-path ref replaces the base's path; a relative
 // segment appends after the base's last '/'.
-inline void uri_join(UriRef r, std::string &out)
-{
-    const char *const base = r.base.data();
-    const size_t blen = r.base.size();
-    const char *const path = r.ref.data();
-    const size_t payload_length = r.ref.size();
-    out.clear();
-    if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
-        const char *colon = static_cast<const char *>(std::memchr(path, ':', payload_length));
-        if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
-            out.append(path, payload_length);
-            return;
-        }
-    }
-    if (payload_length > 0 && path[0] == '/') {
-        size_t slashes = 0, i = 0;
-        for (; i < blen; i++) {
-            if (base[i] == '/') {
-                slashes++;
-                if (slashes == 3)
-                    break;
-            }
-        }
-        out.append(base, i);
-        out.append(path, payload_length);
-        return;
-    }
-    size_t cut = blen;
-    while (cut > 0 && base[cut - 1] != '/')
-        cut--;
-    if (cut == 0)
-        cut = blen;
-    out.append(base, cut);
-    if (!out.empty() && out.back() != '/')
-        out.push_back('/');
-    out.append(path, payload_length);
-}
+void uri_join(UriRef r, std::string &out);
 
 // RFC 9110 5.1 / 5.6.2: a field name is a token. Both writers that put
 // a field in an answer call this, so the shape is decided here and
@@ -2630,53 +1842,14 @@ inline void uri_join(UriRef r, std::string &out)
 // second copy on the wire. Two Content-Length fields are what a proxy
 // and this server then disagree about, which is a response desync; over
 // HTTP/2 the hop-by-hop names are refused outright (RFC 9113 8.2.2).
-inline bool field_name_is_the_servers(const char *p, size_t n)
-{
-    static constexpr const char *kOurs[] = {"content-length",  "transfer-encoding", "connection",
-                                            "keep-alive",      "upgrade",           "te",
-                                            "proxy-connection"};
-    for (const char *ours : kOurs) {
-        size_t i = 0;
-        for (; i < n && ours[i] != '\0'; i++) {
-            const unsigned char c = static_cast<unsigned char>(p[i]);
-            const unsigned char lc =
-                (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c;
-            if (lc != static_cast<unsigned char>(ours[i]))
-                break;
-        }
-        if (i == n && ours[i] == '\0')
-            return true;
-    }
-    return false;
-}
+bool field_name_is_the_servers(const char *p, size_t n);
 
-inline bool field_name_ok(const char *p, size_t n)
-{
-    if (n == 0)
-        return false;
-    for (size_t i = 0; i < n; i++) {
-        const unsigned char c = static_cast<unsigned char>(p[i]);
-        const bool tchar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                           (c >= '0' && c <= '9') || c == '!' || c == '#' || c == '$' || c == '%' ||
-                           c == '&' || c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
-                           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
-        if (!tchar)
-            return false;
-    }
-    return true;
-}
+bool field_name_ok(const char *p, size_t n);
 
 // RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
 // is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
 // byte a malformed h2 field, so one rule serves both writers.
-inline bool field_value_ok(const char *p, size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0')
-            return false;
-    }
-    return true;
-}
+bool field_value_ok(const char *p, size_t n);
 
 // RFC 9110 5.1: a field name is known by its length first. The switches
 // below have a case for these and no other, so a name of any other length is
@@ -3702,44 +2875,7 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 
 // RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
 // identity - compression never fails a response.
-inline bool compress(const std::string &in, std::string &out)
-{
-    if (in.size() >= std::numeric_limits<uint32_t>::max())
-        return false;
-    z_stream strm{};
-    if (deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-        return false;
-    }
-    const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
-    out.assign(reinterpret_cast<const char *>(kHeader), sizeof(kHeader));
-    const size_t body_off = out.size();
-    out.resize(body_off + bound);
-    strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.data()));
-    strm.avail_in = static_cast<uInt>(in.size());
-    strm.next_out = reinterpret_cast<Bytef *>(&out[0]) + body_off;
-    strm.avail_out = static_cast<uInt>(bound);
-    const int rc = deflate(&strm, Z_FINISH);
-    const size_t produced = strm.total_out;
-    deflateEnd(&strm);
-    if (rc != Z_STREAM_END)
-        return false;
-    out.resize(body_off + produced);
-
-    const uint32_t crc =
-        static_cast<uint32_t>(crc32_z(0, reinterpret_cast<const Bytef *>(in.data()), in.size()));
-    const uint32_t isize = static_cast<uint32_t>(in.size());
-    unsigned char trailer[8];
-    trailer[0] = static_cast<unsigned char>(crc);
-    trailer[1] = static_cast<unsigned char>(crc >> 8);
-    trailer[2] = static_cast<unsigned char>(crc >> 16);
-    trailer[3] = static_cast<unsigned char>(crc >> 24);
-    trailer[4] = static_cast<unsigned char>(isize);
-    trailer[5] = static_cast<unsigned char>(isize >> 8);
-    trailer[6] = static_cast<unsigned char>(isize >> 16);
-    trailer[7] = static_cast<unsigned char>(isize >> 24);
-    out.append(reinterpret_cast<const char *>(trailer), sizeof(trailer));
-    return true;
-}
+bool compress(const std::string &in, std::string &out);
 } // namespace webmachine::gzip
 
 namespace webmachine
