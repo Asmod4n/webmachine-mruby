@@ -1548,6 +1548,10 @@ class Ring {
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
     c.sending = false;
+    // The connection ended while this send was with the kernel. That it
+    // is over is all this completion still means: the close is already
+    // on its way, and nothing may spell a round on a slot going back.
+    if (mrb_unlikely(!c.live)) return;
 
     if (mrb_unlikely(cqe->res < 0)) {
       send_refused(idx, c, cqe->res);
@@ -2098,6 +2102,11 @@ class Ring {
     if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (c.gen != gen) return;
+    // The generation alone is not enough here. A send completes, this is
+    // armed, and a recv error in the same batch closes the connection -
+    // same slot, same generation, and the round below would be spelled
+    // onto a socket whose close is already submitted.
+    if (mrb_unlikely(!c.live)) return;
     size_t cap = Conn::kRoundFloor;
     if (mrb_likely(cqe->res >= 0)) {
       const uint32_t used = c.meminfo[SK_MEMINFO_WMEM_QUEUED] > c.meminfo[SK_MEMINFO_WMEM_ALLOC]

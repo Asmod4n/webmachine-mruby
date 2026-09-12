@@ -149,6 +149,13 @@ mrb_value hdrs_set(mrb_state* mrb, mrb_value) {
     mrb_raise(mrb, E_WM_ERROR(mrb),
               "response.headers[]= wants a field value without CR, LF or NUL (RFC 9110 5.5)");
   }
+  if (http::field_name_is_the_servers(k, static_cast<size_t>(klen))) {
+    mrb_raisef(mrb, E_WM_ERROR(mrb),
+               "response.headers[]= may not set %s - the server spells the framing and the "
+               "connection fields itself, and a second copy is what a proxy in front of it "
+               "reads differently",
+               k);
+  }
   if (found) buf.erase(h.start, h.end - h.start);
   append_field(buf, {{k, static_cast<size_t>(klen)},
                      {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});

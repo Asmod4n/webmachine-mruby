@@ -1575,3 +1575,27 @@ assert('resource: reads_body refuses the mapping callback, and a name that is no
     assert_true text.include?('does not define it'), text
   end
 end
+
+# RFC 9110 6.1: the server spells the framing fields and the ones that
+# belong to one hop. A resource that sets one of them put a second copy
+# on the wire, and a proxy in front of this server then read the message
+# differently - a response desync. The refusal is a 500, which is what
+# an unspellable answer always is.
+assert('resource: a framing field a resource sets is refused') do
+  src = <<~RUBY
+    class Framed < Webmachine::Resource
+      def to_html
+        response.headers['Content-Length'] = '0'
+        'never sent'
+      end
+    end
+  RUBY
+  wm_server(wm_app('Framed', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 500'), head
+      assert_equal 1, head.scan(/^content-length:/i).size, head
+    end
+  end
+end

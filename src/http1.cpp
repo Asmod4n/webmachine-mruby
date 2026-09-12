@@ -2210,6 +2210,13 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         // re-parse of a spilled request finds an empty carry behind the
         // head, and the body is complete all the same.
         const size_t body_have = st.spill.fd >= 0 ? st.spill.written : body_here;
+        // What of this body is in the buffer. RFC 9112 9.3.2 lets the
+        // next request follow the last octet of this one, and those
+        // octets are not this body's to take. A declared length says
+        // where the body ends; a chunked body ends where the reader says
+        // it does, and for that this is every octet behind the head.
+        const size_t body_octets =
+            w.content_length != 0 && body_here > w.content_length ? w.content_length : body_here;
         // RFC 9110 6.4: only three callbacks read a request body -
         // content_types_accepted, create_path and process_post. A
         // resource that declares none of them has no node that can ask
@@ -2272,7 +2279,14 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           st.run_wants_body = got != BodyTake::kWhole;
         } else if (w.content_length != 0 && mrb_likely(b->res->takes_body) &&
                    (body_have < w.content_length || b->res->saves_body)) {
-          st.content_need = w.content_length - body_have;
+          // save: true takes this branch with the body already whole, so
+          // the subtraction needs the body's own count. Taking the
+          // buffer's wrapped it to near SIZE_MAX: the file then swallowed
+          // the pipelined request behind the body and every octet the
+          // client sent after it, with max_body seeing only the length
+          // the head declared.
+          const size_t have = body_have < w.content_length ? body_have : w.content_length;
+          st.content_need = w.content_length - have;
           // RFC 9110 6.4: a large body goes to a file, so the connection
           // holds the head and not the upload. The length is declared -
           // this server refuses a chunked request body - so the choice
@@ -2284,7 +2298,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // can be decided.
           if (w.content_length >= kBodySpill || b->res->saves_body) {
             if (mrb_unlikely(!st.spill.open_file())) return fail(st, 500, sink, lflags);
-            if (mrb_unlikely(!st.spill.take(view + off + head_len, body_here))) {
+            if (mrb_unlikely(!st.spill.take(view + off + head_len, body_octets))) {
               st.spill.close_file();
               return fail(st, 500, sink, lflags);
             }
@@ -2304,7 +2318,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
             // The declared length is the whole size, so the buffer is
             // taken once and never grows again.
             st.body_hold.reserve(w.content_length);
-            st.body_hold.assign(view + off + head_len, body_here);
+            st.body_hold.assign(view + off + head_len, body_octets);
             st.body_to = Conn::Body::kMem;
           }
           // #36: the walk starts now, on the head. It stops at kN11,
@@ -2333,7 +2347,7 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
         if (mrb_unlikely(b->res->compute != 0 || b->res->watch != 0 ||
                            b->res->value_jobs != 0 || b->res->value_watch != 0 ||
                            st.run_wants_body)) {
-          const size_t past = head_len + (st.run_wants_body ? body_here : chunk_used);
+          const size_t past = head_len + (st.run_wants_body ? body_octets : chunk_used);
           const BoundStart start = {b,        view + off, view,       viewlen,
                                     off + past,           head_len,   method,
                                     method_len,           path,       path_len,

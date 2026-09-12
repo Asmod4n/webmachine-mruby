@@ -2241,6 +2241,29 @@ inline void uri_join(UriRef r, std::string& out) {
 // "v1\r\nSet-Cookie: a=b" splices a whole field into the answer - and
 // an app that echoes a request header hands that splice to whoever
 // sent the request.
+// RFC 9110 6.1: the fields that say how a message is framed, and the
+// ones that belong to one hop. The server spells all of these itself -
+// Content-Length from the body it is about to send, Connection from what
+// the request allowed - so a resource that writes one of them puts a
+// second copy on the wire. Two Content-Length fields are what a proxy
+// and this server then disagree about, which is a response desync; over
+// HTTP/2 the hop-by-hop names are refused outright (RFC 9113 8.2.2).
+inline bool field_name_is_the_servers(const char* p, size_t n) {
+  static constexpr const char* kOurs[] = {"content-length", "transfer-encoding", "connection",
+                                          "keep-alive",     "upgrade",           "te",
+                                          "proxy-connection"};
+  for (const char* ours : kOurs) {
+    size_t i = 0;
+    for (; i < n && ours[i] != '\0'; i++) {
+      const unsigned char c = static_cast<unsigned char>(p[i]);
+      const unsigned char lc = (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c;
+      if (lc != static_cast<unsigned char>(ours[i])) break;
+    }
+    if (i == n && ours[i] == '\0') return true;
+  }
+  return false;
+}
+
 inline bool field_name_ok(const char* p, size_t n) {
   if (n == 0) return false;
   for (size_t i = 0; i < n; i++) {

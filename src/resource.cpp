@@ -609,6 +609,16 @@ void field(Run& r, http::Field f) {
   const size_t nlen = f.name.size();
   const char* const value = f.value.data();
   const size_t vlen = f.value.size();
+  if (mrb_unlikely(http::field_name_is_the_servers(name, nlen))) {
+    // The name is one of the seven this server spells itself, so the
+    // copy is short and it is a token.
+    const std::string shown(name, nlen);
+    mrb_raisef(mrb, E_WM_ERROR(mrb),
+               "a field this resource produced is the server's to spell: %s says how the "
+               "message is framed or what this hop does, and a second copy of it is what a "
+               "proxy in front of this server reads differently",
+               shown.c_str());
+  }
   if (mrb_likely(http::field_name_ok(name, nlen) && http::field_value_ok(value, vlen))) {
     r.hdrs.append(name, nlen);
     r.hdrs.append(": ", 2);

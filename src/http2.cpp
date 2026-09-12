@@ -782,7 +782,11 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       }
       stx.data = H2Stream::Data::kFile;
     } else {
-      stx.request_content.reserve(claimed.value);
+      // No reserve for a number the client only declared. 256 streams
+      // that each name 255 KiB and send nothing took 64 MiB of this
+      // process, per connection. The string grows with what arrives,
+      // which is geometric and bounded by kBodySpill - over that the
+      // body moves to a file.
       stx.data = H2Stream::Data::kMem;
     }
   }
