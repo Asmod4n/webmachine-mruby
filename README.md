@@ -211,13 +211,6 @@ reason. Without kTLS, run plain HTTP with a proxy in front for TLS.
 [`docs/container.md`](docs/container.md) builds and runs it in a
 container.
 
-## Contributing
-
-[`CLAUDE.md`](CLAUDE.md) holds the rules: two branches, `next` for
-development and `master` for finished features; Simplified Technical
-English in every file and every commit message; no bang methods; and
-the three rules of the code. Nothing in `rake test` may fail.
-
 ## License and credit
 
 Apache License 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
