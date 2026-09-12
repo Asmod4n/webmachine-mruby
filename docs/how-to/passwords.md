@@ -61,25 +61,33 @@ The cost picked for a user is stored with them. Raising it later
 re-hashes one user at their next password change and leaves everyone
 else verifiable at the cost they were given.
 
-## What the server does with the database today
+## What the server does with the database
 
-Nothing yet. `webmachine-passwd` writes the records, and the layout is
-public (`PasswdRec` in `src/webmachine.hpp`: a 32-byte header, then
-the salt, then the argon2id hash, made with the sub-database's name as
-argon2's `ad`). The server has no code that reads it, and no Ruby
-method that answers "is this password right for this user". That is
-the next piece of work, and until it lands a resource checks a
-password against a table it builds itself.
+`Webmachine::Passwd` reads the file `webmachine-passwd` writes.
+`Webmachine::Passwd.open(file, db)` opens `file` read-only and its
+sub-database `db`, and answers an object with one method:
+`valid?(user, password)`. It reads the user's record, recomputes the
+argon2id hash with the record's own cost and salt, and compares it to
+the stored one. An unknown user, a record this side cannot read, and a
+wrong password all answer `false`; the call never tells the three
+apart, on the wire or on the clock - a missing user still pays the
+cost of one hash, so a login cannot be used to ask "who is in this
+database".
+
+Opening the file costs a filesystem call and an LMDB open, so it
+happens once, not on every login. `Webmachine::Passwd.open` raises
+`Webmachine::Error` when the file cannot be opened or the
+sub-database does not exist; the message names the file.
 
 ## Checking a password from a resource
 
 Hashing takes tens of milliseconds by design, so it never runs on the
-request loop. Declare the callback `compute`, and build the table the
-worker reads once per worker through the registry:
+request loop. Declare the callback `compute`, and open the database
+once per worker through the registry:
 
 ```ruby
-Webmachine::Workers::Registry[:passwords] = proc do
-  { 'ada' => Argon2.hash('secret')[:encoded] }   # built once per worker
+Webmachine::Workers::Registry[:passwd] = proc do
+  Webmachine::Passwd.open('pw.lmdb', 'users')   # opened once per worker
 end
 
 class Login < Webmachine::Resource
@@ -88,18 +96,16 @@ class Login < Webmachine::Resource
   def is_authorized?(header)
     Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
       user, pass = h.to_s.split(':', 2)
-      stored = Webmachine::Workers::Registry[:passwords][user]
-      stored ? Argon2.verify(stored, pass.to_s) : false
+      Webmachine::Workers::Registry[:passwd].valid?(user.to_s, pass.to_s)
     end
   end
 end
 ```
 
-The table here is built from a literal, so the example runs on its
-own. In an application the proc reads the hashes from wherever you
-keep them; the encoded form `Argon2.hash` answers is what
-`Argon2.verify` takes back. A task over its deadline answers 500. A
-worker that raises answers 503 with `Retry-After`.
+`'pw.lmdb'` and `'users'` are the same file and sub-database name
+`webmachine-passwd add pw.lmdb users ada` wrote, so an application
+names its own database's path here. A task over its deadline answers
+500. A worker that raises answers 503 with `Retry-After`.
 
 ## Next
 

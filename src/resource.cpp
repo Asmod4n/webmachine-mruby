@@ -3225,6 +3225,7 @@ void mrb_webmachine_mruby_gem_init(mrb_state* mrb) {
   webmachine::response_init(mrb, wm);
   webmachine::watcher_init_class(mrb, wm);
   webmachine::compute_task_init_class(mrb, wm);
+  webmachine::passwd_init_class(mrb, wm);
   webmachine::server_init(mrb, wm);
 }
 

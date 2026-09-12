@@ -3150,6 +3150,12 @@ struct ComputeTaskAsk {
 bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out);
 void compute_task_init_class(mrb_state* mrb, struct RClass* wm);
 
+// src/passwd.cpp: Webmachine::Passwd - the database webmachine-passwd
+// writes, read for one question: is this password right for this
+// user. Meant to be built once per worker, through
+// Webmachine::Workers::Registry, and used inside a compute block.
+void passwd_init_class(mrb_state* mrb, struct RClass* wm);
+
 // #80: a declared callback, ready to cross into a worker. Filled at
 // fold, read by every worker when the pool starts. The id is the index -
 // what crosses a MSG_RING is a slot number, and the slot names this.
