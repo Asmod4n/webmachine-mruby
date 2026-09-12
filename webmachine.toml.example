@@ -46,7 +46,8 @@
 # What a callback raised, with its class, message, backtrace, the
 # request that led there and up to 4 KB of its body. That last part
 # is whatever the app was sent - a form login puts a password in it -
-# so give the file the permissions that says so.
+# so the server creates this file readable by its owner alone, and
+# follows no symlink to it.
 # error_file = "/var/log/webmachine/error.log"
 
 # The ceiling on the access log, in bytes. 0 is no ceiling.

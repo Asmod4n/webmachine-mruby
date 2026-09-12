@@ -57,11 +57,16 @@ class Codec {
     return 0;
   }
 
-  // RFC 7692 7.2.1: one whole message; false means send it uncompressed,
-  // and then never compress on this connection again.
+  // RFC 7692 7.2.1: one whole message. False means send this message
+  // uncompressed, which is always legal and leaves the peer's inflater
+  // untouched. A deflate stream that failed in the middle of a message is
+  // never started again: with context takeover the peer keeps the window
+  // of every message before, and a new stream starts from an empty window.
+  // The two sides would then disagree. So a failure here stops compression
+  // for this connection.
   bool compress(const char* in, size_t n, std::string& out) {
     if (n > std::numeric_limits<uInt>::max()) return false;
-    if (def_broken_ || !deflate_ready()) return false;
+    if (deflate_stopped_ || !deflate_ready()) return false;
     out.clear();
     def_.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in));
     def_.avail_in = static_cast<uInt>(n);
@@ -71,7 +76,7 @@ class Codec {
       def_.avail_out = sizeof(buf);
       const int rc = deflate(&def_, Z_SYNC_FLUSH);
       if (rc != Z_OK && rc != Z_BUF_ERROR) {
-        def_broken_ = true;
+        deflate_stopped_ = true;
         return false;
       }
       out.append(reinterpret_cast<const char*>(buf), sizeof(buf) - def_.avail_out);
@@ -80,7 +85,7 @@ class Codec {
     if (out.size() < sizeof(kSyncTail) ||
         std::memcmp(out.data() + out.size() - sizeof(kSyncTail), kSyncTail,
                     sizeof(kSyncTail)) != 0) {
-      def_broken_ = true;
+      deflate_stopped_ = true;
       return false;
     }
     out.resize(out.size() - sizeof(kSyncTail));
@@ -102,12 +107,18 @@ class Codec {
   }
 
   // RFC 7692 7.1.2.1: raw deflate, the negotiated window, Z_BEST_SPEED.
+  // zlib refuses to build the stream for two different reasons. Z_MEM_ERROR
+  // says the machine has no memory now. No stream exists yet, so no window
+  // can disagree, and a later message tries again. Every other code says
+  // zlib will not take these parameters. The same parameters get the same
+  // answer, so this connection stops compressing.
   bool deflate_ready() {
     if (def_on_) return true;
-    if (deflateInit2(&def_, Z_BEST_SPEED, Z_DEFLATED,
-                     -static_cast<int>(p_.server_max_window_bits), 8,
-                     Z_DEFAULT_STRATEGY) != Z_OK) {
-      def_broken_ = true;
+    const int rc = deflateInit2(&def_, Z_BEST_SPEED, Z_DEFLATED,
+                                -static_cast<int>(p_.server_max_window_bits), 8,
+                                Z_DEFAULT_STRATEGY);
+    if (rc != Z_OK) {
+      if (rc != Z_MEM_ERROR) deflate_stopped_ = true;
       return false;
     }
     def_on_ = true;
@@ -134,7 +145,7 @@ class Codec {
   z_stream def_{};
   bool inf_on_ = false;
   bool def_on_ = false;
-  bool def_broken_ = false;
+  bool deflate_stopped_ = false;
   bool inf_ended_ = false;
 };
 }  // namespace wsdeflate
