@@ -4313,7 +4313,7 @@ struct ServerOptions {
 
 void server_options(const ServerOptions &opts);
 
-void server_backend_say();
+void server_say_which_backend();
 
 void server_init(mrb_state *mrb, struct RClass *wm);
 
