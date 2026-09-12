@@ -2059,3 +2059,103 @@ assert('h2: a malformed trailer field is a stream error, and the connection live
     end
   end
 end
+
+# RFC 9110 6.4: the process holds at most kBodyFilesMax (1024) request
+# body files, whatever the number of connections. One h2 connection may
+# hold 16, so 64 connections at their own ceiling fill the process. The
+# next large body is refused as load: an h2 stream hears REFUSED_STREAM
+# at its head and at the frame that moves it to a file, and an h1
+# request hears 503 at its head. Sixteen streams cancelled give sixteen
+# slots back.
+#
+# The count is one process's. Every bintest server is its own process,
+# so this case needs a server of its own, and it must not move into a
+# server that other cases share.
+assert('h2: the process holds at most 1024 body files, and refuses the next one as load') do
+  src = <<~RUBY
+    class Upload < Webmachine::Resource
+      reads_body :process_post
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 4 * 1024 * 1024
+        app.add_route [:*], Upload
+      end
+    end
+  RUBY
+  spill = 256 * 1024
+  h2_server(src) do |sock|
+    holders = []
+    begin
+      64.times do
+        s = UNIXSocket.open(sock)
+        holders << s
+        h2_handshake(s)
+        # Sixteen streams, each with a declared length at the spill mark
+        # and no DATA: the file opens at the head and stays open.
+        16.times { |i| s.write(h2_frame(1, 0x04, 2 * i + 1, h2_post_block(spill))) }
+        # A PING behind them. Its ACK says the sixteen heads were read,
+        # because one connection is read in order.
+        s.write(h2_frame(6, 0, 0, 'A' * 8))
+        _, flags, = h2_until(s, 6)
+        assert_equal 1, flags & 1, 'PING ACK'
+      end
+
+      # The 1025th file, at an h2 head: REFUSED_STREAM (0x7).
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        s.write(h2_frame(1, 0x04, 1, h2_post_block(spill)))
+        type, _, stream, payload = h2_next_payload(s)
+        assert_equal 3, type, 'RST_STREAM'
+        assert_equal 1, stream
+        assert_equal 7, payload.unpack1('N'), 'REFUSED_STREAM'
+      end
+
+      # The same at the frame that moves an undeclared body to a file.
+      UNIXSocket.open(sock) do |s|
+        h2_handshake(s)
+        s.write(h2_frame(1, 0x04, 1, h2_method_block('POST')))
+        16.times { s.write(h2_frame(0, 0x00, 1, 'y' * 16_384)) }
+        type = payload = nil
+        loop do
+          type, _, _, payload = h2_next_payload(s)
+          break if type == 3
+        end
+        assert_equal 7, payload.unpack1('N'), 'REFUSED_STREAM at the move to a file'
+      end
+
+      # And at an h1 head: 503, before any body octet.
+      UNIXSocket.open(sock) do |s|
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{spill}\r\n\r\n")
+        head, = wm_read(s)
+        assert_equal 'HTTP/1.1 503', head[0, 12]
+      end
+
+      # One connection cancels its sixteen streams. The PING ACK behind
+      # the cancels says the server closed them, files included.
+      first = holders[0]
+      16.times { |i| first.write(h2_frame(3, 0, 2 * i + 1, [8].pack('N'))) }
+      first.write(h2_frame(6, 0, 0, 'B' * 8))
+      _, flags, = h2_until(first, 6)
+      assert_equal 1, flags & 1, 'PING ACK after the cancels'
+      UNIXSocket.open(sock) do |s|
+        payload = 'x' * spill
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{spill}\r\n\r\n")
+        s.write(payload)
+        head, body = wm_read(s)
+        assert_equal 'HTTP/1.1 200', head[0, 12]
+        assert_equal spill.to_s, body
+      end
+    ensure
+      holders.each { |s| s.close rescue nil }
+    end
+  end
+end

@@ -1,7 +1,7 @@
 //
 // What the reactor is set up with: the descriptor budget, the listener
 // spelling, RingConfig, and the tags a completion carries. Read by
-// ring.hpp, server.cpp and compute_task.cpp.
+// ring.hpp, docroot.cpp, server.cpp and compute_task.cpp.
 #ifndef WEBMACHINE_RING_SETUP_HPP
 #define WEBMACHINE_RING_SETUP_HPP
 
@@ -10,6 +10,23 @@
 namespace webmachine {
 inline constexpr uint32_t kMaxListeners = 16;
 inline constexpr uint32_t kFdReserve = 128;
+// RFC 9110 6.4: how many request body files this process holds open at
+// once. A body of kBodySpill or more lives in a file, and so does every
+// body for a resource that saves it, whatever its length. That file is
+// an ordinary descriptor outside the fixed table. One h1 connection
+// holds one, and one h2 connection holds up to kH2SpillFilesMax. No
+// per-connection number bounds the sum; this constant does. The budget
+// below reserves it, so a body file never takes the descriptor that an
+// asset, a log or the docroot opens next. Over it the server refuses
+// the body as load: 503 on h1, REFUSED_STREAM on h2.
+//
+// The size: 1024 is 64 h2 connections at kH2SpillFilesMax, or 1024 h1
+// uploads over kBodySpill at the same time. The server raises itself to
+// the hard limit (raise_nofile). Under the 524288 systemd gives a
+// service, and the 1048576 a container gets, this costs 0.2 % of the
+// connections. A limit under 1169 - this, kFdReserve, kMaxListeners and
+// one connection - refuses to start, and the message names the numbers.
+inline constexpr uint32_t kBodyFilesMax = 1024;
 inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 
 // A ring's SQ/CQ pages are locked memory; failing to raise is not a
@@ -25,7 +42,9 @@ inline void raise_memlock() {
 // The one arithmetic with two consumers: the server sizes itself with it,
 // webmachine-tune.sh only prints it.
 // The file-descriptor budget one process has: what RLIMIT_NOFILE allows,
-// and how many descriptors something other than a connection will take.
+// and how many descriptors something other than a connection takes:
+// kFdReserve for the process's own, kBodyFilesMax for request bodies in
+// files, and the listeners.
 struct FdBudget {
   uint64_t nofile_limit;
   uint32_t extra_slots = 0;
@@ -34,7 +53,8 @@ struct FdBudget {
 inline uint32_t derive_max_conns(FdBudget b) {
   const uint64_t nofile_limit = b.nofile_limit;
   const uint32_t extra_slots = b.extra_slots;
-  const uint64_t taken = static_cast<uint64_t>(kFdReserve) + kMaxListeners + extra_slots;
+  const uint64_t taken =
+      static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners + extra_slots;
   if (nofile_limit <= taken) return 0;
   uint64_t n = nofile_limit - taken;
   if (n + kMaxListeners + extra_slots > kFixedTableKernelMax) {

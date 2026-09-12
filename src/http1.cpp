@@ -1884,6 +1884,17 @@ bool Http1::h1_upgrade_or_stream(Conn& st, const H1Head& h, std::string& sink, b
   return false;
 }
 
+// RFC 9110 15: the status a refused body take earns. Cold - once per
+// refused body, never per buffer - so it stays out of feed_parse.
+__attribute__((noinline)) static uint16_t body_take_status(BodyTake took) {
+  switch (took) {
+    case BodyTake::kTooLarge: return 413;
+    case BodyTake::kNoSlot: return 503;
+    case BodyTake::kFileFailed: return 500;
+    default: return 400;
+  }
+}
+
 bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   const char* data = in.data();
   size_t len = in.size();
@@ -1970,19 +1981,24 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
   }
   switch (took) {
     case BodyTake::kNone: break;
-    // RFC 9112 7.1: a client fault inside the body, or a file that
-    // refused its octets. The connection ends without an answer, and
-    // the body is dropped. A body that already spilled would keep
-    // its file open until the next accept into this slot.
+    // RFC 9112 7.1: a client fault in the framing of the body. The
+    // connection ends without an answer, and the body is dropped. A
+    // body that already spilled would keep its file open until the
+    // next accept into this slot.
     case BodyTake::kFailed:
       drop_body(st);
       return false;
     // RFC 9110 15.5.14: a chunked body declares nothing, so this is the
     // first place its size can be refused. The client hears 413, and the
     // octets still on the way are the reason the connection ends with it.
+    // RFC 9110 15.6.4: no slot for its file is load, and the client
+    // hears 503. RFC 9110 15.6.1: a file the server could not make or
+    // write is 500. All three end the connection the same way.
     case BodyTake::kTooLarge:
+    case BodyTake::kNoSlot:
+    case BodyTake::kFileFailed:
       drop_body(st);
-      return fail(st, 413, sink);
+      return fail(st, body_take_status(took), sink);
     case BodyTake::kMore: return true;
     case BodyTake::kWhole:
       // RFC 9110 6.4: whole on the wire is not whole in the file. The
@@ -2280,10 +2296,9 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           size_t clen = body_here;
           const BodyTake got = take_chunked(st, MemWriter{&st.body_hold}, cp, clen);
           chunk_used = body_here - clen;
-          if (mrb_unlikely(got == BodyTake::kFailed || got == BodyTake::kTooLarge)) {
-            const int code = got == BodyTake::kTooLarge ? 413 : 400;
+          if (mrb_unlikely(got != BodyTake::kMore && got != BodyTake::kWhole)) {
             drop_body(st);
-            return fail(st, code, sink, lflags);
+            return fail(st, body_take_status(got), sink, lflags);
           }
           // What the reader did not read is a pipelined request, and it
           // waits behind a run that has not answered yet.
@@ -2308,7 +2323,13 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // before the first one arrived, which is the only moment this
           // can be decided.
           if (w.content_length >= kBodySpill || b->res->saves_body) {
-            if (mrb_unlikely(!st.spill.open_file())) return fail(st, 500, sink, lflags);
+            // RFC 9110 15.6.4: no slot for the file is load, 503. RFC 9110
+            // 15.6.1: no file is 500. Both end the connection, and the body
+            // still on the way ends with it.
+            const SpillOpen opened = st.spill.open_file();
+            if (mrb_unlikely(opened != SpillOpen::kOpen)) {
+              return fail(st, opened == SpillOpen::kNoSlot ? 503 : 500, sink, lflags);
+            }
             if (mrb_unlikely(!st.spill.take(view + off + head_len, body_octets))) {
               st.spill.close_file();
               return fail(st, 500, sink, lflags);

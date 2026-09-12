@@ -7,7 +7,7 @@
 # prints the command for the operator to copy; it never runs it.
 #
 # Every number it checks against is one this server actually hardcodes
-# or derives (src/ring.hpp) - no generic sysctl folklore. Values it
+# or derives (src/ring_setup.hpp) - no generic sysctl folklore. Values it
 # cannot read are named unreadable, never guessed (same doctrine as the
 # named refusals in bench/floor.sh).
 set -u
@@ -18,8 +18,9 @@ BIN=mruby/build/host/bin/webmachine-server
 # The constants come out of the one source of truth so this tool can
 # never drift from the code it advises about. A failed parse is a
 # named refusal for that section, not a silent default.
-FD_RESERVE=$(sed -n 's/.*kFdReserve = \([0-9][0-9]*\);.*/\1/p' src/ring.hpp)
-MAX_LISTENERS=$(sed -n 's/.*kMaxListeners = \([0-9][0-9]*\);.*/\1/p' src/ring.hpp)
+FD_RESERVE=$(sed -n 's/.*kFdReserve = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
+BODY_FILES=$(sed -n 's/.*kBodyFilesMax = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
+MAX_LISTENERS=$(sed -n 's/.*kMaxListeners = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 BACKLOG=$(sed -n 's/.*io_uring_prep_listen(s, slot, \([0-9][0-9]*\));.*/\1/p' src/ring.hpp)
 
 read_or() {  # read_or <file> <fallback-text>
@@ -97,14 +98,15 @@ echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the
 # ---- resource limits -------------------------------------------------
 # Since #169 the server derives its capacity itself: at init it raises
 # soft to hard (ceiling fs.nr_open) and takes everything the final
-# limit allows minus the reserve. This section prints that arithmetic -
+# limit allows minus the reserve, the body files and the listeners
+# (src/ring_setup.hpp). This section prints that arithmetic -
 # the server does not need help, but the operator deserves the number.
 echo ""
 echo "-- capacity (the server derives this itself at init)"
 HARD=$(ulimit -Hn)
 NR_OPEN=$(read_or /proc/sys/fs/nr_open "")
-if [ -z "$FD_RESERVE" ] || [ -z "$MAX_LISTENERS" ]; then
-  echo "cannot parse kFdReserve/kMaxListeners out of src/ring.hpp - capacity arithmetic not printed (fix the parse, do not guess)"
+if [ -z "$FD_RESERVE" ] || [ -z "$BODY_FILES" ] || [ -z "$MAX_LISTENERS" ]; then
+  echo "cannot parse kFdReserve/kBodyFilesMax/kMaxListeners out of src/ring_setup.hpp - capacity arithmetic not printed (fix the parse, do not guess)"
 else
   if [ "$HARD" = "unlimited" ]; then
     LIMIT=${NR_OPEN:-1048576}
@@ -114,12 +116,12 @@ else
   fi
   # Kernel cap on a fixed-file table: 2^20 (io_uring/rsrc.c).
   TABLE_CAP=1048576
-  MAXC=$((LIMIT - FD_RESERVE - MAX_LISTENERS))
+  MAXC=$((LIMIT - FD_RESERVE - BODY_FILES - MAX_LISTENERS))
   [ $((MAXC + MAX_LISTENERS)) -gt "$TABLE_CAP" ] && MAXC=$((TABLE_CAP - MAX_LISTENERS))
   echo "RLIMIT_NOFILE hard: $HARD   fs.nr_open: ${NR_OPEN:-unreadable}"
-  echo "max connections: $LIMIT - $FD_RESERVE (fd reserve) - $MAX_LISTENERS (listeners) = $MAXC"
+  echo "max connections: $LIMIT - $FD_RESERVE (fd reserve) - $BODY_FILES (body files) - $MAX_LISTENERS (listeners) = $MAXC"
   if [ "$MAXC" -le 0 ]; then
-    echo "the limit leaves no room - the server will refuse to start; raise it: systemd LimitNOFILE=$((FD_RESERVE + MAX_LISTENERS + 1024)) or higher"
+    echo "the limit leaves no room - the server will refuse to start; raise it: systemd LimitNOFILE=$((FD_RESERVE + BODY_FILES + MAX_LISTENERS + 1024)) or higher"
   elif [ "$HARD" != "unlimited" ] && [ "$HARD" -lt 65536 ]; then
     echo "hard limit is low; more connections need a raised hard limit, e.g. systemd LimitNOFILE=524288"
   fi

@@ -1,4 +1,5 @@
 #include "webmachine.hpp"
+#include "ring_setup.hpp"
 
 #include <sys/stat.h>
 #include <climits>
@@ -61,6 +62,23 @@ std::string spill_;
 const char* spill_dir() { return spill_.empty() ? nullptr : spill_.c_str(); }
 
 void spill_dir_set(const char* path) { spill_.assign(path == nullptr ? "" : path); }
+
+// RFC 9110 6.4: the body files open in this process. One thread opens
+// and closes them - the reactor's - so a plain count is enough. Only
+// close_file gives, and only for a descriptor it closed, so the count
+// never goes under zero. A give without a take would wrap it, so every
+// upload is refused and the fault shows at the first one.
+uint32_t body_files_ = 0;
+
+bool body_file_slot_take() {
+  if (body_files_ >= kBodyFilesMax) return false;
+  body_files_++;
+  return true;
+}
+
+void body_file_slot_give() { body_files_--; }
+
+uint32_t body_files_open() { return body_files_; }
 
 const struct open_how* docroot_how() { return &how_; }
 }

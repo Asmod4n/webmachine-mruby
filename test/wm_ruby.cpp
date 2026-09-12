@@ -34,6 +34,7 @@
  *
  */
 #include "../src/webmachine.hpp"
+#include "../src/ring_setup.hpp"
 
 #include <mruby/array.h>
 #include <mruby/class.h>
@@ -290,6 +291,23 @@ mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(webmachine::sniff::known({type, static_cast<size_t>(tlen)}));
 }
 
+// The descriptor budget and the body file count, for test/wm_fd.rb.
+mrb_value spec_fd_max_conns(mrb_state* mrb, mrb_value) {
+  mrb_int nofile = 0;
+  mrb_get_args(mrb, "i", &nofile);
+  return mrb_int_value(mrb, webmachine::derive_max_conns({static_cast<uint64_t>(nofile)}));
+}
+mrb_value spec_fd_body_file_take(mrb_state*, mrb_value) {
+  return mrb_bool_value(webmachine::body_file_slot_take());
+}
+mrb_value spec_fd_body_file_give(mrb_state*, mrb_value) {
+  webmachine::body_file_slot_give();
+  return mrb_nil_value();
+}
+mrb_value spec_fd_body_files_open(mrb_state* mrb, mrb_value) {
+  return mrb_int_value(mrb, webmachine::body_files_open());
+}
+
 }  // namespace
 
 // The gem's one gem_test entry point - mruby calls this once when mrbtest
@@ -307,4 +325,14 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
                                 MRB_ARGS_REQ(2));
   mrb_define_module_function_id(mrb, sn, mrb_intern_lit(mrb, "known?"), spec_sniff_known,
                                 MRB_ARGS_REQ(1));
+
+  struct RClass* fd = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecFd"));
+  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "max_conns"), spec_fd_max_conns,
+                                MRB_ARGS_REQ(1));
+  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_file_take"),
+                                spec_fd_body_file_take, MRB_ARGS_NONE());
+  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_file_give"),
+                                spec_fd_body_file_give, MRB_ARGS_NONE());
+  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_files_open"),
+                                spec_fd_body_files_open, MRB_ARGS_NONE());
 }

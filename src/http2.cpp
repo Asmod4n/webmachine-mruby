@@ -365,6 +365,36 @@ void Http1::h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink) {
   st.h2->close_stream(id);
 }
 
+// RFC 9113 5.1.2: a client opens streams as fast as the settings allow,
+// and each large body takes a descriptor. kH2SpillFilesMax counts the
+// files this connection holds open. RFC 9110 6.4: kBodyFilesMax counts
+// the files the process holds open, and BodySpill::open_file refuses
+// the slot over it. Both refusals are REFUSED_STREAM, the code that
+// tells the client to send the request again later. A file the
+// platform could not make is the server's own error.
+//
+// Out of line on purpose: this runs once per large body, and inline it
+// cost h2_dispatch 90 bytes. nm -S on the host build decided it.
+__attribute__((noinline)) bool Http1::h2_body_file_open(Conn& st0, H2Stream& stx,
+                                                        uint32_t stream_id,
+                                                        std::string& sink) {
+  size_t open_files = 0;
+  for (const H2Stream& other : st0.h2->streams) {
+    if (other.spill.fd >= 0) open_files++;
+  }
+  if (mrb_unlikely(open_files >= kH2SpillFilesMax)) {
+    h2_rst(st0, stream_id, kH2RefusedStream, sink);
+    return false;
+  }
+  const SpillOpen opened = stx.spill.open_file();
+  if (mrb_unlikely(opened != SpillOpen::kOpen)) {
+    h2_rst(st0, stream_id,
+           opened == SpillOpen::kNoSlot ? kH2RefusedStream : kH2InternalError, sink);
+    return false;
+  }
+  return true;
+}
+
 // #210 / #146: the page h1 spells for this status, framed for h2. False =
 // there is nothing to say and the prebuilt bodyless block stands.
 bool Http1::h2_error_page(const H2ErrorAsk& a, H2ErrorPage& p, H2Answer& out) {
@@ -870,22 +900,10 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       // grows. No reserve: the size is what arrives.
       stx.data = H2Stream::Data::kMem;
     } else if (claimed.value >= kBodySpill || db.res->saves_body) {
-      // One descriptor per large body, and a client opens streams as fast
-      // as the settings allow. The ceiling counts the files this
-      // connection holds open: over it the stream is refused, which is
-      // the code that tells the client to send it again later.
-      size_t open_files = 0;
-      for (const H2Stream& other : st0.h2->streams) {
-        if (other.spill.fd >= 0) open_files++;
-      }
-      if (mrb_unlikely(open_files >= kH2SpillFilesMax)) {
-        h2_rst(st0, stream_id, kH2RefusedStream, sink);
-        return true;
-      }
-      if (mrb_unlikely(!stx.spill.open_file())) {
-        h2_rst(st0, stream_id, kH2InternalError, sink);
-        return true;
-      }
+      // One descriptor per large body, and two ceilings on how many are
+      // open: this connection's and the process's. Over either the
+      // stream is refused, and the client sends it again later.
+      if (mrb_unlikely(!h2_body_file_open(st0, stx, stream_id, sink))) return true;
       stx.data = H2Stream::Data::kFile;
     } else {
       // No reserve for a number the client only declared. 256 streams
@@ -2321,7 +2339,16 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           // the test is a comparison the frame already loaded.
           if (mrb_unlikely(wrote && stp->data == H2Stream::Data::kMem &&
                            stp->request_content.size() >= kBodySpill)) {
-            wrote = stp->spill.open_file() &&
+            // RFC 9113 8.7: no slot for the file is load, and REFUSED_STREAM
+            // says the client may send the request again. No node that
+            // reads content has run: each one waits for END_STREAM.
+            const SpillOpen opened = stp->spill.open_file();
+            if (mrb_unlikely(opened == SpillOpen::kNoSlot)) {
+              h2_credit_connection(sink, flen);
+              h2_rst(st0, stream, kH2RefusedStream, sink);
+              break;
+            }
+            wrote = opened == SpillOpen::kOpen &&
                     FileWriter{&stp->spill}.put(stp->request_content.data(),
                                                 stp->request_content.size());
             if (wrote) {

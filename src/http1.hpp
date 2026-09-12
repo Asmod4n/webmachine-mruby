@@ -71,6 +71,11 @@ inline constexpr size_t kTunnelOutCap = 8u * 1024 * 1024;
 // slipstream_tmpfile made the file, so it has no name: nothing to clean
 // up, and nothing another process can open. `fd` of -1 says this body is
 // in memory, which is every body under kBodySpill.
+//
+// What open_file answered: the file is open, the process already holds
+// kBodyFilesMax body files, or the platform made no file.
+enum class SpillOpen : uint8_t { kOpen, kNoSlot, kNoFile };
+
 struct BodySpill {
   int fd = -1;
   // What reached the file. It is the body's whole length once the body
@@ -92,11 +97,14 @@ struct BodySpill {
   // to know that a drained file is a whole body and not a pause.
   bool ended = false;
 
-  // The file goes back. The descriptor holds the last reference to it,
-  // so the close frees the blocks - there is no name to unlink.
-  void close_file() {
+  // The file goes back, and so does its slot in the process-wide count.
+  // The descriptor holds the last reference to it, so the close frees
+  // the blocks - there is no name to unlink. Cold, once per large body,
+  // so it stays out of the functions that call it.
+  __attribute__((noinline)) void close_file() {
     if (fd < 0) return;
     ::close(fd);
+    body_file_slot_give();
     fd = -1;
     written = 0;
     bound = false;
@@ -106,15 +114,22 @@ struct BodySpill {
     failed = false;
     ended = false;
   }
-  // Answers false when the file cannot be made, which is a 500: the
-  // request cannot be answered without its body.
-  bool open_file() {
+  // RFC 9110 6.4: takes a slot in the process-wide count, then makes
+  // the file. kNoSlot is load: h1 answers 503, h2 refuses the stream.
+  // kNoFile is a 500: the request cannot be answered without its body.
+  // Both leave fd at -1 and hold no slot. A file this object still
+  // holds goes back first, so the count stays exact. Cold, once per
+  // large body, so it stays out of the functions that call it.
+  __attribute__((noinline)) SpillOpen open_file() {
+    close_file();
+    if (mrb_unlikely(!body_file_slot_take())) return SpillOpen::kNoSlot;
     fd = slipstream_tmpfile(spill_dir());
     if (mrb_unlikely(fd < 0)) {
       fd = -1;
-      return false;
+      body_file_slot_give();
+      return SpillOpen::kNoFile;
     }
-    return true;
+    return SpillOpen::kOpen;
   }
   // Queue body octets. h1 calls it from the feed, h2 from the DATA
   // frame, and neither one writes: the reactor arms the write through
@@ -126,7 +141,9 @@ struct BodySpill {
   //
   // The file dies with the carrier that holds it, however that carrier
   // ends. A move steals the descriptor and leaves the source at -1, so
-  // an H2Stream the stream table moves cannot close a file twice.
+  // an H2Stream the stream table moves cannot close a file twice. The
+  // count follows the descriptor, not the object: a moved-from BodySpill
+  // holds no file, so its close_file gives nothing back.
   BodySpill() = default;
   ~BodySpill() { close_file(); }
   BodySpill(const BodySpill&) = delete;
@@ -278,7 +295,12 @@ static_assert(conn_move_ok(ConnMode::kAsset, ConnMode::kHead) &&
 
 // What one buffer of octets did to a body: there was no body to fill,
 // it is still short, it finished it, or the write failed.
-enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed, kTooLarge };
+// kFailed is the client's framing, 400. kTooLarge is 413. kNoSlot is
+// the process at kBodyFilesMax, 503. kFileFailed is a file the server
+// could not make or write, 500.
+enum class BodyTake : uint8_t {
+  kNone, kMore, kWhole, kFailed, kTooLarge, kNoSlot, kFileFailed
+};
 
 struct H2Stream {
   // RFC 9113 5.1.1: the Stream Identifier every frame carries.
@@ -2099,8 +2121,8 @@ class Http1 {
   // allocation and not one per buffer.
   //
   // kFailed is the client's fault and the caller answers 400. A writer
-  // that refuses its octets is the other kFailed, and the caller cannot
-  // tell them apart, so both end the connection.
+  // that refuses its octets is kFileFailed, the server's own 500. Both
+  // end the connection.
   //
   // Out of line on purpose: a chunked request is the rare one, and
   // inlined twice it put 379 bytes of decoder into feed_parse, which
@@ -2117,7 +2139,7 @@ class Http1 {
     // has, so the limit is held against it, here.
     if (mrb_unlikely(st.body_count + decoded > st.body_limit)) return BodyTake::kTooLarge;
     if (mrb_unlikely(decoded != 0 && !w.put(st.chunk_buf.data(), decoded))) {
-      return BodyTake::kFailed;
+      return BodyTake::kFileFailed;
     }
     st.body_count += decoded;
     // Everything this call was given is spoken for: what the decoder
@@ -2140,8 +2162,11 @@ class Http1 {
     // goes to the file, and every octet after it is a file write. Once
     // per body, never per buffer.
     if (mrb_unlikely(st.body_to == Conn::Body::kChunkMem && st.body_hold.size() >= kBodySpill)) {
-      if (!st.spill.open_file()) return BodyTake::kFailed;
-      if (!st.spill.take(st.body_hold.data(), st.body_hold.size())) return BodyTake::kFailed;
+      const SpillOpen opened = st.spill.open_file();
+      if (mrb_unlikely(opened != SpillOpen::kOpen)) {
+        return opened == SpillOpen::kNoSlot ? BodyTake::kNoSlot : BodyTake::kFileFailed;
+      }
+      if (!st.spill.take(st.body_hold.data(), st.body_hold.size())) return BodyTake::kFileFailed;
       st.body_hold.clear();
       st.body_hold.shrink_to_fit();
       st.body_to = Conn::Body::kChunkFile;
@@ -2154,7 +2179,7 @@ class Http1 {
   template <class W>
   static BodyTake take_body(Conn& st, W w, const char*& data, size_t& len) {
     const size_t take = len < st.content_need ? len : st.content_need;
-    if (mrb_unlikely(!w.put(data, take))) return BodyTake::kFailed;
+    if (mrb_unlikely(!w.put(data, take))) return BodyTake::kFileFailed;
     st.content_need -= take;
     data += take;
     len -= take;
@@ -3135,6 +3160,10 @@ class Http1 {
     std::span<const unsigned char> block;
   };
   bool h2_dispatch(Conn& st, const H2Headers& h, std::string& sink);
+  // RFC 9113 5.1.2, 8.7: the file for a body that starts in one, behind
+  // the two ceilings that refuse it. Answers false when the stream was
+  // refused. Out of line: once per large body, never per request.
+  bool h2_body_file_open(Conn& st, H2Stream& stx, uint32_t stream_id, std::string& sink);
   // The cold branches of h2_dispatch, out of line: the second HEADERS
   // of a stream and the DATA that ends one both serve the parked
   // stream; :protocol opens a WebSocket.

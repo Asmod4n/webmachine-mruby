@@ -122,9 +122,10 @@ class Ring {
     max_conns_ = derive_max_conns({nofile});
     if (max_conns_ == 0) {
       mrb_raisef(mrb_, E_WM_ERROR(mrb_),
-                 "RLIMIT_NOFILE %i leaves no room for connections (reserve %d + listeners %d)",
+                 "RLIMIT_NOFILE %i leaves no room for connections "
+                 "(reserve %d + body files %d + listeners %d)",
                  static_cast<mrb_int>(nofile), static_cast<int>(kFdReserve),
-                 static_cast<int>(kMaxListeners));
+                 static_cast<int>(kBodyFilesMax), static_cast<int>(kMaxListeners));
     }
     listener_base_ = max_conns_;
 

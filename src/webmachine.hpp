@@ -3832,6 +3832,13 @@ int docroot_fd();
 // before the first accept, the way the docroot is.
 const char* spill_dir();
 void spill_dir_set(const char* path);
+// RFC 9110 6.4: the count of request body files this process holds
+// open. take answers false when kBodyFilesMax are open, and give returns
+// one. BodySpill::open_file and close_file are the only callers in src/.
+bool body_file_slot_take();
+void body_file_slot_give();
+// How many are open now. The tests read it; nothing in src/ does.
+uint32_t body_files_open();
 
 // The canonical absolute path, for the refusals that have to name it.
 const char* docroot_path();
