@@ -20,50 +20,223 @@ other question keeps the default the table below names.
 ## Every callback
 
 The node column names the letter and number the decision graph uses
-for the edge that calls this callback (`Alan Dean and Justin Sheehy's
-diagram, RFC 9110's clauses beside each edge`). "Once" in the "runs"
+for the edge that calls this callback, from Alan Dean and Justin
+Sheehy's diagram, with RFC 9110's clauses beside each edge. "Once" in the "runs"
 column means a `def self.` answer is asked one time, while the
 application starts, and kept for the life of the process. "Per
 request" means the answer is asked again on every request that reaches
 the node.
 
-| Callback | Node | Arguments | Default | Return | What the server does | `def self.` |
-| --- | --- | --- | --- | --- | --- | --- |
-| `service_available?` | B13 | none | `true` | Boolean | `false` halts 503. | Yes, once. |
-| `known_methods` | B12 | none | the server's own HTTP method set | Array of String, or a space/comma-separated String | A request method outside the list halts 501. | Yes, once, or per request as `def`. |
-| `uri_too_long?` | B11 | the URI | `false` | Boolean | `true` halts 414. | No - takes an argument. |
-| `allowed_methods` | B10 | none | the server's own HTTP method set | Array of String, or a space/comma-separated String | Writes `Allow`; a method outside the list halts 405. | Yes, once, or per request as `def`. |
-| `malformed_request?` | B9b | none | `false` | Boolean | `true` halts 400. | Yes, once. |
-| `is_authorized?` | B8 | the `Authorization` field, or `nil` | `true` | Boolean | `false` halts 401 and asks for `WWW-Authenticate`. | Yes - asked per request on the class, not frozen. May be named in `compute` or `watch`. |
-| `forbidden?` | B7 | none | `false` | Boolean | `true` halts 403. | Yes, once. |
-| `valid_content_headers?` | B6 | the request's Content-* fields | `true` | Boolean | `false` halts 501. | No - takes an argument. |
-| `known_content_type?` | B5 | the request's `Content-Type` | `true` | Boolean | `false` halts 415. | No - takes an argument. |
-| `valid_entity_length?` | B4 | the body's declared length | `true` | Boolean | `false` halts 413. | No - takes an argument. |
-| `options` | B3 | none | not defined: writes `Allow` | Hash of field name to value | Answers an `OPTIONS` request with 200; a Hash writes each pair as a field instead of the default `Allow` line. | Yes, once, or per request as `def`. |
-| `content_types_provided` | C3/C4/O18 | none | see below | Array of `[type, handler_symbol]` pairs | Negotiates `Accept`; 406 when nothing matches; the chosen handler renders the body. | Yes, once, or per request as `def`. |
-| `languages_provided` | D4/D5 | none | not implemented | - | Defining this raises at fold time: this tree has no i18n conversion. | Refused. |
-| `charsets_provided` | E5/E6 | none | not implemented | - | Same refusal as `languages_provided`. | Refused. |
-| `encodings_provided` | F6/F7 | none | not implemented per-request | Hash | Must be `def self.`; an instance method is refused. | Yes, class-only. |
-| `resource_exists?` | G7 | none | `true` | Boolean | `false` walks the "does not exist yet" branch instead of the caching branch. | Yes, once. |
-| `generate_etag` | G11/K13 | none | not present | String or `nil` | Spells an `ETag`; feeds `If-Match`/`If-None-Match` checks (412/304). | Yes, once, or per request as `def`. May be named in `compute` or `watch`. |
-| `last_modified` | H12/L17 | none | not present | `Time`, an epoch Integer, or `nil` | Spells `Last-Modified`; feeds `If-Unmodified-Since`/`If-Modified-Since` (412/304). | Yes, once, or per request as `def`. May be named in `compute` or `watch`. |
-| `moved_permanently?` | I4/K5 | none | `false` | `false`, or a String/URI | A truthy answer halts 301 and writes `Location` from it. | Yes, once. |
-| `previously_existed?` | K7 | none | `false` | Boolean | `true` walks the "gone" branch (410-eligible); `false` walks the "never existed" branch (404). | Yes, once. |
-| `moved_temporarily?` | L5 | none | `false` | `false`, or a String/URI | A truthy answer halts 307 and writes `Location` from it. | Yes, once. |
-| `allow_missing_post?` | M7/N5 | none | `false` | Boolean | `true` lets a POST proceed against a resource that does not exist (`false` halts 404 or 410). | Yes, once. |
-| `delete_resource` | M20 | none | `false` | Boolean | `false` halts 500; `true` continues to `delete_completed?`. | No - runs per request. Refused as `def self.`. |
-| `delete_completed?` | M20b | none | `true` | Boolean | `false` halts 202 (accepted, not yet done). | Yes, once. |
-| `post_is_create?` | N11 | none | `false` | Boolean | `true` calls `create_path`; `false` calls `process_post`. | Yes, once. |
-| `create_path` | N11 | none | not present | String | The new path; a missing `Location` is filled from it and `base_uri`. | No - runs per request. Refused as `def self.`. |
-| `process_post` | N11 | none | not present | Boolean, or a value the flow treats as truthy/falsy | Handles the POST; `false` is a failure. | No - runs per request. Refused as `def self.`. |
-| `is_conflict?` | O14/P3 | none | `false` | Boolean | `true` halts 409; `false` runs the negotiated `content_types_accepted` handler. | Yes, once. |
-| `content_types_accepted` | O14/P3 | none | none - a resource that accepts a body must define it | Array of `[type, handler_symbol]`, each optionally followed by `{sniff: true}` | Negotiates the request's `Content-Type`; no match halts 415. | Yes, once, or per request as `def`. |
-| `multiple_choices?` | O18b | none | `false` | Boolean | `true` halts 300 instead of 200. | Yes, once. |
-| `variances` | - | none | `[]` | Array of String | Extra `Vary` field names beside the ones negotiation already added. | Yes, once, or per request as `def`. |
-| `max_body` | - | none | `conf.max_body`, else 1 MiB | Integer, octets | A larger declared `Content-Length` halts 413 before a byte is read. | Yes, class-only; an instance method is refused. |
-| `expires` | - | none | not present | `Time`, an epoch Integer, or `nil` | Spells an `Expires` field. | Yes, once, or per request as `def`. May be named in `compute` or `watch`. |
-| `finish_request` | - | none | not present | ignored | Runs after every request, including one that raised, if the resource defines it. | No - runs per request. Refused as `def self.`. May be named in `compute`. |
-| `handle_exception` | - | the exception | class default: `"#{e.class}: #{e.message}"` | String, or an Array the server joins with CRLF | Only honoured on `Webmachine::ErrorResource`; ignored on an ordinary resource. | Instance only; not a `def self.` question. |
+### `service_available?`
+
+Node B13. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
+
+`false` halts 503.
+
+### `known_methods`
+
+Node B12. Arguments: none. Default: the server's own HTTP method set. Returns: Array of String, or a space/comma-separated String. `def self.`: Yes, once, or per request as `def`.
+
+A request method outside the list halts 501.
+
+### `uri_too_long?`
+
+Node B11. Arguments: the URI. Default: `false`. Returns: Boolean. `def self.`: No - takes an argument.
+
+`true` halts 414.
+
+### `allowed_methods`
+
+Node B10. Arguments: none. Default: the server's own HTTP method set. Returns: Array of String, or a space/comma-separated String. `def self.`: Yes, once, or per request as `def`.
+
+Writes `Allow`; a method outside the list halts 405.
+
+### `malformed_request?`
+
+Node B9b. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` halts 400.
+
+### `is_authorized?`
+
+Node B8. Arguments: the `Authorization` field, or `nil`. Default: `true`. Returns: Boolean. `def self.`: Yes - asked per request on the class, not frozen. May be named in `compute` or `watch`.
+
+`false` halts 401 and asks for `WWW-Authenticate`.
+
+### `forbidden?`
+
+Node B7. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` halts 403.
+
+### `valid_content_headers?`
+
+Node B6. Arguments: the request's Content-* fields. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
+
+`false` halts 501.
+
+### `known_content_type?`
+
+Node B5. Arguments: the request's `Content-Type`. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
+
+`false` halts 415.
+
+### `valid_entity_length?`
+
+Node B4. Arguments: the body's declared length. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
+
+`false` halts 413.
+
+### `options`
+
+Node B3. Arguments: none. Default: not defined: writes `Allow`. Returns: Hash of field name to value. `def self.`: Yes, once, or per request as `def`.
+
+Answers an `OPTIONS` request with 200; a Hash writes each pair as a field instead of the default `Allow` line.
+
+### `content_types_provided`
+
+Node C3/C4/O18. Arguments: none. Default: see below. Returns: Array of `[type, handler_symbol]` pairs. `def self.`: Yes, once, or per request as `def`.
+
+Negotiates `Accept`; 406 when nothing matches; the chosen handler renders the body.
+
+### `languages_provided`
+
+Node D4/D5. Arguments: none. Default: not implemented. Returns: -. `def self.`: Refused.
+
+Defining this raises at fold time: this tree has no i18n conversion.
+
+### `charsets_provided`
+
+Node E5/E6. Arguments: none. Default: not implemented. Returns: -. `def self.`: Refused.
+
+Same refusal as `languages_provided`.
+
+### `encodings_provided`
+
+Node F6/F7. Arguments: none. Default: not implemented per-request. Returns: Hash. `def self.`: Yes, class-only.
+
+Must be `def self.`; an instance method is refused.
+
+### `resource_exists?`
+
+Node G7. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
+
+`false` walks the "does not exist yet" branch instead of the caching branch.
+
+### `generate_etag`
+
+Node G11/K13. Arguments: none. Default: not present. Returns: String or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
+
+Spells an `ETag`; feeds `If-Match`/`If-None-Match` checks (412/304).
+
+### `last_modified`
+
+Node H12/L17. Arguments: none. Default: not present. Returns: `Time`, an epoch Integer, or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
+
+Spells `Last-Modified`; feeds `If-Unmodified-Since`/`If-Modified-Since` (412/304).
+
+### `moved_permanently?`
+
+Node I4/K5. Arguments: none. Default: `false`. Returns: `false`, or a String/URI. `def self.`: Yes, once.
+
+A truthy answer halts 301 and writes `Location` from it.
+
+### `previously_existed?`
+
+Node K7. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` walks the "gone" branch (410-eligible); `false` walks the "never existed" branch (404).
+
+### `moved_temporarily?`
+
+Node L5. Arguments: none. Default: `false`. Returns: `false`, or a String/URI. `def self.`: Yes, once.
+
+A truthy answer halts 307 and writes `Location` from it.
+
+### `allow_missing_post?`
+
+Node M7/N5. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` lets a POST proceed against a resource that does not exist (`false` halts 404 or 410).
+
+### `delete_resource`
+
+Node M20. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: No - runs per request. Refused as `def self.`.
+
+`false` halts 500; `true` continues to `delete_completed?`.
+
+### `delete_completed?`
+
+Node M20b. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
+
+`false` halts 202 (accepted, not yet done).
+
+### `post_is_create?`
+
+Node N11. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` calls `create_path`; `false` calls `process_post`.
+
+### `create_path`
+
+Node N11. Arguments: none. Default: not present. Returns: String. `def self.`: No - runs per request. Refused as `def self.`.
+
+The new path; a missing `Location` is filled from it and `base_uri`.
+
+### `process_post`
+
+Node N11. Arguments: none. Default: not present. Returns: Boolean, or a value the flow treats as truthy/falsy. `def self.`: No - runs per request. Refused as `def self.`.
+
+Handles the POST; `false` is a failure.
+
+### `is_conflict?`
+
+Node O14/P3. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` halts 409; `false` runs the negotiated `content_types_accepted` handler.
+
+### `content_types_accepted`
+
+Node O14/P3. Arguments: none. Default: none - a resource that accepts a body must define it. Returns: Array of `[type, handler_symbol]`, each optionally followed by `{sniff: true}`. `def self.`: Yes, once, or per request as `def`.
+
+Negotiates the request's `Content-Type`; no match halts 415.
+
+### `multiple_choices?`
+
+Node O18b. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
+
+`true` halts 300 instead of 200.
+
+### `variances`
+
+Node -. Arguments: none. Default: `[]`. Returns: Array of String. `def self.`: Yes, once, or per request as `def`.
+
+Extra `Vary` field names beside the ones negotiation already added.
+
+### `max_body`
+
+Node -. Arguments: none. Default: `conf.max_body`, else 1 MiB. Returns: Integer, octets. `def self.`: Yes, class-only; an instance method is refused.
+
+A larger declared `Content-Length` halts 413 before a byte is read.
+
+### `expires`
+
+Node -. Arguments: none. Default: not present. Returns: `Time`, an epoch Integer, or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
+
+Spells an `Expires` field.
+
+### `finish_request`
+
+Node -. Arguments: none. Default: not present. Returns: ignored. `def self.`: No - runs per request. Refused as `def self.`. May be named in `compute`.
+
+Runs after every request, including one that raised, if the resource defines it.
+
+### `handle_exception`
+
+Node -. Arguments: the exception. Default: class default: `"#{e.class}: #{e.message}"`. Returns: String, or an Array the server joins with CRLF. `def self.`: Instance only; not a `def self.` question.
+
+Only honoured on `Webmachine::ErrorResource`; ignored on an ordinary resource.
+
 
 ## The `def self.` rule
 
