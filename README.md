@@ -128,6 +128,7 @@ can be as static or as dynamic as HTTP allows.
 | Work off the request loop: `compute` and `watch` | [how-to](docs/how-to/work-off-the-loop.md) |
 | Request bodies and uploads, with a size limit at three levels | [how-to](docs/how-to/accept-uploads.md) |
 | Access and error logs, written by their own process | [how-to](docs/how-to/logs.md) |
+| Error pages, a problem document, and a fingerprint that finds the log record | [reference](docs/reference/errors.md) |
 | A password database, argon2id in LMDB, with its own tool | [how-to](docs/how-to/passwords.md) |
 
 The build makes four programs:

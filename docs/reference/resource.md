@@ -526,14 +526,16 @@ end
 
 #### `handle_exception`
 
-Not a node. Argument: the exception a callback raised. Default:
-`"#{e.class}: #{e.message}"`. Returns a String, or an Array the server
-joins with CRLF, as the body of the 500. Instance only.
+Not a node, and not a callback of an ordinary resource: it lives on
+`Webmachine::ErrorResource` and nowhere else, and a `handle_exception`
+on your own class is never called. Argument: the exception a callback
+raised. Returns a String, or an Array the server joins with CRLF, as
+the body of the 500. [Errors](errors.md) has the whole path.
 
 ```ruby
-class Api < Webmachine::Resource
+class Webmachine::ErrorResource
   def handle_exception(e)
-    "something went wrong: #{e.class}"
+    ["#{e.class}: #{e.message}", *e.backtrace]
   end
 end
 ```
@@ -761,65 +763,12 @@ A handler `content_types_accepted` names must be declared with
 
 ## The error path
 
-An exception that reaches no `rescue` is answered by
-`Webmachine::ErrorResource`, and only by it - a `handle_exception` on
-an ordinary resource is never called. `handle_exception` turns the
-exception into a String, or an Array the server joins with CRLF. A
-`nil` answer is a 500 page that says only "500".
-
-```ruby
-class Webmachine::ErrorResource
-  def handle_exception(e)
-    ["#{e.class}: #{e.message}", *e.backtrace]
-  end
-end
-```
-
-`ErrorResource` negotiates like any other resource, through its own
-`content_types_provided`:
-
-- `text/html; charset=utf-8` -> `to_html_error`
-- `application/problem+json` -> `to_json_error`, an RFC 9457 problem
-  document (`problem_document`): `type` is always `"about:blank"`,
-  plus `title`, `status`, and - when present - `id`, `detail`, and
-  `backtrace`.
-- `application/json` -> the same `to_json_error`, since a client asking
-  for `application/json` meant the same thing as `+json`.
-- `image/jpeg` -> the status cat, lent straight out of the error asset
-  pack; no method is called for this row.
-- `text/plain; charset=utf-8` -> `to_text_error`
-
-A resource can add a format by reopening the class:
-
-```ruby
-class Webmachine::ErrorResource
-  def self.content_types_provided
-    super + [['application/xml', :to_xml_error]]
-  end
-
-  def to_xml_error(e)
-    "<error status=\"#{e['status']}\">#{e['title']}</error>"
-  end
-end
-```
-
-Every handler is handed the same Hash, which is also the template
-context: `status`, `title`, `source`, and - on a 500 - `id`, `message`,
-and, in a debug build, `backtrace`. `cat` is present only when the
-asset pack holds a picture for the status.
-
-Nothing the client sent reaches the page: not the request target, not
-a header, not the query. A 4xx is an answer, not a failure, so it
-carries no fingerprint and nothing is written to the error log. A 5xx
-does: the fingerprint is 16 lowercase hex digits, an FNV-1a hash over
-the build, the method, the request target, the fields the server
-steered by, the exception class, the backtrace, and the status. The
-same failure at the same place hashes the same twice; a different
-request target is a different fingerprint even at the same line. The
-error log carries the fingerprint on the same line as the request it
-belongs to - the target, the method, the message, the backtrace - so
-an operator greps the fingerprint a user read off the page and finds
-the request that caused it.
+A raise that reaches no `rescue` is answered by
+`Webmachine::ErrorResource`, with a fingerprint that finds the record
+in the error log. [Errors](errors.md) is the page for that: the
+statuses the graph answers on its own, a refusal a resource chooses,
+a failure, the error pages and their formats, and what a worker's
+deadline or raise answers.
 
 ## Base class helpers
 

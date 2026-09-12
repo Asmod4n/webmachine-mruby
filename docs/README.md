@@ -44,6 +44,9 @@ Complete and dry. Structured like the thing it describes.
   method on both objects.
 - [Configuration](reference/configuration.md): `Application`, routes,
   every `app.conf` key, every `webmachine.toml` key.
+- [Errors](reference/errors.md): which callback each status comes
+  from, a refusal a resource chooses, a failure, the error pages and
+  their formats, and the fingerprint that finds the log record.
 - [Waiting](reference/waiting.md): `compute`, `watch`, `reads_body`,
   `ComputeTask`, `Watcher`, the worker registry.
 - [WebSocket and server-sent events](reference/websocket-and-sse.md):
