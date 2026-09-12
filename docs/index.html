@@ -570,7 +570,7 @@
         <dt>One thread. What happens when a callback waits?</dt>
         <dd>It says so on the class. <code><span class="k">compute</span></code> sends the block to a worker thread with a deadline. <code><span class="k">watch</span></code> waits on a descriptor without leaving the loop. Every other connection is served while it waits.</dd>
         <dt>Where does TLS come from?</dt>
-        <dd>The TLS 1.3 handshake is OpenSSL 3. Then the keys go to the kernel, and a plain send is a TLS record. Linux and FreeBSD have that. On a kernel without kTLS the server speaks plain HTTP, and a proxy in front of it does TLS.</dd>
+        <dd>The TLS 1.3 handshake is OpenSSL 3. Then the keys go to the kernel, and a plain send is a TLS record. Linux and FreeBSD have that. On a kernel without kTLS a listener that serves TLS refuses to start and names the reason. Then you run plain HTTP, and a proxy in front does TLS.</dd>
         <dt>Which platforms?</dt>
         <dd>io_uring where the kernel allows it. slipstreamIO carries the same rings to Linux without io_uring, to macOS, the BSDs and Windows. Without io_uring every socket operation is readiness plus a classic call: correct, and slower.</dd>
         <dt>What does a build need?</dt>

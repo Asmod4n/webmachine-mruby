@@ -79,7 +79,7 @@ that callback is refused; see the
 
 ## `Webmachine::ComputeTask`
 
-```ruby
+```
 Webmachine::ComputeTask.new(*args, max_runtime:) { |*args| ... }
 ```
 
@@ -234,7 +234,7 @@ end
 
 ## `Webmachine::Watcher`
 
-```ruby
+```
 Webmachine::Watcher.new(source, events = :r, timeout:) { |revents, watcher| ... }
 ```
 

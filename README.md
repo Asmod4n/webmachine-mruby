@@ -202,8 +202,9 @@ The same packages elsewhere: `zlib-devel` and `openssl-devel` on RHEL
 and Fedora, `zlib-dev` and `openssl-dev` on Alpine, and
 `xcode-select --install` plus Homebrew's `openssl@3` on macOS. When a
 header is missing, the build stops and names the package for your
-distribution. TLS wants a kernel with the tls module loaded; without
-it the server speaks plain HTTP.
+distribution. TLS wants a kernel with the tls module loaded. A
+listener that serves TLS refuses to start without it and names the
+reason. Without kTLS, run plain HTTP with a proxy in front for TLS.
 
 [`docs/container.md`](docs/container.md) builds and runs it in a
 container.
