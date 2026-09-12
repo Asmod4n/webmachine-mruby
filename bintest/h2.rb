@@ -594,13 +594,14 @@ assert('h2: CONTINUATION with no HEADERS before it is a connection error') do
 end
 
 # A DATA frame is answered with WINDOW_UPDATE first (RFC 9113 6.9), so a
-# parked stream's HEADERS is not the next frame on the wire.
-def h2_until(s, type)
+# parked stream's HEADERS is not the next frame on the wire. A caller
+# that waits on one stream names it, so a miss says which one.
+def h2_until(s, type, id = nil)
   20.times do
     t, f, st, pay = h2_next(s)
     return [t, f, st, pay] if t == type
   end
-  raise "no frame of type #{type} arrived"
+  raise "no frame of type #{type} arrived#{id ? " on stream #{id}" : ''}"
 end
 
 H2_FIELDS_APP = <<~RUBY unless defined?(H2_FIELDS_APP)
@@ -1966,6 +1967,95 @@ assert('h2: a parked run still has its headers, its bindings and its body') do
       # stream keeps apart from its fields. A hold that moved them by the
       # fields' own delta would answer bytes of somewhere else.
       assert_equal "body|upload.bin|deep|#{body}", data
+    end
+  end
+end
+
+assert('h2: a malformed field or :path is a stream error, and the connection lives (RFC 9113 8.2.1, 8.3.1)') do
+  bad = [
+    ['a name with a space', h2_get_block + h2_lit('x a', '1')],
+    ['a name with a NUL', h2_get_block + h2_lit("x\x00a", '1')],
+    ['a name with a quote', h2_get_block + h2_lit('x"a', '1')],
+    ['a name with a colon inside', h2_get_block + h2_lit('x:a', '1')],
+    ['a value with CR LF', h2_get_block + h2_lit('x-a', "1\r\nx-b: 2")],
+    ['a value with a NUL', h2_get_block + h2_lit('x-a', "1\x002")],
+    ['a value with a leading SP', h2_get_block + h2_lit('x-a', ' 1')],
+    ['a value with a trailing HTAB', h2_get_block + h2_lit('x-a', "1\t")],
+    # 0x0f 0x04 is a literal without indexing whose name is static
+    # index 19, accept. The decoder resolves the name, and the value
+    # rule must still run on the value.
+    ['a static name with a CR in its value', h2_get_block + "\x0f\x04\x03a\rb".b],
+    [':path with no leading slash', h2_path_block('foo')],
+    [':path with a control octet', h2_path_block("/a\x01b")],
+    [':path with a space', h2_path_block('/a b')],
+    [':path with a CR', h2_path_block("/a\rb")],
+  ]
+  h2_server do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      id = 1
+      bad.each do |what, blk|
+        s.write(h2_frame(1, 0x05, id, blk))
+        type, _, stream, payload = h2_next_payload(s)
+        assert_equal 3, type, "#{what}: the answer must be RST_STREAM"
+        assert_equal id, stream, what
+        assert_equal 1, payload.unpack1('N'), "#{what}: the code must be PROTOCOL_ERROR"
+        id += 2
+      end
+      # RFC 9113 8.2.1: SP and HTAB inside a value are allowed. The
+      # connection lives, and a good request answers on it.
+      s.write(h2_frame(1, 0x05, id, h2_get_block + h2_lit('x-a', "1 \t2")))
+      type, _, stream, block = h2_next_payload(s)
+      assert_equal 1, type, 'a good request after the refusals must still answer'
+      assert_equal id, stream
+      assert_equal 0x88, block.getbyte(0)
+      type, _, _, data = h2_next(s)
+      assert_equal 0, type
+      assert_equal 'OK', data
+    end
+  end
+end
+
+assert('h2: a malformed trailer field is a stream error, and the connection lives (RFC 9113 8.1, 8.2.1)') do
+  h2_server(h2_app('Fields', H2_FIELDS_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      post = "\x83\x86\x84\x41\x0bexample.com".b + h2_lit('content-length', '4')
+      # A trailer that keeps the rules: the body ends, and the resource
+      # answers with what it read.
+      s.write(h2_frame(1, 0x04, 1, post))
+      s.write(h2_frame(0, 0x00, 1, 'test'))
+      s.write(h2_frame(1, 0x05, 1, h2_lit('x-test', 'ok')))
+      _, _, stream, = h2_until(s, 1, 1)
+      assert_equal 1, stream
+      body = +''.b
+      20.times do
+        ty, fl, _, pay = h2_next(s)
+        next unless ty == 0
+        body << pay
+        break if (fl & 0x01) != 0
+      end
+      assert_true body.include?('|test|'), "the body must have arrived: #{body.inspect}"
+      bad = [
+        ['a name with a space', h2_lit('x a', 'ok')],
+        ['a name with a NUL', h2_lit("x\x00a", 'ok')],
+        ['a value with CR LF', h2_lit('x-test', "ok\r\nx-b: 2")],
+        ['a value with a leading SP', h2_lit('x-test', ' ok')],
+        ['a pseudo-header', h2_lit(':method', 'GET')],
+      ]
+      id = 3
+      bad.each do |what, trailer|
+        s.write(h2_frame(1, 0x04, id, post))
+        s.write(h2_frame(0, 0x00, id, 'test'))
+        s.write(h2_frame(1, 0x05, id, trailer))
+        _, _, stream, payload = h2_until(s, 3, id)
+        assert_equal id, stream, what
+        assert_equal 1, payload.unpack1('N'), "#{what}: the code must be PROTOCOL_ERROR"
+        id += 2
+      end
+      s.write(h2_frame(1, 0x05, id, h2_get_block))
+      _, _, stream, = h2_until(s, 1, id)
+      assert_equal id, stream, 'a good request after the refusals must still answer'
     end
   end
 end

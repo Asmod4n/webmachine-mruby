@@ -2,6 +2,7 @@
 
 #include "ring.hpp"
 
+#include <array>
 #include <optional>
 #include <picohttpparser.h>
 
@@ -17,31 +18,6 @@ constexpr size_t kH2FragBudget = kMaxHead * 2;
 // makes the defect its method.
 constexpr uint32_t kH2LieBudget = 4;
 constexpr size_t kH2MergeBody = 1024;
-
-// RFC 9113 8.2.1: a field name carrying an uppercase letter is malformed.
-// Eight bytes a word. Clearing every high bit first and re-setting it as
-// a guard bit keeps each byte's subtraction inside its own lane, so no
-// borrow can travel between bytes and forge (or hide) a letter; the last
-// term drops bytes >= 0x80, whose low seven bits could otherwise spell
-// one.
-bool h2_has_upper(const char* s, size_t n) {
-  constexpr uint64_t kOnes = 0x0101010101010101ULL;
-  constexpr uint64_t kHigh = 0x8080808080808080ULL;
-  size_t i = 0;
-  for (; i + 8 <= n; i += 8) {
-    uint64_t w;
-    std::memcpy(&w, s + i, sizeof(w));
-    const uint64_t g = (w & ~kHigh) | kHigh;
-    const uint64_t ge_a = (g - kOnes * 'A') & kHigh;
-    const uint64_t ge_z1 = (g - kOnes * ('Z' + 1)) & kHigh;
-    if ((ge_a & ~ge_z1 & ~w & kHigh) != 0) return true;
-  }
-  for (; i < n; i++) {
-    const unsigned c = static_cast<unsigned char>(s[i]);
-    if (c - 'A' < 26u) return true;
-  }
-  return false;
-}
 
 // RFC 9113 4.1: a 32-bit field, network order.
 void put_u32(unsigned char* p, uint32_t v) {
@@ -281,6 +257,73 @@ bool h2_trailer_name_ok(const char* n, size_t nl) {
       return !http::tok_eq({n, nl}, "transfer-encoding");
     default:
       break;
+  }
+  return true;
+}
+
+// RFC 9110 5.6.2 / RFC 9113 8.2.1: which octets may stand in a field
+// name. A name is a token, and RFC 9113 8.2.1 takes the uppercase
+// letters out of it. One table of 256 flags, so the scan is one load
+// and one test per octet. The tchar set is the one field_name_ok in
+// webmachine.hpp spells, without 'A' to 'Z'.
+constexpr std::array<bool, 256> h2_name_octets() {
+  std::array<bool, 256> t{};
+  for (unsigned c = 0; c < 256; c++) {
+    t[c] = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '!' || c == '#' ||
+           c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
+           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+  }
+  return t;
+}
+constexpr std::array<bool, 256> kH2NameOctet = h2_name_octets();
+
+// RFC 9113 8.2.1: SP and HTAB may not start or end a field value.
+constexpr bool h2_is_blank(char c) { return c == ' ' || c == '\t'; }
+
+// RFC 9113 8.2.1: one field of a request, head or trailer. The name is
+// a lowercase token. The value carries no NUL, CR or LF, and it neither
+// starts nor ends with SP or HTAB. False = the request is malformed,
+// and RFC 9113 8.1.1 makes that a stream error of type PROTOCOL_ERROR.
+//
+// This runs once per field on the hot path, so it is one call from
+// h2_dispatch and it stays out of line. nm -S on the host build reads
+// its size on its own.
+//
+// RFC 7541 B: name_known says the decoder copied the name out of the
+// static table. Every static name is a lowercase token, so such a name
+// skips the scan.
+//
+// RFC 9113 8.3: a pseudo-header carries a colon, which no token has.
+// h2_dispatch compares such a name whole against the five it serves.
+// It refuses every other one, so the token rule does not run on a
+// pseudo-header here. Its value takes the value rule like any other.
+__attribute__((noinline)) bool h2_field_ok(http::Field f, bool name_known) {
+  const char* const n = f.name.data();
+  const size_t nl = f.name.size();
+  if (nl == 0) return false;
+  if (!name_known && n[0] != ':') {
+    for (size_t i = 0; i < nl; i++) {
+      if (!kH2NameOctet[static_cast<unsigned char>(n[i])]) return false;
+    }
+  }
+  const char* const v = f.value.data();
+  const size_t vl = f.value.size();
+  if (vl != 0 && (h2_is_blank(v[0]) || h2_is_blank(v[vl - 1]))) return false;
+  return http::field_value_ok(v, vl);
+}
+
+// RFC 9113 8.3.1: :path is not empty, and it is "*" or it starts with
+// "/". RFC 3986 3.3: a target carries no control octet, no SP and no
+// DEL. picohttpparser refuses the same octets in an h1 request-line, so
+// h1 and h2 refuse the same octets. An octet of 0x80 or more passes on
+// both. A "*" with any method reaches the router and misses, as it
+// does on h1. False = malformed (RFC 9113 8.1.1).
+__attribute__((noinline)) bool h2_path_ok(const char* p, size_t n) {
+  if (n == 0) return false;
+  if (p[0] != '/' && !(n == 1 && p[0] == '*')) return false;
+  for (size_t i = 0; i < n; i++) {
+    const unsigned char c = static_cast<unsigned char>(p[i]);
+    if (c <= 0x20 || c == 0x7f) return false;
   }
   return true;
 }
@@ -528,15 +571,21 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       return h2_error(st0, kH2ProtocolError, sink);
     }
     // RFC 9113 8.1: a trailer section carries no pseudo-header, and the
-    // rules on a field name hold there as they do in the head. The block
-    // was decoded and then thrown away, so a trailer could spell
-    // anything at all.
+    // rules on a field name and a field value (8.2.1) hold there as they
+    // do in the head. The block was decoded and then thrown away, so a
+    // trailer could spell anything at all.
+    // RFC 9113 8.1.1: a malformed request is a stream error. The stream
+    // ends with PROTOCOL_ERROR. The connection stays open.
     for (size_t i = 0; i < nq; i += 4) {
       const char* const tname = h2.hdrbuf.data() + quads[i];
       const size_t tlen = quads[i + 1];
-      if (tlen == 0 || tname[0] == ':' || h2_has_upper(tname, tlen) ||
+      const char* const tval = h2.hdrbuf.data() + quads[i + 2];
+      const size_t tvlen = quads[i + 3];
+      const bool tknown = hidx[i / 4] != LSHPACK_HDR_UNKNOWN;
+      if (!h2_field_ok({{tname, tlen}, {tval, tvlen}}, tknown) || tname[0] == ':' ||
           !h2_trailer_name_ok(tname, tlen)) {
-        return h2_error(st0, kH2ProtocolError, sink);
+        h2_rst(st0, stream_id, kH2ProtocolError, sink);
+        return true;
       }
     }
     // The two gates the last DATA frame of a body passes. A trailer
@@ -578,7 +627,14 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     const size_t nlen = quads[i + 1];
     const char* val = h2.hdrbuf.data() + quads[i + 2];
     const size_t vlen = quads[i + 3];
-    if (nlen == 0) {
+    const uint8_t known = hidx[i / 4];
+    // RFC 9113 8.2.1: the name is a lowercase token. The value carries
+    // no NUL, CR or LF and no blank at either end. A field that breaks
+    // one of these rules makes the request malformed. One call per
+    // field; the scan is the helper's, not this function's. A name the
+    // decoder took from the static table is a token already and skips
+    // the scan.
+    if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
       ok = false;
       break;
     }
@@ -588,7 +644,6 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     // decoder resolved is not spelled out of the buffer again. It may
     // not stand in for the colon: :status is a static entry too, and a
     // request that carries one is refused by the arm at the end.
-    const uint8_t known = hidx[i / 4];
     if (name[0] == ':') {
       if (saw_regular) {
         ok = false;
@@ -625,7 +680,7 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
         facts.method = http::parse_method(val, vlen);
       } else if (which == kPath) {
         if (path_val != nullptr) { ok = false; break; }
-        have_path = vlen != 0;
+        have_path = true;
         path_val = val;
         path_vlen = vlen;
       } else if (which == kScheme) {
@@ -645,10 +700,6 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       continue;
     }
     saw_regular = true;
-    if (h2_has_upper(name, nlen)) {
-      ok = false;
-      break;
-    }
     // Where this field lands, for vals.named to point at. A block past
     // kH2MaxFields keeps no slot, and SIZE_MAX says so.
     size_t at = SIZE_MAX;
@@ -665,7 +716,9 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       ok = false;
     }
   }
-  if (!ok || !have_method || !have_path || !have_scheme) {
+  // RFC 9113 8.3.1: the :path came, and it has the shape of a target.
+  // have_path is tested first, so path_val is never null here.
+  if (!ok || !have_method || !have_path || !have_scheme || !h2_path_ok(path_val, path_vlen)) {
     h2_rst(st0, stream_id, kH2ProtocolError, sink);
     return true;
   }
