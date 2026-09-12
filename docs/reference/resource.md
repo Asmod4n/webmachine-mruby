@@ -119,13 +119,17 @@ answer it from a worker or a descriptor.
 
 Both answer an Array of pairs. A pair is `[String, Symbol]`: a media
 type, and the name of the instance method that renders it (provided)
-or reads it (accepted). `content_types_provided` must answer at least
+or reads it (accepted). Both tables are the same for every request, so
+they are written `def self.` and read once at start. Written `def`,
+they are read per request, which is allowed and slower. `content_types_provided` must answer at least
 one pair; `content_types_accepted` has no default and a resource that
 allows a body-carrying method must define it, or every such request
 gets 415.
 
 ```ruby
 class Order < Webmachine::Resource
+  reads_body :from_json
+
   def self.allowed_methods
     %w[GET HEAD PUT]
   end
@@ -135,15 +139,15 @@ class Order < Webmachine::Resource
      ['application/json', :to_json]]
   end
 
-  def content_types_accepted
+  def self.content_types_accepted
     [['application/json', :from_json]]
   end
 
-  def resource_exists?
+  def self.resource_exists?
     true
   end
 
-  def generate_etag
+  def self.generate_etag
     'v1'
   end
 
