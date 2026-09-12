@@ -31,7 +31,7 @@ const struct mrb_data_type kHeadersDataType = {"Webmachine::Response::Headers", 
 
 // RFC 9110: the run a response method is answering for, or a named
 // refusal when nothing is being answered right now.
-const Resource *resource_of_the_live_run(mrb_state *mrb)
+const Resource *run_resource_or_raise(mrb_state *mrb)
 {
     if (live_resource_ == nullptr) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "response outside a run frame");
@@ -41,172 +41,205 @@ const Resource *resource_of_the_live_run(mrb_state *mrb)
 
 // RFC 9110 6.3: same as live(), plus the field-line buffer a Headers
 // method needs - run_headers is null between runs even when cur_ is not.
-const Resource *resource_with_a_header_buffer(mrb_state *mrb)
+const Resource *run_resource_with_header_buffer(mrb_state *mrb)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    if (r->run.headers == nullptr) {
+    const Resource *resource = run_resource_or_raise(mrb);
+    if (resource->run.headers == nullptr) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "response.headers: no header buffer is bound for this run");
     }
-    return r;
+    return resource;
 }
 
 // RFC 9110 5.1: header names compare case-insensitively; the query name
 // is not a compile-time literal, so it is lowered once here and handed
 // to http::tok_eq as the (now lowercase) literal side of the compare.
-void lowercase_into(std::string &out, const char *p, size_t n)
+void string_copy_lowercased(std::string &lowered, const char *text, size_t length)
 {
-    out.assign(p, n);
-    for (char &c : out) {
+    lowered.assign(text, length);
+    for (char &c : lowered) {
         if (c >= 'A' && c <= 'Z')
             c = static_cast<char>(c + 32);
     }
 }
 
+// The bytes a Ruby String holds. Every caller in this file hands the
+// String over and reads the answer, so RSTRING_PTR and RSTRING_LEN are
+// spelled here and nowhere else: a macro has no type, it can read its
+// argument twice, and a language server cannot find its callers.
+std::string_view ruby_string_bytes(mrb_value ruby_string)
+{
+    const char *const first = RSTRING_PTR(ruby_string);
+    const size_t length = static_cast<size_t>(RSTRING_LEN(ruby_string));
+    return std::string_view(first, length);
+}
+
+// RFC 9110 5.5: may the bytes of this String stand as a field value?
+bool ruby_string_is_field_value(mrb_value ruby_string)
+{
+    const std::string_view bytes = ruby_string_bytes(ruby_string);
+    return http::field_value_ok(bytes.data(), bytes.size());
+}
+
+// RFC 6265 4.1.1: does this String carry the octet that would end the
+// part it sits in and start the next one?
+bool ruby_string_holds_octet(mrb_value ruby_string, char octet)
+{
+    return ruby_string_bytes(ruby_string).find(octet) != std::string_view::npos;
+}
+
 // One "Name: Value\r\n" line's spans within the run's header buffer.
-struct FieldLine {
-    size_t start = 0; // the name's first byte
-    size_t end = 0;   // one past the trailing '\n'
-    size_t name_len = 0;
-    size_t val_off = 0;
-    size_t val_len = 0;
+struct HeaderLine {
+    size_t start_offset = 0; // the name's first byte
+    size_t end_offset = 0;   // one past the trailing '\n'
+    size_t key_length = 0;
+    size_t value_offset = 0;
+    size_t value_length = 0;
 };
 
 // RFC 9110 6.3: the next field line at or after `pos`; false at the end
 // of the buffer (or on a buffer this code did not itself write).
-bool read_field_line_at(std::string_view buf, size_t pos, FieldLine &out)
+bool header_read_next_key_value(std::string_view header_buffer, size_t from_offset,
+                                HeaderLine &found)
 {
-    if (pos >= buf.size())
+    if (from_offset >= header_buffer.size())
         return false;
-    const size_t colon = buf.find(':', pos);
-    const size_t eol = buf.find("\r\n", pos);
-    if (colon == std::string_view::npos || eol == std::string_view::npos || colon > eol) {
+    const size_t colon = header_buffer.find(':', from_offset);
+    const size_t line_end = header_buffer.find("\r\n", from_offset);
+    if (colon == std::string_view::npos || line_end == std::string_view::npos || colon > line_end) {
         return false;
     }
-    out.start = pos;
-    out.name_len = colon - pos;
+    found.start_offset = from_offset;
+    found.key_length = colon - from_offset;
     size_t val_off = colon + 1;
-    if (val_off < eol && buf[val_off] == ' ')
+    if (val_off < line_end && header_buffer[val_off] == ' ')
         val_off++;
-    out.val_off = val_off;
-    out.val_len = eol - val_off;
-    out.end = eol + 2;
+    found.value_offset = val_off;
+    found.value_length = line_end - val_off;
+    found.end_offset = line_end + 2;
     return true;
 }
 
 // RFC 9110 6.3: the first line named `name`, case-insensitively.
-bool find_field_line_named(std::string_view buf, std::string_view name, FieldLine &out)
+bool header_find_key(std::string_view header_buffer, std::string_view name, HeaderLine &found)
 {
     std::string lowered;
-    lowercase_into(lowered, name.data(), name.size());
-    FieldLine h;
-    size_t pos = 0;
-    while (read_field_line_at(buf, pos, h)) {
-        if (http::tok_eq({buf.data() + h.start, h.name_len}, lowered)) {
-            out = h;
+    string_copy_lowercased(lowered, name.data(), name.size());
+    HeaderLine header_line;
+    size_t offset = 0;
+    while (header_read_next_key_value(header_buffer, offset, header_line)) {
+        if (http::tok_eq({header_buffer.data() + header_line.start_offset, header_line.key_length},
+                         lowered)) {
+            found = header_line;
             return true;
         }
-        pos = h.end;
+        offset = header_line.end_offset;
     }
     return false;
 }
 
 // RFC 9110 6.3: append one field line - the only place a line is spelled,
 // so every writer below goes through it.
-void append_field_line(std::string &buf, http::Field f)
+void header_append_key_value(std::string &header_buffer, http::Field field)
 {
-    buf.append(f.name);
-    buf.append(": ", 2);
-    buf.append(f.value);
-    buf.append("\r\n", 2);
+    header_buffer.append(field.name);
+    header_buffer.append(": ", 2);
+    header_buffer.append(field.value);
+    header_buffer.append("\r\n", 2);
 }
 
 // RFC 9110 6.3: Headers#[] - one field, by name, case-insensitively.
 //: (String) -> (String | NilClass)
-mrb_value headers_field_value(mrb_state *mrb, mrb_value)
+mrb_value header_get_value(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_with_a_header_buffer(mrb);
-    const char *k;
+    const Resource *resource = run_resource_with_header_buffer(mrb);
+    const char *name;
     mrb_int klen;
-    mrb_get_args(mrb, "s", &k, &klen);
-    FieldLine h;
-    if (!find_field_line_named(*r->run.headers, {k, static_cast<size_t>(klen)}, h))
+    mrb_get_args(mrb, "s", &name, &klen);
+    HeaderLine header_line;
+    if (!header_find_key(*resource->run.headers, {name, static_cast<size_t>(klen)}, header_line))
         return mrb_nil_value();
-    return mrb_str_new(mrb, r->run.headers->data() + h.val_off, h.val_len);
+    return mrb_str_new(mrb, resource->run.headers->data() + header_line.value_offset,
+                       header_line.value_length);
 }
 
 // RFC 9110 6.3: Headers#[]= - a String replaces the line of the same
 // name (cut it, append the fresh one) or appends a new one; nil deletes
 // it. Anything else is refused by type, not silently dropped.
 //: (String, String) -> String
-mrb_value headers_set_field(mrb_state *mrb, mrb_value)
+mrb_value header_set_value(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_with_a_header_buffer(mrb);
-    const char *k;
+    const Resource *resource = run_resource_with_header_buffer(mrb);
+    const char *name;
     mrb_int klen;
-    mrb_value v;
-    mrb_get_args(mrb, "so", &k, &klen, &v);
-    std::string &buf = *r->run.headers;
-    FieldLine h;
-    const bool found = find_field_line_named(buf, {k, static_cast<size_t>(klen)}, h);
-    if (mrb_nil_p(v)) {
+    mrb_value value;
+    mrb_get_args(mrb, "so", &name, &klen, &value);
+    std::string &header_buffer = *resource->run.headers;
+    HeaderLine header_line;
+    const bool found =
+        header_find_key(header_buffer, {name, static_cast<size_t>(klen)}, header_line);
+    if (mrb_nil_p(value)) {
         if (found)
-            buf.erase(h.start, h.end - h.start);
-        return v;
+            header_buffer.erase(header_line.start_offset,
+                                header_line.end_offset - header_line.start_offset);
+        return value;
     }
-    if (!mrb_string_p(v)) {
+    if (!mrb_string_p(value)) {
         mrb_raise(mrb, E_TYPE_ERROR, "response.headers[]= takes a String value, or nil to delete");
     }
-    if (!http::field_name_ok(k, static_cast<size_t>(klen))) {
+    if (!http::field_name_ok(name, static_cast<size_t>(klen))) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.headers[]= wants a field name that is a token "
                   "(RFC 9110 5.6.2) - no spaces, no colon, no CR or LF");
     }
-    if (!http::field_value_ok(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)))) {
+    if (!ruby_string_is_field_value(value)) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.headers[]= wants a field value without CR, LF or NUL (RFC 9110 5.5)");
     }
-    if (http::field_name_is_the_servers(k, static_cast<size_t>(klen))) {
+    if (http::field_name_is_the_servers(name, static_cast<size_t>(klen))) {
         mrb_raisef(mrb, E_WM_ERROR(mrb),
                    "response.headers[]= may not set %s - the server spells the framing and the "
                    "connection fields itself, and a second copy is what a proxy in front of it "
                    "reads differently",
-                   k);
+                   name);
     }
     if (found)
-        buf.erase(h.start, h.end - h.start);
-    append_field_line(buf, {{k, static_cast<size_t>(klen)},
-                            {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
-    return v;
+        header_buffer.erase(header_line.start_offset,
+                            header_line.end_offset - header_line.start_offset);
+    header_append_key_value(header_buffer,
+                            {{name, static_cast<size_t>(klen)}, ruby_string_bytes(value)});
+    return value;
 }
 
 // RFC 9110 6.3: Headers#key? - is the field there at all?
 //: (String) -> (TrueClass | FalseClass)
-mrb_value headers_has_field(mrb_state *mrb, mrb_value)
+mrb_value header_has_key(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_with_a_header_buffer(mrb);
-    const char *k;
+    const Resource *resource = run_resource_with_header_buffer(mrb);
+    const char *name;
     mrb_int klen;
-    mrb_get_args(mrb, "s", &k, &klen);
-    FieldLine h;
+    mrb_get_args(mrb, "s", &name, &klen);
+    HeaderLine header_line;
     return mrb_bool_value(
-        find_field_line_named(*r->run.headers, {k, static_cast<size_t>(klen)}, h));
+        header_find_key(*resource->run.headers, {name, static_cast<size_t>(klen)}, header_line));
 }
 
 // RFC 9110 6.3: Headers#delete - cut the line, hand back the value it held.
 //: (String) -> (String | NilClass)
-mrb_value headers_delete_field(mrb_state *mrb, mrb_value)
+mrb_value header_delete_key(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_with_a_header_buffer(mrb);
-    const char *k;
+    const Resource *resource = run_resource_with_header_buffer(mrb);
+    const char *name;
     mrb_int klen;
-    mrb_get_args(mrb, "s", &k, &klen);
-    std::string &buf = *r->run.headers;
-    FieldLine h;
-    if (!find_field_line_named(buf, {k, static_cast<size_t>(klen)}, h))
+    mrb_get_args(mrb, "s", &name, &klen);
+    std::string &header_buffer = *resource->run.headers;
+    HeaderLine header_line;
+    if (!header_find_key(header_buffer, {name, static_cast<size_t>(klen)}, header_line))
         return mrb_nil_value();
-    const mrb_value old = mrb_str_new(mrb, buf.data() + h.val_off, h.val_len);
-    buf.erase(h.start, h.end - h.start);
-    return old;
+    const mrb_value previous_value =
+        mrb_str_new(mrb, header_buffer.data() + header_line.value_offset, header_line.value_length);
+    header_buffer.erase(header_line.start_offset,
+                        header_line.end_offset - header_line.start_offset);
+    return previous_value;
 }
 
 // RFC 9110: Response#headers - the Headers handle is built fresh on
@@ -215,46 +248,49 @@ mrb_value headers_delete_field(mrb_state *mrb, mrb_value)
 //: () -> Webmachine::Response::Headers
 mrb_value response_headers(mrb_state *mrb, mrb_value self)
 {
-    resource_of_the_live_run(mrb);
-    struct RClass *h = mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(Headers));
-    return mrb_obj_value(
-        mrb_data_object_alloc(mrb, h, const_cast<Resource *>(live_resource_), &kHeadersDataType));
+    run_resource_or_raise(mrb);
+    struct RClass *headers_class =
+        mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(Headers));
+    return mrb_obj_value(mrb_data_object_alloc(
+        mrb, headers_class, const_cast<Resource *>(live_resource_), &kHeadersDataType));
 }
 
 // RFC 9110 15: the status a callback named, or nil while the graph
 // still owns the answer (0 = unset).
 //: () -> (Integer | NilClass)
-mrb_value response_status_code(mrb_state *mrb, mrb_value)
+mrb_value response_get_code(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    return r->run.resp_code == 0 ? mrb_nil_value() : mrb_fixnum_value(r->run.resp_code);
+    const Resource *resource = run_resource_or_raise(mrb);
+    return resource->run.resp_code == 0 ? mrb_nil_value()
+                                        : mrb_fixnum_value(resource->run.resp_code);
 }
 
 // RFC 9110 15: a callback naming the status itself.
 //: (Integer) -> Integer
 mrb_value response_set_code(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    mrb_int v;
-    mrb_get_args(mrb, "i", &v);
+    const Resource *resource = run_resource_or_raise(mrb);
+    mrb_int code;
+    mrb_get_args(mrb, "i", &code);
     // RFC 9110 15: a status code is three digits, 100 through 599.
-    if (v < 100 || v > 599) {
+    if (code < 100 || code > 599) {
         mrb_raisef(
             mrb, E_ARGUMENT_ERROR,
-            "response.code=: %i is not a status code, which is 100 through 599 (RFC 9110 15)", v);
+            "response.code=: %i is not a status code, which is 100 through 599 (RFC 9110 15)",
+            code);
     }
-    r->run.resp_code = static_cast<uint16_t>(v);
-    return mrb_fixnum_value(v);
+    resource->run.resp_code = static_cast<uint16_t>(code);
+    return mrb_fixnum_value(code);
 }
 
 // RFC 9110 6.4: the representation a callback built, or nil.
 //: () -> (String | NilClass)
-mrb_value response_body_value(mrb_state *mrb, mrb_value)
+mrb_value response_get_body(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    if (!r->run.have_body || r->run.body == nullptr)
+    const Resource *resource = run_resource_or_raise(mrb);
+    if (!resource->run.have_body || resource->run.body == nullptr)
         return mrb_nil_value();
-    return mrb_str_new(mrb, r->run.body->data(), r->run.body->size());
+    return mrb_str_new(mrb, resource->run.body->data(), resource->run.body->size());
 }
 
 // RFC 9110 6.4: a callback handing the representation over (String), or
@@ -262,32 +298,32 @@ mrb_value response_body_value(mrb_state *mrb, mrb_value)
 //: (String) -> (String | NilClass)
 mrb_value response_set_body(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    mrb_value v;
-    mrb_get_args(mrb, "o", &v);
-    if (mrb_nil_p(v)) {
-        r->run.have_body = false;
-        return v;
+    const Resource *resource = run_resource_or_raise(mrb);
+    mrb_value body;
+    mrb_get_args(mrb, "o", &body);
+    if (mrb_nil_p(body)) {
+        resource->run.have_body = false;
+        return body;
     }
-    if (!mrb_string_p(v)) {
+    if (!mrb_string_p(body)) {
         mrb_raise(mrb, E_TYPE_ERROR, "response.body= takes a String, or nil to clear it");
     }
-    if (r->run.body == nullptr) {
+    if (resource->run.body == nullptr) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "response.body=: no body buffer is bound for this run");
     }
-    r->run.body->assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-    r->run.have_body = true;
-    return v;
+    resource->run.body->assign(ruby_string_bytes(body));
+    resource->run.have_body = true;
+    return body;
 }
 
 // The file a callback named, or nil.
 //: () -> (String | NilClass)
-mrb_value response_file_name(mrb_state *mrb, mrb_value)
+mrb_value response_get_file(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    if (!r->run.have_file)
+    const Resource *resource = run_resource_or_raise(mrb);
+    if (!resource->run.have_file)
         return mrb_nil_value();
-    return mrb_str_new(mrb, r->run.file.data(), r->run.file.size());
+    return mrb_str_new(mrb, resource->run.file.data(), resource->run.file.size());
 }
 
 // response.file = "rel/path": the name of a file under the configured
@@ -304,15 +340,15 @@ mrb_value response_file_name(mrb_state *mrb, mrb_value)
 //: (String) -> (String | NilClass)
 mrb_value response_set_file(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    mrb_value v;
-    mrb_get_args(mrb, "o", &v);
-    if (mrb_nil_p(v)) {
-        r->run.have_file = false;
-        r->run.file_bad = false;
-        return v;
+    const Resource *resource = run_resource_or_raise(mrb);
+    mrb_value name;
+    mrb_get_args(mrb, "o", &name);
+    if (mrb_nil_p(name)) {
+        resource->run.have_file = false;
+        resource->run.file_bad = false;
+        return name;
     }
-    if (!mrb_string_p(v)) {
+    if (!mrb_string_p(name)) {
         mrb_raise(mrb, E_TYPE_ERROR, "response.file= takes a String, or nil to clear it");
     }
     if (!docroot_ready()) {
@@ -326,10 +362,11 @@ mrb_value response_set_file(mrb_state *mrb, mrb_value)
     // own limits: an embedded NUL would truncate the name openat2 actually
     // sees, and an empty name asks for nothing. Both answer the same 404 a
     // rejected resolve does, so neither is a signal to probe with.
-    r->run.file.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
-    r->run.file_bad = r->run.file.empty() || r->run.file.find('\0') != std::string::npos;
-    r->run.have_file = true;
-    return v;
+    resource->run.file.assign(ruby_string_bytes(name));
+    resource->run.file_bad =
+        resource->run.file.empty() || resource->run.file.find('\0') != std::string::npos;
+    resource->run.have_file = true;
+    return name;
 }
 
 // #210: response.error_asset("404.jpg") - an entry of the error assets
@@ -344,14 +381,14 @@ mrb_value response_set_file(mrb_state *mrb, mrb_value)
 // the server lives, so the handle outlives every stream that parks on
 // it.
 //: (String) -> (String | NilClass)
-mrb_value response_error_asset_entry(mrb_state *mrb, mrb_value)
+mrb_value response_use_error_asset(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    mrb_value v;
-    mrb_get_args(mrb, "o", &v);
-    if (mrb_nil_p(v))
-        return v;
-    if (!mrb_string_p(v)) {
+    const Resource *resource = run_resource_or_raise(mrb);
+    mrb_value asked_name;
+    mrb_get_args(mrb, "o", &asked_name);
+    if (mrb_nil_p(asked_name))
+        return asked_name;
+    if (!mrb_string_p(asked_name)) {
         mrb_raise(mrb, E_TYPE_ERROR, "response.error_asset takes a String");
     }
     if (error_assets_ == nullptr) {
@@ -360,21 +397,22 @@ mrb_value response_error_asset_entry(mrb_state *mrb, mrb_value)
                   "file: --error-assets=FILE.zip, or install one where the system keeps shipped "
                   "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
     }
+    const std::string_view asked = ruby_string_bytes(asked_name);
     char name[kMaxHead];
-    const size_t n = static_cast<size_t>(RSTRING_LEN(v));
-    if (n == 0 || n + 2 >= sizeof(name)) {
+    if (asked.empty() || asked.size() + 2 >= sizeof(name)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.error_asset: no such entry");
     }
     name[0] = '/';
-    std::memcpy(name + 1, RSTRING_PTR(v), n);
-    const AssetEntry *e = error_assets_->find(name, n + 1);
-    if (e == nullptr || e->deflated) {
-        mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: the error assets hold no %v", v);
+    std::memcpy(name + 1, asked.data(), asked.size());
+    const AssetEntry *entry = error_assets_->find(name, asked.size() + 1);
+    if (entry == nullptr || entry->deflated) {
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "response.error_asset: the error assets hold no %v",
+                   asked_name);
     }
-    r->run.content_type.assign(e->content_type);
-    r->run.asset = e;
-    r->run.have_body = true;
-    return v;
+    resource->run.content_type.assign(entry->content_type);
+    resource->run.asset = entry;
+    resource->run.have_body = true;
+    return asked_name;
 }
 
 // RFC 9110 15.4.4: webmachine-ruby's own spelling of a redirect - an
@@ -383,28 +421,29 @@ mrb_value response_error_asset_entry(mrb_state *mrb, mrb_value)
 //: (?String) -> TrueClass
 mrb_value response_redirect_to(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    mrb_value loc = mrb_nil_value();
-    mrb_get_args(mrb, "|o", &loc);
-    if (!mrb_nil_p(loc)) {
-        if (r->run.headers == nullptr) {
+    const Resource *resource = run_resource_or_raise(mrb);
+    mrb_value given_location = mrb_nil_value();
+    mrb_get_args(mrb, "|o", &given_location);
+    if (!mrb_nil_p(given_location)) {
+        if (resource->run.headers == nullptr) {
             mrb_raise(mrb, E_RUNTIME_ERROR,
                       "response.do_redirect: no header buffer is bound for this run");
         }
-        const mrb_value s = mrb_obj_as_string(mrb, loc);
+        const mrb_value location = mrb_obj_as_string(mrb, given_location);
         // RFC 9110 5.5: a value with CR, LF or NUL would splice a field in.
-        if (!http::field_value_ok(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)))) {
+        if (!ruby_string_is_field_value(location)) {
             mrb_raise(
                 mrb, E_ARGUMENT_ERROR,
                 "response.redirect_to: the location must carry no CR, LF or NUL (RFC 9110 5.5)");
         }
-        std::string &buf = *r->run.headers;
-        FieldLine h;
-        if (find_field_line_named(buf, "Location", h))
-            buf.erase(h.start, h.end - h.start);
-        append_field_line(buf, {"Location", {RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s))}});
+        std::string &header_buffer = *resource->run.headers;
+        HeaderLine header_line;
+        if (header_find_key(header_buffer, "Location", header_line))
+            header_buffer.erase(header_line.start_offset,
+                                header_line.end_offset - header_line.start_offset);
+        header_append_key_value(header_buffer, {"Location", ruby_string_bytes(location)});
     }
-    r->run.redirect = true;
+    resource->run.redirect = true;
     return mrb_true_value();
 }
 
@@ -414,24 +453,24 @@ mrb_value response_redirect_to(mrb_state *mrb, mrb_value)
 //: () -> (TrueClass | FalseClass)
 mrb_value response_is_redirect(mrb_state *mrb, mrb_value)
 {
-    return mrb_bool_value(resource_of_the_live_run(mrb)->run.redirect);
+    return mrb_bool_value(run_resource_or_raise(mrb)->run.redirect);
 }
 
 // App-level only: no C++ run slot backs an error message, so it lives as
 // a plain ivar on the handle. Keep one handle and get and set agree on
 // it, like any other Ruby attr_accessor.
-mrb_value response_error_message(mrb_state *mrb, mrb_value self)
+mrb_value response_get_error(mrb_state *mrb, mrb_value self)
 {
     return mrb_iv_get(mrb, self, MRB_IVSYM(error));
 }
 
 // App-level only: see resp_error above.
-mrb_value response_set_error_message(mrb_state *mrb, mrb_value self)
+mrb_value response_set_error(mrb_state *mrb, mrb_value self)
 {
-    mrb_value v;
-    mrb_get_args(mrb, "o", &v);
-    mrb_iv_set(mrb, self, MRB_IVSYM(error), v);
-    return v;
+    mrb_value message;
+    mrb_get_args(mrb, "o", &message);
+    mrb_iv_set(mrb, self, MRB_IVSYM(error), message);
+    return message;
 }
 
 // RFC 6265 4.1: one Set-Cookie line, spelled by hand from name/value
@@ -443,32 +482,33 @@ mrb_value response_set_error_message(mrb_state *mrb, mrb_value self)
 // filled, the key the attribute sits under, and the name it goes out with.
 struct CookieAttribute {
     mrb_value attrs;
-    mrb_sym sym;
+    mrb_sym key;
     const char *label;
 };
 
-void append_cookie_attribute(mrb_state *mrb, std::string &line, CookieAttribute a)
+void cookie_append_attribute(mrb_state *mrb, std::string &line, CookieAttribute attribute)
 {
-    const char *const label = a.label;
-    const mrb_value v = mrb_hash_get(mrb, a.attrs, mrb_symbol_value(a.sym));
-    if (mrb_nil_p(v))
+    const char *const label = attribute.label;
+    const mrb_value given_value =
+        mrb_hash_get(mrb, attribute.attrs, mrb_symbol_value(attribute.key));
+    if (mrb_nil_p(given_value))
         return;
-    const mrb_value s = mrb_obj_as_string(mrb, v);
+    const mrb_value text = mrb_obj_as_string(mrb, given_value);
     // A semicolon in one attribute spells a second attribute, so the app
     // would write an attribute this call never named.
-    if (std::memchr(RSTRING_PTR(s), ';', static_cast<size_t>(RSTRING_LEN(s))) != nullptr) {
+    if (ruby_string_holds_octet(text, ';')) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in an attribute");
     }
     line.append("; ", 2);
     line.append(label);
-    line.append(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
+    line.append(ruby_string_bytes(text));
 }
 
 //: (String, String, ?Hash) -> NilClass
-mrb_value response_set_cookie_line(mrb_state *mrb, mrb_value)
+mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    if (r->run.headers == nullptr) {
+    const Resource *resource = run_resource_or_raise(mrb);
+    if (resource->run.headers == nullptr) {
         mrb_raise(mrb, E_RUNTIME_ERROR,
                   "response.set_cookie: no header buffer is bound for this run");
     }
@@ -483,28 +523,27 @@ mrb_value response_set_cookie_line(mrb_state *mrb, mrb_value)
 
     // RFC 6265 4.1.1: the name is one token, and the first `=` ends it. A
     // name that carries `=` or `;` names another cookie or an attribute.
-    const char *const np = RSTRING_PTR(nstr);
-    const size_t nlen = static_cast<size_t>(RSTRING_LEN(nstr));
-    if (nlen == 0 || std::memchr(np, '=', nlen) != nullptr ||
-        std::memchr(np, ';', nlen) != nullptr) {
+    const std::string_view cookie_name = ruby_string_bytes(nstr);
+    if (cookie_name.empty() || cookie_name.find('=') != std::string_view::npos ||
+        cookie_name.find(';') != std::string_view::npos) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.set_cookie wants a name with no `=` and no semicolon in it");
     }
     // A semicolon in the value ends the value and starts an attribute.
-    if (std::memchr(RSTRING_PTR(value), ';', static_cast<size_t>(RSTRING_LEN(value))) != nullptr) {
+    if (ruby_string_holds_octet(value, ';')) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in the value");
     }
 
     std::string line;
-    line.append(np, nlen);
+    line.append(cookie_name);
     line.append("=", 1);
-    line.append(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
+    line.append(ruby_string_bytes(value));
 
     if (mrb_hash_p(attrs)) {
-        append_cookie_attribute(mrb, line, {attrs, MRB_SYM(path), "Path="});
-        append_cookie_attribute(mrb, line, {attrs, MRB_SYM(domain), "Domain="});
-        append_cookie_attribute(mrb, line, {attrs, MRB_SYM(max_age), "Max-Age="});
-        append_cookie_attribute(mrb, line, {attrs, MRB_SYM(expires), "Expires="});
+        cookie_append_attribute(mrb, line, {attrs, MRB_SYM(path), "Path="});
+        cookie_append_attribute(mrb, line, {attrs, MRB_SYM(domain), "Domain="});
+        cookie_append_attribute(mrb, line, {attrs, MRB_SYM(max_age), "Max-Age="});
+        cookie_append_attribute(mrb, line, {attrs, MRB_SYM(expires), "Expires="});
         if (mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(secure))))) {
             line.append("; Secure", 8);
         }
@@ -518,7 +557,7 @@ mrb_value response_set_cookie_line(mrb_state *mrb, mrb_value)
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.set_cookie wants no CR, LF or NUL in name, value or attributes");
     }
-    append_field_line(*r->run.headers, {"Set-Cookie", line});
+    header_append_key_value(*resource->run.headers, {"Set-Cookie", line});
     return mrb_nil_value();
 }
 
@@ -528,29 +567,29 @@ mrb_value response_set_cookie_line(mrb_state *mrb, mrb_value)
 // This server never looks at it. Nothing in it means anything to the
 // flow, nothing reaches a header, and nothing is folded at setup. It is
 // one value with a lifetime, and the lifetime is one run.
-mrb_value response_userdata_value(mrb_state *mrb, mrb_value self)
+mrb_value response_get_userdata(mrb_state *mrb, mrb_value self)
 {
     (void)self;
-    const Resource *const res = resource_of_the_live_run(mrb);
+    const Resource *const resource = run_resource_or_raise(mrb);
     // Undef is "nothing was put there". Ruby never sees it.
-    if (mrb_undef_p(res->run.userdata))
+    if (mrb_undef_p(resource->run.userdata))
         return mrb_nil_value();
-    return res->run.userdata;
+    return resource->run.userdata;
 }
 
 mrb_value response_set_userdata(mrb_state *mrb, mrb_value self)
 {
     (void)self;
-    mrb_value v;
-    mrb_get_args(mrb, "o", &v);
-    const Resource *const res = resource_of_the_live_run(mrb);
-    if (res->run.userdata_held)
-        mrb_gc_unregister(mrb, res->run.userdata);
-    res->run.userdata = v;
+    mrb_value value;
+    mrb_get_args(mrb, "o", &value);
+    const Resource *const resource = run_resource_or_raise(mrb);
+    if (resource->run.userdata_held)
+        mrb_gc_unregister(mrb, resource->run.userdata);
+    resource->run.userdata = value;
     // Rooted: the run parks, and nothing on the VM's stack names this.
-    mrb_gc_register(mrb, v);
-    res->run.userdata_held = true;
-    return v;
+    mrb_gc_register(mrb, value);
+    resource->run.userdata_held = true;
+    return value;
 }
 
 // RFC 9110: Resource#response - a fresh Response handle on every call,
@@ -558,13 +597,14 @@ mrb_value response_set_userdata(mrb_state *mrb, mrb_value self)
 // frame is what keeps the handle alive, same as any other short-lived
 // value a cfunc returns.
 //: () -> Webmachine::Response
-mrb_value resource_response(mrb_state *mrb, mrb_value)
+mrb_value resource_get_response(mrb_state *mrb, mrb_value)
 {
-    resource_of_the_live_run(mrb);
-    struct RClass *wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-    struct RClass *rc = mrb_class_get_under_id(mrb, wm, MRB_SYM(Response));
-    return mrb_obj_value(
-        mrb_data_object_alloc(mrb, rc, const_cast<Resource *>(live_resource_), &kResponseDataType));
+    run_resource_or_raise(mrb);
+    struct RClass *webmachine_module = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    struct RClass *response_class =
+        mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(Response));
+    return mrb_obj_value(mrb_data_object_alloc(
+        mrb, response_class, const_cast<Resource *>(live_resource_), &kResponseDataType));
 }
 
 } // namespace
@@ -582,16 +622,16 @@ mrb_value resource_response(mrb_state *mrb, mrb_value)
 // is small, and saving it there is a second write of every octet.
 bool response_saves_body(mrb_state *mrb)
 {
-    return resource_of_the_live_run(mrb)->saves_body;
+    return run_resource_or_raise(mrb)->saves_body;
 }
 
-bool response_take_body(mrb_state *mrb, std::string_view s)
+bool response_take_body(mrb_state *mrb, std::string_view body)
 {
-    const Resource *r = resource_of_the_live_run(mrb);
-    if (r->run.body == nullptr)
+    const Resource *resource = run_resource_or_raise(mrb);
+    if (resource->run.body == nullptr)
         return false;
-    r->run.body->assign(s.data(), s.size());
-    r->run.have_body = true;
+    resource->run.body->assign(body.data(), body.size());
+    resource->run.have_body = true;
     return true;
 }
 
@@ -599,55 +639,67 @@ bool response_take_body(mrb_state *mrb, std::string_view s)
 // nothing. Same pattern as request_bind, so a stray handle from an
 // ended run reads as "outside a run frame" rather than touching
 // whichever run is live now.
-void response_bind(const Resource *res)
+void response_bind(const Resource *resource)
 {
-    live_resource_ = res;
+    live_resource_ = resource;
 }
 
 // #210: the error assets, bound once at setup the way response_bind
 // binds a resource per run. nullptr when this server found none, and
 // response.error_asset then refuses by name rather than answering
 // something it does not have.
-void response_bind_error_assets(Assets *a)
+void response_bind_error_assets(Assets *assets)
 {
-    error_assets_ = a;
+    error_assets_ = assets;
 }
 
 // RFC 9110: Webmachine::Response and Webmachine::Response::Headers,
 // defined once at gem init. Neither is ever `new`'d by an app - the
 // run frame is the only thing that builds one, via Resource#response.
-void response_init(mrb_state *mrb, struct RClass *wm)
+void response_init(mrb_state *mrb, struct RClass *webmachine_module)
 {
-    struct RClass *c = mrb_define_class_under_id(mrb, wm, MRB_SYM(Response), mrb->object_class);
-    MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
-    mrb_undef_class_method_id(mrb, c, MRB_SYM(new));
-    mrb_define_method_id(mrb, c, MRB_SYM(headers), response_headers, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM(code), response_status_code, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM_E(code), response_set_code, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(body), response_body_value, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM_E(body), response_set_body, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(file), response_file_name, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM_E(file), response_set_file, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(error_asset), response_error_asset_entry, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(do_redirect), response_redirect_to, MRB_ARGS_OPT(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(redirect_to), response_redirect_to, MRB_ARGS_OPT(1));
-    mrb_define_method_id(mrb, c, MRB_SYM_Q(is_redirect), response_is_redirect, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM(error), response_error_message, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM_E(error), response_set_error_message, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, c, MRB_SYM(set_cookie), response_set_cookie_line, MRB_ARGS_ARG(2, 1));
-    mrb_define_method_id(mrb, c, MRB_SYM(userdata), response_userdata_value, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, c, MRB_SYM_E(userdata), response_set_userdata, MRB_ARGS_REQ(1));
+    struct RClass *response_class =
+        mrb_define_class_under_id(mrb, webmachine_module, MRB_SYM(Response), mrb->object_class);
+    MRB_SET_INSTANCE_TT(response_class, MRB_TT_CDATA);
+    mrb_undef_class_method_id(mrb, response_class, MRB_SYM(new));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(headers), response_headers, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM(code), response_get_code, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM_E(code), response_set_code, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(body), response_get_body, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM_E(body), response_set_body, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(file), response_get_file, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM_E(file), response_set_file, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(error_asset), response_use_error_asset,
+                         MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(do_redirect), response_redirect_to,
+                         MRB_ARGS_OPT(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(redirect_to), response_redirect_to,
+                         MRB_ARGS_OPT(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM_Q(is_redirect), response_is_redirect,
+                         MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM(error), response_get_error, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM_E(error), response_set_error,
+                         MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(set_cookie), response_set_cookie,
+                         MRB_ARGS_ARG(2, 1));
+    mrb_define_method_id(mrb, response_class, MRB_SYM(userdata), response_get_userdata,
+                         MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, response_class, MRB_SYM_E(userdata), response_set_userdata,
+                         MRB_ARGS_REQ(1));
 
-    struct RClass *h = mrb_define_class_under_id(mrb, c, MRB_SYM(Headers), mrb->object_class);
-    MRB_SET_INSTANCE_TT(h, MRB_TT_CDATA);
-    mrb_undef_class_method_id(mrb, h, MRB_SYM(new));
-    mrb_define_method_id(mrb, h, MRB_OPSYM(aref), headers_field_value, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, h, MRB_OPSYM(aset), headers_set_field, MRB_ARGS_REQ(2));
-    mrb_define_method_id(mrb, h, MRB_SYM_Q(key), headers_has_field, MRB_ARGS_REQ(1));
-    mrb_define_method_id(mrb, h, MRB_SYM(delete), headers_delete_field, MRB_ARGS_REQ(1));
+    struct RClass *headers_class =
+        mrb_define_class_under_id(mrb, response_class, MRB_SYM(Headers), mrb->object_class);
+    MRB_SET_INSTANCE_TT(headers_class, MRB_TT_CDATA);
+    mrb_undef_class_method_id(mrb, headers_class, MRB_SYM(new));
+    mrb_define_method_id(mrb, headers_class, MRB_OPSYM(aref), header_get_value, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, headers_class, MRB_OPSYM(aset), header_set_value, MRB_ARGS_REQ(2));
+    mrb_define_method_id(mrb, headers_class, MRB_SYM_Q(key), header_has_key, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, headers_class, MRB_SYM(delete), header_delete_key, MRB_ARGS_REQ(1));
 
-    struct RClass *res = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
-    mrb_define_method_id(mrb, res, MRB_SYM(response), resource_response, MRB_ARGS_NONE());
+    struct RClass *resource_class =
+        mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(Resource));
+    mrb_define_method_id(mrb, resource_class, MRB_SYM(response), resource_get_response,
+                         MRB_ARGS_NONE());
 }
 
 } // namespace webmachine
