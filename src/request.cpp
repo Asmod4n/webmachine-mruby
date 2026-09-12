@@ -339,10 +339,19 @@ bool body_digest(const ReqView* v, char (&hex)[SHA256_DIGEST_LENGTH * 2 + 1], st
 // that is in memory, and a file on another filesystem. The kernel does
 // the copying in the second one - no octet passes through this process.
 bool body_copy(const ReqView* v, const std::string& path, std::string& err) {
-  const int out = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+  // The name appears when every octet is in the file, and not before.
+  // Writing into the final name made a half-written upload the answer
+  // to every save after it: the name is there, so access() says the
+  // content is held and EEXIST on the open was read as success. A
+  // request that overlapped another, or a process that died mid-write,
+  // left that short file standing for good. So the octets go into a
+  // temporary file beside it, and the name is a link made at the end.
+  const size_t slash = path.rfind('/');
+  std::string tmp(path, 0, slash == std::string::npos ? 0 : slash + 1);
+  tmp.append("wm-save-XXXXXX");
+  const int out = ::mkstemp(&tmp[0]);
   if (out < 0) {
-    if (errno == EEXIST) return true;
-    err = path + ": " + std::strerror(errno);
+    err = tmp + ": " + std::strerror(errno);
     return false;
   }
   bool ok = true;
@@ -374,8 +383,23 @@ bool body_copy(const ReqView* v, const std::string& path, std::string& err) {
       left -= static_cast<size_t>(n);
     }
   }
+  // The link is the claim, so what it claims has to be on the disk
+  // first - a name that outlives the octets is the hole this replaces.
+  if (ok && ::fsync(out) != 0) {
+    err = std::strerror(errno);
+    ok = false;
+  }
   ::close(out);
-  if (!ok) ::unlink(path.c_str());
+  if (ok) {
+    // EEXIST is another request that finished the same octets first.
+    // The digest says the two files hold the same content, so the name
+    // that stands is as good as this one.
+    if (::link(tmp.c_str(), path.c_str()) != 0 && errno != EEXIST) {
+      err = path + ": " + std::strerror(errno);
+      ok = false;
+    }
+  }
+  ::unlink(tmp.c_str());
   return ok;
 }
 

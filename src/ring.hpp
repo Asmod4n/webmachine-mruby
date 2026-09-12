@@ -1387,6 +1387,11 @@ class Ring {
       const bool last = left <= kBufSize;
       typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
       if (!closing) closing = !app_.feed(c.app, {pool_ + off, n}, {sink, plan});
+      // The peer stopped reading and keeps sending. Multishot recv
+      // delivers while a send is in flight, so a websocket handler's
+      // answers pile up in `next` for as long as the send timeout
+      // allows - unbounded, and the client decides the rate.
+      if (mrb_unlikely(!closing && sink.size() > kTunnelOutCap)) closing = true;
       left -= n;
       bid = (bid + 1) & (kBufCount - 1);
       replenish_++;

@@ -29,6 +29,17 @@ struct AssetEntry;
 // many that is.
 inline constexpr size_t kBodySpill = 256u * 1024;
 
+// RFC-free, this server's own: how much answered content one connection
+// or one stream may hold for a peer that is not reading it.
+//
+// A request and its answer bound each other - one answer per request,
+// and the next request waits. A tunnel does not: a websocket's input
+// drives its output, an event stream speaks on a clock, and a peer is
+// free to send while it reads nothing. The send timeout ends such a
+// peer, and at line rate a minute is gigabytes, so this is the ceiling
+// until it does. Over it the tunnel ends instead of the process growing.
+inline constexpr size_t kTunnelOutCap = 8u * 1024 * 1024;
+
 // RFC 9110 6.4: a request body that lives in a file. Both protocols use
 // it: an h1 connection carries one, an h2 stream carries one each,
 // because h2 uploads on many streams at the same time.
@@ -329,6 +340,8 @@ struct H2Stream {
     // RFC 9113 6.9.1: flow control can cut content across many rounds, so
     // "still owes octets" is what keeps the stream - and the lend - alive.
     bool owes() const { return src != Src::kNone && sent < length; }
+    // What flow control has not taken yet.
+    size_t owed_bytes() const { return length > sent ? length - sent : 0; }
     void take_asset(const AssetEntry* e, size_t first, size_t end) {
       src = Src::kAsset;
       asset = e;

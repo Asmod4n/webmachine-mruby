@@ -1278,6 +1278,18 @@ void Http1::h2_sse_second(Conn& st0, std::string& sink) {
     std::string body;
     const bool go_on = sse_tick(stp.sse, sec_, body);
     if (!body.empty()) stp.response_content.append_owned(body.data(), body.size());
+    // A client that reads its socket but never credits the stream. The
+    // tick speaks every second whatever the window says, so what the
+    // resource hands over piles up with nothing to bound it.
+    if (mrb_unlikely(stp.response_content.owed_bytes() > kTunnelOutCap)) {
+      const uint32_t id = stp.id;
+      stp.streaming = false;
+      stp.response_content.clear();
+      h2_rst(st0, id, kH2EnhanceYourCalm, sink);
+      h2.close_stream(id);
+      i--;
+      continue;
+    }
     if (go_on) continue;
     // The resource said :close. The stream ends when what it already
     // handed over has left, so END_STREAM rides the last DATA frame.
@@ -2136,6 +2148,16 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           // same end a handler reaches when it says so. Without this the
           // stream and its WsConn stood until the connection went, and
           // DATA after END_STREAM was still read.
+          // The peer's own window is shut and it keeps sending. The
+          // credit above let it, so what this handler answers has
+          // nowhere to go and nothing bounded it.
+          if (mrb_unlikely(stp->response_content.owed_bytes() > kTunnelOutCap)) {
+            stp->streaming = false;
+            stp->response_content.clear();
+            h2_rst(st0, stream, kH2EnhanceYourCalm, sink);
+            h2.close_stream(stream);
+            break;
+          }
           if (!go_on || (flags & kH2FlagEndStream) != 0) {
             // RFC 6455 7: the handler said the connection is over. What
             // it still owes leaves first, and END_STREAM rides the last
