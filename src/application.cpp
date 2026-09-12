@@ -534,7 +534,7 @@ void route_table_walk_tokens(mrb_state *mrb, RouteTable &table, Tokens tokens)
     const mrb_value toks = tokens.list;
     const char *const caller_name = tokens.caller_name;
     const size_t count = ruby_array_length(toks);
-    for (mrb_int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         const mrb_value token = mrb_ary_entry(toks, i);
         if (table.pending_splat()) {
             mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),

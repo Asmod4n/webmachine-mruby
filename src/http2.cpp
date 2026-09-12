@@ -2465,7 +2465,7 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
             sink.append(conn.file->head);
         if (step.src != FileStep::Src::kNone) {
             const char *base =
-                step.src == FileStep::Src::kMapping ? conn.file->map_addr : conn.file->buf.data();
+                step.src == FileStep::Src::kMapping ? conn.file->map_addr : conn.file->chunk.data();
             body_lend(conn, sink, {{base + step.start, step.give}, plan});
         }
         file_apply(conn, step);

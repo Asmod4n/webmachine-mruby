@@ -38,24 +38,24 @@ BodySpill::~BodySpill()
     close_file();
 }
 
-BodySpill::BodySpill(BodySpill &&o) noexcept
-    : fd(o.fd), written(o.written), bound(o.bound), pending(std::move(o.pending)),
-      in_flight(o.in_flight), offset(o.offset), failed(o.failed), ended(o.ended)
+BodySpill::BodySpill(BodySpill &&other) noexcept
+    : fd(other.fd), written(other.written), bound(other.bound), pending(std::move(other.pending)),
+      in_flight(other.in_flight), offset(other.offset), failed(other.failed), ended(other.ended)
 {
-    o.fd = -1;
-    o.written = 0;
-    o.bound = false;
-    o.in_flight = false;
-    o.offset = 0;
-    o.failed = false;
-    o.ended = false;
+    other.fd = -1;
+    other.written = 0;
+    other.bound = false;
+    other.in_flight = false;
+    other.offset = 0;
+    other.failed = false;
+    other.ended = false;
 }
 
-bool BodySpill::take(const char *p, size_t n)
+bool BodySpill::take(const char *bytes, size_t count)
 {
     if (mrb_unlikely(failed))
         return false;
-    pending.append(p, n);
+    pending.append(bytes, count);
     return true;
 }
 
@@ -69,37 +69,37 @@ bool BodySpill::drained() const
     return !in_flight && pending.empty();
 }
 
-void BodySpill::fly_into(std::string &out)
+void BodySpill::fly_into(std::string &out_value)
 {
-    out.swap(pending);
+    out_value.swap(pending);
     pending.clear();
     in_flight = true;
 }
 
-void BodySpill::wrote(ssize_t res, const std::string &out)
+void BodySpill::wrote(ssize_t resource, const std::string &out_value)
 {
     in_flight = false;
-    if (mrb_unlikely(res <= 0)) {
+    if (mrb_unlikely(resource <= 0)) {
         failed = true;
         pending.clear();
         return;
     }
-    const size_t n = static_cast<size_t>(res);
-    offset += n;
-    written += n;
-    if (n < out.size())
-        pending.insert(0, out, n, out.size() - n);
+    const size_t count = static_cast<size_t>(resource);
+    offset += count;
+    written += count;
+    if (count < out_value.size())
+        pending.insert(0, out_value, count, out_value.size() - count);
 }
 
-bool MemWriter::put(const char *p, size_t n) const
+bool MemWriter::put(const char *bytes, size_t count) const
 {
-    mem->append(p, n);
+    mem->append(bytes, count);
     return true;
 }
 
-bool FileWriter::put(const char *p, size_t n) const
+bool FileWriter::put(const char *bytes, size_t count) const
 {
-    return spill->take(p, n);
+    return spill->take(bytes, count);
 }
 
 H2State::H2State()
@@ -126,32 +126,32 @@ H2State::~H2State()
     lshpack_dec_cleanup(&dec);
 }
 
-H2Stream *H2State::find(uint32_t id)
+H2Stream *H2State::find(uint32_t stream_id)
 {
     for (H2Stream &st : streams)
-        if (st.id == id)
+        if (st.id == stream_id)
             return &st;
     return nullptr;
 }
 
-H2Stream &H2State::open(uint32_t id)
+H2Stream &H2State::open(uint32_t stream_id)
 {
-    if (H2Stream *st = find(id))
+    if (H2Stream *st = find(stream_id))
         return *st;
     streams.emplace_back();
-    H2Stream &st = streams.back();
-    st.id = id;
-    st.flow_window = peer_initial_window;
-    return st;
+    H2Stream &conn = streams.back();
+    conn.id = stream_id;
+    conn.flow_window = peer_initial_window;
+    return conn;
 }
 
-void H2State::content_retire(H2Stream &s)
+void H2State::content_retire(H2Stream &sqe)
 {
-    if (s.response_content.mrb != nullptr) {
-        retired.push_back(Lend{s.response_content.mrb, s.response_content.value});
-        s.response_content.mrb = nullptr;
+    if (sqe.response_content.mrb != nullptr) {
+        retired.push_back(Lend{sqe.response_content.mrb, sqe.response_content.value});
+        sqe.response_content.mrb = nullptr;
     }
-    s.response_content.clear();
+    sqe.response_content.clear();
 }
 
 void H2State::content_drain()
@@ -161,10 +161,10 @@ void H2State::content_drain()
     retired.clear();
 }
 
-void H2State::close_stream(uint32_t id)
+void H2State::close_stream(uint32_t stream_id)
 {
     for (size_t i = 0; i < streams.size(); i++) {
-        if (streams[i].id == id) {
+        if (streams[i].id == stream_id) {
             // The move-assign below discards this entry's members: a body it
             // still holds has to leave first, or its root leaks silently on
             // every close - RST_STREAM, END_STREAM and error paths alike.

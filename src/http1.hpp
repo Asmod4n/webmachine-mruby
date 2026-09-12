@@ -127,32 +127,32 @@ struct BodySpill {
     ~BodySpill();
     BodySpill(const BodySpill &) = delete;
     BodySpill &operator=(const BodySpill &) = delete;
-    BodySpill(BodySpill &&o) noexcept;
-    BodySpill &operator=(BodySpill &&o) noexcept
+    BodySpill(BodySpill &&other) noexcept;
+    BodySpill &operator=(BodySpill &&other) noexcept
     {
-        if (this == &o)
+        if (this == &other)
             return *this;
         close_file();
-        fd = o.fd;
-        written = o.written;
-        bound = o.bound;
-        pending = std::move(o.pending);
-        in_flight = o.in_flight;
-        offset = o.offset;
-        failed = o.failed;
-        ended = o.ended;
-        o.fd = -1;
-        o.written = 0;
-        o.bound = false;
-        o.in_flight = false;
-        o.offset = 0;
-        o.failed = false;
-        o.ended = false;
+        fd = other.fd;
+        written = other.written;
+        bound = other.bound;
+        pending = std::move(other.pending);
+        in_flight = other.in_flight;
+        offset = other.offset;
+        failed = other.failed;
+        ended = other.ended;
+        other.fd = -1;
+        other.written = 0;
+        other.bound = false;
+        other.in_flight = false;
+        other.offset = 0;
+        other.failed = false;
+        other.ended = false;
         return *this;
     }
     // Answers false when an earlier write failed, which is a 500: the
     // request cannot be answered without its body.
-    bool take(const char *p, size_t n);
+    bool take(const char *bytes, size_t count);
     // Is there a write for the reactor to arm? One at a time: the file
     // has one offset, and a second write in flight would need a second.
     bool owes_write() const;
@@ -163,20 +163,20 @@ struct BodySpill {
     // The octets the reactor hands the ring. They move into the
     // reactor's own buffer, so the writer may queue more while these
     // fly, and so the kernel never writes from memory this object owns.
-    void fly_into(std::string &out);
+    void fly_into(std::string &out_value);
     // What the ring answered, and the buffer it wrote from. A short write
     // leaves the rest at the front of the queue, so the next arm carries
     // it.
-    void wrote(ssize_t res, const std::string &out);
+    void wrote(ssize_t resource, const std::string &out_value);
 };
 
 // RFC 9113 5.1: one entry per stream in a non-idle state. The fields are
 // what that state machine names and nothing else: what the stream has
 // received, what it still owes, and whether either half is closed.
 struct SseStream;
-void sse_free(SseStream *s);
+void sse_free(SseStream *sqe);
 struct WsConn;
-void ws_free(WsConn *c);
+void ws_free(WsConn *conn);
 
 // RFC 9110 6.4: where the octets of a request body go. Two types, one
 // API, so the code that fills a body is written once and instantiated
@@ -184,12 +184,12 @@ void ws_free(WsConn *c);
 // answered that before the first one arrived.
 struct MemWriter {
     std::string *mem;
-    bool put(const char *p, size_t n) const;
+    bool put(const char *bytes, size_t count) const;
 };
 
 struct FileWriter {
     BodySpill *spill;
-    bool put(const char *p, size_t n) const;
+    bool put(const char *bytes, size_t count) const;
 };
 
 // What a connection is, named. The state is implied today by which of
@@ -205,9 +205,9 @@ struct FileWriter {
 // two agree.
 enum class ConnMode : uint8_t { kHead, kAsset, kWs, kSse };
 
-inline constexpr const char *conn_mode_name(ConnMode m)
+inline constexpr const char *conn_mode_name(ConnMode method)
 {
-    switch (m) {
+    switch (method) {
         case ConnMode::kHead:
             return "reading request heads";
         case ConnMode::kAsset:
@@ -352,37 +352,37 @@ struct H2Stream {
         {
             return length > sent ? length - sent : 0;
         }
-        void take_asset(const AssetEntry *e, size_t first, size_t end)
+        void take_asset(const AssetEntry *entry, size_t first, size_t text_end)
         {
             src = Src::kAsset;
-            asset = e;
+            asset = entry;
             sent = first;
-            length = end;
+            length = text_end;
         }
-        void take_lent(mrb_state *m, mrb_value v, const char *p, size_t n)
+        void take_lent(mrb_state *mrb, mrb_value lent_value, const char *bytes, size_t count)
         {
             src = Src::kLent;
-            lent = p;
+            lent = bytes;
             sent = 0;
-            length = n;
-            mrb = m;
-            value = v;
+            length = count;
+            mrb = mrb;
+            lent_value = lent_value;
         }
-        void take_owned(const char *p, size_t n)
+        void take_owned(const char *bytes, size_t count)
         {
             src = Src::kOwned;
-            owned.assign(p, n);
+            owned.assign(bytes, count);
             sent = 0;
-            length = n;
+            length = count;
         }
         // WHATWG HTML: an event stream hands over its next tick while the
         // stream is still sending the last one. What has left already is
         // dropped from the front, so a stream that runs for hours holds only
         // what the window has not taken yet.
-        void append_owned(const char *p, size_t n)
+        void append_owned(const char *bytes, size_t count)
         {
             if (src != Src::kOwned) {
-                take_owned(p, n);
+                take_owned(bytes, count);
                 return;
             }
             if (sent != 0) {
@@ -390,8 +390,8 @@ struct H2Stream {
                 length -= sent;
                 sent = 0;
             }
-            owned.append(p, n);
-            length += n;
+            owned.append(bytes, count);
+            length += count;
         }
         void clear()
         {
@@ -509,20 +509,20 @@ struct H2State {
     H2State &operator=(const H2State &) = delete;
 
     // RFC 9113 5.1: a stream in the table is open or half-closed.
-    H2Stream *find(uint32_t id);
+    H2Stream *find(uint32_t stream_id);
     // RFC 9113 5.1: a stream the connection must remember.
-    H2Stream &open(uint32_t id);
+    H2Stream &open(uint32_t stream_id);
     // RFC 9113 5.1: content leaves the stream when the stream does.
     //
     // Clearing `mrb` here makes a second call a no-op, so no value is
     // unrooted twice. The content is cleared whole, so an asset or an
     // owned buffer cannot outlive the stream that framed it.
-    void content_retire(H2Stream &s);
+    void content_retire(H2Stream &sqe);
     // The release: called where a whole round has drained, so nothing the
     // kernel was handed still points into these Strings.
     void content_drain();
     // RFC 9113 5.1: the number stays, the entry goes.
-    void close_stream(uint32_t id);
+    void close_stream(uint32_t stream_id);
 };
 } // namespace webmachine
 
@@ -545,24 +545,26 @@ struct Params {
 namespace detail
 {
 // RFC 9110 5.6.3: optional whitespace.
-constexpr bool is_ows(char c)
+constexpr bool is_ows(char conn)
 {
-    return c == ' ' || c == '\t';
+    return conn == ' ' || conn == '\t';
 }
 
 // RFC 9110 5.6.2: token, which is what 7692 4.2's params are.
-constexpr bool is_tchar(char c)
+constexpr bool is_tchar(char conn)
 {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '!' ||
-           c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
-           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+    return (conn >= 'a' && conn <= 'z') || (conn >= 'A' && conn <= 'Z') ||
+           (conn >= '0' && conn <= '9') || conn == '!' || conn == '#' || conn == '$' ||
+           conn == '%' || conn == '&' || conn == '\'' || conn == '*' || conn == '+' ||
+           conn == '-' || conn == '.' || conn == '^' || conn == '_' || conn == '`' || conn == '|' ||
+           conn == '~';
 }
 
 // RFC 9110 5.1: case-insensitive equality for an extension parameter name.
 bool ci_eq(std::string_view text, std::string_view lit);
 
 // RFC 7692 7.1.2.1: 8..15, no leading zeroes - "08" is a refusal.
-bool window_bits(const char *v, size_t n, uint8_t &out);
+bool window_bits(const char *value, size_t count, uint8_t &out_value);
 } // namespace detail
 
 // RFC 7692 4.2/5.1: one Sec-WebSocket-Extensions value, answered with the
@@ -574,7 +576,7 @@ struct Negotiated {
     std::string &echo;
 };
 
-bool negotiate(std::string_view value, Negotiated out);
+bool negotiate(std::string_view value, Negotiated out_value);
 // RFC 7692 7: the codec itself lives in wsconn.cpp - it is the only
 // file that codes a frame. Params and negotiate stay here because the
 // h1 upgrade path negotiates the extension before a WsConn exists.
@@ -588,7 +590,7 @@ inline constexpr size_t kMaxWsMessageDefault = 64u * 1024;
 
 struct WsConn;
 
-bool ws_wants_deflate(const WsResource *r);
+bool ws_wants_deflate(const WsResource *round);
 
 // RFC 6455 4.2.2: what admitting one connection answered - the subprotocol
 // to echo back, and the status a refusal carries (0 = admitted).
@@ -596,31 +598,31 @@ struct WsAdmit {
     std::string &proto;
     uint16_t &status;
 };
-WsConn *ws_admit(const WsResource *r, Logger *elog, WsAdmit out);
+WsConn *ws_admit(const WsResource *round, Logger *elog, WsAdmit out_value);
 
-void ws_open(WsConn *c, const wsdeflate::Params &deflate);
+void ws_open(WsConn *conn, const wsdeflate::Params &deflate);
 
-bool ws_feed(WsConn *c, std::string_view data, std::string &sink);
+bool ws_feed(WsConn *conn, std::string_view data, std::string &sink);
 
 // RFC 6455 7.1.1: the server closes the connection, and a Close frame goes
 // first. True = this call wrote one.
-bool ws_going_away(WsConn *c, std::string &sink);
+bool ws_going_away(WsConn *conn, std::string &sink);
 
-void ws_free(WsConn *c);
+void ws_free(WsConn *conn);
 } // namespace webmachine
 
 namespace webmachine
 {
 struct SseStream;
 
-SseStream *sse_open(const SseResource *r, Logger *log, uint16_t &code);
+SseStream *sse_open(const SseResource *round, Logger *log, uint16_t &code);
 
-bool sse_second(SseStream *s, int64_t now_s, std::string &sink);
+bool sse_second(SseStream *sqe, int64_t now_s, std::string &sink);
 // WHATWG HTML: the same tick, unframed - what the resource said. h2 puts
 // these bytes in DATA frames instead of a chunk.
-bool sse_tick(SseStream *s, int64_t now_s, std::string &body);
+bool sse_tick(SseStream *sqe, int64_t now_s, std::string &body);
 
-void sse_free(SseStream *s);
+void sse_free(SseStream *sqe);
 } // namespace webmachine
 
 namespace webmachine
@@ -649,7 +651,7 @@ enum : uint16_t {
 
 inline constexpr size_t kMaxControlPayload = 125;
 
-bool accept_key_compute(const char *key, size_t key_len, char out[28]);
+bool accept_key_compute(const char *key_name, size_t key_len, char out_value[28]);
 
 // RFC 6455 5.2: everything the fourteen header bytes decide on their own -
 // the reserved bits, the opcode, the mask bit, the length encoding, and
@@ -677,7 +679,7 @@ struct Head {
 // Masking-key. Pure and here, not in the reader, because read_head reads
 // all of them unconditionally - so this is the one thing that has to be
 // true before read_head may be called at all.
-uint8_t header_need(const unsigned char *h, uint8_t have);
+uint8_t header_need(const unsigned char *headers, uint8_t have);
 
 // RFC 6455 5.3: transformed-octet-i = original-octet-i XOR
 // masking-key-octet-(i MOD 4).
@@ -692,9 +694,9 @@ struct Mask {
     size_t at;                // how far into the frame the next octet sits
 };
 
-void unmask_copy(char *dst, std::string_view src, Mask m);
+void unmask_copy(char *dst, std::string_view src, Mask method);
 
-Head read_head(const unsigned char *h, bool have_codec);
+Head read_head(const unsigned char *headers, bool have_codec);
 
 // RFC 6455 5.4: the message a frame would join - the opcode it started
 // with (0 = nothing in flight), whether it was negotiated deflated, how
@@ -708,7 +710,7 @@ struct Message {
 
 // RFC 6455 5.4 and 7.4.1: may this frame join it? Four scalars are all the
 // connection state that decides it - which is why it can be a table too.
-Head::Err admit(const Head &h, const Message &msg);
+Head::Err admit(const Head &headers, const Message &msg);
 
 // RFC 6455 5.2: what a server frame header says.
 struct Frame {
@@ -717,7 +719,7 @@ struct Frame {
     bool rsv1;
     size_t payload_len;
 };
-size_t header_build(Frame f, char head[10]);
+size_t header_build(Frame field, char head[10]);
 
 // RFC 6455 5.5.1: what a Close frame said - the code, and the reason where
 // it carried one. 1005 is "the peer named none".
@@ -725,8 +727,8 @@ struct Close {
     uint16_t code = 1005;
     std::string_view reason;
 };
-size_t close_payload_build(Close close, char out[125]);
-bool close_read(std::string_view payload, Close &out);
+size_t close_payload_build(Close close, char out_value[125]);
+bool close_read(std::string_view payload, Close &out_value);
 } // namespace ws
 } // namespace webmachine
 
@@ -738,24 +740,24 @@ namespace wsdeflate
 {
 struct Params;
 }
-WsConn *ws_admit(const WsResource *r, Logger *elog, WsAdmit out);
-bool ws_wants_deflate(const WsResource *r);
-void ws_open(WsConn *c, const wsdeflate::Params &deflate);
-bool ws_feed(WsConn *c, std::string_view data, std::string &sink);
-bool ws_going_away(WsConn *c, std::string &sink);
-void ws_free(WsConn *c);
+WsConn *ws_admit(const WsResource *round, Logger *elog, WsAdmit out_value);
+bool ws_wants_deflate(const WsResource *round);
+void ws_open(WsConn *conn, const wsdeflate::Params &deflate);
+bool ws_feed(WsConn *conn, std::string_view data, std::string &sink);
+bool ws_going_away(WsConn *conn, std::string &sink);
+void ws_free(WsConn *conn);
 
 struct SseResource;
 struct SseStream;
-SseStream *sse_open(const SseResource *r, Logger *log, uint16_t &code);
-bool sse_second(SseStream *s, int64_t now_s, std::string &sink);
+SseStream *sse_open(const SseResource *round, Logger *log, uint16_t &code);
+bool sse_second(SseStream *sqe, int64_t now_s, std::string &sink);
 // WHATWG HTML: the same tick, unframed - what the resource said. h2 puts
 // these bytes in DATA frames instead of a chunk.
-bool sse_tick(SseStream *s, int64_t now_s, std::string &body);
-void sse_free(SseStream *s);
+bool sse_tick(SseStream *sqe, int64_t now_s, std::string &body);
+void sse_free(SseStream *sqe);
 
 struct H2State;
-void h2_free(H2State *h2);
+void h2_free(H2State *h2_state);
 
 class Assets;
 struct AssetEntry;
@@ -909,9 +911,9 @@ class Http1
             {
                 return {};
             }
-            void return_value(uint16_t s)
+            void return_value(uint16_t sqe)
             {
-                status = s;
+                status = sqe;
                 finished = true;
             }
             // A raise is a C++ throw here, and the run frames above already
@@ -924,21 +926,21 @@ class Http1
         };
 
         Run() = default;
-        explicit Run(handle h) : co(h)
+        explicit Run(handle headers) : co(headers)
         {
         }
         Run(const Run &) = delete;
         Run &operator=(const Run &) = delete;
-        Run(Run &&o) noexcept : co(o.co)
+        Run(Run &&other) noexcept : co(other.co)
         {
-            o.co = {};
+            other.co = {};
         }
-        Run &operator=(Run &&o) noexcept
+        Run &operator=(Run &&other) noexcept
         {
-            if (this != &o) {
+            if (this != &other) {
                 destroy();
-                co = o.co;
-                o.co = {};
+                co = other.co;
+                other.co = {};
             }
             return *this;
         }
@@ -989,9 +991,9 @@ class Http1
         {
             return false;
         }
-        bool await_suspend(Run::handle h) noexcept
+        bool await_suspend(Run::handle headers) noexcept
         {
-            p = &h.promise();
+            p = &headers.promise();
             return true;
         }
         Run::promise_type &await_resume() const noexcept
@@ -1012,9 +1014,9 @@ class Http1
         {
             return false;
         }
-        bool await_suspend(Run::handle h) noexcept
+        bool await_suspend(Run::handle headers) noexcept
         {
-            p = &h.promise();
+            p = &headers.promise();
             return false;
         }
         Run::promise_type &await_resume() const noexcept
@@ -1124,13 +1126,13 @@ class Http1
         {
             switch (mode) {
                 case ConnMode::kHead:
-                    return asset == nullptr && ws == nullptr && sse == nullptr;
+                    return asset == nullptr && websocket == nullptr && sse == nullptr;
                 case ConnMode::kAsset:
-                    return asset != nullptr && ws == nullptr && sse == nullptr;
+                    return asset != nullptr && websocket == nullptr && sse == nullptr;
                 case ConnMode::kWs:
-                    return ws != nullptr && asset == nullptr && sse == nullptr;
+                    return websocket != nullptr && asset == nullptr && sse == nullptr;
                 case ConnMode::kSse:
-                    return sse != nullptr && asset == nullptr && ws == nullptr;
+                    return sse != nullptr && asset == nullptr && websocket == nullptr;
             }
             return false;
         }
@@ -1180,7 +1182,7 @@ class Http1
         size_t zc_covered = 0;
         H2State *h2 = nullptr;
         const AssetEntry *asset = nullptr;
-        WsConn *ws = nullptr;
+        WsConn *websocket = nullptr;
         SseStream *sse = nullptr;
         const void *peer = nullptr;
         // No RFC and not the kernel's: "zc" here is the [tune] knob's word,
@@ -1319,13 +1321,13 @@ class Http1
 
         // A slot for a run that is stopping, or -1 when this connection
         // holds as many as a tag can name.
-        int park_take(Round *r)
+        int park_take(Round *round)
         {
             if (park_taken == 0xffffu)
                 return -1;
             const int i = __builtin_ctz(static_cast<unsigned>(~park_taken) & 0xffffu);
             park_taken |= static_cast<uint16_t>(1u << i);
-            park[i] = r;
+            park[i] = round;
             park_gen[i]++;
             return i;
         }
@@ -1391,7 +1393,7 @@ class Http1
             std::string head;           // RFC 9112 2.1: status-line + fields
             std::string content_type;   // RFC 9110 8.3
             std::string field_lines;    // RFC 9112 5: what the run added
-            std::string buf;            // io_uring_prep_read(sqe, fd, buf, ...)
+            std::string chunk;          // io_uring_prep_read(sqe, fd, buf, ...)
             std::string method_token;   // RFC 9110 9.1
             std::string request_target; // RFC 9112 3.2
             std::string referer;        // RFC 9110 10.1.3
@@ -1485,7 +1487,7 @@ class Http1
         // there is nothing to translate between the ring and the hash.
         // Returns the slot, or -1 when this connection is already holding
         // as many as a tag can name.
-        int watchers_add(mrb_state *mrb, mrb_value w)
+        int watchers_add(mrb_state *mrb, mrb_value window)
         {
             if (w_mrb == nullptr) {
                 w_hash = mrb_hash_new(mrb);
@@ -1495,8 +1497,8 @@ class Http1
             for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
                 if (!mrb_nil_p(mrb_hash_get(mrb, w_hash, mrb_int_value(mrb, i))))
                     continue;
-                watcher_set_slot(w, i);
-                mrb_hash_set(mrb, w_hash, mrb_int_value(mrb, i), w);
+                watcher_set_slot(window, i);
+                mrb_hash_set(mrb, w_hash, mrb_int_value(mrb, i), window);
                 w_pending.push_back(i);
                 return i;
             }
@@ -1517,10 +1519,10 @@ class Http1
         {
             if (w_mrb == nullptr)
                 return;
-            const mrb_value w = watchers_at(slot);
-            if (mrb_nil_p(w))
+            const mrb_value window = watchers_at(slot);
+            if (mrb_nil_p(window))
                 return;
-            watcher_disarm(w);
+            watcher_disarm(window);
             mrb_hash_delete_key(w_mrb, w_hash, mrb_int_value(w_mrb, slot));
         }
 
@@ -1543,16 +1545,16 @@ class Http1
         {
             if (w_mrb != nullptr) {
                 for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
-                    const mrb_value w = watchers_at(i);
-                    if (!mrb_nil_p(w))
-                        watcher_disarm(w);
+                    const mrb_value window = watchers_at(i);
+                    if (!mrb_nil_p(window))
+                        watcher_disarm(window);
                 }
             }
             watchers_release();
         }
         // The Ring resets this; `li` is the App's key to "whose connection is
         // this", `pkt` says whether that listener is TCP.
-        void reset(uint8_t li, bool pkt)
+        void reset(uint8_t listener_index, bool pkt)
         {
             zc_release();
             watchers_release();
@@ -1589,13 +1591,13 @@ class Http1
             body_hold.clear();
             run_wants_body = false;
             spill.close_file();
-            listener = li;
+            listener = listener_index;
             packetized = pkt;
             fresh = true;
             h2_free(h2);
             h2 = nullptr;
-            ws_free(ws);
-            ws = nullptr;
+            ws_free(websocket);
+            websocket = nullptr;
             sse_free(sse);
             sse = nullptr;
             asset = nullptr;
@@ -1626,7 +1628,7 @@ class Http1
             watchers_forget();
             delete file;
             h2_free(h2);
-            ws_free(ws);
+            ws_free(websocket);
             sse_free(sse);
         }
     };
@@ -1671,7 +1673,7 @@ class Http1
 
     void clock_tick();
 
-    bool pending(const Conn &st) const;
+    bool pending(const Conn &conn) const;
 
     // WHATWG HTML: does this connection carry a source with its own schedule?
     // WHATWG HTML: which connections want a wake every second. h1 carries
@@ -1680,14 +1682,14 @@ class Http1
     // RFC 6455 5.1: does this connection carry a tunnel rather than a
     // request and an answer? Such a connection owes no next head, so the
     // head clock says nothing about it.
-    bool tunneled(const Conn &st) const;
+    bool tunneled(const Conn &conn) const;
 
     // RFC 6455 7.1.1: this connection ran out of its idle time, and a
     // WebSocket says goodbye with a Close frame before the socket goes.
     // True = something was written and the send carries it.
-    bool going_away(Conn &st, std::string &sink);
+    bool going_away(Conn &conn, std::string &sink);
 
-    bool timed(const Conn &st) const;
+    bool timed(const Conn &conn) const;
 
     // No RFC - this becomes a struct msghdr, so it carries that struct's
     // names: the segments are its msg_iov, their count its msg_iovlen, and
@@ -1720,14 +1722,14 @@ class Http1
         std::string &bytes;
         Plan *plan;
     };
-    bool connection_feed(Conn &st, std::string_view data, Sink out);
+    bool connection_feed(Conn &conn, std::string_view data, Sink out_value);
 
     // The sink has drained, and this connection may still owe bytes: a
     // stopped run, a file transfer, an event stream, an h2 frame, an
     // asset. This spells the next round of them, and when nothing is owed
     // it takes the next request out of the carry. It answers whether the
     // connection lives past that round.
-    bool spell_next_round(Conn &st, std::string &sink, Plan &plan);
+    bool spell_next_round(Conn &conn, std::string &sink, Plan &plan);
 
     // #80: the reactor saying a worker or a watcher answered. Only a flag -
     // the run is resumed in `spell_next_round`, where a sink and a plan exist.
@@ -1735,14 +1737,14 @@ class Http1
     // here, which is the only thread that may build a value in it. A
     // worker that raised, or an answer CBOR cannot carry, is nil - the
     // run reads it like any other answer and decides for itself.
-    static void compute_task_answered(Conn &st, int park, int job, const ComputeAnswer &answered);
+    static void compute_task_answered(Conn &conn, int park, int job, const ComputeAnswer &answered);
     // #30: one job of a round answered, whatever answered it.
-    static void round_answered(Conn::Round &r, int job, mrb_value v);
+    static void round_answered(Conn::Round &round, int job, mrb_value value);
     // The job a stopped run left, or nullptr. Taken, not read: the reactor
     // arms it once and the connection stops naming it - exactly file_take.
     // Every worker slot is taken. The run is told rather than the layer
     // inventing a refusal - it answers this the way it answers anything.
-    static void compute_task_refused(Conn &st, int park);
+    static void compute_task_refused(Conn &conn, int park);
     // The three refusals a stopped run can meet, told apart here so no
     // call site has to. Status 0 means the
     // worker answered and the run reads the answer.
@@ -1762,13 +1764,13 @@ class Http1
     // over by now and nothing of it is left to answer one - so the
     // crossing runs under a frame of its own. compute_task_cross is the
     // half that raises.
-    bool compute_task_hand_over(Conn &st, Conn::Round &round, int park, const Resource &res);
-    bool compute_task_cross(Conn &st, Conn::Round &round, int park, const Resource &res);
+    bool compute_task_hand_over(Conn &conn, Conn::Round &round, int park, const Resource &resource);
+    bool compute_task_cross(Conn &conn, Conn::Round &round, int park, const Resource &resource);
     // #30: the watcher a stopped run left, handed to the connection. The
     // connection files it under a slot and roots it; the reactor arms what
     // `w_pending` names. False when the connection can hold no more, and
     // the run is told the way a full pool tells it.
-    static bool watch_hand_over(Conn &st, Conn::Round &round, int park, const Resource &res);
+    static bool watch_hand_over(Conn &conn, Conn::Round &round, int park, const Resource &resource);
     // What one event did to the wait.
     enum class WatchStep : uint8_t {
         kWait,  // the block wants the same thing again
@@ -1780,23 +1782,23 @@ class Http1
     // wait, `events=` changes what to wait for, anything else waits again.
     // The return value never means "keep waiting" - a block may answer nil
     // and mean it.
-    static WatchStep watcher_event(Conn &st, int slot, unsigned revents);
+    static WatchStep watcher_event(Conn &conn, int slot, unsigned revents);
     // The watcher was quiet for as long as it allowed. The block hears
     // `:timeout` and answers whether the wait goes on.
-    static WatchStep watcher_deadline(Conn &st, int slot);
+    static WatchStep watcher_deadline(Conn &conn, int slot);
     // What a watcher waits for right now, as poll bits, and how long it
     // may stay quiet. The reactor asks both when it arms one.
-    static unsigned watcher_mask(Conn &st, int slot);
-    static int watcher_descriptor(Conn &st, int slot);
-    static void watcher_is_armed(Conn &st, int slot, struct io_uring *ring, uint64_t tag);
-    static void watcher_is_unarmed(Conn &st, int slot);
+    static unsigned watcher_mask(Conn &conn, int slot);
+    static int watcher_descriptor(Conn &conn, int slot);
+    static void watcher_is_armed(Conn &conn, int slot, struct io_uring *ring, uint64_t poll_tag);
+    static void watcher_is_unarmed(Conn &conn, int slot);
     // The tag of the poll in the ring for this watcher, or 0 when none is.
-    static uint64_t watcher_poll_tag(Conn &st, int slot);
-    static void watchers_drop_slot(Conn &st, int slot);
+    static uint64_t watcher_poll_tag(Conn &conn, int slot);
+    static void watchers_drop_slot(Conn &conn, int slot);
     // A watcher this connection has not armed yet. Taken, not read: the
     // reactor arms it once and the connection stops naming it - exactly
     // file_take and compute_task_take.
-    static bool watch_take(Conn &st, int *slot);
+    static bool watch_take(Conn &conn, int *slot);
     // Which watcher this connection waits on, or -1.
     // #30: the watcher slot each job of the round waits on, or -1. A
     // round can wait on several at once.
@@ -1804,21 +1806,21 @@ class Http1
     // this connection is not waiting on it.
     // #30: where the run that owns these watchers is waiting. Told after
     // the park, because only then does the frame hold its own state.
-    static void watch_run_is(Conn &st, Conn::Round &round, Resource::RunState *run);
+    static void watch_run_is(Conn &conn, Conn::Round &round, Resource::RunState *run);
     // #30: every watcher of this connection that stayed quiet for as long
     // as the watcher itself allowed. The sweep asks once per connection, not once per
     // watcher, and this walks the ones that are armed.
-    static size_t watchers_over_deadline(Conn &st, int64_t now, int *slots, size_t max);
+    static size_t watchers_over_deadline(Conn &conn, int64_t now, int *slots, size_t max);
     // The earliest deadline any armed watcher of this connection owes, or
     // 0 when none does. The Ring keeps that one number.
-    static int64_t watchers_soonest_deadline(Conn &st);
-    static void watcher_armed_at(Conn &st, int slot, int64_t at);
-    static double watcher_quiet_seconds(Conn &st, int slot);
+    static int64_t watchers_soonest_deadline(Conn &conn);
+    static void watcher_armed_at(Conn &conn, int slot, int64_t index);
+    static double watcher_quiet_seconds(Conn &conn, int slot);
     // The work a stopped run left, or false. Taken, not read: the reactor
     // arms it once and the connection stops naming it - exactly file_take.
     // #30: response.userdata for this job, as the crossing left it.
-    static std::string_view compute_task_user(const Conn &st, int park, int job);
-    static bool compute_task_take(Conn &st, int park, int job, unsigned *code, std::string &bytes,
+    static std::string_view compute_task_user(const Conn &conn, int park, int job);
+    static bool compute_task_take(Conn &conn, int park, int job, unsigned *code, std::string &bytes,
                                   double *deadline);
     // response.file, the reactor's half. A bound run may name a file instead
     // of spelling a body; opening it is disk work, so it never happens inside
@@ -1827,19 +1829,19 @@ class Http1
     // and the answer reaches the wire through `spell_next_round` like every other
     // continuation. Any refusal - a miss, a directory, a resolve flag
     // catching an escape - lands as the same 404 file_reject spells.
-    const char *file_take(Conn &st);
+    const char *file_take(Conn &conn);
     // The question file_take answers, asked without a call. The reactor
     // asks it on every recv and every round, and the answer is almost
     // always no: file_take lives in another translation unit, so the no
     // cost a call and a return. Measured at 0.38% of a whole h1 run.
-    static bool file_waiting(const Conn &st);
+    static bool file_waiting(const Conn &conn);
     // The same, for the work a stopped run left. arm_compute_task built a
     // std::string before it asked. Measured at 0.45%.
-    static bool compute_task_waiting(const Conn &st);
-    static uint8_t park_generation(const Conn &st, int park);
+    static bool compute_task_waiting(const Conn &conn);
+    static uint8_t park_generation(const Conn &conn, int park);
     // The next parked run with a job to arm, or false. Taken, not read -
     // the same shape as file_take and watch_take.
-    static bool park_take_pending(Conn &st, int *park);
+    static bool park_take_pending(Conn &conn, int *park);
     // RFC 9110 6.4: the request body of this connection that still owes
     // octets to its file. h1 has one spill; an h2 connection has one per
     // stream, and one write flies at a time because the answer names a
@@ -1848,17 +1850,17 @@ class Http1
     // The reactor asks this on every recv and every round, the same way
     // it asks file_waiting, and the answer is no for every connection
     // that is not taking an upload.
-    static BodySpill *spill_waiting(Conn &st);
-    static BodySpill *spill_waiting_h2(Conn &st);
+    static BodySpill *spill_waiting(Conn &conn);
+    static BodySpill *spill_waiting_h2(Conn &conn);
     // What the ring answered for the write it armed. The body may be
     // whole now, and then the run that stopped for it is ready.
-    void spill_wrote(Conn &st, ssize_t res, const std::string &out);
-    void file_reject(Conn &st);
-    void file_error(Conn &st, const char *why);
-    bool file_stat(Conn &st, const struct statx &stx, size_t *want);
-    char *file_buffer(Conn &st, size_t n);
-    void file_ready_now(Conn &st, size_t n);
-    void file_mapped(Conn &st, const char *p, size_t n);
+    void spill_wrote(Conn &conn, ssize_t resource, const std::string &out_value);
+    void file_reject(Conn &conn);
+    void file_error(Conn &conn, const char *why);
+    bool file_stat(Conn &conn, const struct statx &stx, size_t *want);
+    char *file_buffer(Conn &conn, size_t count);
+    void file_ready_now(Conn &conn, size_t count);
+    void file_mapped(Conn &conn, const char *bytes, size_t count);
     // Is a round waiting for `spell_next_round` to run? kDone counts: it puts nothing on
     // the wire, but it is the round that hands the mapping back and writes
     // the access line, so nothing may go idle in front of it.
@@ -1891,9 +1893,9 @@ class Http1
     // inlined twice it put 379 bytes of decoder into feed_parse, which
     // every request walks. nm -S on the host build decided it.
     // RFC 9110 5.6.2: the octets a token may carry.
-    static bool chunk_tchar(char c);
+    static bool chunk_tchar(char conn);
 
-    static bool chunk_hex(char c);
+    static bool chunk_hex(char conn);
 
     // RFC 9112 7.1.1: one chunk-size line, without its CRLF.
     //
@@ -1910,7 +1912,7 @@ class Http1
     //
     // Cold: once per chunk header of a chunked body, which is the rare
     // request, and out of line because take_chunked is out of line already.
-    __attribute__((noinline)) static bool chunk_size_line_ok(const char *p, size_t n);
+    __attribute__((noinline)) static bool chunk_size_line_ok(const char *bytes, size_t count);
 
     // RFC 9112 7.1.1: the same octets the decoder is about to read, held to
     // the grammar first. picohttpparser accepts `2 erfrferferf`, `2;`, `a `
@@ -1920,10 +1922,11 @@ class Http1
     // The walk keeps its own place, because the decoder's is not reachable
     // and one buffer may carry several chunks. It never copies the body -
     // only a size line that a buffer cut in half.
-    __attribute__((noinline)) static bool chunk_lines_ok(Conn &st, const char *data, size_t len);
+    __attribute__((noinline)) static bool chunk_lines_ok(Conn &conn, const char *data,
+                                                         size_t length);
 
     template <class W>
-    __attribute__((noinline)) static BodyTake take_chunked(Conn &st, W w, const char *&data,
+    __attribute__((noinline)) static BodyTake take_chunked(Conn &conn, W window, const char *&data,
                                                            size_t &len)
     {
         if (len == 0)
@@ -1931,22 +1934,22 @@ class Http1
         // RFC 9112 7.1.1: the grammar first, because the decoder is lenient
         // about it and a chunk reader that takes sizes outside the grammar is
         // where request smuggling keeps being found.
-        if (mrb_unlikely(!chunk_lines_ok(st, data, len)))
+        if (mrb_unlikely(!chunk_lines_ok(conn, data, len)))
             return BodyTake::kFailed;
 
-        st.chunk_buf.assign(data, len);
-        size_t decoded = st.chunk_buf.size();
-        const ssize_t rest = phr_decode_chunked(&st.chunk, st.chunk_buf.data(), &decoded);
+        conn.chunk_buf.assign(data, len);
+        size_t decoded = conn.chunk_buf.size();
+        const ssize_t rest = phr_decode_chunked(&conn.chunk, conn.chunk_buf.data(), &decoded);
         if (mrb_unlikely(rest == -1))
             return BodyTake::kFailed;
         // RFC 9110 15.5.14: the count is the only length a chunked body
         // has, so the limit is held against it, here.
-        if (mrb_unlikely(st.body_count + decoded > st.body_limit))
+        if (mrb_unlikely(conn.body_count + decoded > conn.body_limit))
             return BodyTake::kTooLarge;
-        if (mrb_unlikely(decoded != 0 && !w.put(st.chunk_buf.data(), decoded))) {
+        if (mrb_unlikely(decoded != 0 && !window.put(conn.chunk_buf.data(), decoded))) {
             return BodyTake::kFileFailed;
         }
-        st.body_count += decoded;
+        conn.body_count += decoded;
         // Everything this call was given is spoken for: what the decoder
         // read, and the framing it dropped. What it did not read is a
         // pipelined request, and the cursor stops in front of it.
@@ -1956,9 +1959,9 @@ class Http1
         // every content octet of this body. body_count already holds this
         // call's octets. A body in one-octet chunks passes, and framing
         // that carries no content stops at the floor.
-        st.chunk_framing += used - decoded;
-        if (mrb_unlikely(st.chunk_framing >
-                         kChunkFramingFloor + st.body_count * kChunkFramingPerOctet)) {
+        conn.chunk_framing += used - decoded;
+        if (mrb_unlikely(conn.chunk_framing >
+                         kChunkFramingFloor + conn.body_count * kChunkFramingPerOctet)) {
             return BodyTake::kFailed;
         }
         data += used;
@@ -1966,35 +1969,36 @@ class Http1
         // The one move: this body has outgrown memory. What memory holds
         // goes to the file, and every octet after it is a file write. Once
         // per body, never per buffer.
-        if (mrb_unlikely(st.body_to == Conn::Body::kChunkMem &&
-                         st.body_hold.size() >= kBodySpill)) {
-            const SpillOpen opened = st.spill.open_file();
+        if (mrb_unlikely(conn.body_to == Conn::Body::kChunkMem &&
+                         conn.body_hold.size() >= kBodySpill)) {
+            const SpillOpen opened = conn.spill.open_file();
             if (mrb_unlikely(opened != SpillOpen::kOpen)) {
                 return opened == SpillOpen::kNoSlot ? BodyTake::kNoSlot : BodyTake::kFileFailed;
             }
-            if (!st.spill.take(st.body_hold.data(), st.body_hold.size()))
+            if (!conn.spill.take(conn.body_hold.data(), conn.body_hold.size()))
                 return BodyTake::kFileFailed;
-            st.body_hold.clear();
-            st.body_hold.shrink_to_fit();
-            st.body_to = Conn::Body::kChunkFile;
+            conn.body_hold.clear();
+            conn.body_hold.shrink_to_fit();
+            conn.body_to = Conn::Body::kChunkFile;
         }
         if (rest < 0)
             return BodyTake::kMore;
-        st.body_to = Conn::Body::kNone;
+        conn.body_to = Conn::Body::kNone;
         return BodyTake::kWhole;
     }
 
-    template <class W> static BodyTake take_body(Conn &st, W w, const char *&data, size_t &len)
+    template <class W>
+    static BodyTake take_body(Conn &conn, W window, const char *&data, size_t &length)
     {
-        const size_t take = len < st.content_need ? len : st.content_need;
-        if (mrb_unlikely(!w.put(data, take)))
+        const size_t take = length < conn.content_need ? length : conn.content_need;
+        if (mrb_unlikely(!window.put(data, take)))
             return BodyTake::kFileFailed;
-        st.content_need -= take;
+        conn.content_need -= take;
         data += take;
-        len -= take;
-        if (st.content_need != 0)
+        length -= take;
+        if (conn.content_need != 0)
             return BodyTake::kMore;
-        st.body_to = Conn::Body::kNone;
+        conn.body_to = Conn::Body::kNone;
         return BodyTake::kWhole;
     }
 
@@ -2005,19 +2009,19 @@ class Http1
     //
     // Out of line on purpose: four refusal arms in feed_parse spell these
     // five stores, and feed_parse is the function every request walks.
-    __attribute__((noinline)) static void drop_body(Conn &st);
+    __attribute__((noinline)) static void drop_body(Conn &conn);
 
-    static bool file_answerable(const Conn &st);
+    static bool file_answerable(const Conn &conn);
     // #36: a run of this connection stopped for the request body, and the
     // body is whole. Its answer owes the ring no completion - the octets
     // came in on the receive that just fed the parser - so nothing else
     // would ever come back to collect it. The reactor asks this instead,
     // the way it asks file_answerable.
-    static bool run_resumable(const Conn &st);
+    static bool run_resumable(const Conn &conn);
     // 0 = do not map; otherwise the exact length to map. One question, one
     // answer - the split that made the read path ask "map?" and then use the
     // map's length to read with.
-    static size_t file_map_len(const Conn &st);
+    static size_t file_map_len(const Conn &conn);
     // Which shape a resource's answer takes. One value, decided once, so
     // the writer and the access line below cannot disagree about what went
     // out.
@@ -2047,7 +2051,7 @@ class Http1
         bool gzip_ok;
         bool bound;
     };
-    static AnswerStep answer_step(const AnswerFacts &f);
+    static AnswerStep answer_step(const AnswerFacts &field);
 
     // RFC 9113 6.9.1: what one stream may put on the wire this round. Both
     // windows, what is left of the body, and - for a copied buffer only -
@@ -2069,7 +2073,7 @@ class Http1
         int64_t conn_window;
         size_t chunk;
     };
-    static H2SendStep h2_send_step(const H2Stream &s, RoundRoom room);
+    static H2SendStep h2_send_step(const H2Stream &sqe, RoundRoom room);
 
     // What the asset tier does with one request: computed here, performed
     // by the caller. One value, so nothing is decided inside a branch that
@@ -2099,7 +2103,7 @@ class Http1
         flow::Method method;
         const http::ReqValues &vals;
     };
-    static AssetStep asset_step(const AssetEntry &e, const RangeAsk &ask);
+    static AssetStep asset_step(const AssetEntry &entry, const RangeAsk &request_ask);
 
     // The next round of a transfer, computed and not performed.
     //
@@ -2109,19 +2113,19 @@ class Http1
     // 16 bytes that way). Inlined, the FileStep never exists - the compiler
     // keeps its fields in registers. Purity only pays where the compiler can
     // see it.
-    static FileStep file_step(const Conn::FileXfer &x, size_t chunk);
+    static FileStep file_step(const Conn::FileXfer &one, size_t chunk);
     // The one place a transfer's state changes as a round is delivered.
-    void file_apply(Conn &st, const FileStep &step);
+    void file_apply(Conn &conn, const FileStep &step);
     // The single access line of a transfer, with the bytes that really went
     // out. Called on the kDone round, or by file_abandon when a connection
     // dies under one; the stage is what keeps it from happening twice.
-    void file_log(Conn &st);
+    void file_log(Conn &conn);
     // A connection closing under a transfer still owes its access line.
-    void file_abandon(Conn &st);
+    void file_abandon(Conn &conn);
     // Nothing owed, nothing on the wire: give the read buffer back, or a slot
     // that once served a big file would hold those bytes for the process's
     // life. The Ring calls this only where both are true.
-    static void file_release(Conn &st);
+    static void file_release(Conn &conn);
 
     // The App formats lines; the Ring flushes the buffer. Opt-in.
     Logger *access_log();
@@ -2132,10 +2136,10 @@ class Http1
     // The only way an error record is ever built.
     void enable_error_log();
     // [tune] zero_copy_threshold, once, before the first accept.
-    void set_zero_copy_threshold(size_t n);
+    void set_zero_copy_threshold(size_t count);
 
     // [tune] file_map_threshold, once, before the first accept. 0 = never map.
-    void set_file_map_threshold(size_t n);
+    void set_file_map_threshold(size_t count);
     // The Ring owns the send clock, so the Ring is what tells this layer how
     // much one send may carry - one rule, one place.
     void set_send_timeout(int secs);
@@ -2250,8 +2254,8 @@ class Http1
         const char *date;
         const char *conn = "";
     };
-    static void build_variants(Variants &v, Prebuilt p);
-    static void build_one_variant(Resp &r, Prebuilt p);
+    static void build_variants(Variants &value, Prebuilt bytes);
+    static void build_one_variant(Resp &round, Prebuilt bytes);
     static void copy_without_tail(const Resp &src, Resp &dst, size_t cut);
     // RFC 9112: a head that stops before Content-Length, for a body the run
     // has yet to produce - the status line, the route's own fields, whatever
@@ -2263,8 +2267,8 @@ class Http1
         const char *enc;
         const char *conn = "";
     };
-    static void build_open_prefixes(Variants &v, OpenPrefix p);
-    static void build_open_prefix(Resp &r, OpenPrefix p);
+    static void build_open_prefixes(Variants &value, OpenPrefix bytes);
+    static void build_open_prefix(Resp &round, OpenPrefix bytes);
     // RFC 9113 6.2: one whole HEADERS frame for the cache to replay - the
     // route's prebuilt block, the per-answer fields, and the date.
     struct CachedHead {
@@ -2272,7 +2276,7 @@ class Http1
         std::span<const unsigned char> fields;
         std::span<const unsigned char> date;
     };
-    static void cache_headers(std::string &out, const CachedHead &head);
+    static void cache_headers(std::string &out_value, const CachedHead &head);
     // WHATWG HTML: an event stream's one access record. SseLine is what the
     // seven arguments were - see #std-first.
     struct SseLine {
@@ -2282,17 +2286,17 @@ class Http1
         uint16_t status;
         uint8_t lflags;
     };
-    static void log_sse(Logger &lg, const Conn &st, const SseLine &line);
+    static void log_sse(Logger &logger, const Conn &conn, const SseLine &line);
     // What one prebuilt status says beyond its status line: the fields that
     // always go with it, and the body it carries where it carries one.
     struct StatusText {
         const char *extra;
         const char *body;
     };
-    void build_status(uint16_t status, StatusText t);
-    void status_line_is_stocked(bool have[600], uint16_t s);
-    void build_bundle(Bundle &b, const Resource *res);
-    static void patch_date(Variants &v, const char *core);
+    void build_status(uint16_t status, StatusText text);
+    void status_line_is_stocked(bool have[600], uint16_t sqe);
+    void build_bundle(Bundle &block, const Resource *resource);
+    static void patch_date(Variants &value, const char *core);
     // RFC 9112: one prebuilt head and the body behind it - a HEAD request
     // takes the same head and none of the bytes.
     struct Assembled {
@@ -2300,12 +2304,13 @@ class Http1
         std::string_view body;
         bool head_only;
     };
-    static void answer_assemble(std::string &sink, const Assembled &a);
-    bool feed_parse(Conn &st, std::string_view data, Sink out);
+    static void answer_assemble(std::string &sink, const Assembled &answer);
+    bool feed_parse(Conn &conn, std::string_view data, Sink out_value);
     // The cold branches of feed_parse, out of line: the protocol decision
     // on a fresh connection, and a head that upgrades or opens a stream.
     enum class Preface : uint8_t { kH1, kH2, kWait, kRefused };
-    Preface h1_preface(Conn &st, const char *data, size_t len, std::string &sink, size_t *consumed);
+    Preface h1_preface(Conn &conn, const char *data, size_t length, std::string &sink,
+                       size_t *consumed);
     struct H1Head {
         std::string_view method;
         std::string_view path;
@@ -2322,15 +2327,15 @@ class Http1
         const char *rest;
         size_t rest_len;
     };
-    bool h1_upgrade_or_stream(Conn &st, const H1Head &h, std::string &sink, bool *lives);
-    static void sink_claim(Conn &st, const std::string &sink, Plan &plan);
+    bool h1_upgrade_or_stream(Conn &conn, const H1Head &headers, std::string &sink, bool *lives);
+    static void sink_claim(Conn &conn, const std::string &sink, Plan &plan);
     // The bytes one answer lends rather than copies, and the plan they are
     // lent into.
     struct Lending {
         std::string_view body;
         Plan &plan;
     };
-    static void body_lend(Conn &st, std::string &sink, Lending lend);
+    static void body_lend(Conn &conn, std::string &sink, Lending lend);
     // RFC 9110 12.5.3/12.5.5: what a dynamic 200 chooses between - the two
     // prebuilt prefixes, whether gzip is on the table at all (the peer
     // accepts it and this connection is packetized), and whether the request
@@ -2345,7 +2350,7 @@ class Http1
         bool may_gzip;
         bool head_only;
     };
-    void assemble_dynamic(const DynamicBody &d, std::string &sink);
+    void assemble_dynamic(const DynamicBody &dynamic_body, std::string &sink);
     // RFC 9112 9.3: one prebuilt status in its three connection spellings.
     const Variants &variants(uint16_t status) const;
     // The same status without its Content-Length and terminator: what an
@@ -2368,7 +2373,7 @@ class Http1
         const ErrorPages::Fields &fields;
         bool head_only;
     };
-    void spell_error(const ErrorAnswer &e, std::string &sink);
+    void spell_error(const ErrorAnswer &entry, std::string &sink);
     // #80: everything a stopped run borrowed, rebased onto bytes it owns.
     // Named Held and not Parked because Http1 already has a Parked, and
     // that one is an h2 stream's view - a different thing entirely.
@@ -2416,11 +2421,11 @@ class Http1
             // True when this span owned the pointer and moved it. One past the
             // end belongs to the span as well: an empty piece at the end of it
             // is spelled that way.
-            bool move(const char *&p) const
+            bool move(const char *&bytes) const
             {
-                if (at == nullptr || p == nullptr || p < at || p > at + len)
+                if (at == nullptr || bytes == nullptr || bytes < at || bytes > at + len)
                     return false;
-                p += delta;
+                bytes += delta;
                 return true;
             }
         };
@@ -2512,7 +2517,7 @@ class Http1
         size_t zc_min = 0;
         bool accept_gzip = false;
     };
-    void bound_prepare(Round &r, const BoundAsk &ask, BoundPrep &prep);
+    void bound_prepare(Round &round, const BoundAsk &request_ask, BoundPrep &prep);
 
     // #80: everything a stopped run has to keep about the request, by
     // value. The Round it is built from holds references into feed_parse's
@@ -2581,7 +2586,7 @@ class Http1
         };
         H2Start h2{};
     };
-    Run run_parkable(Conn &st, RunStart s, std::string *sink, Plan *plan);
+    Run run_parkable(Conn &conn, RunStart sqe, std::string *sink, Plan *plan);
     // What one such round leaves for the parse to do next.
     enum class ComputeRound : uint8_t {
         kNext,   // answered here; read the next request out of this buffer
@@ -2593,16 +2598,16 @@ class Http1
     // hottest function in the server. Inlined
     // here it was paid for by every request that never
     // ran a compute task.
-    __attribute__((noinline)) ComputeRound start_compute_round(Conn &st, const BoundStart &s,
+    __attribute__((noinline)) ComputeRound start_compute_round(Conn &conn, const BoundStart &sqe,
                                                                std::string *sink, Plan *plan,
                                                                size_t &off);
 
     // kOwed = nothing is answered yet: the body is still coming, or a file
     // is being fetched through the ring.
-    Took answer_bound(Round &r, const BoundAsk &ask, BoundOut &out);
+    Took answer_bound(Round &round, const BoundAsk &request_ask, BoundOut &out_value);
     // The half after the walk. Reached from answer_bound and, once a run
     // can park, from the coroutine a promising resource runs through.
-    Took bound_finish(Round &r, const BoundAsk &ask, BoundOut &out);
+    Took bound_finish(Round &round, const BoundAsk &request_ask, BoundOut &out_value);
 
     // #80: what the answer switch needs beyond the Round - the sink it
     // writes to, the plan a lend rides out on, and what the run left
@@ -2626,21 +2631,21 @@ class Http1
     // reach it from inside a coroutine while the konst tier keeps calling it
     // straight - a run that can never stop must not pay for a frame.
     // Returns the step it took, because the access line counts what it wrote.
-    AnswerStep spell_answer(Round &r, Spelling sp);
+    AnswerStep spell_answer(Round &round, Spelling sp);
 
     // RFC 9110 6.3: response.file named a file, so no body is spelled here
     // - the framing goes onto the connection and the reactor drives
     // openat2/statx/read. Answers whether it took the round.
-    bool answer_from_file(Round &r, uint16_t status, const std::string &rhdrs);
+    bool answer_from_file(Round &round, uint16_t status, const std::string &rhdrs);
 
     // RFC 9110 6.3 / RFC 9111: a mounted archive answers this target, head
     // and body, without the flow or the VM. /error_assets/ resolves against
     // the error archive, everything else against --assets.
-    Took answer_from_assets(Round &r, std::string &sink, Plan *plan);
-    Took answer_from_docroot(Round &r);
-    void file_named_tail(Round &r);
+    Took answer_from_assets(Round &round, std::string &sink, Plan *plan);
+    Took answer_from_docroot(Round &round);
+    void file_named_tail(Round &round);
 
-    bool connection_fail(Conn &st, uint16_t code, std::string &out, uint8_t log = 0);
+    bool connection_fail(Conn &conn, uint16_t code, std::string &out_value, uint8_t log = 0);
     // response.file's answer, head only - the bytes ride after it as a lent
     // segment. `prebuilt` takes the status straight out of the shared store.
     // The head a served file wears: the status it carries, how many octets
@@ -2650,11 +2655,11 @@ class Http1
         size_t content_length;
         bool bodyless;
     };
-    void file_spell(Conn &st, FileHead head);
-    void file_prebuilt(Conn &st, uint16_t status_code);
-    bool ws_upgrade(Conn &st, const WsUpgrade &up, std::string &sink);
+    void file_spell(Conn &conn, FileHead head);
+    void file_prebuilt(Conn &conn, uint16_t status_code);
+    bool ws_upgrade(Conn &conn, const WsUpgrade &up, std::string &sink);
 
-    bool sse_begin(Conn &st, const SseBegin &req, std::string &sink);
+    bool sse_begin(Conn &conn, const SseBegin &request, std::string &sink);
 
     // RFC 7541 6.1/6.2.2: what a prebuilt block says - the status, the
     // Content-Type where the route has one, the Allow a 405 keeps.
@@ -2663,19 +2668,19 @@ class Http1
         const std::string *ctype = nullptr;
         const std::string *allow = nullptr;
     };
-    void h2_build_block(H2Block &b, const H2BlockFields &f);
-    bool h2_error_page(const H2ErrorAsk &a, H2ErrorPage &p, H2Answer &out);
+    void h2_build_block(H2Block &block, const H2BlockFields &field);
+    bool h2_error_page(const H2ErrorAsk &answer, H2ErrorPage &bytes, H2Answer &out_value);
 
-    bool h2_begin(Conn &st, std::string &sink);
-    bool h2_feed(Conn &st, std::string_view data, Sink out);
-    bool h2_error(Conn &st, uint32_t code, std::string &sink);
-    void h2_reset_stream(Conn &st, uint32_t id, uint32_t code, std::string &sink);
-    bool h2_count_lie(Conn &st, uint32_t id, std::string &sink);
+    bool h2_begin(Conn &conn, std::string &sink);
+    bool h2_feed(Conn &conn, std::string_view data, Sink out_value);
+    bool h2_error(Conn &conn, uint32_t code, std::string &sink);
+    void h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::string &sink);
+    bool h2_count_lie(Conn &conn, uint32_t stream_id, std::string &sink);
     // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
     // named one is refused rather than served the empty body it never meant
     // to send. Its own function because those fifteen lines are not part of
     // answering a stream, and inline they cost h2_answer 952 bytes.
-    uint16_t h2_refuse_file(Conn &st, const ReqView *req);
+    uint16_t h2_refuse_file(Conn &conn, const ReqView *request);
     // RFC 9113 6.2: one HEADERS block as it arrived - the stream it belongs
     // to, whether the peer said that is the end of that stream, and the bytes
     // of the block itself.
@@ -2684,11 +2689,11 @@ class Http1
         bool end_stream;
         std::span<const unsigned char> block;
     };
-    bool h2_dispatch(Conn &st, const H2Headers &h, std::string &sink);
+    bool h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink);
     // RFC 9113 5.1.2, 8.7: the file for a body that starts in one, behind
     // the two ceilings that refuse it. Answers false when the stream was
     // refused. Out of line: once per large body, never per request.
-    bool h2_body_file_open(Conn &st, H2Stream &stx, uint32_t stream_id, std::string &sink);
+    bool h2_body_file_open(Conn &conn, H2Stream &stx, uint32_t stream_id, std::string &sink);
     // The cold branches of h2_dispatch, out of line: the second HEADERS
     // of a stream and the DATA that ends one both serve the parked
     // stream; :protocol opens a WebSocket.
@@ -2701,13 +2706,13 @@ class Http1
         size_t nfields;
         const http::ReqValues *vals;
     };
-    static size_t h2_fields_of_parked(const H2Stream &stp, struct phr_header *hv);
-    bool h2_serve_parked(Conn &st, H2Stream &stp, std::string &sink, bool complete);
+    static size_t h2_fields_of_parked(const H2Stream &stream, struct phr_header *header_vector);
+    bool h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, bool complete);
     // #53: the body a parked run stopped for is whole. True = a run was
     // waiting on it and its round is ready now, so the stream must not be
     // served a second time.
-    bool h2_body_ready(Conn &st, uint32_t stream_id);
-    bool h2_extended_connect(Conn &st, const H2Connect &ask, std::string &sink);
+    bool h2_body_ready(Conn &conn, uint32_t stream_id);
+    bool h2_extended_connect(Conn &conn, const H2Connect &request_ask, std::string &sink);
     // A parked stream's request as a view: the target it named, and the
     // ReqView the caller owns for it to point into.
     struct Parked {
@@ -2717,14 +2722,14 @@ class Http1
         // them, so they have to live in the caller's frame, beside the view.
         RouteSpans &spans;
     };
-    const ReqView *h2_parked_view(Conn &st, Parked p);
+    const ReqView *h2_parked_view(Conn &conn, Parked bytes);
     // What one h2 access line is written from: the facts the stream carried,
     // and the :path they were read beside - which is still live only here.
     struct H2Logged {
         const flow::ReqFacts &facts;
         std::string_view target;
     };
-    void h2_log(Conn &st, const H2Logged &l);
+    void h2_log(Conn &conn, const H2Logged &l);
     // `target` rides beside `req` because an error answer needs it even
     // when no route matched - a 404 names what was not found, and that is
     // exactly the case where there is no ReqView (#210).
@@ -2759,13 +2764,13 @@ class Http1
     };
     // Whether a run on this bundle can stop: it declared compute or
     // watch, or a value round. Only such a run pays for a frame.
-    static bool h2_can_stop(const Bundle *b);
+    static bool h2_can_stop(const Bundle *block);
     // #30: the walk, and the framing, are two functions - a run can stop
     // between them. One framer serves both paths.
     struct H2Produced;
-    void h2_produce(Conn &st, const H2Request &q, bool can_park, H2Produced &p);
-    void h2_after_run(Conn &st, const H2Request &q, H2Produced &p, uint16_t status);
-    bool h2_answer(Conn &st, const H2Request &q, std::string &sink);
+    void h2_produce(Conn &conn, const H2Request &q, bool can_park, H2Produced &bytes);
+    void h2_after_run(Conn &conn, const H2Request &q, H2Produced &bytes, uint16_t status);
+    bool h2_answer(Conn &conn, const H2Request &q, std::string &sink);
     // RFC 9110 15.5.12: the 411 itself, and the stream that earns one -
     // content whose length the client did not declare.
     // #30: which of the two an h2 request takes - the straight answer, or
@@ -2774,7 +2779,7 @@ class Http1
     // What h2_serve did with the request: answered it into the sink,
     // parked a run for it, or closed the connection.
     enum class H2Served : uint8_t { kAnswered, kParked, kClosed };
-    H2Served h2_serve(Conn &st, const H2Request &q, std::string &sink);
+    H2Served h2_serve(Conn &conn, const H2Request &q, std::string &sink);
     // WHATWG HTML over RFC 9113: what an event stream needs to open on one
     // h2 stream. The request's own bytes, because sse_open runs the
     // resource's initialize and that reads `request`.
@@ -2787,8 +2792,8 @@ class Http1
         size_t nfields;
         const http::ReqValues *vals;
     };
-    bool h2_sse_begin(Conn &st, const H2SseAsk &ask, std::string &sink);
-    void h2_sse_second(Conn &st, std::string &sink);
+    bool h2_sse_begin(Conn &conn, const H2SseAsk &request_ask, std::string &sink);
+    void h2_sse_second(Conn &conn, std::string &sink);
     // RFC 8441: a WebSocket on one h2 stream, opened by the extended
     // CONNECT. The same fields the event stream needs, plus what the
     // handshake reads.
@@ -2801,10 +2806,10 @@ class Http1
         size_t nfields;
         const http::ReqValues *vals;
     };
-    bool h2_ws_begin(Conn &st, const H2WsAsk &ask, std::string &sink);
-    bool h2_frame(Conn &st, const H2Request &q, std::string &sink, H2Produced &p);
-    void h2_flush_pending(Conn &st, std::string &sink, Plan *plan);
-    void h2_build_asset_blocks(AssetEntry &e);
+    bool h2_ws_begin(Conn &conn, const H2WsAsk &request_ask, std::string &sink);
+    bool h2_frame(Conn &conn, const H2Request &q, std::string &sink, H2Produced &bytes);
+    void h2_flush_pending(Conn &conn, std::string &sink, Plan *plan);
+    void h2_build_asset_blocks(AssetEntry &entry);
     void h2_build_asset_shared();
     // RFC 9113 6.1/6.9: one asset answer on one stream - the stream it goes
     // out on, the entry it comes from, the status it carries, whether the
@@ -2818,7 +2823,7 @@ class Http1
         size_t win_off;
         size_t win_end;
     };
-    bool h2_asset_answer(Conn &st, const H2Asset &a, std::string &sink);
+    bool h2_asset_answer(Conn &conn, const H2Asset &answer, std::string &sink);
 
     struct AppSlot {
         const RouteTable *table = nullptr;

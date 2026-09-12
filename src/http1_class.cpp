@@ -8,46 +8,46 @@ void Http1::serve_docroot(const MimeDb *mime)
     mime_ = mime;
 }
 
-bool Http1::tunneled(const Conn &st) const
+bool Http1::tunneled(const Conn &conn) const
 {
-    if (st.ws != nullptr)
+    if (conn.websocket != nullptr)
         return true;
-    if (st.h2 == nullptr)
+    if (conn.h2 == nullptr)
         return false;
-    for (const H2Stream &s : st.h2->streams) {
+    for (const H2Stream &s : conn.h2->streams) {
         if (s.ws != nullptr)
             return true;
     }
     return false;
 }
 
-bool Http1::going_away(Conn &st, std::string &sink)
+bool Http1::going_away(Conn &conn, std::string &sink)
 {
-    if (st.ws == nullptr)
+    if (conn.websocket == nullptr)
         return false;
-    return ws_going_away(st.ws, sink);
+    return ws_going_away(conn.websocket, sink);
 }
 
-bool Http1::timed(const Conn &st) const
+bool Http1::timed(const Conn &conn) const
 {
-    if (st.sse != nullptr)
+    if (conn.sse != nullptr)
         return true;
-    if (st.h2 == nullptr)
+    if (conn.h2 == nullptr)
         return false;
-    for (const H2Stream &s : st.h2->streams) {
+    for (const H2Stream &s : conn.h2->streams) {
         if (s.sse != nullptr)
             return true;
     }
     return false;
 }
 
-void Http1::compute_task_refused(Conn &st, int park)
+void Http1::compute_task_refused(Conn &conn, int park)
 {
-    Conn::Round *const r = st.park_at(park);
-    if (r == nullptr)
+    Conn::Round *const round = conn.park_at(park);
+    if (round == nullptr)
         return;
-    r->answer_ready = true;
-    r->compute_task_full = true;
+    round->answer_ready = true;
+    round->compute_task_full = true;
 }
 
 Http1::ComputeRefusal Http1::compute_task_refusal(Conn::Round &round)
@@ -76,30 +76,30 @@ Http1::ComputeRefusal Http1::compute_task_refusal(Conn::Round &round)
     return {};
 }
 
-bool Http1::watch_take(Conn &st, int *slot)
+bool Http1::watch_take(Conn &conn, int *slot)
 {
-    if (st.w_pending.empty())
+    if (conn.w_pending.empty())
         return false;
-    *slot = st.w_pending.back();
-    st.w_pending.pop_back();
+    *slot = conn.w_pending.back();
+    conn.w_pending.pop_back();
     return true;
 }
 
-std::string_view Http1::compute_task_user(const Conn &st, int park, int job)
+std::string_view Http1::compute_task_user(const Conn &conn, int park, int job)
 {
-    const Conn::Round *const r = st.park_at(park);
-    if (r == nullptr || job < 0 || job >= Conn::kJobSlots)
+    const Conn::Round *const round = conn.park_at(park);
+    if (round == nullptr || job < 0 || job >= Conn::kJobSlots)
         return {};
-    return r->job.at(job).user_bytes;
+    return round->job.at(job).user_bytes;
 }
 
-bool Http1::compute_task_take(Conn &st, int park, int job, unsigned *code, std::string &bytes,
+bool Http1::compute_task_take(Conn &conn, int park, int job, unsigned *code, std::string &bytes,
                               double *deadline)
 {
-    Conn::Round *const r = st.park_at(park);
-    if (r == nullptr || job < 0 || job >= Conn::kJobSlots)
+    Conn::Round *const round = conn.park_at(park);
+    if (round == nullptr || job < 0 || job >= Conn::kJobSlots)
         return false;
-    Conn::Round::Job &j = r->job.at(job);
+    Conn::Round::Job &j = round->job.at(job);
     if (!j.waiting)
         return false;
     *code = j.code;
@@ -110,90 +110,92 @@ bool Http1::compute_task_take(Conn &st, int park, int job, unsigned *code, std::
     return true;
 }
 
-bool Http1::file_waiting(const Conn &st)
+bool Http1::file_waiting(const Conn &conn)
 {
-    return st.file != nullptr && st.file->stage == FileStage::kNamed;
+    return conn.file != nullptr && conn.file->stage == FileStage::kNamed;
 }
 
-bool Http1::compute_task_waiting(const Conn &st)
+bool Http1::compute_task_waiting(const Conn &conn)
 {
-    return st.park_owes != 0;
+    return conn.park_owes != 0;
 }
 
-uint8_t Http1::park_generation(const Conn &st, int park)
+uint8_t Http1::park_generation(const Conn &conn, int park)
 {
-    return park >= 0 && park < Conn::kParkSlots ? st.park_gen[park] : 0;
+    return park >= 0 && park < Conn::kParkSlots ? conn.park_gen[park] : 0;
 }
 
-bool Http1::park_take_pending(Conn &st, int *park)
+bool Http1::park_take_pending(Conn &conn, int *park)
 {
-    if (st.park_owes == 0)
+    if (conn.park_owes == 0)
         return false;
-    const int slot = __builtin_ctz(st.park_owes);
-    st.park_owes &= static_cast<uint16_t>(~(1u << slot));
+    const int slot = __builtin_ctz(conn.park_owes);
+    conn.park_owes &= static_cast<uint16_t>(~(1u << slot));
     *park = slot;
     return true;
 }
 
-BodySpill *Http1::spill_waiting(Conn &st)
+BodySpill *Http1::spill_waiting(Conn &conn)
 {
-    if (st.spill.owes_write())
-        return &st.spill;
-    if (mrb_likely(st.h2 == nullptr))
+    if (conn.spill.owes_write())
+        return &conn.spill;
+    if (mrb_likely(conn.h2 == nullptr))
         return nullptr;
-    return spill_waiting_h2(st);
+    return spill_waiting_h2(conn);
 }
 
-bool Http1::chunk_tchar(char c)
+bool Http1::chunk_tchar(char conn)
 {
-    const unsigned char u = static_cast<unsigned char>(c);
-    return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') || c == '!' ||
-           c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
-           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+    const unsigned char u = static_cast<unsigned char>(conn);
+    return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') ||
+           conn == '!' || conn == '#' || conn == '$' || conn == '%' || conn == '&' ||
+           conn == '\'' || conn == '*' || conn == '+' || conn == '-' || conn == '.' ||
+           conn == '^' || conn == '_' || conn == '`' || conn == '|' || conn == '~';
 }
 
-bool Http1::chunk_hex(char c)
+bool Http1::chunk_hex(char conn)
 {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    return (conn >= '0' && conn <= '9') || (conn >= 'a' && conn <= 'f') ||
+           (conn >= 'A' && conn <= 'F');
 }
 
-__attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *p, size_t n)
+__attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *bytes, size_t count)
 {
     size_t i = 0;
-    while (i < n && chunk_hex(p[i]))
+    while (i < count && chunk_hex(bytes[i]))
         i++;
     if (i == 0)
         return false;
 
-    while (i < n) {
-        while (i < n && (p[i] == ' ' || p[i] == '\t'))
+    while (i < count) {
+        while (i < count && (bytes[i] == ' ' || bytes[i] == '\t'))
             i++;
-        if (i >= n || p[i] != ';')
+        if (i >= count || bytes[i] != ';')
             return false;
         i++;
-        while (i < n && (p[i] == ' ' || p[i] == '\t'))
+        while (i < count && (bytes[i] == ' ' || bytes[i] == '\t'))
             i++;
         const size_t name = i;
-        while (i < n && chunk_tchar(p[i]))
+        while (i < count && chunk_tchar(bytes[i]))
             i++;
         if (i == name)
             return false;
-        while (i < n && (p[i] == ' ' || p[i] == '\t'))
+        while (i < count && (bytes[i] == ' ' || bytes[i] == '\t'))
             i++;
-        if (i >= n || p[i] != '=')
+        if (i >= count || bytes[i] != '=')
             continue;
         i++;
-        while (i < n && (p[i] == ' ' || p[i] == '\t'))
+        while (i < count && (bytes[i] == ' ' || bytes[i] == '\t'))
             i++;
-        if (i < n && p[i] == '"') {
+        if (i < count && bytes[i] == '"') {
             i++;
             bool closed = false;
-            while (i < n) {
-                if (p[i] == '\\' && i + 1 < n) {
+            while (i < count) {
+                if (bytes[i] == '\\' && i + 1 < count) {
                     i += 2;
                     continue;
                 }
-                if (p[i] == '"') {
+                if (bytes[i] == '"') {
                     i++;
                     closed = true;
                     break;
@@ -203,136 +205,138 @@ __attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *p, size_t n
             if (!closed)
                 return false;
         } else {
-            const size_t val = i;
-            while (i < n && chunk_tchar(p[i]))
+            const size_t field_value = i;
+            while (i < count && chunk_tchar(bytes[i]))
                 i++;
-            if (i == val)
+            if (i == field_value)
                 return false;
         }
     }
     return true;
 }
 
-__attribute__((noinline)) bool Http1::chunk_lines_ok(Conn &st, const char *data, size_t len)
+__attribute__((noinline)) bool Http1::chunk_lines_ok(Conn &conn, const char *data, size_t length)
 {
     size_t i = 0;
-    while (i < len) {
-        if (st.chunk_scan == Conn::ChunkScan::kDone)
+    while (i < length) {
+        if (conn.chunk_scan == Conn::ChunkScan::kDone)
             return true;
 
-        if (st.chunk_scan == Conn::ChunkScan::kData) {
-            const size_t take = len - i < st.chunk_need ? len - i : st.chunk_need;
+        if (conn.chunk_scan == Conn::ChunkScan::kData) {
+            const size_t take = length - i < conn.chunk_need ? length - i : conn.chunk_need;
             i += take;
-            st.chunk_need -= take;
-            if (st.chunk_need == 0)
-                st.chunk_scan = Conn::ChunkScan::kAfterData;
+            conn.chunk_need -= take;
+            if (conn.chunk_need == 0)
+                conn.chunk_scan = Conn::ChunkScan::kAfterData;
             continue;
         }
 
-        if (st.chunk_scan == Conn::ChunkScan::kAfterData) {
+        if (conn.chunk_scan == Conn::ChunkScan::kAfterData) {
             // RFC 9112 7.1: the CRLF that closes a chunk, and nothing else.
-            const char want = st.chunk_after == 0 ? '\r' : '\n';
+            const char want = conn.chunk_after == 0 ? '\r' : '\n';
             if (data[i] != want)
                 return false;
             i++;
-            st.chunk_after++;
-            if (st.chunk_after == 2) {
-                st.chunk_after = 0;
-                st.chunk_scan = Conn::ChunkScan::kSize;
+            conn.chunk_after++;
+            if (conn.chunk_after == 2) {
+                conn.chunk_after = 0;
+                conn.chunk_scan = Conn::ChunkScan::kSize;
             }
             continue;
         }
 
         // kSize: gather to the CRLF, then hold the line to the grammar.
-        const char *const nl = static_cast<const char *>(std::memchr(data + i, '\n', len - i));
-        if (nl == nullptr) {
+        const char *const name_length =
+            static_cast<const char *>(std::memchr(data + i, '\n', length - i));
+        if (name_length == nullptr) {
             // The line runs past this buffer. A size line this long is not a
             // size line; kMaxHead is far more room than the grammar needs.
-            if (st.chunk_line.size() + (len - i) > kMaxHead)
+            if (conn.chunk_line.size() + (length - i) > kMaxHead)
                 return false;
 
-            st.chunk_line.append(data + i, len - i);
+            conn.chunk_line.append(data + i, length - i);
             return true;
         }
-        const size_t upto = static_cast<size_t>(nl - (data + i));
-        if (st.chunk_line.size() + upto > kMaxHead)
+        const size_t upto = static_cast<size_t>(name_length - (data + i));
+        if (conn.chunk_line.size() + upto > kMaxHead)
             return false;
 
-        st.chunk_line.append(data + i, upto);
+        conn.chunk_line.append(data + i, upto);
         i += upto + 1;
         // The CR belongs to the terminator, never to the line.
-        if (st.chunk_line.empty() || st.chunk_line.back() != '\r')
+        if (conn.chunk_line.empty() || conn.chunk_line.back() != '\r')
             return false;
 
-        st.chunk_line.pop_back();
-        if (!chunk_size_line_ok(st.chunk_line.data(), st.chunk_line.size()))
+        conn.chunk_line.pop_back();
+        if (!chunk_size_line_ok(conn.chunk_line.data(), conn.chunk_line.size()))
             return false;
 
         size_t size = 0;
-        for (char c : st.chunk_line) {
+        for (char c : conn.chunk_line) {
             if (!chunk_hex(c))
                 break;
-            const unsigned d = c <= '9' ? static_cast<unsigned>(c - '0')
-                                        : static_cast<unsigned>((c | 0x20) - 'a') + 10;
+            const unsigned dynamic_body = c <= '9' ? static_cast<unsigned>(c - '0')
+                                                   : static_cast<unsigned>((c | 0x20) - 'a') + 10;
             // A size that cannot be held is a size this server will not read.
-            if (size > (SIZE_MAX - d) / 16)
+            if (size > (SIZE_MAX - dynamic_body) / 16)
                 return false;
 
-            size = size * 16 + d;
+            size = size * 16 + dynamic_body;
         }
-        st.chunk_line.clear();
+        conn.chunk_line.clear();
         if (size == 0) {
             // RFC 9112 7.1.2: the trailer section follows, and the decoder
             // reads it. Its field rules are not this walk's business.
-            st.chunk_scan = Conn::ChunkScan::kDone;
+            conn.chunk_scan = Conn::ChunkScan::kDone;
             return true;
         }
-        st.chunk_need = size;
-        st.chunk_scan = Conn::ChunkScan::kData;
+        conn.chunk_need = size;
+        conn.chunk_scan = Conn::ChunkScan::kData;
     }
     return true;
 }
 
-__attribute__((noinline)) void Http1::drop_body(Conn &st)
+__attribute__((noinline)) void Http1::drop_body(Conn &conn)
 {
-    st.body_to = Conn::Body::kNone;
-    st.content_need = 0;
-    st.body_hold.clear();
-    st.spill.close_file();
-    st.run_wants_body = false;
+    conn.body_to = Conn::Body::kNone;
+    conn.content_need = 0;
+    conn.body_hold.clear();
+    conn.spill.close_file();
+    conn.run_wants_body = false;
 }
 
-bool Http1::file_answerable(const Conn &st)
+bool Http1::file_answerable(const Conn &conn)
 {
-    return st.file != nullptr &&
-           (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone);
+    return conn.file != nullptr &&
+           (conn.file->stage == FileStage::kDeliver || conn.file->stage == FileStage::kDone);
 }
 
-bool Http1::run_resumable(const Conn &st)
+bool Http1::run_resumable(const Conn &conn)
 {
-    if (mrb_likely(!st.run_parked()))
+    if (mrb_likely(!conn.run_parked()))
         return false;
-    const Conn::Round *const r = st.park_at(st.parked.co.promise().park);
-    return r != nullptr && r->answer_ready;
+    const Conn::Round *const round = conn.park_at(conn.parked.co.promise().park);
+    return round != nullptr && round->answer_ready;
 }
 
-size_t Http1::file_map_len(const Conn &st)
+size_t Http1::file_map_len(const Conn &conn)
 {
-    return (st.file != nullptr && st.file->map_wanted) ? st.file->content_length : 0;
+    return (conn.file != nullptr && conn.file->map_wanted) ? conn.file->content_length : 0;
 }
 
-Http1::AnswerStep Http1::answer_step(const AnswerFacts &f)
+Http1::AnswerStep Http1::answer_step(const AnswerFacts &field)
 {
     AnswerStep s;
-    s.body_len = f.has_lent ? f.lent_len : f.body_len;
-    s.answered = f.answered_already;
-    if (f.have_body && f.status == 200) {
-        s.shape = f.has_lent ? AnswerStep::Shape::kLent
-                             : (f.gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
+    s.body_len = field.has_lent ? field.lent_len : field.body_len;
+    s.answered = field.answered_already;
+    if (field.have_body && field.status == 200) {
+        s.shape = field.has_lent
+                      ? AnswerStep::Shape::kLent
+                      : (field.gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
         s.answered = true;
-    } else if (f.answered_already) {
+    } else if (field.answered_already) {
         s.shape = AnswerStep::Shape::kAlready;
-    } else if (f.status == 500 && f.bound) {
+    } else if (field.status == 500 && field.bound) {
         // Whether a body exists is a question for the VM, so the caller
         // demotes this to kStatus when the answer is no.
         s.shape = AnswerStep::Shape::kException;
@@ -342,21 +346,21 @@ Http1::AnswerStep Http1::answer_step(const AnswerFacts &f)
     return s;
 }
 
-Http1::H2SendStep Http1::h2_send_step(const H2Stream &s, RoundRoom room)
+Http1::H2SendStep Http1::h2_send_step(const H2Stream &sqe, RoundRoom room)
 {
     const int64_t conn_window = room.conn_window;
     const size_t chunk = room.chunk;
     H2SendStep o;
-    if (!s.response_content.owes())
+    if (!sqe.response_content.owes())
         return o;
-    o.start = s.response_content.sent;
-    o.total = s.response_content.length;
-    size_t remaining = s.response_content.length - s.response_content.sent;
+    o.start = sqe.response_content.sent;
+    o.total = sqe.response_content.length;
+    size_t remaining = sqe.response_content.length - sqe.response_content.sent;
     // A copied buffer is bounded per round; a lend and a mapping are not.
-    if (s.response_content.src == H2Stream::Content::Src::kOwned && remaining > chunk) {
+    if (sqe.response_content.src == H2Stream::Content::Src::kOwned && remaining > chunk) {
         remaining = chunk;
     }
-    const int64_t budget = conn_window < s.flow_window ? conn_window : s.flow_window;
+    const int64_t budget = conn_window < sqe.flow_window ? conn_window : sqe.flow_window;
     if (budget <= 0)
         return o; // owed, but the window is shut: give stays 0
     o.give = remaining;
@@ -366,71 +370,72 @@ Http1::H2SendStep Http1::h2_send_step(const H2Stream &s, RoundRoom room)
     return o;
 }
 
-Http1::AssetStep Http1::asset_step(const AssetEntry &e, const RangeAsk &ask)
+Http1::AssetStep Http1::asset_step(const AssetEntry &entry, const RangeAsk &request_ask)
 {
-    const uint16_t verdict = ask.verdict;
-    const bool head_only = ask.head_only;
-    const http::ReqValues &vals = ask.vals;
-    AssetStep s;
-    s.status_code = verdict;
+    const uint16_t verdict = request_ask.verdict;
+    const bool head_only = request_ask.head_only;
+    const http::ReqValues &vals = request_ask.vals;
+    AssetStep sqe;
+    sqe.status_code = verdict;
     if (verdict == 412 || verdict == 501) {
-        s.head = AssetStep::HeadKind::kRefusal;
-        return s;
+        sqe.head = AssetStep::HeadKind::kRefusal;
+        return sqe;
     }
-    const size_t complete_length = Assets::wire_len(e);
-    if (verdict == 200 && !head_only && ask.method == flow::Method::kGet && vals.range != nullptr &&
-        (vals.if_range == nullptr ||
-         http::if_range_matches({vals.if_range, vals.if_range_len}, {e.etag, sizeof(e.etag)}))) {
-        http::ByteRange r = {0, 0};
-        switch (http::parse_range({{vals.range, vals.range_len}, complete_length}, r)) {
+    const size_t complete_length = Assets::wire_len(entry);
+    if (verdict == 200 && !head_only && request_ask.method == flow::Method::kGet &&
+        vals.range != nullptr &&
+        (vals.if_range == nullptr || http::if_range_matches({vals.if_range, vals.if_range_len},
+                                                            {entry.etag, sizeof(entry.etag)}))) {
+        http::ByteRange round = {0, 0};
+        switch (http::parse_range({{vals.range, vals.range_len}, complete_length}, round)) {
             case http::RangeParse::kOne:
-                s.head = AssetStep::HeadKind::kRange;
-                s.status_code = 206;
-                s.first_byte_pos = r.first;
-                s.content_length = r.last - r.first + 1;
-                s.sends_content = true;
+                sqe.head = AssetStep::HeadKind::kRange;
+                sqe.status_code = 206;
+                sqe.first_byte_pos = round.first;
+                sqe.content_length = round.last - round.first + 1;
+                sqe.sends_content = true;
                 break;
             case http::RangeParse::kUnsat:
-                s.head = AssetStep::HeadKind::kUnsatisfiable;
-                s.status_code = 416;
-                return s;
+                sqe.head = AssetStep::HeadKind::kUnsatisfiable;
+                sqe.status_code = 416;
+                return sqe;
             case http::RangeParse::kNone:
                 break;
         }
     }
-    if (s.head == AssetStep::HeadKind::kNormal && verdict == 200 && !head_only) {
-        s.content_length = complete_length;
-        s.sends_content = true;
+    if (sqe.head == AssetStep::HeadKind::kNormal && verdict == 200 && !head_only) {
+        sqe.content_length = complete_length;
+        sqe.sends_content = true;
     }
-    return s;
+    return sqe;
 }
 
-FileStep Http1::file_step(const Conn::FileXfer &x, size_t chunk)
+FileStep Http1::file_step(const Conn::FileXfer &one, size_t chunk)
 {
     FileStep s;
-    s.persist = x.persist;
-    s.sent_after = x.content_sent;
-    s.next = x.stage;
-    switch (x.stage) {
+    s.persist = one.persist;
+    s.sent_after = one.content_sent;
+    s.next = one.stage;
+    switch (one.stage) {
         case FileStage::kDeliver: {
-            const bool mapped = x.map_addr != nullptr;
+            const bool mapped = one.map_addr != nullptr;
             const size_t left =
-                x.content_length > x.content_sent ? x.content_length - x.content_sent : 0;
+                one.content_length > one.content_sent ? one.content_length - one.content_sent : 0;
             // A mapping lends a bounded chunk of itself; a window lends exactly
             // what the read put in it.
-            const size_t take = mapped ? (left < chunk ? left : chunk) : x.buf_filled;
-            s.head = !x.head.empty();
+            const size_t take = mapped ? (left < chunk ? left : chunk) : one.buf_filled;
+            s.head = !one.head.empty();
             if (take != 0) {
                 s.src = mapped ? FileStep::Src::kMapping : FileStep::Src::kWindow;
                 // A mapping is walked from where the transfer stands; the window
                 // buffer holds only this round's bytes and starts at zero.
-                s.start = mapped ? x.content_sent : 0;
+                s.start = mapped ? one.content_sent : 0;
             }
             s.give = take;
-            s.sent_after = x.content_sent + take;
+            s.sent_after = one.content_sent + take;
             // A window is refilled by the ring, so the next round waits on it.
             // A mapping has no read coming to wake it and drives itself.
-            s.next = s.sent_after < x.content_length
+            s.next = s.sent_after < one.content_length
                          ? (mapped ? FileStage::kDeliver : FileStage::kRing)
                          : FileStage::kDone;
             break;
@@ -439,7 +444,7 @@ FileStep Http1::file_step(const Conn::FileXfer &x, size_t chunk)
             // The last lend has drained - that is what kDone means and the only
             // way to reach it. So this is where the mapping goes back and where
             // the transfer's one access line is owed.
-            s.release_map = x.map_addr != nullptr;
+            s.release_map = one.map_addr != nullptr;
             s.log = true;
             s.clear = true;
             s.next = FileStage::kNone;
@@ -450,10 +455,10 @@ FileStep Http1::file_step(const Conn::FileXfer &x, size_t chunk)
     return s;
 }
 
-void Http1::file_release(Conn &st)
+void Http1::file_release(Conn &conn)
 {
-    if (st.file != nullptr && st.file->buf.capacity() > kDeliverChunk) {
-        std::string().swap(st.file->buf);
+    if (conn.file != nullptr && conn.file->chunk.capacity() > kDeliverChunk) {
+        std::string().swap(conn.file->chunk);
     }
 }
 
@@ -477,14 +482,14 @@ void Http1::enable_error_log()
     elog_.enabled = true;
 }
 
-void Http1::set_zero_copy_threshold(size_t n)
+void Http1::set_zero_copy_threshold(size_t count)
 {
-    zc_min_ = n;
+    zc_min_ = count;
 }
 
-void Http1::set_file_map_threshold(size_t n)
+void Http1::set_file_map_threshold(size_t count)
 {
-    map_min_ = n;
+    map_min_ = count;
 }
 
 void Http1::set_send_timeout(int secs)
@@ -502,18 +507,18 @@ const Http1::Variants &Http1::prefixes(uint16_t status) const
     return store_prefix_[index_[status]];
 }
 
-Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
+Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
 {
-    Conn &st = r.st;
-    const Bundle *const b = r.b;
-    const int minor = r.minor;
-    const bool persist = r.persist;
-    const bool head_only = r.head_only;
-    const http::ReqValues &vals = r.vals;
-    const char *const method = r.method;
-    const size_t method_len = r.method_len;
-    const char *const path = r.path;
-    const size_t path_len = r.path_len;
+    Conn &st = round.st;
+    const Bundle *const b = round.b;
+    const int minor = round.minor;
+    const bool persist = round.persist;
+    const bool head_only = round.head_only;
+    const http::ReqValues &vals = round.vals;
+    const char *const method = round.method;
+    const size_t method_len = round.method_len;
+    const char *const path = round.path;
+    const size_t path_len = round.path_len;
     std::string &sink = sp.sink;
     Plan *const plan = sp.plan;
     const uint16_t status = sp.status;
@@ -569,8 +574,8 @@ Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
             const Resp &pfx =
                 minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
             sink.append(pfx.bytes);
-            char cl[40];
-            sink.append(cl, http::spell_content_length(cl, lent_len));
+            char content_length[40];
+            sink.append(content_length, http::spell_content_length(content_length, lent_len));
             body_lend(st, sink, {{lent, lent_len}, *plan});
             break;
         }
@@ -596,23 +601,23 @@ Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
             err_pages_.exception_text(exc_value, message);
             const Variants &pv = store_prefix_[(*idx)[500]];
             const Variants &bv = store_[(*idx)[500]];
-            ErrorPages::Fields f;
-            f.message = message.data();
-            f.message_len = message.size();
-            f.fingerprint = ef_hash;
+            ErrorPages::Fields field;
+            field.message = message.data();
+            field.message_len = message.size();
+            field.fingerprint = ef_hash;
             // A ship build says what was thrown and where the log has the rest; a
             // debug build is already telling you about itself, so the trace goes
             // on the page too.
             if (kDebugBuild) {
-                f.backtrace = ef.backtrace;
-                f.backtrace_len = ef.backtrace_len;
+                field.backtrace = ef.backtrace;
+                field.backtrace_len = ef.backtrace_len;
             }
             const Resp &prefix =
                 minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
             const Resp &bodyless =
                 minor >= 1 ? (persist ? bv.plain : bv.close) : (persist ? bv.keep : bv.close);
             spell_error({prefix, bodyless, 500,
-                         err_pages_.media_pick_for_status(500, vals.accept, vals.accept_len), f,
+                         err_pages_.media_pick_for_status(500, vals.accept, vals.accept_len), field,
                          head_only},
                         sink);
             break;
@@ -625,12 +630,12 @@ Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
             // a 304 or a redirect is an answer, and answers carry no page.
             if (status >= 400) {
                 const Variants &pv = store_prefix_[(*idx)[status]];
-                const ErrorPages::Fields f;
+                const ErrorPages::Fields field;
                 const Resp &prefix =
                     minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
                 spell_error({prefix, bodyless, status,
                              err_pages_.media_pick_for_status(status, vals.accept, vals.accept_len),
-                             f, head_only},
+                             field, head_only},
                             sink);
             } else if (status == 200 && !head_only && plan != nullptr &&
                        b->konst.body.size() >= kLendFloor) {
@@ -646,8 +651,9 @@ Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
                 const Resp &pfx = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                              : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
                 sink.append(pfx.bytes);
-                char cl[40];
-                sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
+                char content_length[40];
+                sink.append(content_length,
+                            http::spell_content_length(content_length, b->konst.body.size()));
                 body_lend(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
             } else {
                 sink.append(bodyless.bytes);
@@ -658,11 +664,11 @@ Http1::AnswerStep Http1::spell_answer(Round &r, Spelling sp)
     return astep;
 }
 
-bool Http1::h2_can_stop(const Bundle *b)
+bool Http1::h2_can_stop(const Bundle *block)
 {
-    return b != nullptr && b->bound && b->res != nullptr &&
-           ((b->res->compute | b->res->watch) != 0 ||
-            (b->res->value_jobs | b->res->value_watch) != 0);
+    return block != nullptr && block->bound && block->res != nullptr &&
+           ((block->res->compute | block->res->watch) != 0 ||
+            (block->res->value_jobs | block->res->value_watch) != 0);
 }
 
 } // namespace webmachine

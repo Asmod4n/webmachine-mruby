@@ -1136,9 +1136,9 @@ bool Http1::file_stat(Conn &conn, const struct statx &file_stat, size_t *want)
 // Where the ring reads the bytes. Only ever called with no read in flight.
 char *Http1::file_buffer(Conn &conn, size_t length)
 {
-    if (conn.file->buf.size() < length)
-        conn.file->buf.resize(length);
-    return &conn.file->buf[0];
+    if (conn.file->chunk.size() < length)
+        conn.file->chunk.resize(length);
+    return &conn.file->chunk[0];
 }
 
 // The whole file, mapped. No read happened and none will: the next round lends the
@@ -2331,8 +2331,8 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
         return true;
     }
 
-    if (mrb_unlikely(conn.ws != nullptr))
-        return ws_feed(conn.ws, in, sink);
+    if (mrb_unlikely(conn.websocket != nullptr))
+        return ws_feed(conn.websocket, in, sink);
     if (mrb_unlikely(conn.sse != nullptr))
         return true;
 
@@ -2941,12 +2941,12 @@ bool Http1::ws_upgrade(Conn &conn, const WsUpgrade &up, std::string &sink)
     sink.append("\r\n\r\n");
 
     ws_open(wsc, dparams);
-    conn.ws = wsc;
+    conn.websocket = wsc;
     conn.become(ConnMode::kWs);
     conn.carry.clear();
     conn.content_skip = 0;
     if (!up.rest.empty())
-        return ws_feed(conn.ws, up.rest, sink);
+        return ws_feed(conn.websocket, up.rest, sink);
     return true;
 }
 

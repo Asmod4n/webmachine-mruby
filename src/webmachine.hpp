@@ -153,14 +153,14 @@ struct Target {
     uint16_t status;
 };
 // The graph as data: an edge that continues to a node.
-constexpr Target to(Node n)
+constexpr Target to(Node count)
 {
-    return {n, 0};
+    return {count, 0};
 }
 // The graph as data: an edge that halts with a status.
-constexpr Target halt(uint16_t s)
+constexpr Target halt(uint16_t sqe)
 {
-    return {Node::kCount, s};
+    return {Node::kCount, sqe};
 }
 
 // One row of the diagram. `callback` is webmachine-ruby's method name for
@@ -309,11 +309,11 @@ constexpr bool ids_in_order()
 }
 static_assert(ids_in_order(), "kFlow order must match Node order");
 
-constexpr bool target_names_a_node_or_a_status(const Target &t)
+constexpr bool target_names_a_node_or_a_status(const Target &text)
 {
-    if (t.status == 0)
-        return t.node < Node::kCount;
-    return t.status >= 100 && t.status <= 599;
+    if (text.status == 0)
+        return text.node < Node::kCount;
+    return text.status >= 100 && text.status <= 599;
 }
 constexpr bool both_targets_of_every_node_name_one()
 {
@@ -336,9 +336,9 @@ static_assert(both_targets_of_every_node_name_one(), "every edge continues or ha
 // path instead is exponential in the branches, and crashed gcc 16's
 // constexpr evaluator.
 enum : uint8_t { kUnseen = 0, kOnThePath = 1, kFinished = 2 };
-constexpr bool no_cycle_from(Node n, uint8_t (&colour)[kNodeCount])
+constexpr bool no_cycle_from(Node count, uint8_t (&colour)[kNodeCount])
 {
-    const size_t i = static_cast<size_t>(n);
+    const size_t i = static_cast<size_t>(count);
     if (colour[i] == kOnThePath)
         return false;
     if (colour[i] == kFinished)
@@ -360,9 +360,9 @@ constexpr bool the_flow_is_acyclic()
 static_assert(the_flow_is_acyclic(), "the flow is acyclic from B13");
 
 // Proof: reachability, both branches from every node.
-constexpr void mark(Node n, bool (&seen)[kNodeCount])
+constexpr void mark(Node count, bool (&seen)[kNodeCount])
 {
-    const size_t i = static_cast<size_t>(n);
+    const size_t i = static_cast<size_t>(count);
     if (seen[i])
         return;
     seen[i] = true;
@@ -452,59 +452,59 @@ struct KonstAnswers {
 
 // RFC 9110: the kRequest nodes - decided from the parsed request alone,
 // never from the VM.
-constexpr bool eval_request(Node id, const ReqFacts &r)
+constexpr bool eval_request(Node stream_id, const ReqFacts &round)
 {
-    switch (id) {
+    switch (stream_id) {
         case Node::kB3:
-            return r.method == Method::kOptions;
+            return round.method == Method::kOptions;
         case Node::kC3:
-            return r.has_accept;
+            return round.has_accept;
         case Node::kC4:
-            return r.accept_ok;
+            return round.accept_ok;
         case Node::kD4:
-            return r.has_accept_language;
+            return round.has_accept_language;
         case Node::kE5:
-            return r.has_accept_charset;
+            return round.has_accept_charset;
         case Node::kF6:
-            return r.has_accept_encoding;
+            return round.has_accept_encoding;
         case Node::kG8:
-            return r.has_if_match;
+            return round.has_if_match;
         case Node::kG9:
-            return r.if_match_star;
+            return round.if_match_star;
         case Node::kH7:
-            return r.has_if_match && r.if_match_star;
+            return round.has_if_match && round.if_match_star;
         case Node::kH10:
-            return r.has_if_unmodified_since;
+            return round.has_if_unmodified_since;
         case Node::kH11:
-            return r.if_unmodified_since_valid;
+            return round.if_unmodified_since_valid;
         case Node::kI7:
-            return r.method == Method::kPut;
+            return round.method == Method::kPut;
         case Node::kI12:
-            return r.has_if_none_match;
+            return round.has_if_none_match;
         case Node::kI13:
-            return r.if_none_match_star;
+            return round.if_none_match_star;
         case Node::kJ18:
-            return r.method == Method::kGet || r.method == Method::kHead;
+            return round.method == Method::kGet || round.method == Method::kHead;
         case Node::kL7:
-            return r.method == Method::kPost;
+            return round.method == Method::kPost;
         case Node::kL13:
-            return r.has_if_modified_since;
+            return round.has_if_modified_since;
         case Node::kL14:
-            return r.if_modified_since_valid;
+            return round.if_modified_since_valid;
         case Node::kL15:
-            return r.if_modified_since_future;
+            return round.if_modified_since_future;
         case Node::kM5:
-            return r.method == Method::kPost;
+            return round.method == Method::kPost;
         case Node::kM16:
-            return r.method == Method::kDelete;
+            return round.method == Method::kDelete;
         case Node::kN16:
-            return r.method == Method::kPost;
+            return round.method == Method::kPost;
         case Node::kO16:
-            return r.method == Method::kPut;
+            return round.method == Method::kPut;
         case Node::kO20:
-            return r.response_has_body;
+            return round.response_has_body;
         case Node::kP11:
-            return r.response_has_location;
+            return round.response_has_location;
         default:
             return false;
     }
@@ -521,26 +521,26 @@ inline constexpr Node kAfterConneg = Node::kG7;
 // g8 -> h10 -> i12 -> l13 -> m16.
 inline constexpr Node kAfterConditional = Node::kM16;
 
-constexpr uint16_t walk(const ReqFacts &req, const KonstAnswers &k)
+constexpr uint16_t walk(const ReqFacts &request, const KonstAnswers &k)
 {
     Node n = Node::kB13;
     for (;;) {
-        if (n == Node::kC3 && !req.names_a_conneg_field())
+        if (n == Node::kC3 && !request.names_a_conneg_field())
             n = kAfterConneg;
-        else if (n == Node::kG8 && !req.names_a_conditional_field())
+        else if (n == Node::kG8 && !request.names_a_conditional_field())
             n = kAfterConditional;
-        const FlowNode &f = kFlow[static_cast<size_t>(n)];
+        const FlowNode &field = kFlow[static_cast<size_t>(n)];
         // c4 reads the request as surely as any kRequest node does - it is the
         // client's Accept against this resource's types, and no fold can bake
         // that. The other kConneg nodes (d5/e6/f7) stay konst: languages and
         // charsets are named refusal in this tree, so their answer never moves.
-        const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
-                             ? eval_request(n, req)
+        const bool ans = (field.kind == Kind::kRequest || n == Node::kC4)
+                             ? eval_request(n, request)
                              : k.ans[static_cast<size_t>(n)];
-        const Target &t = ans ? f.on_true : f.on_false;
-        if (t.status != 0)
-            return t.status;
-        n = t.node;
+        const Target &text = ans ? field.on_true : field.on_false;
+        if (text.status != 0)
+            return text.status;
+        n = text.node;
     }
 }
 
@@ -557,20 +557,20 @@ struct Walk {
 };
 
 // c4 counts as one, for the reason walk() gives above.
-constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w)
+constexpr bool reaches_a_node_that_reads_the_request(Node count, Walk window)
 {
-    const KonstAnswers &k = w.answers;
-    bool *const seen = w.seen;
-    if (seen[static_cast<size_t>(n)])
+    const KonstAnswers &k = window.answers;
+    bool *const seen = window.seen;
+    if (seen[static_cast<size_t>(count)])
         return false;
-    seen[static_cast<size_t>(n)] = true;
-    const FlowNode &f = kFlow[static_cast<size_t>(n)];
-    if (f.kind == Kind::kRequest || n == Node::kC4)
+    seen[static_cast<size_t>(count)] = true;
+    const FlowNode &field = kFlow[static_cast<size_t>(count)];
+    if (field.kind == Kind::kRequest || count == Node::kC4)
         return true;
-    const Target &t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
-    if (t.status != 0)
+    const Target &text = k.ans[static_cast<size_t>(count)] ? field.on_true : field.on_false;
+    if (text.status != 0)
         return false;
-    return reaches_a_node_that_reads_the_request(t.node, w);
+    return reaches_a_node_that_reads_the_request(text.node, window);
 }
 
 // The two skips above are claims about the graph, so the graph is asked.
@@ -583,22 +583,22 @@ struct Given {
     const KonstAnswers &konst;
 };
 
-constexpr Node lands_on(Node from, Given g)
+constexpr Node lands_on(Node from, Given group)
 {
-    const ReqFacts &req = g.req;
-    const KonstAnswers &k = g.konst;
-    Node n = from;
+    const ReqFacts &req = group.req;
+    const KonstAnswers &k = group.konst;
+    Node count = from;
     for (size_t step = 0; step < kNodeCount; step++) {
-        const FlowNode &f = kFlow[static_cast<size_t>(n)];
-        const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
-                             ? eval_request(n, req)
-                             : k.ans[static_cast<size_t>(n)];
-        const Target &t = ans ? f.on_true : f.on_false;
-        if (t.status != 0)
+        const FlowNode &field = kFlow[static_cast<size_t>(count)];
+        const bool ans = (field.kind == Kind::kRequest || count == Node::kC4)
+                             ? eval_request(count, req)
+                             : k.ans[static_cast<size_t>(count)];
+        const Target &text = ans ? field.on_true : field.on_false;
+        if (text.status != 0)
             return Node::kB13; // halted: not an exit
-        n = t.node;
-        if (n == kAfterConneg || n == kAfterConditional)
-            return n;
+        count = text.node;
+        if (count == kAfterConneg || count == kAfterConditional)
+            return count;
     }
     return Node::kB13;
 }
@@ -606,10 +606,10 @@ constexpr Node lands_on(Node from, Given g)
 // Neither block's chain reads konst - c4/d5/e6/f7 and g9/g11/h11/h12/i13/
 // k13/l14/l15/l17 all hang off a has_* that is false here - so both konst
 // extremes have to give the same exit, for every method.
-constexpr bool block_skips_are_the_graphs(Method m)
+constexpr bool block_skips_are_the_graphs(Method method)
 {
     ReqFacts absent;
-    absent.method = m;
+    absent.method = method;
     KonstAnswers all_false{};
     KonstAnswers all_true{};
     for (size_t i = 0; i < kNodeCount; i++)
@@ -629,11 +629,11 @@ static_assert(block_skips_are_the_graphs(Method::kOther));
 
 // RFC 9110: what the graph would say when it has nothing to decide -
 // from the same walk, run once with every header fact false.
-constexpr Shortcut shortcut_for(Method m, const KonstAnswers &k)
+constexpr Shortcut shortcut_for(Method method, const KonstAnswers &k)
 {
     Shortcut s;
     ReqFacts plain_facts;
-    plain_facts.method = m;
+    plain_facts.method = method;
     s.status = walk(plain_facts, k);
     bool seen[kNodeCount] = {};
     s.always = !reaches_a_node_that_reads_the_request(Node::kB13, {k, seen});
@@ -650,55 +650,55 @@ struct Decided {
 
 // RFC 9110: the one entry point the request path calls. Two integer tests
 // where the graph could not have said anything else.
-constexpr uint16_t answer(const ReqFacts &req, Decided d)
+constexpr uint16_t answer(const ReqFacts &request, Decided dynamic_body)
 {
-    if (d.shortcut.always || (req.plain && !req.has_accept))
-        return d.shortcut.status;
-    return walk(req, d.konst);
+    if (dynamic_body.shortcut.always || (request.plain && !request.has_accept))
+        return dynamic_body.shortcut.status;
+    return walk(request, dynamic_body.konst);
 }
 
 namespace detail
 {
 // The whole remaining walk from N, unrolled: K's answers are constants,
 // so only kRequest nodes survive as branches.
-template <KonstAnswers K, Node N> constexpr uint16_t status_reached_from(const ReqFacts &req)
+template <KonstAnswers K, Node N> constexpr uint16_t status_reached_from(const ReqFacts &request)
 {
-    constexpr FlowNode f = kFlow[static_cast<size_t>(N)];
-    if constexpr (f.kind != Kind::kRequest) {
-        constexpr Target t = K.ans[static_cast<size_t>(N)] ? f.on_true : f.on_false;
-        if constexpr (t.status != 0)
-            return t.status;
+    constexpr FlowNode field = kFlow[static_cast<size_t>(N)];
+    if constexpr (field.kind != Kind::kRequest) {
+        constexpr Target text = K.ans[static_cast<size_t>(N)] ? field.on_true : field.on_false;
+        if constexpr (text.status != 0)
+            return text.status;
         else
-            return status_reached_from<K, t.node>(req);
+            return status_reached_from<K, text.node>(request);
     } else {
-        if (eval_request(N, req)) {
-            if constexpr (f.on_true.status != 0)
-                return f.on_true.status;
+        if (eval_request(N, request)) {
+            if constexpr (field.on_true.status != 0)
+                return field.on_true.status;
             else
-                return status_reached_from<K, f.on_true.node>(req);
+                return status_reached_from<K, field.on_true.node>(request);
         } else {
-            if constexpr (f.on_false.status != 0)
-                return f.on_false.status;
+            if constexpr (field.on_false.status != 0)
+                return field.on_false.status;
             else
-                return status_reached_from<K, f.on_false.node>(req);
+                return status_reached_from<K, field.on_false.node>(request);
         }
     }
 }
 } // namespace detail
 
-template <KonstAnswers K> constexpr uint16_t walk_compiled(const ReqFacts &req)
+template <KonstAnswers K> constexpr uint16_t walk_compiled(const ReqFacts &request)
 {
-    return detail::status_reached_from<K, Node::kB13>(req);
+    return detail::status_reached_from<K, Node::kB13>(request);
 }
 
 // RFC 9110: webmachine-ruby's Resource defaults, folded per method.
-constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m)
+constexpr KonstAnswers answers_of_an_unoverridden_resource(Method method)
 {
     KonstAnswers k{};
     k.ans[static_cast<size_t>(Node::kB13)] = true;
-    k.ans[static_cast<size_t>(Node::kB12)] = m != Method::kOther;
+    k.ans[static_cast<size_t>(Node::kB12)] = method != Method::kOther;
     k.ans[static_cast<size_t>(Node::kB11)] = false;
-    k.ans[static_cast<size_t>(Node::kB10)] = m == Method::kGet || m == Method::kHead;
+    k.ans[static_cast<size_t>(Node::kB10)] = method == Method::kGet || method == Method::kHead;
     k.ans[static_cast<size_t>(Node::kB9b)] = false;
     k.ans[static_cast<size_t>(Node::kB8)] = true;
     k.ans[static_cast<size_t>(Node::kB7)] = false;
@@ -897,15 +897,15 @@ class RouteTable
         pending_splat_ = false;
     }
     // RFC 9110 4.2.1: a String token is a literal segment.
-    bool literal(const char *p, size_t n)
+    bool literal(const char *bytes, size_t count)
     {
-        if (n > 0xffffu)
+        if (count > 0xffffu)
             return false;
         RouteToken t;
         t.kind = kLiteral;
         t.off = static_cast<uint32_t>(blob_.size());
-        t.len = static_cast<uint32_t>(n);
-        blob_.append(p, n);
+        t.len = static_cast<uint32_t>(count);
+        blob_.append(bytes, count);
         toks_.push_back(t);
         return true;
     }
@@ -974,16 +974,16 @@ class RouteTable
 
     // RFC 9110 4.2.1: the first route that matches wins (registration order).
     // -1 is a miss, and a miss answers 404 before B13.
-    int match(const char *path, size_t len, RouteSpans &out) const
+    int match(const char *path, size_t length, RouteSpans &out_value) const
     {
         // What the caller may read whatever this returns. The spans behind
         // them are written only as far as nbind and has_splat admit, which
         // is what lets RouteSpans stay uninitialized at the top of a
         // request path.
-        out.nbind = 0;
-        out.has_splat = false;
-        size_t plen = len;
-        for (size_t i = 0; i < len; i++) {
+        out_value.nbind = 0;
+        out_value.has_splat = false;
+        size_t plen = length;
+        for (size_t i = 0; i < length; i++) {
             if (path[i] == '?') {
                 plen = i;
                 break;
@@ -993,49 +993,49 @@ class RouteTable
         if (start < plen && path[start] == '/')
             start++;
         const char *blob = blob_.data();
-        const size_t n = routes_.size();
-        for (size_t r = 0; r < n; r++) {
+        const size_t count = routes_.size();
+        for (size_t r = 0; r < count; r++) {
             const Route &rt = routes_[r];
-            size_t p = start;
+            size_t bytes = start;
             uint8_t nb = 0;
-            bool ok = true;
+            bool accepted = true;
             bool splat = false;
-            for (uint32_t t = 0; t < rt.count; t++) {
-                const RouteToken &tk = toks_[rt.first + t];
+            for (uint32_t text = 0; text < rt.count; text++) {
+                const RouteToken &tk = toks_[rt.first + text];
                 if (tk.kind == kSplat) {
-                    out.splat.p = path + p;
-                    out.splat.n = plen - p;
-                    p = plen;
+                    out_value.splat.p = path + bytes;
+                    out_value.splat.n = plen - bytes;
+                    bytes = plen;
                     splat = true;
                     break;
                 }
-                if (p >= plen) {
-                    ok = false;
+                if (bytes >= plen) {
+                    accepted = false;
                     break;
                 }
-                const size_t seg = p;
-                while (p < plen && path[p] != '/')
-                    p++;
-                const size_t seglen = p - seg;
+                const size_t seg = bytes;
+                while (bytes < plen && path[bytes] != '/')
+                    bytes++;
+                const size_t seglen = bytes - seg;
                 if (tk.kind == kLiteral) {
                     if (seglen != tk.len || std::memcmp(path + seg, blob + tk.off, seglen) != 0) {
-                        ok = false;
+                        accepted = false;
                         break;
                     }
                 } else {
-                    out.bind[nb].p = path + seg;
-                    out.bind[nb].n = seglen;
+                    out_value.bind[nb].p = path + seg;
+                    out_value.bind[nb].n = seglen;
                     nb++;
                 }
-                if (p < plen)
-                    p++;
+                if (bytes < plen)
+                    bytes++;
             }
-            if (!ok)
+            if (!accepted)
                 continue;
-            if (!splat && p < plen)
+            if (!splat && bytes < plen)
                 continue;
-            out.nbind = nb;
-            out.has_splat = splat;
+            out_value.nbind = nb;
+            out_value.has_splat = splat;
             return static_cast<int>(r);
         }
         return -1;
@@ -1119,7 +1119,7 @@ inline constexpr size_t kLogQueueCap = 4u * 1024 * 1024;
 
 // True when this record has no room. The caller writes nothing and the
 // count carries what was lost.
-bool log_queue_full(Logger &lg);
+bool log_queue_full(Logger &logger);
 
 // One response as one record. The format is ours (see Logger above); the
 // fields are not:
@@ -1197,7 +1197,7 @@ struct AccessLine {
 };
 
 // Truncation caps are the wire fields' widths.
-void log_access(Logger &lg, const AccessLine &line);
+void log_access(Logger &logger, const AccessLine &line);
 
 // One raise as one record. No format specifies this, and most of what is
 // in it has no RFC either - an exception class, a message and a
@@ -1279,13 +1279,13 @@ uint64_t &app_build_hash();
 // implementation). One raise's fingerprint is this over everything that
 // led to it, fed piece by piece.
 inline constexpr uint64_t kFnvBasis = 0xcbf29ce484222325ULL;
-uint64_t fnv1a(uint64_t h, const void *p, size_t n);
+uint64_t fnv1a(uint64_t headers, const void *bytes, size_t count);
 // A length in front of every piece, so two pieces that meet cannot spell
 // what a different pair would: "/a" + "bc" and "/ab" + "c" are two
 // fingerprints, not one.
-uint64_t fnv1a_piece(uint64_t h, const void *p, size_t n);
+uint64_t fnv1a_piece(uint64_t headers, const void *bytes, size_t count);
 // The 16 lowercase hex digits a page shows and a log carries.
-void spell_fingerprint(char *out, uint64_t h);
+void spell_fingerprint(char *out_value, uint64_t headers);
 
 // What one failure was: the request that led there, and the raise that
 // ended it. Read, never written, by everything below - the fingerprint is
@@ -1325,12 +1325,12 @@ struct ErrFacts {
 // Everything that led here goes in, each piece behind its own length; the
 // message does not - the same fault at the same place under the same
 // request is one failure, whatever the exception chose to say about it.
-uint64_t fingerprint_of(const ErrFacts &f);
+uint64_t fingerprint_of(const ErrFacts &field);
 
 // One raise as one record: a fixed header whose last field is the size of
 // the second send, then that many bytes - peer, class, target, message,
 // backtrace, method, steering, in that order.
-void log_error(Logger &lg, const ErrFacts &f);
+void log_error(Logger &logger, const ErrFacts &field);
 
 // The server's own fault, spelled the same way at every call site: one
 // error-log record, class Webmachine::Error/17, never reaching the answer.
@@ -1343,7 +1343,7 @@ struct ErrorLine {
     uint16_t status_code = 0;        // RFC 9110 15
 };
 
-void log_internal_error(Logger &lg, const ErrorLine &line);
+void log_internal_error(Logger &logger, const ErrorLine &line);
 
 // A raise inside a worker VM, written by the reactor. The exception
 // object itself cannot cross - an mrb_value belongs to the VM that made
@@ -1366,7 +1366,7 @@ struct ComputeFault {
 // whole. stderr gets it only when no error log was configured, because
 // then there is nothing else to read - a line printed beside a log that
 // is being read is a line nobody reads.
-void say_server_error(Logger *lg, std::string_view why);
+void say_server_error(Logger *logger, std::string_view why);
 
 // Which build this is. mruby's enable_debug defines MRB_DEBUG and the
 // ship configs do not, so this is the build's own word for itself and
@@ -1389,19 +1389,19 @@ struct Raised {
     ErrFacts &facts;
     std::string &backtrace;
 };
-void exception_facts(mrb_state *mrb, Raised out);
+void exception_facts(mrb_state *mrb, Raised out_value);
 
 // A raise with no request around it: a stream that was answered long ago
 // and is now running app code of its own (SSE, a WebSocket). There is no
 // target and no method to name, so the fingerprint is the build, the
 // class and the place - which is exactly what such a failure is.
-void log_raise(Logger &lg, mrb_state *mrb, uint16_t status);
+void log_raise(Logger &logger, mrb_state *mrb, uint16_t status);
 
 // Every exception the VM raised and the server does not hand back to a
 // client goes through here: into the error log when there is one, and
 // on screen in a debug build, as the VM made it. Then it is cleared.
-void report_raise(Logger *lg, mrb_state *mrb, uint16_t status);
-void fault_report(Logger *lg, mrb_state *mrb, const ComputeFault &x);
+void report_raise(Logger *logger, mrb_state *mrb, uint16_t status);
+void fault_report(Logger *logger, mrb_state *mrb, const ComputeFault &one);
 } // namespace webmachine
 
 namespace webmachine::http
@@ -1409,77 +1409,77 @@ namespace webmachine::http
 // RFC 9110 5.1: case-insensitive equality against a lowercase literal.
 constexpr bool tok_eq(std::string_view text, std::string_view lit)
 {
-    const char *const s = text.data();
-    const size_t n = text.size();
-    if (n != lit.size())
+    const char *const sqe = text.data();
+    const size_t count = text.size();
+    if (count != lit.size())
         return false;
-    for (size_t i = 0; i < n; i++) {
-        char c = s[i];
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c + 32);
-        if (c != lit[i])
+    for (size_t i = 0; i < count; i++) {
+        char conn = sqe[i];
+        if (conn >= 'A' && conn <= 'Z')
+            conn = static_cast<char>(conn + 32);
+        if (conn != lit[i])
             return false;
     }
     return true;
 }
 
 // RFC 9110 13.1.1/13.1.2: If-Match / If-None-Match spell "any" as *.
-constexpr bool star_value(const char *v, size_t n)
+constexpr bool star_value(const char *value, size_t count)
 {
-    if (n == 1 && v[0] == '*')
+    if (count == 1 && value[0] == '*')
         return true;
-    return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
+    return count == 3 && value[0] == '"' && value[1] == '*' && value[2] == '"';
 }
 
 // RFC 9110 4.2.1: the query is not part of the path.
-size_t path_only(const char *p, size_t n);
+size_t path_only(const char *bytes, size_t count);
 
 // RFC 9110 9.1: methods are case-sensitive tokens.
-flow::Method parse_method(const char *m, size_t n);
+flow::Method parse_method(const char *method, size_t count);
 
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and every writer goes through here.
 std::string with_charset(const std::string &type);
 
 // A literal's length, at compile time.
-constexpr size_t clen(const char *s)
+constexpr size_t clen(const char *sqe)
 {
     size_t n = 0;
-    while (s[n] != '\0')
+    while (sqe[n] != '\0')
         n++;
     return n;
 }
 // RFC 6839 / RFC 9110 8.3: is a body of this type worth compressing?
 // Structural, conservative downward, decided once per resource.
-constexpr bool compressible_media_type(const char *v, size_t n)
+constexpr bool compressible_media_type(const char *value, size_t count)
 {
     size_t tn = 0;
-    while (tn < n && v[tn] != ';')
+    while (tn < count && value[tn] != ';')
         tn++;
-    if (tn >= 5 && tok_eq({v, 5}, "text/"))
+    if (tn >= 5 && tok_eq({value, 5}, "text/"))
         return true;
-    if (tn >= 5 && tok_eq({v + tn - 5, 5}, "+json"))
+    if (tn >= 5 && tok_eq({value + tn - 5, 5}, "+json"))
         return true;
-    if (tn >= 4 && tok_eq({v + tn - 4, 4}, "+xml"))
+    if (tn >= 4 && tok_eq({value + tn - 4, 4}, "+xml"))
         return true;
     constexpr const char *kExact[] = {
         "application/json", "application/javascript", "application/xml",
         "application/wasm", "image/svg+xml",
     };
     for (const char *lit : kExact) {
-        if (tok_eq({v, tn}, lit))
+        if (tok_eq({value, tn}, lit))
             return true;
     }
     return false;
 }
 // RFC 6839: the same question, from a std::string.
-bool compressible_media_type(const std::string &v);
+bool compressible_media_type(const std::string &value);
 namespace proof
 {
 // The table's own self-check, at compile time.
-constexpr bool ct(const char *s)
+constexpr bool ct(const char *sqe)
 {
-    return compressible_media_type(s, clen(s));
+    return compressible_media_type(sqe, clen(sqe));
 }
 static_assert(ct("text/html"), "text/* compresses");
 static_assert(ct("text/html; charset=utf-8"), "a parameter does not hide the media type");
@@ -1563,20 +1563,20 @@ inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
 // Two digits, zero-padded, at out[0..1].
-void write_two_digits(char *out, int v);
+void write_two_digits(char *out_value, int value);
 
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
-void date_core(char out[kDateLen], const struct tm &tm);
+void date_core(char out_value[kDateLen], const struct tm &tm);
 
 // RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
-size_t spell_content_length(char (&buf)[40], size_t len);
+size_t spell_content_length(char (&buf)[40], size_t length);
 
 // RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
 int hex_digit(char ch);
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
-ClStatus parse_content_length(std::string_view v, size_t *out);
+ClStatus parse_content_length(std::string_view value, size_t *out_value);
 
 // RFC 9110: the ten fields Resource#request hands back by name. The one
 // pass over the field array notes where each one sits; a later ask is a bit
@@ -1613,25 +1613,25 @@ struct NamedFieldIndex {
     //
     // Declared here, defined in request.cpp, where the framer's header has
     // been included and phr_header is complete.
-    const struct phr_header *find(NamedField f, HeaderList hs) const;
+    const struct phr_header *find(NamedField field, HeaderList fields) const;
 
-    constexpr void note(NamedField f, size_t i)
+    constexpr void note(NamedField field, size_t i)
     {
         // The framer kept no slot for this one (its field array was full), so
         // there is no place to point at and the bit stays clear.
         if (i > 255)
             return;
-        const auto b = static_cast<uint8_t>(f);
+        const auto block = static_cast<uint8_t>(field);
         // RFC 9110 5.2: a repeated field is one list, and the first occurrence
         // is where it starts. A second Host is the framer's 400, not ours.
-        if (((present >> b) & 1u) != 0)
+        if (((present >> block) & 1u) != 0)
             return;
-        present = static_cast<uint16_t>(present | (1u << b));
-        at[b] = static_cast<uint8_t>(i);
+        present = static_cast<uint16_t>(present | (1u << block));
+        index[block] = static_cast<uint8_t>(i);
     }
-    constexpr bool carries(NamedField f) const
+    constexpr bool carries(NamedField field) const
     {
-        return ((present >> static_cast<uint8_t>(f)) & 1u) != 0;
+        return ((present >> static_cast<uint8_t>(field)) & 1u) != 0;
     }
 
   private:
@@ -1639,7 +1639,7 @@ struct NamedFieldIndex {
     // position, and the bit is how that is said.
     uint16_t present = 0;
     // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
-    uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
+    uint8_t index[static_cast<size_t>(NamedField::kCount)] = {};
 };
 struct ReqValues {
     const char *log_ref = nullptr;
@@ -1707,7 +1707,7 @@ static_assert(sizeof(ReqValues) == 224,
 // Move every span in `v` by `delta`. A null span stays null: it names no
 // bytes, so there is nothing to move and an offset from nullptr is
 // undefined besides.
-void rebase(ReqValues &v, ptrdiff_t delta);
+void rebase(ReqValues &value, ptrdiff_t delta);
 
 // #210: the fields this request steered by, one per line, for the error
 // record and the fingerprint over it. These are the ones the server reads
@@ -1720,11 +1720,11 @@ void rebase(ReqValues &v, ptrdiff_t delta);
 // 7616, and whatever else the IANA registry grows). Which scheme ran
 // decides which code ran; the credential decides nothing and belongs in
 // no file. Cookie is named without its value for the same reason.
-void spell_steering(const ReqValues *v, std::string &out);
+void spell_steering(const ReqValues *value, std::string &out_value);
 
 // A run of digits at v[i], cursor left on the first that is not one.
 // False = none there, or the value does not fit a size_t.
-bool read_size(const char *v, size_t n, size_t &i, size_t *out);
+bool read_size(const char *value, size_t count, size_t &i, size_t *out_value);
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // RFC 9110 14.1.2: one range over the selected representation's octets.
@@ -1742,14 +1742,14 @@ struct ByteRange {
     size_t last;
 };
 
-RangeParse parse_range(RangeField field, ByteRange &out);
+RangeParse parse_range(RangeField field, ByteRange &out_value);
 
 // RFC 9110 14.2: one validator, compared strongly; a date reads as no match.
-bool if_range_matches(std::string_view v, std::string_view tag);
+bool if_range_matches(std::string_view value, std::string_view poll_tag);
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
 // never reaches this parse.
-bool gzip_acceptable(const char *v, size_t n);
+bool gzip_acceptable(const char *value, size_t count);
 
 // RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
 // representation's own tag, and which comparison applies - strong for
@@ -1760,13 +1760,13 @@ struct EtagMatch {
     bool weak;
 };
 
-bool etag_list_match(EtagMatch m);
+bool etag_list_match(EtagMatch method);
 
 // Exactly k digits at p[at], as one number. -1 = one of them is not a digit.
-int read_fixed_digits(const char *p, size_t at, size_t k);
+int read_fixed_digits(const char *bytes, size_t index, size_t k);
 
 // The three-letter month name at p[at], 1..12. -1 = none of them.
-int read_month_name(const char *p, size_t at);
+int read_month_name(const char *bytes, size_t index);
 
 // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
 // One civil date and time, as the fields a Date line spells.
@@ -1779,13 +1779,13 @@ struct Civil {
     int ss;
 };
 
-int64_t epoch_from_civil(Civil c);
+int64_t epoch_from_civil(Civil conn);
 
 // RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
 // ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
 // ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
 // ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
-bool parse_http_date(const char *p, size_t n, int64_t *out);
+bool parse_http_date(const char *bytes, size_t count, int64_t *out_value);
 
 // RFC 9110 12.5.1: choose among the provided types given an Accept
 // value - q-values and both wildcard forms, most specific match per
@@ -1809,12 +1809,12 @@ struct Conneg {
 // is case-insensitive and weighs q properly.
 bool accept_is_exact(std::string_view accept, std::string_view type);
 
-int choose_media_type(Conneg c);
+int choose_media_type(Conneg conn);
 
 // RFC 9110 8.8.3: spell an application-supplied ETag for the wire - an
 // already-quoted or weak form passes verbatim, bare bytes are quoted
 // (webmachine ETag.new semantics).
-void etag_spell(const char *raw, size_t n, std::string &out);
+void etag_spell(const char *raw, size_t count, std::string &out_value);
 
 // RFC 3986 5.3: a reference and the base it is resolved against.
 struct UriRef {
@@ -1825,7 +1825,7 @@ struct UriRef {
 // The n11 subset: join create_path onto a base. A full URI passes
 // verbatim; an absolute-path ref replaces the base's path; a relative
 // segment appends after the base's last '/'.
-void uri_join(UriRef r, std::string &out);
+void uri_join(UriRef round, std::string &out_value);
 
 // RFC 9110 5.1 / 5.6.2: a field name is a token. Both writers that put
 // a field in an answer call this, so the shape is decided here and
@@ -1842,24 +1842,24 @@ void uri_join(UriRef r, std::string &out);
 // second copy on the wire. Two Content-Length fields are what a proxy
 // and this server then disagree about, which is a response desync; over
 // HTTP/2 the hop-by-hop names are refused outright (RFC 9113 8.2.2).
-bool field_name_is_the_servers(const char *p, size_t n);
+bool field_name_is_the_servers(const char *bytes, size_t count);
 
-bool field_name_ok(const char *p, size_t n);
+bool field_name_ok(const char *bytes, size_t count);
 
 // RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
 // is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
 // byte a malformed h2 field, so one rule serves both writers.
-bool field_value_ok(const char *p, size_t n);
+bool field_value_ok(const char *bytes, size_t count);
 
 // RFC 9110 5.1: a field name is known by its length first. The switches
 // below have a case for these and no other, so a name of any other length is
 // none of them - one shift and one test, before a byte is compared. The mask
 // is derived from the list, so a new case cannot forget to widen it.
-constexpr uint32_t lengths_mask(const size_t *v, size_t n)
+constexpr uint32_t lengths_mask(const size_t *value, size_t count)
 {
     uint32_t m = 0;
-    for (size_t i = 0; i < n; i++)
-        m |= 1u << v[i];
+    for (size_t i = 0; i < count; i++)
+        m |= 1u << value[i];
     return m;
 }
 constexpr bool length_is_one_of(size_t nlen, uint32_t mask)
@@ -1892,12 +1892,12 @@ struct FactSink {
 
 // RFC 9110: one length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
-static inline bool header_switch(Field f, FactSink into)
+static inline bool header_switch(Field field, FactSink into)
 {
-    const char *const name = f.name.data();
-    const size_t nlen = f.name.size();
-    const char *const value = f.value.data();
-    const size_t vlen = f.value.size();
+    const char *const name = field.name.data();
+    const size_t nlen = field.name.size();
+    const char *const value = field.value.data();
+    const size_t vlen = field.value.size();
     flow::ReqFacts &facts = into.facts;
     ReqValues &vals = into.vals;
     const size_t at = into.at;
@@ -2126,10 +2126,10 @@ struct ReqView {
 // RFC 9110 5.3: every line of one field, joined with `sep`, in the
 // order they came. Written for the rare request whose field came more
 // than once; the one-pass span in ReqValues is the first line only.
-void join_repeated_fields(const ReqView *v, std::string_view name, std::string_view sep,
+void join_repeated_fields(const ReqView *value, std::string_view name, std::string_view sep,
                           std::string &out);
 
-void request_init(mrb_state *mrb, struct RClass *wm);
+void request_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 void request_bind(const ReqView *view);
 
@@ -2137,11 +2137,11 @@ void request_bind(const ReqView *view);
 // from the fields it copied. Cold, and it lives in request.cpp so that
 // h2_dispatch stays header_switch's only caller in http2.cpp - two callers
 // there and the switch stops being inlined into the hot path.
-void values_of_copied_fields(http::HeaderList h, http::ReqValues &out);
+void values_of_copied_fields(http::HeaderList headers, http::ReqValues &out_value);
 
 // RFC 9110: n11's create_path names a new disp_path for this run;
 // request_bind clears the override. request.cpp owns the storage.
-void request_disp_override(const char *p, size_t n);
+void request_disp_override(const char *bytes, size_t count);
 } // namespace webmachine
 
 namespace webmachine
@@ -2172,7 +2172,7 @@ struct Native {
     NativeCb fn;
     mrb_aspec aspec = MRB_ARGS_ANY();
 };
-void define_native(mrb_state *mrb, struct RClass *c, Native n);
+void define_native(mrb_state *mrb, struct RClass *conn, Native count);
 
 // #210: a run may hand over one of these (response.error_asset). The
 // definition is further down, with the tier that owns it - a run only
@@ -2559,7 +2559,7 @@ struct Resource {
     bool has_caching = false;
 };
 
-void resource_fold(mrb_state *mrb, mrb_value klass, Resource &out);
+void resource_fold(mrb_state *mrb, mrb_value klass, Resource &out_value);
 
 // One request as a bound run receives it: what the parse settled, the
 // header values the calling frame still holds, the bytes themselves, and
@@ -2589,7 +2589,7 @@ struct RunAnswer {
 // says which, and the job the reactor owes a worker is read with
 // `resource_job`. A stopped run keeps everything it wrote in res.run,
 // which the caller takes with it.
-uint16_t resource_run(const Resource &res, RunAsk ask, RunAnswer out);
+uint16_t resource_run(const Resource &resource, RunAsk request_ask, RunAnswer out_value);
 // #80: the same walk, re-entered at the node it stopped before, with the
 // worker's answer standing in for that node's callback.
 // #30: what a round answered. One entry per job: the value, and which
@@ -2607,21 +2607,21 @@ struct RunRound {
 // mrb_protect_error: mruby catches what this raises, and a
 // std::out_of_range would pass that protect by and unwind the VM.
 template <typename Array>
-const typename Array::value_type &round_at(mrb_state *mrb, const Array &a, size_t i)
+const typename Array::value_type &round_at(mrb_state *mrb, const Array &answer, size_t i)
 {
-    if (mrb_unlikely(i >= a.size())) {
+    if (mrb_unlikely(i >= answer.size())) {
         mrb_raisef(mrb, E_INDEX_ERROR, "round entry %d of %d", static_cast<mrb_int>(i),
-                   static_cast<mrb_int>(a.size()));
+                   static_cast<mrb_int>(answer.size()));
         WM_UNREACHABLE();
     }
-    return a[i];
+    return answer[i];
 }
-uint16_t resource_resume(const Resource &res, RunAnswer out, const RunRound &round);
-void resource_forget_userdata(const Resource &res);
-void resource_abandon(const Resource &res, Resource::RunState &state);
-bool run_stopped(const Resource &res);
+uint16_t resource_resume(const Resource &resource, RunAnswer out_value, const RunRound &round);
+void resource_forget_userdata(const Resource &resource);
+void resource_abandon(const Resource &resource, Resource::RunState &state);
+bool run_stopped(const Resource &resource);
 
-bool resource_exception_take(const Resource &res, mrb_value *out);
+bool resource_exception_take(const Resource &resource, mrb_value *out_value);
 
 // The body a bound run lent rather than copied: the value the connection
 // has to hold until its send drains, and the bytes it may point at.
@@ -2631,10 +2631,10 @@ struct LentBody {
     mrb_value value;
     std::string_view bytes;
 };
-bool resource_body_lent(const Resource &res, LentBody &out);
+bool resource_body_lent(const Resource &resource, LentBody &out_value);
 
 // Hand a lent body back - the only legal end of the window opened above.
-void resource_body_unlend(mrb_state *mrb, mrb_value v);
+void resource_body_unlend(mrb_state *mrb, mrb_value value);
 
 // Did this run name a file instead of spelling a body? Same hand-off shape
 // as resource_body_lent: the run is over, so the slot leaves the Resource.
@@ -2644,18 +2644,18 @@ struct WantedFile {
     std::string_view name;
     bool bad;
 };
-bool resource_file_wanted(const Resource &res, WantedFile &out);
+bool resource_file_wanted(const Resource &resource, WantedFile &out_value);
 
 // RFC 9110: Webmachine::Response - the object a runtime callback
 // writes to. Handles over the run slots above, nothing owns storage;
 // response.cpp owns every line. response_bind mirrors request_bind:
 // the run frame points it at this run's Resource, and at nothing
 // after it.
-void response_init(mrb_state *mrb, struct RClass *wm);
-void response_bind(const Resource *res);
+void response_init(mrb_state *mrb, struct RClass *webmachine_module);
+void response_bind(const Resource *resource);
 // Assets is declared further down - this only needs the name.
 class Assets;
-void response_bind_error_assets(Assets *a);
+void response_bind_error_assets(Assets *answer);
 
 // #80: the compute pool. Threads that answer a compute task, fed and heard
 // through io_uring's own MSG_RING - see src/compute_task.cpp for why that is
@@ -2692,14 +2692,14 @@ struct ComputeTaskAsk {
 // Reads the three fields off a Promise, or answers false. It raises
 // when the value is not a Promise at all, because a callback that
 // declared one owes one.
-bool compute_task_read_from_value(mrb_state *mrb, mrb_value v, ComputeTaskAsk *out);
-void compute_task_init_class(mrb_state *mrb, struct RClass *wm);
+bool compute_task_read_from_value(mrb_state *mrb, mrb_value value, ComputeTaskAsk *out_value);
+void compute_task_init_class(mrb_state *mrb, struct RClass *webmachine_module);
 
 // src/passwd.cpp: Webmachine::Passwd - the database webmachine-passwd
 // writes, read for one question: is this password right for this
 // user. Meant to be built once per worker, through
 // Webmachine::Workers::Registry, and used inside a compute block.
-void passwd_init_class(mrb_state *mrb, struct RClass *wm);
+void passwd_init_class(mrb_state *mrb, struct RClass *webmachine_module);
 
 // #80: a declared callback, ready to cross into a worker. Filled at
 // fold, read by every worker when the pool starts. The id is the index -
@@ -2737,7 +2737,7 @@ struct WorkerBuild {
 };
 // Registered from the main VM at startup. Answers false when the pool
 // has already started - a key set then exists in no worker.
-bool worker_build_register(mrb_state *mrb, std::string key, mrb_value block);
+bool worker_build_register(mrb_state *mrb, std::string key_name, mrb_value block);
 const std::vector<WorkerBuild> &worker_builds();
 // Said once, when the first worker starts. After it a registration is
 // refused rather than silently missing from every worker.
@@ -2759,7 +2759,7 @@ unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime
 // The bytes and the deadline of one entry, copied out under the lock.
 // A worker calls this the first time it meets an id, and never again
 // for that id.
-bool compute_task_code_of(unsigned id, std::string *irep, double *max_runtime);
+bool compute_task_code_of(unsigned stream_id, std::string *irep, double *max_runtime);
 
 // What one job left behind. The bytes are the answer; the rest is what
 // the reactor needs to write a failure down, because a worker cannot -
@@ -2810,16 +2810,16 @@ class ComputePool
                 double deadline, uint64_t answer);
     // A worker began the job in `slot`, its `gen`th taking. The deadline
     // to arm for it, or 0 when it has none or the slot moved on.
-    double started(unsigned slot, uint16_t gen);
+    double started(unsigned slot, uint16_t generation);
     // The deadline passed. This is the one thing the reactor does to a
     // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
     // is safe from this thread. The job is named by its slot and the
     // taking of it, and only when that job is the one its worker runs now
     // is the worker interrupted.
-    void interrupt(unsigned slot, uint16_t gen);
+    void interrupt(unsigned slot, uint16_t generation);
     // What the worker answered. Reading it frees the slot: the answer is
     // handed over once.
-    bool take(uint64_t answer, ComputeAnswer *out);
+    bool take(uint64_t answer, ComputeAnswer *out_value);
     unsigned workers() const;
 
     struct Impl;
@@ -2833,40 +2833,40 @@ class ComputePool
 // one and hands it back; the server arms it. The mask, the abort flag and
 // the handle live in its CDATA and not in its iv table, which holds
 // exactly the two things a GC has to see: the source and the block.
-void watcher_init_class(mrb_state *mrb, struct RClass *wm);
-bool value_is_watcher(mrb_state *mrb, mrb_value v);
-unsigned watcher_events_mask(mrb_value v);
-bool watcher_is_aborted(mrb_value v);
+void watcher_init_class(mrb_state *mrb, struct RClass *webmachine_module);
+bool value_is_watcher(mrb_state *mrb, mrb_value value);
+unsigned watcher_events_mask(mrb_value value);
+bool watcher_is_aborted(mrb_value value);
 // The seconds a watcher may stay quiet, as `timeout:` gave them.
-double watcher_timeout(mrb_value v);
+double watcher_timeout(mrb_value value);
 // The deadline passed. The block runs with the `:timeout` event and
 // answers what happens next: true says the watcher waits again, false
 // says it aborted and the run goes on without it.
-bool watcher_deadline_passed(mrb_state *mrb, mrb_value v, mrb_value *said);
-int watcher_fd(mrb_value v);
-int watcher_slot(mrb_value v);
+bool watcher_deadline_passed(mrb_state *mrb, mrb_value value, mrb_value *said);
+int watcher_fd(mrb_value value);
+int watcher_slot(mrb_value value);
 // #30: when this watcher may be asked why it is quiet, as the whole
 // second the sweep reads, or 0 when it owes no deadline. It lives on
 // the watcher because a connection can wait on many at once and each
 // one allows its own time.
-int64_t watcher_deadline_at(mrb_value v);
-void watcher_set_deadline_at(mrb_value v, int64_t at);
+int64_t watcher_deadline_at(mrb_value value);
+void watcher_set_deadline_at(mrb_value value, int64_t index);
 // #30: the state of the run this watcher belongs to, or nothing. It
 // points into the coroutine frame that parked - the one thing that
 // holds everything about that run - so each watcher finds its own,
 // and a connection carrying many runs keeps them apart.
-Resource::RunState *watcher_run(mrb_value v);
-void watcher_set_run(mrb_value v, Resource::RunState *run);
+Resource::RunState *watcher_run(mrb_value value);
+void watcher_set_run(mrb_value value, Resource::RunState *run);
 // #30: which job of the round this watcher answers.
-int watcher_job(mrb_value v);
-void watcher_set_job(mrb_value v, int job);
-void watcher_set_slot(mrb_value v, int slot);
-void watcher_armed(mrb_value v, struct io_uring *ring, uint64_t tag);
-void watcher_unarmed(mrb_value v);
-uint64_t watcher_armed_tag(mrb_value v);
-void watcher_disarm(mrb_value v);
-mrb_value watcher_source_of(mrb_state *mrb, mrb_value v);
-mrb_value watcher_block_of(mrb_state *mrb, mrb_value v);
+int watcher_job(mrb_value value);
+void watcher_set_job(mrb_value value, int job);
+void watcher_set_slot(mrb_value value, int slot);
+void watcher_armed(mrb_value value, struct io_uring *ring, uint64_t poll_tag);
+void watcher_unarmed(mrb_value value);
+uint64_t watcher_armed_tag(mrb_value value);
+void watcher_disarm(mrb_value value);
+mrb_value watcher_source_of(mrb_state *mrb, mrb_value value);
+mrb_value watcher_block_of(mrb_state *mrb, mrb_value value);
 } // namespace webmachine
 
 namespace webmachine::gzip
@@ -2875,7 +2875,7 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 
 // RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
 // identity - compression never fails a response.
-bool compress(const std::string &in, std::string &out);
+bool compress(const std::string &in, std::string &out_value);
 } // namespace webmachine::gzip
 
 namespace webmachine
@@ -2902,8 +2902,8 @@ class MimeDb
 
   private:
     void take(const char *type, size_t tlen, const char *ext, size_t elen);
-    void parse_types(const char *p, const char *end);
-    void parse_globs2(const char *p, const char *end);
+    void parse_types(const char *bytes, const char *text_end);
+    void parse_globs2(const char *bytes, const char *text_end);
 
     std::vector<std::pair<std::string, std::string>> by_ext_;
     std::string source_;
@@ -2980,7 +2980,7 @@ class Assets
 
     void open(mrb_state *mrb, const char *zip_path, const MimeDb &mime);
 
-    AssetEntry *find(const char *path, size_t len);
+    AssetEntry *find(const char *path, size_t length);
 
     // What the asset tier weighs one request by: the facts the parse settled
     // - the method among them - and the header values behind them.
@@ -2988,7 +2988,7 @@ class Assets
         const flow::ReqFacts &facts;
         const http::ReqValues &vals;
     };
-    uint16_t entry_verdict(const AssetEntry &e, const AssetRequest &r) const;
+    uint16_t entry_verdict(const AssetEntry &entry, const AssetRequest &round) const;
 
     // Everything this tier needs to spell one head: the entry it describes,
     // the status it carries, whether the connection stays open, the Date
@@ -3009,16 +3009,16 @@ class Assets
         size_t body_len = 0;
     };
 
-    void head_answer(const HeadAsk &ask, std::string &sink);
-    void answer_206_head(const HeadAsk &ask, std::string &sink);
-    void answer_416_head(const HeadAsk &ask, std::string &sink);
+    void head_answer(const HeadAsk &request_ask, std::string &sink);
+    void answer_206_head(const HeadAsk &request_ask, std::string &sink);
+    void answer_416_head(const HeadAsk &request_ask, std::string &sink);
 
     // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
     // header and 8 trailer octets of a gzip member, or the stored bytes
     // alone when nothing was deflated.
-    static size_t wire_len(const AssetEntry &e)
+    static size_t wire_len(const AssetEntry &entry)
     {
-        return e.deflated ? e.compressed_size + 18 : e.compressed_size;
+        return entry.deflated ? entry.compressed_size + 18 : entry.compressed_size;
     }
     // RFC 1952 2.2: [off, off+n) of that body without copying it, which is
     // why it returns a count: a gzip member is three separate spans - our
@@ -3030,8 +3030,8 @@ class Assets
         size_t off;
         size_t n;
     };
-    static unsigned entry_wire_iov(const AssetEntry &e, Window w, iovec *iov);
-    static void entry_copy_wire(const AssetEntry &e, Window w, std::string &out);
+    static unsigned entry_wire_iov(const AssetEntry &entry, Window window, iovec *out_iov);
+    static void entry_copy_wire(const AssetEntry &entry, Window window, std::string &out_value);
 
     // ZIP (APPNOTE): the entry table, for the h2 setup half.
     std::vector<AssetEntry> &entries()
@@ -3040,14 +3040,14 @@ class Assets
     }
 
   private:
-    const AssetEntry *find_exact(const char *name, size_t len) const;
+    const AssetEntry *find_exact(const char *name, size_t length) const;
     // The Date line for one second, and the second it stands for - what
     // patch_date compares before it rewrites a prebuilt head.
     struct DateStamp {
         const char *line;
         time_t unix_seconds;
     };
-    static void head_patch_date(AssetEntry::Head &h, DateStamp when);
+    static void head_patch_date(AssetEntry::Head &headers, DateStamp when);
 
     // munmap(addr, length) - the names of the arguments they become.
     const char *map_addr_ = nullptr;
@@ -3097,23 +3097,23 @@ class ErrorPages
 
     // RFC 9110 12.5.1: which form this client can read, as an index into
     // what the error resource offers. -1 when it offers nothing.
-    int media_pick_for_status(uint16_t status, const char *accept, size_t len) const;
+    int media_pick_for_status(uint16_t status, const char *accept, size_t length) const;
     // The picture is the answer for an image form: not rendered, lent out
     // of the error assets's mapping. nullptr when this slot is not one, or when
     // this status has no cat.
-    const char *pack_body_of_status(uint16_t status, int slot, size_t *len) const;
+    const char *pack_body_of_status(uint16_t status, int slot, size_t *length) const;
     // #210: the page for a status in a form, rendered once at boot and
     // lent from there. Every 4xx is one of these - it names no failure and
     // repeats nothing the client sent, so two answers with the same status
     // are the same bytes. Null for a status no page was prepared for, and
     // for any answer that has something of its own to say.
-    const char *prepared_body(uint16_t status, int slot, size_t *len) const;
+    const char *prepared_body(uint16_t status, int slot, size_t *length) const;
     const char *media_type_of_slot(int slot) const;
-    bool accept_names_one_of_ours(const char *accept, size_t len) const;
-    static bool accept_names_anything(const char *accept, size_t len);
+    bool accept_names_one_of_ours(const char *accept, size_t length) const;
+    static bool accept_names_anything(const char *accept, size_t length);
 
     // fsm.rb handle_exception, on the error resource and nowhere else.
-    bool exception_text(mrb_value exc, std::string &out);
+    bool exception_text(mrb_value exc, std::string &out_value);
 
     // What one answer adds to the status. Nothing the client sent is in
     // here: a page that repeated the target back would be reflecting a
@@ -3140,14 +3140,14 @@ class ErrorPages
 
     // false when there is no page to offer - the caller still owes an
     // answer and falls back to the bodyless status.
-    bool render(const Page &p, std::string &out);
+    bool render(const Page &bytes, std::string &out_value);
     // The bytes this status answers with, whichever way this build has
     // them: the picture where the error assets hold one, the page prepared
     // at boot where the answer names no failure of its own, a render where
     // it does. `held` is the caller's storage and is used for that last
     // case only - the other two are lent where they lie. Null when this
     // build can spell no page at all.
-    const char *body_of_page(const Page &p, std::string &held, size_t *len);
+    const char *body_of_page(const Page &bytes, std::string &held, size_t *length);
 
   private:
     struct Handler {
@@ -3265,15 +3265,15 @@ inline constexpr size_t kMaxBodyMax = 1u << 30;
 // The WebSocket and event-stream resources are the connection layer's
 // (http1.hpp). An application folds them and holds them, through these.
 struct WsResource;
-void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out);
+void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out_value);
 WsResource *ws_resource_new();
-void ws_resource_free(WsResource *r);
-void ws_init(mrb_state *mrb, struct RClass *wm);
+void ws_resource_free(WsResource *round);
+void ws_init(mrb_state *mrb, struct RClass *webmachine_module);
 struct SseResource;
-void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out);
+void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out_value);
 SseResource *sse_resource_new();
-void sse_resource_free(SseResource *r);
-void sse_init(mrb_state *mrb, struct RClass *wm);
+void sse_resource_free(SseResource *round);
+void sse_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 struct AppSpec {
     enum class Form : uint8_t { kNone, kPort, kUnix, kUrl };
@@ -3344,11 +3344,11 @@ Verdict check_declaration(std::string_view declared, std::string_view head);
 
 // The answer's body, set by something that is not a callback of the
 // resource. See response.cpp.
-bool response_take_body(mrb_state *mrb, std::string_view s);
+bool response_take_body(mrb_state *mrb, std::string_view sqe);
 // Did the resource being answered declare `reads_body ..., save: true`?
 bool response_saves_body(mrb_state *mrb);
 
-void application_init(mrb_state *mrb, struct RClass *wm);
+void application_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 void app_load(mrb_state *mrb, const char *path);
 
@@ -3358,7 +3358,7 @@ struct Registered {
     std::vector<AppSpec *> &specs;
     size_t max_listeners;
 };
-void app_registered_all(mrb_state *mrb, Registered out);
+void app_registered_all(mrb_state *mrb, Registered out_value);
 
 AppSpec *app_assets_only();
 
@@ -3451,7 +3451,7 @@ void server_options(const ServerOptions &opts);
 
 void server_say_which_backend();
 
-void server_init(mrb_state *mrb, struct RClass *wm);
+void server_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 int server_run(mrb_state *mrb);
 
@@ -3509,7 +3509,7 @@ struct Config {
 // null for the commented example line.
 bool config_write_default(const char *path, const char *error_assets);
 
-void config_load(mrb_state *mrb, const char *path, Config &out);
+void config_load(mrb_state *mrb, const char *path, Config &out_value);
 } // namespace webmachine
 
 #ifndef SO_MEMINFO

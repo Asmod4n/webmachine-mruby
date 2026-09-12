@@ -948,7 +948,7 @@ const struct phr_header *NamedFieldIndex::find(NamedField f, HeaderList fields) 
 {
     if (fields.items == nullptr || !carries(f))
         return nullptr;
-    const uint8_t i = at[static_cast<uint8_t>(f)];
+    const uint8_t i = index[static_cast<uint8_t>(f)];
     // A position this array cannot reach is no field. Every producer
     // builds the index beside the array it came from, so this branch
     // should never be taken - and "should" is not what may stand between

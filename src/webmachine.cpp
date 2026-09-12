@@ -5,14 +5,14 @@ namespace webmachine
 {
 struct io_uring_sqe *sqe_or_raise(mrb_state *mrb, struct io_uring *ring)
 {
-    struct io_uring_sqe *s = io_uring_get_sqe(ring);
-    if (s != nullptr)
-        return s;
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    if (sqe != nullptr)
+        return sqe;
     io_uring_submit(ring);
-    s = io_uring_get_sqe(ring);
-    if (s == nullptr)
+    sqe = io_uring_get_sqe(ring);
+    if (sqe == nullptr)
         mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
-    return s;
+    return sqe;
 }
 
 mrb_state *open_vm_or_say(const char *who)
@@ -31,22 +31,23 @@ mrb_state *open_vm_or_say(const char *who)
     return mrb;
 }
 
-bool log_queue_full(Logger &lg)
+bool log_queue_full(Logger &logger)
 {
-    if (lg.pending.size() > kLogQueueCap) {
-        lg.dropped++;
+    if (logger.pending.size() > kLogQueueCap) {
+        logger.dropped++;
         return true;
     }
-    if (lg.dropped != 0) {
-        std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n", lg.dropped);
-        lg.dropped = 0;
+    if (logger.dropped != 0) {
+        std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n",
+                     logger.dropped);
+        logger.dropped = 0;
     }
     return false;
 }
 
-void log_access(Logger &lg, const AccessLine &line)
+void log_access(Logger &logger, const AccessLine &line)
 {
-    if (mrb_unlikely(log_queue_full(lg)))
+    if (mrb_unlikely(log_queue_full(logger)))
         return;
     size_t peer_len = line.peer.size();
     size_t method_token_len = line.method_token.size();
@@ -71,29 +72,29 @@ void log_access(Logger &lg, const AccessLine &line)
         referer_len = 65535;
     if (user_agent_len > 65535)
         user_agent_len = 65535;
-    LogRec r;
-    r.version = kLogRecVersion;
-    r.flags = flags;
-    r.status_code = status_code;
-    r.content_length =
+    LogRec round;
+    round.version = kLogRecVersion;
+    round.flags = flags;
+    round.status_code = status_code;
+    round.content_length =
         content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
-    r.unix_seconds = lg.unix_seconds;
-    r.method_token_len = static_cast<uint8_t>(method_token_len);
-    r.peer_len = static_cast<uint8_t>(peer_len);
-    r.request_target_len = static_cast<uint16_t>(request_target_len);
-    r.referer_len = static_cast<uint16_t>(referer_len);
-    r.user_agent_len = static_cast<uint16_t>(user_agent_len);
-    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
+    round.unix_seconds = logger.unix_seconds;
+    round.method_token_len = static_cast<uint8_t>(method_token_len);
+    round.peer_len = static_cast<uint8_t>(peer_len);
+    round.request_target_len = static_cast<uint16_t>(request_target_len);
+    round.referer_len = static_cast<uint16_t>(referer_len);
+    round.user_agent_len = static_cast<uint16_t>(user_agent_len);
+    logger.pending.append(reinterpret_cast<const char *>(&round), sizeof round);
     if (method_token_len != 0)
-        lg.pending.append(method_token, method_token_len);
+        logger.pending.append(method_token, method_token_len);
     if (peer_len != 0)
-        lg.pending.append(peer, peer_len);
+        logger.pending.append(peer, peer_len);
     if (request_target_len != 0)
-        lg.pending.append(request_target, request_target_len);
+        logger.pending.append(request_target, request_target_len);
     if (referer_len != 0)
-        lg.pending.append(referer, referer_len);
+        logger.pending.append(referer, referer_len);
     if (user_agent_len != 0)
-        lg.pending.append(user_agent, user_agent_len);
+        logger.pending.append(user_agent, user_agent_len);
 }
 
 uint64_t &app_build_hash()
@@ -102,104 +103,104 @@ uint64_t &app_build_hash()
     return h;
 }
 
-uint64_t fnv1a(uint64_t h, const void *p, size_t n)
+uint64_t fnv1a(uint64_t headers, const void *bytes, size_t count)
 {
-    const unsigned char *b = static_cast<const unsigned char *>(p);
+    const unsigned char *block = static_cast<const unsigned char *>(bytes);
     size_t i = 0;
-    for (; i < n; i++) {
-        h ^= b[i];
-        h *= 0x100000001b3ULL;
+    for (; i < count; i++) {
+        headers ^= block[i];
+        headers *= 0x100000001b3ULL;
     }
-    return h;
+    return headers;
 }
 
-uint64_t fnv1a_piece(uint64_t h, const void *p, size_t n)
+uint64_t fnv1a_piece(uint64_t headers, const void *bytes, size_t count)
 {
-    const uint32_t len = static_cast<uint32_t>(n);
-    h = fnv1a(h, &len, sizeof len);
-    return n != 0 ? fnv1a(h, p, n) : h;
+    const uint32_t length = static_cast<uint32_t>(count);
+    headers = fnv1a(headers, &length, sizeof length);
+    return count != 0 ? fnv1a(headers, bytes, count) : headers;
 }
 
-void spell_fingerprint(char *out, uint64_t h)
+void spell_fingerprint(char *out_value, uint64_t headers)
 {
     static const char kHex[] = "0123456789abcdef";
     size_t i = 0;
     for (; i < kFingerprintLen; i++)
-        out[i] = kHex[(h >> ((15 - i) * 4)) & 0xf];
+        out_value[i] = kHex[(headers >> ((15 - i) * 4)) & 0xf];
 }
 
-uint64_t fingerprint_of(const ErrFacts &f)
+uint64_t fingerprint_of(const ErrFacts &field)
 {
-    uint64_t h = app_build_hash();
-    h = fnv1a_piece(h, f.method, f.method_len);
-    h = fnv1a_piece(h, f.request_target, f.request_target_len);
-    h = fnv1a_piece(h, f.steering, f.steering_len);
-    h = fnv1a_piece(h, f.exception_class, f.exception_class_len);
-    h = fnv1a_piece(h, f.backtrace, f.backtrace_len);
-    h = fnv1a_piece(h, &f.status_code, sizeof f.status_code);
-    return h;
+    uint64_t headers = app_build_hash();
+    headers = fnv1a_piece(headers, field.method, field.method_len);
+    headers = fnv1a_piece(headers, field.request_target, field.request_target_len);
+    headers = fnv1a_piece(headers, field.steering, field.steering_len);
+    headers = fnv1a_piece(headers, field.exception_class, field.exception_class_len);
+    headers = fnv1a_piece(headers, field.backtrace, field.backtrace_len);
+    headers = fnv1a_piece(headers, &field.status_code, sizeof field.status_code);
+    return headers;
 }
 
-void log_error(Logger &lg, const ErrFacts &f)
+void log_error(Logger &logger, const ErrFacts &field)
 {
-    if (mrb_unlikely(log_queue_full(lg)))
+    if (mrb_unlikely(log_queue_full(logger)))
         return;
     // A 4xx is an answer, not a failure: the client asked for something it
     // may not have, and the server said so. Nothing raised, so there is
     // nothing to explain and no hash to hand out. Refused here, once, so no
     // call site has to remember it.
-    if (f.status_code >= 400 && f.status_code < 500)
+    if (field.status_code >= 400 && field.status_code < 500)
         return;
-    const size_t peer_len = f.peer_len > 255 ? 255 : f.peer_len;
-    const size_t class_len = f.exception_class_len > 255 ? 255 : f.exception_class_len;
-    const size_t target_len = f.request_target_len > 65535 ? 65535 : f.request_target_len;
-    const size_t message_len = f.message_len > 65535 ? 65535 : f.message_len;
-    const size_t backtrace_len = f.backtrace_len > 65535 ? 65535 : f.backtrace_len;
-    const size_t method_len = f.method_len > 255 ? 255 : f.method_len;
-    const size_t steering_len = f.steering_len > 255 ? 255 : f.steering_len;
-    const size_t body_len = f.body_len > kBodyKept ? kBodyKept : f.body_len;
-    ErrRec r;
-    r.version = kErrRecVersion;
-    r.flags = 0; // no RFC, and nothing sets it yet: reserved on the wire
-    r.status_code = f.status_code;
-    r.unix_seconds = lg.unix_seconds;
-    r.peer_len = static_cast<uint8_t>(peer_len);
-    r.exception_class_len = static_cast<uint8_t>(class_len);
-    r.request_target_len = static_cast<uint16_t>(target_len);
-    r.message_len = static_cast<uint16_t>(message_len);
-    r.backtrace_len = static_cast<uint16_t>(backtrace_len);
-    r.method_len = static_cast<uint8_t>(method_len);
-    r.steering_len = static_cast<uint8_t>(steering_len);
-    r.body_len = static_cast<uint16_t>(body_len);
-    r.body_full_len = static_cast<uint32_t>(f.body_full);
-    spell_fingerprint(r.fingerprint, fingerprint_of(f));
-    spell_fingerprint(r.app_build, app_build_hash());
-    r.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
-                                          backtrace_len + method_len + steering_len + body_len);
-    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
+    const size_t peer_len = field.peer_len > 255 ? 255 : field.peer_len;
+    const size_t class_len = field.exception_class_len > 255 ? 255 : field.exception_class_len;
+    const size_t target_len = field.request_target_len > 65535 ? 65535 : field.request_target_len;
+    const size_t message_len = field.message_len > 65535 ? 65535 : field.message_len;
+    const size_t backtrace_len = field.backtrace_len > 65535 ? 65535 : field.backtrace_len;
+    const size_t method_len = field.method_len > 255 ? 255 : field.method_len;
+    const size_t steering_len = field.steering_len > 255 ? 255 : field.steering_len;
+    const size_t body_len = field.body_len > kBodyKept ? kBodyKept : field.body_len;
+    ErrRec round;
+    round.version = kErrRecVersion;
+    round.flags = 0; // no RFC, and nothing sets it yet: reserved on the wire
+    round.status_code = field.status_code;
+    round.unix_seconds = logger.unix_seconds;
+    round.peer_len = static_cast<uint8_t>(peer_len);
+    round.exception_class_len = static_cast<uint8_t>(class_len);
+    round.request_target_len = static_cast<uint16_t>(target_len);
+    round.message_len = static_cast<uint16_t>(message_len);
+    round.backtrace_len = static_cast<uint16_t>(backtrace_len);
+    round.method_len = static_cast<uint8_t>(method_len);
+    round.steering_len = static_cast<uint8_t>(steering_len);
+    round.body_len = static_cast<uint16_t>(body_len);
+    round.body_full_len = static_cast<uint32_t>(field.body_full);
+    spell_fingerprint(round.fingerprint, fingerprint_of(field));
+    spell_fingerprint(round.app_build, app_build_hash());
+    round.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
+                                              backtrace_len + method_len + steering_len + body_len);
+    logger.pending.append(reinterpret_cast<const char *>(&round), sizeof round);
     if (peer_len != 0)
-        lg.pending.append(static_cast<const char *>(f.peer), peer_len);
+        logger.pending.append(static_cast<const char *>(field.peer), peer_len);
     if (class_len != 0)
-        lg.pending.append(f.exception_class, class_len);
+        logger.pending.append(field.exception_class, class_len);
     if (target_len != 0)
-        lg.pending.append(f.request_target, target_len);
+        logger.pending.append(field.request_target, target_len);
     if (message_len != 0)
-        lg.pending.append(f.message, message_len);
+        logger.pending.append(field.message, message_len);
     if (backtrace_len != 0)
-        lg.pending.append(f.backtrace, backtrace_len);
+        logger.pending.append(field.backtrace, backtrace_len);
     if (method_len != 0)
-        lg.pending.append(f.method, method_len);
+        logger.pending.append(field.method, method_len);
     if (steering_len != 0)
-        lg.pending.append(f.steering, steering_len);
+        logger.pending.append(field.steering, steering_len);
     if (body_len != 0)
-        lg.pending.append(f.body, body_len);
+        logger.pending.append(field.body, body_len);
 }
 
-void log_internal_error(Logger &lg, const ErrorLine &line)
+void log_internal_error(Logger &logger, const ErrorLine &line)
 {
-    if (mrb_unlikely(log_queue_full(lg)))
+    if (mrb_unlikely(log_queue_full(logger)))
         return;
-    if (!lg.enabled)
+    if (!logger.enabled)
         return;
     const void *peer = line.peer.data();
     const size_t peer_len = line.peer.size();
@@ -218,21 +219,21 @@ void log_internal_error(Logger &lg, const ErrorLine &line)
     f.message = why;
     f.message_len = why_len;
     f.status_code = status_code;
-    log_error(lg, f);
+    log_error(logger, f);
 }
 
-void say_server_error(Logger *lg, std::string_view why)
+void say_server_error(Logger *logger, std::string_view why)
 {
-    if (lg != nullptr && lg->enabled) {
-        log_internal_error(*lg, {{}, {}, why, 0});
+    if (logger != nullptr && logger->enabled) {
+        log_internal_error(*logger, {{}, {}, why, 0});
         return;
     }
     std::fprintf(stderr, "webmachine: %.*s\n", static_cast<int>(why.size()), why.data());
 }
 
-void log_raise(Logger &lg, mrb_state *mrb, uint16_t status)
+void log_raise(Logger &logger, mrb_state *mrb, uint16_t status)
 {
-    if (!lg.enabled)
+    if (!logger.enabled)
         return;
     ErrFacts f;
     std::string backtrace;
@@ -240,15 +241,15 @@ void log_raise(Logger &lg, mrb_state *mrb, uint16_t status)
     exception_facts(mrb, {f, backtrace});
     if (f.exception_class == nullptr)
         return;
-    log_error(lg, f);
+    log_error(logger, f);
 }
 
-void report_raise(Logger *lg, mrb_state *mrb, uint16_t status)
+void report_raise(Logger *logger, mrb_state *mrb, uint16_t status)
 {
     if (mrb->exc == nullptr)
         return;
-    if (lg != nullptr)
-        log_raise(*lg, mrb, status);
+    if (logger != nullptr)
+        log_raise(*logger, mrb, status);
     if (kDebugBuild)
         mrb_print_error(mrb);
     mrb->exc = nullptr;
@@ -258,36 +259,36 @@ void report_raise(Logger *lg, mrb_state *mrb, uint16_t status)
 
 namespace webmachine::http
 {
-size_t path_only(const char *p, size_t n)
+size_t path_only(const char *bytes, size_t count)
 {
-    for (size_t i = 0; i < n; i++) {
-        if (p[i] == '?')
+    for (size_t i = 0; i < count; i++) {
+        if (bytes[i] == '?')
             return i;
     }
-    return n;
+    return count;
 }
 
-flow::Method parse_method(const char *m, size_t n)
+flow::Method parse_method(const char *method, size_t count)
 {
-    switch (n) {
+    switch (count) {
         case 3:
-            if (std::memcmp(m, "GET", 3) == 0)
+            if (std::memcmp(method, "GET", 3) == 0)
                 return flow::Method::kGet;
-            if (std::memcmp(m, "PUT", 3) == 0)
+            if (std::memcmp(method, "PUT", 3) == 0)
                 return flow::Method::kPut;
             break;
         case 4:
-            if (std::memcmp(m, "HEAD", 4) == 0)
+            if (std::memcmp(method, "HEAD", 4) == 0)
                 return flow::Method::kHead;
-            if (std::memcmp(m, "POST", 4) == 0)
+            if (std::memcmp(method, "POST", 4) == 0)
                 return flow::Method::kPost;
             break;
         case 6:
-            if (std::memcmp(m, "DELETE", 6) == 0)
+            if (std::memcmp(method, "DELETE", 6) == 0)
                 return flow::Method::kDelete;
             break;
         case 7:
-            if (std::memcmp(m, "OPTIONS", 7) == 0)
+            if (std::memcmp(method, "OPTIONS", 7) == 0)
                 return flow::Method::kOptions;
             break;
         default:
@@ -305,49 +306,49 @@ std::string with_charset(const std::string &type)
     return type + "; charset=utf-8";
 }
 
-bool compressible_media_type(const std::string &v)
+bool compressible_media_type(const std::string &value)
 {
-    return compressible_media_type(v.data(), v.size());
+    return compressible_media_type(value.data(), value.size());
 }
 
-void write_two_digits(char *out, int v)
+void write_two_digits(char *out_value, int value)
 {
-    out[0] = static_cast<char>('0' + v / 10);
-    out[1] = static_cast<char>('0' + v % 10);
+    out_value[0] = static_cast<char>('0' + value / 10);
+    out_value[1] = static_cast<char>('0' + value % 10);
 }
 
-void date_core(char out[kDateLen], const struct tm &tm)
+void date_core(char out_value[kDateLen], const struct tm &tm)
 {
     static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    std::memcpy(out, kDay[tm.tm_wday], 3);
-    out[3] = ',';
-    out[4] = ' ';
-    write_two_digits(out + 5, tm.tm_mday);
-    out[7] = ' ';
-    std::memcpy(out + 8, kMon[tm.tm_mon], 3);
-    out[11] = ' ';
+    std::memcpy(out_value, kDay[tm.tm_wday], 3);
+    out_value[3] = ',';
+    out_value[4] = ' ';
+    write_two_digits(out_value + 5, tm.tm_mday);
+    out_value[7] = ' ';
+    std::memcpy(out_value + 8, kMon[tm.tm_mon], 3);
+    out_value[11] = ' ';
     const int year = tm.tm_year + 1900;
-    write_two_digits(out + 12, year / 100);
-    write_two_digits(out + 14, year % 100);
-    out[16] = ' ';
-    write_two_digits(out + 17, tm.tm_hour);
-    out[19] = ':';
-    write_two_digits(out + 20, tm.tm_min);
-    out[22] = ':';
-    write_two_digits(out + 23, tm.tm_sec);
-    out[25] = ' ';
-    std::memcpy(out + 26, "GMT", 3);
+    write_two_digits(out_value + 12, year / 100);
+    write_two_digits(out_value + 14, year % 100);
+    out_value[16] = ' ';
+    write_two_digits(out_value + 17, tm.tm_hour);
+    out_value[19] = ':';
+    write_two_digits(out_value + 20, tm.tm_min);
+    out_value[22] = ':';
+    write_two_digits(out_value + 23, tm.tm_sec);
+    out_value[25] = ' ';
+    std::memcpy(out_value + 26, "GMT", 3);
 }
 
-size_t spell_content_length(char (&buf)[40], size_t len)
+size_t spell_content_length(char (&buf)[40], size_t length)
 {
     std::memcpy(buf, "Content-Length: ", 16);
     size_t at = 16;
     char digits[20];
     size_t d = 0;
-    size_t v = len;
+    size_t v = length;
     do {
         digits[d++] = static_cast<char>('0' + v % 10);
         v /= 10;
@@ -372,109 +373,109 @@ int hex_digit(char ch)
     return -1;
 }
 
-ClStatus parse_content_length(std::string_view v, size_t *out)
+ClStatus parse_content_length(std::string_view value, size_t *out_value)
 {
-    const char *const s = v.data();
-    const size_t n = v.size();
-    if (n == 0)
+    const char *const sqe = value.data();
+    const size_t count = value.size();
+    if (count == 0)
         return ClStatus::kBad;
     size_t acc = 0;
-    for (size_t j = 0; j < n; j++) {
-        const char ch = s[j];
+    for (size_t j = 0; j < count; j++) {
+        const char ch = sqe[j];
         if (ch < '0' || ch > '9')
             return ClStatus::kBad;
-        size_t t = 0;
-        if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &t) ||
-            __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &acc)) {
+        size_t text = 0;
+        if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &text) ||
+            __builtin_add_overflow(text, static_cast<size_t>(ch - '0'), &acc)) {
             return ClStatus::kOverflow;
         }
     }
-    *out = acc;
+    *out_value = acc;
     return ClStatus::kOk;
 }
 
-void rebase(ReqValues &v, ptrdiff_t delta)
+void rebase(ReqValues &value, ptrdiff_t delta)
 {
     for (const char *ReqValues::*m : kReqValueSpans) {
-        if (v.*m != nullptr)
-            v.*m += delta;
+        if (value.*m != nullptr)
+            value.*m += delta;
     }
 }
 
-void spell_steering(const ReqValues *v, std::string &out)
+void spell_steering(const ReqValues *value, std::string &out_value)
 {
-    out.clear();
-    if (v == nullptr)
+    out_value.clear();
+    if (value == nullptr)
         return;
-    const char *p = nullptr;
+    const char *bytes = nullptr;
     size_t n = 0;
-    const auto put = [&out](const char *name, const char *val, size_t len) {
-        if (val == nullptr || len == 0)
+    const auto put = [&out_value](const char *name, const char *field_value, size_t length) {
+        if (field_value == nullptr || length == 0)
             return;
-        out.append(name);
-        out.append(": ", 2);
-        out.append(val, len);
-        out.push_back('\n');
+        out_value.append(name);
+        out_value.append(": ", 2);
+        out_value.append(field_value, length);
+        out_value.push_back('\n');
     };
-    put("accept", v->accept, v->accept_len);
-    put("accept-encoding", v->accept_encoding, v->accept_encoding_len);
-    put("content-type", v->content_type, v->content_type_len);
-    put("host", v->host, v->host_len);
-    put("range", v->range, v->range_len);
-    put("if-range", v->if_range, v->if_range_len);
-    put("if-match", v->if_match, v->if_match_len);
-    put("if-none-match", v->if_none_match, v->if_none_match_len);
+    put("accept", value->accept, value->accept_len);
+    put("accept-encoding", value->accept_encoding, value->accept_encoding_len);
+    put("content-type", value->content_type, value->content_type_len);
+    put("host", value->host, value->host_len);
+    put("range", value->range, value->range_len);
+    put("if-range", value->if_range, value->if_range_len);
+    put("if-match", value->if_match, value->if_match_len);
+    put("if-none-match", value->if_none_match, value->if_none_match_len);
     // The scheme is the first token; a line with no space is a scheme on
     // its own, which is all that goes down either way.
-    if (v->authorization != nullptr && v->authorization_len != 0) {
-        p = v->authorization;
+    if (value->authorization != nullptr && value->authorization_len != 0) {
+        bytes = value->authorization;
         n = 0;
-        while (n < v->authorization_len && p[n] != ' ' && p[n] != '\t')
+        while (n < value->authorization_len && bytes[n] != ' ' && bytes[n] != '\t')
             n++;
-        put("authorization", p, n);
+        put("authorization", bytes, n);
     }
-    if (v->cookie != nullptr && v->cookie_len != 0)
+    if (value->cookie != nullptr && value->cookie_len != 0)
         put("cookie", "sent", 4);
 }
 
-bool read_size(const char *v, size_t n, size_t &i, size_t *out)
+bool read_size(const char *value, size_t count, size_t &i, size_t *out_value)
 {
     bool any = false;
     size_t val = 0;
-    while (i < n && v[i] >= '0' && v[i] <= '9') {
-        size_t t = 0;
-        if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
-            __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
+    while (i < count && value[i] >= '0' && value[i] <= '9') {
+        size_t text = 0;
+        if (__builtin_mul_overflow(val, static_cast<size_t>(10), &text) ||
+            __builtin_add_overflow(text, static_cast<size_t>(value[i] - '0'), &val)) {
             return false;
         }
         any = true;
         i++;
     }
-    *out = val;
+    *out_value = val;
     return any;
 }
 
-RangeParse parse_range(RangeField field, ByteRange &out)
+RangeParse parse_range(RangeField field, ByteRange &out_value)
 {
-    const char *const v = field.value.data();
-    const size_t n = field.value.size();
+    const char *const value = field.value.data();
+    const size_t count = field.value.size();
     const size_t complete = field.complete;
-    size_t *const first = &out.first;
-    size_t *const last = &out.last;
-    if (n < 7 || !tok_eq({v, 6}, "bytes="))
+    size_t *const first = &out_value.first;
+    size_t *const last = &out_value.last;
+    if (count < 7 || !tok_eq({value, 6}, "bytes="))
         return RangeParse::kNone;
     size_t i = 6;
-    while (i < n && (v[i] == ' ' || v[i] == '\t'))
+    while (i < count && (value[i] == ' ' || value[i] == '\t'))
         i++;
     size_t a = 0, b = 0;
-    const bool have_a = read_size(v, n, i, &a);
-    if (i >= n || v[i] != '-')
+    const bool have_a = read_size(value, count, i, &a);
+    if (i >= count || value[i] != '-')
         return RangeParse::kNone;
     i++;
-    const bool have_b = read_size(v, n, i, &b);
-    while (i < n && (v[i] == ' ' || v[i] == '\t'))
+    const bool have_b = read_size(value, count, i, &b);
+    while (i < count && (value[i] == ' ' || value[i] == '\t'))
         i++;
-    if (i != n)
+    if (i != count)
         return RangeParse::kNone;
     if (!have_a && !have_b)
         return RangeParse::kNone;
@@ -496,49 +497,49 @@ RangeParse parse_range(RangeField field, ByteRange &out)
     return RangeParse::kOne;
 }
 
-bool if_range_matches(std::string_view v, std::string_view tag)
+bool if_range_matches(std::string_view value, std::string_view poll_tag)
 {
-    const char *const p = v.data();
-    const size_t n = v.size();
-    const size_t taglen = tag.size();
+    const char *const bytes = value.data();
+    const size_t count = value.size();
+    const size_t taglen = poll_tag.size();
     size_t i = 0;
-    while (i < n && (p[i] == ' ' || p[i] == '\t'))
+    while (i < count && (bytes[i] == ' ' || bytes[i] == '\t'))
         i++;
-    size_t e = n;
-    while (e > i && (p[e - 1] == ' ' || p[e - 1] == '\t'))
+    size_t e = count;
+    while (e > i && (bytes[e - 1] == ' ' || bytes[e - 1] == '\t'))
         e--;
-    return e - i == taglen && std::memcmp(p + i, tag.data(), taglen) == 0;
+    return e - i == taglen && std::memcmp(bytes + i, poll_tag.data(), taglen) == 0;
 }
 
-bool gzip_acceptable(const char *v, size_t n)
+bool gzip_acceptable(const char *value, size_t n)
 {
     bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
     size_t i = 0;
     while (i < n) {
-        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
+        while (i < n && (value[i] == ' ' || value[i] == '\t' || value[i] == ','))
             i++;
         const size_t ts = i;
-        while (i < n && v[i] != ',' && v[i] != ';' && v[i] != ' ' && v[i] != '\t')
+        while (i < n && value[i] != ',' && value[i] != ';' && value[i] != ' ' && value[i] != '\t')
             i++;
         const size_t tl = i - ts;
         bool q_nonzero = true;
-        while (i < n && v[i] != ',') {
-            if (v[i] != ';') {
+        while (i < n && value[i] != ',') {
+            if (value[i] != ';') {
                 i++;
                 continue;
             }
             i++;
-            while (i < n && (v[i] == ' ' || v[i] == '\t'))
+            while (i < n && (value[i] == ' ' || value[i] == '\t'))
                 i++;
-            if (i < n && (v[i] == 'q' || v[i] == 'Q')) {
+            if (i < n && (value[i] == 'q' || value[i] == 'Q')) {
                 size_t j = i + 1;
-                while (j < n && (v[j] == ' ' || v[j] == '\t'))
+                while (j < n && (value[j] == ' ' || value[j] == '\t'))
                     j++;
-                if (j < n && v[j] == '=') {
+                if (j < n && value[j] == '=') {
                     j++;
                     q_nonzero = false;
-                    while (j < n && v[j] != ',' && v[j] != ';') {
-                        if (v[j] >= '1' && v[j] <= '9')
+                    while (j < n && value[j] != ',' && value[j] != ';') {
+                        if (value[j] >= '1' && value[j] <= '9')
                             q_nonzero = true;
                         j++;
                     }
@@ -547,10 +548,10 @@ bool gzip_acceptable(const char *v, size_t n)
             }
         }
         if (tl != 0) {
-            if (tok_eq({v + ts, tl}, "gzip") || tok_eq({v + ts, tl}, "x-gzip")) {
+            if (tok_eq({value + ts, tl}, "gzip") || tok_eq({value + ts, tl}, "x-gzip")) {
                 gz_seen = true;
                 gz_ok = q_nonzero;
-            } else if (tl == 1 && v[ts] == '*') {
+            } else if (tl == 1 && value[ts] == '*') {
                 star_seen = true;
                 star_ok = q_nonzero;
             }
@@ -563,70 +564,71 @@ bool gzip_acceptable(const char *v, size_t n)
     return false;
 }
 
-bool etag_list_match(EtagMatch m)
+bool etag_list_match(EtagMatch method)
 {
-    const char *const v = m.list.data();
-    const size_t n = m.list.size();
-    const char *const tag = m.tag.data();
-    const size_t taglen = m.tag.size();
-    const bool weak = m.weak;
+    const char *const value = method.list.data();
+    const size_t count = method.list.size();
+    const char *const poll_tag = method.tag.data();
+    const size_t taglen = method.tag.size();
+    const bool weak = method.weak;
     size_t i = 0;
-    while (i < n) {
-        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
+    while (i < count) {
+        while (i < count && (value[i] == ' ' || value[i] == '\t' || value[i] == ','))
             i++;
-        if (i >= n)
+        if (i >= count)
             break;
         bool member_weak = false;
-        if (i + 1 < n && v[i] == 'W' && v[i + 1] == '/') {
+        if (i + 1 < count && value[i] == 'W' && value[i + 1] == '/') {
             member_weak = true;
             i += 2;
         }
-        if (i >= n || v[i] != '"') {
-            while (i < n && v[i] != ',')
+        if (i >= count || value[i] != '"') {
+            while (i < count && value[i] != ',')
                 i++;
             continue;
         }
         const size_t start = i;
         i++;
-        while (i < n && v[i] != '"')
+        while (i < count && value[i] != '"')
             i++;
-        if (i >= n)
+        if (i >= count)
             break;
         i++;
         const size_t mlen = i - start;
-        if ((weak || !member_weak) && mlen == taglen && std::memcmp(v + start, tag, taglen) == 0) {
+        if ((weak || !member_weak) && mlen == taglen &&
+            std::memcmp(value + start, poll_tag, taglen) == 0) {
             return true;
         }
     }
     return false;
 }
 
-int read_fixed_digits(const char *p, size_t at, size_t k)
+int read_fixed_digits(const char *bytes, size_t index, size_t k)
 {
     int v = 0;
     for (size_t i = 0; i < k; i++) {
-        if (p[at + i] < '0' || p[at + i] > '9')
+        if (bytes[index + i] < '0' || bytes[index + i] > '9')
             return -1;
-        v = v * 10 + (p[at + i] - '0');
+        v = v * 10 + (bytes[index + i] - '0');
     }
     return v;
 }
 
-int read_month_name(const char *p, size_t at)
+int read_month_name(const char *bytes, size_t index)
 {
     static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     for (int m = 0; m < 12; m++) {
-        if (std::memcmp(p + at, kMon[m], 3) == 0)
+        if (std::memcmp(bytes + index, kMon[m], 3) == 0)
             return m + 1;
     }
     return -1;
 }
 
-int64_t epoch_from_civil(Civil c)
+int64_t epoch_from_civil(Civil conn)
 {
-    int y = c.y;
-    const int m = c.m, d = c.d, hh = c.hh, mm = c.mm, ss = c.ss;
+    int y = conn.y;
+    const int m = conn.m, d = conn.d, hh = conn.hh, mm = conn.mm, ss = conn.ss;
     y -= m <= 2;
     const int era = (y >= 0 ? y : y - 399) / 400;
     const int yoe = y - era * 400;
@@ -636,41 +638,41 @@ int64_t epoch_from_civil(Civil c)
     return days * 86400 + hh * 3600 + mm * 60 + ss;
 }
 
-bool parse_http_date(const char *p, size_t n, int64_t *out)
+bool parse_http_date(const char *bytes, size_t count, int64_t *out_value)
 {
     int y, mo, d, hh, mm, ss;
-    if (n == 29 && p[3] == ',' && p[4] == ' ') { // IMF-fixdate
-        d = read_fixed_digits(p, 5, 2);
-        mo = read_month_name(p, 8);
-        y = read_fixed_digits(p, 12, 4);
-        hh = read_fixed_digits(p, 17, 2);
-        mm = read_fixed_digits(p, 20, 2);
-        ss = read_fixed_digits(p, 23, 2);
-        if (std::memcmp(p + 25, " GMT", 4) != 0)
+    if (count == 29 && bytes[3] == ',' && bytes[4] == ' ') { // IMF-fixdate
+        d = read_fixed_digits(bytes, 5, 2);
+        mo = read_month_name(bytes, 8);
+        y = read_fixed_digits(bytes, 12, 4);
+        hh = read_fixed_digits(bytes, 17, 2);
+        mm = read_fixed_digits(bytes, 20, 2);
+        ss = read_fixed_digits(bytes, 23, 2);
+        if (std::memcmp(bytes + 25, " GMT", 4) != 0)
             return false;
-    } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
-               static_cast<const char *>(std::memchr(p, ',', n)) != nullptr) { // RFC 850
-        const char *c = static_cast<const char *>(std::memchr(p, ',', n));
-        const size_t at = static_cast<size_t>(c - p) + 2;
-        if (at + 18 + 4 != n || at + 18 > n)
+    } else if (count >= 28 && count <= 33 && std::memcmp(bytes + count - 4, " GMT", 4) == 0 &&
+               static_cast<const char *>(std::memchr(bytes, ',', count)) != nullptr) { // RFC 850
+        const char *conn = static_cast<const char *>(std::memchr(bytes, ',', count));
+        const size_t index = static_cast<size_t>(conn - bytes) + 2;
+        if (index + 18 + 4 != count || index + 18 > count)
             return false;
-        d = read_fixed_digits(p, at, 2);
-        if (p[at + 2] != '-' || p[at + 6] != '-')
+        d = read_fixed_digits(bytes, index, 2);
+        if (bytes[index + 2] != '-' || bytes[index + 6] != '-')
             return false;
-        mo = read_month_name(p, at + 3);
-        y = read_fixed_digits(p, at + 7, 2);
+        mo = read_month_name(bytes, index + 3);
+        y = read_fixed_digits(bytes, index + 7, 2);
         if (y >= 0)
             y += y < 70 ? 2000 : 1900; // 5.6.7's two-digit rule
-        hh = read_fixed_digits(p, at + 10, 2);
-        mm = read_fixed_digits(p, at + 13, 2);
-        ss = read_fixed_digits(p, at + 16, 2);
-    } else if (n == 24 && p[3] == ' ' && p[7] == ' ') { // asctime
-        mo = read_month_name(p, 4);
-        d = p[8] == ' ' ? read_fixed_digits(p, 9, 1) : read_fixed_digits(p, 8, 2);
-        hh = read_fixed_digits(p, 11, 2);
-        mm = read_fixed_digits(p, 14, 2);
-        ss = read_fixed_digits(p, 17, 2);
-        y = read_fixed_digits(p, 20, 4);
+        hh = read_fixed_digits(bytes, index + 10, 2);
+        mm = read_fixed_digits(bytes, index + 13, 2);
+        ss = read_fixed_digits(bytes, index + 16, 2);
+    } else if (count == 24 && bytes[3] == ' ' && bytes[7] == ' ') { // asctime
+        mo = read_month_name(bytes, 4);
+        d = bytes[8] == ' ' ? read_fixed_digits(bytes, 9, 1) : read_fixed_digits(bytes, 8, 2);
+        hh = read_fixed_digits(bytes, 11, 2);
+        mm = read_fixed_digits(bytes, 14, 2);
+        ss = read_fixed_digits(bytes, 17, 2);
+        y = read_fixed_digits(bytes, 20, 4);
     } else {
         return false;
     }
@@ -678,33 +680,33 @@ bool parse_http_date(const char *p, size_t n, int64_t *out)
         ss > 60) {
         return false;
     }
-    *out = epoch_from_civil({y, mo, d, hh, mm, ss});
+    *out_value = epoch_from_civil({y, mo, d, hh, mm, ss});
     return true;
 }
 
 bool accept_is_exact(std::string_view accept, std::string_view type)
 {
-    const char *const a = accept.data();
-    const size_t n = accept.size();
+    const char *const answer = accept.data();
+    const size_t count = accept.size();
     size_t i = 0;
-    while (i < n && (a[i] == ' ' || a[i] == '\t'))
+    while (i < count && (answer[i] == ' ' || answer[i] == '\t'))
         i++;
-    if (n - i < type.size())
+    if (count - i < type.size())
         return false;
-    if (std::memcmp(a + i, type.data(), type.size()) != 0)
+    if (std::memcmp(answer + i, type.data(), type.size()) != 0)
         return false;
     i += type.size();
-    while (i < n && (a[i] == ' ' || a[i] == '\t'))
+    while (i < count && (answer[i] == ' ' || answer[i] == '\t'))
         i++;
-    return i == n || a[i] == ',';
+    return i == count || answer[i] == ',';
 }
 
-int choose_media_type(Conneg c)
+int choose_media_type(Conneg conn)
 {
-    const std::string *const types = c.provided.data();
-    const size_t ntypes = c.provided.size();
-    const char *const av = c.accept.data();
-    const size_t alen = c.accept.size();
+    const std::string *const types = conn.provided.data();
+    const size_t ntypes = conn.provided.size();
+    const char *const av = conn.accept.data();
+    const size_t alen = conn.accept.size();
     struct Range {
         const char *t;
         size_t tn;
@@ -723,32 +725,32 @@ int choose_media_type(Conneg c)
         const size_t start = i;
         while (i < alen && av[i] != ',')
             i++;
-        const size_t end = i;
+        const size_t text_end = i;
         int q = 1000;
         size_t semi = start;
-        while (semi < end && av[semi] != ';')
+        while (semi < text_end && av[semi] != ';')
             semi++;
         size_t tend = semi;
         while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t'))
             tend--;
         size_t pi = semi;
-        while (pi < end) {
+        while (pi < text_end) {
             pi++;
-            while (pi < end && (av[pi] == ' ' || av[pi] == '\t'))
+            while (pi < text_end && (av[pi] == ' ' || av[pi] == '\t'))
                 pi++;
-            if (pi + 2 <= end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
-                size_t v = pi + 2;
+            if (pi + 2 <= text_end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
+                size_t value = pi + 2;
                 int whole = 0, frac = 0, fdig = 0;
-                if (v < end && (av[v] >= '0' && av[v] <= '9')) {
-                    whole = av[v] - '0';
-                    v++;
+                if (value < text_end && (av[value] >= '0' && av[value] <= '9')) {
+                    whole = av[value] - '0';
+                    value++;
                 }
-                if (v < end && av[v] == '.') {
-                    v++;
-                    while (v < end && (av[v] >= '0' && av[v] <= '9') && fdig < 3) {
-                        frac = frac * 10 + (av[v] - '0');
+                if (value < text_end && av[value] == '.') {
+                    value++;
+                    while (value < text_end && (av[value] >= '0' && av[value] <= '9') && fdig < 3) {
+                        frac = frac * 10 + (av[value] - '0');
                         fdig++;
-                        v++;
+                        value++;
                     }
                 }
                 while (fdig < 3) {
@@ -759,7 +761,7 @@ int choose_media_type(Conneg c)
                 if (q > 1000)
                     q = 1000;
             }
-            while (pi < end && av[pi] != ';')
+            while (pi < text_end && av[pi] != ';')
                 pi++;
         }
         const char *slash = static_cast<const char *>(std::memchr(av + start, '/', tend - start));
@@ -783,16 +785,16 @@ int choose_media_type(Conneg c)
         while (tn > 0 && full[tn - 1] == ' ')
             tn--;
         const char *tp = full.data();
-        const size_t sl = full.find('/');
-        if (sl == std::string::npos || sl >= tn)
+        const size_t slot = full.find('/');
+        if (slot == std::string::npos || slot >= tn)
             continue;
-        const size_t main_n = sl;
-        const char *sub_p = tp + sl + 1;
-        const size_t sub_n = tn - sl - 1;
+        const size_t main_n = slot;
+        const char *sub_p = tp + slot + 1;
+        const size_t sub_n = tn - slot - 1;
         int q = -1;
         int spec = -1;
-        for (size_t r = 0; r < nr; r++) {
-            const Range &rg = ranges[r];
+        for (size_t round = 0; round < nr; round++) {
+            const Range &rg = ranges[round];
             int this_spec;
             if (rg.tn == 1 && rg.t[0] == '*') {
                 this_spec = 0;
@@ -821,29 +823,29 @@ int choose_media_type(Conneg c)
     return best;
 }
 
-void etag_spell(const char *raw, size_t n, std::string &out)
+void etag_spell(const char *raw, size_t count, std::string &out_value)
 {
-    out.clear();
-    if ((n >= 2 && raw[0] == '"') || (n >= 3 && raw[0] == 'W' && raw[1] == '/')) {
-        out.append(raw, n);
+    out_value.clear();
+    if ((count >= 2 && raw[0] == '"') || (count >= 3 && raw[0] == 'W' && raw[1] == '/')) {
+        out_value.append(raw, count);
         return;
     }
-    out.push_back('"');
-    out.append(raw, n);
-    out.push_back('"');
+    out_value.push_back('"');
+    out_value.append(raw, count);
+    out_value.push_back('"');
 }
 
-void uri_join(UriRef r, std::string &out)
+void uri_join(UriRef round, std::string &out_value)
 {
-    const char *const base = r.base.data();
-    const size_t blen = r.base.size();
-    const char *const path = r.ref.data();
-    const size_t payload_length = r.ref.size();
-    out.clear();
+    const char *const base = round.base.data();
+    const size_t blen = round.base.size();
+    const char *const path = round.ref.data();
+    const size_t payload_length = round.ref.size();
+    out_value.clear();
     if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
         const char *colon = static_cast<const char *>(std::memchr(path, ':', payload_length));
         if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
-            out.append(path, payload_length);
+            out_value.append(path, payload_length);
             return;
         }
     }
@@ -856,8 +858,8 @@ void uri_join(UriRef r, std::string &out)
                     break;
             }
         }
-        out.append(base, i);
-        out.append(path, payload_length);
+        out_value.append(base, i);
+        out_value.append(path, payload_length);
         return;
     }
     size_t cut = blen;
@@ -865,52 +867,53 @@ void uri_join(UriRef r, std::string &out)
         cut--;
     if (cut == 0)
         cut = blen;
-    out.append(base, cut);
-    if (!out.empty() && out.back() != '/')
-        out.push_back('/');
-    out.append(path, payload_length);
+    out_value.append(base, cut);
+    if (!out_value.empty() && out_value.back() != '/')
+        out_value.push_back('/');
+    out_value.append(path, payload_length);
 }
 
-bool field_name_is_the_servers(const char *p, size_t n)
+bool field_name_is_the_servers(const char *bytes, size_t count)
 {
     static constexpr const char *kOurs[] = {"content-length",  "transfer-encoding", "connection",
                                             "keep-alive",      "upgrade",           "te",
                                             "proxy-connection"};
     for (const char *ours : kOurs) {
         size_t i = 0;
-        for (; i < n && ours[i] != '\0'; i++) {
-            const unsigned char c = static_cast<unsigned char>(p[i]);
+        for (; i < count && ours[i] != '\0'; i++) {
+            const unsigned char conn = static_cast<unsigned char>(bytes[i]);
             const unsigned char lc =
-                (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c;
+                (conn >= 'A' && conn <= 'Z') ? static_cast<unsigned char>(conn + 32) : conn;
             if (lc != static_cast<unsigned char>(ours[i]))
                 break;
         }
-        if (i == n && ours[i] == '\0')
+        if (i == count && ours[i] == '\0')
             return true;
     }
     return false;
 }
 
-bool field_name_ok(const char *p, size_t n)
+bool field_name_ok(const char *bytes, size_t count)
 {
-    if (n == 0)
+    if (count == 0)
         return false;
-    for (size_t i = 0; i < n; i++) {
-        const unsigned char c = static_cast<unsigned char>(p[i]);
-        const bool tchar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                           (c >= '0' && c <= '9') || c == '!' || c == '#' || c == '$' || c == '%' ||
-                           c == '&' || c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
-                           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+    for (size_t i = 0; i < count; i++) {
+        const unsigned char conn = static_cast<unsigned char>(bytes[i]);
+        const bool tchar = (conn >= 'a' && conn <= 'z') || (conn >= 'A' && conn <= 'Z') ||
+                           (conn >= '0' && conn <= '9') || conn == '!' || conn == '#' ||
+                           conn == '$' || conn == '%' || conn == '&' || conn == '\'' ||
+                           conn == '*' || conn == '+' || conn == '-' || conn == '.' ||
+                           conn == '^' || conn == '_' || conn == '`' || conn == '|' || conn == '~';
         if (!tchar)
             return false;
     }
     return true;
 }
 
-bool field_value_ok(const char *p, size_t n)
+bool field_value_ok(const char *bytes, size_t count)
 {
-    for (size_t i = 0; i < n; i++) {
-        if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0')
+    for (size_t i = 0; i < count; i++) {
+        if (bytes[i] == '\r' || bytes[i] == '\n' || bytes[i] == '\0')
             return false;
     }
     return true;
@@ -920,7 +923,7 @@ bool field_value_ok(const char *p, size_t n)
 
 namespace webmachine::gzip
 {
-bool compress(const std::string &in, std::string &out)
+bool compress(const std::string &in, std::string &out_value)
 {
     if (in.size() >= std::numeric_limits<uint32_t>::max())
         return false;
@@ -929,19 +932,19 @@ bool compress(const std::string &in, std::string &out)
         return false;
     }
     const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
-    out.assign(reinterpret_cast<const char *>(kHeader), sizeof(kHeader));
-    const size_t body_off = out.size();
-    out.resize(body_off + bound);
+    out_value.assign(reinterpret_cast<const char *>(kHeader), sizeof(kHeader));
+    const size_t body_off = out_value.size();
+    out_value.resize(body_off + bound);
     strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.data()));
     strm.avail_in = static_cast<uInt>(in.size());
-    strm.next_out = reinterpret_cast<Bytef *>(&out[0]) + body_off;
+    strm.next_out = reinterpret_cast<Bytef *>(&out_value[0]) + body_off;
     strm.avail_out = static_cast<uInt>(bound);
-    const int rc = deflate(&strm, Z_FINISH);
+    const int status = deflate(&strm, Z_FINISH);
     const size_t produced = strm.total_out;
     deflateEnd(&strm);
-    if (rc != Z_STREAM_END)
+    if (status != Z_STREAM_END)
         return false;
-    out.resize(body_off + produced);
+    out_value.resize(body_off + produced);
 
     const uint32_t crc =
         static_cast<uint32_t>(crc32_z(0, reinterpret_cast<const Bytef *>(in.data()), in.size()));
@@ -955,7 +958,7 @@ bool compress(const std::string &in, std::string &out)
     trailer[5] = static_cast<unsigned char>(isize >> 8);
     trailer[6] = static_cast<unsigned char>(isize >> 16);
     trailer[7] = static_cast<unsigned char>(isize >> 24);
-    out.append(reinterpret_cast<const char *>(trailer), sizeof(trailer));
+    out_value.append(reinterpret_cast<const char *>(trailer), sizeof(trailer));
     return true;
 }
 
