@@ -544,6 +544,15 @@ class Ring {
       struct iovec bye_iov {};
       unsigned char bye[2] = {1, 0};  // warning, close_notify
       unsigned char bye_control[CMSG_SPACE(1)] = {};
+      // RFC 8446 4.6.3: the KeyUpdate this side sends before it turns its
+      // own send key - handshake type 24, a body of one octet, and that
+      // octet 0 for update_not_requested. It is submitted and then
+      // waited for, so it outlives the call that spelled it, exactly as
+      // the alert above does.
+      struct msghdr ku_msg {};
+      struct iovec ku_iov {};
+      unsigned char ku[5] = {24, 0, 0, 1, 0};
+      unsigned char ku_control[CMSG_SPACE(1)] = {};
       // RFC 8446 4.6.1: plaintext a peer put in the same flight as its
       // Finished. The kernel's stream starts at sequence zero and cannot
       // be handed a backlog, so this waits here until the socket has both
@@ -1061,6 +1070,38 @@ class Ring {
     std::memcpy(c.tls->info[KTLS_TX], info, len);
     c.tls->info_len[KTLS_TX] = len;
     c.tls->tx_records = 0;
+    // RFC 8446 4.6.3: the peer is told before the key changes, and the
+    // message goes out under the key it replaces. Without it the kernel
+    // began encrypting under a key the peer did not have, and every long
+    // AES stream - a download, a websocket, an event stream - died at
+    // this exact point with nothing saying why.
+    //
+    // A handshake record over kTLS is a sendmsg carrying the record type
+    // in a control message, the shape the close_notify alert uses. The
+    // setsockopt is linked behind it, so the kernel keeps the order: the
+    // KeyUpdate leaves under the old key, then the new one is installed.
+    const int cmsg_type = ktls_record_type_set_cmsg();
+    if (mrb_likely(cmsg_type >= 0)) {
+      typename Conn::Tls& t = *c.tls;
+      t.ku_iov.iov_base = t.ku;
+      t.ku_iov.iov_len = sizeof t.ku;
+      t.ku_msg = msghdr{};
+      t.ku_msg.msg_iov = &t.ku_iov;
+      t.ku_msg.msg_iovlen = 1;
+      t.ku_msg.msg_control = t.ku_control;
+      t.ku_msg.msg_controllen = sizeof t.ku_control;
+      struct cmsghdr* cm = CMSG_FIRSTHDR(&t.ku_msg);
+      cm->cmsg_level = ktls_sol_tls();
+      cm->cmsg_type = cmsg_type;
+      cm->cmsg_len = CMSG_LEN(1);
+      if (mrb_likely(ktls_record_type_encode(KTLS_RECORD_HANDSHAKE, CMSG_DATA(cm), 1) == 1)) {
+        t.ku_msg.msg_controllen = CMSG_SPACE(1);
+        struct io_uring_sqe* ks = sqe();
+        io_uring_prep_sendmsg(ks, static_cast<int>(idx), &t.ku_msg, MSG_NOSIGNAL);
+        ks->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+        io_uring_sqe_set_data64(ks, detail::tag(detail::kTlsBye, c.gen, idx));
+      }
+    }
     struct io_uring_sqe* s = sqe();
     io_uring_prep_cmd_sock(s, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(idx), ktls_sol_tls(),
                            ktls_optname(KTLS_TX), c.tls->info[KTLS_TX],
@@ -1078,6 +1119,10 @@ class Ring {
     if (mrb_unlikely(idx >= max_conns_)) return;
     Conn& c = conns_[idx];
     if (!c.live || c.gen != gen) return;
+    // ECANCELED here is the KeyUpdate linked ahead of this one failing.
+    // The peer never heard that the key changes, so the key may not
+    // change: the connection ends rather than encrypting under a secret
+    // nobody on the other side has.
     if (mrb_unlikely(cqe->res < 0)) conn_failed("tls: setsockopt(TLS_TX) for a record limit", cqe->res);
     send_done(idx);
   }
