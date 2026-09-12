@@ -1,8 +1,9 @@
 # Keep passwords
 
-This how-to is for an operator who needs a password database, and a
-developer who needs to check a login against it. At the end, you have
-users in an LMDB file, and a resource that checks a password without
+This how-to is for an operator who keeps a password database with
+`webmachine-passwd`, and a developer who checks a login on a worker
+thread. At the end you know what the tool does, what the server does
+with its file today, and how a resource checks a password without
 blocking the request loop.
 
 ## The tool
@@ -60,6 +61,16 @@ The cost picked for a user is stored with them. Raising it later
 re-hashes one user at their next password change and leaves everyone
 else verifiable at the cost they were given.
 
+## What the server does with the database today
+
+Nothing yet. `webmachine-passwd` writes the records, and the layout is
+public (`PasswdRec` in `src/webmachine.hpp`: a 32-byte header, then
+the salt, then the argon2id hash, made with the sub-database's name as
+argon2's `ad`). The server has no code that reads it, and no Ruby
+method that answers "is this password right for this user". That is
+the next piece of work, and until it lands a resource checks a
+password against a table it builds itself.
+
 ## Checking a password from a resource
 
 Hashing takes tens of milliseconds by design, so it never runs on the
@@ -84,13 +95,11 @@ class Login < Webmachine::Resource
 end
 ```
 
-A task over its deadline answers 500. A worker that raises answers 503
-with `Retry-After`.
-
-The database `webmachine-passwd` writes is LMDB. Its record layout is
-the tool's, in `tools/webmachine-passwd/main.cpp`, and this page does
-not spell it. Build the table the worker reads from a source you
-control, or read the tool's file with the same layout the tool uses.
+The table here is built from a literal, so the example runs on its
+own. In an application the proc reads the hashes from wherever you
+keep them; the encoded form `Argon2.hash` answers is what
+`Argon2.verify` takes back. A task over its deadline answers 500. A
+worker that raises answers 503 with `Retry-After`.
 
 ## Next
 
