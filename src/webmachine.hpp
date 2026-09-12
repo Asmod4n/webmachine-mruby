@@ -1,6 +1,7 @@
 #ifndef WEBMACHINE_HPP
 #define WEBMACHINE_HPP
 
+#include <array>
 #include <mruby.h>
 #include <mruby/class.h>
 #include <mruby/hash.h>
@@ -3050,13 +3051,26 @@ uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
 // #30: what a round answered. One entry per job: the value, and which
 // answer it is (kJob*). A node's own callback is one entry of kJobNode.
 struct RunRound {
-  const mrb_value* answers;
-  const uint8_t* what;
+  const std::array<mrb_value, kValueJobs>& answers;
+  const std::array<uint8_t, kValueJobs>& what;
   // #30: response.userdata a worker changed, per job, or nothing.
-  const mrb_value* user;
-  const bool* user_have;
+  const std::array<mrb_value, kValueJobs>& user;
+  const std::array<bool, kValueJobs>& user_have;
+  // How many entries are the round's. An index past it is a throw.
   uint8_t n;
 };
+// A checked index into a round's arrays, for code that runs under
+// mrb_protect_error: mruby catches what this raises, and a
+// std::out_of_range would pass that protect by and unwind the VM.
+template <typename Array>
+const typename Array::value_type& round_at(mrb_state* mrb, const Array& a, size_t i) {
+  if (mrb_unlikely(i >= a.size())) {
+    mrb_raisef(mrb, E_INDEX_ERROR, "round entry %d of %d", static_cast<mrb_int>(i),
+               static_cast<mrb_int>(a.size()));
+    WM_UNREACHABLE();
+  }
+  return a[i];
+}
 uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round);
 void resource_forget_userdata(const Resource& res);
 void resource_abandon(const Resource& res, Resource::RunState& state);

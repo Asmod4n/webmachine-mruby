@@ -1466,12 +1466,12 @@ mrb_value run_resume_answers(mrb_state* mrb, void* ud) {
   const Resource& res = *ask->res;
   const RunRound& round = *ask->round;
   for (uint8_t i = 0; i < round.n; i++) {
-    if (round.what[i] == kJobNode) {
-      res.run.answer = round.answers[i];
+    if (round_at(mrb, round.what, i) == kJobNode) {
+      res.run.answer = round_at(mrb, round.answers, i);
       res.run.answered = true;
       continue;
     }
-    value_answer(res, round.what[i], round.answers[i]);
+    value_answer(res, round_at(mrb, round.what, i), round_at(mrb, round.answers, i));
   }
   return run_resume_body(mrb, const_cast<Resource*>(&res));
 }
@@ -2893,18 +2893,18 @@ uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& rou
   // after this, and a round of several jobs takes them in job order -
   // the last worker that changed it is the one that speaks.
   for (uint8_t i = 0; i < round.n; i++) {
-    if (round.user_have == nullptr || !round.user_have[i]) continue;
+    if (!round_at(mrb, round.user_have, i)) continue;
     if (res.run.userdata_held) mrb_gc_unregister(mrb, res.run.userdata);
-    res.run.userdata = round.user[i];
+    res.run.userdata = round_at(mrb, round.user, i);
     mrb_gc_register(mrb, res.run.userdata);
     res.run.userdata_held = true;
   }
   // A watcher whose block raised answers with the exception. The run
   // raises it as its own, which is what a raise in a callback is.
   for (uint8_t i = 0; i < round.n; i++) {
-    if (mrb_exception_p(round.answers[i])) {
+    if (mrb_exception_p(round_at(mrb, round.answers, i))) {
       res.run.stopped = false;
-      return run_settle(res, out, {round.answers[i], TRUE});
+      return run_settle(res, out, {round_at(mrb, round.answers, i), TRUE});
     }
   }
   res.run.stopped = false;

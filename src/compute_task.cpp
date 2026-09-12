@@ -318,7 +318,7 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
   // ordinary case and ends the round at once.
   if (round->jobs_answered < round->jobs_owed) round->jobs_answered++;
   round->answer_ready = round->jobs_answered >= round->jobs_owed;
-  round->answer_value[slot] = mrb_nil_value();
+  round->answer_value.at(slot) = mrb_nil_value();
   round->compute_task_over_deadline = answered.over_deadline;
   // A raise and a deadline are told apart, because the answers are not
   // the same one: 503 says come back, 500 says nothing will change.
@@ -333,22 +333,22 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
   // it outlives the restore.
   const int ai = mrb_gc_arena_save(mrb);
   // #30: response.userdata, when the worker left something else there.
-  round->user_have[slot] = false;
+  round->user_have.at(slot) = false;
   if (answered.user_changed && !answered.user_bytes.empty()) {
     const mrb_value u = mrb_cbor_decode_fast(
         mrb, mrb_str_new(mrb, answered.user_bytes.data(), answered.user_bytes.size()));
     if (mrb->exc != nullptr) {
       // The exception is the round's answer: the run raises it as its
       // own, and nothing here rewrites what the VM said.
-      round->answer_value[slot] = mrb_obj_value(mrb->exc);
-      mrb_gc_register(mrb, round->answer_value[slot]);
+      round->answer_value.at(slot) = mrb_obj_value(mrb->exc);
+      mrb_gc_register(mrb, round->answer_value.at(slot));
       mrb->exc = nullptr;
       mrb_gc_arena_restore(mrb, ai);
       return;
     } else {
-      round->user_value[slot] = u;
+      round->user_value.at(slot) = u;
       mrb_gc_register(mrb, u);
-      round->user_have[slot] = true;
+      round->user_have.at(slot) = true;
     }
   }
   if (answered.bytes.empty()) {
@@ -358,13 +358,13 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
   const mrb_value v =
       mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
   if (mrb->exc != nullptr) {
-    round->answer_value[slot] = mrb_obj_value(mrb->exc);
-    mrb_gc_register(mrb, round->answer_value[slot]);
+    round->answer_value.at(slot) = mrb_obj_value(mrb->exc);
+    mrb_gc_register(mrb, round->answer_value.at(slot));
     mrb->exc = nullptr;
     mrb_gc_arena_restore(mrb, ai);
     return;
   }
-  round->answer_value[slot] = v;
+  round->answer_value.at(slot) = v;
   mrb_gc_register(mrb, v);
   mrb_gc_arena_restore(mrb, ai);
 }
@@ -471,13 +471,13 @@ bool Http1::compute_task_cross(Conn& st, Conn::Round& round, int park, const Res
                  t.args);
       WM_UNREACHABLE();
     }
-    Conn::Round::Job& j = round.job[i];
+    Conn::Round::Job& j = round.job.at(i);
     j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
     mrb_gc_arena_restore(mrb, ai);
     j.user_bytes = user;
     j.code = id;
     j.deadline = t.deadline;
-    round.job_what[i] = t.what;
+    round.job_what.at(i) = t.what;
     j.waiting = true;
     round.jobs_owed = static_cast<uint8_t>(i + 1);
   }

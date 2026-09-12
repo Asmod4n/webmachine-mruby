@@ -401,8 +401,8 @@ bool Http1::watch_hand_over(Conn& st, Conn::Round& round, int park, const Resour
     if (job >= Conn::kJobSlots) return false;
     watcher_set_job(res.run.watch[i], job);
     watcher_set_round(res.run.watch[i], &round);
-    round.w_slot[job] = slot;
-    round.job_what[job] = res.run.watch_what[i];
+    round.w_slot.at(job) = slot;
+    round.job_what.at(job) = res.run.watch_what[i];
     round.jobs_owed = static_cast<uint8_t>(job + 1);
   }
   return true;
@@ -412,7 +412,7 @@ bool Http1::watch_hand_over(Conn& st, Conn::Round& round, int park, const Resour
 // does - a single watcher ends its round at once.
 void Http1::round_answered(Conn::Round& r, int job, mrb_value v) {
   if (job < 0 || job >= Conn::kJobSlots) return;
-  r.answer_value[job] = v;
+  r.answer_value.at(job) = v;
   if (r.jobs_answered < r.jobs_owed) r.jobs_answered++;
   r.answer_ready = r.jobs_owed == 0 || r.jobs_answered >= r.jobs_owed;
 }

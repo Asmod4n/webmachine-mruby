@@ -1589,7 +1589,7 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
       // hold no more says so, and the run is answered rather than left
       // waiting for a poll nobody armed.
       if (res.run.watch_count != 0 && !watch_hand_over(st, mine_round, park, res)) {
-        mine_round.answer_value[0] = mrb_nil_value();
+        mine_round.answer_value.at(0) = mrb_nil_value();
         mine_round.jobs_owed = 0;
         mine_round.answer_ready = true;
       }
@@ -1622,8 +1622,8 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
             a = mrb_nil_value();
           }
           for (int i = 0; i < Conn::kJobSlots; i++) {
-            if (round->user_have[i]) mrb_gc_unregister(res->mrb, round->user_value[i]);
-            round->user_have[i] = false;
+            if (round->user_have.at(i)) mrb_gc_unregister(res->mrb, round->user_value.at(i));
+            round->user_have.at(i) = false;
           }
         }
       } parked_roots{&res, &mine, &mine_round};
@@ -1738,10 +1738,10 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         }
       }
       for (int i = 0; i < Conn::kJobSlots; i++) {
-        if (!mine_round.user_have[i]) continue;
-        mrb_gc_unregister(res.mrb, mine_round.user_value[i]);
-        mine_round.user_value[i] = mrb_nil_value();
-        mine_round.user_have[i] = false;
+        if (!mine_round.user_have.at(i)) continue;
+        mrb_gc_unregister(res.mrb, mine_round.user_value.at(i));
+        mine_round.user_value.at(i) = mrb_nil_value();
+        mine_round.user_have.at(i) = false;
       }
     }
 

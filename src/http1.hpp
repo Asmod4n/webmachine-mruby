@@ -1438,7 +1438,7 @@ class Http1 {
       // render do not decide anything for each other - so the channel is
       // as wide as the round. Slot 0 is the single job's, and a
       // watcher's.
-      mrb_value answer_value[kJobSlots] = {};
+      std::array<mrb_value, kJobSlots> answer_value{};
       // Every job of the round answered; the resume is where the run
       // picks that up, because that is the one point at which a fresh
       // sink and a fresh plan exist to write into.
@@ -1457,15 +1457,15 @@ class Http1 {
         // The reactor has not armed this one yet.
         bool waiting = false;
       };
-      Job job[kJobSlots];
+      std::array<Job, kJobSlots> job{};
       // Which value each job of the round answers - kJobNode for a
       // node's own callback. A watcher fills its place here too, and it
       // has no Job: nothing crosses to a worker for it.
-      uint8_t job_what[kJobSlots] = {};
+      std::array<uint8_t, kJobSlots> job_what{};
       // #30: response.userdata as the worker left it, per job, when the
       // worker changed it. Rooted like an answer, read at the resume.
-      mrb_value user_value[kJobSlots] = {};
-      bool user_have[kJobSlots] = {};
+      std::array<mrb_value, kJobSlots> user_value{};
+      std::array<bool, kJobSlots> user_have{};
       // How many jobs this stop handed over, and how many answered. The
       // run goes on when the two are equal.
       uint8_t jobs_owed = 0;
@@ -1479,7 +1479,7 @@ class Http1 {
       // crossing, because the answer comes long after.
       const Resource* job_res = nullptr;
       // #30: the watcher slot each job of this round waits on, or -1.
-      int w_slot[kValueJobs] = {-1, -1, -1, -1};
+      std::array<int, kValueJobs> w_slot{{-1, -1, -1, -1}};
       // The pool had no slot: load, and load passes. 429 with a
       // Retry-After of a few seconds.
       bool compute_task_full = false;
@@ -2046,13 +2046,13 @@ class Http1 {
   static std::string_view compute_task_user(const Conn& st, int park, int job) {
     const Conn::Round* const r = st.park_at(park);
     if (r == nullptr || job < 0 || job >= Conn::kJobSlots) return {};
-    return r->job[job].user_bytes;
+    return r->job.at(job).user_bytes;
   }
   static bool compute_task_take(Conn& st, int park, int job, unsigned* code, std::string& bytes,
                                 double* deadline) {
     Conn::Round* const r = st.park_at(park);
     if (r == nullptr || job < 0 || job >= Conn::kJobSlots) return false;
-    Conn::Round::Job& j = r->job[job];
+    Conn::Round::Job& j = r->job.at(job);
     if (!j.waiting) return false;
     *code = j.code;
     *deadline = j.deadline;
