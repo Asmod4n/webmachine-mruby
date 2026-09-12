@@ -959,7 +959,31 @@ struct Logger {
   std::string flight;        // handed over; the kernel owns these bytes
   bool in_flight = false;
   int64_t unix_seconds = 0;  // the reactor's cached wall clock, per batch
+  // No RFC: what a log daemon that cannot keep up costs this process.
+  // One write flies at a time, so a slow disk or a daemon rewriting a
+  // capped file leaves every record of every request here until it
+  // catches up - memory the request rate decides. Past the ceiling the
+  // count is kept instead of the record, and the first record that fits
+  // again says on stderr how many there were.
+  size_t dropped = 0;
 };
+// The ceiling. Four megabytes is thousands of records, which is minutes
+// of a daemon being slow rather than one of it being gone.
+inline constexpr size_t kLogQueueCap = 4u * 1024 * 1024;
+
+// True when this record has no room. The caller writes nothing and the
+// count carries what was lost.
+inline bool log_queue_full(Logger& lg) {
+  if (lg.pending.size() > kLogQueueCap) {
+    lg.dropped++;
+    return true;
+  }
+  if (lg.dropped != 0) {
+    std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n", lg.dropped);
+    lg.dropped = 0;
+  }
+  return false;
+}
 
 // One response as one record. The format is ours (see Logger above); the
 // fields are not:
@@ -1038,6 +1062,7 @@ struct AccessLine {
 
 // Truncation caps are the wire fields' widths.
 inline void log_access(Logger& lg, const AccessLine& line) {
+  if (mrb_unlikely(log_queue_full(lg))) return;
   size_t peer_len = line.peer.size();
   size_t method_token_len = line.method_token.size();
   size_t request_target_len = line.request_target.size();
@@ -1236,6 +1261,7 @@ inline uint64_t fingerprint_of(const ErrFacts& f) {
 // the second send, then that many bytes - peer, class, target, message,
 // backtrace, method, steering, in that order.
 inline void log_error(Logger& lg, const ErrFacts& f) {
+  if (mrb_unlikely(log_queue_full(lg))) return;
   // A 4xx is an answer, not a failure: the client asked for something it
   // may not have, and the server said so. Nothing raised, so there is
   // nothing to explain and no hash to hand out. Refused here, once, so no
@@ -1290,6 +1316,7 @@ struct ErrorLine {
 };
 
 inline void log_internal_error(Logger& lg, const ErrorLine& line) {
+  if (mrb_unlikely(log_queue_full(lg))) return;
   if (!lg.enabled) return;
   const void* peer = line.peer.data();
   const size_t peer_len = line.peer.size();

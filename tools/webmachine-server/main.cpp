@@ -5,12 +5,14 @@
 #include <mruby/string.h>
 #include <mruby/throw.h>
 #include <mruby/variable.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 
 #include <sys/uio.h>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -247,7 +249,22 @@ int serve(mrb_state* mrb, Invocation& in) {
         "/usr/local/etc/webmachine/webmachine.toml",
         "/etc/webmachine/webmachine.toml",
     };
+    // The file in the start directory is a convenience while
+    // developing. A privileged server may not take it: [server] app
+    // names the bytecode this process runs, so a start in a directory
+    // somebody else can write would run their code as root. Naming it
+    // with --config is still allowed - that is the operator's word.
+    const bool privileged = ::geteuid() == 0;
     for (const char* p : kConfigPlaces) {
+      if (privileged && p[0] != '/') {
+        if (::access(p, R_OK) == 0) {
+          std::fprintf(stderr,
+                       "webmachine: %s is in the start directory and this server is root, so it "
+                       "is not read - name it with --config to mean it\n",
+                       p);
+        }
+        continue;
+      }
       if (::access(p, R_OK) == 0) {
         config_path = p;
         break;
@@ -300,13 +317,20 @@ int serve(mrb_state* mrb, Invocation& in) {
   opts.standalone_port = cli_port;
 
   if (pidfile != nullptr) {
-    FILE* pf = std::fopen(pidfile, "we");
-    if (pf == nullptr) {
-      std::fprintf(stderr, "webmachine: cannot write pidfile %s\n", pidfile);
+    // O_NOFOLLOW: a pidfile in a directory somebody else can write is a
+    // path where a symlink decides what this process truncates, and this
+    // process may be root. The file is ours or it is nothing.
+    const int pf =
+        ::open(pidfile, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+    char line[32];
+    const int n = std::snprintf(line, sizeof(line), "%d\n", static_cast<int>(getpid()));
+    if (pf < 0 || n <= 0 || ::write(pf, line, static_cast<size_t>(n)) != n) {
+      std::fprintf(stderr, "webmachine: cannot write pidfile %s: %s\n", pidfile,
+                   std::strerror(errno));
+      if (pf >= 0) ::close(pf);
       return 1;
     }
-    std::fprintf(pf, "%d\n", getpid());
-    std::fclose(pf);
+    ::close(pf);
   }
 
   // main() blocked these before it made a thread. The fd is the only
@@ -393,6 +417,21 @@ int serve(mrb_state* mrb, Invocation& in) {
 // refuse, and a raise is a C++ throw: mrb->jmp names the frame it lands
 // in, and the catch below is that frame. What was refused goes to stderr,
 // because a process that does not come up has no log yet.
+// The pidfile goes while it still names this process. A path another
+// server took over in the meantime is that server's to remove, and a
+// symlink at it is nobody's to follow.
+void pidfile_remove(const char* path) {
+  const int fd = ::open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return;
+  char buf[32];
+  const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+  ::close(fd);
+  if (n <= 0) return;
+  buf[n] = '\0';
+  if (std::atoi(buf) != static_cast<int>(getpid())) return;
+  ::unlink(path);
+}
+
 int main(int argc, char** argv) {
   Invocation in;
   sigset_t stop_signals;
@@ -446,6 +485,6 @@ int main(int argc, char** argv) {
   // server_run.
   webmachine::server_release();
   mrb_close(mrb);
-  if (in.pidfile != nullptr) ::unlink(in.pidfile);
+  if (in.pidfile != nullptr) pidfile_remove(in.pidfile);
   return rc;
 }
