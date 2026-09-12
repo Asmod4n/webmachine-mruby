@@ -1,4 +1,4 @@
-#include "webmachine.hpp"
+#include "ruby_value.hpp"
 
 #include <mruby/class.h>
 #include <mruby/data.h>
@@ -60,31 +60,6 @@ void string_copy_lowercased(std::string &lowered, const char *text, size_t lengt
         if (c >= 'A' && c <= 'Z')
             c = static_cast<char>(c + 32);
     }
-}
-
-// The bytes a Ruby String holds. Every caller in this file hands the
-// String over and reads the answer, so RSTRING_PTR and RSTRING_LEN are
-// spelled here and nowhere else: a macro has no type, it can read its
-// argument twice, and a language server cannot find its callers.
-std::string_view ruby_string_bytes(mrb_value ruby_string)
-{
-    const char *const first = RSTRING_PTR(ruby_string);
-    const size_t length = static_cast<size_t>(RSTRING_LEN(ruby_string));
-    return std::string_view(first, length);
-}
-
-// RFC 9110 5.5: may the bytes of this String stand as a field value?
-bool ruby_string_is_field_value(mrb_value ruby_string)
-{
-    const std::string_view bytes = ruby_string_bytes(ruby_string);
-    return http::field_value_ok(bytes.data(), bytes.size());
-}
-
-// RFC 6265 4.1.1: does this String carry the octet that would end the
-// part it sits in and start the next one?
-bool ruby_string_holds_octet(mrb_value ruby_string, char octet)
-{
-    return ruby_string_bytes(ruby_string).find(octet) != std::string_view::npos;
 }
 
 // One "Name: Value\r\n" line's spans within the run's header buffer.

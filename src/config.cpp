@@ -1,4 +1,4 @@
-#include "webmachine.hpp"
+#include "ruby_value.hpp"
 
 #include <mruby/array.h>
 #include <mruby/chrono.hpp>
@@ -28,39 +28,39 @@ struct TomlAsk {
     mrb_value path;
 };
 
-mrb_value toml_load_body(mrb_state *mrb, void *ud)
+mrb_value toml_load_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    TomlAsk *a = static_cast<TomlAsk *>(ud);
+    TomlAsk *ask = static_cast<TomlAsk *>(user_data);
     struct RClass *toml = mrb_module_get_id(mrb, MRB_SYM(TOML));
-    return mrb_funcall_argv(mrb, mrb_obj_value(toml), MRB_SYM(load), 1, &a->path);
+    return mrb_funcall_argv(mrb, mrb_obj_value(toml), MRB_SYM(load), 1, &ask->path);
 }
 
 // TOML: the parser's own words, under this file's name. Caught on purpose
 // - the parser says what is wrong with the syntax and nothing about which
 // file, and the operator needs both in one sentence.
-mrb_value toml_load(const ConfigFile &f)
+mrb_value toml_document_load(const ConfigFile &file)
 {
-    mrb_state *const mrb = f.mrb;
-    TomlAsk ask{mrb_str_new_cstr(mrb, f.path)};
+    mrb_state *const mrb = file.mrb;
+    TomlAsk ask{mrb_str_new_cstr(mrb, file.path)};
     mrb_bool raised = FALSE;
-    const mrb_value doc = mrb_protect_error(mrb, toml_load_body, &ask, &raised);
+    const mrb_value document = mrb_protect_error(mrb, toml_load_in_protected_call, &ask, &raised);
     if (raised)
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %v", f.path, doc);
-    return doc;
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %v", file.path, document);
+    return document;
 }
 
 // TOML: one section, read out of the document. A missing key is how an
 // absent section answers here, so that one exception is expected and the
 // rest are the file's fault.
 struct SectionAsk {
-    mrb_value doc;
+    mrb_value document;
     mrb_value key;
 };
 
-mrb_value section_body(mrb_state *mrb, void *ud)
+mrb_value section_read_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    SectionAsk *a = static_cast<SectionAsk *>(ud);
-    return mrb_funcall_argv(mrb, a->doc, MRB_OPSYM(aref), 1, &a->key);
+    SectionAsk *ask = static_cast<SectionAsk *>(user_data);
+    return mrb_funcall_argv(mrb, ask->document, MRB_OPSYM(aref), 1, &ask->key);
 }
 
 // One setting: the table it sits in and the two names a message spells it
@@ -70,13 +70,13 @@ mrb_value section_body(mrb_state *mrb, void *ud)
 struct Setting {
     mrb_value table;
     const char *where;
-    const char *key;
+    const char *key_name;
 };
 
 // TOML: the closed range a count must fall in.
 struct Bounds {
-    mrb_int lo;
-    mrb_int hi;
+    mrb_int low;
+    mrb_int high;
 };
 
 // TOML: one top-level table, and whether the file named it at all - an
@@ -87,69 +87,74 @@ struct FoundTable {
 };
 
 // TOML: one top-level section; an absent one means the CLI or conf speaks.
-void section(Setting s, FoundTable &out, const ConfigFile &f)
+void section_take(Setting setting, FoundTable &out_table, const ConfigFile &file)
 {
-    mrb_state *const mrb = f.mrb;
-    SectionAsk ask{s.table, mrb_str_new_cstr(mrb, s.key)};
+    mrb_state *const mrb = file.mrb;
+    SectionAsk ask{setting.table, mrb_str_new_cstr(mrb, setting.key_name)};
     mrb_bool raised = FALSE;
-    const mrb_value v = mrb_protect_error(mrb, section_body, &ask, &raised);
+    const mrb_value answer = mrb_protect_error(mrb, section_read_in_protected_call, &ask, &raised);
     if (raised) {
-        if (mrb_obj_is_kind_of(mrb, v, E_KEY_ERROR))
+        if (mrb_obj_is_kind_of(mrb, answer, E_KEY_ERROR))
             return;
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %v", f.path, v);
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %v", file.path, answer);
     }
-    if (!mrb_hash_p(v)) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: [%s] must be a table, not %v", f.path, s.key,
-                   v);
+    if (!mrb_hash_p(answer)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: [%s] must be a table, not %v", file.path,
+                   setting.key_name, answer);
     }
-    out.table = v;
-    out.present = true;
+    out_table.table = answer;
+    out_table.present = true;
 }
 
 // TOML: a present key must have the right type; absent is always fine.
-void take_string(Setting s, std::string &out, const ConfigFile &f)
+void setting_take_string(Setting setting, std::string &out_text, const ConfigFile &file)
 {
-    const mrb_value v = mrb_hash_get(f.mrb, s.table, mrb_str_new_cstr(f.mrb, s.key));
-    if (mrb_nil_p(v))
+    const mrb_value raw =
+        mrb_hash_get(file.mrb, setting.table, mrb_str_new_cstr(file.mrb, setting.key_name));
+    if (mrb_nil_p(raw))
         return;
-    if (!mrb_string_p(v) || RSTRING_LEN(v) == 0) {
-        mrb_raisef(f.mrb, E_WM_CONFIG_ERROR(f.mrb), "%s: %s.%s takes a non-empty string, not %v",
-                   f.path, s.where, s.key, v);
+    if (!mrb_string_p(raw) || ruby_string_length(raw) == 0) {
+        mrb_raisef(file.mrb, E_WM_CONFIG_ERROR(file.mrb),
+                   "%s: %s.%s takes a non-empty string, not %v", file.path, setting.where,
+                   setting.key_name, raw);
     }
-    out.assign(RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v)));
+    out_text.assign(ruby_string_bytes(raw));
 }
 
 // TOML: a count, in range. Counts are not durations.
-void take_int(Setting s, Bounds b, mrb_int *out, const ConfigFile &f)
+void setting_take_int(Setting setting, Bounds bounds, mrb_int *out_count, const ConfigFile &file)
 {
-    const mrb_value v = mrb_hash_get(f.mrb, s.table, mrb_str_new_cstr(f.mrb, s.key));
-    if (mrb_nil_p(v))
+    const mrb_value raw =
+        mrb_hash_get(file.mrb, setting.table, mrb_str_new_cstr(file.mrb, setting.key_name));
+    if (mrb_nil_p(raw))
         return;
-    if (!mrb_integer_p(v) || mrb_integer(v) < b.lo || mrb_integer(v) > b.hi) {
-        mrb_raisef(f.mrb, E_WM_CONFIG_ERROR(f.mrb), "%s: %s.%s takes an integer in %i..%i, not %v",
-                   f.path, s.where, s.key, b.lo, b.hi, v);
+    if (!mrb_integer_p(raw) || mrb_integer(raw) < bounds.low || mrb_integer(raw) > bounds.high) {
+        mrb_raisef(file.mrb, E_WM_CONFIG_ERROR(file.mrb),
+                   "%s: %s.%s takes an integer in %i..%i, not %v", file.path, setting.where,
+                   setting.key_name, bounds.low, bounds.high, raw);
     }
-    *out = mrb_integer(v);
+    *out_count = mrb_integer(raw);
 }
 
 // TOML: a duration, through mruby-chrono and nothing else; rounded up.
-void take_seconds(Setting s, int *out, const ConfigFile &f)
+void setting_take_seconds(Setting setting, int *out_seconds, const ConfigFile &file)
 {
-    const mrb_value v = mrb_hash_get(f.mrb, s.table, mrb_str_new_cstr(f.mrb, s.key));
-    if (mrb_nil_p(v))
+    const mrb_value raw =
+        mrb_hash_get(file.mrb, setting.table, mrb_str_new_cstr(file.mrb, setting.key_name));
+    if (mrb_nil_p(raw))
         return;
-    if (!mrb_integer_p(v) && !mrb_float_p(v)) {
-        mrb_raisef(f.mrb, E_WM_CONFIG_ERROR(f.mrb),
-                   "%s: %s.%s takes a duration in seconds (60, or 0.5), not %v", f.path, s.where,
-                   s.key, v);
+    if (!mrb_integer_p(raw) && !mrb_float_p(raw)) {
+        mrb_raisef(file.mrb, E_WM_CONFIG_ERROR(file.mrb),
+                   "%s: %s.%s takes a duration in seconds (60, or 0.5), not %v", file.path,
+                   setting.where, setting.key_name, raw);
     }
-    const auto secs = mrb_chrono::ceil<std::chrono::seconds>(f.mrb, v);
+    const auto secs = mrb_chrono::ceil<std::chrono::seconds>(file.mrb, raw);
     if (secs.count() < 1 || secs.count() > 86400) {
-        mrb_raisef(f.mrb, E_WM_CONFIG_ERROR(f.mrb),
-                   "%s: %s.%s is %i seconds - the range is 1..86400", f.path, s.where, s.key,
-                   static_cast<mrb_int>(secs.count()));
+        mrb_raisef(file.mrb, E_WM_CONFIG_ERROR(file.mrb),
+                   "%s: %s.%s is %i seconds - the range is 1..86400", file.path, setting.where,
+                   setting.key_name, static_cast<mrb_int>(secs.count()));
     }
-    *out = static_cast<int>(secs.count());
+    *out_seconds = static_cast<int>(secs.count());
 }
 } // namespace
 
@@ -159,11 +164,11 @@ void take_seconds(Setting s, int *out, const ConfigFile &f)
 // flag. Nothing writes this without being asked.
 bool config_write_default(const char *path, const char *error_assets)
 {
-    FILE *f = std::fopen(path, "wxe"); // x: never over a file somebody has
-    if (f == nullptr)
+    FILE *file = std::fopen(path, "wxe"); // x: never over a file somebody has
+    if (file == nullptr)
         return false;
     const bool have_assets = error_assets != nullptr && error_assets[0] != '\0';
-    std::fprintf(f,
+    std::fprintf(file,
                  "# webmachine.toml - written by --write-config.\n"
                  "#\n"
                  "# Every knob this server reads from a file is here, with what it does\n"
@@ -250,81 +255,81 @@ bool config_write_default(const char *path, const char *error_assets)
                  have_assets ? error_assets : "/usr/local/share/webmachine-mruby/error-assets.zip",
                  kSqWanted, kZeroCopyDefault, kZeroCopyDefault / 1024, kFileMapDefault,
                  kFileMapDefault / 1024);
-    std::fclose(f);
+    std::fclose(file);
     return true;
 }
 
 // TOML: parse and validate webmachine.toml through the VM the process carries.
-void config_load(mrb_state *mrb, const char *path, Config &out)
+void config_load(mrb_state *mrb, const char *path, Config &out_config)
 {
     const ArenaGuard arena(mrb);
-    out.path = path;
+    out_config.path = path;
     const ConfigFile file = {mrb, path};
-    const mrb_value doc = toml_load(file);
+    const mrb_value document = toml_document_load(file);
 
     FoundTable server, log, tune;
     mrb_int port = 0, backlog = 0, sq = 0, maxb = 0, zct = -1, fmt = -1;
-    section({doc, "", "server"}, server, file);
-    section({doc, "", "log"}, log, file);
-    section({doc, "", "tune"}, tune, file);
+    section_take({document, "", "server"}, server, file);
+    section_take({document, "", "log"}, log, file);
+    section_take({document, "", "tune"}, tune, file);
 
     if (server.present) {
-        const mrb_value t = server.table;
-        take_string({t, "server", "unix"}, out.unix_path, file);
-        take_int({t, "server", "port"}, {1, 65535}, &port, file);
-        take_string({t, "server", "app"}, out.app, file);
-        take_string({t, "server", "assets"}, out.assets, file);
-        take_string({t, "server", "docroot"}, out.docroot, file);
-        take_string({t, "server", "mime_types"}, out.mime_types, file);
-        take_string({t, "server", "error_assets"}, out.error_assets, file);
-        take_string({t, "server", "pidfile"}, out.pidfile, file);
-        out.port = static_cast<int>(port);
-        if (!out.unix_path.empty() && out.port != 0) {
+        const mrb_value table = server.table;
+        setting_take_string({table, "server", "unix"}, out_config.unix_path, file);
+        setting_take_int({table, "server", "port"}, {1, 65535}, &port, file);
+        setting_take_string({table, "server", "app"}, out_config.app, file);
+        setting_take_string({table, "server", "assets"}, out_config.assets, file);
+        setting_take_string({table, "server", "docroot"}, out_config.docroot, file);
+        setting_take_string({table, "server", "mime_types"}, out_config.mime_types, file);
+        setting_take_string({table, "server", "error_assets"}, out_config.error_assets, file);
+        setting_take_string({table, "server", "pidfile"}, out_config.pidfile, file);
+        out_config.port = static_cast<int>(port);
+        if (!out_config.unix_path.empty() && out_config.port != 0) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: server.unix and server.port - at most one",
                        path);
         }
     }
 
     if (log.present) {
-        const mrb_value t = log.table;
-        take_string({t, "log", "file"}, out.log_file, file);
-        take_string({t, "log", "privacy"}, out.log_privacy, file);
-        if (!out.log_privacy.empty() && out.log_privacy != "none" && out.log_privacy != "anon" &&
-            out.log_privacy != "full") {
+        const mrb_value table = log.table;
+        setting_take_string({table, "log", "file"}, out_config.log_file, file);
+        setting_take_string({table, "log", "privacy"}, out_config.log_privacy, file);
+        if (!out_config.log_privacy.empty() && out_config.log_privacy != "none" &&
+            out_config.log_privacy != "anon" && out_config.log_privacy != "full") {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: log.privacy '%s'? none, anon or full",
-                       path, out.log_privacy.c_str());
+                       path, out_config.log_privacy.c_str());
         }
-        if (!out.log_privacy.empty() && out.log_file.empty()) {
+        if (!out_config.log_privacy.empty() && out_config.log_file.empty()) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                        "%s: log.privacy without log.file decides nothing", path);
         }
-        take_string({t, "log", "error_file"}, out.error_log_file, file);
-        take_int({t, "log", "max_bytes"}, {4096, 1LL << 40}, &maxb, file);
-        out.log_max_bytes = static_cast<unsigned long long>(maxb);
+        setting_take_string({table, "log", "error_file"}, out_config.error_log_file, file);
+        setting_take_int({table, "log", "max_bytes"}, {4096, 1LL << 40}, &maxb, file);
+        out_config.log_max_bytes = static_cast<unsigned long long>(maxb);
     }
 
     if (tune.present) {
-        const mrb_value t = tune.table;
-        take_int({t, "tune", "backlog"}, {1, 65535}, &backlog, file);
-        take_int({t, "tune", "sq_entries"}, {1, 32768}, &sq, file);
+        const mrb_value table = tune.table;
+        setting_take_int({table, "tune", "backlog"}, {1, 65535}, &backlog, file);
+        setting_take_int({table, "tune", "sq_entries"}, {1, 32768}, &sq, file);
         // 0 is the operator saying "never lend, always copy" - a real answer,
         // which is why absence is -1 and not 0. bench/vm/zero_copy_advise.sh
         // measures the crossover on the machine that will run this.
-        take_int({t, "tune", "zero_copy_threshold"}, {0, static_cast<mrb_int>(kZeroCopyMax)}, &zct,
-                 file);
+        setting_take_int({table, "tune", "zero_copy_threshold"},
+                         {0, static_cast<mrb_int>(kZeroCopyMax)}, &zct, file);
         // 0 is the operator saying "never map, always read" - a real answer,
         // which is why absence is -1 and not 0.
-        take_int({t, "tune", "file_map_threshold"}, {0, static_cast<mrb_int>(kFileMapMax)}, &fmt,
-                 file);
-        take_seconds({t, "tune", "header_timeout"}, &out.header_timeout, file);
-        take_seconds({t, "tune", "send_timeout"}, &out.send_timeout, file);
-        take_seconds({t, "tune", "idle_timeout"}, &out.idle_timeout, file);
-        out.backlog = static_cast<int>(backlog);
-        out.sq_entries = static_cast<unsigned>(sq);
+        setting_take_int({table, "tune", "file_map_threshold"},
+                         {0, static_cast<mrb_int>(kFileMapMax)}, &fmt, file);
+        setting_take_seconds({table, "tune", "header_timeout"}, &out_config.header_timeout, file);
+        setting_take_seconds({table, "tune", "send_timeout"}, &out_config.send_timeout, file);
+        setting_take_seconds({table, "tune", "idle_timeout"}, &out_config.idle_timeout, file);
+        out_config.backlog = static_cast<int>(backlog);
+        out_config.sq_entries = static_cast<unsigned>(sq);
         if (zct >= 0)
-            out.zero_copy_threshold = static_cast<long long>(zct);
+            out_config.zero_copy_threshold = static_cast<long long>(zct);
         if (fmt >= 0)
-            out.file_map_threshold = static_cast<long long>(fmt);
+            out_config.file_map_threshold = static_cast<long long>(fmt);
     }
 }
 } // namespace webmachine
