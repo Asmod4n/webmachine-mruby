@@ -787,7 +787,15 @@ class Ring {
     if (listeners_closed_) return;
     listeners_closed_ = true;
     for (uint32_t i = 0; i < nlisteners_; i++) {
+      // The multishot accept holds the listening socket itself, so
+      // closing the fixed-table entry left it in LISTEN and peers kept
+      // arriving: a drain under any traffic at all never reached zero
+      // connections, and only the ring exit ended it. The accept is
+      // cancelled by its own tag first; nothing reads that completion.
       struct io_uring_sqe* s = sqe();
+      io_uring_prep_cancel64(s, detail::tag(detail::kAccept, 0, i), 0);
+      io_uring_sqe_set_data64(s, detail::tag(detail::kPollRemove, 0, 0));
+      s = sqe();
       io_uring_prep_close_direct(s, listener_base_ + i);
       io_uring_sqe_set_data64(s, detail::tag(detail::kClose, 0, listener_base_ + i));
     }

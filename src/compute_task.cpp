@@ -860,6 +860,16 @@ void run_job(WorkerVm& vm, Slot& s, std::atomic<bool>& asked_stop) {
     } else {
       note_raise(mrb, s, body.step);
     }
+  } else if (mrb_unlikely(asked_stop.load(std::memory_order_acquire))) {
+    // The reactor stopped this job and the block swallowed the raise - a
+    // rescue around the work, or a retry that ran to the end. The
+    // deadline passed all the same, and what the block answered after it
+    // is not this request's answer: the round owes a 500 and this says
+    // so. A block that rescues and loops for good still holds its
+    // worker; nothing here can reach inside that loop.
+    mrb->vm_interrupt = FALSE;
+    s.over_deadline = true;
+    s.out.clear();
   }
   // The next job on this worker starts with an empty slot.
   worker_userdata_set(vm, mrb_nil_value());
