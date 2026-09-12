@@ -518,6 +518,11 @@ struct RunLent {
     if (r == nullptr || parked == nullptr) return;
     res = r;
     from = parked;
+    // What the last request on this route left here. The move below
+    // takes it away and the destructor zeroes what is left, so the
+    // root it holds would never be given back - one object pinned for
+    // the life of the process, per watcher event.
+    resource_forget_userdata(*res);
     res->run = std::move(*from);
     request_bind(res->run.req);
     response_bind(res);

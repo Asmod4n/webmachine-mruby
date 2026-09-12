@@ -325,6 +325,12 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
   const Resource* const res = round->job_res;
   if (res == nullptr || answered.raised) return;
   mrb_state* const mrb = res->mrb;
+  // What a decode leaves behind. The string the bytes arrive in and the
+  // value they become are both the arena's, and this arena grows: every
+  // answer left three entries in it that no collection could ever take,
+  // for the life of the process. What the round keeps is registered, so
+  // it outlives the restore.
+  const int ai = mrb_gc_arena_save(mrb);
   // #30: response.userdata, when the worker left something else there.
   round->user_have[slot] = false;
   if (answered.user_changed && !answered.user_bytes.empty()) {
@@ -336,6 +342,7 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
       round->answer_value[slot] = mrb_obj_value(mrb->exc);
       mrb_gc_register(mrb, round->answer_value[slot]);
       mrb->exc = nullptr;
+      mrb_gc_arena_restore(mrb, ai);
       return;
     } else {
       round->user_value[slot] = u;
@@ -343,17 +350,22 @@ void Http1::compute_task_answered(Conn& st, int park, int slot, const ComputeAns
       round->user_have[slot] = true;
     }
   }
-  if (answered.bytes.empty()) return;
+  if (answered.bytes.empty()) {
+    mrb_gc_arena_restore(mrb, ai);
+    return;
+  }
   const mrb_value v =
       mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
   if (mrb->exc != nullptr) {
     round->answer_value[slot] = mrb_obj_value(mrb->exc);
     mrb_gc_register(mrb, round->answer_value[slot]);
     mrb->exc = nullptr;
+    mrb_gc_arena_restore(mrb, ai);
     return;
   }
   round->answer_value[slot] = v;
   mrb_gc_register(mrb, v);
+  mrb_gc_arena_restore(mrb, ai);
 }
 
 // #80: the crossing, done by the frame at the stop. It runs on the

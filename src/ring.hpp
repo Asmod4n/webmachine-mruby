@@ -1108,6 +1108,12 @@ class Ring {
   // when one send returns.
   void arm_send(uint32_t idx) {
     Conn& c = conns_[idx];
+    // One round, one deadline. A plaintext send is MSG_WAITALL and comes
+    // back once, so this is the same rule both paths follow; an
+    // offloaded one comes back per partial, and refreshing the deadline
+    // there let a peer that opens its window one octet at a time hold
+    // the round, its lent body and its slot for as long as it liked.
+    c.deadline_s = now_s_ + send_timeout_;
     struct io_uring_sqe* s = sqe();
     const bool resumes = c.tls != nullptr && c.tls->offloaded;
     const int flags = MSG_NOSIGNAL | (resumes ? 0 : MSG_WAITALL) |
@@ -1175,7 +1181,15 @@ class Ring {
     t.bye_msg.msg_controllen = CMSG_SPACE(1);
 
     struct io_uring_sqe* s = sqe();
-    io_uring_prep_sendmsg(s, static_cast<int>(idx), &t.bye_msg, MSG_NOSIGNAL);
+    // MSG_DONTWAIT: the alert is a courtesy and the close behind it is
+    // not. A peer that stops reading fills the send buffer, and a
+    // blocking alert then waits on POLLOUT with the linked shutdown and
+    // close behind it - the slot stayed in the fixed table until that
+    // peer left, and enough such peers are every slot this server has.
+    // An alert that cannot go answers EAGAIN, which cancels the link;
+    // the close re-submits itself on ECANCELED, and close(2) on the last
+    // reference sends the FIN the shutdown would have.
+    io_uring_prep_sendmsg(s, static_cast<int>(idx), &t.bye_msg, MSG_NOSIGNAL | MSG_DONTWAIT);
     s->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
     io_uring_sqe_set_data64(s, detail::tag(detail::kTlsBye, c.gen, idx));
   }
@@ -1612,7 +1626,6 @@ class Ring {
     } else {
       c.out_sent += took;
     }
-    c.deadline_s = now_s_ + send_timeout_;
     tls_charge_records(c, took);
     arm_send(idx);
   }
