@@ -102,40 +102,14 @@ struct BodySpill {
     // The descriptor holds the last reference to it, so the close frees
     // the blocks - there is no name to unlink. Cold, once per large body,
     // so it stays out of the functions that call it.
-    __attribute__((noinline)) void close_file()
-    {
-        if (fd < 0)
-            return;
-        ::close(fd);
-        body_file_slot_give();
-        fd = -1;
-        written = 0;
-        bound = false;
-        pending.clear();
-        in_flight = false;
-        offset = 0;
-        failed = false;
-        ended = false;
-    }
+    __attribute__((noinline)) void close_file();
     // RFC 9110 6.4: takes a slot in the process-wide count, then makes
     // the file. kNoSlot is load: h1 answers 503, h2 refuses the stream.
     // kNoFile is a 500: the request cannot be answered without its body.
     // Both leave fd at -1 and hold no slot. A file this object still
     // holds goes back first, so the count stays exact. Cold, once per
     // large body, so it stays out of the functions that call it.
-    __attribute__((noinline)) SpillOpen open_file()
-    {
-        close_file();
-        if (mrb_unlikely(!body_file_slot_take()))
-            return SpillOpen::kNoSlot;
-        fd = slipstream_tmpfile(spill_dir_get());
-        if (mrb_unlikely(fd < 0)) {
-            fd = -1;
-            body_file_slot_give();
-            return SpillOpen::kNoFile;
-        }
-        return SpillOpen::kOpen;
-    }
+    __attribute__((noinline)) SpillOpen open_file();
     // Queue body octets. h1 calls it from the feed, h2 from the DATA
     // frame, and neither one writes: the reactor arms the write through
     // the ring, and the octets wait here until it does.
@@ -150,24 +124,10 @@ struct BodySpill {
     // count follows the descriptor, not the object: a moved-from BodySpill
     // holds no file, so its close_file gives nothing back.
     BodySpill() = default;
-    ~BodySpill()
-    {
-        close_file();
-    }
+    ~BodySpill();
     BodySpill(const BodySpill &) = delete;
     BodySpill &operator=(const BodySpill &) = delete;
-    BodySpill(BodySpill &&o) noexcept
-        : fd(o.fd), written(o.written), bound(o.bound), pending(std::move(o.pending)),
-          in_flight(o.in_flight), offset(o.offset), failed(o.failed), ended(o.ended)
-    {
-        o.fd = -1;
-        o.written = 0;
-        o.bound = false;
-        o.in_flight = false;
-        o.offset = 0;
-        o.failed = false;
-        o.ended = false;
-    }
+    BodySpill(BodySpill &&o) noexcept;
     BodySpill &operator=(BodySpill &&o) noexcept
     {
         if (this == &o)
@@ -192,52 +152,22 @@ struct BodySpill {
     }
     // Answers false when an earlier write failed, which is a 500: the
     // request cannot be answered without its body.
-    bool take(const char *p, size_t n)
-    {
-        if (mrb_unlikely(failed))
-            return false;
-        pending.append(p, n);
-        return true;
-    }
+    bool take(const char *p, size_t n);
     // Is there a write for the reactor to arm? One at a time: the file
     // has one offset, and a second write in flight would need a second.
-    bool owes_write() const
-    {
-        return fd >= 0 && !failed && !in_flight && !pending.empty();
-    }
+    bool owes_write() const;
     // Everything this body queued is in the file. A run that reads the
     // body waits for this, because a descriptor that still owes octets
     // answers a short read.
-    bool drained() const
-    {
-        return !in_flight && pending.empty();
-    }
+    bool drained() const;
     // The octets the reactor hands the ring. They move into the
     // reactor's own buffer, so the writer may queue more while these
     // fly, and so the kernel never writes from memory this object owns.
-    void fly_into(std::string &out)
-    {
-        out.swap(pending);
-        pending.clear();
-        in_flight = true;
-    }
+    void fly_into(std::string &out);
     // What the ring answered, and the buffer it wrote from. A short write
     // leaves the rest at the front of the queue, so the next arm carries
     // it.
-    void wrote(ssize_t res, const std::string &out)
-    {
-        in_flight = false;
-        if (mrb_unlikely(res <= 0)) {
-            failed = true;
-            pending.clear();
-            return;
-        }
-        const size_t n = static_cast<size_t>(res);
-        offset += n;
-        written += n;
-        if (n < out.size())
-            pending.insert(0, out, n, out.size() - n);
-    }
+    void wrote(ssize_t res, const std::string &out);
 };
 
 // RFC 9113 5.1: one entry per stream in a non-idle state. The fields are
@@ -254,19 +184,12 @@ void ws_free(WsConn *c);
 // answered that before the first one arrived.
 struct MemWriter {
     std::string *mem;
-    bool put(const char *p, size_t n) const
-    {
-        mem->append(p, n);
-        return true;
-    }
+    bool put(const char *p, size_t n) const;
 };
 
 struct FileWriter {
     BodySpill *spill;
-    bool put(const char *p, size_t n) const
-    {
-        return spill->take(p, n);
-    }
+    bool put(const char *p, size_t n) const;
 };
 
 // What a connection is, named. The state is implied today by which of
@@ -577,100 +500,29 @@ struct H2State {
     // h2_begin refuses.
     bool hpack_ready = false;
     // RFC 9113: allocated only when the preface was spoken, never before.
-    H2State()
-    {
-        hpack_ready = lshpack_enc_init(&enc) == 0;
-        lshpack_dec_init(&dec);
-        lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
-        // The dynamic table needs nothing done to it here any more. This
-        // used to hand the decoder an array, because ls-hpack left it NULL
-        // and the first growth did memcpy(new, NULL + 0, 0) - undefined
-        // twice over, and two UBSan reports on the first h2 request this
-        // server ever answered. deps/ls-hpack is pinned at the fork's
-        // fix-undefined-behaviour branch, where lshpack_arr_push guards the
-        // copy on nelem. The pin moves to a release when upstream takes the
-        // three fixes (tools/webmachine-fuzz/ls-hpack).
-    }
+    H2State();
     // RFC 9113: the decoder dies with the connection - and so does every
     // lend the streams still hold. h1's ~Conn, one tier down: unconditional,
     // GOAWAY or error or a client that simply left.
-    ~H2State()
-    {
-        for (H2Stream &s : streams)
-            content_retire(s);
-        content_drain();
-        lshpack_enc_cleanup(&enc);
-        lshpack_dec_cleanup(&dec);
-    }
+    ~H2State();
     H2State(const H2State &) = delete;
     H2State &operator=(const H2State &) = delete;
 
     // RFC 9113 5.1: a stream in the table is open or half-closed.
-    H2Stream *find(uint32_t id)
-    {
-        for (H2Stream &st : streams)
-            if (st.id == id)
-                return &st;
-        return nullptr;
-    }
+    H2Stream *find(uint32_t id);
     // RFC 9113 5.1: a stream the connection must remember.
-    H2Stream &open(uint32_t id)
-    {
-        if (H2Stream *st = find(id))
-            return *st;
-        streams.emplace_back();
-        H2Stream &st = streams.back();
-        st.id = id;
-        st.flow_window = peer_initial_window;
-        return st;
-    }
+    H2Stream &open(uint32_t id);
     // RFC 9113 5.1: content leaves the stream when the stream does.
     //
     // Clearing `mrb` here makes a second call a no-op, so no value is
     // unrooted twice. The content is cleared whole, so an asset or an
     // owned buffer cannot outlive the stream that framed it.
-    void content_retire(H2Stream &s)
-    {
-        if (s.response_content.mrb != nullptr) {
-            retired.push_back(Lend{s.response_content.mrb, s.response_content.value});
-            s.response_content.mrb = nullptr;
-        }
-        s.response_content.clear();
-    }
+    void content_retire(H2Stream &s);
     // The release: called where a whole round has drained, so nothing the
     // kernel was handed still points into these Strings.
-    void content_drain()
-    {
-        for (const Lend &l : retired)
-            resource_body_unlend(l.mrb, l.v);
-        retired.clear();
-    }
+    void content_drain();
     // RFC 9113 5.1: the number stays, the entry goes.
-    void close_stream(uint32_t id)
-    {
-        for (size_t i = 0; i < streams.size(); i++) {
-            if (streams[i].id == id) {
-                // The move-assign below discards this entry's members: a body it
-                // still holds has to leave first, or its root leaks silently on
-                // every close - RST_STREAM, END_STREAM and error paths alike.
-                content_retire(streams[i]);
-                // WHATWG HTML: the resource hears that its stream ended, once,
-                // however it ended.
-                if (streams[i].sse != nullptr) {
-                    sse_free(streams[i].sse);
-                    streams[i].sse = nullptr;
-                }
-                // RFC 6455 7: and the same for a WebSocket, which hears on_close.
-                if (streams[i].ws != nullptr) {
-                    ws_free(streams[i].ws);
-                    streams[i].ws = nullptr;
-                }
-                streams[i] = std::move(streams.back());
-                streams.pop_back();
-                return;
-            }
-        }
-    }
+    void close_stream(uint32_t id);
 };
 } // namespace webmachine
 
@@ -1815,10 +1667,7 @@ class Http1
     // does not. The media-type database is the server's, lent here for the
     // one thing this tier decides that the file machine does not - what a
     // name's Content-Type is.
-    void serve_docroot(const MimeDb *mime)
-    {
-        mime_ = mime;
-    }
+    void serve_docroot(const MimeDb *mime);
 
     void clock_tick();
 
@@ -1831,41 +1680,14 @@ class Http1
     // RFC 6455 5.1: does this connection carry a tunnel rather than a
     // request and an answer? Such a connection owes no next head, so the
     // head clock says nothing about it.
-    bool tunneled(const Conn &st) const
-    {
-        if (st.ws != nullptr)
-            return true;
-        if (st.h2 == nullptr)
-            return false;
-        for (const H2Stream &s : st.h2->streams) {
-            if (s.ws != nullptr)
-                return true;
-        }
-        return false;
-    }
+    bool tunneled(const Conn &st) const;
 
     // RFC 6455 7.1.1: this connection ran out of its idle time, and a
     // WebSocket says goodbye with a Close frame before the socket goes.
     // True = something was written and the send carries it.
-    bool going_away(Conn &st, std::string &sink)
-    {
-        if (st.ws == nullptr)
-            return false;
-        return ws_going_away(st.ws, sink);
-    }
+    bool going_away(Conn &st, std::string &sink);
 
-    bool timed(const Conn &st) const
-    {
-        if (st.sse != nullptr)
-            return true;
-        if (st.h2 == nullptr)
-            return false;
-        for (const H2Stream &s : st.h2->streams) {
-            if (s.sse != nullptr)
-                return true;
-        }
-        return false;
-    }
+    bool timed(const Conn &st) const;
 
     // No RFC - this becomes a struct msghdr, so it carries that struct's
     // names: the segments are its msg_iov, their count its msg_iovlen, and
@@ -1920,14 +1742,7 @@ class Http1
     // arms it once and the connection stops naming it - exactly file_take.
     // Every worker slot is taken. The run is told rather than the layer
     // inventing a refusal - it answers this the way it answers anything.
-    static void compute_task_refused(Conn &st, int park)
-    {
-        Conn::Round *const r = st.park_at(park);
-        if (r == nullptr)
-            return;
-        r->answer_ready = true;
-        r->compute_task_full = true;
-    }
+    static void compute_task_refused(Conn &st, int park);
     // The three refusals a stopped run can meet, told apart here so no
     // call site has to. Status 0 means the
     // worker answered and the run reads the answer.
@@ -1939,31 +1754,7 @@ class Http1
         uint16_t status = 0;
         std::string_view retry_after;
     };
-    static ComputeRefusal compute_task_refusal(Conn::Round &round)
-    {
-        // A full pool is load, and load passes. The seconds move over 3..5
-        // so a burst that was refused together does not come back together.
-        if (round.compute_task_full) {
-            static const char *const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
-                                                 "Retry-After: 5\r\n"};
-            static unsigned turn = 0;
-            return {429, kWait[turn++ % 3]};
-        }
-        // The author's number was wrong. Coming back does not make the work
-        // shorter, so nothing tells the client to.
-        if (round.compute_task_over_deadline)
-            return {500, {}};
-        // The block or the arguments could not cross. Nothing a client does
-        // changes that, so nothing tells it to come back.
-        if (round.compute_task_not_crossed)
-            return {500, {}};
-        // A handle the worker needs is gone. A database that is restarted
-        // comes back, and a minute is the size of that, not the seconds a
-        // burst of load lives on.
-        if (round.compute_task_raised)
-            return {503, "Retry-After: 60\r\n"};
-        return {};
-    }
+    static ComputeRefusal compute_task_refusal(Conn::Round &round);
     // #80: the crossing, done by the frame at the stop. The block becomes
     // an id and the arguments become CBOR. After this nothing of the VM is
     // named, which is what lets a worker touch the result at all.
@@ -2005,14 +1796,7 @@ class Http1
     // A watcher this connection has not armed yet. Taken, not read: the
     // reactor arms it once and the connection stops naming it - exactly
     // file_take and compute_task_take.
-    static bool watch_take(Conn &st, int *slot)
-    {
-        if (st.w_pending.empty())
-            return false;
-        *slot = st.w_pending.back();
-        st.w_pending.pop_back();
-        return true;
-    }
+    static bool watch_take(Conn &st, int *slot);
     // Which watcher this connection waits on, or -1.
     // #30: the watcher slot each job of the round waits on, or -1. A
     // round can wait on several at once.
@@ -2033,29 +1817,9 @@ class Http1
     // The work a stopped run left, or false. Taken, not read: the reactor
     // arms it once and the connection stops naming it - exactly file_take.
     // #30: response.userdata for this job, as the crossing left it.
-    static std::string_view compute_task_user(const Conn &st, int park, int job)
-    {
-        const Conn::Round *const r = st.park_at(park);
-        if (r == nullptr || job < 0 || job >= Conn::kJobSlots)
-            return {};
-        return r->job.at(job).user_bytes;
-    }
+    static std::string_view compute_task_user(const Conn &st, int park, int job);
     static bool compute_task_take(Conn &st, int park, int job, unsigned *code, std::string &bytes,
-                                  double *deadline)
-    {
-        Conn::Round *const r = st.park_at(park);
-        if (r == nullptr || job < 0 || job >= Conn::kJobSlots)
-            return false;
-        Conn::Round::Job &j = r->job.at(job);
-        if (!j.waiting)
-            return false;
-        *code = j.code;
-        *deadline = j.deadline;
-        bytes.swap(j.bytes);
-        j.bytes.clear();
-        j.waiting = false;
-        return true;
-    }
+                                  double *deadline);
     // response.file, the reactor's half. A bound run may name a file instead
     // of spelling a body; opening it is disk work, so it never happens inside
     // the run. These five are the whole contract with the Ring - it drives
@@ -2068,31 +1832,14 @@ class Http1
     // asks it on every recv and every round, and the answer is almost
     // always no: file_take lives in another translation unit, so the no
     // cost a call and a return. Measured at 0.38% of a whole h1 run.
-    static bool file_waiting(const Conn &st)
-    {
-        return st.file != nullptr && st.file->stage == FileStage::kNamed;
-    }
+    static bool file_waiting(const Conn &st);
     // The same, for the work a stopped run left. arm_compute_task built a
     // std::string before it asked. Measured at 0.45%.
-    static bool compute_task_waiting(const Conn &st)
-    {
-        return st.park_owes != 0;
-    }
-    static uint8_t park_generation(const Conn &st, int park)
-    {
-        return park >= 0 && park < Conn::kParkSlots ? st.park_gen[park] : 0;
-    }
+    static bool compute_task_waiting(const Conn &st);
+    static uint8_t park_generation(const Conn &st, int park);
     // The next parked run with a job to arm, or false. Taken, not read -
     // the same shape as file_take and watch_take.
-    static bool park_take_pending(Conn &st, int *park)
-    {
-        if (st.park_owes == 0)
-            return false;
-        const int slot = __builtin_ctz(st.park_owes);
-        st.park_owes &= static_cast<uint16_t>(~(1u << slot));
-        *park = slot;
-        return true;
-    }
+    static bool park_take_pending(Conn &st, int *park);
     // RFC 9110 6.4: the request body of this connection that still owes
     // octets to its file. h1 has one spill; an h2 connection has one per
     // stream, and one write flies at a time because the answer names a
@@ -2101,14 +1848,7 @@ class Http1
     // The reactor asks this on every recv and every round, the same way
     // it asks file_waiting, and the answer is no for every connection
     // that is not taking an upload.
-    static BodySpill *spill_waiting(Conn &st)
-    {
-        if (st.spill.owes_write())
-            return &st.spill;
-        if (mrb_likely(st.h2 == nullptr))
-            return nullptr;
-        return spill_waiting_h2(st);
-    }
+    static BodySpill *spill_waiting(Conn &st);
     static BodySpill *spill_waiting_h2(Conn &st);
     // What the ring answered for the write it armed. The body may be
     // whole now, and then the run that stopped for it is ready.
@@ -2151,19 +1891,9 @@ class Http1
     // inlined twice it put 379 bytes of decoder into feed_parse, which
     // every request walks. nm -S on the host build decided it.
     // RFC 9110 5.6.2: the octets a token may carry.
-    static bool chunk_tchar(char c)
-    {
-        const unsigned char u = static_cast<unsigned char>(c);
-        return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') ||
-               c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' ||
-               c == '+' || c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' ||
-               c == '~';
-    }
+    static bool chunk_tchar(char c);
 
-    static bool chunk_hex(char c)
-    {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-    }
+    static bool chunk_hex(char c);
 
     // RFC 9112 7.1.1: one chunk-size line, without its CRLF.
     //
@@ -2180,61 +1910,7 @@ class Http1
     //
     // Cold: once per chunk header of a chunked body, which is the rare
     // request, and out of line because take_chunked is out of line already.
-    __attribute__((noinline)) static bool chunk_size_line_ok(const char *p, size_t n)
-    {
-        size_t i = 0;
-        while (i < n && chunk_hex(p[i]))
-            i++;
-        if (i == 0)
-            return false;
-
-        while (i < n) {
-            while (i < n && (p[i] == ' ' || p[i] == '\t'))
-                i++;
-            if (i >= n || p[i] != ';')
-                return false;
-            i++;
-            while (i < n && (p[i] == ' ' || p[i] == '\t'))
-                i++;
-            const size_t name = i;
-            while (i < n && chunk_tchar(p[i]))
-                i++;
-            if (i == name)
-                return false;
-            while (i < n && (p[i] == ' ' || p[i] == '\t'))
-                i++;
-            if (i >= n || p[i] != '=')
-                continue;
-            i++;
-            while (i < n && (p[i] == ' ' || p[i] == '\t'))
-                i++;
-            if (i < n && p[i] == '"') {
-                i++;
-                bool closed = false;
-                while (i < n) {
-                    if (p[i] == '\\' && i + 1 < n) {
-                        i += 2;
-                        continue;
-                    }
-                    if (p[i] == '"') {
-                        i++;
-                        closed = true;
-                        break;
-                    }
-                    i++;
-                }
-                if (!closed)
-                    return false;
-            } else {
-                const size_t val = i;
-                while (i < n && chunk_tchar(p[i]))
-                    i++;
-                if (i == val)
-                    return false;
-            }
-        }
-        return true;
-    }
+    __attribute__((noinline)) static bool chunk_size_line_ok(const char *p, size_t n);
 
     // RFC 9112 7.1.1: the same octets the decoder is about to read, held to
     // the grammar first. picohttpparser accepts `2 erfrferferf`, `2;`, `a `
@@ -2244,85 +1920,7 @@ class Http1
     // The walk keeps its own place, because the decoder's is not reachable
     // and one buffer may carry several chunks. It never copies the body -
     // only a size line that a buffer cut in half.
-    __attribute__((noinline)) static bool chunk_lines_ok(Conn &st, const char *data, size_t len)
-    {
-        size_t i = 0;
-        while (i < len) {
-            if (st.chunk_scan == Conn::ChunkScan::kDone)
-                return true;
-
-            if (st.chunk_scan == Conn::ChunkScan::kData) {
-                const size_t take = len - i < st.chunk_need ? len - i : st.chunk_need;
-                i += take;
-                st.chunk_need -= take;
-                if (st.chunk_need == 0)
-                    st.chunk_scan = Conn::ChunkScan::kAfterData;
-                continue;
-            }
-
-            if (st.chunk_scan == Conn::ChunkScan::kAfterData) {
-                // RFC 9112 7.1: the CRLF that closes a chunk, and nothing else.
-                const char want = st.chunk_after == 0 ? '\r' : '\n';
-                if (data[i] != want)
-                    return false;
-                i++;
-                st.chunk_after++;
-                if (st.chunk_after == 2) {
-                    st.chunk_after = 0;
-                    st.chunk_scan = Conn::ChunkScan::kSize;
-                }
-                continue;
-            }
-
-            // kSize: gather to the CRLF, then hold the line to the grammar.
-            const char *const nl = static_cast<const char *>(std::memchr(data + i, '\n', len - i));
-            if (nl == nullptr) {
-                // The line runs past this buffer. A size line this long is not a
-                // size line; kMaxHead is far more room than the grammar needs.
-                if (st.chunk_line.size() + (len - i) > kMaxHead)
-                    return false;
-
-                st.chunk_line.append(data + i, len - i);
-                return true;
-            }
-            const size_t upto = static_cast<size_t>(nl - (data + i));
-            if (st.chunk_line.size() + upto > kMaxHead)
-                return false;
-
-            st.chunk_line.append(data + i, upto);
-            i += upto + 1;
-            // The CR belongs to the terminator, never to the line.
-            if (st.chunk_line.empty() || st.chunk_line.back() != '\r')
-                return false;
-
-            st.chunk_line.pop_back();
-            if (!chunk_size_line_ok(st.chunk_line.data(), st.chunk_line.size()))
-                return false;
-
-            size_t size = 0;
-            for (char c : st.chunk_line) {
-                if (!chunk_hex(c))
-                    break;
-                const unsigned d = c <= '9' ? static_cast<unsigned>(c - '0')
-                                            : static_cast<unsigned>((c | 0x20) - 'a') + 10;
-                // A size that cannot be held is a size this server will not read.
-                if (size > (SIZE_MAX - d) / 16)
-                    return false;
-
-                size = size * 16 + d;
-            }
-            st.chunk_line.clear();
-            if (size == 0) {
-                // RFC 9112 7.1.2: the trailer section follows, and the decoder
-                // reads it. Its field rules are not this walk's business.
-                st.chunk_scan = Conn::ChunkScan::kDone;
-                return true;
-            }
-            st.chunk_need = size;
-            st.chunk_scan = Conn::ChunkScan::kData;
-        }
-        return true;
-    }
+    __attribute__((noinline)) static bool chunk_lines_ok(Conn &st, const char *data, size_t len);
 
     template <class W>
     __attribute__((noinline)) static BodyTake take_chunked(Conn &st, W w, const char *&data,
@@ -2407,39 +2005,19 @@ class Http1
     //
     // Out of line on purpose: four refusal arms in feed_parse spell these
     // five stores, and feed_parse is the function every request walks.
-    __attribute__((noinline)) static void drop_body(Conn &st)
-    {
-        st.body_to = Conn::Body::kNone;
-        st.content_need = 0;
-        st.body_hold.clear();
-        st.spill.close_file();
-        st.run_wants_body = false;
-    }
+    __attribute__((noinline)) static void drop_body(Conn &st);
 
-    static bool file_answerable(const Conn &st)
-    {
-        return st.file != nullptr &&
-               (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone);
-    }
+    static bool file_answerable(const Conn &st);
     // #36: a run of this connection stopped for the request body, and the
     // body is whole. Its answer owes the ring no completion - the octets
     // came in on the receive that just fed the parser - so nothing else
     // would ever come back to collect it. The reactor asks this instead,
     // the way it asks file_answerable.
-    static bool run_resumable(const Conn &st)
-    {
-        if (mrb_likely(!st.run_parked()))
-            return false;
-        const Conn::Round *const r = st.park_at(st.parked.co.promise().park);
-        return r != nullptr && r->answer_ready;
-    }
+    static bool run_resumable(const Conn &st);
     // 0 = do not map; otherwise the exact length to map. One question, one
     // answer - the split that made the read path ask "map?" and then use the
     // map's length to read with.
-    static size_t file_map_len(const Conn &st)
-    {
-        return (st.file != nullptr && st.file->map_wanted) ? st.file->content_length : 0;
-    }
+    static size_t file_map_len(const Conn &st);
     // Which shape a resource's answer takes. One value, decided once, so
     // the writer and the access line below cannot disagree about what went
     // out.
@@ -2469,27 +2047,7 @@ class Http1
         bool gzip_ok;
         bool bound;
     };
-    static AnswerStep answer_step(const AnswerFacts &f)
-    {
-        AnswerStep s;
-        s.body_len = f.has_lent ? f.lent_len : f.body_len;
-        s.answered = f.answered_already;
-        if (f.have_body && f.status == 200) {
-            s.shape = f.has_lent
-                          ? AnswerStep::Shape::kLent
-                          : (f.gzip_ok ? AnswerStep::Shape::kGzip : AnswerStep::Shape::kPlain);
-            s.answered = true;
-        } else if (f.answered_already) {
-            s.shape = AnswerStep::Shape::kAlready;
-        } else if (f.status == 500 && f.bound) {
-            // Whether a body exists is a question for the VM, so the caller
-            // demotes this to kStatus when the answer is no.
-            s.shape = AnswerStep::Shape::kException;
-        } else {
-            s.shape = AnswerStep::Shape::kStatus;
-        }
-        return s;
-    }
+    static AnswerStep answer_step(const AnswerFacts &f);
 
     // RFC 9113 6.9.1: what one stream may put on the wire this round. Both
     // windows, what is left of the body, and - for a copied buffer only -
@@ -2511,29 +2069,7 @@ class Http1
         int64_t conn_window;
         size_t chunk;
     };
-    static H2SendStep h2_send_step(const H2Stream &s, RoundRoom room)
-    {
-        const int64_t conn_window = room.conn_window;
-        const size_t chunk = room.chunk;
-        H2SendStep o;
-        if (!s.response_content.owes())
-            return o;
-        o.start = s.response_content.sent;
-        o.total = s.response_content.length;
-        size_t remaining = s.response_content.length - s.response_content.sent;
-        // A copied buffer is bounded per round; a lend and a mapping are not.
-        if (s.response_content.src == H2Stream::Content::Src::kOwned && remaining > chunk) {
-            remaining = chunk;
-        }
-        const int64_t budget = conn_window < s.flow_window ? conn_window : s.flow_window;
-        if (budget <= 0)
-            return o; // owed, but the window is shut: give stays 0
-        o.give = remaining;
-        if (static_cast<int64_t>(o.give) > budget)
-            o.give = static_cast<size_t>(budget);
-        o.ends = o.give != 0 && o.start + o.give == o.total;
-        return o;
-    }
+    static H2SendStep h2_send_step(const H2Stream &s, RoundRoom room);
 
     // What the asset tier does with one request: computed here, performed
     // by the caller. One value, so nothing is decided inside a branch that
@@ -2563,45 +2099,7 @@ class Http1
         flow::Method method;
         const http::ReqValues &vals;
     };
-    static AssetStep asset_step(const AssetEntry &e, const RangeAsk &ask)
-    {
-        const uint16_t verdict = ask.verdict;
-        const bool head_only = ask.head_only;
-        const http::ReqValues &vals = ask.vals;
-        AssetStep s;
-        s.status_code = verdict;
-        if (verdict == 412 || verdict == 501) {
-            s.head = AssetStep::HeadKind::kRefusal;
-            return s;
-        }
-        const size_t complete_length = Assets::wire_len(e);
-        if (verdict == 200 && !head_only && ask.method == flow::Method::kGet &&
-            vals.range != nullptr &&
-            (vals.if_range == nullptr || http::if_range_matches({vals.if_range, vals.if_range_len},
-                                                                {e.etag, sizeof(e.etag)}))) {
-            http::ByteRange r = {0, 0};
-            switch (http::parse_range({{vals.range, vals.range_len}, complete_length}, r)) {
-                case http::RangeParse::kOne:
-                    s.head = AssetStep::HeadKind::kRange;
-                    s.status_code = 206;
-                    s.first_byte_pos = r.first;
-                    s.content_length = r.last - r.first + 1;
-                    s.sends_content = true;
-                    break;
-                case http::RangeParse::kUnsat:
-                    s.head = AssetStep::HeadKind::kUnsatisfiable;
-                    s.status_code = 416;
-                    return s;
-                case http::RangeParse::kNone:
-                    break;
-            }
-        }
-        if (s.head == AssetStep::HeadKind::kNormal && verdict == 200 && !head_only) {
-            s.content_length = complete_length;
-            s.sends_content = true;
-        }
-        return s;
-    }
+    static AssetStep asset_step(const AssetEntry &e, const RangeAsk &ask);
 
     // The next round of a transfer, computed and not performed.
     //
@@ -2611,50 +2109,7 @@ class Http1
     // 16 bytes that way). Inlined, the FileStep never exists - the compiler
     // keeps its fields in registers. Purity only pays where the compiler can
     // see it.
-    static FileStep file_step(const Conn::FileXfer &x, size_t chunk)
-    {
-        FileStep s;
-        s.persist = x.persist;
-        s.sent_after = x.content_sent;
-        s.next = x.stage;
-        switch (x.stage) {
-            case FileStage::kDeliver: {
-                const bool mapped = x.map_addr != nullptr;
-                const size_t left =
-                    x.content_length > x.content_sent ? x.content_length - x.content_sent : 0;
-                // A mapping lends a bounded chunk of itself; a window lends exactly
-                // what the read put in it.
-                const size_t take = mapped ? (left < chunk ? left : chunk) : x.buf_filled;
-                s.head = !x.head.empty();
-                if (take != 0) {
-                    s.src = mapped ? FileStep::Src::kMapping : FileStep::Src::kWindow;
-                    // A mapping is walked from where the transfer stands; the window
-                    // buffer holds only this round's bytes and starts at zero.
-                    s.start = mapped ? x.content_sent : 0;
-                }
-                s.give = take;
-                s.sent_after = x.content_sent + take;
-                // A window is refilled by the ring, so the next round waits on it.
-                // A mapping has no read coming to wake it and drives itself.
-                s.next = s.sent_after < x.content_length
-                             ? (mapped ? FileStage::kDeliver : FileStage::kRing)
-                             : FileStage::kDone;
-                break;
-            }
-            case FileStage::kDone:
-                // The last lend has drained - that is what kDone means and the only
-                // way to reach it. So this is where the mapping goes back and where
-                // the transfer's one access line is owed.
-                s.release_map = x.map_addr != nullptr;
-                s.log = true;
-                s.clear = true;
-                s.next = FileStage::kNone;
-                break;
-            default:
-                break;
-        }
-        return s;
-    }
+    static FileStep file_step(const Conn::FileXfer &x, size_t chunk);
     // The one place a transfer's state changes as a round is delivered.
     void file_apply(Conn &st, const FileStep &step);
     // The single access line of a transfer, with the bytes that really went
@@ -2666,50 +2121,24 @@ class Http1
     // Nothing owed, nothing on the wire: give the read buffer back, or a slot
     // that once served a big file would hold those bytes for the process's
     // life. The Ring calls this only where both are true.
-    static void file_release(Conn &st)
-    {
-        if (st.file != nullptr && st.file->buf.capacity() > kDeliverChunk) {
-            std::string().swap(st.file->buf);
-        }
-    }
+    static void file_release(Conn &st);
 
     // The App formats lines; the Ring flushes the buffer. Opt-in.
-    Logger *access_log()
-    {
-        return &alog_;
-    }
+    Logger *access_log();
     // The only way an access line is ever built.
-    void enable_access_log()
-    {
-        alog_.enabled = true;
-    }
+    void enable_access_log();
     // The second stream: its own socket, its own daemon, its own file.
-    Logger *error_log()
-    {
-        return &elog_;
-    }
+    Logger *error_log();
     // The only way an error record is ever built.
-    void enable_error_log()
-    {
-        elog_.enabled = true;
-    }
+    void enable_error_log();
     // [tune] zero_copy_threshold, once, before the first accept.
-    void set_zero_copy_threshold(size_t n)
-    {
-        zc_min_ = n;
-    }
+    void set_zero_copy_threshold(size_t n);
 
     // [tune] file_map_threshold, once, before the first accept. 0 = never map.
-    void set_file_map_threshold(size_t n)
-    {
-        map_min_ = n;
-    }
+    void set_file_map_threshold(size_t n);
     // The Ring owns the send clock, so the Ring is what tells this layer how
     // much one send may carry - one rule, one place.
-    void set_send_timeout(int secs)
-    {
-        send_chunk_ = file_send_chunk(secs);
-    }
+    void set_send_timeout(int secs);
 
     // The Ring asks before it opens: the size that decides this is the App's
     // to weigh, because the App is what holds the operator's answer.
@@ -2918,16 +2347,10 @@ class Http1
     };
     void assemble_dynamic(const DynamicBody &d, std::string &sink);
     // RFC 9112 9.3: one prebuilt status in its three connection spellings.
-    const Variants &variants(uint16_t status) const
-    {
-        return store_[index_[status]];
-    }
+    const Variants &variants(uint16_t status) const;
     // The same status without its Content-Length and terminator: what an
     // error answer that has a page puts its own two fields behind.
-    const Variants &prefixes(uint16_t status) const
-    {
-        return store_prefix_[index_[status]];
-    }
+    const Variants &prefixes(uint16_t status) const;
     // RFC 9110 15: the error answer this connection gets. The prebuilt
     // status line and Date, then the page rendered for this request.
     //
@@ -3203,165 +2626,7 @@ class Http1
     // reach it from inside a coroutine while the konst tier keeps calling it
     // straight - a run that can never stop must not pay for a frame.
     // Returns the step it took, because the access line counts what it wrote.
-    AnswerStep spell_answer(Round &r, Spelling sp)
-    {
-        Conn &st = r.st;
-        const Bundle *const b = r.b;
-        const int minor = r.minor;
-        const bool persist = r.persist;
-        const bool head_only = r.head_only;
-        const http::ReqValues &vals = r.vals;
-        const char *const method = r.method;
-        const size_t method_len = r.method_len;
-        const char *const path = r.path;
-        const size_t path_len = r.path_len;
-        std::string &sink = sp.sink;
-        Plan *const plan = sp.plan;
-        const uint16_t status = sp.status;
-        const char *const lent = sp.lent;
-        const size_t lent_len = sp.lent_len;
-        const bool answered = sp.answered;
-        const bool have_body = sp.have_body;
-        const bool accept_gzip = sp.accept_gzip;
-        const std::array<uint16_t, 600> *const idx = sp.idx;
-        AnswerStep astep =
-            answer_step({status, sp.body.size(), lent_len, answered, have_body, lent != nullptr,
-                         b != nullptr && b->gzip_ok, b != nullptr && b->bound});
-        mrb_value exc_value = mrb_nil_value();
-        // #210: what led here, gathered once - the record and the page carry
-        // the same hash because they are taken over the same facts.
-        ErrFacts ef;
-        std::string ef_backtrace;
-        std::string ef_steering;
-        char ef_hash[kFingerprintLen] = {};
-        if (mrb_unlikely(astep.shape == AnswerStep::Shape::kException)) {
-            ef.peer = st.peer;
-            ef.peer_len = st.peer_len;
-            ef.request_target = path;
-            ef.request_target_len = path_len;
-            ef.method = method;
-            ef.method_len = method_len;
-            spell_steering(&vals, ef_steering);
-            ef.steering = ef_steering.data();
-            ef.steering_len = ef_steering.size();
-            // The request as the resource saw it: lent for this frame, which is
-            // the frame still being answered.
-            ef.body = b->res->run.req != nullptr ? b->res->run.req->content : nullptr;
-            ef.body_len = b->res->run.req != nullptr ? b->res->run.req->content_len : 0;
-            ef.body_full = ef.body_len;
-            ef.status_code = 500;
-            exception_facts(b->res->mrb, {ef, ef_backtrace});
-            spell_fingerprint(ef_hash, fingerprint_of(ef));
-            if (elog_.enabled)
-                log_error(elog_, ef);
-            // #210: handle_exception lives on the error resource and nowhere
-            // else, so the exception object itself is what crosses over - not
-            // a message some resource already made of it.
-            if (resource_exception_take(*b->res, &exc_value))
-                astep.answered = true;
-            else
-                astep.shape = AnswerStep::Shape::kStatus;
-        }
-        switch (astep.shape) {
-            case AnswerStep::Shape::kAlready:
-                break;
-            case AnswerStep::Shape::kLent: {
-                const Variants &pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
-                const Resp &pfx =
-                    minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
-                sink.append(pfx.bytes);
-                char cl[40];
-                sink.append(cl, http::spell_content_length(cl, lent_len));
-                body_lend(st, sink, {{lent, lent_len}, *plan});
-                break;
-            }
-            case AnswerStep::Shape::kGzip: {
-                const Resp &prefix_id =
-                    minor >= 1 ? (persist ? b->ok_prefix_vary.plain : b->ok_prefix_vary.close)
-                               : (persist ? b->ok_prefix_vary.keep : b->ok_prefix_vary.close);
-                const Resp &prefix_gz =
-                    minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
-                               : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
-                assemble_dynamic(
-                    {prefix_id, prefix_gz, sp.body, accept_gzip && st.packetized, head_only}, sink);
-                break;
-            }
-            case AnswerStep::Shape::kPlain: {
-                const Resp &prefix = minor >= 1
-                                         ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
-                                         : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-                answer_assemble(sink, {prefix, sp.body, head_only});
-                break;
-            }
-            case AnswerStep::Shape::kException: {
-                std::string message;
-                err_pages_.exception_text(exc_value, message);
-                const Variants &pv = store_prefix_[(*idx)[500]];
-                const Variants &bv = store_[(*idx)[500]];
-                ErrorPages::Fields f;
-                f.message = message.data();
-                f.message_len = message.size();
-                f.fingerprint = ef_hash;
-                // A ship build says what was thrown and where the log has the rest; a
-                // debug build is already telling you about itself, so the trace goes
-                // on the page too.
-                if (kDebugBuild) {
-                    f.backtrace = ef.backtrace;
-                    f.backtrace_len = ef.backtrace_len;
-                }
-                const Resp &prefix =
-                    minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
-                const Resp &bodyless =
-                    minor >= 1 ? (persist ? bv.plain : bv.close) : (persist ? bv.keep : bv.close);
-                spell_error({prefix, bodyless, 500,
-                             err_pages_.media_pick_for_status(500, vals.accept, vals.accept_len), f,
-                             head_only},
-                            sink);
-                break;
-            }
-            case AnswerStep::Shape::kStatus: {
-                const Variants &sv =
-                    (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
-                const Resp &bodyless =
-                    minor >= 1 ? (persist ? sv.plain : sv.close) : (persist ? sv.keep : sv.close);
-                // RFC 9110 15: only a 4xx or 5xx has something to explain. A 204,
-                // a 304 or a redirect is an answer, and answers carry no page.
-                if (status >= 400) {
-                    const Variants &pv = store_prefix_[(*idx)[status]];
-                    const ErrorPages::Fields f;
-                    const Resp &prefix = minor >= 1 ? (persist ? pv.plain : pv.close)
-                                                    : (persist ? pv.keep : pv.close);
-                    spell_error(
-                        {prefix, bodyless, status,
-                         err_pages_.media_pick_for_status(status, vals.accept, vals.accept_len), f,
-                         head_only},
-                        sink);
-                } else if (status == 200 && !head_only && plan != nullptr &&
-                           b->konst.body.size() >= kLendFloor) {
-                    // The konst body is a std::string built at setup and immortal.
-                    // Nothing for the GC to move or collect, so it is lent as a
-                    // pointer rather than copied into this connection's sink - a
-                    // copy gives every stalled reader a private duplicate of the
-                    // same answer.
-                    //
-                    // From kLendFloor up. Below it the whole prebuilt 200 goes into
-                    // the sink - head, Content-Length and body in one piece - and
-                    // the round leaves as one send.
-                    const Resp &pfx = minor >= 1
-                                          ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
-                                          : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-                    sink.append(pfx.bytes);
-                    char cl[40];
-                    sink.append(cl, http::spell_content_length(cl, b->konst.body.size()));
-                    body_lend(st, sink, {{b->konst.body.data(), b->konst.body.size()}, *plan});
-                } else {
-                    sink.append(bodyless.bytes);
-                }
-                break;
-            }
-        }
-        return astep;
-    }
+    AnswerStep spell_answer(Round &r, Spelling sp);
 
     // RFC 9110 6.3: response.file named a file, so no body is spelled here
     // - the framing goes onto the connection and the reactor drives
@@ -3494,12 +2759,7 @@ class Http1
     };
     // Whether a run on this bundle can stop: it declared compute or
     // watch, or a value round. Only such a run pays for a frame.
-    static bool h2_can_stop(const Bundle *b)
-    {
-        return b != nullptr && b->bound && b->res != nullptr &&
-               ((b->res->compute | b->res->watch) != 0 ||
-                (b->res->value_jobs | b->res->value_watch) != 0);
-    }
+    static bool h2_can_stop(const Bundle *b);
     // #30: the walk, and the framing, are two functions - a run can stop
     // between them. One framer serves both paths.
     struct H2Produced;
