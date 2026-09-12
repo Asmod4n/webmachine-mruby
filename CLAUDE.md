@@ -1,7 +1,7 @@
 # Rules for this repository
 
 Everything in this repository is written in English: file contents,
-comments, documentation, and commit messages. No German, not one word.
+comments, documentation, and commit messages.
 
 ## Two branches, no more
 
