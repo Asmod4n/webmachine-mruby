@@ -1443,9 +1443,13 @@ class Ring {
       on_recv_tls(idx, {bid0, total, cqe->flags});
       return;
     }
-    if (mrb_unlikely(c.idle)) {
+    // A tunnel owes no next request head, so header_timeout_ is not its
+    // clock: what it waits for is the peer, and that is the idle one. The
+    // octets that just arrived are the proof the peer is there.
+    const bool tunneled = app_.tunneled(c.app);
+    if (mrb_unlikely(c.idle || tunneled)) {
       c.idle = false;
-      c.deadline_s = now_s_ + header_timeout_;
+      c.deadline_s = now_s_ + (tunneled ? idle_timeout_ : header_timeout_);
     }
 
     std::string& sink = c.sending ? c.next : c.out;
@@ -1542,6 +1546,14 @@ class Ring {
   // whole of what arrived says so.
   void deliver(uint32_t idx, const char* data, size_t len, bool last) {
     Conn& c = conns_[idx];
+    // The same clock the cleartext path keeps: plaintext arrived, so the
+    // peer is there, and a tunnel waits on the idle time rather than on a
+    // head that never comes.
+    const bool tunneled = app_.tunneled(c.app);
+    if (mrb_unlikely(c.idle || tunneled)) {
+      c.idle = false;
+      c.deadline_s = now_s_ + (tunneled ? idle_timeout_ : header_timeout_);
+    }
     typename App::Plan req;
     req.byte_cap = c.round_cap;
     typename App::Plan* plan = (last && !c.sending) ? &req : nullptr;
@@ -2500,6 +2512,11 @@ class Ring {
             // A TLS connection that ran out of time before the kernel
             // ever got its keys did not just go idle.
             connection_failed(i, ConnFailed{"tls: a handshake that never finished", -ETIMEDOUT});
+          } else if (app_.going_away(c.app, c.out)) {
+            // RFC 6455 7.1.1: a WebSocket hears a Close frame before the
+            // socket goes. The send carries it and closes behind it.
+            c.close_after_send = true;
+            arm_send(i);
           } else {
             begin_close(i);
           }

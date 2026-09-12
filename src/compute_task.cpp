@@ -21,6 +21,7 @@
 
 #include <mruby/array.h>
 #include <mruby/cbor.h>
+#include <mruby/irep.h>
 #include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/hash.h>
@@ -507,6 +508,11 @@ unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime
   code.max_runtime = max_runtime;
   reg.codes.push_back(std::move(code));
   const unsigned id = static_cast<unsigned>(reg.codes.size() - 1);
+  // The key is the address of the irep, and the registry holds it for the
+  // life of the process. So the irep has to live that long as well: a
+  // freed one would let the next irep land on the same address and answer
+  // to this entry. One reference, never given back.
+  mrb_irep_incref(mrb, const_cast<struct mrb_irep*>(proc->body.irep));
   reg.by_irep.emplace(key, id);
   return id;
 }

@@ -885,3 +885,33 @@ assert('ws: an optional parameter is a shape the resource may declare') do
     s.close
   end
 end
+
+# RFC 6455 7.1.1: the server closes the connection, and the Close frame
+# goes first. An idle tunnel hears 1001 - going away - and then the socket
+# ends. The idle clock also belongs to the tunnel: a peer that speaks keeps
+# the connection, and the head clock never applies to it.
+assert('ws: an idle tunnel hears a 1001 Close frame before the socket ends') do
+  cfg = Tempfile.new(['wm-ws-idle', '.toml'])
+  cfg.write("[tune]\nheader_timeout = 1\nidle_timeout = 2\n")
+  cfg.flush
+  begin
+    wm_server(WS_ECHO, "--config=#{cfg.path}", tag: 'wm-ws-idle') do |sock|
+      # A tunnel that speaks is kept past the head clock, which is shorter.
+      s = UNIXSocket.new(sock)
+      ws_handshake(s)
+      sleep 1.3
+      s.write(ws_frame(0x1, 'still here'))
+      op, _, payload = ws_read_frame(s)
+      assert_equal [0x1, 'still here'], [op, payload]
+      # And then it says nothing at all.
+      op2, _, payload2 = ws_read_frame(s)
+      assert_equal 0x8, op2, 'an idle tunnel owes a Close frame'
+      code = (payload2.getbyte(0) << 8) | payload2.getbyte(1)
+      assert_equal 1001, code
+      s.close
+    end
+  ensure
+    cfg.close
+    cfg.unlink
+  end
+end

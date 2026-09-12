@@ -817,6 +817,18 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
       // grows. No reserve: the size is what arrives.
       stx.data = H2Stream::Data::kMem;
     } else if (claimed.value >= kBodySpill || db.res->saves_body) {
+      // One descriptor per large body, and a client opens streams as fast
+      // as the settings allow. The ceiling counts the files this
+      // connection holds open: over it the stream is refused, which is
+      // the code that tells the client to send it again later.
+      size_t open_files = 0;
+      for (const H2Stream& other : st0.h2->streams) {
+        if (other.spill.fd >= 0) open_files++;
+      }
+      if (mrb_unlikely(open_files >= kH2SpillFilesMax)) {
+        h2_rst(st0, stream_id, kH2RefusedStream, sink);
+        return true;
+      }
       if (mrb_unlikely(!stx.spill.open_file())) {
         h2_rst(st0, stream_id, kH2InternalError, sink);
         return true;

@@ -706,6 +706,15 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit answered) {
   return c;
 }
 
+// RFC 6455 7.1.1: the idle time ran out, so this end starts the close
+// handshake with 1001 - going away - and the socket follows the frame.
+bool ws_going_away(WsConn* c, std::string& sink) {
+  if (c == nullptr || c->sent_close) return false;
+  const size_t was = sink.size();
+  emit_close(c, sink, {1001, {}});
+  return sink.size() != was;
+}
+
 // RFC 7692: does this route accept the extension at all?
 bool ws_wants_deflate(const WsResource* r) { return r->want_deflate; }
 

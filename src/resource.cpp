@@ -717,6 +717,7 @@ using Args = std::span<const mrb_value>;
 
 mrb_value call_direct(Run& r, Bound b, Args args = {});
 mrb_value call_on_class(Run& r, Bound b, Args args = {});
+mrb_value call_value_cb_raw(Run& r, const Resource::ValueCb& cb, Args args = {});
 mrb_value call_value_cb(Run& r, const Resource::ValueCb& cb, Args args = {});
 mrb_value nodecall(Run& r, Node nd, Args args);
 mrb_value arg_for(Run& r, Node nd);
@@ -789,10 +790,32 @@ mrb_value call_on_class(Run& r, Bound b, Args args) {
     return answer;
 }
 
-mrb_value call_value_cb(Run& r, const Resource::ValueCb& cb, Args args) {
+mrb_value call_value_cb_raw(Run& r, const Resource::ValueCb& cb, Args args) {
     const Bound b = {cb.m, cb.irep, cb.native, cb.sym};
     if (cb.on_class) return call_on_class(r, b, args);
     return call_direct(r, b, args);
+}
+
+mrb_value call_value_cb(Run& r, const Resource::ValueCb& cb, Args args) {
+    const mrb_value v = call_value_cb_raw(r, cb, args);
+    // #30: the same missing declaration a node can have. This callback
+    // said nothing, so the reader ahead takes the object for an ETag, a
+    // moment or a type list and never runs the block.
+    if (mrb_unlikely(mrb_data_p(v))) {
+      ComputeTaskAsk ask;
+      if (mrb_unlikely(compute_task_of(r.mrb, v, &ask))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::ComputeTask and never declared one - write "
+                   "`compute %n`",
+                   cb.sym, cb.sym);
+      }
+      if (mrb_unlikely(watcher_p(r.mrb, v))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::Watcher and never declared one - write `watch %n`",
+                   cb.sym, cb.sym);
+      }
+    }
+    return v;
 }
 
 mrb_value nodecall(Run& r, Node nd, Args args) {
@@ -876,6 +899,25 @@ bool node_answer(Run& r, Node nd, Args args, uint16_t status, mrb_value* out) {
       res.run.watch_count = 1;
       res.run.stopped = true;
       return false;
+    }
+    // #80: this node declared nothing, so its answer is read as an answer -
+    // and every object is true. A ComputeTask or a Watcher here is a
+    // missing declaration, and the flow would take the true edge without
+    // ever running the block. Name it instead.
+    if (mrb_unlikely(mrb_data_p(v))) {
+      ComputeTaskAsk ask;
+      if (mrb_unlikely(compute_task_of(r.mrb, v, &ask))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::ComputeTask and never declared one - write "
+                   "`compute %n`",
+                   res.node_sym[i], res.node_sym[i]);
+      }
+      if (mrb_unlikely(watcher_p(r.mrb, v))) {
+        mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
+                   "%n answered a Webmachine::Watcher and never declared one - write "
+                   "`watch %n`",
+                   res.node_sym[i], res.node_sym[i]);
+      }
     }
     *out = v;
     return true;
@@ -1153,7 +1195,7 @@ bool value_round_start(Run& r, Node n, uint16_t status) {
   for (const Want& w : wants) {
     const bool watched = (res.value_watch & (1u << w.what)) != 0;
     if ((res.value_jobs & (1u << w.what)) == 0 && !watched) continue;
-    const mrb_value v = call_value_cb(r, *w.cb);
+    const mrb_value v = call_value_cb_raw(r, *w.cb);
     // #30: a watcher answers this one. It waits beside the tasks - a
     // descriptor and a worker are two ways to the same round.
     if (watched) {

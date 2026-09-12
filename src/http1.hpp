@@ -31,6 +31,10 @@ inline constexpr size_t kBodySpill = 256u * 1024;
 // RFC 9112 7.1: the framing a chunked body may spend. 64 KiB covers any
 // head of a body, and one octet of framing per eight of content covers a
 // client that chunks small on purpose.
+// RFC 9113 5.1.2: one h2 connection may hold this many body files open at
+// once. A body over kBodySpill takes a descriptor for as long as the
+// stream lives, and a client opens streams as fast as the settings allow.
+inline constexpr size_t kH2SpillFilesMax = 16;
 inline constexpr size_t kChunkFramingFloor = 64u * 1024u;
 inline constexpr size_t kChunkFramingShare = 8u;
 
@@ -765,6 +769,10 @@ void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 
 bool ws_feed(WsConn* c, std::string_view data, std::string& sink);
 
+// RFC 6455 7.1.1: the server closes the connection, and a Close frame goes
+// first. True = this call wrote one.
+bool ws_going_away(WsConn* c, std::string& sink);
+
 void ws_free(WsConn* c);
 }
 
@@ -967,6 +975,7 @@ WsConn* ws_admit(const WsResource* r, Logger* elog, WsAdmit out);
 bool ws_wants_deflate(const WsResource* r);
 void ws_open(WsConn* c, const wsdeflate::Params& deflate);
 bool ws_feed(WsConn* c, std::string_view data, std::string& sink);
+bool ws_going_away(WsConn* c, std::string& sink);
 void ws_free(WsConn* c);
 
 struct SseResource;
@@ -1792,6 +1801,26 @@ class Http1 {
   // WHATWG HTML: which connections want a wake every second. h1 carries
   // one event stream on the connection; an h2 connection carries one per
   // stream, so it is asked as soon as any stream has one.
+  // RFC 6455 5.1: does this connection carry a tunnel rather than a
+  // request and an answer? Such a connection owes no next head, so the
+  // head clock says nothing about it.
+  bool tunneled(const Conn& st) const {
+    if (st.ws != nullptr) return true;
+    if (st.h2 == nullptr) return false;
+    for (const H2Stream& s : st.h2->streams) {
+      if (s.ws != nullptr) return true;
+    }
+    return false;
+  }
+
+  // RFC 6455 7.1.1: this connection ran out of its idle time, and a
+  // WebSocket says goodbye with a Close frame before the socket goes.
+  // True = something was written and the send carries it.
+  bool going_away(Conn& st, std::string& sink) {
+    if (st.ws == nullptr) return false;
+    return ws_going_away(st.ws, sink);
+  }
+
   bool timed(const Conn& st) const {
     if (st.sse != nullptr) return true;
     if (st.h2 == nullptr) return false;
