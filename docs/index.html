@@ -1,276 +1,629 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>webmachine-mruby — an HTTP server for Ruby, shipped as one binary</title>
-<meta name="description" content="webmachine-mruby is a small, fast HTTP server for Ruby. You write resources, and it runs them from one binary.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%231f5f8b'/%3E%3C/svg%3E">
+<title>webmachine-mruby</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
 <style>
-:root {
-  --ink: #14181f;
-  --muted: #4b5563;
-  --paper: #f7f7f4;
-  --card: #ffffff;
-  --line: #d8d8d0;
-  --accent: #1f5f8b;
-  --code: #eef1f4;
-  color-scheme: light dark;
-}
-@media (prefers-color-scheme: dark) {
   :root {
-    --ink: #e8e8e3;
-    --muted: #a3a8b0;
-    --paper: #14181f;
-    --card: #1c2129;
-    --line: #2d333d;
-    --accent: #7fb3d9;
-    --code: #0f1318;
+    --ground: #fbfaf8;
+    --raised: #f3f1ed;
+    --sunk: #edeae4;
+    --ink: #15171b;
+    --muted: #565c64;
+    --faint: #878d95;
+    --rule: #e0dcd5;
+    --accent: #0f5f52;
+    --accent-ink: #0b4a40;
+    --accent-soft: #e5efec;
+    --ochre: #8a6018;
+    --t-key: #a020a0;
+    --t-str: #3f7f36;
+    --t-const: #8a6018;
+    --t-fn: #2b5fd0;
+    --t-sym: #0a7285;
+    --t-num: #8a5000;
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: var(--ink);
-  background: var(--paper);
-}
-a { color: var(--accent); }
-header {
-  border-bottom: 1px solid var(--line);
-  background: var(--card);
-}
-.bar {
-  max-width: 62rem;
-  margin: 0 auto;
-  padding: 0.9rem 1.2rem;
-  display: flex;
-  gap: 1.4rem;
-  align-items: baseline;
-}
-.bar .name { font-weight: 700; color: var(--ink); text-decoration: none; }
-.bar a { color: var(--ink); text-decoration: none; }
-.bar a:hover { color: var(--accent); }
-main { max-width: 62rem; margin: 0 auto; padding: 2.4rem 1.2rem 4rem; }
-h1 { font-size: 2.2rem; line-height: 1.15; margin: 0 0 0.8rem; max-width: 30ch; }
-h2 { font-size: 1.25rem; margin: 2.6rem 0 0.8rem; }
-p.lede { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.6rem; max-width: 60ch; }
-.btn {
-  display: inline-block;
-  font: inherit;
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--paper);
-  text-decoration: none;
-}
-.btn.ghost { background: transparent; color: var(--accent); margin-left: 0.6rem; }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 1rem;
-  margin: 2.4rem 0 0;
-}
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 1rem 1.2rem;
-}
-.card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
-.card p { margin: 0; color: var(--muted); }
-pre {
-  background: var(--code);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 1rem 1.2rem;
-  overflow-x: auto;
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-p code { background: var(--code); padding: 0.05rem 0.3rem; border-radius: 4px; }
-table { border-collapse: collapse; width: 100%; }
-td { padding: 0.45rem 0.6rem; border-top: 1px solid var(--line); vertical-align: top; }
-td:first-child { white-space: nowrap; }
-footer {
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 0.95rem;
-}
-footer .bar { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #131619; --raised: #1a1e22; --sunk: #21262b;
+      --ink: #e9e7e2; --muted: #9ba2a9; --faint: #6b737a; --rule: #292f35;
+      --accent: #5dc2ac; --accent-ink: #8ad6c5; --accent-soft: #162825; --ochre: #cea25a;
+      --t-key: #c678dd; --t-str: #98c379; --t-const: #e5c07b;
+      --t-fn: #61afef; --t-sym: #56b6c2; --t-num: #d19a66;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #131619; --raised: #1a1e22; --sunk: #21262b;
+    --ink: #e9e7e2; --muted: #9ba2a9; --faint: #6b737a; --rule: #292f35;
+    --accent: #5dc2ac; --accent-ink: #8ad6c5; --accent-soft: #162825; --ochre: #cea25a;
+    --t-key: #c678dd; --t-str: #98c379; --t-const: #e5c07b;
+    --t-fn: #61afef; --t-sym: #56b6c2; --t-num: #d19a66;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 64rem; margin: 0 auto; padding-inline: 24px; }
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+  h1 {
+    font-size: clamp(2.2rem, 1.3rem + 3.2vw, 3.5rem);
+    line-height: 1.05; font-weight: 600; letter-spacing: -0.028em;
+  }
+  h2 { font-size: 1.45rem; font-weight: 600; letter-spacing: -0.016em; }
+  h3 { font-size: 0.98rem; font-weight: 600; letter-spacing: -0.004em; }
+  p { margin: 0; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+  code, pre, .mono { font-family: var(--mono); }
+
+  .eyebrow {
+    font-size: 0.71rem; text-transform: uppercase; letter-spacing: 0.11em;
+    font-weight: 500; color: var(--faint);
+  }
+  .lede { font-size: 1.14rem; color: var(--muted); max-width: 40rem; }
+
+  header.top { border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--ground); z-index: 5; }
+  .topbar { display: flex; flex-wrap: wrap; gap: 0.5rem 1.3rem; align-items: center; padding-block: 0.9rem; font-size: 0.86rem; }
+  .brand { font-family: var(--mono); font-weight: 600; letter-spacing: -0.02em; }
+  .topbar nav { display: flex; flex-wrap: wrap; gap: 1.2rem; margin-left: auto; }
+  .topbar nav a { color: var(--muted); text-decoration: none; }
+  .topbar nav a:hover { color: var(--accent); }
+
+  section { padding-block: 3.6rem; border-bottom: 1px solid var(--rule); }
+  .stack { display: flex; flex-direction: column; gap: 1rem; }
+  .stack-lg { display: flex; flex-direction: column; gap: 2rem; }
+
+  /* hero */
+  .hero { padding-block: 4rem 3.6rem; }
+  .hero-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 2.6rem; align-items: start; }
+  .runline {
+    background: var(--sunk); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 0.8rem 0.95rem; overflow-x: auto;
+  }
+  .runline code { display: block; white-space: pre; font-size: 0.85rem; line-height: 1.75; }
+  .runline .p { color: var(--accent); user-select: none; padding-right: 0.35rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.65rem; }
+  .btn {
+    display: inline-block; background: var(--accent); color: var(--ground);
+    padding: 0.55rem 1.1rem; border-radius: 4px; font-size: 0.9rem; font-weight: 500; text-decoration: none;
+  }
+  .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--rule); }
+
+  pre {
+    background: var(--raised); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 1rem 1.1rem; overflow-x: auto; font-size: 0.84rem; line-height: 1.6; margin: 0; tab-size: 2;
+  }
+  pre .c, code .c { color: var(--faint); font-style: italic; }
+  .k { color: var(--t-key); font-weight: 500; }
+  .s { color: var(--t-str); }
+  .cn { color: var(--t-const); }
+  .fn { color: var(--t-fn); }
+  .sy { color: var(--t-sym); }
+  .nu { color: var(--t-num); }
+  .iv { color: var(--t-sym); }
+
+  /* feature grid */
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.7rem 2rem; }
+  .feat { display: flex; flex-direction: column; gap: 0.3rem; }
+  .feat .tag { font-family: var(--mono); font-size: 0.7rem; color: var(--accent); letter-spacing: 0.02em; }
+  .feat p { font-size: 0.92rem; color: var(--muted); }
+
+  /* figures */
+  .figs { display: flex; flex-wrap: wrap; gap: 2.8rem; }
+  .fig .n { font-family: var(--mono); font-size: 1.75rem; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -0.025em; }
+  .fig .l { font-size: 0.83rem; color: var(--muted); }
+  .note { border-left: 2px solid var(--ochre); padding-left: 0.95rem; color: var(--muted); font-size: 0.92rem; }
+
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 2.4rem; align-items: start; }
+  .col { max-width: 34rem; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.89rem; }
+  th, td { text-align: left; padding: 0.5rem 0.9rem 0.5rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 500; color: var(--faint); font-size: 0.71rem; text-transform: uppercase; letter-spacing: 0.09em; }
+  td:first-child { font-family: var(--mono); font-size: 0.82rem; white-space: nowrap; padding-right: 1.5rem; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .scroller { overflow-x: auto; }
+  tr.why td {
+    padding-top: 0.15rem; padding-bottom: 0.8rem;
+    color: var(--muted); font-size: 0.84rem; line-height: 1.55;
+    border-bottom: 1px solid var(--rule); white-space: normal;
+  }
+  tr.why td:first-child { font-family: var(--sans); padding-right: 0; }
+
+  .flow { display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 0.9rem; align-items: baseline; margin: 0; font-size: 0.9rem; }
+  .flow dt { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); background: var(--accent-soft); padding: 0.1rem 0.4rem; border-radius: 3px; white-space: nowrap; }
+  .flow dd { margin: 0; color: var(--muted); }
+  .flow dd b { color: var(--ink); font-weight: 500; }
+  .graphlink { font-size: 0.88rem; color: var(--muted); }
+
+  .cmd {
+    background: var(--sunk); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 0.5rem 0.6rem; margin-top: 0.5rem; overflow-x: auto;
+    font-size: 0.76rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+  }
+  .cmd .p { color: var(--accent); user-select: none; padding-right: 0.35rem; }
+  .ex { display: flex; flex-direction: column; gap: 0.7rem; }
+  .ex h3 { font-size: 1.02rem; }
+  .ex p { font-size: 0.92rem; color: var(--muted); }
+  .ex pre { font-size: 0.78rem; }
+
+  .qa { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1.6rem 2.4rem; margin: 0; }
+  .qa dt { font-weight: 600; font-size: 0.98rem; }
+  .qa dd { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.92rem; }
+  footer { padding-block: 2.4rem 3.2rem; color: var(--faint); font-size: 0.85rem; }
+  footer a { color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
-</head>
-<body>
-<header>
-  <nav class="bar">
-    <a class="name" href="./">webmachine-mruby</a>
-    <a href="https://github.com/Asmod4n/webmachine-mruby">GitHub</a>
-    <a href="https://github.com/Asmod4n/webmachine-mruby/tree/next/examples">Examples</a>
-  </nav>
+
+<header class="top">
+  <div class="wrap topbar">
+    <span class="brand">webmachine-mruby</span>
+    <nav>
+      <a href="#proof">Proof</a>
+      <a href="#how">How it works</a>
+      <a href="#features">On board</a>
+      <a href="#waiting">Waiting</a>
+      <a href="#instead">Replaces</a>
+      <a href="#questions">Questions</a>
+      <a href="#start">Get started</a>
+      <a href="https://github.com/Asmod4n/webmachine-mruby/blob/master/docs/README.md">Docs</a>
+      <a href="https://github.com/Asmod4n/webmachine-mruby">GitHub</a>
+    </nav>
+  </div>
 </header>
 
 <main>
-  <h1>An HTTP server for Ruby, shipped as one binary.</h1>
-  <p class="lede">You write resources. webmachine-mruby answers the
-  rest of HTTP for them, and runs them from one binary with nothing to
-  install beside it.</p>
-  <a class="btn" href="https://github.com/Asmod4n/webmachine-mruby#hello-world">Get started</a>
-  <a class="btn ghost" href="https://github.com/Asmod4n/webmachine-mruby">Source</a>
+  <section class="hero" id="top">
+    <div class="wrap hero-grid">
+      <div class="stack">
+        <p class="eyebrow">HTTP server</p>
+        <h1>Your Ruby app, as one binary.</h1>
+        <p class="lede">
+          You write a class for each resource. The decision graph answers the rest of
+          HTTP. HTTP/1.1, HTTP/2, WebSocket, server-sent events, static files and TLS
+          are on board, and at run time it needs OpenSSL 3 and nothing else.
+        </p>
+        <div class="runline">
+          <code><span class="p">$</span> rake
+<span class="p">$</span> mrbc -g -o app.mrb app.rb
+<span class="p">$</span> webmachine-server --app=app.mrb</code>
+        </div>
+        <div class="actions">
+          <a class="btn" href="https://github.com/Asmod4n/webmachine-mruby/blob/master/docs/tutorial.md">Run it in five minutes</a>
+          <a class="btn ghost" href="https://github.com/Asmod4n/webmachine-mruby">Read the source</a>
+        </div>
+      </div>
+      <div class="stack">
+        <p class="eyebrow">app.rb</p>
+        <pre><span class="c"># A resource answers for one thing. Name the</span>
+<span class="c"># media types, and write the body.</span>
+<span class="k">class</span> <span class="cn">Article</span> &lt; <span class="cn">Webmachine</span>::<span class="cn">Resource</span>
+  <span class="k">def</span> <span class="k">self</span>.<span class="fn">content_types_provided</span>
+    [[<span class="s">'text/html'</span>,        <span class="sy">:to_html</span>],
+     [<span class="s">'application/json'</span>, <span class="sy">:to_json</span>]]
+  <span class="k">end</span>
 
-  <div class="grid">
-    <div class="card">
-      <h3>The HTTP model comes with it</h3>
-      <p>Conditional requests, content negotiation, 304, 406, 412:
-      webmachine's flow answers them from what your resource declares.
-      You do not write that logic again for every route.</p>
+  <span class="k">def</span> <span class="fn">to_html</span>
+    <span class="s">"&lt;h1&gt;#{request.path}&lt;/h1&gt;"</span>
+  <span class="k">end</span>
+
+  <span class="k">def</span> <span class="fn">to_json</span>
+    <span class="s">%Q({"path":"#{request.path}"})</span>
+  <span class="k">end</span>
+<span class="k">end</span>
+
+<span class="k">def</span> <span class="fn">main</span>
+  <span class="cn">Webmachine</span>::<span class="cn">Application</span>.new <span class="k">do</span> |app|
+    app.conf.port = <span class="nu">8080</span>
+    app.add_route [<span class="s">'articles'</span>, <span class="sy">:id</span>], <span class="cn">Article</span>
+  <span class="k">end</span>
+<span class="k">end</span></pre>
+      </div>
     </div>
-    <div class="card">
-      <h3>Everything on board</h3>
-      <p>HTTP/1.1, HTTP/2, WebSocket, server-sent events, static files,
-      TLS through the kernel.</p>
+  </section>
+
+  <section id="proof">
+    <div class="wrap two">
+      <div class="stack col">
+        <p class="eyebrow">Proof, with the method beside it</p>
+        <h2>Measured, not claimed</h2>
+        <p>
+          Optimised from the accept to the last byte written, and across the board
+          rather than on one favoured path: heads are prebuilt, a folded answer is kept
+          as bytes, sends avoid a copy where the kernel allows one, and the size of the
+          hot functions is measured so the rare paths stay out of them.
+        </p>
+        <p>
+          It runs on io_uring where the kernel allows it. slipstreamIO carries the same
+          rings to Linux without io_uring, to macOS, the BSDs and Windows.
+        </p>
+        <p class="note">
+          Both figures are one core, over a unix socket. Every run is in
+          <code>bench/results/</code> with the command that produced it, and
+          <code>bench/how-to-measure.md</code> explains how to get a number you can
+          trust on your own hardware. The same asset sweep runs against nginx with
+          gzip_static, against lighttpd and against h2o, with the same columns, so the
+          rows sit next to each other and mean the same thing. A number from someone
+          else's machine is a starting point, not a result.
+        </p>
+      </div>
+      <div class="figs">
+        <div class="fig">
+          <div class="n">~1,000,000</div>
+          <div class="l">HTTP/1.1 requests a second</div>
+        </div>
+        <div class="fig">
+          <div class="n">~10,000,000</div>
+          <div class="l">HTTP/2 requests a second</div>
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <h3>Fast by design</h3>
-      <p><code>def self.x</code> runs once, when the server starts, and
-      its answer is kept as bytes. <code>def x</code> runs per request.
-      You choose per method.</p>
+  </section>
+
+  <section>
+    <div class="wrap two">
+      <div class="stack col">
+        <p class="eyebrow">Asked by somebody else's suite</p>
+        <h2>Conformance</h2>
+        <p>
+          Every push runs the whole test suite, the same suite under the address and
+          thread sanitizers, a release build that must answer 200, and h2spec. The
+          Autobahn suite runs on every release tag. Where a suite is not answered in
+          full, the reason is here.
+        </p>
+      </div>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Suite</th><th>Covers</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>h2spec</td><td>RFC 9113, RFC 7541</td><td class="num">145 / 146</td></tr>
+            <tr class="why"><td colspan="3">
+              The remaining case measures an endpoint that speaks only HTTP/2. This
+              listener speaks HTTP/1.1 as well, so a preface that is wrong at its first
+              byte is answered as HTTP/1.1 rather than as a frame. RFC 9113 3.4 reads it
+              the same way, and the connection ends either way.
+            </td></tr>
+            <tr><td>Autobahn</td><td>RFC 6455, on each release tag</td><td>full suite</td></tr>
+            <tr><td>h1spec</td><td>RFC 9112 framing, run by hand</td><td class="num">102 / 102</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-    <div class="card">
-      <h3>Runs everywhere</h3>
-      <p>io_uring where the kernel allows it. slipstreamIO carries the
-      same rings to Linux without io_uring, to macOS, the BSDs, and
-      Windows.</p>
+  </section>
+
+  <section id="how">
+    <div class="wrap two">
+      <div class="stack col">
+        <p class="eyebrow">How it works, 1 of 2</p>
+        <h2>The half of HTTP you did not write</h2>
+        <p>
+          Every request walks the same graph. Each node asks one question and cites the
+          clause it comes from. You override the handful your resource cares about, and
+          the rest answer themselves, so correctness is not a thing you have to remember
+          to write.
+        </p>
+        <p>
+          The callback names are
+          <a href="https://github.com/webmachine/webmachine-ruby">webmachine-ruby</a>'s,
+          so its documentation applies here.
+        </p>
+      </div>
+      <div class="stack">
+        <dl class="flow">
+          <dt>B13</dt><dd><b>service_available?</b>, RFC 9110 15.6.4</dd>
+          <dt>B10</dt><dd><b>allowed_methods</b>, 15.5.6, and the <code>Allow</code> field</dd>
+          <dt>C3</dt><dd><b>content_types_provided</b>, negotiation, 12.5.1</dd>
+          <dt>G7</dt><dd><b>resource_exists?</b>, where <code>Vary</code> lands</dd>
+          <dt>O14</dt><dd><b>is_conflict?</b>, 15.5.10</dd>
+        </dl>
+        <p class="graphlink">
+          Five of the nodes, out of far more.
+          <a href="https://github.com/webmachine/webmachine/wiki/Diagram">See the whole
+          graph as a diagram</a>, the map every one of these names comes from.
+        </p>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <h2>Hello, World</h2>
-<pre><code>class HelloWorld &lt; Webmachine::Resource
-  def self.to_html
-    '&lt;html&gt;&lt;body&gt;Hello, World!&lt;/body&gt;&lt;/html&gt;'
-  end
-end
+  <section id="fold">
+    <div class="wrap two">
+      <div class="stack col">
+        <p class="eyebrow">How it works, 2 of 2</p>
+        <h2>When an answer never changes, move it to the class</h2>
+        <p>
+          A callback written <code><span class="k">def</span></code> runs per request, which is how most of them
+          are written. Write one <code><span class="k">def</span> <span class="k">self</span>.</code> and the server calls it once at
+          start instead, then keeps what it answered as bytes: the status line, the head,
+          the ETag and the HTTP/2 header block.
+        </p>
+        <p>
+          A request against a resource folded that way is a lookup and a write. The server
+          tells you at start if a callback is written the wrong way for what it does.
+        </p>
+        <p>
+          Nothing says the answer has to be a constant. A folded callback can read files,
+          walk a directory and render templates while the server is coming up, which is a
+          site generator that runs at start and leaves its output in memory rather than on
+          disk.
+        </p>
+        <p>
+          Doing the work at start and holding it in memory is a choice you make, never a
+          condition of using the server. You can make an answer as static or as dynamic as
+          HTTP itself allows, one callback at a time.
+        </p>
+      </div>
+      <pre><span class="c"># Per request, the ordinary form.</span>
+<span class="k">def</span> <span class="fn">to_html</span>
+  <span class="s">"&lt;h1&gt;#{request.path}&lt;/h1&gt;"</span>
+<span class="k">end</span>
 
-def main
-  Webmachine::Application.new do |app|
-    app.conf.port = 8080
-    app.add_route [:*], HelloWorld
-  end
-end</code></pre>
-<pre><code>rake
-mruby/bin/mrbc -g -o hello.mrb hello.rb
-mruby/bin/webmachine-server --app=hello.mrb</code></pre>
-  <p><code>self.to_html</code> is the whole trick. The server calls it
-  once at start and keeps the answer, with its status line, its head,
-  its ETag and its HTTP/2 header block, as bytes. A request against this
-  resource never enters the VM. It is a lookup and a write. Write
-  <code>def to_html</code> only when the answer changes from request to
-  request. Then the method runs per request.</p>
-  <p>Any callback can be <code>def self.</code>, when its answer is the
-  same for every request. Four do work and must stay <code>def</code>:
-  <code>process_post</code>, <code>create_path</code>,
-  <code>delete_resource</code> and <code>finish_request</code>. The
-  server refuses a class-level one of those at start, by name.</p>
-  <p>On one core, over a unix socket, the server answers about one
-  million HTTP/1.1 requests a second. Every run is in
-  <code>bench/results/</code> with the command that made it.</p>
+<span class="c"># Once at start, kept as bytes.</span>
+<span class="k">def</span> <span class="k">self</span>.<span class="fn">to_html</span>
+  <span class="s">'&lt;h1&gt;About&lt;/h1&gt;'</span>
+<span class="k">end</span></pre>
+    </div>
+  </section>
 
-  <h2>A resource declares, the flow answers</h2>
-<pre><code>class Article &lt; Webmachine::Resource
-  def self.content_types_provided
-    [['text/html', :to_html], ['application/json', :to_json]]
-  end
+  <section id="features">
+    <div class="wrap stack-lg">
+      <div class="stack col">
+        <p class="eyebrow">On board</p>
+        <h2>A server, not a framework you assemble</h2>
+        <p class="lede">
+          All of HTTP, answered from what your resource declares. Content negotiation,
+          conditional requests and the rest of it come with the server.
+        </p>
+      </div>
+      <div class="features">
+        <div class="feat">
+          <span class="tag">HTTP/1.1 and HTTP/2</span>
+          <h3>Both versions, one listener</h3>
+          <p>Cleartext or TLS, with ALPN. The same resource answers on either.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">RFC 6455</span>
+          <h3>WebSocket</h3>
+          <p>Two callbacks, <code>on_data</code> and <code>on_close</code>. Permessage-deflate included.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">text/event-stream</span>
+          <h3>Server-sent events</h3>
+          <p>A route kind of its own, with the keep-alive comment a proxy needs.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">TLS</span>
+          <h3>kTLS where the kernel has it</h3>
+          <p>The handshake is OpenSSL 3, and the records come off the kernel's send path.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">Static files</span>
+          <h3>Assets from one pack</h3>
+          <p>A zip file, verified at start, served with ETag, Last-Modified and gzip.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">compute</span>
+          <h3>Work off the request loop</h3>
+          <p>
+            Send a block to a worker thread with a deadline. Each worker has its own VM
+            and its own ring. The flow waits, the loop that takes requests does not.
+          </p>
+        </div>
+        <div class="feat">
+          <span class="tag">watch</span>
+          <h3>Wait on a descriptor</h3>
+          <p>
+            A database socket drives the request without leaving the request loop, so
+            the block still has <code>request</code> and <code>response</code> in reach.
+          </p>
+        </div>
+        <div class="feat">
+          <span class="tag">webmachine-passwd</span>
+          <h3>Passwords, argon2id</h3>
+          <p>Its own database in LMDB, and its own tool to keep it.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">webmachine-logd</span>
+          <h3>Logs as their own process</h3>
+          <p>Access and error logs leave the server's thread as binary records.</p>
+          <div class="cmd"><span class="p">$</span> webmachine-server --app=app.mrb --log=access.log</div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  def self.generate_etag
-    'article-7'
-  end
+  <section id="waiting">
+    <div class="wrap stack-lg">
+      <div class="stack col">
+        <p class="eyebrow">Work that must not block</p>
+        <h2>Two declarations, and the loop keeps taking requests</h2>
+        <p class="lede">
+          A callback that waits says so on the class. The flow stops at that node and
+          goes on with the answer. Nothing else on the server waits with it.
+        </p>
+      </div>
+      <div class="two">
+        <div class="ex">
+          <h3><span class="k">compute</span>: a worker thread answers</h3>
+          <p>
+            The block leaves the request loop. Each worker has its own VM and its own
+            ring. A dumped block carries no environment, so you pass what it needs as
+            an argument, or you build it once per worker in the registry.
+          </p>
+          <pre><span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwords</span>] = <span class="k">proc</span> <span class="k">do</span>
+  { <span class="s">'ada'</span> =&gt; <span class="cn">Argon2</span>.hash(<span class="s">'secret'</span>)[<span class="sy">:encoded</span>] }
+<span class="k">end</span>
 
-  def self.last_modified
-    1_756_000_000   # seconds since the epoch
-  end
-end</code></pre>
-  <p>That resource answers <code>Accept</code>,
-  <code>If-None-Match</code>, <code>If-Modified-Since</code> and
-  <code>OPTIONS</code> correctly, and you wrote none of it. The callback
-  names are <a href="https://github.com/webmachine/webmachine-ruby">webmachine-ruby</a>'s,
-  so its documentation applies here.</p>
+<span class="k">class</span> <span class="cn">Login</span> &lt; <span class="cn">Webmachine</span>::<span class="cn">Resource</span>
+  <span class="fn">compute</span> <span class="sy">:is_authorized?</span>
 
-  <h2>Work that must not block</h2>
-  <p>The server is one thread. Two declarations keep a callback from
-  stopping it, and they differ in where the work runs, which decides how
-  you write the callback. <code>compute</code> sends a block to a worker
-  thread; a worker has its own VM and sees nothing of your app, so the
-  callback is written <code>def self.x</code> and builds the task, nothing
-  else. <code>watch</code> waits on a descriptor in the server's own
-  thread; the block runs inside the request, with <code>request</code>
-  and <code>response</code> in reach, so the callback is written
-  <code>def x</code>.</p>
-  <p><strong><code>compute</code></strong> sends a block to a worker thread with a deadline. The flow waits at that node and goes on with the block&#x27;s answer. Password hashing is the typical case:</p>
-<pre><code>Webmachine::Workers::Registry[:passwords] = proc do
-  { &#x27;ada&#x27; =&gt; Argon2.hash(&#x27;secret&#x27;)[:encoded] }   # built once per worker
-end
+  <span class="k">def</span> <span class="fn">is_authorized?</span>(header)
+    <span class="cn">Webmachine</span>::<span class="cn">ComputeTask</span>.new(header,
+                                max_runtime: <span class="nu">200</span>.ms) <span class="k">do</span> |h|
+      user, pass = h.to_s.split(<span class="s">':'</span>, <span class="nu">2</span>)
+      db = <span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwords</span>]
+      stored = db[user]
+      stored ? <span class="cn">Argon2</span>.verify(stored, pass.to_s) : <span class="k">false</span>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span></pre>
+          <p>
+            A task over its deadline answers 500. A worker that raises answers 503 with
+            a Retry-After field.
+          </p>
+        </div>
+        <div class="ex">
+          <h3><span class="k">watch</span>: a descriptor answers</h3>
+          <p>
+            The block stays in the request loop, so it keeps <code>request</code> and
+            <code>response</code> in reach. It runs each time the descriptor is ready,
+            until it says abort, and its last value is the answer.
+          </p>
+          <pre><span class="cn">DB_IDLE</span> = []   <span class="c"># one thread, so an Array is a pool</span>
 
-class Login &lt; Webmachine::Resource
-  compute :is_authorized?
+<span class="k">class</span> <span class="cn">Article</span> &lt; <span class="cn">Webmachine</span>::<span class="cn">Resource</span>
+  <span class="fn">watch</span> <span class="sy">:generate_etag</span>
 
-  def self.is_authorized?(header)
-    Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
-      user, pass = h.to_s.split(&#x27;:&#x27;, 2)
-      stored = Webmachine::Workers::Registry[:passwords][user]
-      stored ? Argon2.verify(stored, pass.to_s) : false
-    end
-  end
-end</code></pre>
-  <p>A worker has its own VM, so the block sees nothing of your app. What it needs is built in every worker through the registry. A task over its deadline answers 500. A worker that raises answers 503 with <code>Retry-After</code>.</p>
-  <p><strong><code>watch</code></strong> waits on a descriptor. The block runs each time the descriptor is ready, until it says <code>abort</code>, and its last value is the callback&#x27;s answer. A database query, with the connection reused:</p>
-<pre><code>DB_IDLE = []   # one thread, so an Array is a pool
-
-class Article &lt; Webmachine::Resource
-  watch :generate_etag
-
-  def generate_etag
-    conn = DB_IDLE.pop || Pq.new(DB_URL).tap { |c| c.nonblocking = true }
-    conn.send_query(&#x27;select etag from articles where id = 7&#x27;)
-    Webmachine::Watcher.new(conn.socket, :r, timeout: 2.s) do |ready, w|
-      next w.abort if ready == :timeout   # mid-query: not returned
+  <span class="k">def</span> <span class="fn">generate_etag</span>
+    conn = <span class="cn">DB_IDLE</span>.pop ||
+           <span class="cn">Pq</span>.new(<span class="cn">DB_URL</span>).tap { |c| c.nonblocking = <span class="k">true</span> }
+    conn.send_query(<span class="s">'select etag from articles'</span>)
+    <span class="cn">Webmachine</span>::<span class="cn">Watcher</span>.new(conn.socket, <span class="sy">:r</span>,
+                            timeout: <span class="nu">2</span>.s) <span class="k">do</span> |ready, w|
+      <span class="k">next</span> w.abort <span class="k">if</span> ready == <span class="sy">:timeout</span>
       conn.consume_input
-      next if conn.busy?                  # not whole yet: wait again
+      <span class="k">next</span> <span class="k">if</span> conn.busy?      <span class="c"># not whole yet</span>
       w.abort
-      etag = conn.get_result.to_ary[0][0]
-      conn.get_result                     # the nil that ends the set
-      DB_IDLE &lt;&lt; conn
+      etag = conn.get_result.to_ary[<span class="nu">0</span>][<span class="nu">0</span>]
+      conn.get_result         <span class="c"># the nil that ends the set</span>
+      <span class="cn">DB_IDLE</span> &lt;&lt; conn
       etag
-    end
-  end
-end</code></pre>
-  <p>Nothing else on the server waits while this does. Every other connection is served in between.</p>
+    <span class="k">end</span>
+  <span class="k">end</span>
+<span class="k">end</span></pre>
+          <p>
+            Every other connection is served while this one waits for the database.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <h2>What the build makes</h2>
-  <table>
-    <tr><td><code>webmachine-server</code></td><td>runs your app, one process, one thread</td></tr>
-    <tr><td><code>mrbc</code></td><td>compiles your Ruby to bytecode, the only form the server runs</td></tr>
-    <tr><td><code>webmachine-logd</code></td><td>writes the access log and the error log, as its own process</td></tr>
-    <tr><td><code>webmachine-passwd</code></td><td>keeps the password database, argon2id in LMDB</td></tr>
-  </table>
+  <section id="instead">
+    <div class="wrap stack-lg">
+      <div class="stack col">
+        <p class="eyebrow">What it replaces</p>
+        <h2>Things you would otherwise install a tool for</h2>
+        <p class="lede">
+          The server runs with no application at all when all you need is files, so a
+          few of the specialised tools around a site stop being separate pieces.
+        </p>
+      </div>
+      <div class="features">
+        <div class="feat">
+          <span class="tag">--standalone --docroot=DIR</span>
+          <h3>A file server</h3>
+          <p>
+            What you would reach for <code>python3 -m http.server</code> or
+            <code>npx serve</code> to do, with ETag, gzip, HTTP/2 and TLS on it.
+          </p>
+          <div class="cmd"><span class="p">$</span> webmachine-server --standalone --docroot=./public --port=8080</div>
+        </div>
+        <div class="feat">
+          <span class="tag"><span class="k">def</span> <span class="k">self</span>.</span>
+          <h3>A site generator you never run</h3>
+          <p>
+            Your Ruby builds the pages when the server comes up, reading whatever you
+            keep them in. Each one is kept as bytes and answered from memory after
+            that. No generator, no output directory, no build step to forget. This is
+            one option and not a rule. The same resource written to run per request
+            works, and you pick per callback.
+          </p>
+          <div class="cmd"><span class="p">$</span> mrbc -g -o site.mrb site.rb
+<span class="p">$</span> webmachine-server --app=site.mrb</div>
+        </div>
+        <div class="feat">
+          <span class="tag">rake pack[DIR,OUT.zip]</span>
+          <h3>Files you already have</h3>
+          <p>
+            A directory of assets, or a site something else built, zipped once. The
+            pack is mapped and every file answers from memory, with its ETag and its
+            compressed form ready.
+          </p>
+          <div class="cmd"><span class="p">$</span> rake pack[public,site.zip]
+<span class="p">$</span> webmachine-server --standalone --assets=site.zip</div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <h2>What you need</h2>
-  <p><code>rake install[PREFIX]</code> puts the four programs under
-  <code>PREFIX/bin</code>, the error pages' pictures under
-  <code>PREFIX/share/webmachine-mruby</code>, and a config that names
-  them under <code>PREFIX/etc/webmachine</code>.</p>
-  <p>To build: a C/C++ toolchain, zlib headers, OpenSSL 3 headers. To
-  run: OpenSSL 3, and for TLS a kernel with the tls module loaded. TLS
-  is kTLS, which Linux and FreeBSD offer. On a kernel without it the
-  server speaks plain HTTP, and a proxy in front of it does TLS.</p>
+  <section id="questions">
+    <div class="wrap stack-lg">
+      <div class="stack">
+        <p class="eyebrow">Before you try it</p>
+        <h2>The questions an engineer asks first</h2>
+      </div>
+      <dl class="qa">
+        <dt>Is mruby a real Ruby?</dt>
+        <dd>It is the Ruby of ISO/IEC 30170, made to embed. A resource is plain Ruby: classes, blocks, strings, hashes. Libraries are mrbgems, compiled into the binary, not gems installed at run time. Rails does not run on it, and this server is not a framework.</dd>
+        <dt>One thread. What happens when a callback waits?</dt>
+        <dd>It says so on the class. <code><span class="k">compute</span></code> sends the block to a worker thread with a deadline. <code><span class="k">watch</span></code> waits on a descriptor without leaving the loop. Every other connection is served while it waits.</dd>
+        <dt>Where does TLS come from?</dt>
+        <dd>The TLS 1.3 handshake is OpenSSL 3. Then the keys go to the kernel, and a plain send is a TLS record. Linux and FreeBSD have that. On a kernel without kTLS the server speaks plain HTTP, and a proxy in front of it does TLS.</dd>
+        <dt>Which platforms?</dt>
+        <dd>io_uring where the kernel allows it. slipstreamIO carries the same rings to Linux without io_uring, to macOS, the BSDs and Windows. Without io_uring every socket operation is readiness plus a classic call: correct, and slower.</dd>
+        <dt>What does it not do?</dt>
+        <dd>It is not a reverse proxy and has no HTTP client yet. It speaks no HTTP/3. It has no template language, no ORM and no session store. It serves the answers your resources declare, and the files you pack.</dd>
+        <dt>What does a build need?</dt>
+        <dd>A C++20 compiler, ruby for the build system, git, pkg-config, zlib and OpenSSL headers. At run time: libz, libssl 3 and libstdc++. The build stops and names the missing package.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap two">
+      <div class="stack col">
+        <p class="eyebrow">Get started</p>
+        <h2>Three commands, then the tutorial</h2>
+        <p>
+          A clone and one <code>rake</code> build everything. Compile your app to bytecode and
+          start the server. The <a href="https://github.com/Asmod4n/webmachine-mruby/blob/master/docs/tutorial.md">tutorial</a> takes it from
+          there, one step at a time, to a resource that answers a conditional request
+          with 304.
+        </p>
+        <div class="runline">
+          <code><span class="p">$</span> git clone --recursive https://github.com/Asmod4n/webmachine-mruby
+<span class="p">$</span> cd webmachine-mruby &amp;&amp; rake
+<span class="p">$</span> mruby/bin/mrbc -g -o hello.mrb hello.rb
+<span class="p">$</span> mruby/bin/webmachine-server --app=hello.mrb</code>
+        </div>
+        <p>
+          <code>rake install[PREFIX]</code> puts the four programs under <code>PREFIX/bin</code>.
+          <a href="https://github.com/Asmod4n/webmachine-mruby/blob/master/docs/container.md">docs/container.md</a> builds and runs it in a container.
+          The build makes four programs:
+        </p>
+      </div>
+      <div class="scroller">
+        <table>
+          <tbody>
+            <tr><td>webmachine-server</td><td>runs your app. One thread takes the requests, and compute workers take the work that must not stop it</td></tr>
+            <tr><td>mrbc</td><td>compiles your Ruby to bytecode, the form the server runs</td></tr>
+            <tr><td>webmachine-logd</td><td>writes the access log and the error log</td></tr>
+            <tr><td>webmachine-passwd</td><td>keeps the password database, argon2id in LMDB</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </main>
 
 <footer>
-  <div class="bar">
-    A port of <a href="https://github.com/webmachine/webmachine">Webmachine</a>
-    and <a href="https://github.com/webmachine/webmachine-ruby">webmachine-ruby</a>,
-    with the authors' permission. Apache-2.0.
+  <div class="wrap">
+    Apache License 2.0.
+    <a href="https://github.com/Asmod4n/webmachine-mruby">github.com/Asmod4n/webmachine-mruby</a><br>
+    This is a port. Webmachine is Justin Sheehy, Andy Gross and Bryan Fink's, written at Basho.
+    webmachine-ruby is Sean Cribbs'. The flow and the callback names are theirs, and the name is
+    used with their permission. <a href="https://github.com/Asmod4n/webmachine-mruby/blob/master/docs/README.md">Documentation</a>.
   </div>
 </footer>
-</body>
-</html>
