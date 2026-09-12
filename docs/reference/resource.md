@@ -19,274 +19,683 @@ other question keeps the default the table below names.
 
 ## Every callback
 
-The node column names the letter and number the decision graph uses
-for the edge that calls this callback, from Alan Dean and Justin
-Sheehy's diagram, with RFC 9110's clauses beside each edge. "Once" in the "runs"
-column means a `def self.` answer is asked one time, while the
-application starts, and kept for the life of the process. "Per
-request" means the answer is asked again on every request that reaches
-the node.
+The graph asks the callbacks in the order below. The node names the
+letter and number the decision graph uses for the edge that calls the
+callback, from Alan Dean and Justin Sheehy's diagram, with RFC 9110's
+clauses beside each edge. Each entry shows the callback in use. A
+callback written `def self.` is asked once, while the application
+starts, and its answer is kept for the life of the process; a
+callback written `def` is asked on every request that reaches the
+node. The entry says which forms are allowed.
+
+### Is the service up, and is this request acceptable
+
+#### `service_available?`
+
+Node B13. No arguments. Default `true`. Returns a Boolean. `def self.`
+allowed. `false` answers 503.
+
+```ruby
+class Api < Webmachine::Resource
+  def service_available?
+    !MAINTENANCE[0]
+  end
+end
+```
+
+#### `known_methods`
+
+Node B12. No arguments. Default: the server's own method set. Returns
+an Array of String, or one String with spaces or commas. `def self.`
+allowed. A method outside the list answers 501.
+
+```ruby
+class Api < Webmachine::Resource
+  def self.known_methods
+    %w[GET HEAD POST PUT DELETE OPTIONS PATCH]
+  end
+end
+```
+
+#### `uri_too_long?`
+
+Node B11. Argument: the request URI. Default `false`. Returns a
+Boolean. `def` only, because it takes an argument. `true` answers 414.
+
+```ruby
+class Api < Webmachine::Resource
+  def uri_too_long?(uri)
+    uri.length > 2048
+  end
+end
+```
+
+#### `allowed_methods`
+
+Node B10. No arguments. Default: the server's own method set. Returns
+an Array of String, or one String. `def self.` allowed. A method
+outside the list answers 405, and the list is the `Allow` field.
+
+```ruby
+class Article < Webmachine::Resource
+  def self.allowed_methods
+    %w[GET HEAD PUT DELETE]
+  end
+end
+```
+
+#### `malformed_request?`
+
+Node B9b. No arguments. Default `false`. Returns a Boolean. `def self.`
+allowed, but a check of the request is `def`. `true` answers 400.
+
+```ruby
+class Search < Webmachine::Resource
+  def malformed_request?
+    request.query['q'].to_s.empty?
+  end
+end
+```
+
+#### `is_authorized?`
+
+Node B8. Argument: the `Authorization` field, or `nil`. Default
+`true`. Returns a Boolean. Asked per request, on the class or the
+instance. May be named in `compute` or `watch`. `false` answers 401.
+
+```ruby
+class Admin < Webmachine::Resource
+  def is_authorized?(header)
+    header == "Bearer #{TOKEN}"
+  end
+end
+```
+
+#### `forbidden?`
+
+Node B7. No arguments. Default `false`. Returns a Boolean. `def self.`
+allowed. `true` answers 403: the client is known, and still may not.
+
+```ruby
+class Report < Webmachine::Resource
+  def forbidden?
+    request.path_info[:id] != request.cookies['owner']
+  end
+end
+```
 
-### `service_available?`
-
-Node B13. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
-
-`false` halts 503.
-
-### `known_methods`
-
-Node B12. Arguments: none. Default: the server's own HTTP method set. Returns: Array of String, or a space/comma-separated String. `def self.`: Yes, once, or per request as `def`.
-
-A request method outside the list halts 501.
-
-### `uri_too_long?`
-
-Node B11. Arguments: the URI. Default: `false`. Returns: Boolean. `def self.`: No - takes an argument.
-
-`true` halts 414.
-
-### `allowed_methods`
-
-Node B10. Arguments: none. Default: the server's own HTTP method set. Returns: Array of String, or a space/comma-separated String. `def self.`: Yes, once, or per request as `def`.
-
-Writes `Allow`; a method outside the list halts 405.
-
-### `malformed_request?`
-
-Node B9b. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` halts 400.
-
-### `is_authorized?`
-
-Node B8. Arguments: the `Authorization` field, or `nil`. Default: `true`. Returns: Boolean. `def self.`: Yes - asked per request on the class, not frozen. May be named in `compute` or `watch`.
-
-`false` halts 401 and asks for `WWW-Authenticate`.
-
-### `forbidden?`
-
-Node B7. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` halts 403.
-
-### `valid_content_headers?`
-
-Node B6. Arguments: the request's Content-* fields. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
-
-`false` halts 501.
-
-### `known_content_type?`
-
-Node B5. Arguments: the request's `Content-Type`. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
-
-`false` halts 415.
-
-### `valid_entity_length?`
-
-Node B4. Arguments: the body's declared length. Default: `true`. Returns: Boolean. `def self.`: No - takes an argument.
-
-`false` halts 413.
-
-### `options`
-
-Node B3. Arguments: none. Default: not defined: writes `Allow`. Returns: Hash of field name to value. `def self.`: Yes, once, or per request as `def`.
-
-Answers an `OPTIONS` request with 200; a Hash writes each pair as a field instead of the default `Allow` line.
-
-### `content_types_provided`
-
-Node C3/C4/O18. Arguments: none. Default: see below. Returns: Array of `[type, handler_symbol]` pairs. `def self.`: Yes, once, or per request as `def`.
-
-Negotiates `Accept`; 406 when nothing matches; the chosen handler renders the body.
-
-### `languages_provided`
-
-Node D4/D5. Arguments: none. Default: not implemented. Returns: -. `def self.`: Refused.
-
-Defining this raises at fold time: this tree has no i18n conversion.
-
-### `charsets_provided`
-
-Node E5/E6. Arguments: none. Default: not implemented. Returns: -. `def self.`: Refused.
-
-Same refusal as `languages_provided`.
-
-### `encodings_provided`
-
-Node F6/F7. Arguments: none. Default: not implemented per-request. Returns: Hash. `def self.`: Yes, class-only.
-
-Must be `def self.`; an instance method is refused.
-
-### `resource_exists?`
-
-Node G7. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
-
-`false` walks the "does not exist yet" branch instead of the caching branch.
-
-### `generate_etag`
-
-Node G11/K13. Arguments: none. Default: not present. Returns: String or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
-
-Spells an `ETag`; feeds `If-Match`/`If-None-Match` checks (412/304).
-
-### `last_modified`
-
-Node H12/L17. Arguments: none. Default: not present. Returns: `Time`, an epoch Integer, or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
-
-Spells `Last-Modified`; feeds `If-Unmodified-Since`/`If-Modified-Since` (412/304).
-
-### `moved_permanently?`
-
-Node I4/K5. Arguments: none. Default: `false`. Returns: `false`, or a String/URI. `def self.`: Yes, once.
-
-A truthy answer halts 301 and writes `Location` from it.
-
-### `previously_existed?`
-
-Node K7. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` walks the "gone" branch (410-eligible); `false` walks the "never existed" branch (404).
-
-### `moved_temporarily?`
-
-Node L5. Arguments: none. Default: `false`. Returns: `false`, or a String/URI. `def self.`: Yes, once.
-
-A truthy answer halts 307 and writes `Location` from it.
-
-### `allow_missing_post?`
-
-Node M7/N5. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` lets a POST proceed against a resource that does not exist (`false` halts 404 or 410).
-
-### `delete_resource`
-
-Node M20. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: No - runs per request. Refused as `def self.`.
-
-`false` halts 500; `true` continues to `delete_completed?`.
-
-### `delete_completed?`
-
-Node M20b. Arguments: none. Default: `true`. Returns: Boolean. `def self.`: Yes, once.
-
-`false` halts 202 (accepted, not yet done).
-
-### `post_is_create?`
-
-Node N11. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` calls `create_path`; `false` calls `process_post`.
-
-### `create_path`
-
-Node N11. Arguments: none. Default: not present. Returns: String. `def self.`: No - runs per request. Refused as `def self.`.
-
-The new path; a missing `Location` is filled from it and `base_uri`.
-
-### `process_post`
-
-Node N11. Arguments: none. Default: not present. Returns: Boolean, or a value the flow treats as truthy/falsy. `def self.`: No - runs per request. Refused as `def self.`.
-
-Handles the POST; `false` is a failure.
-
-### `is_conflict?`
-
-Node O14/P3. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` halts 409; `false` runs the negotiated `content_types_accepted` handler.
-
-### `content_types_accepted`
-
-Node O14/P3. Arguments: none. Default: none - a resource that accepts a body must define it. Returns: Array of `[type, handler_symbol]`, each optionally followed by `{sniff: true}`. `def self.`: Yes, once, or per request as `def`.
-
-Negotiates the request's `Content-Type`; no match halts 415.
-
-### `multiple_choices?`
-
-Node O18b. Arguments: none. Default: `false`. Returns: Boolean. `def self.`: Yes, once.
-
-`true` halts 300 instead of 200.
-
-### `variances`
-
-Node -. Arguments: none. Default: `[]`. Returns: Array of String. `def self.`: Yes, once, or per request as `def`.
-
-Extra `Vary` field names beside the ones negotiation already added.
-
-### `max_body`
-
-Node -. Arguments: none. Default: `conf.max_body`, else 1 MiB. Returns: Integer, octets. `def self.`: Yes, class-only; an instance method is refused.
-
-A larger declared `Content-Length` halts 413 before a byte is read.
-
-### `expires`
-
-Node -. Arguments: none. Default: not present. Returns: `Time`, an epoch Integer, or `nil`. `def self.`: Yes, once, or per request as `def`. May be named in `compute` or `watch`.
-
-Spells an `Expires` field.
-
-### `finish_request`
-
-Node -. Arguments: none. Default: not present. Returns: ignored. `def self.`: No - runs per request. Refused as `def self.`. May be named in `compute`.
-
-Runs after every request, including one that raised, if the resource defines it.
-
-### `handle_exception`
-
-Node -. Arguments: the exception. Default: class default: `"#{e.class}: #{e.message}"`. Returns: String, or an Array the server joins with CRLF. `def self.`: Instance only; not a `def self.` question.
-
-Only honoured on `Webmachine::ErrorResource`; ignored on an ordinary resource.
-
-
-## The `def self.` rule
-
-A `def self.x` on a resource runs once, while the application starts.
-The fold asks it, keeps the answer, and freezes the class right after - 
-so the answer can never go stale, and it never sees a request.
-
-That is the right shape for a question with one answer for the whole
-process. It is the wrong shape for a callback that takes an argument:
-an argument means the callback is asking about *this* request - the
-URI, the fields, the type, the length - and a class method never sees
-one. The fold checks this at startup:
-
-> `def self.%n takes an argument, so it asks about a request - a class
-> method runs once at start and sees none. Write def %n`
-
-The same fold refuses the reverse mistake for a callback that does
-real work - `delete_resource`, `create_path`, `process_post`, and
-`finish_request` - because a class-level version of one of these would
-run exactly once, at start, and answer zero requests, silently:
-
-> `%s does work, so it runs per request - declare it on the instance
-> (def %s), not on the class: def self.%s would be asked once at start
-> and never again`
-
-Two more names are refused outright, because this tree has no
-implementation behind them:
-
-> `%s is defined but i18n/charset conversion does not exist in this
-> tree`
-
- - for `languages_provided`, `charsets_provided`, and `language_chosen`.
-
-And two names must be the class form and only the class form, because
-they shape a compiled table rather than answer a question:
-
-> `%s shapes the compiled vectors - declare it konst (def self.%s)`
-
- - for `encodings_provided` and `max_body`.
-
-For the value-semantics callbacks - `known_methods`, `allowed_methods`,
-`content_types_provided`, `content_types_accepted`, `options`,
-`variances`, `generate_etag`, `last_modified`, and `expires` - either
-form is honoured. An instance method (`def`) wins when both are
-defined, and is asked again on every request; a class method
-(`def self.`) is asked once and frozen. `is_authorized?` is the one
-exception among the boolean callbacks: it takes an argument, so
-`def self.` is not refused for taking one, but it is asked again on
-every request rather than frozen, because `compute` or `watch` may
-answer it from a worker or a descriptor.
+#### `valid_content_headers?`
+
+Node B6. Argument: the request's `Content-*` fields. Default `true`.
+Returns a Boolean. `def` only. `false` answers 501.
+
+```ruby
+class Upload < Webmachine::Resource
+  def valid_content_headers?(fields)
+    !fields.key?('content-encoding')
+  end
+end
+```
+
+#### `known_content_type?`
+
+Node B5. Argument: the request's `Content-Type`. Default `true`.
+Returns a Boolean. `def` only. `false` answers 415.
+
+```ruby
+class Upload < Webmachine::Resource
+  def known_content_type?(type)
+    type.to_s.start_with?('image/')
+  end
+end
+```
+
+#### `valid_entity_length?`
+
+Node B4. Argument: the declared length of the body. Default `true`.
+Returns a Boolean. `def` only. `false` answers 413, before a byte of
+the body is read. `max_body` below is the class-level form of the same
+limit.
+
+```ruby
+class Upload < Webmachine::Resource
+  def valid_entity_length?(length)
+    length.to_i <= 8 * 1024 * 1024
+  end
+end
+```
+
+#### `options`
+
+Node B3. No arguments. Default: not defined, and then the server
+writes `Allow`. Returns a Hash of field name to value, the fields of
+the answer to OPTIONS. `def self.` allowed.
+
+```ruby
+class Api < Webmachine::Resource
+  def self.options
+    { 'Access-Control-Allow-Origin' => '*' }
+  end
+end
+```
+
+### Negotiation
+
+#### `content_types_provided`
+
+Node C3, C4 and O18. No arguments. Returns an Array of pairs, a media
+type and the handler that renders it. `def self.` allowed, and the
+usual form. The section below has every form the table takes.
+
+```ruby
+class Article < Webmachine::Resource
+  def self.content_types_provided
+    [['text/html', :to_html], ['application/json', :to_json]]
+  end
+
+  def to_html
+    "<h1>#{request.path_info[:id]}</h1>"
+  end
+
+  def to_json
+    %Q({"id":"#{request.path_info[:id]}"})
+  end
+end
+```
+
+#### `languages_provided` and `charsets_provided`
+
+Nodes D4, D5, E5 and E6. Not in this tree: a resource that defines
+either one is refused at start with `does not exist in this tree`.
+
+#### `encodings_provided`
+
+Nodes F6 and F7. No arguments. Returns a Hash. Class-only. The
+default is identity, and a pack answers gzip on its own.
+
+### Existence and caching
+
+#### `resource_exists?`
+
+Node G7. No arguments. Default `true`. Returns a Boolean. `def self.`
+allowed. `false` answers 404 on a read, and leads to `previously_existed?`
+and `allow_missing_post?` for the other methods.
+
+```ruby
+class Article < Webmachine::Resource
+  def resource_exists?
+    ARTICLES.key?(request.path_info[:id])
+  end
+end
+```
+
+#### `generate_etag`
+
+Nodes G11 and K13. No arguments. Default: none. Returns a String, or
+`nil` for no ETag. `def self.` allowed for an ETag that is the same
+for every request; `def` is the usual form. May be named in `compute`
+or `watch`. The graph writes `ETag`, and answers `If-None-Match` with
+304 and `If-Match` with 412 from it.
+
+```ruby
+class Article < Webmachine::Resource
+  def generate_etag
+    ARTICLES[request.path_info[:id]][:version].to_s
+  end
+end
+```
+
+#### `last_modified`
+
+Nodes H12 and L17. No arguments. Default: none. Returns a `Time`, an
+epoch Integer, or `nil`. `def self.` allowed; `def` is the usual form.
+May be named in `compute` or `watch`. The graph writes
+`Last-Modified` and answers `If-Modified-Since` and
+`If-Unmodified-Since` from it.
+
+```ruby
+class Article < Webmachine::Resource
+  def last_modified
+    ARTICLES[request.path_info[:id]][:changed_at]
+  end
+end
+```
+
+#### `expires`
+
+Not a node; read while the answer is written. No arguments. Default:
+none. Returns a `Time`, an epoch Integer, or `nil`. `def self.`
+allowed. May be named in `compute` or `watch`. The graph writes
+`Expires`. A time in the past says a cache must ask again.
+
+```ruby
+class Clock < Webmachine::Resource
+  def expires
+    Time.now - 1
+  end
+end
+```
+
+#### `moved_permanently?`
+
+Nodes I4 and K5. No arguments. Default `false`. Returns `false`, or the
+new URI as a String. `def self.` allowed. Asked when the resource does
+not exist. A URI answers 301 with `Location`.
+
+```ruby
+class OldArticle < Webmachine::Resource
+  def self.resource_exists?
+    false
+  end
+
+  def moved_permanently?
+    "/articles/#{request.path_info[:id]}"
+  end
+end
+```
+
+#### `previously_existed?`
+
+Node K7. No arguments. Default `false`. Returns a Boolean. `def self.`
+allowed. Asked when the resource does not exist and has not moved.
+`true` answers 410 instead of 404.
+
+```ruby
+class Article < Webmachine::Resource
+  def resource_exists?
+    ARTICLES.key?(request.path_info[:id])
+  end
+
+  def previously_existed?
+    DELETED.include?(request.path_info[:id])
+  end
+end
+```
+
+#### `moved_temporarily?`
+
+Node L5. No arguments. Default `false`. Returns `false`, or the new URI
+as a String. `def self.` allowed. A URI answers 307 with `Location`.
+
+```ruby
+class Mirror < Webmachine::Resource
+  def self.resource_exists?
+    false
+  end
+
+  def moved_temporarily?
+    "https://mirror.example/#{request.path}"
+  end
+end
+```
+
+### Writing
+
+#### `allow_missing_post?`
+
+Nodes M7 and N5. No arguments. Default `false`. Returns a Boolean.
+`def self.` allowed. `true` lets a POST to a resource that does not
+exist go on to `process_post` instead of answering 404.
+
+```ruby
+class Inbox < Webmachine::Resource
+  def self.allow_missing_post?
+    true
+  end
+end
+```
+
+#### `post_is_create?`
+
+Node N11. No arguments. Default `false`. Returns a Boolean. `def self.`
+allowed. `true` means a POST creates a new resource: the graph asks
+`create_path` and then the handler `content_types_accepted` names.
+`false` means the graph asks `process_post`.
+
+#### `create_path`
+
+Node N11. No arguments. Default: none. Returns the path of the new
+resource as a String. `def` only. The answer is 201 with `Location`.
+
+```ruby
+class Articles < Webmachine::Resource
+  reads_body :from_json
+
+  def self.allowed_methods
+    %w[GET HEAD POST]
+  end
+
+  def self.post_is_create?
+    true
+  end
+
+  def self.content_types_accepted
+    [['application/json', :from_json]]
+  end
+
+  def create_path
+    @id = ARTICLES.size.to_s
+    "/articles/#{@id}"
+  end
+
+  def from_json
+    ARTICLES[@id] = request.body.read
+    true
+  end
+end
+```
+
+#### `process_post`
+
+Node N11. No arguments. Default: none. Returns a Boolean. `def` only,
+and it must be named in `reads_body` to read the body. `true` answers
+200 with the body the callback set, or 204 without one.
+
+```ruby
+class Counter < Webmachine::Resource
+  reads_body :process_post
+  COUNT = [0]
+
+  def self.allowed_methods
+    %w[GET HEAD POST]
+  end
+
+  def process_post
+    COUNT[0] += request.body.read.to_i
+    response.body = COUNT[0].to_s
+    true
+  end
+end
+```
+
+#### `content_types_accepted`
+
+Nodes O14 and P3. No arguments. Default: none, and a resource that
+allows PUT or POST must define it. Returns an Array of pairs, a media
+type and the handler that reads it, with an optional `{sniff: true}`
+third member. `def self.` allowed, and the usual form. The handler
+must be named in `reads_body`.
+
+```ruby
+class Photo < Webmachine::Resource
+  reads_body :from_png, save: true
+
+  def self.allowed_methods
+    %w[GET HEAD PUT]
+  end
+
+  def self.content_types_accepted
+    [['image/png', :from_png, { sniff: true }]]
+  end
+
+  def from_png
+    request.body.save('/var/photos', 'photo.png') { |dir, _err| dir }
+  end
+end
+```
+
+#### `is_conflict?`
+
+Nodes O14 and P3. No arguments. Default `false`. Returns a Boolean.
+`def self.` allowed. Asked before a PUT is read. `true` answers 409.
+
+```ruby
+class Document < Webmachine::Resource
+  def is_conflict?
+    request.if_match.nil? && DOCS.key?(request.path_info[:id])
+  end
+end
+```
+
+#### `delete_resource`
+
+Node M20. No arguments. Default `false`. Returns a Boolean. `def` only.
+`true` means the delete was accepted; `false` answers 500.
+
+#### `delete_completed?`
+
+Node M20b. No arguments. Default `true`. Returns a Boolean. `def self.`
+allowed. `true` answers 204 or 200; `false` answers 202, the delete is
+still going on.
+
+```ruby
+class Document < Webmachine::Resource
+  def self.allowed_methods
+    %w[GET HEAD DELETE]
+  end
+
+  def delete_resource
+    !DOCS.delete(request.path_info[:id]).nil?
+  end
+
+  def self.delete_completed?
+    true
+  end
+end
+```
+
+### The answer
+
+#### `multiple_choices?`
+
+Node O18b. No arguments. Default `false`. Returns a Boolean. `def self.`
+allowed. `true` answers 300 with the body the resource rendered.
+
+#### `variances`
+
+Not a node. No arguments. Default `[]`. Returns an Array of String,
+field names added to `Vary` beside the ones negotiation adds.
+`def self.` allowed.
+
+```ruby
+class Greeting < Webmachine::Resource
+  def self.variances
+    ['Cookie']
+  end
+end
+```
+
+#### `max_body`
+
+Not a node. No arguments. Default: `conf.max_body`, else 1 MiB.
+Returns an Integer, octets. Class-only; an instance method is refused.
+A declared length above it answers 413 before the body is read.
+
+```ruby
+class Upload < Webmachine::Resource
+  def self.max_body
+    64 * 1024 * 1024
+  end
+end
+```
+
+#### `finish_request`
+
+Not a node; the last callback, after the answer is decided. No
+arguments. The return value is ignored. `def` only. May be named in
+`compute`. The place for a field every answer of this resource
+carries.
+
+```ruby
+class Api < Webmachine::Resource
+  def finish_request
+    response.headers['Cache-Control'] = 'private'
+  end
+end
+```
+
+#### `handle_exception`
+
+Not a node. Argument: the exception a callback raised. Default:
+`"#{e.class}: #{e.message}"`. Returns a String, or an Array the server
+joins with CRLF, as the body of the 500. Instance only.
+
+```ruby
+class Api < Webmachine::Resource
+  def handle_exception(e)
+    "something went wrong: #{e.class}"
+  end
+end
+```
+
+## Combinations
+
+Four resources, each a common shape.
+
+### A document that is read and cached
+
+Negotiation and conditional requests, and nothing written.
+
+```ruby
+class Article < Webmachine::Resource
+  def self.content_types_provided
+    [['text/html', :to_html], ['application/json', :to_json]]
+  end
+
+  def resource_exists?
+    @article = ARTICLES[request.path_info[:id]]
+    !@article.nil?
+  end
+
+  def generate_etag
+    @article[:version].to_s
+  end
+
+  def last_modified
+    @article[:changed_at]
+  end
+
+  def to_html
+    "<h1>#{@article[:title]}</h1>"
+  end
+
+  def to_json
+    %Q({"title":"#{@article[:title]}"})
+  end
+end
+```
+
+`resource_exists?` runs first and keeps what it found, so the later
+callbacks read `@article` instead of looking it up again. The graph
+answers 404, 304, 412 and 406 from these six methods.
+
+### A collection that creates on POST
+
+```ruby
+class Articles < Webmachine::Resource
+  reads_body :from_json
+
+  def self.allowed_methods
+    %w[GET HEAD POST]
+  end
+
+  def self.content_types_provided
+    [['application/json', :to_json]]
+  end
+
+  def self.content_types_accepted
+    [['application/json', :from_json]]
+  end
+
+  def self.post_is_create?
+    true
+  end
+
+  def create_path
+    @id = ARTICLES.size.to_s
+    "/articles/#{@id}"
+  end
+
+  def from_json
+    ARTICLES[@id] = request.body.read
+    true
+  end
+
+  def to_json
+    "[#{ARTICLES.keys.join(',')}]"
+  end
+end
+```
+
+A POST with `Content-Type: application/json` answers 201 with
+`Location: /articles/N`. A POST with another type answers 415 before
+the body is read.
+
+### A document that is replaced with PUT and removed with DELETE
+
+```ruby
+class Document < Webmachine::Resource
+  reads_body :from_text
+
+  def self.allowed_methods
+    %w[GET HEAD PUT DELETE]
+  end
+
+  def self.content_types_provided
+    [['text/plain', :to_text]]
+  end
+
+  def self.content_types_accepted
+    [['text/plain', :from_text]]
+  end
+
+  def resource_exists?
+    DOCS.key?(request.path_info[:id])
+  end
+
+  def is_conflict?
+    request.if_match.nil? && resource_exists?
+  end
+
+  def from_text
+    DOCS[request.path_info[:id]] = request.body.read
+    true
+  end
+
+  def delete_resource
+    !DOCS.delete(request.path_info[:id]).nil?
+  end
+
+  def to_text
+    DOCS[request.path_info[:id]]
+  end
+end
+```
+
+A PUT to a new id creates it and answers 201. A PUT to an existing id
+without `If-Match` answers 409. A DELETE answers 204.
+
+### A protected resource with the password check on a worker
+
+```ruby
+Webmachine::Workers::Registry[:passwords] = proc do
+  { 'ada' => Argon2.hash('secret')[:encoded] }
+end
+
+class Admin < Webmachine::Resource
+  compute :is_authorized?
+
+  def is_authorized?(header)
+    Webmachine::ComputeTask.new(header, max_runtime: 200.ms) do |h|
+      user, pass = h.to_s.split(':', 2)
+      stored = Webmachine::Workers::Registry[:passwords][user]
+      stored ? Argon2.verify(stored, pass.to_s) : false
+    end
+  end
+
+  def forbidden?
+    request.path_info[:id] == 'root'
+  end
+
+  def to_html
+    '<h1>admin</h1>'
+  end
+end
+```
+
+The hash runs on a worker with a deadline, and the request loop keeps
+taking requests while it does. `forbidden?` runs after it, on the
+loop, because it is a lookup.
 
 ## `content_types_provided` and `content_types_accepted`
 
