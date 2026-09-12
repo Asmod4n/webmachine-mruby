@@ -2203,14 +2203,13 @@ template <class App> class Ring
         // connection is gone, because the fault is the application's either
         // way.
         if (answered.raised && have) {
-            fault_report(
-                app_.error_log(), mrb_,
-                {answered.exception, answered.step, answered.worker_name,
-                 c.live && c.gen == gen && c.peer != nullptr
-                     ? std::string_view{reinterpret_cast<const char *>(&c.peer->addr),
-                                        static_cast<size_t>(c.peer->addrlen)}
-                     : std::string_view{},
-                 static_cast<uint16_t>(answered.over_deadline ? 500 : 503)});
+            fault_report(app_.error_log(), mrb_,
+                         {answered.exception, answered.step, answered.worker_name,
+                          c.live && c.gen == gen && c.peer != nullptr
+                              ? std::string_view{reinterpret_cast<const char *>(&c.peer->addr),
+                                                 static_cast<size_t>(c.peer->addrlen)}
+                              : std::string_view{},
+                          static_cast<uint16_t>(answered.over_deadline ? 500 : 503)});
         }
         // A generation that moved means the connection is gone and its run
         // died with it. The answer is still taken, because the slot is the
