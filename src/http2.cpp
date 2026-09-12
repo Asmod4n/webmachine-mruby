@@ -679,6 +679,14 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
         ok = false;
         break;
       }
+      // RFC 9113 8.2.1: the value rule holds for a pseudo-header as it
+      // holds for every other field. The name carries a colon, so
+      // h2_field_ok runs no token scan on it, and the switch below is
+      // what refuses a name that is not one of the five.
+      if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
+        ok = false;
+        break;
+      }
       // One switch on the index, and the memcmp chain only for a name
       // the decoder did not resolve. The chain that tested the index
       // and the name together cost more than the memcmp it replaced:

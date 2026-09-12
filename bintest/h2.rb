@@ -52,6 +52,19 @@ def h2_path_block(path)
   "\x82\x86\x04#{path.bytesize.chr}#{path}\x41\x0bexample.com".b
 end
 
+# A block that names one bad pseudo-header instead of the good one. An
+# appended pseudo-header would be a second one, and the server refuses a
+# duplicate before it ever reads the value - which is not what these
+# prove. Static index 6 is :scheme and 1 is :authority, and both go out
+# as a literal without indexing, so the dynamic table stays still.
+def h2_scheme_block(scheme)
+  "\x82\x06#{scheme.bytesize.chr}#{scheme}\x84\x41\x0bexample.com".b
+end
+
+def h2_authority_block(authority)
+  "\x82\x86\x84\x01#{authority.bytesize.chr}#{authority}".b
+end
+
 def h2_handshake(s, settings = ''.b)
   s.write(WM_H2_PREFACE + h2_frame(4, 0, 0, settings))
   t, f, st, = h2_next(s)
@@ -1989,6 +2002,13 @@ assert('h2: a malformed field or :path is a stream error, and the connection liv
     [':path with a control octet', h2_path_block("/a\x01b")],
     [':path with a space', h2_path_block('/a b')],
     [':path with a CR', h2_path_block("/a\rb")],
+    # RFC 9113 8.2.1: the value rule holds for a pseudo-header as well.
+    # Without it :method reached the router, :scheme was read for a flag
+    # and its value thrown away, and :authority became a Host.
+    [':method with a NUL', h2_method_block("G\x00T")],
+    [':scheme with CR LF', h2_scheme_block("http\r\nx: 1")],
+    [':authority with a leading SP', h2_authority_block(' example.com')],
+    [':authority with a trailing HTAB', h2_authority_block("example.com\t")],
   ]
   h2_server do |sock|
     UNIXSocket.open(sock) do |s|
