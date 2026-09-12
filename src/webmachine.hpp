@@ -4200,10 +4200,10 @@ struct AppSpec {
 namespace sniff
 {
 enum class Verdict : uint8_t { kAgrees, kContradicts, kUnknown };
-bool known(std::string_view declared);
-bool wants(const std::vector<std::string> &types, std::string_view declared);
-size_t bytes_wanted();
-Verdict check(std::string_view declared, std::string_view head);
+bool knows_media_type(std::string_view declared);
+bool was_asked_for(const std::vector<std::string> &types, std::string_view declared);
+size_t octets_needed();
+Verdict check_declaration(std::string_view declared, std::string_view head);
 } // namespace sniff
 
 // The answer's body, set by something that is not a callback of the
@@ -4240,14 +4240,14 @@ namespace webmachine
 void docroot_open(mrb_state *mrb, const char *path);
 
 // Did an operator configure one? response.file= refuses by name when not.
-bool docroot_ready();
+bool docroot_is_open();
 
 // The dirfd every per-request openat2 resolves relative to; -1 when unset.
 int docroot_fd();
 // RFC-free: the directory a request body spills into, or nullptr for
 // the platform's own choice. One directory for the process, settled
 // before the first accept, the way the docroot is.
-const char *spill_dir();
+const char *spill_dir_get();
 void spill_dir_set(const char *path);
 // RFC 9110 6.4: the count of request body files this process holds
 // open. take answers false when kBodyFilesMax are open, and give returns
@@ -4255,7 +4255,7 @@ void spill_dir_set(const char *path);
 bool body_file_slot_take();
 void body_file_slot_give();
 // How many are open now. The tests read it; nothing in src/ does.
-uint32_t body_files_open();
+uint32_t body_file_slots_taken();
 
 // The canonical absolute path, for the refusals that have to name it.
 const char *docroot_path();

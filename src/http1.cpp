@@ -2192,12 +2192,12 @@ bool Http1::feed_parse(Conn &st, std::string_view in, Sink out)
     // file - and the table reads them once. A contradiction is 415 at the
     // first buffer, so a half gigabyte behind a lie never arrives.
     if (mrb_unlikely(!st.sniff_type.empty() && !st.sniff_done && len != 0)) {
-        const size_t want = sniff::bytes_wanted();
+        const size_t want = sniff::octets_needed();
         if (st.sniff_head.size() < want) {
             const size_t room = want - st.sniff_head.size();
             st.sniff_head.append(data, len < room ? len : room);
         }
-        const sniff::Verdict v = sniff::check(st.sniff_type, st.sniff_head);
+        const sniff::Verdict v = sniff::check_declaration(st.sniff_type, st.sniff_head);
         if (mrb_unlikely(v == sniff::Verdict::kContradicts)) {
             drop_body(st);
             return fail(st, 415, sink);
@@ -2544,17 +2544,18 @@ bool Http1::feed_parse(Conn &st, std::string_view in, Sink out)
                 // runs on the first buffer, in sniff_body below.
                 if (mrb_unlikely(!b->res->sniff_types.empty()) && vals.content_type != nullptr) {
                     const std::string_view claim{vals.content_type, vals.content_type_len};
-                    if (sniff::wants(b->res->sniff_types, claim)) {
+                    if (sniff::was_asked_for(b->res->sniff_types, claim)) {
                         st.sniff_type.assign(claim);
                         st.sniff_head.clear();
                         st.sniff_done = false;
                         // The first octets of a body usually arrive in the buffer
                         // that carried the head, and those never pass the feed's
                         // body switch. So the check starts here, on them.
-                        const size_t want = sniff::bytes_wanted();
+                        const size_t want = sniff::octets_needed();
                         st.sniff_head.assign(view + off + head_len,
                                              body_here < want ? body_here : want);
-                        const sniff::Verdict v = sniff::check(st.sniff_type, st.sniff_head);
+                        const sniff::Verdict v =
+                            sniff::check_declaration(st.sniff_type, st.sniff_head);
                         if (mrb_unlikely(v == sniff::Verdict::kContradicts)) {
                             return fail(st, 415, sink, lflags);
                         }
@@ -2835,7 +2836,7 @@ bool Http1::ws_upgrade(Conn &st, const WsUpgrade &up, std::string &sink)
     const size_t nhdr = up.nhdr;
     const http::ReqValues &vals = up.vals;
     char accept[28];
-    if (!ws::accept_key(up.key.data(), up.key.size(), accept))
+    if (!ws::accept_key_compute(up.key.data(), up.key.size(), accept))
         return fail(st, 400, sink);
 
     const WsResource *res = ws_res_[slot.ws_base + static_cast<size_t>(route)];

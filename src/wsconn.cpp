@@ -263,7 +263,7 @@ void emit(std::string &sink, Outgoing frame)
 {
     const size_t n = frame.payload.size();
     char head[10];
-    const size_t hn = ws::build_header({frame.opcode, true, frame.deflated, n}, head);
+    const size_t hn = ws::header_build({frame.opcode, true, frame.deflated, n}, head);
     sink.append(head, hn);
     if (n != 0)
         sink.append(frame.payload);
@@ -322,7 +322,7 @@ void emit_close(WsConn *c, std::string &sink, ws::Close close)
         return;
     c->sent_close = true;
     char payload[125];
-    const size_t n = ws::build_close_payload(close, payload);
+    const size_t n = ws::close_payload_build(close, payload);
     emit(sink, {ws::kClose, {payload, n}});
 }
 
@@ -495,7 +495,7 @@ bool finish_frame(WsConn *c, std::string &sink)
             return true;
         case ws::kClose: {
             ws::Close close;
-            if (!ws::read_close({c->ctl, c->ctl_len}, close)) {
+            if (!ws::close_read({c->ctl, c->ctl_len}, close)) {
                 return fail(c, sink, ws::kCloseProtocolError);
             }
             const char *const reason = close.reason.data();

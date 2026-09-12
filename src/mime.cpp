@@ -36,108 +36,112 @@ struct ExtBeforeKey {
 };
 
 // POSIX read(2): a whole file into memory. Setup only.
-bool read_whole_file(const char *path, std::string &out)
+bool file_read_whole(const char *path, std::string &text)
 {
-    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
+    const int opened_fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (opened_fd < 0)
         return false;
-    char buf[64 * 1024];
+    char chunk[64 * 1024];
     for (;;) {
-        const ssize_t n = ::read(fd, buf, sizeof buf);
-        if (n < 0) {
+        const ssize_t got = ::read(opened_fd, chunk, sizeof chunk);
+        if (got < 0) {
             if (errno == EINTR)
                 continue;
-            ::close(fd);
+            ::close(opened_fd);
             return false;
         }
-        if (n == 0)
+        if (got == 0)
             break;
-        out.append(buf, static_cast<size_t>(n));
+        text.append(chunk, static_cast<size_t>(got));
     }
-    ::close(fd);
+    ::close(opened_fd);
     return true;
 }
 
 // Apache mime.types / shared-mime-info globs2: field separators.
-bool is_blank(char c)
+bool character_is_blank(char character)
 {
-    return c == ' ' || c == '\t' || c == '\r';
+    return character == ' ' || character == '\t' || character == '\r';
 }
 
 // RFC 9110 8.3: a media type's extension key is case-insensitive.
-char lower(char c)
+char character_lowercased(char character)
 {
-    return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+    return character >= 'A' && character <= 'Z' ? char(character - 'A' + 'a') : character;
 }
 } // namespace
 
 // RFC 9110 8.3: one extension, one media type.
-void MimeDb::take(const char *type, size_t tlen, const char *ext, size_t elen)
+void MimeDb::take(const char *type, size_t tlen, const char *extension, size_t elen)
 {
     if (tlen == 0 || elen == 0)
         return;
     std::string key(elen, '\0');
     for (size_t i = 0; i < elen; i++)
-        key[i] = lower(ext[i]);
+        key[i] = character_lowercased(extension[i]);
     by_ext_.emplace_back(std::move(key), std::string(type, tlen));
 }
 
 // Apache mime.types format: "type ext ext ...", '#' comments.
-void MimeDb::parse_types(const char *p, const char *end)
+void MimeDb::parse_types(const char *cursor, const char *text_end)
 {
-    while (p < end) {
-        const char *eol = static_cast<const char *>(std::memchr(p, '\n', size_t(end - p)));
-        const char *stop = eol != nullptr ? eol : end;
-        const char *hash = static_cast<const char *>(std::memchr(p, '#', size_t(stop - p)));
+    while (cursor < text_end) {
+        const char *line_end =
+            static_cast<const char *>(std::memchr(cursor, '\n', size_t(text_end - cursor)));
+        const char *stop = line_end != nullptr ? line_end : text_end;
+        const char *hash =
+            static_cast<const char *>(std::memchr(cursor, '#', size_t(stop - cursor)));
         if (hash != nullptr)
             stop = hash;
-        while (p < stop && is_blank(*p))
-            p++;
-        const char *type = p;
-        while (p < stop && !is_blank(*p))
-            p++;
-        const size_t tlen = size_t(p - type);
-        while (p < stop) {
-            while (p < stop && is_blank(*p))
-                p++;
-            const char *ext = p;
-            while (p < stop && !is_blank(*p))
-                p++;
-            take(type, tlen, ext, size_t(p - ext));
+        while (cursor < stop && character_is_blank(*cursor))
+            cursor++;
+        const char *type = cursor;
+        while (cursor < stop && !character_is_blank(*cursor))
+            cursor++;
+        const size_t tlen = size_t(cursor - type);
+        while (cursor < stop) {
+            while (cursor < stop && character_is_blank(*cursor))
+                cursor++;
+            const char *extension = cursor;
+            while (cursor < stop && !character_is_blank(*cursor))
+                cursor++;
+            take(type, tlen, extension, size_t(cursor - extension));
         }
-        if (eol == nullptr)
+        if (line_end == nullptr)
             break;
-        p = eol + 1;
+        cursor = line_end + 1;
     }
 }
 
 // shared-mime-info globs2 format: "weight:type:*.ext".
-void MimeDb::parse_globs2(const char *p, const char *end)
+void MimeDb::parse_globs2(const char *cursor, const char *text_end)
 {
-    while (p < end) {
-        const char *eol = static_cast<const char *>(std::memchr(p, '\n', size_t(end - p)));
-        const char *stop = eol != nullptr ? eol : end;
-        if (p < stop && *p != '#') {
-            const char *c1 = static_cast<const char *>(std::memchr(p, ':', size_t(stop - p)));
-            if (c1 != nullptr) {
-                const char *type = c1 + 1;
-                const char *c2 =
+    while (cursor < text_end) {
+        const char *line_end =
+            static_cast<const char *>(std::memchr(cursor, '\n', size_t(text_end - cursor)));
+        const char *stop = line_end != nullptr ? line_end : text_end;
+        if (cursor < stop && *cursor != '#') {
+            const char *first_colon =
+                static_cast<const char *>(std::memchr(cursor, ':', size_t(stop - cursor)));
+            if (first_colon != nullptr) {
+                const char *type = first_colon + 1;
+                const char *second_colon =
                     static_cast<const char *>(std::memchr(type, ':', size_t(stop - type)));
-                if (c2 != nullptr) {
-                    const char *glob = c2 + 1;
+                if (second_colon != nullptr) {
+                    const char *glob = second_colon + 1;
                     const size_t glen = size_t(stop - glob);
                     if (glen > 2 && glob[0] == '*' && glob[1] == '.' &&
                         std::memchr(glob + 2, '*', glen - 2) == nullptr &&
                         std::memchr(glob + 2, '?', glen - 2) == nullptr &&
                         std::memchr(glob + 2, '[', glen - 2) == nullptr) {
-                        take(type, size_t(c2 - type), glob + 2, glen - 2);
+                        take(type, size_t(second_colon - type), glob + 2, glen - 2);
                     }
                 }
             }
         }
-        if (eol == nullptr)
+        if (line_end == nullptr)
             break;
-        p = eol + 1;
+        cursor = line_end + 1;
     }
 }
 
@@ -152,7 +156,7 @@ void MimeDb::load(mrb_state *mrb, const char *configured)
     std::string text;
     bool globs2 = false;
     if (configured != nullptr && configured[0] != '\0') {
-        if (!read_whole_file(configured, text)) {
+        if (!file_read_whole(configured, text)) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
                        std::strerror(errno));
         }
@@ -160,12 +164,12 @@ void MimeDb::load(mrb_state *mrb, const char *configured)
         globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
     } else {
         for (const char *path : kTypesPaths) {
-            if (read_whole_file(path, text)) {
+            if (file_read_whole(path, text)) {
                 source_ = path;
                 break;
             }
         }
-        if (source_.empty() && read_whole_file(kGlobs2, text)) {
+        if (source_.empty() && file_read_whole(kGlobs2, text)) {
             source_ = kGlobs2;
             globs2 = true;
         }
@@ -175,12 +179,12 @@ void MimeDb::load(mrb_state *mrb, const char *configured)
         }
     }
 
-    const char *p = text.data();
-    const char *end = p + text.size();
+    const char *cursor = text.data();
+    const char *text_end = cursor + text.size();
     if (globs2) {
-        parse_globs2(p, end);
+        parse_globs2(cursor, text_end);
     } else {
-        parse_types(p, end);
+        parse_types(cursor, text_end);
     }
 
     std::stable_sort(by_ext_.begin(), by_ext_.end(), ExtBefore());
@@ -196,13 +200,13 @@ void MimeDb::load(mrb_state *mrb, const char *configured)
 const char *MimeDb::type_of(const std::string &name) const
 {
     static const char kOctets[] = "application/octet-stream";
-    const size_t dot = name.rfind('.');
-    if (dot == std::string::npos || dot + 1 == name.size())
+    const size_t last_dot = name.rfind('.');
+    if (last_dot == std::string::npos || last_dot + 1 == name.size())
         return kOctets;
-    std::string ext(name.size() - dot - 1, '\0');
+    std::string ext(name.size() - last_dot - 1, '\0');
     for (size_t i = 0; i < ext.size(); i++)
-        ext[i] = lower(name[dot + 1 + i]);
-    const auto it = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext, ExtBeforeKey());
-    return it != by_ext_.end() && it->first == ext ? it->second.c_str() : kOctets;
+        ext[i] = character_lowercased(name[last_dot + 1 + i]);
+    const auto found = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext, ExtBeforeKey());
+    return found != by_ext_.end() && found->first == ext ? found->second.c_str() : kOctets;
 }
 } // namespace webmachine

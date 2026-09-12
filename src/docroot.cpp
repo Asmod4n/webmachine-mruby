@@ -15,9 +15,9 @@ namespace
 // One process, one docroot: the fd RESOLVE_BENEATH anchors against has to
 // outlive every request, and a second one would be a second answer to
 // "beneath what".
-std::string root_;
-int fd_ = -1;
-struct open_how how_ {
+std::string docroot_path_;
+int docroot_fd_ = -1;
+struct open_how docroot_open_how_ {
 };
 } // namespace
 
@@ -27,61 +27,61 @@ struct open_how how_ {
 // as much as the thing it is anchored to.
 void docroot_open(mrb_state *mrb, const char *path)
 {
-    char real[PATH_MAX];
-    if (::realpath(path, real) == nullptr) {
+    char canonical[PATH_MAX];
+    if (::realpath(path, canonical) == nullptr) {
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", path, std::strerror(errno));
     }
-    struct stat st {
+    struct stat info {
     };
-    if (::stat(real, &st) != 0) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", real, std::strerror(errno));
+    if (::stat(canonical, &info) != 0) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", canonical, std::strerror(errno));
     }
-    if (!S_ISDIR(st.st_mode)) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s is not a directory", real);
+    if (!S_ISDIR(info.st_mode)) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s is not a directory", canonical);
     }
     // O_PATH is all a dirfd owes openat2: it names the anchor, it never reads.
-    const int fd = ::open(real, O_DIRECTORY | O_PATH | O_CLOEXEC);
-    if (fd < 0) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", real, std::strerror(errno));
+    const int opened_fd = ::open(canonical, O_DIRECTORY | O_PATH | O_CLOEXEC);
+    if (opened_fd < 0) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", canonical, std::strerror(errno));
     }
-    if (fd_ >= 0)
-        ::close(fd_);
-    fd_ = fd;
-    root_ = real;
+    if (docroot_fd_ >= 0)
+        ::close(docroot_fd_);
+    docroot_fd_ = opened_fd;
+    docroot_path_ = canonical;
     // O_NONBLOCK so a FIFO planted in the docroot answers instead of parking an
     // io-wq worker on a writer that never comes; statx refuses it right after.
-    how_.flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
-    how_.mode = 0;
-    how_.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+    docroot_open_how_.flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
+    docroot_open_how_.mode = 0;
+    docroot_open_how_.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
 }
 
-bool docroot_ready()
+bool docroot_is_open()
 {
-    return fd_ >= 0;
+    return docroot_fd_ >= 0;
 }
 
 int docroot_fd()
 {
-    return fd_;
+    return docroot_fd_;
 }
 
 const char *docroot_path()
 {
-    return root_.c_str();
+    return docroot_path_.c_str();
 }
 
 // RFC-free: where a request body spills. Empty means nobody named one,
 // and slipstream_tmpfile asks the platform instead - TMPDIR, then /tmp.
-std::string spill_;
+std::string spill_dir_;
 
-const char *spill_dir()
+const char *spill_dir_get()
 {
-    return spill_.empty() ? nullptr : spill_.c_str();
+    return spill_dir_.empty() ? nullptr : spill_dir_.c_str();
 }
 
 void spill_dir_set(const char *path)
 {
-    spill_.assign(path == nullptr ? "" : path);
+    spill_dir_.assign(path == nullptr ? "" : path);
 }
 
 // RFC 9110 6.4: the body files open in this process. One thread opens
@@ -89,28 +89,28 @@ void spill_dir_set(const char *path)
 // close_file gives, and only for a descriptor it closed, so the count
 // never goes under zero. A give without a take would wrap it, so every
 // upload is refused and the fault shows at the first one.
-uint32_t body_files_ = 0;
+uint32_t body_file_slots_ = 0;
 
 bool body_file_slot_take()
 {
-    if (body_files_ >= kBodyFilesMax)
+    if (body_file_slots_ >= kBodyFilesMax)
         return false;
-    body_files_++;
+    body_file_slots_++;
     return true;
 }
 
 void body_file_slot_give()
 {
-    body_files_--;
+    body_file_slots_--;
 }
 
-uint32_t body_files_open()
+uint32_t body_file_slots_taken()
 {
-    return body_files_;
+    return body_file_slots_;
 }
 
 const struct open_how *docroot_how()
 {
-    return &how_;
+    return &docroot_open_how_;
 }
 } // namespace webmachine

@@ -1454,7 +1454,7 @@ bool sniff_agrees(Run &r, std::string_view declared)
     } else {
         return true;
     }
-    return sniff::check(declared, head) != sniff::Verdict::kContradicts;
+    return sniff::check_declaration(declared, head) != sniff::Verdict::kContradicts;
 }
 
 // Does this row ask for the check? The row is [type, handler] and may

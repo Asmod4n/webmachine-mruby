@@ -25,7 +25,7 @@ class Clangd:
         self.root = os.path.abspath(root)
         self.next_id = 1
         self.process = subprocess.Popen(
-            ["clangd", "--background-index=false", "--log=error"],
+            ["clangd", "--background-index", "--log=error"],
             cwd=self.root,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -48,6 +48,22 @@ class Clangd:
             if line.lower().startswith(b"content-length:"):
                 length = int(line.split(b":")[1])
         return json.loads(self.process.stdout.read(length))
+
+    def wait_until_indexed(self, quiet_seconds=8, cap_seconds=600):
+        """clangd renames across files only from its project index, and it
+        builds that index in the background. There is no one message that
+        says the index is whole, so this waits until clangd has said
+        nothing for a while. The index is kept beside the compile database
+        in .cache/clangd/index, so only the first run waits long."""
+        import select
+        import time
+        started = time.time()
+        while time.time() - started < cap_seconds:
+            ready, _, _ = select.select([self.process.stdout], [], [],
+                                        quiet_seconds)
+            if not ready:
+                return
+            self.read()
 
     def ask(self, method, params):
         """One request, and the answer to that request and no other."""
@@ -102,8 +118,14 @@ def apply_edits(edits_by_uri):
 
 
 def find_name(path, name):
-    """The first place a name stands in a file, as line and column."""
+    """The first place a name stands in a file, as line and column. A
+    comment line is skipped: the same word often stands in the sentence
+    above a declaration, and clangd finds no symbol there."""
     for number, line in enumerate(open(path, encoding="utf-8"), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("*") or \
+           stripped.startswith("/*") or stripped.startswith("#"):
+            continue
         column = line.find(name)
         while column >= 0:
             before = line[column - 1] if column else " "
@@ -139,6 +161,7 @@ def main(argv):
                                        {"documentChanges": True}}},
     })
     clangd.tell("initialized", {})
+    clangd.wait_until_indexed()
     clangd.tell("textDocument/didOpen", {"textDocument": {
         "uri": uri_of(path), "languageId": "cpp", "version": 1,
         "text": open(path, encoding="utf-8").read(),

@@ -317,7 +317,7 @@ void build(mrb_state *mrb)
             if (specs_[i]->spill_dir.empty())
                 continue;
             spill_dir_set(specs_[i]->spill_dir.c_str());
-            std::fprintf(stderr, "webmachine: request bodies spill into %s\n", spill_dir());
+            std::fprintf(stderr, "webmachine: request bodies spill into %s\n", spill_dir_get());
             break;
         }
     }

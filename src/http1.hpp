@@ -128,7 +128,7 @@ struct BodySpill {
         close_file();
         if (mrb_unlikely(!body_file_slot_take()))
             return SpillOpen::kNoSlot;
-        fd = slipstream_tmpfile(spill_dir());
+        fd = slipstream_tmpfile(spill_dir_get());
         if (mrb_unlikely(fd < 0)) {
             fd = -1;
             body_file_slot_give();
@@ -954,7 +954,7 @@ enum : uint16_t {
 
 inline constexpr size_t kMaxControlPayload = 125;
 
-bool accept_key(const char *key, size_t key_len, char out[28]);
+bool accept_key_compute(const char *key, size_t key_len, char out[28]);
 
 // RFC 6455 5.2: everything the fourteen header bytes decide on their own -
 // the reserved bits, the opcode, the mask bit, the length encoding, and
@@ -1124,7 +1124,7 @@ struct Frame {
     bool rsv1;
     size_t payload_len;
 };
-size_t build_header(Frame f, char head[10]);
+size_t header_build(Frame f, char head[10]);
 
 // RFC 6455 5.5.1: what a Close frame said - the code, and the reason where
 // it carried one. 1005 is "the peer named none".
@@ -1132,8 +1132,8 @@ struct Close {
     uint16_t code = 1005;
     std::string_view reason;
 };
-size_t build_close_payload(Close close, char out[125]);
-bool read_close(std::string_view payload, Close &out);
+size_t close_payload_build(Close close, char out[125]);
+bool close_read(std::string_view payload, Close &out);
 } // namespace ws
 } // namespace webmachine
 

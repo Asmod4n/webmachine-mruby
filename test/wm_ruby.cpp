@@ -274,7 +274,7 @@ mrb_value spec_sniff(mrb_state* mrb, mrb_value) {
   const char* head = nullptr;
   mrb_int hlen = 0;
   mrb_get_args(mrb, "ss", &type, &tlen, &head, &hlen);
-  switch (webmachine::sniff::check({type, static_cast<size_t>(tlen)}, {head, static_cast<size_t>(hlen)})) {
+  switch (webmachine::sniff::check_declaration({type, static_cast<size_t>(tlen)}, {head, static_cast<size_t>(hlen)})) {
     case webmachine::sniff::Verdict::kAgrees: return mrb_symbol_value(mrb_intern_lit(mrb, "agrees"));
     case webmachine::sniff::Verdict::kContradicts:
       return mrb_symbol_value(mrb_intern_lit(mrb, "contradicts"));
@@ -288,7 +288,7 @@ mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
   const char* type = nullptr;
   mrb_int tlen = 0;
   mrb_get_args(mrb, "s", &type, &tlen);
-  return mrb_bool_value(webmachine::sniff::known({type, static_cast<size_t>(tlen)}));
+  return mrb_bool_value(webmachine::sniff::knows_media_type({type, static_cast<size_t>(tlen)}));
 }
 
 // The descriptor budget and the body file count, for test/wm_fd.rb.
@@ -305,7 +305,7 @@ mrb_value spec_fd_body_file_give(mrb_state*, mrb_value) {
   return mrb_nil_value();
 }
 mrb_value spec_fd_body_files_open(mrb_state* mrb, mrb_value) {
-  return mrb_int_value(mrb, webmachine::body_files_open());
+  return mrb_int_value(mrb, webmachine::body_file_slots_taken());
 }
 
 }  // namespace

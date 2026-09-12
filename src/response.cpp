@@ -351,7 +351,7 @@ mrb_value response_set_file(mrb_state *mrb, mrb_value)
     if (!mrb_string_p(name)) {
         mrb_raise(mrb, E_TYPE_ERROR, "response.file= takes a String, or nil to clear it");
     }
-    if (!docroot_ready()) {
+    if (!docroot_is_open()) {
         mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
                   "response.file= needs a docroot and this server has none. Name one: "
                   "conf.docroot in the application's configure block, or --docroot=PATH "

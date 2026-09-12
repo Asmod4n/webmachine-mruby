@@ -14,26 +14,27 @@ namespace ws
 namespace
 {
 // RFC 6455 4.2.2 step 5.4: the 20-byte digest as 28 base64 characters.
-void b64_20(const unsigned char in[20], char out[28])
+void base64_encode_digest(const unsigned char in[20], char out[28])
 {
     simdutf::binary_to_base64(reinterpret_cast<const char *>(in), 20, out);
 }
 
 // RFC 6455 4.2.1 step 5: the alphabet a Sec-WebSocket-Key is spelled in.
-bool b64_char(char c)
+bool base64_is_char(char character)
 {
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' ||
-           c == '/' || c == '=';
+    return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+           (character >= '0' && character <= '9') || character == '+' || character == '/' ||
+           character == '=';
 }
 } // namespace
 
 // RFC 6455 4.2.2 step 5.4: key + GUID, SHA-1, base64.
-bool accept_key(const char *key, size_t key_len, char out[28])
+bool accept_key_compute(const char *key, size_t key_len, char out[28])
 {
     if (key_len != 24)
         return false;
     for (size_t i = 0; i < 24; i++) {
-        if (!b64_char(key[i]))
+        if (!base64_is_char(key[i]))
             return false;
     }
     unsigned char in[24 + 36];
@@ -41,15 +42,16 @@ bool accept_key(const char *key, size_t key_len, char out[28])
     std::memcpy(in + 24, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", 36);
     unsigned char digest[20];
     SHA1(in, sizeof(in), digest);
-    b64_20(digest, out);
+    base64_encode_digest(digest, out);
     return true;
 }
 
 // RFC 6455 5.1/5.2: a server frame header (never masked, RSV1 per 7692 6).
-size_t build_header(Frame f, char head[10])
+size_t header_build(Frame frame, char head[10])
 {
-    const size_t payload_len = f.payload_len;
-    head[0] = static_cast<char>((f.fin ? 0x80 : 0x00) | (f.rsv1 ? 0x40 : 0x00) | (f.opcode & 0x0f));
+    const size_t payload_len = frame.payload_len;
+    head[0] = static_cast<char>((frame.fin ? 0x80 : 0x00) | (frame.rsv1 ? 0x40 : 0x00) |
+                                (frame.opcode & 0x0f));
     if (payload_len < 126) {
         head[1] = static_cast<char>(payload_len);
         return 2;
@@ -67,7 +69,7 @@ size_t build_header(Frame f, char head[10])
     return 10;
 }
 
-size_t build_close_payload(Close close, char out[125])
+size_t close_payload_build(Close close, char out[125])
 {
     out[0] = static_cast<char>((close.code >> 8) & 0xff);
     out[1] = static_cast<char>(close.code & 0xff);
@@ -77,7 +79,7 @@ size_t build_close_payload(Close close, char out[125])
     return n + 2;
 }
 
-bool read_close(std::string_view payload, Close &out)
+bool close_read(std::string_view payload, Close &out)
 {
     const size_t len = payload.size();
     out.reason = {};

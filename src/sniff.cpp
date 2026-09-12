@@ -32,7 +32,7 @@ namespace
 // A row of the table. `at` is where the pattern has to sit, counted from
 // the first octet of the body.
 struct Pattern {
-    uint16_t at;
+    uint16_t pattern_sits_at;
     std::string_view bytes;
     std::string_view type;
     // A container carries other formats: a zip is a docx, an epub, a jar
@@ -44,9 +44,10 @@ struct Pattern {
 
 // The one place an offset and a length meet. Every row goes through it,
 // so no row can get its own bounds wrong.
-bool at(std::string_view buf, size_t off, std::string_view pat)
+bool at(std::string_view body_start, size_t offset, std::string_view pattern)
 {
-    return buf.size() >= off + pat.size() && buf.compare(off, pat.size(), pat) == 0;
+    return body_start.size() >= offset + pattern.size() &&
+           body_start.compare(offset, pattern.size(), pattern) == 0;
 }
 
 constexpr Pattern kTable[] = {
@@ -102,22 +103,25 @@ constexpr Pattern kTable[] = {
 // The type a declaration names, without its parameters and folded to
 // lower case for the comparison. The header reader already gave us the
 // value; this only cuts the parameters off.
-std::string_view base_of(std::string_view declared)
+std::string_view media_type_without_parameters(std::string_view declared)
 {
     const size_t semi = declared.find(';');
-    std::string_view t = semi == std::string_view::npos ? declared : declared.substr(0, semi);
-    while (!t.empty() && (t.back() == ' ' || t.back() == '\t'))
-        t.remove_suffix(1);
-    return t;
+    std::string_view without_parameters =
+        semi == std::string_view::npos ? declared : declared.substr(0, semi);
+    while (!without_parameters.empty() &&
+           (without_parameters.back() == ' ' || without_parameters.back() == '\t'))
+        without_parameters.remove_suffix(1);
+    return without_parameters;
 }
 
-bool same_type(std::string_view a, std::string_view b)
+bool media_type_is_same(std::string_view one, std::string_view other)
 {
-    if (a.size() != b.size())
+    if (one.size() != other.size())
         return false;
-    for (size_t i = 0; i < a.size(); i++) {
-        const char x = a[i] >= 'A' && a[i] <= 'Z' ? static_cast<char>(a[i] + 32) : a[i];
-        if (x != b[i])
+    for (size_t i = 0; i < one.size(); i++) {
+        const char folded =
+            one[i] >= 'A' && one[i] <= 'Z' ? static_cast<char>(one[i] + 32) : one[i];
+        if (folded != other[i])
             return false;
     }
     return true;
@@ -127,11 +131,11 @@ bool same_type(std::string_view a, std::string_view b)
 // Does this server hold a pattern for that type? The fold asks it, so a
 // resource that writes `sniff: true` beside a type nothing can confirm
 // is refused while the app is being set up rather than at a request.
-bool known(std::string_view declared)
+bool knows_media_type(std::string_view declared)
 {
-    const std::string_view want = base_of(declared);
+    const std::string_view want = media_type_without_parameters(declared);
     for (const Pattern &p : kTable) {
-        if (same_type(want, p.type))
+        if (media_type_is_same(want, p.type))
             return true;
     }
     return false;
@@ -140,11 +144,11 @@ bool known(std::string_view declared)
 // Did this resource ask for that claim to be checked? The list is what
 // the fold read from the content_types_accepted rows, and the claim is
 // the Content-Type of the request, parameters and all.
-bool wants(const std::vector<std::string> &types, std::string_view declared)
+bool was_asked_for(const std::vector<std::string> &types, std::string_view declared)
 {
-    const std::string_view want = base_of(declared);
+    const std::string_view want = media_type_without_parameters(declared);
     for (const std::string &t : types) {
-        if (same_type(want, t))
+        if (media_type_is_same(want, t))
             return true;
     }
     return false;
@@ -152,7 +156,7 @@ bool wants(const std::vector<std::string> &types, std::string_view declared)
 
 // How many octets the table can read. The deepest row is the tar
 // header at 257, and nothing here looks further.
-size_t bytes_wanted()
+size_t octets_needed()
 {
     return 512;
 }
@@ -174,14 +178,14 @@ size_t bytes_wanted()
 // Anything else is kUnknown, and kUnknown never refuses a request. A
 // check that guesses would refuse honest clients, which is worse than
 // letting a liar through to max_body.
-Verdict check(std::string_view declared, std::string_view head)
+Verdict check_declaration(std::string_view declared, std::string_view head)
 {
-    const std::string_view want = base_of(declared);
-    const bool declared_known = known(want);
+    const std::string_view want = media_type_without_parameters(declared);
+    const bool declared_known = knows_media_type(want);
     for (const Pattern &p : kTable) {
-        if (!at(head, p.at, p.bytes))
+        if (!at(head, p.pattern_sits_at, p.bytes))
             continue;
-        if (same_type(want, p.type))
+        if (media_type_is_same(want, p.type))
             return Verdict::kAgrees;
         if (declared_known)
             return Verdict::kContradicts;
@@ -192,7 +196,7 @@ Verdict check(std::string_view declared, std::string_view head)
     // Nothing matched. A type this table knows has to have matched, so
     // the claim is wrong - but only once enough octets have arrived to
     // say so.
-    if (declared_known && head.size() >= bytes_wanted())
+    if (declared_known && head.size() >= octets_needed())
         return Verdict::kContradicts;
     return Verdict::kUnknown;
 }
