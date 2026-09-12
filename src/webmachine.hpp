@@ -1624,7 +1624,7 @@ inline void report_raise(Logger *lg, mrb_state *mrb, uint16_t status)
         mrb_print_error(mrb);
     mrb->exc = nullptr;
 }
-void report_compute_fault(Logger *lg, mrb_state *mrb, const ComputeFault &x);
+void fault_report(Logger *lg, mrb_state *mrb, const ComputeFault &x);
 } // namespace webmachine
 
 namespace webmachine::http
@@ -3519,7 +3519,7 @@ struct ComputeTaskAsk {
 // Reads the three fields off a Promise, or answers false. It raises
 // when the value is not a Promise at all, because a callback that
 // declared one owes one.
-bool compute_task_of(mrb_state *mrb, mrb_value v, ComputeTaskAsk *out);
+bool compute_task_read_from_value(mrb_state *mrb, mrb_value v, ComputeTaskAsk *out);
 void compute_task_init_class(mrb_state *mrb, struct RClass *wm);
 
 // src/passwd.cpp: Webmachine::Passwd - the database webmachine-passwd

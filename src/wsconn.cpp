@@ -1,4 +1,5 @@
 #include "http1.hpp"
+#include "ruby_value.hpp"
 
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -36,9 +37,9 @@ class Codec
     }
 
     // RFC 7692 7.1.2: what the negotiation settled on.
-    void configure(const Params &p)
+    void configure(const Params &bytes)
     {
-        p_ = p;
+        p_ = bytes;
     }
     // RFC 7692: what this connection agreed to.
     const Params &params() const
@@ -48,25 +49,25 @@ class Codec
 
     // RFC 7692 7.2.2: payload bytes as they arrive; the sink is the only
     // bound, which is the whole decompression-bomb answer.
-    int inflate_some(const char *in, size_t n, InflateSink sink, void *ud)
+    int inflate_some(const char *incoming, size_t length, InflateSink sink, void *user_data)
     {
         if (!inflate_ready())
             return -1;
-        inf_.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in));
-        inf_.avail_in = static_cast<uInt>(n);
-        return pump(sink, ud);
+        inf_.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(incoming));
+        inf_.avail_in = static_cast<uInt>(length);
+        return pump(sink, user_data);
     }
 
     // RFC 7692 7.2.2 step 1: the four bytes the sender stripped go back on.
-    int inflate_finish(InflateSink sink, void *ud)
+    int inflate_finish(InflateSink sink, void *user_data)
     {
         if (!inflate_ready())
             return -1;
         inf_.next_in = const_cast<Bytef *>(kSyncTail);
         inf_.avail_in = sizeof(kSyncTail);
-        const int rc = pump(sink, ud);
-        if (rc != 0)
-            return rc;
+        const int status = pump(sink, user_data);
+        if (status != 0)
+            return status;
         if (p_.client_no_context_takeover || inf_ended_) {
             inflateReset(&inf_);
             inf_ended_ = false;
@@ -81,35 +82,35 @@ class Codec
     // of every message before, and a new stream starts from an empty window.
     // The two sides would then disagree. So a failure here stops compression
     // for this connection.
-    bool compress(const char *in, size_t n, std::string &out)
+    bool compress(const char *incoming, size_t length, std::string &answer)
     {
-        if (n > std::numeric_limits<uInt>::max())
+        if (length > std::numeric_limits<uInt>::max())
             return false;
         if (deflate_stopped_ || !deflate_ready())
             return false;
-        out.clear();
-        def_.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in));
-        def_.avail_in = static_cast<uInt>(n);
-        unsigned char buf[8192];
+        answer.clear();
+        def_.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(incoming));
+        def_.avail_in = static_cast<uInt>(length);
+        unsigned char chunk[8192];
         for (;;) {
-            def_.next_out = buf;
-            def_.avail_out = sizeof(buf);
-            const int rc = deflate(&def_, Z_SYNC_FLUSH);
-            if (rc != Z_OK && rc != Z_BUF_ERROR) {
+            def_.next_out = chunk;
+            def_.avail_out = sizeof(chunk);
+            const int status = deflate(&def_, Z_SYNC_FLUSH);
+            if (status != Z_OK && status != Z_BUF_ERROR) {
                 deflate_stopped_ = true;
                 return false;
             }
-            out.append(reinterpret_cast<const char *>(buf), sizeof(buf) - def_.avail_out);
+            answer.append(reinterpret_cast<const char *>(chunk), sizeof(chunk) - def_.avail_out);
             if (def_.avail_out != 0)
                 break;
         }
-        if (out.size() < sizeof(kSyncTail) ||
-            std::memcmp(out.data() + out.size() - sizeof(kSyncTail), kSyncTail,
+        if (answer.size() < sizeof(kSyncTail) ||
+            std::memcmp(answer.data() + answer.size() - sizeof(kSyncTail), kSyncTail,
                         sizeof(kSyncTail)) != 0) {
             deflate_stopped_ = true;
             return false;
         }
-        out.resize(out.size() - sizeof(kSyncTail));
+        answer.resize(answer.size() - sizeof(kSyncTail));
         if (p_.server_no_context_takeover)
             deflateReset(&def_);
         return true;
@@ -140,11 +141,11 @@ class Codec
     {
         if (def_on_)
             return true;
-        const int rc =
+        const int status =
             deflateInit2(&def_, Z_BEST_SPEED, Z_DEFLATED,
                          -static_cast<int>(p_.server_max_window_bits), 8, Z_DEFAULT_STRATEGY);
-        if (rc != Z_OK) {
-            if (rc != Z_MEM_ERROR)
+        if (status != Z_OK) {
+            if (status != Z_MEM_ERROR)
                 deflate_stopped_ = true;
             return false;
         }
@@ -153,19 +154,20 @@ class Codec
     }
 
     // RFC 7692 7.2.2: inflate until zlib stops producing.
-    int pump(InflateSink sink, void *ud)
+    int pump(InflateSink sink, void *user_data)
     {
-        unsigned char buf[8192];
+        unsigned char chunk[8192];
         for (;;) {
-            inf_.next_out = buf;
-            inf_.avail_out = sizeof(buf);
-            const int rc = inflate(&inf_, Z_NO_FLUSH);
-            if (rc == Z_STREAM_END)
+            inf_.next_out = chunk;
+            inf_.avail_out = sizeof(chunk);
+            const int status = inflate(&inf_, Z_NO_FLUSH);
+            if (status == Z_STREAM_END)
                 inf_ended_ = true;
-            else if (rc != Z_OK && rc != Z_BUF_ERROR)
+            else if (status != Z_OK && status != Z_BUF_ERROR)
                 return -1;
-            const size_t got = sizeof(buf) - inf_.avail_out;
-            if (got != 0 && !sink(ud, reinterpret_cast<const char *>(buf), got))
+            const size_t read_bytes = sizeof(chunk) - inf_.avail_out;
+            if (read_bytes != 0 &&
+                !sink(user_data, reinterpret_cast<const char *>(chunk), read_bytes))
                 return -2;
             if (inf_.avail_out != 0)
                 return 0;
@@ -202,7 +204,7 @@ struct WsConn {
 
     bool in_payload = false;
     uint8_t opcode = 0;
-    bool fin = false;
+    bool is_final = false;
     bool control = false;
     uint64_t remaining = 0;
     unsigned char mask[4] = {};
@@ -211,7 +213,7 @@ struct WsConn {
     char ctl[125] = {};
     uint8_t ctl_len = 0;
 
-    mrb_value msg = mrb_nil_value();
+    mrb_value message = mrb_nil_value();
     bool msg_live = false;
     uint8_t msg_op = 0;
     size_t validated = 0;
@@ -227,23 +229,23 @@ struct WsConn {
 namespace
 {
 // RFC 6455 7.4.1: a Symbol answer by name. This is the vocabulary.
-bool symbol_code(mrb_sym s, uint16_t &code)
+bool close_code_of_symbol(mrb_sym symbol, uint16_t &code)
 {
-    if (s == MRB_SYM(close) || s == MRB_SYM(normal))
+    if (symbol == MRB_SYM(close) || symbol == MRB_SYM(normal))
         code = ws::kCloseNormal;
-    else if (s == MRB_SYM(going_away))
+    else if (symbol == MRB_SYM(going_away))
         code = ws::kCloseGoingAway;
-    else if (s == MRB_SYM(protocol_error))
+    else if (symbol == MRB_SYM(protocol_error))
         code = ws::kCloseProtocolError;
-    else if (s == MRB_SYM(unsupported))
+    else if (symbol == MRB_SYM(unsupported))
         code = ws::kCloseUnsupportedData;
-    else if (s == MRB_SYM(invalid))
+    else if (symbol == MRB_SYM(invalid))
         code = ws::kCloseInvalidPayload;
-    else if (s == MRB_SYM(policy))
+    else if (symbol == MRB_SYM(policy))
         code = ws::kClosePolicyViolation;
-    else if (s == MRB_SYM(too_big))
+    else if (symbol == MRB_SYM(too_big))
         code = ws::kCloseTooBig;
-    else if (s == MRB_SYM(internal_error))
+    else if (symbol == MRB_SYM(internal_error))
         code = ws::kCloseInternalError;
     else
         return false;
@@ -259,13 +261,13 @@ struct Outgoing {
     bool deflated = false;
 };
 
-void emit(std::string &sink, Outgoing frame)
+void frame_emit(std::string &sink, Outgoing frame)
 {
-    const size_t n = frame.payload.size();
+    const size_t length = frame.payload.size();
     char head[10];
-    const size_t hn = ws::header_build({frame.opcode, true, frame.deflated, n}, head);
-    sink.append(head, hn);
-    if (n != 0)
+    const size_t head_length = ws::header_build({frame.opcode, true, frame.deflated, length}, head);
+    sink.append(head, head_length);
+    if (length != 0)
         sink.append(frame.payload);
 }
 
@@ -283,7 +285,7 @@ struct Method {
 // nothing about the method: how many arguments a method takes is a
 // question for mrb_get_args, and a resource of another shape raises
 // ArgumentError when the callback runs.
-bool method_defined(mrb_state *mrb, Method want)
+bool method_is_defined(mrb_state *mrb, Method want)
 {
     struct RClass *owner = want.klass;
     return !MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, want.sym));
@@ -291,322 +293,324 @@ bool method_defined(mrb_state *mrb, Method want)
 
 // RFC 7692 7.2.2: inflated bytes onto the message being assembled, up to
 // the resource's cap. False is what stops a decompression bomb.
-bool msg_cat(void *ud, const char *q, size_t qn)
+bool message_append_inflated(void *user_data, const char *inflated, size_t inflated_length)
 {
-    WsConn *c = static_cast<WsConn *>(ud);
-    if (static_cast<uint64_t>(RSTRING_LEN(c->msg)) + qn > c->res->max_message)
+    WsConn *conn = static_cast<WsConn *>(user_data);
+    if (ruby_string_length(conn->message) + inflated_length > conn->res->max_message)
         return false;
-    mrb_str_cat(c->res->mrb, c->msg, q, qn);
+    mrb_str_cat(conn->res->mrb, conn->message, inflated, inflated_length);
     return true;
 }
 
-void emit_data(WsConn *c, std::string &sink, Outgoing frame)
+void data_frame_emit(WsConn *conn, std::string &sink, Outgoing frame)
 {
     const uint8_t opcode = frame.opcode;
-    const char *const p = frame.payload.data();
-    const size_t n = frame.payload.size();
-    if (c->codec != nullptr) {
+    const char *const bytes = frame.payload.data();
+    const size_t length = frame.payload.size();
+    if (conn->codec != nullptr) {
         static std::string scratch;
-        if (c->codec->compress(p, n, scratch)) {
-            emit(sink, {opcode, scratch, true});
+        if (conn->codec->compress(bytes, length, scratch)) {
+            frame_emit(sink, {opcode, scratch, true});
             return;
         }
     }
-    emit(sink, {opcode, {p, n}});
+    frame_emit(sink, {opcode, {bytes, length}});
 }
 
 // RFC 6455 5.5.1: the close handshake's own half, sent at most once.
-void emit_close(WsConn *c, std::string &sink, ws::Close close)
+void close_frame_emit(WsConn *conn, std::string &sink, ws::Close close)
 {
-    if (c->sent_close)
+    if (conn->sent_close)
         return;
-    c->sent_close = true;
+    conn->sent_close = true;
     char payload[125];
-    const size_t n = ws::close_payload_build(close, payload);
-    emit(sink, {ws::kClose, {payload, n}});
+    const size_t length = ws::close_payload_build(close, payload);
+    frame_emit(sink, {ws::kClose, {payload, length}});
 }
 
 // RFC 3629: can these 1-3 bytes still become a valid sequence?
-bool valid_prefix(const unsigned char *p, size_t n)
+bool utf8_prefix_may_still_be_valid(const unsigned char *bytes, size_t length)
 {
-    if (n == 0)
+    if (length == 0)
         return true;
-    const unsigned char b0 = p[0];
+    const unsigned char first_byte = bytes[0];
     size_t need = 0;
-    unsigned char lo = 0x80, hi = 0xbf;
-    if (b0 >= 0xc2 && b0 <= 0xdf)
+    unsigned char low = 0x80, hi = 0xbf;
+    if (first_byte >= 0xc2 && first_byte <= 0xdf)
         need = 1;
-    else if (b0 == 0xe0) {
+    else if (first_byte == 0xe0) {
         need = 2;
-        lo = 0xa0;
-    } else if (b0 >= 0xe1 && b0 <= 0xec)
+        low = 0xa0;
+    } else if (first_byte >= 0xe1 && first_byte <= 0xec)
         need = 2;
-    else if (b0 == 0xed) {
+    else if (first_byte == 0xed) {
         need = 2;
         hi = 0x9f;
-    } else if (b0 >= 0xee && b0 <= 0xef)
+    } else if (first_byte >= 0xee && first_byte <= 0xef)
         need = 2;
-    else if (b0 == 0xf0) {
+    else if (first_byte == 0xf0) {
         need = 3;
-        lo = 0x90;
-    } else if (b0 >= 0xf1 && b0 <= 0xf3)
+        low = 0x90;
+    } else if (first_byte >= 0xf1 && first_byte <= 0xf3)
         need = 3;
-    else if (b0 == 0xf4) {
+    else if (first_byte == 0xf4) {
         need = 3;
         hi = 0x8f;
     } else
         return false;
-    if (n - 1 > need)
+    if (length - 1 > need)
         return false;
-    for (size_t i = 1; i < n; i++) {
-        const unsigned char lim_lo = i == 1 ? lo : 0x80;
+    for (size_t i = 1; i < length; i++) {
+        const unsigned char lim_lo = i == 1 ? low : 0x80;
         const unsigned char lim_hi = i == 1 ? hi : 0xbf;
-        if (p[i] < lim_lo || p[i] > lim_hi)
+        if (bytes[i] < lim_lo || bytes[i] > lim_hi)
             return false;
     }
     return true;
 }
 
 // RFC 6455 8.1: UTF-8 over a message that is still arriving.
-bool utf8_ok(WsConn *c, bool final)
+bool message_utf8_is_valid(WsConn *conn, bool final)
 {
-    if (!c->res->validate_text)
+    if (!conn->res->validate_text)
         return true;
-    const char *p = RSTRING_PTR(c->msg);
-    const size_t n = static_cast<size_t>(RSTRING_LEN(c->msg));
-    if (n <= c->validated)
+    const std::string_view message = ruby_string_bytes(conn->message);
+    const char *bytes = message.data();
+    const size_t length = message.size();
+    if (length <= conn->validated)
         return true;
-    const simdutf::result r =
-        simdutf::validate_utf8_with_errors(p + c->validated, n - c->validated);
-    if (r.error == simdutf::error_code::SUCCESS) {
-        c->validated = n;
+    const simdutf::result resource =
+        simdutf::validate_utf8_with_errors(bytes + conn->validated, length - conn->validated);
+    if (resource.error == simdutf::error_code::SUCCESS) {
+        conn->validated = length;
         return true;
     }
-    if (!final && r.error == simdutf::error_code::TOO_SHORT && c->validated + r.count + 4 > n) {
-        const size_t at = c->validated + r.count;
-        if (!valid_prefix(reinterpret_cast<const unsigned char *>(p) + at, n - at))
+    if (!final && resource.error == simdutf::error_code::TOO_SHORT &&
+        conn->validated + resource.count + 4 > length) {
+        const size_t at = conn->validated + resource.count;
+        if (!utf8_prefix_may_still_be_valid(reinterpret_cast<const unsigned char *>(bytes) + at,
+                                            length - at))
             return false;
-        c->validated = at;
+        conn->validated = at;
         return true;
     }
     return false;
 }
 
 // RFC 6455 5.4: the message under construction is released.
-void drop_msg(WsConn *c)
+void message_drop(WsConn *conn)
 {
-    if (!c->msg_live)
+    if (!conn->msg_live)
         return;
-    mrb_gc_unregister(c->res->mrb, c->msg);
-    c->msg = mrb_nil_value();
-    c->msg_live = false;
-    c->msg_op = 0;
-    c->msg_deflated = false;
-    c->validated = 0;
+    mrb_gc_unregister(conn->res->mrb, conn->message);
+    conn->message = mrb_nil_value();
+    conn->msg_live = false;
+    conn->msg_op = 0;
+    conn->msg_deflated = false;
+    conn->validated = 0;
 }
 
 // RFC 6455 7.1.5: on_close, once, however the connection ended.
-void report_close(WsConn *c, ws::Close close)
+void close_report_to_resource(WsConn *conn, ws::Close close)
 {
     const uint16_t code = close.code;
     const char *const reason = close.reason.data();
     const size_t reason_len = close.reason.size();
-    if (c->closed_reported || !c->res->have_close)
+    if (conn->closed_reported || !conn->res->have_close)
         return;
-    c->closed_reported = true;
-    mrb_state *mrb = c->res->mrb;
-    const int ai = mrb_gc_arena_save(mrb);
+    conn->closed_reported = true;
+    mrb_state *mrb = conn->res->mrb;
+    const int arena = mrb_gc_arena_save(mrb);
     mrb_value argv[2];
     argv[0] = mrb_fixnum_value(code);
     argv[1] = mrb_str_new(mrb, reason == nullptr ? "" : reason, reason_len);
-    mrb_funcall_argv(mrb, c->self, MRB_SYM(on_close), 2, argv);
+    mrb_funcall_argv(mrb, conn->self, MRB_SYM(on_close), 2, argv);
     if (mrb->exc != nullptr) {
-        report_raise(c->elog, mrb, 0);
+        report_raise(conn->elog, mrb, 0);
     }
-    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_arena_restore(mrb, arena);
 }
 
 // RFC 6455 5.5.1: this side found something wrong - close with the code.
-bool fail(WsConn *c, std::string &sink, uint16_t code)
+bool connection_fail(WsConn *conn, std::string &sink, uint16_t code)
 {
-    emit_close(c, sink, {code, {}});
-    report_close(c, {code, {}});
-    drop_msg(c);
+    close_frame_emit(conn, sink, {code, {}});
+    close_report_to_resource(conn, {code, {}});
+    message_drop(conn);
     return false;
 }
 
 // RFC 6455 5.6: a complete message to the resource, and act on the answer.
-bool deliver(WsConn *c, std::string &sink)
+bool message_deliver(WsConn *conn, std::string &sink)
 {
-    const WsResource *r = c->res;
-    mrb_state *mrb = r->mrb;
-    const bool binary = c->msg_op == ws::kBinary;
-    const int ai = mrb_gc_arena_save(mrb);
+    const WsResource *resource = conn->res;
+    mrb_state *mrb = resource->mrb;
+    const bool binary = conn->msg_op == ws::kBinary;
+    const int arena = mrb_gc_arena_save(mrb);
     mrb_value argv[2];
-    argv[0] = c->msg;
+    argv[0] = conn->message;
     argv[1] = mrb_bool_value(binary);
-    const mrb_value out = mrb_funcall_argv(mrb, c->self, MRB_SYM(on_data), 2, argv);
-    drop_msg(c);
+    const mrb_value answer = mrb_funcall_argv(mrb, conn->self, MRB_SYM(on_data), 2, argv);
+    message_drop(conn);
     if (mrb->exc != nullptr) {
-        report_raise(c->elog, mrb, 0);
-        mrb_gc_arena_restore(mrb, ai);
-        return fail(c, sink, ws::kCloseInternalError);
+        report_raise(conn->elog, mrb, 0);
+        mrb_gc_arena_restore(mrb, arena);
+        return connection_fail(conn, sink, ws::kCloseInternalError);
     }
-    if (mrb_string_p(out)) {
-        emit_data(c, sink,
-                  {binary ? ws::kBinary : ws::kText,
-                   {RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out))}});
-    } else if (mrb_symbol_p(out)) {
+    if (mrb_string_p(answer)) {
+        data_frame_emit(conn, sink, {binary ? ws::kBinary : ws::kText, ruby_string_bytes(answer)});
+    } else if (mrb_symbol_p(answer)) {
         uint16_t code = 0;
-        if (symbol_code(mrb_symbol(out), code)) {
-            emit_close(c, sink, {code, {}});
-            report_close(c, {code, {}});
+        if (close_code_of_symbol(mrb_symbol(answer), code)) {
+            close_frame_emit(conn, sink, {code, {}});
+            close_report_to_resource(conn, {code, {}});
         } else {
             std::fprintf(stderr,
                          "webmachine: on_data returned :%s, which is not a close this endpoint "
                          "can speak (RFC 6455 7.4.1). Say a String, nil, or one of :close "
                          ":going_away :protocol_error :unsupported :invalid :policy :too_big "
                          ":internal_error\n",
-                         mrb_sym_name(mrb, mrb_symbol(out)));
-            mrb_gc_arena_restore(mrb, ai);
-            return fail(c, sink, ws::kCloseInternalError);
+                         mrb_sym_name(mrb, mrb_symbol(answer)));
+            mrb_gc_arena_restore(mrb, arena);
+            return connection_fail(conn, sink, ws::kCloseInternalError);
         }
-    } else if (!mrb_nil_p(out)) {
+    } else if (!mrb_nil_p(answer)) {
         std::fprintf(stderr,
                      "webmachine: on_data returned a %s - a websocket answer is a String (a "
                      "message), a Symbol (a close by name) or nil (nothing said)\n",
-                     mrb_obj_classname(mrb, out));
-        mrb_gc_arena_restore(mrb, ai);
-        return fail(c, sink, ws::kCloseInternalError);
+                     mrb_obj_classname(mrb, answer));
+        mrb_gc_arena_restore(mrb, arena);
+        return connection_fail(conn, sink, ws::kCloseInternalError);
     }
-    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_arena_restore(mrb, arena);
     return true;
 }
 
 // RFC 6455 5.5/5.6: a frame whose payload is now complete.
-bool finish_frame(WsConn *c, std::string &sink)
+bool frame_finish(WsConn *conn, std::string &sink)
 {
-    switch (c->opcode) {
+    switch (conn->opcode) {
         case ws::kPing:
-            if (!c->sent_close)
-                emit(sink, {ws::kPong, {c->ctl, c->ctl_len}});
+            if (!conn->sent_close)
+                frame_emit(sink, {ws::kPong, {conn->ctl, conn->ctl_len}});
             return true;
         case ws::kPong:
             return true;
         case ws::kClose: {
             ws::Close close;
-            if (!ws::close_read({c->ctl, c->ctl_len}, close)) {
-                return fail(c, sink, ws::kCloseProtocolError);
+            if (!ws::close_read({conn->ctl, conn->ctl_len}, close)) {
+                return connection_fail(conn, sink, ws::kCloseProtocolError);
             }
             const char *const reason = close.reason.data();
             const size_t rlen = close.reason.size();
             const uint16_t code = close.code;
             if (rlen != 0 && !simdutf::validate_utf8(reason, rlen)) {
-                return fail(c, sink, ws::kCloseInvalidPayload);
+                return connection_fail(conn, sink, ws::kCloseInvalidPayload);
             }
-            c->got_close = true;
+            conn->got_close = true;
             const uint16_t say = code == 1005 ? ws::kCloseNormal : code;
-            emit_close(c, sink, {say, close.reason});
-            report_close(c, {code, close.reason});
-            drop_msg(c);
+            close_frame_emit(conn, sink, {say, close.reason});
+            close_report_to_resource(conn, {code, close.reason});
+            message_drop(conn);
             return false;
         }
         default:
             break;
     }
-    if (!c->fin)
+    if (!conn->is_final)
         return true;
-    if (c->msg_deflated) {
-        const int rc = c->codec->inflate_finish(msg_cat, c);
-        if (rc != 0) {
-            return fail(c, sink, rc == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
+    if (conn->msg_deflated) {
+        const int status = conn->codec->inflate_finish(message_append_inflated, conn);
+        if (status != 0) {
+            return connection_fail(conn, sink,
+                                   status == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
         }
     }
-    if (c->msg_op == ws::kText && !utf8_ok(c, true)) {
-        return fail(c, sink, ws::kCloseInvalidPayload);
+    if (conn->msg_op == ws::kText && !message_utf8_is_valid(conn, true)) {
+        return connection_fail(conn, sink, ws::kCloseInvalidPayload);
     }
-    if (c->sent_close) {
-        drop_msg(c);
+    if (conn->sent_close) {
+        message_drop(conn);
         return true;
     }
-    return deliver(c, sink);
+    return message_deliver(conn, sink);
 }
 
 // RFC 6455 5.2/5.5, RFC 7692 6: everything the header must satisfy.
-bool begin_frame(WsConn *c, std::string &sink)
+bool frame_begin(WsConn *conn, std::string &sink)
 {
     // RFC 6455 5.2 / 5.4: the header is read and judged first, whole. It used
     // to be judged one rule at a time with the refusal written from inside
     // the check that failed.
-    const ws::Head h = ws::read_head(c->hbuf, c->codec != nullptr);
-    if (h.err != ws::Head::Err::kNone)
-        return fail(c, sink, ws::kCloseProtocolError);
-    const uint64_t msg_len = c->msg_op != 0 ? static_cast<uint64_t>(RSTRING_LEN(c->msg)) : 0;
+    const ws::Head header = ws::read_head(conn->hbuf, conn->codec != nullptr);
+    if (header.err != ws::Head::Err::kNone)
+        return connection_fail(conn, sink, ws::kCloseProtocolError);
+    const uint64_t msg_len = conn->msg_op != 0 ? ruby_string_length(conn->message) : 0;
     const ws::Head::Err a =
-        ws::admit(h, {c->msg_op, c->msg_deflated, msg_len, c->res->max_message});
+        ws::admit(header, {conn->msg_op, conn->msg_deflated, msg_len, conn->res->max_message});
     if (a != ws::Head::Err::kNone) {
-        return fail(c, sink,
-                    a == ws::Head::Err::kTooBig ? ws::kCloseTooBig : ws::kCloseProtocolError);
+        return connection_fail(
+            conn, sink, a == ws::Head::Err::kTooBig ? ws::kCloseTooBig : ws::kCloseProtocolError);
     }
 
-    std::memcpy(c->mask, c->hbuf + h.masking_key_at, 4);
-    c->mask_off = 0;
-    c->opcode = h.opcode;
-    c->fin = h.fin;
-    c->control = h.control;
-    c->remaining = h.payload_length;
-    c->ctl_len = 0;
+    std::memcpy(conn->mask, conn->hbuf + header.masking_key_at, 4);
+    conn->mask_off = 0;
+    conn->opcode = header.opcode;
+    conn->is_final = header.fin;
+    conn->control = header.control;
+    conn->remaining = header.payload_length;
+    conn->ctl_len = 0;
 
     // A data frame that starts a message opens the buffer it collects into -
     // the one thing here the VM has to be asked for.
-    if (!h.control && h.opcode != ws::kContinuation) {
-        mrb_state *mrb = c->res->mrb;
-        const uint64_t max = c->res->max_message;
-        const uint64_t capa = h.payload_length > max ? max : h.payload_length;
-        c->msg = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
-        mrb_gc_register(mrb, c->msg);
-        c->msg_live = true;
-        c->msg_op = h.opcode;
-        c->msg_deflated = h.rsv1;
+    if (!header.control && header.opcode != ws::kContinuation) {
+        mrb_state *mrb = conn->res->mrb;
+        const uint64_t max = conn->res->max_message;
+        const uint64_t capa = header.payload_length > max ? max : header.payload_length;
+        conn->message = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
+        mrb_gc_register(mrb, conn->message);
+        conn->msg_live = true;
+        conn->msg_op = header.opcode;
+        conn->msg_deflated = header.rsv1;
     }
-    c->in_payload = h.payload_length != 0;
+    conn->in_payload = header.payload_length != 0;
     return true;
 }
 
 struct FeedCall {
-    WsConn *c;
+    WsConn *conn;
     const char *data;
-    size_t len;
+    size_t length;
     std::string *sink;
 };
 
 // RFC 6455 5.3: the reader - unmasked straight into the mruby String.
-mrb_value feed_body(mrb_state *mrb, void *ud)
+mrb_value feed_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    FeedCall *f = static_cast<FeedCall *>(ud);
-    WsConn *c = f->c;
+    FeedCall *f = static_cast<FeedCall *>(user_data);
+    WsConn *conn = f->conn;
     std::string &sink = *f->sink;
-    const char *p = f->data;
-    size_t len = f->len;
+    const char *bytes = f->data;
+    size_t length = f->length;
     bool alive = true;
 
-    while (len != 0) {
-        if (!c->in_payload) {
-            c->hneed = ws::header_need(c->hbuf, c->hlen);
-            while (c->hlen < c->hneed && len != 0) {
-                c->hbuf[c->hlen++] = static_cast<unsigned char>(*p++);
-                len--;
-                c->hneed = ws::header_need(c->hbuf, c->hlen);
+    while (length != 0) {
+        if (!conn->in_payload) {
+            conn->hneed = ws::header_need(conn->hbuf, conn->hlen);
+            while (conn->hlen < conn->hneed && length != 0) {
+                conn->hbuf[conn->hlen++] = static_cast<unsigned char>(*bytes++);
+                length--;
+                conn->hneed = ws::header_need(conn->hbuf, conn->hlen);
             }
-            if (c->hlen < c->hneed)
+            if (conn->hlen < conn->hneed)
                 break;
-            c->hlen = 0;
-            if (!begin_frame(c, sink)) {
+            conn->hlen = 0;
+            if (!frame_begin(conn, sink)) {
                 alive = false;
                 break;
             }
-            if (!c->in_payload) {
-                if (!finish_frame(c, sink)) {
+            if (!conn->in_payload) {
+                if (!frame_finish(conn, sink)) {
                     alive = false;
                     break;
                 }
@@ -614,48 +618,51 @@ mrb_value feed_body(mrb_state *mrb, void *ud)
             continue;
         }
 
-        size_t take = len < c->remaining ? len : static_cast<size_t>(c->remaining);
-        if (c->control) {
-            ws::unmask_copy(c->ctl + c->ctl_len, {p, take}, {c->mask, c->mask_off});
-            c->ctl_len += take;
+        size_t take = length < conn->remaining ? length : static_cast<size_t>(conn->remaining);
+        if (conn->control) {
+            ws::unmask_copy(conn->ctl + conn->ctl_len, {bytes, take}, {conn->mask, conn->mask_off});
+            conn->ctl_len += take;
         } else {
-            char tmp[512];
+            char unmasked[512];
             size_t done = 0;
             bool broke = false;
             while (done < take) {
-                const size_t chunk = take - done < sizeof(tmp) ? take - done : sizeof(tmp);
-                ws::unmask_copy(tmp, {p + done, chunk}, {c->mask, c->mask_off + done});
-                if (c->msg_deflated) {
-                    const int rc = c->codec->inflate_some(tmp, chunk, msg_cat, c);
-                    if (rc != 0) {
-                        alive =
-                            fail(c, sink, rc == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
+                const size_t chunk =
+                    take - done < sizeof(unmasked) ? take - done : sizeof(unmasked);
+                ws::unmask_copy(unmasked, {bytes + done, chunk},
+                                {conn->mask, conn->mask_off + done});
+                if (conn->msg_deflated) {
+                    const int status =
+                        conn->codec->inflate_some(unmasked, chunk, message_append_inflated, conn);
+                    if (status != 0) {
+                        alive = connection_fail(
+                            conn, sink, status == -2 ? ws::kCloseTooBig : ws::kCloseProtocolError);
                         broke = true;
                         break;
                     }
                 } else {
-                    mrb_str_cat(mrb, c->msg, tmp, chunk);
+                    mrb_str_cat(mrb, conn->message, unmasked, chunk);
                 }
                 done += chunk;
             }
             if (broke)
                 break;
-            if (c->msg_op == ws::kText && !utf8_ok(c, false)) {
-                alive = fail(c, sink, ws::kCloseInvalidPayload);
+            if (conn->msg_op == ws::kText && !message_utf8_is_valid(conn, false)) {
+                alive = connection_fail(conn, sink, ws::kCloseInvalidPayload);
                 break;
             }
         }
-        c->mask_off = static_cast<uint8_t>((c->mask_off + take) & 3);
-        c->remaining -= take;
-        p += take;
-        len -= take;
-        if (c->remaining == 0) {
-            c->in_payload = false;
-            if (!finish_frame(c, sink)) {
+        conn->mask_off = static_cast<uint8_t>((conn->mask_off + take) & 3);
+        conn->remaining -= take;
+        bytes += take;
+        length -= take;
+        if (conn->remaining == 0) {
+            conn->in_payload = false;
+            if (!frame_finish(conn, sink)) {
                 alive = false;
                 break;
             }
-            if (c->got_close)
+            if (conn->got_close)
                 break;
         }
     }
@@ -664,9 +671,10 @@ mrb_value feed_body(mrb_state *mrb, void *ud)
 } // namespace
 
 // RFC 6455: Webmachine::WebsocketResource, the class a route may name.
-void ws_init(mrb_state *mrb, struct RClass *wm)
+void ws_init(mrb_state *mrb, struct RClass *webmachine_module)
 {
-    mrb_define_class_under_id(mrb, wm, MRB_SYM(WebsocketResource), mrb->object_class);
+    mrb_define_class_under_id(mrb, webmachine_module, MRB_SYM(WebsocketResource),
+                              mrb->object_class);
 }
 
 // RFC 6455: one route's folded resource.
@@ -676,24 +684,25 @@ WsResource *ws_resource_new()
 }
 
 // RFC 6455: unique_ptr's deleter across the TU boundary.
-void ws_resource_free(WsResource *r)
+void ws_resource_free(WsResource *resource)
 {
-    if (r == nullptr)
+    if (resource == nullptr)
         return;
-    delete r;
+    delete resource;
 }
 
 // RFC 6455: fold a resource class for a websocket route, once, at
 // route.websocket - arities read, konst answers asked, the class frozen.
-void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out)
+void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &answer)
 {
     if (!mrb_class_p(klass)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                    "route.websocket wants a class inheriting Webmachine::WebsocketResource, not %v",
                    klass);
     }
-    struct RClass *wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-    struct RClass *base = mrb_class_get_under_id(mrb, wm, MRB_SYM(WebsocketResource));
+    struct RClass *webmachine_module = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    struct RClass *base =
+        mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(WebsocketResource));
     bool ok = false;
     for (struct RClass *k = mrb_class_ptr(klass)->super; k != nullptr; k = k->super) {
         if (k == base) {
@@ -708,54 +717,55 @@ void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out)
                    "flow survives the upgrade, only the handshake's head",
                    klass);
     }
-    out.mrb = mrb;
-    out.klass = mrb_class_ptr(klass);
+    answer.mrb = mrb;
+    answer.klass = mrb_class_ptr(klass);
 
-    if (!method_defined(mrb, {out.klass, MRB_SYM(on_data)})) {
+    if (!method_is_defined(mrb, {answer.klass, MRB_SYM(on_data)})) {
         mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
                   "route.websocket: the resource defines no on_data - that is the one method a "
                   "websocket resource is (on_data(data, binary))");
     }
-    out.have_close = method_defined(mrb, {out.klass, MRB_SYM(on_close)});
+    answer.have_close = method_is_defined(mrb, {answer.klass, MRB_SYM(on_close)});
 
     {
         struct RClass *meta = mrb_class(mrb, klass);
-        mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(validate_text));
-        if (!MRB_METHOD_UNDEF_P(m)) {
-            const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM_Q(validate_text), 0, nullptr);
+        mrb_method_t method = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(validate_text));
+        if (!MRB_METHOD_UNDEF_P(method)) {
+            const mrb_value value =
+                mrb_funcall_argv(mrb, klass, MRB_SYM_Q(validate_text), 0, nullptr);
             if (mrb->exc != nullptr)
                 rethrow(mrb);
-            out.validate_text = mrb_test(v);
+            answer.validate_text = mrb_test(value);
         }
     }
 
     {
         struct RClass *meta = mrb_class(mrb, klass);
-        mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(permessage_deflate));
-        if (!MRB_METHOD_UNDEF_P(m)) {
-            const mrb_value v =
+        mrb_method_t method = mrb_method_search_vm(mrb, &meta, MRB_SYM_Q(permessage_deflate));
+        if (!MRB_METHOD_UNDEF_P(method)) {
+            const mrb_value value =
                 mrb_funcall_argv(mrb, klass, MRB_SYM_Q(permessage_deflate), 0, nullptr);
             if (mrb->exc != nullptr)
                 rethrow(mrb);
-            out.want_deflate = mrb_test(v);
+            answer.want_deflate = mrb_test(value);
         }
     }
 
     {
         struct RClass *meta = mrb_class(mrb, klass);
-        mrb_method_t m = mrb_method_search_vm(mrb, &meta, MRB_SYM(max_message));
-        if (!MRB_METHOD_UNDEF_P(m)) {
-            const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(max_message), 0, nullptr);
+        mrb_method_t method = mrb_method_search_vm(mrb, &meta, MRB_SYM(max_message));
+        if (!MRB_METHOD_UNDEF_P(method)) {
+            const mrb_value value = mrb_funcall_argv(mrb, klass, MRB_SYM(max_message), 0, nullptr);
             if (mrb->exc != nullptr)
                 rethrow(mrb);
-            if (!mrb_fixnum_p(v) || mrb_fixnum(v) <= 0) {
+            if (!mrb_fixnum_p(value) || mrb_fixnum(value) <= 0) {
                 mrb_raisef(
                     mrb, E_WM_ROUTE_ERROR(mrb),
                     "route.websocket: max_message answers with a positive Integer of bytes, or "
                     "it is not defined at all (the default is %i) - not %v",
-                    static_cast<mrb_int>(kMaxWsMessageDefault), v);
+                    static_cast<mrb_int>(kMaxWsMessageDefault), value);
             }
-            out.max_message = static_cast<size_t>(mrb_fixnum(v));
+            answer.max_message = static_cast<size_t>(mrb_fixnum(value));
         }
     }
 
@@ -764,43 +774,44 @@ void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out)
 
 // RFC 6455 4.2.2: build this peer's resource; its initialize is the
 // connect hook and its return value is the answer.
-WsConn *ws_admit(const WsResource *r, Logger *elog, WsAdmit answered)
+WsConn *ws_admit(const WsResource *resource, Logger *elog, WsAdmit answered)
 {
     std::string &proto = answered.proto;
     uint16_t &status = answered.status;
     proto.clear();
     status = 0;
-    mrb_state *mrb = r->mrb;
-    const int ai = mrb_gc_arena_save(mrb);
-    const mrb_value obj = mrb_obj_value(mrb_obj_alloc(mrb, MRB_INSTANCE_TT(r->klass), r->klass));
+    mrb_state *mrb = resource->mrb;
+    const int arena = mrb_gc_arena_save(mrb);
+    const mrb_value obj =
+        mrb_obj_value(mrb_obj_alloc(mrb, MRB_INSTANCE_TT(resource->klass), resource->klass));
     mrb_gc_register(mrb, obj);
-    const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
+    const mrb_value answer = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
     if (mrb->exc != nullptr) {
         report_raise(elog, mrb, 500);
         mrb_gc_unregister(mrb, obj);
-        mrb_gc_arena_restore(mrb, ai);
+        mrb_gc_arena_restore(mrb, arena);
         status = 500;
         return nullptr;
     }
     bool admit = true;
-    if (mrb_string_p(out)) {
+    if (mrb_string_p(answer)) {
         // RFC 6455 4.2.2: the answer names one subprotocol, and a subprotocol
         // is one token. Anything else this String holds would write a field
         // value of the server's own making - or a second field.
-        if (!http::field_name_ok(RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out)))) {
+        if (!ruby_string_is_field_name(answer)) {
             mrb_gc_unregister(mrb, obj);
-            mrb_gc_arena_restore(mrb, ai);
+            mrb_gc_arena_restore(mrb, arena);
             status = 500;
             return nullptr;
         }
-        proto.assign(RSTRING_PTR(out), static_cast<size_t>(RSTRING_LEN(out)));
-    } else if (mrb_symbol_p(out)) {
-        const mrb_sym s = mrb_symbol(out);
-        if (s == MRB_SYM(forbidden))
+        proto.assign(ruby_string_bytes(answer));
+    } else if (mrb_symbol_p(answer)) {
+        const mrb_sym symbol = mrb_symbol(answer);
+        if (symbol == MRB_SYM(forbidden))
             status = 403;
-        else if (s == MRB_SYM(not_found))
+        else if (symbol == MRB_SYM(not_found))
             status = 404;
-        else if (s == MRB_SYM(bad_request))
+        else if (symbol == MRB_SYM(bad_request))
             status = 400;
         else
             status = 403;
@@ -808,82 +819,82 @@ WsConn *ws_admit(const WsResource *r, Logger *elog, WsAdmit answered)
     }
     if (!admit) {
         mrb_gc_unregister(mrb, obj);
-        mrb_gc_arena_restore(mrb, ai);
+        mrb_gc_arena_restore(mrb, arena);
         return nullptr;
     }
-    mrb_gc_arena_restore(mrb, ai);
-    WsConn *c = new WsConn();
-    c->res = r;
-    c->elog = elog;
-    c->self = obj;
-    return c;
+    mrb_gc_arena_restore(mrb, arena);
+    WsConn *conn = new WsConn();
+    conn->res = resource;
+    conn->elog = elog;
+    conn->self = obj;
+    return conn;
 }
 
 // RFC 6455 7.1.1: the idle time ran out, so this end starts the close
 // handshake with 1001 - going away - and the socket follows the frame.
-bool ws_going_away(WsConn *c, std::string &sink)
+bool ws_going_away(WsConn *conn, std::string &sink)
 {
-    if (c == nullptr || c->sent_close)
+    if (conn == nullptr || conn->sent_close)
         return false;
     const size_t was = sink.size();
-    emit_close(c, sink, {1001, {}});
+    close_frame_emit(conn, sink, {1001, {}});
     return sink.size() != was;
 }
 
 // RFC 7692: does this route accept the extension at all?
-bool ws_wants_deflate(const WsResource *r)
+bool ws_wants_deflate(const WsResource *resource)
 {
-    return r->want_deflate;
+    return resource->want_deflate;
 }
 
 // RFC 7692: settle what the handshake negotiated; the codec is lazy.
-void ws_open(WsConn *c, const wsdeflate::Params &deflate)
+void ws_open(WsConn *conn, const wsdeflate::Params &deflate)
 {
     if (deflate.on) {
-        c->codec = new wsdeflate::Codec();
-        c->codec->configure(deflate);
+        conn->codec = new wsdeflate::Codec();
+        conn->codec->configure(deflate);
     }
 }
 
 // RFC 6455 7.4.1: 1006 where no close frame was ever seen.
-void ws_free(WsConn *c)
+void ws_free(WsConn *conn)
 {
-    if (c == nullptr)
+    if (conn == nullptr)
         return;
-    report_close(c, {1006, {}});
-    drop_msg(c);
-    if (c->res != nullptr && c->res->mrb != nullptr && !mrb_nil_p(c->self)) {
-        mrb_gc_unregister(c->res->mrb, c->self);
-        c->self = mrb_nil_value();
+    close_report_to_resource(conn, {1006, {}});
+    message_drop(conn);
+    if (conn->res != nullptr && conn->res->mrb != nullptr && !mrb_nil_p(conn->self)) {
+        mrb_gc_unregister(conn->res->mrb, conn->self);
+        conn->self = mrb_nil_value();
     }
-    delete c->codec;
-    delete c;
+    delete conn->codec;
+    delete conn;
 }
 
 // RFC 6455 5.3: wire bytes for an upgraded connection, under protection.
-bool ws_feed(WsConn *c, std::string_view in, std::string &sink)
+bool ws_feed(WsConn *conn, std::string_view incoming, std::string &sink)
 {
-    const char *const data = in.data();
-    const size_t len = in.size();
-    if (len == 0)
+    const char *const data = incoming.data();
+    const size_t length = incoming.size();
+    if (length == 0)
         return true;
-    mrb_state *mrb = c->res->mrb;
-    FeedCall call{c, data, len, &sink};
+    mrb_state *mrb = conn->res->mrb;
+    FeedCall call{conn, data, length, &sink};
     mrb_bool raised = FALSE;
-    const mrb_value r = mrb_protect_error(mrb, feed_body, &call, &raised);
+    const mrb_value resource = mrb_protect_error(mrb, feed_in_protected_call, &call, &raised);
     if (raised) {
         // Only an exception object may be stored in mrb->exc; mrb_obj_ptr on
         // an immediate (Integer, Symbol, nil) would read its bits as a
         // pointer. Same check as resource.cpp's take_pending.
-        if (mrb_exception_p(r))
-            mrb->exc = mrb_obj_ptr(r);
+        if (mrb_exception_p(resource))
+            mrb->exc = mrb_obj_ptr(resource);
         else
             mrb->exc = mrb_obj_ptr(mrb_exc_new_lit(mrb, E_WM_ERROR(mrb),
                                                    "the websocket handler ended without an "
                                                    "exception object"));
-        report_raise(c->elog, mrb, 0);
-        return fail(c, sink, ws::kCloseInternalError);
+        report_raise(conn->elog, mrb, 0);
+        return connection_fail(conn, sink, ws::kCloseInternalError);
     }
-    return mrb_test(r);
+    return mrb_test(resource);
 }
 } // namespace webmachine

@@ -13,6 +13,7 @@
 // Watcher is this file's sibling: it answers the same question again,
 // and it watches a descriptor.
 #include "http1.hpp"
+#include "ruby_value.hpp"
 #include "ring_setup.hpp"
 
 #include <liburing.h>
@@ -81,7 +82,7 @@ struct Slot {
     // The argument as CBOR on the way in, the answer as CBOR on the way
     // out. Bytes both ways, because an mrb_value belongs to one VM.
     std::string arg;
-    std::string out;
+    std::string out_ask;
     // #30: response.userdata, in and out. The worker reads what the run
     // put there and can leave something else - the reactor only looks
     // when the bytes came back different.
@@ -141,7 +142,7 @@ struct Registry {
     std::unordered_map<const void *, unsigned> by_irep;
 };
 
-Registry &registry()
+Registry &registry_of_this_vm()
 {
     static Registry reg;
     return reg;
@@ -209,23 +210,23 @@ mrb_value compute_task_initialize(mrb_state *mrb, mrb_value self)
 namespace
 {
 
-std::mutex &builds_mutex()
+std::mutex &worker_builds_mutex()
 {
     static std::mutex m;
     return m;
 }
 
-std::vector<WorkerBuild> &builds()
+std::vector<WorkerBuild> &worker_builds_list()
 {
-    static std::vector<WorkerBuild> v;
-    return v;
+    static std::vector<WorkerBuild> value;
+    return value;
 }
 
 bool builds_closed_ = false;
 
 // The table a worker built for itself, under the same keys. Read by a
 // block through Registry[], and by nothing else.
-mrb_value worker_table(mrb_state *mrb)
+mrb_value worker_table_of_this_vm(mrb_state *mrb)
 {
     struct RClass *const workers =
         mrb_module_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Workers));
@@ -236,103 +237,103 @@ mrb_value worker_table(mrb_state *mrb)
 mrb_value registry_get(mrb_state *mrb, mrb_value self)
 {
     (void)self;
-    mrb_value key;
-    mrb_get_args(mrb, "o", &key);
-    const mrb_value table = worker_table(mrb);
+    mrb_value key_name;
+    mrb_get_args(mrb, "o", &key_name);
+    const mrb_value table = worker_table_of_this_vm(mrb);
     if (!mrb_hash_p(table)) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "Webmachine::Workers::Registry answers inside a worker only - the values are "
                   "built there, one per worker, and this VM has none");
     }
-    return mrb_hash_get(mrb, table, key);
+    return mrb_hash_get(mrb, table, key_name);
 }
 
 // Registry[key] = proc - in the main VM, at startup.
 mrb_value registry_set(mrb_state *mrb, mrb_value self)
 {
     (void)self;
-    mrb_value key;
+    mrb_value key_name;
     mrb_value block;
-    mrb_get_args(mrb, "oo", &key, &block);
+    mrb_get_args(mrb, "oo", &key_name, &block);
     if (!mrb_proc_p(block)) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "Webmachine::Workers::Registry takes a proc that builds the value, not the "
                   "value - an object cannot cross into a worker, and how to build one can");
     }
-    const mrb_value name = mrb_obj_as_string(mrb, key);
-    if (!worker_build_register(mrb, std::string(RSTRING_PTR(name), RSTRING_LEN(name)), block)) {
+    const mrb_value name = mrb_obj_as_string(mrb, key_name);
+    if (!worker_build_register(mrb, std::string(ruby_string_bytes(name)), block)) {
         if (mrb->exc != nullptr)
             rethrow(mrb);
         mrb_raisef(mrb, E_WM_ERROR(mrb),
                    "Webmachine::Workers::Registry[%v] was set after the workers started - they "
                    "were built already, so this key exists in none of them",
-                   key);
+                   key_name);
     }
     return block;
 }
 
 } // namespace
 
-bool worker_build_register(mrb_state *mrb, std::string key, mrb_value block)
+bool worker_build_register(mrb_state *mrb, std::string key_name, mrb_value block)
 {
-    std::lock_guard<std::mutex> hold(builds_mutex());
+    std::lock_guard<std::mutex> hold(worker_builds_mutex());
     if (builds_closed_)
         return false;
     // A failed dump leaves its exception in place, and registry_set raises it.
     const mrb_value bytes = mrb_proc_to_irep(mrb, mrb_proc_ptr(block));
     if (mrb->exc != nullptr || !mrb_string_p(bytes))
         return false;
-    WorkerBuild b;
-    b.key = std::move(key);
-    b.irep.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
-    builds().push_back(std::move(b));
+    WorkerBuild build;
+    build.key = std::move(key_name);
+    build.irep.assign(ruby_string_bytes(bytes));
+    worker_builds_list().push_back(std::move(build));
     return true;
 }
 
 const std::vector<WorkerBuild> &worker_builds()
 {
-    return builds();
+    return worker_builds_list();
 }
 
 void worker_builds_close()
 {
-    std::lock_guard<std::mutex> hold(builds_mutex());
+    std::lock_guard<std::mutex> hold(worker_builds_mutex());
     builds_closed_ = true;
 }
 
-void compute_task_init_class(mrb_state *mrb, struct RClass *wm)
+void compute_task_init_class(mrb_state *mrb, struct RClass *webmachine_module)
 {
     struct RClass *const task =
-        mrb_define_class_under_id(mrb, wm, MRB_SYM(ComputeTask), mrb->object_class);
+        mrb_define_class_under_id(mrb, webmachine_module, MRB_SYM(ComputeTask), mrb->object_class);
     mrb_define_method_id(mrb, task, MRB_SYM(initialize), compute_task_initialize,
                          MRB_ARGS_ANY() | MRB_ARGS_BLOCK());
 
-    struct RClass *workers = mrb_define_module_under_id(mrb, wm, MRB_SYM(Workers));
+    struct RClass *workers = mrb_define_module_under_id(mrb, webmachine_module, MRB_SYM(Workers));
     struct RClass *registry = mrb_define_module_under_id(mrb, workers, MRB_SYM(Registry));
     mrb_define_class_method_id(mrb, registry, MRB_OPSYM(aref), registry_get, MRB_ARGS_REQ(1));
     mrb_define_class_method_id(mrb, registry, MRB_OPSYM(aset), registry_set, MRB_ARGS_REQ(2));
 }
 
-bool compute_task_of(mrb_state *mrb, mrb_value v, ComputeTaskAsk *out)
+bool compute_task_read_from_value(mrb_state *mrb, mrb_value value, ComputeTaskAsk *out_ask)
 {
     // The class is looked up in the VM that holds v. Every VM in this
     // process runs the gem init, workers included, so a pointer kept at
     // file scope would name whichever VM opened last.
     struct RClass *const klass = mrb_class_get_under_id(
         mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ComputeTask));
-    if (!mrb_obj_is_kind_of(mrb, v, klass))
+    if (!mrb_obj_is_kind_of(mrb, value, klass))
         return false;
-    out->block = mrb_iv_get(mrb, v, MRB_IVSYM(block));
-    out->args = mrb_iv_get(mrb, v, MRB_IVSYM(args));
-    out->max_runtime = mrb_as_float(mrb, mrb_iv_get(mrb, v, MRB_IVSYM(max_runtime)));
+    out_ask->block = mrb_iv_get(mrb, value, MRB_IVSYM(block));
+    out_ask->args = mrb_iv_get(mrb, value, MRB_IVSYM(args));
+    out_ask->max_runtime = mrb_as_float(mrb, mrb_iv_get(mrb, value, MRB_IVSYM(max_runtime)));
     return true;
 }
 
 // #80: the way back. Only this thread may build a value in the
 // reactor's VM, so the decode happens here and nowhere else.
-void Http1::compute_task_answered(Conn &st, int park, int slot, const ComputeAnswer &answered)
+void Http1::compute_task_answered(Conn &conn, int park, int slot, const ComputeAnswer &answered)
 {
-    Conn::Round *const round = st.park_at(park);
+    Conn::Round *const round = conn.park_at(park);
     if (round == nullptr || slot < 0 || slot >= Conn::kJobSlots)
         return;
     // The round goes on when the last job of it answered. One job is the
@@ -345,16 +346,16 @@ void Http1::compute_task_answered(Conn &st, int park, int slot, const ComputeAns
     // A raise and a deadline are told apart, because the answers are not
     // the same one: 503 says come back, 500 says nothing will change.
     round->compute_task_raised = answered.raised && !answered.over_deadline;
-    const Resource *const res = round->job_res;
-    if (res == nullptr || answered.raised)
+    const Resource *const resource = round->job_res;
+    if (resource == nullptr || answered.raised)
         return;
-    mrb_state *const mrb = res->mrb;
+    mrb_state *const mrb = resource->mrb;
     // What a decode leaves behind. The string the bytes arrive in and the
     // value they become are both the arena's, and this arena grows: every
     // answer left three entries in it that no collection could ever take,
     // for the life of the process. What the round keeps is registered, so
     // it outlives the restore.
-    const int ai = mrb_gc_arena_save(mrb);
+    const int arena = mrb_gc_arena_save(mrb);
     // #30: response.userdata, when the worker left something else there.
     round->user_have.at(slot) = false;
     if (answered.user_changed && !answered.user_bytes.empty()) {
@@ -366,7 +367,7 @@ void Http1::compute_task_answered(Conn &st, int park, int slot, const ComputeAns
             round->answer_value.at(slot) = mrb_obj_value(mrb->exc);
             mrb_gc_register(mrb, round->answer_value.at(slot));
             mrb->exc = nullptr;
-            mrb_gc_arena_restore(mrb, ai);
+            mrb_gc_arena_restore(mrb, arena);
             return;
         } else {
             round->user_value.at(slot) = u;
@@ -375,21 +376,21 @@ void Http1::compute_task_answered(Conn &st, int park, int slot, const ComputeAns
         }
     }
     if (answered.bytes.empty()) {
-        mrb_gc_arena_restore(mrb, ai);
+        mrb_gc_arena_restore(mrb, arena);
         return;
     }
-    const mrb_value v =
+    const mrb_value value =
         mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, answered.bytes.data(), answered.bytes.size()));
     if (mrb->exc != nullptr) {
         round->answer_value.at(slot) = mrb_obj_value(mrb->exc);
         mrb_gc_register(mrb, round->answer_value.at(slot));
         mrb->exc = nullptr;
-        mrb_gc_arena_restore(mrb, ai);
+        mrb_gc_arena_restore(mrb, arena);
         return;
     }
-    round->answer_value.at(slot) = v;
-    mrb_gc_register(mrb, v);
-    mrb_gc_arena_restore(mrb, ai);
+    round->answer_value.at(slot) = value;
+    mrb_gc_register(mrb, value);
+    mrb_gc_arena_restore(mrb, arena);
 }
 
 // #80: the crossing, done by the frame at the stop. It runs on the
@@ -410,26 +411,27 @@ namespace
 // of the crossing and the answer it gives.
 struct CrossAsk {
     Http1 *server;
-    Http1::Conn *st;
+    Http1::Conn *conn;
     Http1::Conn::Round *round;
     int park;
-    const Resource *res;
+    const Resource *resource;
     bool crossed;
 };
-mrb_value cross_body(mrb_state *, void *ud)
+mrb_value cross_in_protected_call(mrb_state *, void *user_data)
 {
-    auto *const a = static_cast<CrossAsk *>(ud);
-    a->crossed = a->server->compute_task_cross(*a->st, *a->round, a->park, *a->res);
+    auto *const a = static_cast<CrossAsk *>(user_data);
+    a->crossed = a->server->compute_task_cross(*a->conn, *a->round, a->park, *a->resource);
     return mrb_nil_value();
 }
 } // namespace
 
-bool Http1::compute_task_hand_over(Conn &st, Conn::Round &round, int park, const Resource &res)
+bool Http1::compute_task_hand_over(Conn &conn, Conn::Round &round, int park,
+                                   const Resource &resource)
 {
-    mrb_state *const mrb = res.mrb;
-    CrossAsk ask{this, &st, &round, park, &res, false};
+    mrb_state *const mrb = resource.mrb;
+    CrossAsk ask{this, &conn, &round, park, &resource, false};
     mrb_bool raised = FALSE;
-    const mrb_value thrown = mrb_protect_error(mrb, cross_body, &ask, &raised);
+    const mrb_value thrown = mrb_protect_error(mrb, cross_in_protected_call, &ask, &raised);
     if (mrb_likely(raised == FALSE))
         return ask.crossed;
     // Nothing crossed, so nothing is owed an answer. The round is refused
@@ -443,28 +445,28 @@ bool Http1::compute_task_hand_over(Conn &st, Conn::Round &round, int park, const
     round.answer_ready = true;
     if (mrb_exception_p(thrown))
         mrb->exc = mrb_obj_ptr(thrown);
-    report_compute_fault(error_log(), mrb, {{}, "the crossing into a worker", {}, {}, 500});
+    fault_report(error_log(), mrb, {{}, "the crossing into a worker", {}, {}, 500});
     return false;
 }
 
-bool Http1::compute_task_cross(Conn &st, Conn::Round &round, int park, const Resource &res)
+bool Http1::compute_task_cross(Conn &conn, Conn::Round &round, int park, const Resource &resource)
 {
     for (Conn::Round::Job &j : round.job)
         j.waiting = false;
     round.jobs_owed = 0;
     round.jobs_answered = 0;
-    round.job_res = &res;
-    if (res.run.compute_task_count == 0)
+    round.job_res = &resource;
+    if (resource.run.compute_task_count == 0)
         return false;
 
-    mrb_state *const mrb = res.mrb;
+    mrb_state *const mrb = resource.mrb;
     // #30: response.userdata crosses with the job. Undef is "the run put
     // nothing there", and then nothing is encoded and nothing is sent.
     std::string user;
-    if (!mrb_undef_p(res.run.userdata) && !mrb_nil_p(res.run.userdata)) {
+    if (!mrb_undef_p(resource.run.userdata) && !mrb_nil_p(resource.run.userdata)) {
         const int uai = mrb_gc_arena_save(mrb);
-        const mrb_value enc = mrb_cbor_encode_fast(mrb, res.run.userdata);
-        if (mrb->exc != nullptr || !mrb_string_p(enc)) {
+        const mrb_value encoded = mrb_cbor_encode_fast(mrb, resource.run.userdata);
+        if (mrb->exc != nullptr || !mrb_string_p(encoded)) {
             mrb_gc_arena_restore(mrb, uai);
             if (mrb->exc != nullptr)
                 rethrow(mrb);
@@ -474,17 +476,17 @@ bool Http1::compute_task_cross(Conn &st, Conn::Round &round, int park, const Res
                 "takes with it, and this is not one of those");
             WM_UNREACHABLE();
         }
-        user.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
+        user.assign(ruby_string_bytes(encoded));
         mrb_gc_arena_restore(mrb, uai);
     }
     // Every task of the round crosses here, or none does. A round that
     // loses one job would wait for an answer nobody owes.
-    for (uint8_t i = 0; i < res.run.compute_task_count; i++) {
-        const Resource::RunState::HeldTask &t = res.run.compute_task[i];
-        const int ai = mrb_gc_arena_save(mrb);
-        const unsigned id = compute_task_intern(mrb, t.block, t.deadline);
-        if (id == kComputeTaskNoCode) {
-            mrb_gc_arena_restore(mrb, ai);
+    for (uint8_t i = 0; i < resource.run.compute_task_count; i++) {
+        const Resource::RunState::HeldTask &task = resource.run.compute_task[i];
+        const int arena = mrb_gc_arena_save(mrb);
+        const unsigned task_id = compute_task_intern(mrb, task.block, task.deadline);
+        if (task_id == kComputeTaskNoCode) {
+            mrb_gc_arena_restore(mrb, arena);
             for (Conn::Round::Job &j : round.job)
                 j.waiting = false;
             round.jobs_owed = 0;
@@ -494,9 +496,9 @@ bool Http1::compute_task_cross(Conn &st, Conn::Round &round, int park, const Res
                       "a compute task's block cannot cross to a worker - mruby could not dump it");
             WM_UNREACHABLE();
         }
-        const mrb_value enc = mrb_cbor_encode_fast(mrb, t.args);
-        if (mrb->exc != nullptr || !mrb_string_p(enc)) {
-            mrb_gc_arena_restore(mrb, ai);
+        const mrb_value encoded = mrb_cbor_encode_fast(mrb, task.args);
+        if (mrb->exc != nullptr || !mrb_string_p(encoded)) {
+            mrb_gc_arena_restore(mrb, arena);
             for (Conn::Round::Job &j : round.job)
                 j.waiting = false;
             round.jobs_owed = 0;
@@ -505,23 +507,23 @@ bool Http1::compute_task_cross(Conn &st, Conn::Round &round, int park, const Res
             mrb_raisef(mrb, E_WM_ERROR(mrb),
                        "a compute task's arguments cannot cross to a worker - CBOR carries what a "
                        "task takes with it, and %v is not one of those",
-                       t.args);
+                       task.args);
             WM_UNREACHABLE();
         }
         Conn::Round::Job &j = round.job.at(i);
-        j.bytes.assign(RSTRING_PTR(enc), static_cast<size_t>(RSTRING_LEN(enc)));
-        mrb_gc_arena_restore(mrb, ai);
+        j.bytes.assign(ruby_string_bytes(encoded));
+        mrb_gc_arena_restore(mrb, arena);
         j.user_bytes = user;
-        j.code = id;
-        j.deadline = t.deadline;
-        round.job_what.at(i) = t.what;
+        j.code = task_id;
+        j.deadline = task.deadline;
+        round.job_what.at(i) = task.what;
         j.waiting = true;
         round.jobs_owed = static_cast<uint8_t>(i + 1);
     }
     round.jobs_answered = 0;
     // The reactor arms what this stop handed over. It finds the run by
     // its park slot, which is what the completion tag will carry back.
-    st.park_wants_arming(park);
+    conn.park_wants_arming(park);
     // A new round, so nothing of the last one speaks for it.
     round.compute_task_full = false;
     round.compute_task_over_deadline = false;
@@ -532,10 +534,10 @@ bool Http1::compute_task_cross(Conn &st, Conn::Round &round, int park, const Res
 unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime)
 {
     struct RProc *const proc = mrb_proc_ptr(block);
-    const void *const key = proc->body.irep;
-    Registry &reg = registry();
+    const void *const key_name = proc->body.irep;
+    Registry &reg = registry_of_this_vm();
     std::lock_guard<std::mutex> hold(reg.mtx);
-    const auto seen = reg.by_irep.find(key);
+    const auto seen = reg.by_irep.find(key_name);
     if (seen != reg.by_irep.end())
         return seen->second;
 
@@ -544,27 +546,27 @@ unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime
     const mrb_value bytes = mrb_proc_to_irep(mrb, proc);
     if (mrb->exc != nullptr || !mrb_string_p(bytes))
         return kComputeTaskNoCode;
-    code.irep.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+    code.irep.assign(ruby_string_bytes(bytes));
     code.max_runtime = max_runtime;
     reg.codes.push_back(std::move(code));
-    const unsigned id = static_cast<unsigned>(reg.codes.size() - 1);
+    const unsigned task_id = static_cast<unsigned>(reg.codes.size() - 1);
     // The key is the address of the irep, and the registry holds it for the
     // life of the process. So the irep has to live that long as well: a
     // freed one would let the next irep land on the same address and answer
     // to this entry. One reference, never given back.
     mrb_irep_incref(mrb, const_cast<struct mrb_irep *>(proc->body.irep));
-    reg.by_irep.emplace(key, id);
-    return id;
+    reg.by_irep.emplace(key_name, task_id);
+    return task_id;
 }
 
-bool compute_task_code_of(unsigned id, std::string *irep, double *max_runtime)
+bool compute_task_code_of(unsigned task_id, std::string *irep, double *max_runtime)
 {
-    Registry &reg = registry();
+    Registry &reg = registry_of_this_vm();
     std::lock_guard<std::mutex> hold(reg.mtx);
-    if (id >= reg.codes.size())
+    if (task_id >= reg.codes.size())
         return false;
-    *irep = reg.codes[id].irep;
-    *max_runtime = reg.codes[id].max_runtime;
+    *irep = reg.codes[task_id].irep;
+    *max_runtime = reg.codes[task_id].max_runtime;
     return true;
 }
 
@@ -617,9 +619,10 @@ struct ComputePool::Impl {
 mrb_value worker_response(mrb_state *mrb, mrb_value self)
 {
     (void)self;
-    mrb_value wm = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
-    wm = mrb_const_get(mrb, wm, MRB_SYM(Workers));
-    return mrb_funcall_argv(mrb, wm, MRB_SYM(response), 0, nullptr);
+    mrb_value webmachine_module =
+        mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Webmachine));
+    webmachine_module = mrb_const_get(mrb, webmachine_module, MRB_SYM(Workers));
+    return mrb_funcall_argv(mrb, webmachine_module, MRB_SYM(response), 0, nullptr);
 }
 
 struct WorkerVm {
@@ -674,18 +677,19 @@ struct WorkerVm {
     // is said at the start, never on the first request.
     // One key of the registry, as the body mrb_protect_error runs.
     struct BuildOne {
-        const WorkerBuild *b;
+        const WorkerBuild *build;
         mrb_value table;
     };
-    static mrb_value build_one(mrb_state *mrb, void *ud)
+    static mrb_value build_one(mrb_state *mrb, void *user_data)
     {
-        BuildOne &o = *static_cast<BuildOne *>(ud);
-        const mrb_value proc = mrb_proc_from_irep(mrb, o.b->irep.data(), o.b->irep.size());
+        BuildOne &o = *static_cast<BuildOne *>(user_data);
+        const mrb_value proc = mrb_proc_from_irep(mrb, o.build->irep.data(), o.build->irep.size());
         if (!mrb_proc_p(proc))
             mrb_raise(mrb, E_WM_ERROR(mrb), "the build proc could not be loaded");
-        const mrb_value v = mrb_yield_argv(mrb, proc, 0, nullptr);
+        const mrb_value value = mrb_yield_argv(mrb, proc, 0, nullptr);
         mrb_hash_set(mrb, o.table,
-                     mrb_symbol_value(mrb_intern(mrb, o.b->key.data(), o.b->key.size())), v);
+                     mrb_symbol_value(mrb_intern(mrb, o.build->key.data(), o.build->key.size())),
+                     value);
         return mrb_nil_value();
     }
     bool build_registry()
@@ -715,28 +719,28 @@ struct WorkerVm {
     // The block behind an id, loaded the first time this worker meets it
     // and kept for the life of the VM. A request pays this once per block
     // per worker, never per call.
-    mrb_value proc_for(unsigned id)
+    mrb_value proc_for(unsigned task_id)
     {
-        if (id < procs.size() && !mrb_nil_p(procs[id]))
-            return procs[id];
+        if (task_id < procs.size() && !mrb_nil_p(procs[task_id]))
+            return procs[task_id];
         std::string irep;
         double deadline = 0.0;
-        if (!compute_task_code_of(id, &irep, &deadline))
+        if (!compute_task_code_of(task_id, &irep, &deadline))
             return mrb_nil_value();
-        const mrb_value p = mrb_proc_from_irep(mrb, irep.data(), irep.size());
-        if (mrb->exc != nullptr || !mrb_proc_p(p)) {
+        const mrb_value raw = mrb_proc_from_irep(mrb, irep.data(), irep.size());
+        if (mrb->exc != nullptr || !mrb_proc_p(raw)) {
             std::fprintf(stderr, "webmachine compute worker: compute task %u could not be loaded\n",
-                         id);
+                         task_id);
             if (mrb->exc != nullptr)
                 mrb_print_error(mrb);
             mrb->exc = nullptr;
             return mrb_nil_value();
         }
-        if (id >= procs.size())
-            procs.resize(id + 1, mrb_nil_value());
-        procs[id] = p;
-        mrb_gc_register(mrb, p);
-        return p;
+        if (task_id >= procs.size())
+            procs.resize(task_id + 1, mrb_nil_value());
+        procs[task_id] = raw;
+        mrb_gc_register(mrb, raw);
+        return raw;
     }
 
     void close()
@@ -748,146 +752,147 @@ struct WorkerVm {
     }
 };
 
-void report_compute_fault(Logger *lg, mrb_state *mrb, const ComputeFault &x)
+void fault_report(Logger *logger, mrb_state *mrb, const ComputeFault &fault)
 {
-    const int ai = mrb_gc_arena_save(mrb);
-    if (!x.exception.empty()) {
-        const mrb_value e =
-            mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, x.exception.data(), x.exception.size()));
-        if (mrb->exc == nullptr && mrb_exception_p(e))
-            mrb->exc = mrb_obj_ptr(e);
+    const int arena = mrb_gc_arena_save(mrb);
+    if (!fault.exception.empty()) {
+        const mrb_value entry = mrb_cbor_decode_fast(
+            mrb, mrb_str_new(mrb, fault.exception.data(), fault.exception.size()));
+        if (mrb->exc == nullptr && mrb_exception_p(entry))
+            mrb->exc = mrb_obj_ptr(entry);
     }
-    std::string where(x.step);
-    if (!x.worker_name.empty())
-        where.append(" (").append(x.worker_name).append(")");
+    std::string where(fault.step);
+    if (!fault.worker_name.empty())
+        where.append(" (").append(fault.worker_name).append(")");
     if (mrb->exc != nullptr) {
-        if (lg != nullptr && lg->enabled) {
+        if (logger != nullptr && logger->enabled) {
             ErrFacts f;
             std::string backtrace;
-            f.status_code = x.status;
-            f.peer = x.peer.data();
-            f.peer_len = x.peer.size();
+            f.status_code = fault.status;
+            f.peer = fault.peer.data();
+            f.peer_len = fault.peer.size();
             f.steering = where.data();
             f.steering_len = where.size();
             exception_facts(mrb, {f, backtrace});
             if (f.exception_class != nullptr)
-                log_error(*lg, f);
+                log_error(*logger, f);
         }
         if (kDebugBuild)
             mrb_print_error(mrb);
         mrb->exc = nullptr;
-    } else if (lg != nullptr && lg->enabled) {
+    } else if (logger != nullptr && logger->enabled) {
         // Nothing decodable crossed: the step alone is the record.
-        log_internal_error(*lg, {x.peer, {}, where, x.status});
+        log_internal_error(*logger, {fault.peer, {}, where, fault.status});
     }
-    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_arena_restore(mrb, arena);
 }
 
 // One failure inside a worker: the exception itself, as CBOR, and the
 // step of the job it happened in. The exception is cleared here and
 // nowhere else: a VM that keeps one raises it again on the next job,
 // and the next job belongs to another request.
-void note_raise(mrb_state *mrb, Slot &s, const char *step)
+void slot_note_raise(mrb_state *mrb, Slot &slot, const char *step)
 {
-    s.raised = true;
-    s.step = step;
-    s.exception.clear();
+    slot.raised = true;
+    slot.step = step;
+    slot.exception.clear();
     if (mrb->exc == nullptr)
         return;
     const mrb_value exc = mrb_obj_value(mrb->exc);
     mrb->exc = nullptr;
-    const int ai = mrb_gc_arena_save(mrb);
+    const int arena = mrb_gc_arena_save(mrb);
     const mrb_value bytes = mrb_cbor_encode_fast(mrb, exc);
     if (mrb->exc == nullptr && mrb_string_p(bytes)) {
-        s.exception.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+        slot.exception.assign(ruby_string_bytes(bytes));
     } else {
         // The exception itself could not cross. Its text still can.
         mrb->exc = nullptr;
         const mrb_value text = mrb_inspect(mrb, exc);
-        s.step.append(": ").append(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text)));
+        slot.step.append(": ").append(ruby_string_bytes(text));
     }
-    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_arena_restore(mrb, arena);
 }
 
 // #30: the worker's own response.userdata. mrblib carries the object -
 // Webmachine::Workers.response - and the worker holds it from open, so
 // a job reads and writes the ivar and calls nothing.
-void worker_userdata_set(WorkerVm &vm, mrb_value v)
+void worker_userdata_set(WorkerVm &worker_vm, mrb_value value)
 {
-    mrb_iv_set(vm.mrb, vm.response, MRB_IVSYM(userdata), v);
+    mrb_iv_set(worker_vm.mrb, worker_vm.response, MRB_IVSYM(userdata), value);
 }
 
-mrb_value worker_userdata(WorkerVm &vm)
+mrb_value worker_userdata(WorkerVm &worker_vm)
 {
-    return mrb_iv_get(vm.mrb, vm.response, MRB_IVSYM(userdata));
+    return mrb_iv_get(worker_vm.mrb, worker_vm.response, MRB_IVSYM(userdata));
 }
 
 // One job, as the body mrb_protect_error runs. A raise anywhere in here
 // comes back to run_job as a value, and `step` says where it was.
 struct JobBody {
-    WorkerVm &vm;
-    Slot &s;
+    WorkerVm &worker_vm;
+    Slot &slot;
     const char *step;
 };
 
-mrb_value job_body(mrb_state *mrb, void *ud)
+mrb_value job_run_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    JobBody &b = *static_cast<JobBody *>(ud);
-    Slot &s = b.s;
-    WorkerVm &vm = b.vm;
+    JobBody &build = *static_cast<JobBody *>(user_data);
+    Slot &slot = build.slot;
+    WorkerVm &worker_vm = build.worker_vm;
 
-    b.step = "decoding the arguments of a compute task";
+    build.step = "decoding the arguments of a compute task";
     mrb_value arg = mrb_nil_value();
-    if (!s.arg.empty()) {
-        arg = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, s.arg.data(), s.arg.size()));
+    if (!slot.arg.empty()) {
+        arg = mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, slot.arg.data(), slot.arg.size()));
     }
     // The arguments arrive as one Array, because that is what
     // ComputeTask.new(*args, max_runtime:) collected.
-    b.step = "loading the block of a compute task";
-    const mrb_value block = vm.proc_for(s.code_id);
+    build.step = "loading the block of a compute task";
+    const mrb_value block = worker_vm.proc_for(slot.code_id);
     if (mrb_nil_p(block)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "the worker has no block under this id");
     }
     // #30: what the run put in response.userdata, into this VM's own
     // response - the block reads and writes it the way it does at home.
-    b.step = "decoding response.userdata of a compute task";
+    build.step = "decoding response.userdata of a compute task";
     mrb_value user_before = mrb_nil_value();
-    if (!s.user_in.empty()) {
+    if (!slot.user_in.empty()) {
         user_before =
-            mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, s.user_in.data(), s.user_in.size()));
+            mrb_cbor_decode_fast(mrb, mrb_str_new(mrb, slot.user_in.data(), slot.user_in.size()));
     }
-    worker_userdata_set(vm, user_before);
+    worker_userdata_set(worker_vm, user_before);
 
-    b.step = "running a compute task";
+    build.step = "running a compute task";
     const mrb_value args = mrb_array_p(arg) ? arg : mrb_ary_new(mrb);
-    const mrb_value answer =
-        mrb_yield_argv(mrb, block, static_cast<mrb_int>(RARRAY_LEN(args)), RARRAY_PTR(args));
+    const mrb_value answer = mrb_yield_argv(
+        mrb, block, static_cast<mrb_int>(ruby_array_length(args)), ruby_array_items(args));
 
-    b.step = "encoding the answer of a compute task";
+    build.step = "encoding the answer of a compute task";
     const mrb_value bytes = mrb_cbor_encode_fast(mrb, answer);
     if (!mrb_string_p(bytes)) {
         mrb_raisef(mrb, E_WM_ERROR(mrb), "CBOR cannot carry %v", answer);
     }
-    s.out.assign(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes)));
+    slot.out_ask.assign(ruby_string_bytes(bytes));
 
     // #30: and response.userdata as the block left it. The reactor is
     // told only when the bytes came back different - a job that never
     // touched the slot costs the reactor nothing.
-    b.step = "encoding response.userdata of a compute task";
-    const mrb_value user_after = worker_userdata(vm);
+    build.step = "encoding response.userdata of a compute task";
+    const mrb_value user_after = worker_userdata(worker_vm);
     if (!mrb_nil_p(user_after)) {
-        const mrb_value ub = mrb_cbor_encode_fast(mrb, user_after);
-        if (!mrb_string_p(ub)) {
+        const mrb_value userdata_bytes = mrb_cbor_encode_fast(mrb, user_after);
+        if (!mrb_string_p(userdata_bytes)) {
             mrb_raisef(mrb, E_WM_ERROR(mrb), "CBOR cannot carry response.userdata %v", user_after);
         }
-        if (static_cast<size_t>(RSTRING_LEN(ub)) != s.user_in.size() ||
-            std::memcmp(RSTRING_PTR(ub), s.user_in.data(), s.user_in.size()) != 0) {
-            s.user_out.assign(RSTRING_PTR(ub), static_cast<size_t>(RSTRING_LEN(ub)));
-            s.user_changed = true;
+        const std::string_view after = ruby_string_bytes(userdata_bytes);
+        if (after.size() != slot.user_in.size() ||
+            std::memcmp(after.data(), slot.user_in.data(), slot.user_in.size()) != 0) {
+            slot.user_out.assign(after);
+            slot.user_changed = true;
         }
-    } else if (!s.user_in.empty()) {
+    } else if (!slot.user_in.empty()) {
         // The block cleared it. That is a change too.
-        s.user_changed = true;
+        slot.user_changed = true;
     }
     return mrb_nil_value();
 }
@@ -907,21 +912,21 @@ mrb_value job_body(mrb_state *mrb, void *ud)
 // Under Ruby there is C, and a C function stops for nothing the VM
 // can do. So the deadline holds for what mruby executes, and
 // admission holds for the rest.
-void run_job(WorkerVm &vm, Slot &s, std::atomic<bool> &asked_stop)
+void job_run(WorkerVm &worker_vm, Slot &slot, std::atomic<bool> &asked_stop)
 {
-    mrb_state *const mrb = vm.mrb;
-    const int ai = mrb_gc_arena_save(mrb);
-    s.raised = false;
-    s.over_deadline = false;
-    s.out.clear();
-    s.exception.clear();
-    s.step.clear();
+    mrb_state *const mrb = worker_vm.mrb;
+    const int arena = mrb_gc_arena_save(mrb);
+    slot.raised = false;
+    slot.over_deadline = false;
+    slot.out_ask.clear();
+    slot.exception.clear();
+    slot.step.clear();
     mrb->vm_interrupt = FALSE;
     asked_stop.store(false, std::memory_order_relaxed);
 
-    JobBody body{vm, s, "starting a compute task"};
+    JobBody body{worker_vm, slot, "starting a compute task"};
     mrb_bool raised = FALSE;
-    const mrb_value thrown = mrb_protect_error(mrb, job_body, &body, &raised);
+    const mrb_value thrown = mrb_protect_error(mrb, job_run_in_protected_call, &body, &raised);
     if (raised) {
         // The reactor asked for the stop, so the raise is the deadline and
         // not the application's. It is read after the call: the reactor
@@ -932,11 +937,11 @@ void run_job(WorkerVm &vm, Slot &s, std::atomic<bool> &asked_stop)
             mrb->exc = mrb_obj_ptr(thrown);
         if (asked_stop.load(std::memory_order_acquire)) {
             mrb->vm_interrupt = FALSE;
-            s.over_deadline = true;
-            note_raise(mrb, s,
-                       "the compute task ran past its max_runtime and the reactor stopped it");
+            slot.over_deadline = true;
+            slot_note_raise(mrb, slot,
+                            "the compute task ran past its max_runtime and the reactor stopped it");
         } else {
-            note_raise(mrb, s, body.step);
+            slot_note_raise(mrb, slot, body.step);
         }
     } else if (mrb_unlikely(asked_stop.load(std::memory_order_acquire))) {
         // The reactor stopped this job and the block swallowed the raise - a
@@ -946,12 +951,12 @@ void run_job(WorkerVm &vm, Slot &s, std::atomic<bool> &asked_stop)
         // so. A block that rescues and loops for good still holds its
         // worker; nothing here can reach inside that loop.
         mrb->vm_interrupt = FALSE;
-        s.over_deadline = true;
-        s.out.clear();
+        slot.over_deadline = true;
+        slot.out_ask.clear();
     }
     // The next job on this worker starts with an empty slot.
-    worker_userdata_set(vm, mrb_nil_value());
-    mrb_gc_arena_restore(mrb, ai);
+    worker_userdata_set(worker_vm, mrb_nil_value());
+    mrb_gc_arena_restore(mrb, arena);
 }
 
 // One worker: block, run what the slot names, answer, repeat.
@@ -972,22 +977,22 @@ void ComputePool::worker(Impl *impl, unsigned me)
 
     // This worker's own VM. The pool makes one worker at a time, so no
     // other mrb_open runs while this one does.
-    WorkerVm vm;
+    WorkerVm worker_vm;
     // A worker whose VM did not open stays at its ring and answers every
     // job it is sent as a fault, so the run behind it gets its 503 and
     // the error log names this worker. Leaving would strand each job
     // sent here with no answer and no deadline, because the clock starts
     // when a job starts.
     bool boot_failed = false;
-    if (!vm.open()) {
-        vm.close();
+    if (!worker_vm.open()) {
+        worker_vm.close();
         boot_failed = true;
     }
     // The address the reactor interrupts. It is published only after the
     // VM stands, and taken back before it closes, so the reactor never
     // holds a pointer to a VM that is being built or torn down.
     if (!boot_failed)
-        impl->vms[me].store(vm.mrb, std::memory_order_release);
+        impl->vms[me].store(worker_vm.mrb, std::memory_order_release);
 
     // The starter waits for this word. It comes after a good open and
     // after a bad one, so a worker that has no VM does not hold the pool.
@@ -999,12 +1004,12 @@ void ComputePool::worker(Impl *impl, unsigned me)
 
     for (;;) {
         struct io_uring_cqe *first = nullptr;
-        const int rc = io_uring_wait_cqe(ring, &first);
-        if (rc < 0) {
-            if (rc == -EINTR)
+        const int status = io_uring_wait_cqe(ring, &first);
+        if (status < 0) {
+            if (status == -EINTR)
                 continue;
             impl->vms[me].store(nullptr, std::memory_order_release);
-            vm.close();
+            worker_vm.close();
             return;
         }
         // Every completion the wait woke up to, in one pass. The answers
@@ -1026,32 +1031,33 @@ void ComputePool::worker(Impl *impl, unsigned me)
             if (job >= impl->slots.size())
                 continue;
 
-            Slot &s = impl->slots[static_cast<size_t>(job)];
-            WM_HANDOVER_TAKE(&s);
+            Slot &slot = impl->slots[static_cast<size_t>(job)];
+            WM_HANDOVER_TAKE(&slot);
             // The reader of an error record asks where it ran before anything
             // else, so the name goes in beside the answer.
-            s.worker_name = thread_name;
+            slot.worker_name = thread_name;
             // The reactor arms the deadline from this message: the clock
             // starts when the job starts, not when it was queued.
             impl->running[me].store(static_cast<unsigned>(job), std::memory_order_release);
-            if (s.deadline > 0.0) {
+            if (slot.deadline > 0.0) {
                 struct io_uring_sqe *began = nullptr;
                 while ((began = io_uring_get_sqe(ring)) == nullptr)
                     io_uring_submit(ring);
                 io_uring_prep_msg_ring(
                     began, impl->home->ring_fd, 0,
-                    detail::compute_started_tag(static_cast<unsigned>(job), s.gen), 0);
+                    detail::compute_started_tag(static_cast<unsigned>(job), slot.gen), 0);
                 io_uring_sqe_set_data64(began, kSent);
                 io_uring_submit(ring);
             }
             if (boot_failed) {
-                s.raised = true;
-                s.over_deadline = false;
-                s.exception.clear();
-                s.step = "the worker could not open its VM at start, and this job was sent to it";
-                s.out.clear();
+                slot.raised = true;
+                slot.over_deadline = false;
+                slot.exception.clear();
+                slot.step =
+                    "the worker could not open its VM at start, and this job was sent to it";
+                slot.out_ask.clear();
             } else {
-                run_job(vm, s, impl->asked_stop[static_cast<size_t>(job)]);
+                job_run(worker_vm, slot, impl->asked_stop[static_cast<size_t>(job)]);
             }
             impl->running[me].store(static_cast<unsigned>(impl->slots.size()),
                                     std::memory_order_release);
@@ -1065,8 +1071,8 @@ void ComputePool::worker(Impl *impl, unsigned me)
                 io_uring_submit(ring);
             // The name of the answer is read before the handover, because the
             // handover is the last thing this thread does with the slot.
-            const uint64_t answer_name = s.answer;
-            WM_HANDOVER_SEND(&s);
+            const uint64_t answer_name = slot.answer;
+            WM_HANDOVER_SEND(&slot);
             io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, answer_name, 0);
             io_uring_sqe_set_data64(sqe, kSent);
             answers++;
@@ -1076,7 +1082,7 @@ void ComputePool::worker(Impl *impl, unsigned me)
             io_uring_submit(ring);
         if (told_to_stop) {
             impl->vms[me].store(nullptr, std::memory_order_release);
-            vm.close();
+            worker_vm.close();
             return;
         }
     }
@@ -1111,12 +1117,12 @@ const char *ComputePool::start(unsigned workers, unsigned depth, struct io_uring
     }
 
     for (unsigned i = 0; i < workers; i++) {
-        const int rc = io_uring_queue_init(depth < 8 ? 8 : depth, &impl->rings[i], 0);
-        if (rc < 0) {
+        const int status = io_uring_queue_init(depth < 8 ? 8 : depth, &impl->rings[i], 0);
+        if (status < 0) {
             for (unsigned j = 0; j < i; j++)
                 io_uring_queue_exit(&impl->rings[j]);
             delete impl;
-            return std::strerror(-rc);
+            return std::strerror(-status);
         }
     }
     // One thread at a time: make worker i, wait until its VM stands, then
@@ -1154,22 +1160,22 @@ void ComputePool::stop()
         }
         io_uring_prep_msg_ring(sqe, impl->rings[i].ring_fd, 0, kStopJob, 0);
         io_uring_sqe_set_data64(sqe, detail::tag(detail::kComputeTask, 0, 0));
-        const int rc = io_uring_submit(impl->home);
-        if (rc < 0) {
+        const int status = io_uring_submit(impl->home);
+        if (status < 0) {
             std::fprintf(stderr, "webmachine: compute worker %zu cannot be told to stop: %s\n", i,
-                         std::strerror(-rc));
+                         std::strerror(-status));
             continue;
         }
         told[i] = true;
     }
     for (size_t i = 0; i < impl->threads.size(); i++) {
-        std::thread &t = impl->threads[i];
-        if (!t.joinable())
+        std::thread &task = impl->threads[i];
+        if (!task.joinable())
             continue;
         if (told[i]) {
-            t.join();
+            task.join();
         } else {
-            t.detach();
+            task.detach();
         }
     }
     for (size_t i = 0; i < impl->rings.size(); i++) {
@@ -1231,30 +1237,30 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     if (at == impl->slots.size())
         return false;
 
-    Slot &s = impl->slots[at];
+    Slot &slot = impl->slots[at];
     impl->asked_stop[at].store(false, std::memory_order_relaxed);
-    s.code_id = code_id;
-    s.deadline = deadline;
-    s.arg.assign(arg.data(), arg.size());
-    s.user_in.assign(user.data(), user.size());
-    s.user_out.clear();
-    s.user_changed = false;
-    s.out.clear();
-    s.raised = false;
-    s.answer = answer;
-    s.gen++;
-    s.busy = true;
+    slot.code_id = code_id;
+    slot.deadline = deadline;
+    slot.arg.assign(arg.data(), arg.size());
+    slot.user_in.assign(user.data(), user.size());
+    slot.user_out.clear();
+    slot.user_changed = false;
+    slot.out_ask.clear();
+    slot.raised = false;
+    slot.answer = answer;
+    slot.gen++;
+    slot.busy = true;
 
     const unsigned to = impl->next++ % static_cast<unsigned>(impl->rings.size());
     struct io_uring_sqe *sqe = nullptr;
     try {
         sqe = sqe_or_raise(mrb, impl->home);
     } catch (...) {
-        s.busy = false;
+        slot.busy = false;
         throw;
     }
-    s.worker = to;
-    WM_HANDOVER_SEND(&s);
+    slot.worker = to;
+    WM_HANDOVER_SEND(&slot);
     io_uring_prep_msg_ring(sqe, impl->rings[to].ring_fd, 0, static_cast<uint64_t>(at), 0);
     // The submission itself owes no completion to anyone: the answer comes
     // from the worker, not from the act of sending.
@@ -1265,24 +1271,24 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
 // The answer, handed over once. Taking it frees the slot, so a second
 // read finds nothing - which is what makes "the run reads its answer
 // exactly once" a property of this layer rather than of its callers.
-bool ComputePool::take(uint64_t answer, ComputeAnswer *out)
+bool ComputePool::take(uint64_t answer, ComputeAnswer *out_ask)
 {
     if (impl_ == nullptr)
         return false;
     for (Slot &s : impl_->slots) {
         if (s.busy && s.answer == answer) {
             WM_HANDOVER_TAKE(&s);
-            out->bytes.swap(s.out);
-            out->user_bytes.swap(s.user_out);
-            out->user_changed = s.user_changed;
-            out->raised = s.raised;
-            out->over_deadline = s.over_deadline;
-            out->exception.swap(s.exception);
-            out->step.swap(s.step);
-            out->worker_name = s.worker_name;
+            out_ask->bytes.swap(s.out_ask);
+            out_ask->user_bytes.swap(s.user_out);
+            out_ask->user_changed = s.user_changed;
+            out_ask->raised = s.raised;
+            out_ask->over_deadline = s.over_deadline;
+            out_ask->exception.swap(s.exception);
+            out_ask->step.swap(s.step);
+            out_ask->worker_name = s.worker_name;
             s.busy = false;
             s.arg.clear();
-            s.out.clear();
+            s.out_ask.clear();
             s.user_in.clear();
             s.user_out.clear();
             s.exception.clear();

@@ -50,6 +50,11 @@ size_t ruby_array_length(mrb_value ruby_array)
     return static_cast<size_t>(RARRAY_LEN(ruby_array));
 }
 
+const mrb_value *ruby_array_items(mrb_value ruby_array)
+{
+    return RARRAY_PTR(ruby_array);
+}
+
 mrb_value ruby_array_entry(mrb_value ruby_array, size_t index)
 {
     return RARRAY_PTR(ruby_array)[index];

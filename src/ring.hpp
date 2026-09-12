@@ -2203,7 +2203,7 @@ template <class App> class Ring
         // connection is gone, because the fault is the application's either
         // way.
         if (answered.raised && have) {
-            report_compute_fault(
+            fault_report(
                 app_.error_log(), mrb_,
                 {answered.exception, answered.step, answered.worker_name,
                  c.live && c.gen == gen && c.peer != nullptr

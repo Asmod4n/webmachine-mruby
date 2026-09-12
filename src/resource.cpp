@@ -892,7 +892,7 @@ mrb_value call_value_cb(Run &r, const Resource::ValueCb &cb, Args args)
     // moment or a type list and never runs the block.
     if (mrb_unlikely(mrb_data_p(v))) {
         ComputeTaskAsk ask;
-        if (mrb_unlikely(compute_task_of(r.mrb, v, &ask))) {
+        if (mrb_unlikely(compute_task_read_from_value(r.mrb, v, &ask))) {
             mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                        "%n answered a Webmachine::ComputeTask and never declared one - write "
                        "`compute %n`",
@@ -946,7 +946,7 @@ bool node_answer(Run &r, Node nd, Args args, uint16_t status, mrb_value *out)
     const mrb_value v = nodecall(r, nd, args);
     if (mrb_unlikely(((res.compute >> i) & 1) != 0)) {
         ComputeTaskAsk ask;
-        if (mrb_unlikely(!compute_task_of(r.mrb, v, &ask))) {
+        if (mrb_unlikely(!compute_task_read_from_value(r.mrb, v, &ask))) {
             mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                        "%n is declared `compute` and answered %v - it owes a "
                        "Webmachine::ComputeTask",
@@ -998,7 +998,7 @@ bool node_answer(Run &r, Node nd, Args args, uint16_t status, mrb_value *out)
     // ever running the block. Name it instead.
     if (mrb_unlikely(mrb_data_p(v))) {
         ComputeTaskAsk ask;
-        if (mrb_unlikely(compute_task_of(r.mrb, v, &ask))) {
+        if (mrb_unlikely(compute_task_read_from_value(r.mrb, v, &ask))) {
             mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                        "%n answered a Webmachine::ComputeTask and never declared one - write "
                        "`compute %n`",
@@ -1346,7 +1346,7 @@ bool value_round_start(Run &r, Node n, uint16_t status)
             continue;
         }
         ComputeTaskAsk ask;
-        if (mrb_unlikely(!compute_task_of(r.mrb, v, &ask))) {
+        if (mrb_unlikely(!compute_task_read_from_value(r.mrb, v, &ask))) {
             mrb_raisef(
                 r.mrb, E_WM_ERROR(r.mrb),
                 "%n is declared `compute` and answered %v - it owes a Webmachine::ComputeTask",

@@ -39,6 +39,10 @@ bool ruby_string_holds_octet(mrb_value ruby_string, char octet);
 // How many entries a Ruby Array holds.
 size_t ruby_array_length(mrb_value ruby_array);
 
+// Where a Ruby Array keeps its entries. For a call that takes the whole
+// run at once, such as mrb_yield_argv.
+const mrb_value *ruby_array_items(mrb_value ruby_array);
+
 // One entry of a Ruby Array, by its index. The caller must know the
 // index is inside the array; ruby_array_length answers that question.
 mrb_value ruby_array_entry(mrb_value ruby_array, size_t index);
