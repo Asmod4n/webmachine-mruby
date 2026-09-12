@@ -174,9 +174,7 @@ site served from an asset pack.
 
 Both figures above are one core, over a unix socket, with both sides
 of the measurement busy. [`bench/how-to-measure.md`](bench/how-to-measure.md)
-says how to get a number you can trust on your own hardware, and
-[`bench/host-variance.md`](bench/host-variance.md) says what the host
-adds. A number from someone else's machine is a starting point, not
+says how to get a number you can trust on your own hardware. A number from someone else's machine is a starting point, not
 a result.
 
 It runs on io_uring where the kernel allows it. slipstreamIO carries
