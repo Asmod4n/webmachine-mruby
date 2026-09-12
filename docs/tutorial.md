@@ -38,7 +38,7 @@ it; the server does the rest of HTTP. Create `hello.rb`:
 
 ```ruby
 class HelloWorld < Webmachine::Resource
-  def self.to_html
+  def to_html
     '<html><body>Hello, World!</body></html>'
   end
 end
@@ -51,9 +51,10 @@ def main
 end
 ```
 
-`to_html` is written `def self.`, so it runs once, when the server
-starts, and its answer is kept as bytes. Every request against this
-resource is a lookup and a write, nothing more. `main` is the one
+`to_html` runs per request, which is the ordinary form of a callback.
+When an answer is the same for every request you may write it
+`def self.to_html`; then the server calls it once at start and keeps
+the answer as bytes. That is a choice per callback. `main` is the one
 function an app file must define; the server calls it once, and the
 block that registers the app runs when `main` returns.
 
@@ -93,11 +94,11 @@ class HelloWorld < Webmachine::Resource
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def self.to_html
+  def to_html
     '<html><body>Hello, World!</body></html>'
   end
 
-  def self.to_json
+  def to_json
     '{"hello":"world"}'
   end
 end
@@ -149,11 +150,11 @@ class HelloWorld < Webmachine::Resource
     'hello-1'
   end
 
-  def self.to_html
+  def to_html
     '<html><body>Hello, World!</body></html>'
   end
 
-  def self.to_json
+  def to_json
     '{"hello":"world"}'
   end
 end

@@ -40,7 +40,7 @@ Write `hello.rb`:
 
 ```ruby
 class HelloWorld < Webmachine::Resource
-  def self.to_html
+  def to_html
     '<html><body>Hello, World!</body></html>'
   end
 end
@@ -73,10 +73,11 @@ Ask it:
 
     <html><body>Hello, World!</body></html>
 
-`self.to_html` is the whole trick. The server calls it once at start
-and keeps the answer, with its status line and its head, as bytes. A
-request against this resource is a lookup and a write. Write
-`def to_html` when the answer changes from request to request.
+`to_html` runs per request. This is the ordinary form, and most
+callbacks are written this way. Write `def self.to_html` instead when
+the answer is the same for every request: the server calls it once at
+start and keeps the answer, with its status line and its head, as
+bytes, and a request against the resource is a lookup and a write.
 
 The [tutorial](docs/tutorial.md) goes on from here: a second media
 type, an ETag, and a conditional request that answers 304.
