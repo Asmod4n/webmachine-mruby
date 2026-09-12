@@ -44,6 +44,12 @@ class Ring {
       const uint64_t unlink_tag = detail::tag(detail::kSetup, 0, detail::kStUnlink);
       unsigned n = 0;
       for (const std::string& path : unix_paths_) {
+        // The name, not the socket: this server bound it, and between
+        // then and now another instance may have taken it over. Only a
+        // socket is unlinked, and a newer one belongs to whoever bound
+        // it - a missing entry needs nothing done at all.
+        struct stat st {};
+        if (::stat(path.c_str(), &st) != 0 || !S_ISSOCK(st.st_mode)) continue;
         struct io_uring_sqe* s = io_uring_get_sqe(&ring_);
         if (s == nullptr) {
           io_uring_submit(&ring_);
@@ -1372,8 +1378,13 @@ class Ring {
   void on_recv_nothing_to_parse(Slot s, struct io_uring_cqe* cqe) {
     const uint32_t idx = s.idx;
     Conn& c = s.conn;
+    // A completion that carries a buffer carries it even with no bytes.
+    // Some kernels report one on a clean EOF, and a buffer nobody hands
+    // back is a buffer this process has lost: 2048 such closes and every
+    // recv answers ENOBUFS.
+    give_back_buffers(cqe);
     if (cqe->res == -ENOBUFS) {
-      rearm_.push_back(idx);
+      rearm_.push_back({idx, c.gen});
       return;
     }
     if (cqe->res < 0 && c.tls != nullptr && c.tls->offloaded) {
@@ -1489,7 +1500,7 @@ class Ring {
       round_closed(idx, c);
       if (!c.live) return;
     }
-    if (mrb_unlikely(!(cqe->flags & IORING_CQE_F_MORE))) rearm_.push_back(idx);
+    if (mrb_unlikely(!(cqe->flags & IORING_CQE_F_MORE))) rearm_.push_back({idx, c.gen});
   }
 
   // The App will take nothing more on this connection.
@@ -1611,7 +1622,7 @@ class Ring {
       deliver(idx, static_cast<const char*>(payload), len, true);
       if (!c.live) return;
     }
-    if (!(flags & IORING_CQE_F_MORE)) rearm_.push_back(idx);
+    if (!(flags & IORING_CQE_F_MORE)) rearm_.push_back({idx, c.gen});
   }
 
   // What the kernel took, and what is still owed.
@@ -1924,7 +1935,16 @@ class Ring {
     // A connection that died under the write: the octets were written
     // from this reactor's buffer, so there is nothing to hand back.
     c.spill_writing = false;
-    if (!c.live || c.gen != done.gen) return;
+    if (!c.live || c.gen != done.gen) {
+      // The write belonged to a tenant that is gone. The slot may hold a
+      // new one whose own octets queued while spill_writing still stood
+      // for the old, and nothing else would arm that write until the
+      // next recv - a body complete on the wire waiting on the clock.
+      c.spill_out.clear();
+      arm_spill_write(idx);
+      if (c.live && !c.sending) continue_conn(idx);
+      return;
+    }
     app_.spill_wrote(c.app, done.cqe->res, c.spill_out);
     c.spill_out.clear();
     arm_spill_write(idx);
@@ -2346,7 +2366,12 @@ class Ring {
         default: break;
       }
     } catch (const ConnFailed& f) {
-      connection_failed(idx, f);
+      // kComputeTask puts the park generation in the top byte of the
+      // connection word, so its low word is not an index on its own -
+      // begin_close saw a number above max_conns_ and returned, leaving
+      // the connection open with nothing said. Every other kind's word
+      // is the index itself.
+      connection_failed(kind == detail::kComputeTask ? (idx & 0xffffffu) : idx, f);
     }
   }
 
@@ -2413,9 +2438,9 @@ class Ring {
       }
     }
     if (!rearm_.empty()) {
-      for (uint32_t idx : rearm_) {
-        Conn& c = conns_[idx];
-        if (c.live && !c.close_after_send) arm_recv(idx);
+      for (const Rearm& r : rearm_) {
+        Conn& c = conns_[r.idx];
+        if (c.live && c.gen == r.gen && !c.close_after_send) arm_recv(r.idx);
       }
       rearm_.clear();
     }
@@ -2573,7 +2598,16 @@ class Ring {
   // thing this should be able to do by accident. max_conns_ is decided
   // once, from the FD budget, before the first accept.
   std::unique_ptr<Conn[]> conns_;
-  std::vector<uint32_t> rearm_;
+  // Which connection owes a fresh recv, and which tenant of the slot
+  // owed it. The generation is half the entry: sqe() submits mid-batch
+  // when the queue fills, so a close and a new accept for one slot can
+  // both be handled inside a single batch, and a second multishot recv
+  // on one socket delivers its bytes outside the parser's order.
+  struct Rearm {
+    uint32_t idx;
+    uint16_t gen;
+  };
+  std::vector<Rearm> rearm_;
 };
 
 }  // namespace webmachine

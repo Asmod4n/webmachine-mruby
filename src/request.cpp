@@ -403,10 +403,33 @@ bool body_copy(const ReqView* v, const std::string& path, std::string& err) {
   return ok;
 }
 
+// One level of the upload tree. An EEXIST is this server's own earlier
+// save, and it has to be a directory: a symbolic link in its place sends
+// every upload under it to another tree.
+bool save_mkdir(const std::string& path, std::string& err) {
+  if (::mkdir(path.c_str(), 0700) == 0) return true;
+  if (errno != EEXIST) {
+    err = path + ": " + std::strerror(errno);
+    return false;
+  }
+  struct stat st;
+  if (::lstat(path.c_str(), &st) < 0) {
+    err = path + ": " + std::strerror(errno);
+    return false;
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    err = path + ": this name is there already, and it is no directory";
+    return false;
+  }
+  return true;
+}
+
 // One save, start to end. Everything it can answer is in the ask.
 void save_body(mrb_state* mrb, SaveAsk& ask) {
-  if (ask.name.empty() || ask.name.find('/') != std::string_view::npos || ask.name == "." ||
-      ask.name == "..") {
+  // A NUL ends the path this name becomes, so the file on the disk would
+  // carry a shorter name than the one the app asked for.
+  if (ask.name.empty() || ask.name.find('/') != std::string_view::npos ||
+      ask.name.find('\0') != std::string_view::npos || ask.name == "." || ask.name == "..") {
     ask.err = "the name is one file name, with no directory in it";
     return;
   }
@@ -433,16 +456,10 @@ void save_body(mrb_state* mrb, SaveAsk& ask) {
   while (path.size() > 1 && path.back() == '/') path.pop_back();
   path.push_back('/');
   path.append(hex, 2);
-  if (::mkdir(path.c_str(), 0700) < 0 && errno != EEXIST) {
-    ask.err = path + ": " + std::strerror(errno);
-    return;
-  }
+  if (!save_mkdir(path, ask.err)) return;
   path.push_back('/');
   path.append(hex, SHA256_DIGEST_LENGTH * 2);
-  if (::mkdir(path.c_str(), 0700) < 0 && errno != EEXIST) {
-    ask.err = path + ": " + std::strerror(errno);
-    return;
-  }
+  if (!save_mkdir(path, ask.err)) return;
   ask.out = path;
   path.push_back('/');
   path.append(ask.name);

@@ -414,6 +414,11 @@ void add_cookie_attr(mrb_state* mrb, std::string& line, CookieAttr a) {
   const mrb_value v = mrb_hash_get(mrb, a.attrs, mrb_symbol_value(a.sym));
   if (mrb_nil_p(v)) return;
   const mrb_value s = mrb_obj_as_string(mrb, v);
+  // A semicolon in one attribute spells a second attribute, so the app
+  // would write an attribute this call never named.
+  if (std::memchr(RSTRING_PTR(s), ';', static_cast<size_t>(RSTRING_LEN(s))) != nullptr) {
+    mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in an attribute");
+  }
   line.append("; ", 2);
   line.append(label);
   line.append(RSTRING_PTR(s), static_cast<size_t>(RSTRING_LEN(s)));
@@ -434,8 +439,22 @@ mrb_value resp_set_cookie(mrb_state* mrb, mrb_value) {
     mrb_raise(mrb, E_TYPE_ERROR, "response.set_cookie's value must be a String");
   }
 
+  // RFC 6265 4.1.1: the name is one token, and the first `=` ends it. A
+  // name that carries `=` or `;` names another cookie or an attribute.
+  const char* const np = RSTRING_PTR(nstr);
+  const size_t nlen = static_cast<size_t>(RSTRING_LEN(nstr));
+  if (nlen == 0 || std::memchr(np, '=', nlen) != nullptr ||
+      std::memchr(np, ';', nlen) != nullptr) {
+    mrb_raise(mrb, E_WM_ERROR(mrb),
+              "response.set_cookie wants a name with no `=` and no semicolon in it");
+  }
+  // A semicolon in the value ends the value and starts an attribute.
+  if (std::memchr(RSTRING_PTR(value), ';', static_cast<size_t>(RSTRING_LEN(value))) != nullptr) {
+    mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in the value");
+  }
+
   std::string line;
-  line.append(RSTRING_PTR(nstr), static_cast<size_t>(RSTRING_LEN(nstr)));
+  line.append(np, nlen);
   line.append("=", 1);
   line.append(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
 

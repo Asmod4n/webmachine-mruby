@@ -256,6 +256,35 @@ bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
   return true;
 }
 
+// RFC 9113 8.1: a trailer field name the head owns alone. A trailer says
+// nothing about framing, about the connection, or about the length of the
+// body it closes.
+bool h2_trailer_name_ok(const char* n, size_t nl) {
+  // te(2) host(4) upgrade(7) connection/keep-alive(10) content-length(14)
+  // transfer-encoding(17).
+  static constexpr size_t kLengths[] = {2, 4, 7, 10, 14, 17};
+  static constexpr uint32_t kMask =
+      http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
+  if (!http::length_is_one_of(nl, kMask)) return true;
+  switch (nl) {
+    case 2:
+      return !http::tok_eq({n, nl}, "te");
+    case 4:
+      return !http::tok_eq({n, nl}, "host");
+    case 7:
+      return !http::tok_eq({n, nl}, "upgrade");
+    case 10:
+      return !http::tok_eq({n, nl}, "connection") && !http::tok_eq({n, nl}, "keep-alive");
+    case 14:
+      return !http::tok_eq({n, nl}, "content-length");
+    case 17:
+      return !http::tok_eq({n, nl}, "transfer-encoding");
+    default:
+      break;
+  }
+  return true;
+}
+
 static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_opened; }
 
 // RFC 9113 6.2: one whole HEADERS frame - the route's prebuilt block, the
@@ -497,6 +526,18 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
     if (!end_stream || existing->half_closed_remote || existing->ws != nullptr ||
         existing->sse != nullptr || existing->streaming) {
       return h2_error(st0, kH2ProtocolError, sink);
+    }
+    // RFC 9113 8.1: a trailer section carries no pseudo-header, and the
+    // rules on a field name hold there as they do in the head. The block
+    // was decoded and then thrown away, so a trailer could spell
+    // anything at all.
+    for (size_t i = 0; i < nq; i += 4) {
+      const char* const tname = h2.hdrbuf.data() + quads[i];
+      const size_t tlen = quads[i + 1];
+      if (tlen == 0 || tname[0] == ':' || h2_has_upper(tname, tlen) ||
+          !h2_trailer_name_ok(tname, tlen)) {
+        return h2_error(st0, kH2ProtocolError, sink);
+      }
     }
     // The two gates the last DATA frame of a body passes. A trailer
     // section ends the body, so it answers to both: the octets have to
@@ -2351,6 +2392,15 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
             case kH2SettingsInitialWindowSize: {
               if (v > kH2WindowCeiling) return h2_error(st0, kH2FlowControlError, sink);
               const int64_t delta = static_cast<int64_t>(v) - h2.peer_initial_window;
+              // RFC 9113 6.9.2: the change applies to every open stream,
+              // and a stream that would go over the ceiling is a
+              // FLOW_CONTROL_ERROR rather than a window this server
+              // quietly carries.
+              for (const H2Stream& stp : h2.streams) {
+                if (stp.flow_window + delta > kH2WindowCeiling) {
+                  return h2_error(st0, kH2FlowControlError, sink);
+                }
+              }
               h2.peer_initial_window = static_cast<int64_t>(v);
               for (H2Stream& stp : h2.streams) stp.flow_window += delta;
               break;
@@ -2371,7 +2421,11 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
         return h2_error(st0, kH2ProtocolError, sink);
 
       case kH2Ping:
-        if (stream != 0 || flen != 8) return h2_error(st0, kH2FrameSizeError, sink);
+        // RFC 9113 6.7: a PING on a stream is a PROTOCOL_ERROR, and only
+        // a length other than 8 is a FRAME_SIZE_ERROR. One code for both
+        // told the peer the wrong thing about its own mistake.
+        if (stream != 0) return h2_error(st0, kH2ProtocolError, sink);
+        if (flen != 8) return h2_error(st0, kH2FrameSizeError, sink);
         if (!(flags & kH2FlagAck)) emit_control(sink, {kH2Ping, kH2FlagAck, 0, {p, 8}});
         break;
 
