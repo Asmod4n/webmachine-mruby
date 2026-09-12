@@ -30,6 +30,16 @@ bool ruby_string_is_field_name(mrb_value ruby_string)
     return http::field_name_ok(bytes.data(), bytes.size());
 }
 
+void ruby_string_lowercase_in_place(mrb_value ruby_string)
+{
+    char *const first = RSTRING_PTR(ruby_string);
+    const size_t length = static_cast<size_t>(RSTRING_LEN(ruby_string));
+    for (size_t i = 0; i < length; i++) {
+        if (first[i] >= 'A' && first[i] <= 'Z')
+            first[i] = static_cast<char>(first[i] + 32);
+    }
+}
+
 bool ruby_string_holds_octet(mrb_value ruby_string, char octet)
 {
     return ruby_string_bytes(ruby_string).find(octet) != std::string_view::npos;

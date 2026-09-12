@@ -898,7 +898,7 @@ mrb_value call_value_cb(Run &r, const Resource::ValueCb &cb, Args args)
                        "`compute %n`",
                        cb.sym, cb.sym);
         }
-        if (mrb_unlikely(watcher_p(r.mrb, v))) {
+        if (mrb_unlikely(value_is_watcher(r.mrb, v))) {
             mrb_raisef(
                 r.mrb, E_WM_ERROR(r.mrb),
                 "%n answered a Webmachine::Watcher and never declared one - write `watch %n`",
@@ -973,7 +973,7 @@ bool node_answer(Run &r, Node nd, Args args, uint16_t status, mrb_value *out)
     // Webmachine::Watcher. The run then stops until the descriptor says
     // something and the block says the wait is over.
     if (mrb_unlikely(((res.watch >> i) & 1) != 0)) {
-        if (mrb_unlikely(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+        if (mrb_unlikely(!mrb_data_p(v) || !value_is_watcher(r.mrb, v))) {
             mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                        "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
                        res.node_sym[i], v);
@@ -1004,7 +1004,7 @@ bool node_answer(Run &r, Node nd, Args args, uint16_t status, mrb_value *out)
                        "`compute %n`",
                        res.node_sym[i], res.node_sym[i]);
         }
-        if (mrb_unlikely(watcher_p(r.mrb, v))) {
+        if (mrb_unlikely(value_is_watcher(r.mrb, v))) {
             mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                        "%n answered a Webmachine::Watcher and never declared one - write "
                        "`watch %n`",
@@ -1330,7 +1330,7 @@ bool value_round_start(Run &r, Node n, uint16_t status)
         // #30: a watcher answers this one. It waits beside the tasks - a
         // descriptor and a worker are two ways to the same round.
         if (watched) {
-            if (mrb_unlikely(!mrb_data_p(v) || !watcher_p(r.mrb, v))) {
+            if (mrb_unlikely(!mrb_data_p(v) || !value_is_watcher(r.mrb, v))) {
                 mrb_raisef(r.mrb, E_WM_ERROR(r.mrb),
                            "%n is declared `watch` and answered %v - it owes a Webmachine::Watcher",
                            w.cb->sym, v);

@@ -28,6 +28,11 @@ bool ruby_string_is_field_value(mrb_value ruby_string);
 // RFC 9110 5.6.2: may the bytes of this String stand as a field name?
 bool ruby_string_is_field_name(mrb_value ruby_string);
 
+// Fold every A to Z of this String to lower case, in the String's own
+// bytes. RFC 9110 5.1: a field name compares case-insensitively, so a
+// name used as a Hash key is folded before it is frozen.
+void ruby_string_lowercase_in_place(mrb_value ruby_string);
+
 // Does this String carry that octet anywhere?
 bool ruby_string_holds_octet(mrb_value ruby_string, char octet);
 

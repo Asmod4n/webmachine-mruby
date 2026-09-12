@@ -3661,9 +3661,9 @@ class ComputePool
 // the handle live in its CDATA and not in its iv table, which holds
 // exactly the two things a GC has to see: the source and the block.
 void watcher_init_class(mrb_state *mrb, struct RClass *wm);
-bool watcher_p(mrb_state *mrb, mrb_value v);
+bool value_is_watcher(mrb_state *mrb, mrb_value v);
 unsigned watcher_events_mask(mrb_value v);
-bool watcher_aborted_p(mrb_value v);
+bool watcher_is_aborted(mrb_value v);
 // The seconds a watcher may stay quiet, as `timeout:` gave them.
 double watcher_timeout(mrb_value v);
 // The deadline passed. The block runs with the `:timeout` event and
