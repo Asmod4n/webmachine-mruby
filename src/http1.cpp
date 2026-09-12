@@ -1884,6 +1884,42 @@ bool Http1::h1_upgrade_or_stream(Conn& st, const H1Head& h, std::string& sink, b
   return false;
 }
 
+// RFC 9112 2.2 and 5.2: how this server's head framing is stricter than
+// the parser that reads it. picohttpparser accepts both of these, so the
+// refusal has to be ours, and it is one walk over a head that already
+// parsed. 0 = the head is well framed, otherwise the status it earns.
+//
+// RFC 9112 5.2: obs-fold. The text gives a server two answers and no
+// third - reject the message with 400, or replace each fold with SP
+// before it reads the field value. This server did neither: the fold was
+// dropped, so a folded field went missing with no word to anybody.
+// picohttpparser reports a continuation line as a field with no name,
+// which is what this counts. 400 is the answer the text prefers.
+//
+// RFC 9112 2.2: a bare LF. The text permits a recipient to read a single
+// LF as a line terminator, so this is a choice and not a defect - and
+// the choice is to refuse. A front end that holds out for CRLF reads
+// `Dummy: a LF Content-Length: 5` as one field value and sees no body,
+// while a server that splits the line sees a body of five octets. The
+// two then disagree about where the message ends, which is request
+// smuggling (RFC 9112 11.2). llhttp's strict mode and Node refuse it for
+// the same reason. Every line of a head that parsed ends with LF, so an
+// LF with no CR in front of it is a line this server will not read.
+//
+// Cold: once per head, and only after the head is whole.
+__attribute__((noinline)) static uint16_t head_framing_status(const char* head, size_t len,
+                                                              const struct phr_header* hs,
+                                                              size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (mrb_unlikely(hs[i].name_len == 0)) return 400;
+  }
+  for (size_t i = 0; i < len; i++) {
+    if (head[i] != '\n') continue;
+    if (mrb_unlikely(i == 0 || head[i - 1] != '\r')) return 400;
+  }
+  return 0;
+}
+
 // RFC 9110 15: the status a refused body take earns. Cold - once per
 // refused body, never per buffer - so it stays out of feed_parse.
 __attribute__((noinline)) static uint16_t body_take_status(BodyTake took) {
@@ -2102,6 +2138,12 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
     }
     if (mrb_unlikely(ret <= 0)) return fail(st, 400, sink);
     if (mrb_unlikely(static_cast<size_t>(ret) > kMaxHead)) return fail(st, 431, sink);
+    // RFC 9112 2.2 and 5.2: a fold, or a line this server will not read.
+    {
+      const uint16_t framing =
+          head_framing_status(view + off, static_cast<size_t>(ret), headers, num_headers);
+      if (mrb_unlikely(framing != 0)) return fail(st, framing, sink);
+    }
 
     WireFacts w;
     flow::ReqFacts facts;
@@ -2289,6 +2331,14 @@ bool Http1::feed_parse(Conn& st, std::string_view in, Sink out) {
           // zeroes it per connection, and a kept-alive connection
           // carries many bodies.
           st.chunk_framing = 0;
+          // RFC 9112 7.1.1: the strict walk over the framing starts at a
+          // size line, once per body. A kept-alive connection carries
+          // many bodies, and the walk of the last one must not decide
+          // where this one begins.
+          st.chunk_scan = Conn::ChunkScan::kSize;
+          st.chunk_need = 0;
+          st.chunk_after = 0;
+          st.chunk_line.clear();
           st.body_hold.clear();
           st.body_to = Conn::Body::kChunkMem;
           st.run_wants_body = true;

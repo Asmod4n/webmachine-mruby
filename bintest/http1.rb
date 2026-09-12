@@ -315,6 +315,120 @@ assert('h1: a chunked body over conf.max_body answers 413') do
   end
 end
 
+# RFC 9112 5.2: a server that reads an obs-fold has two answers and no
+# third - refuse with 400, or replace the fold with SP before it reads the
+# value. This server dropped the line, so a folded field went missing with
+# nothing said. RFC 9112 2.2: a bare LF may end a line, and this server
+# will not read one, because a front end that holds out for CRLF reads the
+# fold and the line behind it as one value and then disagrees with this end
+# about where the message stops.
+assert('h1: a fold and a bare LF in the head each answer 400 (RFC 9112 2.2, 5.2)') do
+  wm_server(H1_APP, tag: 'wm-headframe') do |sock, _|
+    checks = [
+      # An obs-fold continuation line.
+      ["GET / HTTP/1.1\r\nHost: x\r\nFoo: bar\r\n baz\r\n\r\n", '400'],
+      ["GET / HTTP/1.1\r\nHost: x\r\nFoo: bar\r\n\tbaz\r\n\r\n", '400'],
+      # A fold that carries a framing field is the reason this is refused
+      # and not quietly unfolded.
+      ["POST / HTTP/1.1\r\nHost: x\r\nFoo: bar\r\n Content-Length: 5\r\n\r\nHELLO", '400'],
+      # A bare LF ends a field line, and the field behind it counts.
+      ["GET / HTTP/1.1\r\nHost: x\r\nDummy: a\nX-Two: 1\r\n\r\n", '400'],
+      ["POST / HTTP/1.1\r\nHost: x\r\nDummy: a\nContent-Length: 5\r\n\r\nHELLO", '400'],
+      # A head whose every line ends with a bare LF.
+      ["GET / HTTP/1.1\nHost: x\n\n", '400'],
+      # The control: the same fields, every line ended with CRLF.
+      ["GET / HTTP/1.1\r\nHost: x\r\nFoo: bar\r\nX-Two: 1\r\n\r\n", '200']
+    ]
+    checks.each do |req, code|
+      UNIXSocket.open(sock) do |s|
+        s.write(req)
+        head, = wm_read(s)
+        assert_true head.start_with?("HTTP/1.1 #{code}"),
+                    "expected #{code} for #{req.inspect}, got: #{head.lines.first}"
+      end
+    end
+  end
+end
+
+# RFC 9112 7.1.1: chunk-size is 1*HEXDIG, and chunk-ext is a semicolon, a
+# name and an optional value, with BWS only where the rule puts it.
+# picohttpparser reads all four of the refused lines below and answers a
+# size for each, so the grammar has to be this server's own check. A chunk
+# reader that takes a size outside the grammar is where request smuggling
+# keeps being found.
+assert('h1: a chunk-size line answers to RFC 9112 7.1.1') do
+  src = <<~RUBY
+    class Chunks < Webmachine::Resource
+      reads_body :process_post
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def process_post
+        response.body = request.body.read.bytesize.to_s
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.add_route [:*], Chunks
+      end
+    end
+  RUBY
+  head_bytes = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+  wm_server(src, tag: 'wm-chunkgram') do |sock|
+    refused = [
+      # An extension with no semicolon in front of it.
+      "2 erfrferferf\r\naa\r\n0\r\n\r\n",
+      # A semicolon with no name behind it.
+      "2;\r\naa\r\n0\r\n\r\n",
+      # Whitespace where no rule puts it.
+      "a \r\n0123456789\r\n0\r\n\r\n",
+      # A bare CR inside the size line.
+      "5\r\r;ABCD\r\n34567\r\n0\r\n\r\n",
+      # An equals with no value behind it.
+      "2;a=\r\naa\r\n0\r\n\r\n",
+      # A size that is no hex number at all.
+      "zz\r\naa\r\n0\r\n\r\n"
+    ]
+    refused.each do |body|
+      UNIXSocket.open(sock) do |s|
+        s.write(head_bytes)
+        s.write(body)
+        head, = wm_read(s)
+        assert_true head.start_with?('HTTP/1.1 400'),
+                    "expected 400 for #{body.inspect}, got: #{head.lines.first}"
+      end
+    end
+
+    # What the grammar does allow still reads. A quoted value may hold a
+    # semicolon and an escaped quote, a name may stand with no value, and
+    # the last chunk may carry a trailer section.
+    allowed = [
+      ["5\r\nhello\r\n0\r\n\r\n", '5'],
+      ["5;a=b\r\nhello\r\n0\r\n\r\n", '5'],
+      ["5;a=\"x;y\";b\r\nhello\r\n0\r\n\r\n", '5'],
+      ["5;a=\"x\\\"y\"\r\nhello\r\n0\r\n\r\n", '5'],
+      ["5 ;a=b\r\nhello\r\n0\r\n\r\n", '5'],
+      ["5\r\nhello\r\n0\r\nVary: *\r\n\r\n", '5'],
+      ["5\r\nhello\r\n0;done\r\n\r\n", '5'],
+      # Many small chunks, which the framing budget has to pass.
+      [("1\r\na\r\n" * 40) + "0\r\n\r\n", '40']
+    ]
+    allowed.each do |body, want|
+      UNIXSocket.open(sock) do |s|
+        s.write(head_bytes)
+        s.write(body)
+        head, got = wm_read(s)
+        assert_true head.start_with?('HTTP/1.1 2'),
+                    "expected 2xx for #{body.inspect}, got: #{head.lines.first}"
+        assert_equal want, got
+      end
+    end
+  end
+end
+
 assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body, 501 gzip framing') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
     checks = [

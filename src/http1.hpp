@@ -1298,6 +1298,20 @@ class Http1 {
     // so body_limit never sees them, and a client that sends framing and
     // no content would send it forever.
     size_t chunk_framing = 0;
+    // RFC 9112 7.1.1: where the strict walk over the chunk framing
+    // stands. picohttpparser decodes the body, and it accepts several
+    // chunk-size lines the grammar does not allow, so this server reads
+    // the same octets first and holds them to the text. The walk owns no
+    // body: it only says yes or no.
+    //   kSize      the octets are a chunk-size line
+    //   kData      chunk_need octets of content are still to come
+    //   kAfterData the CRLF that closes a chunk
+    //   kDone      the zero chunk arrived; the trailer is the decoder's
+    enum class ChunkScan : uint8_t { kSize, kData, kAfterData, kDone };
+    ChunkScan chunk_scan = ChunkScan::kSize;
+    size_t chunk_need = 0;
+    uint8_t chunk_after = 0;
+    std::string chunk_line;
     // RFC 9110 8.3: what this body's head declared, kept while the
     // first octets arrive, because the check that reads it happens
     // after the head is gone from the buffer. Empty = this route asked
@@ -1744,6 +1758,10 @@ class Http1 {
       body_count = 0;
       body_limit = 0;
       chunk_framing = 0;
+      chunk_scan = ChunkScan::kSize;
+      chunk_need = 0;
+      chunk_after = 0;
+      chunk_line.clear();
       sniff_type.clear();
       sniff_head.clear();
       sniff_done = false;
@@ -2127,10 +2145,163 @@ class Http1 {
   // Out of line on purpose: a chunked request is the rare one, and
   // inlined twice it put 379 bytes of decoder into feed_parse, which
   // every request walks. nm -S on the host build decided it.
+  // RFC 9110 5.6.2: the octets a token may carry.
+  static bool chunk_tchar(char c) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') ||
+           c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' ||
+           c == '*' || c == '+' || c == '-' || c == '.' || c == '^' || c == '_' ||
+           c == '`' || c == '|' || c == '~';
+  }
+
+  static bool chunk_hex(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+  }
+
+  // RFC 9112 7.1.1: one chunk-size line, without its CRLF.
+  //
+  //   chunk-size = 1*HEXDIG
+  //   chunk-ext  = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+  //
+  // BWS is whitespace a sender must not send and a recipient may accept,
+  // and it stands only where the rule puts it: around the semicolon and
+  // around the equals. Whitespace anywhere else belongs to no rule, so a
+  // size with a space behind it and no extension is refused. An extension
+  // needs its semicolon, a semicolon needs its name, and an equals needs
+  // its value. A quoted value may hold anything, the semicolon included,
+  // and a backslash inside it quotes the octet behind it.
+  //
+  // Cold: once per chunk header of a chunked body, which is the rare
+  // request, and out of line because take_chunked is out of line already.
+  __attribute__((noinline)) static bool chunk_size_line_ok(const char* p, size_t n) {
+    size_t i = 0;
+    while (i < n && chunk_hex(p[i])) i++;
+    if (i == 0) return false;
+
+    while (i < n) {
+      while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
+      if (i >= n || p[i] != ';') return false;
+      i++;
+      while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
+      const size_t name = i;
+      while (i < n && chunk_tchar(p[i])) i++;
+      if (i == name) return false;
+      while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
+      if (i >= n || p[i] != '=') continue;
+      i++;
+      while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
+      if (i < n && p[i] == '"') {
+        i++;
+        bool closed = false;
+        while (i < n) {
+          if (p[i] == '\\' && i + 1 < n) {
+            i += 2;
+            continue;
+          }
+          if (p[i] == '"') {
+            i++;
+            closed = true;
+            break;
+          }
+          i++;
+        }
+        if (!closed) return false;
+      } else {
+        const size_t val = i;
+        while (i < n && chunk_tchar(p[i])) i++;
+        if (i == val) return false;
+      }
+    }
+    return true;
+  }
+
+  // RFC 9112 7.1.1: the same octets the decoder is about to read, held to
+  // the grammar first. picohttpparser accepts `2 erfrferferf`, `2;`, `a `
+  // and a bare CR inside the line, and answers a size for each, so a
+  // server that wants the grammar has to say so itself.
+  //
+  // The walk keeps its own place, because the decoder's is not reachable
+  // and one buffer may carry several chunks. It never copies the body -
+  // only a size line that a buffer cut in half.
+  __attribute__((noinline)) static bool chunk_lines_ok(Conn& st, const char* data, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+      if (st.chunk_scan == Conn::ChunkScan::kDone) return true;
+
+      if (st.chunk_scan == Conn::ChunkScan::kData) {
+        const size_t take = len - i < st.chunk_need ? len - i : st.chunk_need;
+        i += take;
+        st.chunk_need -= take;
+        if (st.chunk_need == 0) st.chunk_scan = Conn::ChunkScan::kAfterData;
+        continue;
+      }
+
+      if (st.chunk_scan == Conn::ChunkScan::kAfterData) {
+        // RFC 9112 7.1: the CRLF that closes a chunk, and nothing else.
+        const char want = st.chunk_after == 0 ? '\r' : '\n';
+        if (data[i] != want) return false;
+        i++;
+        st.chunk_after++;
+        if (st.chunk_after == 2) {
+          st.chunk_after = 0;
+          st.chunk_scan = Conn::ChunkScan::kSize;
+        }
+        continue;
+      }
+
+      // kSize: gather to the CRLF, then hold the line to the grammar.
+      const char* const nl = static_cast<const char*>(std::memchr(data + i, '\n', len - i));
+      if (nl == nullptr) {
+        // The line runs past this buffer. A size line this long is not a
+        // size line; kMaxHead is far more room than the grammar needs.
+        if (st.chunk_line.size() + (len - i) > kMaxHead) return false;
+
+        st.chunk_line.append(data + i, len - i);
+        return true;
+      }
+      const size_t upto = static_cast<size_t>(nl - (data + i));
+      if (st.chunk_line.size() + upto > kMaxHead) return false;
+
+      st.chunk_line.append(data + i, upto);
+      i += upto + 1;
+      // The CR belongs to the terminator, never to the line.
+      if (st.chunk_line.empty() || st.chunk_line.back() != '\r') return false;
+
+      st.chunk_line.pop_back();
+      if (!chunk_size_line_ok(st.chunk_line.data(), st.chunk_line.size())) return false;
+
+      size_t size = 0;
+      for (char c : st.chunk_line) {
+        if (!chunk_hex(c)) break;
+        const unsigned d = c <= '9' ? static_cast<unsigned>(c - '0')
+                                    : static_cast<unsigned>((c | 0x20) - 'a') + 10;
+        // A size that cannot be held is a size this server will not read.
+        if (size > (SIZE_MAX - d) / 16) return false;
+
+        size = size * 16 + d;
+      }
+      st.chunk_line.clear();
+      if (size == 0) {
+        // RFC 9112 7.1.2: the trailer section follows, and the decoder
+        // reads it. Its field rules are not this walk's business.
+        st.chunk_scan = Conn::ChunkScan::kDone;
+        return true;
+      }
+      st.chunk_need = size;
+      st.chunk_scan = Conn::ChunkScan::kData;
+    }
+    return true;
+  }
+
   template <class W>
   __attribute__((noinline)) static BodyTake take_chunked(Conn& st, W w, const char*& data,
                                                          size_t& len) {
     if (len == 0) return BodyTake::kMore;
+    // RFC 9112 7.1.1: the grammar first, because the decoder is lenient
+    // about it and a chunk reader that takes sizes outside the grammar is
+    // where request smuggling keeps being found.
+    if (mrb_unlikely(!chunk_lines_ok(st, data, len))) return BodyTake::kFailed;
+
     st.chunk_buf.assign(data, len);
     size_t decoded = st.chunk_buf.size();
     const ssize_t rest = phr_decode_chunked(&st.chunk, st.chunk_buf.data(), &decoded);
