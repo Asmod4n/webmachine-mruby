@@ -92,7 +92,7 @@ class Article < Webmachine::Resource
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def self.generate_etag
+  def generate_etag
     'article-7'
   end
 

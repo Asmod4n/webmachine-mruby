@@ -146,7 +146,7 @@ class HelloWorld < Webmachine::Resource
     [['text/html', :to_html], ['application/json', :to_json]]
   end
 
-  def self.generate_etag
+  def generate_etag
     'hello-1'
   end
 
@@ -186,17 +186,61 @@ you got back.
     Vary: Accept
     ETag: "hello-1"
 
-The second answer has no body. `generate_etag` is written `def self.`,
-so the graph computes it once, at start, and every request that names
-that same ETag is answered from the header alone.
+The second answer has no body. `generate_etag` runs per request, like
+`to_html`, so an ETag can follow the data: a version column, a digest,
+a modification time. The graph compares what you answered with what
+the client sent, and writes the 304 itself.
+
+## Keep an answer as bytes
+
+Most answers change from request to request. Some never do. For those
+there is the other form of every callback, `def self.`: the server
+calls it once at start and keeps the answer, with its status line and
+its head, as bytes. Add a second resource and a route for it:
+
+```ruby
+class About < Webmachine::Resource
+  def self.to_html
+    '<html><body>About this server</body></html>'
+  end
+end
+
+def main
+  Webmachine::Application.new do |app|
+    app.conf.port = 8080
+    app.add_route ['about'], About
+    app.add_route [:*], HelloWorld
+  end
+end
+```
+
+A String in a route is a literal segment, so `/about` reaches `About`
+and everything else still reaches `HelloWorld`. Compile and start it:
+
+    $ curl -i http://127.0.0.1:8080/about
+    HTTP/1.1 200 OK
+    Date: Sat, 12 Sep 2026 11:35:23 GMT
+    Content-Type: text/html; charset=utf-8
+    Content-Length: 43
+
+    <html><body>About this server</body></html>
+
+The answer looks the same as any other. What differs is the cost: a
+request against `About` is a lookup and a write, and the Ruby VM is
+not entered. That is where the server's request rate comes from. Any
+callback whose answer is the same for every request can be written
+this way, the media type table included, and the server says so at
+start when a callback that asks about a request is written `def self.`
+by mistake. It is a choice per callback, never a rule.
 
 ## What you have now
 
 A server that runs one Ruby class, answers two media types over
 `Accept`, and answers a conditional request with 304, all without a
 line of negotiation code in your resource. The methods you wrote,
-`content_types_provided` and `generate_etag`, are the whole of what you
-own; the graph did everything else.
+`content_types_provided`, `generate_etag` and two bodies, are the whole
+of what you own; the graph did everything else. One resource runs per
+request and one is kept as bytes, and you chose which.
 
 ## Next
 

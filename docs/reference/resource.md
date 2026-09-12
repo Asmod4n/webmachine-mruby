@@ -320,7 +320,7 @@ class Order < Webmachine::Resource
     true
   end
 
-  def self.generate_etag
+  def generate_etag
     'v1'
   end
 
