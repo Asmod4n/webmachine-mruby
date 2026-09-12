@@ -49,6 +49,12 @@ rendering. Use `watch` when the work is another process's and you hold
 a descriptor to it: a database, a queue, a pipe. Use neither when the
 callback is a lookup; a lookup is faster on the loop than off it.
 
+A crossing is work too. Per request the arguments are encoded, a
+worker wakes, the answer is encoded and decoded back. A block that
+runs for less time than that crossing takes makes the answer slower
+when it is declared `compute`. Measure the callback both ways, and
+keep the faster one.
+
 ## Next
 
 - [Work off the request loop, the how-to](../how-to/work-off-the-loop.md)

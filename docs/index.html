@@ -470,7 +470,8 @@
 <span class="k">end</span></pre>
           <p>
             A task over its deadline answers 500. A worker that raises answers 503 with
-            a Retry-After field.
+            a Retry-After field. The crossing has a cost of its own, so a block that
+            runs for less time than it takes is faster on the loop. Measure both ways.
           </p>
         </div>
         <div class="ex">

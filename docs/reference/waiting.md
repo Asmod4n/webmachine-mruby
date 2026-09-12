@@ -122,6 +122,14 @@ end
 number is also accepted wherever a duration is asked for - `2.s` and
 `2.0` mean the same 2.0 seconds.
 
+### The cost of a crossing
+
+Each task pays for its crossing: the arguments are encoded as CBOR,
+a worker is woken, and the answer is encoded and decoded back. A block
+that runs for less time than that takes makes the answer slower than
+running on the loop. `compute` is for a block that runs longer than
+its crossing.
+
 ### The deadline
 
 A compute task that runs past `max_runtime:` is interrupted. The

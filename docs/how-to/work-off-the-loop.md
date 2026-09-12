@@ -115,6 +115,21 @@ deadline. `watch` is for a descriptor this process already has open
 that will become readable or writable on its own - a pipe, a socket, a
 timer - where the work is waiting, not computing.
 
+## When a task makes the answer slower
+
+A crossing has a cost of its own. Per request the server encodes the
+arguments as CBOR, hands the job to a worker, the worker wakes, runs
+the block, encodes the answer, and the reactor decodes it on its next
+turn. A block that finishes in less time than that crossing takes
+makes the answer slower, not faster, and it costs a worker as well.
+
+The loop is the fast path for short work. A lookup, a string build, a
+small comparison and an ETag from a field in memory belong on the
+loop. `compute` pays off when the block runs for longer than the
+crossing: a password hash, a render of a large page, a compression.
+Measure before you declare: time the callback on the loop, then time
+it as a task, and keep the faster one.
+
 ## Next
 
 - [passwords.md](passwords.md): a worked `compute` example that checks
