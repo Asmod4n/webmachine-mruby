@@ -1456,6 +1456,13 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
   std::string rhdrs;
   Held held;
   bool have_body = false;
+  // #53: an h2 body the resume binds. The octets live on the stream, and
+  // the stream table is a vector that a new HEADERS frame may move, so a
+  // run that stops again after reading its body would be left pointing
+  // into the old allocation. The frame takes them instead: it outlives
+  // every stop this run can make. h1 needs none of this - its body is
+  // the connection's, and the connection serves one request at a time.
+  std::string h2_content;
 
   // RFC 9112 9.3: the request decided this, and the caller reads it off
   // the frame - whether that caller is the parse that started the run or
@@ -1669,21 +1676,48 @@ Http1::Run Http1::run_parkable(Conn& st, RunStart start, std::string* sink, Plan
         // reach. `content_seen` is already set, so it does not stop on
         // that node a second time.
         //
-        // res.run.req points at prep.rv, which the hold re-pointed at
-        // the copied head. So the body binds here, in the frame that
-        // outlives the parse.
-        if (st.spill.fd >= 0) {
-          prep.rv.content_fd = st.spill.fd;
-          prep.rv.content_len = st.spill.written;
-          st.spill.bound = true;
+        // res.run.req points at the view this frame holds - prep.rv for
+        // h1, held.rv for h2 - and the hold re-pointed it at the copied
+        // head. So the body binds here, in the frame that outlives the
+        // parse.
+        //
+        // #53: where the body is depends on the protocol. h1 keeps one
+        // per connection, because it answers one request at a time. h2
+        // keeps one per stream, because it does not.
+        if (h1) {
+          if (st.spill.fd >= 0) {
+            prep.rv.content_fd = st.spill.fd;
+            prep.rv.content_len = st.spill.written;
+            st.spill.bound = true;
+          } else {
+            prep.rv.content = st.body_hold.empty() ? nullptr : st.body_hold.data();
+            prep.rv.content_len = st.body_hold.size();
+          }
+          prep.rv.content_ready = true;
+          st.run_wants_body = false;
         } else {
-          prep.rv.content = st.body_hold.empty() ? nullptr : st.body_hold.data();
-          prep.rv.content_len = st.body_hold.size();
+          // The stream may be gone: a RST_STREAM closes the entry while
+          // the run is parked. Then there is no body to bind and the
+          // walk reads none - the run answers from the head it holds.
+          H2Stream* const owner = st.h2 != nullptr ? st.h2->find(start.h2.stream_id) : nullptr;
+          if (owner != nullptr) {
+            if (owner->spill.fd >= 0) {
+              // The file is the stream's until close_stream drops the
+              // entry, so the descriptor is still this run's to read.
+              held.rv.content_fd = owner->spill.fd;
+              held.rv.content_len = owner->spill.written;
+              owner->spill.bound = true;
+            } else {
+              h2_content = std::move(owner->request_content);
+              owner->request_content.clear();
+              held.rv.content = h2_content.empty() ? nullptr : h2_content.data();
+              held.rv.content_len = h2_content.size();
+            }
+          }
+          held.rv.content_ready = true;
         }
-        prep.rv.content_ready = true;
         res.run.wants_body = false;
         mine_round.wants_body = false;
-        st.run_wants_body = false;
         status = resource_resume(res, {&body, &have_body, &rhdrs},
                                  {mine_round.answer_value, mine_round.job_what,
                                   mine_round.user_value, mine_round.user_have, 0});

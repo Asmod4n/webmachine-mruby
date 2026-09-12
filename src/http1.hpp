@@ -3349,6 +3349,10 @@ class Http1 {
   };
   static size_t h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv);
   bool h2_serve_parked(Conn& st, H2Stream& stp, std::string& sink, bool complete);
+  // #53: the body a parked run stopped for is whole. True = a run was
+  // waiting on it and its round is ready now, so the stream must not be
+  // served a second time.
+  bool h2_body_ready(Conn& st, uint32_t stream_id);
   bool h2_extended_connect(Conn& st, const H2Connect& ask, std::string& sink);
   // A parked stream's request as a view: the target it named, and the
   // ReqView the caller owns for it to point into.
@@ -3388,6 +3392,12 @@ class Http1 {
     // then a run that stops answers from the head alone.
     const char* head_at = nullptr;
     size_t head_len = 0;
+    // #53: is the whole body here? A stream served while its DATA is
+    // still coming says no, and two things follow: the walk stops at the
+    // first node that reads content, and the stream is not half closed -
+    // more of the request is on its way. Every caller that serves a whole
+    // request leaves this alone.
+    bool complete = true;
     // The route's bundle, looked up once by whoever built this. Null
     // for kNoRoute. h2_serve and h2_produce read it instead of asking
     // bundles_ a second and a third time per request.

@@ -2179,3 +2179,103 @@ assert('h2: the process holds at most 1024 body files, and refuses the next one 
     end
   end
 end
+
+# #53: the flow walks on the head, and the body waits behind it. A
+# request this server was always going to refuse is refused before its
+# octets arrive - h1 has answered that way since #36. Until this, h2 took
+# the whole upload first, so a body file opened at the head held a slot
+# of the process-wide count for as long as the client kept sending.
+H2_REFUSE_APP = <<~RUBY unless defined?(H2_REFUSE_APP)
+  class Refuser < Webmachine::Resource
+    reads_body :process_post
+
+    def self.allowed_methods
+      'GET HEAD POST'
+    end
+
+    # RFC 9110 15.5.7: the answer is settled at the head, and no octet of
+    # the body is needed to reach it.
+    def resource_exists?
+      false
+    end
+
+    def process_post
+      response.body = request.body.read.bytesize.to_s
+      true
+    end
+  end
+RUBY
+
+assert('h2: a request refused at the head answers before its body arrives (#53)') do
+  h2_server(h2_app('Refuser', H2_REFUSE_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      # A head that promises a body, and not one octet of it sent.
+      s.write(h2_frame(1, 0x04, 1, h2_post_block(65_536)))
+      type, _, stream, block = h2_next_payload(s)
+      assert_equal 1, type, 'the answer must arrive with no DATA sent at all'
+      assert_equal 1, stream
+      # 0x8d is the static entry for 404 in this server's prebuilt heads.
+      assert_true block.getbyte(0) == 0x8d || block.getbyte(0) == 0x8c,
+                  "expected a refusal, got first byte #{block.getbyte(0).inspect}"
+      # RFC 9113 8.1: the answer is whole and the request is not, so the
+      # peer is told to stop sending rather than left uploading.
+      found_rst = false
+      6.times do
+        ty, _, st_id, pay = h2_next(s)
+        next unless ty == 3 && st_id == 1
+
+        found_rst = true
+        assert_equal 0, pay.unpack1('N'), 'the code must be NO_ERROR'
+        break
+      end
+      assert_true found_rst, 'the refused stream must be reset with NO_ERROR'
+    end
+  end
+end
+
+# The other half of the same change: a resource that does read the body
+# still gets all of it. The walk stops at the node that reads content and
+# the resume binds the whole body, so a part of one never reaches a
+# callback.
+H2_BODY_APP = <<~RUBY unless defined?(H2_BODY_APP)
+  class BodyTaker < Webmachine::Resource
+    reads_body :process_post
+
+    def self.allowed_methods
+      'GET HEAD POST'
+    end
+
+    def process_post
+      response.body = request.body.read.bytesize.to_s
+      true
+    end
+  end
+RUBY
+
+assert('h2: a resource that reads the body still gets every octet (#53)') do
+  h2_server(h2_app('BodyTaker', H2_BODY_APP)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      body = 'x' * 3000
+      s.write(h2_frame(1, 0x04, 1, h2_post_block(body.bytesize)))
+      # The head is in, and the flow has already walked. Only now the body.
+      seen = []
+      h2_write_body(s, 1, body, seen)
+      got = +''.b
+      ended = false
+      30.times do
+        ty, fl, st_id, pay = seen.shift || h2_next(s)
+        next unless st_id == 1
+
+        got << pay if ty == 0
+        if (ty == 0 || ty == 1) && (fl & 0x01) != 0
+          ended = true
+          break
+        end
+      end
+      assert_true ended, 'the stream must end'
+      assert_equal body.bytesize.to_s, got
+    end
+  end
+end

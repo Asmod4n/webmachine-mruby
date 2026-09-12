@@ -454,6 +454,27 @@ BodySpill* Http1::spill_waiting_h2(Conn& st) {
   return nullptr;
 }
 
+// #53: the octets a run stopped for have all arrived. The run is in
+// h2_parked with its round marked wants_body, and making that round ready
+// is the whole resume - the loop that drives parked runs walks it on from
+// the node it stopped at, and the resume binds the body.
+//
+// False = no run of this stream is waiting on a body, so the caller
+// serves the stream itself. That is every stream whose flow has not run
+// yet: an asset, a konst route, or a connection already at kParkSlots.
+bool Http1::h2_body_ready(Conn& st, uint32_t stream_id) {
+  for (Conn::H2Parked& p : st.h2_parked) {
+    if (p.stream_id != stream_id) continue;
+
+    Conn::Round* const r = st.park_at(p.run.co.promise().park);
+    if (r == nullptr || !r->wants_body) return false;
+
+    r->answer_ready = true;
+    return true;
+  }
+  return false;
+}
+
 bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool complete) {
   const uint32_t stream_id = stp.id;
   // RFC 9113 5.1: only the end of the request closes this half. A stream
@@ -516,6 +537,7 @@ bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool co
   H2Request q{stream_id, facts,    &pvals,
               rvp,       target,   route,
               head_only, stp.field_blob.data(), stp.field_blob.size()};
+  q.complete = body_whole;
   q.bundle = route == kNoRoute ? nullptr : &bundles_[apps_[st0.listener].base + route];
   const H2Served served = h2_serve(st0, q, sink);
   if (served == H2Served::kClosed) return false;
@@ -944,6 +966,49 @@ bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
   }
   stx.content_length = claimed.value;
   stx.content_length_given = claimed.have;
+
+  // #53: the flow walks on the head, and the body waits behind it.
+  //
+  // A request this server was always going to refuse - 401 from
+  // is_authorized?, 403, 404 from resource_exists?, 405, 406, 412 - is
+  // refused now, before its octets arrive. h1 has answered that way
+  // since #36. h2 waited for the whole body first, so an upload to a
+  // route that answers 404 was taken in full, and the body file opened
+  // at this head held a slot of the process-wide count (kBodyFilesMax)
+  // for as long as the upload lasted. An unauthenticated peer could
+  // hold those slots against every other upload of the process.
+  //
+  // Only a run that can stop may walk here. A route that cannot stop,
+  // or a connection with no park slot left, would take h2_serve's
+  // straight path and answer from a body that has not arrived - a wrong
+  // answer rather than a late one. Those wait, as they did before.
+  if (asset == nullptr && route != kNoRoute && stx.data != H2Stream::Data::kDrop) {
+    const Bundle& eb = bundles_[apps_[st0.listener].base + route];
+    // Any bound resource may be asked to wait for a body, so what
+    // matters here is a park slot to wait in, not what the resource
+    // declares. Without one the stream waits for its body as before.
+    if (eb.bound && eb.res != nullptr &&
+        st0.h2_parked.size() < static_cast<size_t>(Conn::kParkSlots)) {
+      // The stream table may move under the serve, so nothing of stx is
+      // read after this call.
+      if (!h2_serve_parked(st0, stx, sink, false)) return false;
+
+      bool parked_now = false;
+      for (const Conn::H2Parked& p : st0.h2_parked) {
+        if (p.stream_id == stream_id) {
+          parked_now = true;
+          break;
+        }
+      }
+      if (!parked_now) {
+        // RFC 9113 8.1: the answer is whole and the request is not. The
+        // peer is told to stop rather than left sending a body into a
+        // stream that is finished with it. NO_ERROR, because nothing
+        // went wrong - the answer simply needed none of it.
+        h2_rst(st0, stream_id, kH2NoError, sink);
+      }
+    }
+  }
   return true;
 }
 
@@ -1442,10 +1507,21 @@ void Http1::h2_sse_second(Conn& st0, std::string& sink) {
 
 Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
   const Bundle* b = q.bundle;
-  if (!h2_can_stop(b)) return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
+  // #53: h2_can_stop asks whether the resource has a compute task or a
+  // watcher - whether it can stop for a worker. A body is the other
+  // reason to stop, and it belongs to no resource: any route may be
+  // asked to wait for one. So a request whose body has not arrived takes
+  // the parkable path whatever the resource declares. The straight path
+  // runs the walk with can_park false, and the body stop is gated on
+  // that, so it would answer from a body that is not there.
+  if (q.complete && !h2_can_stop(b)) {
+    return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
+  }
   // A connection holds as many stopped runs as a tag can name. Past
   // that the request is answered the straight way: it cannot stop, so a
-  // compute task runs here and a watcher is refused by name.
+  // compute task runs here and a watcher is refused by name. A caller
+  // serving an incomplete body checks for a slot before it asks, and
+  // nothing between that check and this one takes one.
   if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
     return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
   }
@@ -1502,7 +1578,10 @@ Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink
   H2Stream& keep = st0.h2->open(q.stream_id);
   keep.parked = true;
   keep.end_headers = true;
-  keep.half_closed_remote = true;
+  // RFC 9113 5.1: only the end of the request closes this half. A run
+  // that stopped for its body is waiting on DATA that has not arrived,
+  // so the stream is still open to the peer.
+  if (q.complete) keep.half_closed_remote = true;
   st0.h2_parked.push_back({q.stream_id, std::move(r)});
   return H2Served::kParked;
 }
@@ -2146,7 +2225,10 @@ bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
       H2Stream& s = st.h2->streams[i];
       if (!s.spill.ended || s.spill.fd < 0 || !s.spill.drained()) continue;
       s.spill.ended = false;
-      if (!h2_serve_parked(st, s, sink, true)) return false;
+      s.half_closed_remote = true;
+      if (!h2_body_ready(st, s.id)) {
+        if (!h2_serve_parked(st, s, sink, true)) return false;
+      }
     }
     // #30: every run this connection stopped whose round is done. Each
     // one frames its own stream, so several may go out in one round.
@@ -2391,7 +2473,12 @@ bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
           // The reactor serves this stream when the file is drained.
           stp->spill.ended = true;
           if (mrb_unlikely(stp->spill.fd >= 0 && !stp->spill.drained())) break;
-          if (!h2_serve_parked(st0, *stp, sink, true)) return false;
+          // #53: a run that walked on the head and stopped for this body
+          // is resumed. Only a stream with no such run is served here.
+          stp->half_closed_remote = true;
+          if (!h2_body_ready(st0, stream)) {
+            if (!h2_serve_parked(st0, *stp, sink, true)) return false;
+          }
         }
         break;
       }
