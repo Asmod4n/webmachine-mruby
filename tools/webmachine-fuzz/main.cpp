@@ -33,12 +33,13 @@
 
 #include "../../src/ring.hpp"
 
-namespace {
+namespace
+{
 
-const char* kSock = "/tmp/wm-libfuzzer.sock";
+const char *kSock = "/tmp/wm-libfuzzer.sock";
 
-mrb_state* g_mrb = nullptr;
-struct RClass* g_wm = nullptr;
+mrb_state *g_mrb = nullptr;
+struct RClass *g_wm = nullptr;
 
 // Connections deliberately left open across runs, so slot reuse under
 // the generation counters, the idle deadline and the header deadline are
@@ -48,101 +49,116 @@ std::vector<int> g_open;
 constexpr size_t kMaxOpen = 32;
 uint64_t g_runs = 0;
 
-void tick() {
-  if (g_mrb == nullptr) return;
-  mrb_funcall_id(g_mrb, mrb_obj_value(g_wm), MRB_SYM(tick), 0);
-  if (g_mrb->exc != nullptr) {
-    // A raise from the reactor is a FINDING, not noise: since the ring
-    // stopped ending the process itself, Webmachine::Error is how it
-    // says it cannot go on.
-    mrb_value s = mrb_funcall_id(g_mrb, mrb_obj_value(g_mrb->exc), MRB_SYM(message), 0);
-    std::fprintf(stderr, "webmachine-fuzz: reactor raised: %s\n",
-                 mrb_string_p(s) ? RSTRING_PTR(s) : "?");
-    std::abort();
-  }
+void tick()
+{
+    if (g_mrb == nullptr)
+        return;
+    mrb_funcall_id(g_mrb, mrb_obj_value(g_wm), MRB_SYM(tick), 0);
+    if (g_mrb->exc != nullptr) {
+        // A raise from the reactor is a FINDING, not noise: since the ring
+        // stopped ending the process itself, Webmachine::Error is how it
+        // says it cannot go on.
+        mrb_value s = mrb_funcall_id(g_mrb, mrb_obj_value(g_mrb->exc), MRB_SYM(message), 0);
+        std::fprintf(stderr, "webmachine-fuzz: reactor raised: %s\n",
+                     mrb_string_p(s) ? RSTRING_PTR(s) : "?");
+        std::abort();
+    }
 }
 
 // #33: app_load raises, and the fuzz driver is not a Ruby frame.
 struct LoadApp {
-  const char* path;
+    const char *path;
 };
 
-mrb_value load_app_body(mrb_state* mrb, void* ud) {
-  webmachine::app_load(mrb, static_cast<LoadApp*>(ud)->path);
-  return mrb_nil_value();
+mrb_value load_app_body(mrb_state *mrb, void *ud)
+{
+    webmachine::app_load(mrb, static_cast<LoadApp *>(ud)->path);
+    return mrb_nil_value();
 }
 
-void setup() {
-  ::unlink(kSock);
-  g_mrb = webmachine::open_vm_or_say("webmachine-fuzz");
-  if (g_mrb == nullptr) std::abort();
-  g_wm = mrb_module_get_id(g_mrb, MRB_SYM(Webmachine));
+void setup()
+{
+    ::unlink(kSock);
+    g_mrb = webmachine::open_vm_or_say("webmachine-fuzz");
+    if (g_mrb == nullptr)
+        std::abort();
+    g_wm = mrb_module_get_id(g_mrb, MRB_SYM(Webmachine));
 
-  webmachine::ServerOptions opts;
-  opts.cli_unix = kSock;
-  // An app makes the flow engine reachable; without one the server is
-  // the bare floor and only the framing gets fuzzed. Compiled bytecode
-  // only (#100), so the runner hands the path in.
-  if (const char* app = std::getenv("WM_FUZZ_APP")) opts.app_path = app;
-  webmachine::server_options(opts);
+    webmachine::ServerOptions opts;
+    opts.cli_unix = kSock;
+    // An app makes the flow engine reachable; without one the server is
+    // the bare floor and only the framing gets fuzzed. Compiled bytecode
+    // only (#100), so the runner hands the path in.
+    if (const char *app = std::getenv("WM_FUZZ_APP"))
+        opts.app_path = app;
+    webmachine::server_options(opts);
 
-  if (opts.app_path != nullptr) {
-    // The fuzz driver has no frame above it either, and #33 means the
-    // load refuses by raising.
-    LoadApp ask{opts.app_path};
-    mrb_bool raised = FALSE;
-    mrb_protect_error(g_mrb, load_app_body, &ask, &raised);
-    if (raised) std::exit(1);
-  }
-  tick();  // builds the ring and the listener, then runs one round
-}
-
-int dial() {
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
-  if (fd < 0) return -1;
-  struct sockaddr_un sa {};
-  sa.sun_family = AF_UNIX;
-  std::snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", kSock);
-  if (::connect(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0 &&
-      errno != EINPROGRESS) {
-    ::close(fd);
-    return -1;
-  }
-  return fd;
-}
-
-}  // namespace
-
-extern "C" int LLVMFuzzerInitialize(int*, char***) {
-  setup();
-  return 0;
-}
-
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-  if (size == 0 || size > 65536) return 0;
-  const int fd = dial();
-  if (fd < 0) return 0;
-  tick();  // let the accept land
-
-  ::send(fd, data, size, MSG_NOSIGNAL);
-  tick();  // and the recv, the answer, the send
-
-  // Every payload gets its own connection; a share of them are LEFT
-  // OPEN, unread, and reaped later - a peer that stops reading is one
-  // the server has to survive.
-  if ((g_runs & 3) == 0 && g_open.size() < kMaxOpen) {
-    g_open.push_back(fd);
-  } else {
-    char sink[4096];
-    while (::recv(fd, sink, sizeof sink, MSG_DONTWAIT) > 0) {
+    if (opts.app_path != nullptr) {
+        // The fuzz driver has no frame above it either, and #33 means the
+        // load refuses by raising.
+        LoadApp ask{opts.app_path};
+        mrb_bool raised = FALSE;
+        mrb_protect_error(g_mrb, load_app_body, &ask, &raised);
+        if (raised)
+            std::exit(1);
     }
-    ::close(fd);
-  }
-  if (g_open.size() >= kMaxOpen) {
-    for (int old : g_open) ::close(old);
-    g_open.clear();
-    tick();
-  }
-  g_runs++;
-  return 0;
+    tick(); // builds the ring and the listener, then runs one round
+}
+
+int dial()
+{
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_un sa {
+    };
+    sa.sun_family = AF_UNIX;
+    std::snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", kSock);
+    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) != 0 &&
+        errno != EINPROGRESS) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+} // namespace
+
+extern "C" int LLVMFuzzerInitialize(int *, char ***)
+{
+    setup();
+    return 0;
+}
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size == 0 || size > 65536)
+        return 0;
+    const int fd = dial();
+    if (fd < 0)
+        return 0;
+    tick(); // let the accept land
+
+    ::send(fd, data, size, MSG_NOSIGNAL);
+    tick(); // and the recv, the answer, the send
+
+    // Every payload gets its own connection; a share of them are LEFT
+    // OPEN, unread, and reaped later - a peer that stops reading is one
+    // the server has to survive.
+    if ((g_runs & 3) == 0 && g_open.size() < kMaxOpen) {
+        g_open.push_back(fd);
+    } else {
+        char sink[4096];
+        while (::recv(fd, sink, sizeof sink, MSG_DONTWAIT) > 0) {
+        }
+        ::close(fd);
+    }
+    if (g_open.size() >= kMaxOpen) {
+        for (int old : g_open)
+            ::close(old);
+        g_open.clear();
+        tick();
+    }
+    g_runs++;
+    return 0;
 }

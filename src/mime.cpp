@@ -8,163 +8,201 @@
 
 #include "mime_builtin.h"
 
-namespace webmachine {
-namespace {
+namespace webmachine
+{
+namespace
+{
 using ExtType = std::pair<std::string, std::string>;
 
 // The extension order type_of then searches in. Types, not function
 // pointers: the sort inlines the comparison the way it did the lambdas.
 struct ExtBefore {
-  bool operator()(const ExtType& a, const ExtType& b) const { return a.first < b.first; }
+    bool operator()(const ExtType &a, const ExtType &b) const
+    {
+        return a.first < b.first;
+    }
 };
 struct SameExt {
-  bool operator()(const ExtType& a, const ExtType& b) const { return a.first == b.first; }
+    bool operator()(const ExtType &a, const ExtType &b) const
+    {
+        return a.first == b.first;
+    }
 };
 struct ExtBeforeKey {
-  bool operator()(const ExtType& a, const std::string& b) const { return a.first < b; }
+    bool operator()(const ExtType &a, const std::string &b) const
+    {
+        return a.first < b;
+    }
 };
 
 // POSIX read(2): a whole file into memory. Setup only.
-bool read_whole_file(const char* path, std::string& out) {
-  const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return false;
-  char buf[64 * 1024];
-  for (;;) {
-    const ssize_t n = ::read(fd, buf, sizeof buf);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      ::close(fd);
-      return false;
+bool read_whole_file(const char *path, std::string &out)
+{
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    char buf[64 * 1024];
+    for (;;) {
+        const ssize_t n = ::read(fd, buf, sizeof buf);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            ::close(fd);
+            return false;
+        }
+        if (n == 0)
+            break;
+        out.append(buf, static_cast<size_t>(n));
     }
-    if (n == 0) break;
-    out.append(buf, static_cast<size_t>(n));
-  }
-  ::close(fd);
-  return true;
+    ::close(fd);
+    return true;
 }
 
 // Apache mime.types / shared-mime-info globs2: field separators.
-bool is_blank(char c) { return c == ' ' || c == '\t' || c == '\r'; }
-
-// RFC 9110 8.3: a media type's extension key is case-insensitive.
-char lower(char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; }
+bool is_blank(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r';
 }
 
+// RFC 9110 8.3: a media type's extension key is case-insensitive.
+char lower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+}
+} // namespace
+
 // RFC 9110 8.3: one extension, one media type.
-void MimeDb::take(const char* type, size_t tlen, const char* ext, size_t elen) {
-  if (tlen == 0 || elen == 0) return;
-  std::string key(elen, '\0');
-  for (size_t i = 0; i < elen; i++) key[i] = lower(ext[i]);
-  by_ext_.emplace_back(std::move(key), std::string(type, tlen));
+void MimeDb::take(const char *type, size_t tlen, const char *ext, size_t elen)
+{
+    if (tlen == 0 || elen == 0)
+        return;
+    std::string key(elen, '\0');
+    for (size_t i = 0; i < elen; i++)
+        key[i] = lower(ext[i]);
+    by_ext_.emplace_back(std::move(key), std::string(type, tlen));
 }
 
 // Apache mime.types format: "type ext ext ...", '#' comments.
-void MimeDb::parse_types(const char* p, const char* end) {
-  while (p < end) {
-    const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
-    const char* stop = eol != nullptr ? eol : end;
-    const char* hash = static_cast<const char*>(std::memchr(p, '#', size_t(stop - p)));
-    if (hash != nullptr) stop = hash;
-    while (p < stop && is_blank(*p)) p++;
-    const char* type = p;
-    while (p < stop && !is_blank(*p)) p++;
-    const size_t tlen = size_t(p - type);
-    while (p < stop) {
-      while (p < stop && is_blank(*p)) p++;
-      const char* ext = p;
-      while (p < stop && !is_blank(*p)) p++;
-      take(type, tlen, ext, size_t(p - ext));
+void MimeDb::parse_types(const char *p, const char *end)
+{
+    while (p < end) {
+        const char *eol = static_cast<const char *>(std::memchr(p, '\n', size_t(end - p)));
+        const char *stop = eol != nullptr ? eol : end;
+        const char *hash = static_cast<const char *>(std::memchr(p, '#', size_t(stop - p)));
+        if (hash != nullptr)
+            stop = hash;
+        while (p < stop && is_blank(*p))
+            p++;
+        const char *type = p;
+        while (p < stop && !is_blank(*p))
+            p++;
+        const size_t tlen = size_t(p - type);
+        while (p < stop) {
+            while (p < stop && is_blank(*p))
+                p++;
+            const char *ext = p;
+            while (p < stop && !is_blank(*p))
+                p++;
+            take(type, tlen, ext, size_t(p - ext));
+        }
+        if (eol == nullptr)
+            break;
+        p = eol + 1;
     }
-    if (eol == nullptr) break;
-    p = eol + 1;
-  }
 }
 
 // shared-mime-info globs2 format: "weight:type:*.ext".
-void MimeDb::parse_globs2(const char* p, const char* end) {
-  while (p < end) {
-    const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
-    const char* stop = eol != nullptr ? eol : end;
-    if (p < stop && *p != '#') {
-      const char* c1 = static_cast<const char*>(std::memchr(p, ':', size_t(stop - p)));
-      if (c1 != nullptr) {
-        const char* type = c1 + 1;
-        const char* c2 = static_cast<const char*>(std::memchr(type, ':', size_t(stop - type)));
-        if (c2 != nullptr) {
-          const char* glob = c2 + 1;
-          const size_t glen = size_t(stop - glob);
-          if (glen > 2 && glob[0] == '*' && glob[1] == '.' &&
-              std::memchr(glob + 2, '*', glen - 2) == nullptr &&
-              std::memchr(glob + 2, '?', glen - 2) == nullptr &&
-              std::memchr(glob + 2, '[', glen - 2) == nullptr) {
-            take(type, size_t(c2 - type), glob + 2, glen - 2);
-          }
+void MimeDb::parse_globs2(const char *p, const char *end)
+{
+    while (p < end) {
+        const char *eol = static_cast<const char *>(std::memchr(p, '\n', size_t(end - p)));
+        const char *stop = eol != nullptr ? eol : end;
+        if (p < stop && *p != '#') {
+            const char *c1 = static_cast<const char *>(std::memchr(p, ':', size_t(stop - p)));
+            if (c1 != nullptr) {
+                const char *type = c1 + 1;
+                const char *c2 =
+                    static_cast<const char *>(std::memchr(type, ':', size_t(stop - type)));
+                if (c2 != nullptr) {
+                    const char *glob = c2 + 1;
+                    const size_t glen = size_t(stop - glob);
+                    if (glen > 2 && glob[0] == '*' && glob[1] == '.' &&
+                        std::memchr(glob + 2, '*', glen - 2) == nullptr &&
+                        std::memchr(glob + 2, '?', glen - 2) == nullptr &&
+                        std::memchr(glob + 2, '[', glen - 2) == nullptr) {
+                        take(type, size_t(c2 - type), glob + 2, glen - 2);
+                    }
+                }
+            }
         }
-      }
+        if (eol == nullptr)
+            break;
+        p = eol + 1;
     }
-    if (eol == nullptr) break;
-    p = eol + 1;
-  }
 }
 
 // RFC 9110 8.3: the machine's own media-type database, first that exists.
-void MimeDb::load(mrb_state* mrb, const char* configured) {
-  static const char* const kTypesPaths[] = {
-      "/etc/mime.types", "/etc/apache2/mime.types", "/etc/httpd/conf/mime.types",
-      "/usr/local/etc/mime.types"};
-  static const char kGlobs2[] = "/usr/share/mime/globs2";
+void MimeDb::load(mrb_state *mrb, const char *configured)
+{
+    static const char *const kTypesPaths[] = {"/etc/mime.types", "/etc/apache2/mime.types",
+                                              "/etc/httpd/conf/mime.types",
+                                              "/usr/local/etc/mime.types"};
+    static const char kGlobs2[] = "/usr/share/mime/globs2";
 
-  std::string text;
-  bool globs2 = false;
-  if (configured != nullptr && configured[0] != '\0') {
-    if (!read_whole_file(configured, text)) {
-      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
-                 std::strerror(errno));
+    std::string text;
+    bool globs2 = false;
+    if (configured != nullptr && configured[0] != '\0') {
+        if (!read_whole_file(configured, text)) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
+                       std::strerror(errno));
+        }
+        source_ = configured;
+        globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
+    } else {
+        for (const char *path : kTypesPaths) {
+            if (read_whole_file(path, text)) {
+                source_ = path;
+                break;
+            }
+        }
+        if (source_.empty() && read_whole_file(kGlobs2, text)) {
+            source_ = kGlobs2;
+            globs2 = true;
+        }
+        if (source_.empty()) {
+            text.assign(kBuiltinMimeTypes, sizeof(kBuiltinMimeTypes) - 1);
+            source_ = "built in (share/mime.types)";
+        }
     }
-    source_ = configured;
-    globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
-  } else {
-    for (const char* path : kTypesPaths) {
-      if (read_whole_file(path, text)) {
-        source_ = path;
-        break;
-      }
-    }
-    if (source_.empty() && read_whole_file(kGlobs2, text)) {
-      source_ = kGlobs2;
-      globs2 = true;
-    }
-    if (source_.empty()) {
-      text.assign(kBuiltinMimeTypes, sizeof(kBuiltinMimeTypes) - 1);
-      source_ = "built in (share/mime.types)";
-    }
-  }
 
-  const char* p = text.data();
-  const char* end = p + text.size();
-  if (globs2) {
-    parse_globs2(p, end);
-  } else {
-    parse_types(p, end);
-  }
+    const char *p = text.data();
+    const char *end = p + text.size();
+    if (globs2) {
+        parse_globs2(p, end);
+    } else {
+        parse_types(p, end);
+    }
 
-  std::stable_sort(by_ext_.begin(), by_ext_.end(), ExtBefore());
-  by_ext_.erase(std::unique(by_ext_.begin(), by_ext_.end(), SameExt()), by_ext_.end());
+    std::stable_sort(by_ext_.begin(), by_ext_.end(), ExtBefore());
+    by_ext_.erase(std::unique(by_ext_.begin(), by_ext_.end(), SameExt()), by_ext_.end());
 
-  if (by_ext_.empty()) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s holds no extension at all",
-               source_.c_str());
-  }
+    if (by_ext_.empty()) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s holds no extension at all",
+                   source_.c_str());
+    }
 }
 
 // RFC 9110 8.3: the type a filename claims; octet-stream when unknown.
-const char* MimeDb::type_of(const std::string& name) const {
-  static const char kOctets[] = "application/octet-stream";
-  const size_t dot = name.rfind('.');
-  if (dot == std::string::npos || dot + 1 == name.size()) return kOctets;
-  std::string ext(name.size() - dot - 1, '\0');
-  for (size_t i = 0; i < ext.size(); i++) ext[i] = lower(name[dot + 1 + i]);
-  const auto it = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext, ExtBeforeKey());
-  return it != by_ext_.end() && it->first == ext ? it->second.c_str() : kOctets;
+const char *MimeDb::type_of(const std::string &name) const
+{
+    static const char kOctets[] = "application/octet-stream";
+    const size_t dot = name.rfind('.');
+    if (dot == std::string::npos || dot + 1 == name.size())
+        return kOctets;
+    std::string ext(name.size() - dot - 1, '\0');
+    for (size_t i = 0; i < ext.size(); i++)
+        ext[i] = lower(name[dot + 1 + i]);
+    const auto it = std::lower_bound(by_ext_.begin(), by_ext_.end(), ext, ExtBeforeKey());
+    return it != by_ext_.end() && it->first == ext ? it->second.c_str() : kOctets;
 }
-}
+} // namespace webmachine

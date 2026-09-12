@@ -62,9 +62,9 @@
 #include <linux/openat2.h>
 #else
 struct open_how {
-  uint64_t flags;
-  uint64_t mode;
-  uint64_t resolve;
+    uint64_t flags;
+    uint64_t mode;
+    uint64_t resolve;
 };
 #endif
 #ifndef RESOLVE_NO_MAGICLINKS
@@ -80,20 +80,68 @@ struct open_how {
 // picohttpparser's field pair; the framers include the header itself.
 struct phr_header;
 
-namespace webmachine::flow {
+namespace webmachine::flow
+{
 // Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
 // its node names. Each edge's clause is in kFlow's `clause` column.
 enum class Node : uint8_t {
-  kB13, kB12, kB11, kB10, kB9b, kB8, kB7, kB6, kB5, kB4, kB3,
-  kC3, kC4, kD4, kD5, kE5, kE6, kF6, kF7,
-  kG7, kG8, kG9, kG11, kH7, kH10, kH11, kH12,
-  kI4, kI7, kI12, kI13, kJ18,
-  kK5, kK7, kK13, kL5, kL7, kL13, kL14, kL15, kL17,
-  kM5, kM7, kM16, kM20, kM20b,
-  kN5, kN11, kN16,
-  kO14, kO16, kO18, kO18b, kO20,
-  kP3, kP11,
-  kCount
+    kB13,
+    kB12,
+    kB11,
+    kB10,
+    kB9b,
+    kB8,
+    kB7,
+    kB6,
+    kB5,
+    kB4,
+    kB3,
+    kC3,
+    kC4,
+    kD4,
+    kD5,
+    kE5,
+    kE6,
+    kF6,
+    kF7,
+    kG7,
+    kG8,
+    kG9,
+    kG11,
+    kH7,
+    kH10,
+    kH11,
+    kH12,
+    kI4,
+    kI7,
+    kI12,
+    kI13,
+    kJ18,
+    kK5,
+    kK7,
+    kK13,
+    kL5,
+    kL7,
+    kL13,
+    kL14,
+    kL15,
+    kL17,
+    kM5,
+    kM7,
+    kM16,
+    kM20,
+    kM20b,
+    kN5,
+    kN11,
+    kN16,
+    kO14,
+    kO16,
+    kO18,
+    kO18b,
+    kO20,
+    kP3,
+    kP11,
+    kCount
 };
 
 // Also ours: who decides a node. RFC 9110 has no such split - it is the
@@ -101,66 +149,68 @@ enum class Node : uint8_t {
 enum class Kind : uint8_t { kRequest, kResource, kConneg, kAction };
 
 struct Target {
-  Node node;
-  uint16_t status;
+    Node node;
+    uint16_t status;
 };
 // The graph as data: an edge that continues to a node.
-constexpr Target to(Node n) { return {n, 0}; }
+constexpr Target to(Node n)
+{
+    return {n, 0};
+}
 // The graph as data: an edge that halts with a status.
-constexpr Target halt(uint16_t s) { return {Node::kCount, s}; }
+constexpr Target halt(uint16_t s)
+{
+    return {Node::kCount, s};
+}
 
 // One row of the diagram. `callback` is webmachine-ruby's method name for
 // this node, verbatim - that is the contract an app writes against.
 // `clause` is the RFC 9110 section the edge implements, which is what a
 // reader needs when the diagram and the specification are both open.
 struct FlowNode {
-  Node id;
-  Kind kind;
-  const char* callback;
-  const char* clause;
-  Target on_true;
-  Target on_false;
+    Node id;
+    Kind kind;
+    const char *callback;
+    const char *clause;
+    Target on_true;
+    Target on_false;
 };
 
 inline constexpr FlowNode kFlow[] = {
-    {Node::kB13, Kind::kResource, "service_available?", "RFC 9110 15.6.4 (503)",
-     to(Node::kB12), halt(503)},
+    {Node::kB13, Kind::kResource, "service_available?", "RFC 9110 15.6.4 (503)", to(Node::kB12),
+     halt(503)},
     {Node::kB12, Kind::kResource, "known_methods", "RFC 9110 15.6.2 (501); list x method",
      to(Node::kB11), halt(501)},
-    {Node::kB11, Kind::kResource, "uri_too_long?", "RFC 9110 15.5.15 (414)",
-     halt(414), to(Node::kB10)},
+    {Node::kB11, Kind::kResource, "uri_too_long?", "RFC 9110 15.5.15 (414)", halt(414),
+     to(Node::kB10)},
     {Node::kB10, Kind::kResource, "allowed_methods", "RFC 9110 15.5.6 (405) + 10.2.1 Allow",
      to(Node::kB9b), halt(405)},
-    {Node::kB9b, Kind::kResource, "malformed_request?", "RFC 9110 15.5.1 (400)",
-     halt(400), to(Node::kB8)},
-    {Node::kB8, Kind::kResource, "is_authorized?", "RFC 9110 15.5.2 (401) + 11.6.1 WWW-Authenticate",
-     to(Node::kB7), halt(401)},
-    {Node::kB7, Kind::kResource, "forbidden?", "RFC 9110 15.5.4 (403)",
-     halt(403), to(Node::kB6)},
+    {Node::kB9b, Kind::kResource, "malformed_request?", "RFC 9110 15.5.1 (400)", halt(400),
+     to(Node::kB8)},
+    {Node::kB8, Kind::kResource, "is_authorized?",
+     "RFC 9110 15.5.2 (401) + 11.6.1 WWW-Authenticate", to(Node::kB7), halt(401)},
+    {Node::kB7, Kind::kResource, "forbidden?", "RFC 9110 15.5.4 (403)", halt(403), to(Node::kB6)},
     {Node::kB6, Kind::kResource, "valid_content_headers?", "RFC 9110 15.6.2 (501); Content-* set",
      to(Node::kB5), halt(501)},
-    {Node::kB5, Kind::kResource, "known_content_type?", "RFC 9110 15.5.16 (415)",
-     to(Node::kB4), halt(415)},
-    {Node::kB4, Kind::kResource, "valid_entity_length?", "RFC 9110 15.5.14 (413)",
-     to(Node::kB3), halt(413)},
+    {Node::kB5, Kind::kResource, "known_content_type?", "RFC 9110 15.5.16 (415)", to(Node::kB4),
+     halt(415)},
+    {Node::kB4, Kind::kResource, "valid_entity_length?", "RFC 9110 15.5.14 (413)", to(Node::kB3),
+     halt(413)},
     {Node::kB3, Kind::kRequest, "options", "RFC 9110 9.3.7: OPTIONS answers 200 from options()",
      halt(200), to(Node::kC3)},
 
     {Node::kC3, Kind::kRequest, "content_types_provided",
-     "RFC 9110 12.5.1: Accept absent takes the first provided type",
-     to(Node::kC4), to(Node::kD4)},
+     "RFC 9110 12.5.1: Accept absent takes the first provided type", to(Node::kC4), to(Node::kD4)},
     {Node::kC4, Kind::kConneg, "content_types_provided", "RFC 9110 12.5.1 / 15.5.7 (406)",
      to(Node::kD4), halt(406)},
     {Node::kD4, Kind::kRequest, "languages_provided",
-     "RFC 9110 12.5.4: absent negotiates '*' and may still 406",
-     to(Node::kD5), to(Node::kE5)},
+     "RFC 9110 12.5.4: absent negotiates '*' and may still 406", to(Node::kD5), to(Node::kE5)},
     {Node::kD5, Kind::kConneg, "languages_provided", "RFC 9110 12.5.4 / 15.5.7 (406)",
      to(Node::kE5), halt(406)},
     {Node::kE5, Kind::kRequest, "charsets_provided",
-     "RFC 9110 12.5.2: absent negotiates '*' and may still 406",
-     to(Node::kE6), to(Node::kF6)},
-    {Node::kE6, Kind::kConneg, "charsets_provided", "RFC 9110 12.5.2 / 15.5.7 (406)",
-     to(Node::kF6), halt(406)},
+     "RFC 9110 12.5.2: absent negotiates '*' and may still 406", to(Node::kE6), to(Node::kF6)},
+    {Node::kE6, Kind::kConneg, "charsets_provided", "RFC 9110 12.5.2 / 15.5.7 (406)", to(Node::kF6),
+     halt(406)},
     {Node::kF6, Kind::kRequest, "encodings_provided",
      "RFC 9110 12.5.3: absent negotiates identity;q=1,*;q=0.5; Content-Type header lands here",
      to(Node::kF7), to(Node::kG7)},
@@ -169,32 +219,29 @@ inline constexpr FlowNode kFlow[] = {
 
     {Node::kG7, Kind::kResource, "resource_exists?", "RFC 9110 12.5.5: Vary lands here",
      to(Node::kG8), to(Node::kH7)},
-    {Node::kG8, Kind::kRequest, nullptr, "RFC 9110 13.1.1: If-Match present?",
-     to(Node::kG9), to(Node::kH10)},
-    {Node::kG9, Kind::kRequest, nullptr, "RFC 9110 13.1.1: If-Match is '*'?",
-     to(Node::kH10), to(Node::kG11)},
+    {Node::kG8, Kind::kRequest, nullptr, "RFC 9110 13.1.1: If-Match present?", to(Node::kG9),
+     to(Node::kH10)},
+    {Node::kG9, Kind::kRequest, nullptr, "RFC 9110 13.1.1: If-Match is '*'?", to(Node::kH10),
+     to(Node::kG11)},
     {Node::kG11, Kind::kResource, "generate_etag", "RFC 9110 13.1.1 / 15.5.13 (412)",
      to(Node::kH10), halt(412)},
     {Node::kH7, Kind::kRequest, nullptr,
-     "RFC 9110 13.1.1: If-Match '*' against a missing resource is 412",
-     halt(412), to(Node::kI7)},
+     "RFC 9110 13.1.1: If-Match '*' against a missing resource is 412", halt(412), to(Node::kI7)},
     {Node::kH10, Kind::kRequest, nullptr, "RFC 9110 13.1.4: If-Unmodified-Since present?",
      to(Node::kH11), to(Node::kI12)},
     {Node::kH11, Kind::kRequest, nullptr, "RFC 9110 5.6.7: IUS parses as HTTP-date?",
      to(Node::kH12), to(Node::kI12)},
-    {Node::kH12, Kind::kResource, "last_modified", "RFC 9110 13.1.4 / 15.5.13 (412)",
-     halt(412), to(Node::kI12)},
+    {Node::kH12, Kind::kResource, "last_modified", "RFC 9110 13.1.4 / 15.5.13 (412)", halt(412),
+     to(Node::kI12)},
     {Node::kI4, Kind::kResource, "moved_permanently?", "RFC 9110 15.4.2 (301) + Location",
      halt(301), to(Node::kP3)},
-    {Node::kI7, Kind::kRequest, nullptr, "RFC 9110 9.3.4: PUT?",
-     to(Node::kI4), to(Node::kK7)},
-    {Node::kI12, Kind::kRequest, nullptr, "RFC 9110 13.1.2: If-None-Match present?",
-     to(Node::kI13), to(Node::kL13)},
-    {Node::kI13, Kind::kRequest, nullptr, "RFC 9110 13.1.2: If-None-Match is '*'?",
-     to(Node::kJ18), to(Node::kK13)},
+    {Node::kI7, Kind::kRequest, nullptr, "RFC 9110 9.3.4: PUT?", to(Node::kI4), to(Node::kK7)},
+    {Node::kI12, Kind::kRequest, nullptr, "RFC 9110 13.1.2: If-None-Match present?", to(Node::kI13),
+     to(Node::kL13)},
+    {Node::kI13, Kind::kRequest, nullptr, "RFC 9110 13.1.2: If-None-Match is '*'?", to(Node::kJ18),
+     to(Node::kK13)},
     {Node::kJ18, Kind::kRequest, nullptr,
-     "RFC 9110 13.1.2: GET/HEAD gets 304 (15.4.5), others 412 (15.5.13)",
-     halt(304), halt(412)},
+     "RFC 9110 13.1.2: GET/HEAD gets 304 (15.4.5), others 412 (15.5.13)", halt(304), halt(412)},
     {Node::kK5, Kind::kResource, "moved_permanently?", "RFC 9110 15.4.2 (301) + Location",
      halt(301), to(Node::kL5)},
     {Node::kK7, Kind::kResource, "previously_existed?", "RFC 9110 15.4/15.5: gone vs never",
@@ -211,15 +258,15 @@ inline constexpr FlowNode kFlow[] = {
      to(Node::kL15), to(Node::kM16)},
     {Node::kL15, Kind::kRequest, nullptr, "RFC 9110 13.1.3: IMS in the future is ignored",
      to(Node::kM16), to(Node::kL17)},
-    {Node::kL17, Kind::kResource, "last_modified", "RFC 9110 13.1.3 / 15.4.5 (304)",
-     to(Node::kM16), halt(304)},
+    {Node::kL17, Kind::kResource, "last_modified", "RFC 9110 13.1.3 / 15.4.5 (304)", to(Node::kM16),
+     halt(304)},
 
     {Node::kM5, Kind::kRequest, nullptr, "RFC 9110 15.5.11 (410): only POST may revive",
      to(Node::kN5), halt(410)},
     {Node::kM7, Kind::kResource, "allow_missing_post?", "RFC 9110 9.3.3 / 15.5.5 (404)",
      to(Node::kN11), halt(404)},
-    {Node::kM16, Kind::kRequest, nullptr, "RFC 9110 9.3.5: DELETE?",
-     to(Node::kM20), to(Node::kN16)},
+    {Node::kM16, Kind::kRequest, nullptr, "RFC 9110 9.3.5: DELETE?", to(Node::kM20),
+     to(Node::kN16)},
     {Node::kM20, Kind::kAction, "delete_resource", "RFC 9110 9.3.5; false is 500 (15.6.1)",
      to(Node::kM20b), halt(500)},
     {Node::kM20b, Kind::kResource, "delete_completed?", "RFC 9110 15.3.3 (202) when async",
@@ -227,15 +274,13 @@ inline constexpr FlowNode kFlow[] = {
     {Node::kN5, Kind::kResource, "allow_missing_post?", "RFC 9110 9.3.3 / 15.5.11 (410)",
      to(Node::kN11), halt(410)},
     {Node::kN11, Kind::kAction, "post_is_create?",
-     "RFC 9110 9.3.3: create_path/base_uri or process_post; redirect is 303 (15.4.4)",
-     halt(303), to(Node::kP11)},
-    {Node::kN16, Kind::kRequest, nullptr, "RFC 9110 9.3.3: POST?",
-     to(Node::kN11), to(Node::kO16)},
+     "RFC 9110 9.3.3: create_path/base_uri or process_post; redirect is 303 (15.4.4)", halt(303),
+     to(Node::kP11)},
+    {Node::kN16, Kind::kRequest, nullptr, "RFC 9110 9.3.3: POST?", to(Node::kN11), to(Node::kO16)},
     {Node::kO14, Kind::kAction, "is_conflict?",
-     "RFC 9110 15.5.10 (409); false runs content_types_accepted (accept_helper)",
-     halt(409), to(Node::kP11)},
-    {Node::kO16, Kind::kRequest, nullptr, "RFC 9110 9.3.4: PUT?",
-     to(Node::kO14), to(Node::kO18)},
+     "RFC 9110 15.5.10 (409); false runs content_types_accepted (accept_helper)", halt(409),
+     to(Node::kP11)},
+    {Node::kO16, Kind::kRequest, nullptr, "RFC 9110 9.3.4: PUT?", to(Node::kO14), to(Node::kO18)},
     {Node::kO18, Kind::kAction, "content_types_provided",
      "GET/HEAD render the body through the negotiated handler; caching headers land here",
      to(Node::kO18b), to(Node::kO18b)},
@@ -244,36 +289,41 @@ inline constexpr FlowNode kFlow[] = {
     {Node::kO20, Kind::kRequest, nullptr, "RFC 9110 15.3.5 (204): response carries no entity",
      to(Node::kO18), halt(204)},
     {Node::kP3, Kind::kAction, "is_conflict?",
-     "RFC 9110 15.5.10 (409); false runs content_types_accepted (accept_helper)",
-     halt(409), to(Node::kP11)},
-    {Node::kP11, Kind::kRequest, nullptr, "RFC 9110 15.3.2 (201): Location was set",
-     halt(201), to(Node::kO20)},
+     "RFC 9110 15.5.10 (409); false runs content_types_accepted (accept_helper)", halt(409),
+     to(Node::kP11)},
+    {Node::kP11, Kind::kRequest, nullptr, "RFC 9110 15.3.2 (201): Location was set", halt(201),
+     to(Node::kO20)},
 };
 
 inline constexpr size_t kNodeCount = sizeof(kFlow) / sizeof(kFlow[0]);
 static_assert(kNodeCount == static_cast<size_t>(Node::kCount), "one entry per node");
 
 // Proof: the table is indexed by its own ids.
-constexpr bool ids_in_order() {
-  for (size_t i = 0; i < kNodeCount; i++) {
-    if (kFlow[i].id != static_cast<Node>(i)) return false;
-  }
-  return true;
+constexpr bool ids_in_order()
+{
+    for (size_t i = 0; i < kNodeCount; i++) {
+        if (kFlow[i].id != static_cast<Node>(i))
+            return false;
+    }
+    return true;
 }
 static_assert(ids_in_order(), "kFlow order must match Node order");
 
-constexpr bool target_names_a_node_or_a_status(const Target& t) {
-  if (t.status == 0) return t.node < Node::kCount;
-  return t.status >= 100 && t.status <= 599;
+constexpr bool target_names_a_node_or_a_status(const Target &t)
+{
+    if (t.status == 0)
+        return t.node < Node::kCount;
+    return t.status >= 100 && t.status <= 599;
 }
-constexpr bool both_targets_of_every_node_name_one() {
-  for (size_t i = 0; i < kNodeCount; i++) {
-    if (!target_names_a_node_or_a_status(kFlow[i].on_true) ||
-        !target_names_a_node_or_a_status(kFlow[i].on_false)) {
-      return false;
+constexpr bool both_targets_of_every_node_name_one()
+{
+    for (size_t i = 0; i < kNodeCount; i++) {
+        if (!target_names_a_node_or_a_status(kFlow[i].on_true) ||
+            !target_names_a_node_or_a_status(kFlow[i].on_false)) {
+            return false;
+        }
     }
-  }
-  return true;
+    return true;
 }
 static_assert(both_targets_of_every_node_name_one(), "every edge continues or halts");
 
@@ -286,46 +336,59 @@ static_assert(both_targets_of_every_node_name_one(), "every edge continues or ha
 // path instead is exponential in the branches, and crashed gcc 16's
 // constexpr evaluator.
 enum : uint8_t { kUnseen = 0, kOnThePath = 1, kFinished = 2 };
-constexpr bool no_cycle_from(Node n, uint8_t (&colour)[kNodeCount]) {
-  const size_t i = static_cast<size_t>(n);
-  if (colour[i] == kOnThePath) return false;
-  if (colour[i] == kFinished) return true;
-  colour[i] = kOnThePath;
-  const FlowNode& f = kFlow[i];
-  if (f.on_true.status == 0 && !no_cycle_from(f.on_true.node, colour)) return false;
-  if (f.on_false.status == 0 && !no_cycle_from(f.on_false.node, colour)) return false;
-  colour[i] = kFinished;
-  return true;
+constexpr bool no_cycle_from(Node n, uint8_t (&colour)[kNodeCount])
+{
+    const size_t i = static_cast<size_t>(n);
+    if (colour[i] == kOnThePath)
+        return false;
+    if (colour[i] == kFinished)
+        return true;
+    colour[i] = kOnThePath;
+    const FlowNode &f = kFlow[i];
+    if (f.on_true.status == 0 && !no_cycle_from(f.on_true.node, colour))
+        return false;
+    if (f.on_false.status == 0 && !no_cycle_from(f.on_false.node, colour))
+        return false;
+    colour[i] = kFinished;
+    return true;
 }
-constexpr bool the_flow_is_acyclic() {
-  uint8_t colour[kNodeCount] = {};
-  return no_cycle_from(Node::kB13, colour);
+constexpr bool the_flow_is_acyclic()
+{
+    uint8_t colour[kNodeCount] = {};
+    return no_cycle_from(Node::kB13, colour);
 }
 static_assert(the_flow_is_acyclic(), "the flow is acyclic from B13");
 
 // Proof: reachability, both branches from every node.
-constexpr void mark(Node n, bool (&seen)[kNodeCount]) {
-  const size_t i = static_cast<size_t>(n);
-  if (seen[i]) return;
-  seen[i] = true;
-  const FlowNode& f = kFlow[i];
-  if (f.on_true.status == 0) mark(f.on_true.node, seen);
-  if (f.on_false.status == 0) mark(f.on_false.node, seen);
+constexpr void mark(Node n, bool (&seen)[kNodeCount])
+{
+    const size_t i = static_cast<size_t>(n);
+    if (seen[i])
+        return;
+    seen[i] = true;
+    const FlowNode &f = kFlow[i];
+    if (f.on_true.status == 0)
+        mark(f.on_true.node, seen);
+    if (f.on_false.status == 0)
+        mark(f.on_false.node, seen);
 }
 // Proof: no dead entry - a dead node would be an untested lie.
-constexpr bool all_reachable() {
-  bool seen[kNodeCount] = {};
-  mark(Node::kB13, seen);
-  for (bool s : seen) {
-    if (!s) return false;
-  }
-  return true;
+constexpr bool all_reachable()
+{
+    bool seen[kNodeCount] = {};
+    mark(Node::kB13, seen);
+    for (bool s : seen) {
+        if (!s)
+            return false;
+    }
+    return true;
 }
 static_assert(all_reachable(), "every node is reachable from B13");
 
-}
+} // namespace webmachine::flow
 
-namespace webmachine::flow {
+namespace webmachine::flow
+{
 // RFC 9110 9.3: the methods this server names. kOther is not a method -
 // it is "some token we did not recognise", which b12 turns into 501.
 enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOther };
@@ -344,78 +407,107 @@ enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOthe
 //                               from DNT and Sec-GPC, neither of which
 //                               any RFC defines
 struct ReqFacts {
-  Method method = Method::kGet;
-  bool has_accept = false;
-  bool has_accept_language = false;
-  bool has_accept_charset = false;
-  bool has_accept_encoding = false;
-  bool has_if_match = false;
-  bool if_match_star = false;
-  bool has_if_unmodified_since = false;
-  bool if_unmodified_since_valid = false;
-  bool has_if_none_match = false;
-  bool if_none_match_star = false;
-  bool has_if_modified_since = false;
-  bool if_modified_since_valid = false;
-  bool if_modified_since_future = false;
-  // RFC 9110 12.5.1: whether this request's Accept names a media type
-  // the bound resource offers. True by default so a request without an
-  // Accept header negotiates nothing, exactly as c3 sends it.
-  bool accept_ok = true;
-  bool response_has_location = false;
-  bool response_has_body = true;
-  bool plain = true;
-  bool no_track = false;
+    Method method = Method::kGet;
+    bool has_accept = false;
+    bool has_accept_language = false;
+    bool has_accept_charset = false;
+    bool has_accept_encoding = false;
+    bool has_if_match = false;
+    bool if_match_star = false;
+    bool has_if_unmodified_since = false;
+    bool if_unmodified_since_valid = false;
+    bool has_if_none_match = false;
+    bool if_none_match_star = false;
+    bool has_if_modified_since = false;
+    bool if_modified_since_valid = false;
+    bool if_modified_since_future = false;
+    // RFC 9110 12.5.1: whether this request's Accept names a media type
+    // the bound resource offers. True by default so a request without an
+    // Accept header negotiates nothing, exactly as c3 sends it.
+    bool accept_ok = true;
+    bool response_has_location = false;
+    bool response_has_body = true;
+    bool plain = true;
+    bool no_track = false;
 
-  // RFC 9110 12.5: did the request name any of the four negotiation fields?
-  // Derived, never stored - a second copy is a second thing to keep true.
-  constexpr bool names_a_conneg_field() const {
-    return has_accept || has_accept_language || has_accept_charset || has_accept_encoding;
-  }
-  // RFC 9110 13: the same question for the four conditional fields.
-  constexpr bool names_a_conditional_field() const {
-    return has_if_match || has_if_unmodified_since || has_if_none_match ||
-           has_if_modified_since;
-  }
+    // RFC 9110 12.5: did the request name any of the four negotiation fields?
+    // Derived, never stored - a second copy is a second thing to keep true.
+    constexpr bool names_a_conneg_field() const
+    {
+        return has_accept || has_accept_language || has_accept_charset || has_accept_encoding;
+    }
+    // RFC 9110 13: the same question for the four conditional fields.
+    constexpr bool names_a_conditional_field() const
+    {
+        return has_if_match || has_if_unmodified_since || has_if_none_match ||
+               has_if_modified_since;
+    }
 };
 
 // No RFC: the fold's own result. What a resource answered at setup, once,
 // for every node whose answer cannot change per request.
 struct KonstAnswers {
-  bool ans[kNodeCount] = {};
+    bool ans[kNodeCount] = {};
 };
 
 // RFC 9110: the kRequest nodes - decided from the parsed request alone,
 // never from the VM.
-constexpr bool eval_request(Node id, const ReqFacts& r) {
-  switch (id) {
-    case Node::kB3: return r.method == Method::kOptions;
-    case Node::kC3: return r.has_accept;
-    case Node::kC4: return r.accept_ok;
-    case Node::kD4: return r.has_accept_language;
-    case Node::kE5: return r.has_accept_charset;
-    case Node::kF6: return r.has_accept_encoding;
-    case Node::kG8: return r.has_if_match;
-    case Node::kG9: return r.if_match_star;
-    case Node::kH7: return r.has_if_match && r.if_match_star;
-    case Node::kH10: return r.has_if_unmodified_since;
-    case Node::kH11: return r.if_unmodified_since_valid;
-    case Node::kI7: return r.method == Method::kPut;
-    case Node::kI12: return r.has_if_none_match;
-    case Node::kI13: return r.if_none_match_star;
-    case Node::kJ18: return r.method == Method::kGet || r.method == Method::kHead;
-    case Node::kL7: return r.method == Method::kPost;
-    case Node::kL13: return r.has_if_modified_since;
-    case Node::kL14: return r.if_modified_since_valid;
-    case Node::kL15: return r.if_modified_since_future;
-    case Node::kM5: return r.method == Method::kPost;
-    case Node::kM16: return r.method == Method::kDelete;
-    case Node::kN16: return r.method == Method::kPost;
-    case Node::kO16: return r.method == Method::kPut;
-    case Node::kO20: return r.response_has_body;
-    case Node::kP11: return r.response_has_location;
-    default: return false;
-  }
+constexpr bool eval_request(Node id, const ReqFacts &r)
+{
+    switch (id) {
+        case Node::kB3:
+            return r.method == Method::kOptions;
+        case Node::kC3:
+            return r.has_accept;
+        case Node::kC4:
+            return r.accept_ok;
+        case Node::kD4:
+            return r.has_accept_language;
+        case Node::kE5:
+            return r.has_accept_charset;
+        case Node::kF6:
+            return r.has_accept_encoding;
+        case Node::kG8:
+            return r.has_if_match;
+        case Node::kG9:
+            return r.if_match_star;
+        case Node::kH7:
+            return r.has_if_match && r.if_match_star;
+        case Node::kH10:
+            return r.has_if_unmodified_since;
+        case Node::kH11:
+            return r.if_unmodified_since_valid;
+        case Node::kI7:
+            return r.method == Method::kPut;
+        case Node::kI12:
+            return r.has_if_none_match;
+        case Node::kI13:
+            return r.if_none_match_star;
+        case Node::kJ18:
+            return r.method == Method::kGet || r.method == Method::kHead;
+        case Node::kL7:
+            return r.method == Method::kPost;
+        case Node::kL13:
+            return r.has_if_modified_since;
+        case Node::kL14:
+            return r.if_modified_since_valid;
+        case Node::kL15:
+            return r.if_modified_since_future;
+        case Node::kM5:
+            return r.method == Method::kPost;
+        case Node::kM16:
+            return r.method == Method::kDelete;
+        case Node::kN16:
+            return r.method == Method::kPost;
+        case Node::kO16:
+            return r.method == Method::kPut;
+        case Node::kO20:
+            return r.response_has_body;
+        case Node::kP11:
+            return r.response_has_location;
+        default:
+            return false;
+    }
 }
 
 // RFC 9110: the graph, run with this request's facts and a resource's
@@ -429,48 +521,56 @@ inline constexpr Node kAfterConneg = Node::kG7;
 // g8 -> h10 -> i12 -> l13 -> m16.
 inline constexpr Node kAfterConditional = Node::kM16;
 
-constexpr uint16_t walk(const ReqFacts& req, const KonstAnswers& k) {
-  Node n = Node::kB13;
-  for (;;) {
-    if (n == Node::kC3 && !req.names_a_conneg_field()) n = kAfterConneg;
-    else if (n == Node::kG8 && !req.names_a_conditional_field()) n = kAfterConditional;
-    const FlowNode& f = kFlow[static_cast<size_t>(n)];
-    // c4 reads the request as surely as any kRequest node does - it is the
-    // client's Accept against this resource's types, and no fold can bake
-    // that. The other kConneg nodes (d5/e6/f7) stay konst: languages and
-    // charsets are named refusal in this tree, so their answer never moves.
-    const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
-                         ? eval_request(n, req)
-                         : k.ans[static_cast<size_t>(n)];
-    const Target& t = ans ? f.on_true : f.on_false;
-    if (t.status != 0) return t.status;
-    n = t.node;
-  }
+constexpr uint16_t walk(const ReqFacts &req, const KonstAnswers &k)
+{
+    Node n = Node::kB13;
+    for (;;) {
+        if (n == Node::kC3 && !req.names_a_conneg_field())
+            n = kAfterConneg;
+        else if (n == Node::kG8 && !req.names_a_conditional_field())
+            n = kAfterConditional;
+        const FlowNode &f = kFlow[static_cast<size_t>(n)];
+        // c4 reads the request as surely as any kRequest node does - it is the
+        // client's Accept against this resource's types, and no fold can bake
+        // that. The other kConneg nodes (d5/e6/f7) stay konst: languages and
+        // charsets are named refusal in this tree, so their answer never moves.
+        const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
+                             ? eval_request(n, req)
+                             : k.ans[static_cast<size_t>(n)];
+        const Target &t = ans ? f.on_true : f.on_false;
+        if (t.status != 0)
+            return t.status;
+        n = t.node;
+    }
 }
 
 struct Shortcut {
-  uint16_t status = 0;
-  bool always = false;
+    uint16_t status = 0;
+    bool always = false;
 };
 
 // One walk of the graph in progress: the konst answers it follows, and
 // which nodes it has already stood on.
 struct Walk {
-  const KonstAnswers& answers;
-  bool* seen;
+    const KonstAnswers &answers;
+    bool *seen;
 };
 
 // c4 counts as one, for the reason walk() gives above.
-constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w) {
-  const KonstAnswers& k = w.answers;
-  bool* const seen = w.seen;
-  if (seen[static_cast<size_t>(n)]) return false;
-  seen[static_cast<size_t>(n)] = true;
-  const FlowNode& f = kFlow[static_cast<size_t>(n)];
-  if (f.kind == Kind::kRequest || n == Node::kC4) return true;
-  const Target& t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
-  if (t.status != 0) return false;
-  return reaches_a_node_that_reads_the_request(t.node, w);
+constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w)
+{
+    const KonstAnswers &k = w.answers;
+    bool *const seen = w.seen;
+    if (seen[static_cast<size_t>(n)])
+        return false;
+    seen[static_cast<size_t>(n)] = true;
+    const FlowNode &f = kFlow[static_cast<size_t>(n)];
+    if (f.kind == Kind::kRequest || n == Node::kC4)
+        return true;
+    const Target &t = k.ans[static_cast<size_t>(n)] ? f.on_true : f.on_false;
+    if (t.status != 0)
+        return false;
+    return reaches_a_node_that_reads_the_request(t.node, w);
 }
 
 // The two skips above are claims about the graph, so the graph is asked.
@@ -479,40 +579,45 @@ constexpr bool reaches_a_node_that_reads_the_request(Node n, Walk w) {
 // halt or a wrong exit both fail the assert below.
 // The request as parsed, and what the fold decided for this resource.
 struct Given {
-  const ReqFacts& req;
-  const KonstAnswers& konst;
+    const ReqFacts &req;
+    const KonstAnswers &konst;
 };
 
-constexpr Node lands_on(Node from, Given g) {
-  const ReqFacts& req = g.req;
-  const KonstAnswers& k = g.konst;
-  Node n = from;
-  for (size_t step = 0; step < kNodeCount; step++) {
-    const FlowNode& f = kFlow[static_cast<size_t>(n)];
-    const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
-                         ? eval_request(n, req)
-                         : k.ans[static_cast<size_t>(n)];
-    const Target& t = ans ? f.on_true : f.on_false;
-    if (t.status != 0) return Node::kB13;  // halted: not an exit
-    n = t.node;
-    if (n == kAfterConneg || n == kAfterConditional) return n;
-  }
-  return Node::kB13;
+constexpr Node lands_on(Node from, Given g)
+{
+    const ReqFacts &req = g.req;
+    const KonstAnswers &k = g.konst;
+    Node n = from;
+    for (size_t step = 0; step < kNodeCount; step++) {
+        const FlowNode &f = kFlow[static_cast<size_t>(n)];
+        const bool ans = (f.kind == Kind::kRequest || n == Node::kC4)
+                             ? eval_request(n, req)
+                             : k.ans[static_cast<size_t>(n)];
+        const Target &t = ans ? f.on_true : f.on_false;
+        if (t.status != 0)
+            return Node::kB13; // halted: not an exit
+        n = t.node;
+        if (n == kAfterConneg || n == kAfterConditional)
+            return n;
+    }
+    return Node::kB13;
 }
 
 // Neither block's chain reads konst - c4/d5/e6/f7 and g9/g11/h11/h12/i13/
 // k13/l14/l15/l17 all hang off a has_* that is false here - so both konst
 // extremes have to give the same exit, for every method.
-constexpr bool block_skips_are_the_graphs(Method m) {
-  ReqFacts absent;
-  absent.method = m;
-  KonstAnswers all_false{};
-  KonstAnswers all_true{};
-  for (size_t i = 0; i < kNodeCount; i++) all_true.ans[i] = true;
-  return lands_on(Node::kC3, {absent, all_false}) == kAfterConneg &&
-         lands_on(Node::kC3, {absent, all_true}) == kAfterConneg &&
-         lands_on(Node::kG8, {absent, all_false}) == kAfterConditional &&
-         lands_on(Node::kG8, {absent, all_true}) == kAfterConditional;
+constexpr bool block_skips_are_the_graphs(Method m)
+{
+    ReqFacts absent;
+    absent.method = m;
+    KonstAnswers all_false{};
+    KonstAnswers all_true{};
+    for (size_t i = 0; i < kNodeCount; i++)
+        all_true.ans[i] = true;
+    return lands_on(Node::kC3, {absent, all_false}) == kAfterConneg &&
+           lands_on(Node::kC3, {absent, all_true}) == kAfterConneg &&
+           lands_on(Node::kG8, {absent, all_false}) == kAfterConditional &&
+           lands_on(Node::kG8, {absent, all_true}) == kAfterConditional;
 }
 static_assert(block_skips_are_the_graphs(Method::kGet));
 static_assert(block_skips_are_the_graphs(Method::kHead));
@@ -524,104 +629,119 @@ static_assert(block_skips_are_the_graphs(Method::kOther));
 
 // RFC 9110: what the graph would say when it has nothing to decide -
 // from the same walk, run once with every header fact false.
-constexpr Shortcut shortcut_for(Method m, const KonstAnswers& k) {
-  Shortcut s;
-  ReqFacts plain_facts;
-  plain_facts.method = m;
-  s.status = walk(plain_facts, k);
-  bool seen[kNodeCount] = {};
-  s.always = !reaches_a_node_that_reads_the_request(Node::kB13, {k, seen});
-  return s;
+constexpr Shortcut shortcut_for(Method m, const KonstAnswers &k)
+{
+    Shortcut s;
+    ReqFacts plain_facts;
+    plain_facts.method = m;
+    s.status = walk(plain_facts, k);
+    bool seen[kNodeCount] = {};
+    s.always = !reaches_a_node_that_reads_the_request(Node::kB13, {k, seen});
+    return s;
 }
 
 // What the fold settled about one resource, for one method: the konst
 // answers the walk follows, and the shortcut that says when it need not
 // walk at all.
 struct Decided {
-  const KonstAnswers& konst;
-  const Shortcut& shortcut;
+    const KonstAnswers &konst;
+    const Shortcut &shortcut;
 };
 
 // RFC 9110: the one entry point the request path calls. Two integer tests
 // where the graph could not have said anything else.
-constexpr uint16_t answer(const ReqFacts& req, Decided d) {
-  if (d.shortcut.always || (req.plain && !req.has_accept)) return d.shortcut.status;
-  return walk(req, d.konst);
+constexpr uint16_t answer(const ReqFacts &req, Decided d)
+{
+    if (d.shortcut.always || (req.plain && !req.has_accept))
+        return d.shortcut.status;
+    return walk(req, d.konst);
 }
 
-namespace detail {
+namespace detail
+{
 // The whole remaining walk from N, unrolled: K's answers are constants,
 // so only kRequest nodes survive as branches.
-template <KonstAnswers K, Node N>
-constexpr uint16_t status_reached_from(const ReqFacts& req) {
-  constexpr FlowNode f = kFlow[static_cast<size_t>(N)];
-  if constexpr (f.kind != Kind::kRequest) {
-    constexpr Target t = K.ans[static_cast<size_t>(N)] ? f.on_true : f.on_false;
-    if constexpr (t.status != 0) return t.status;
-    else return status_reached_from<K, t.node>(req);
-  } else {
-    if (eval_request(N, req)) {
-      if constexpr (f.on_true.status != 0) return f.on_true.status;
-      else return status_reached_from<K, f.on_true.node>(req);
+template <KonstAnswers K, Node N> constexpr uint16_t status_reached_from(const ReqFacts &req)
+{
+    constexpr FlowNode f = kFlow[static_cast<size_t>(N)];
+    if constexpr (f.kind != Kind::kRequest) {
+        constexpr Target t = K.ans[static_cast<size_t>(N)] ? f.on_true : f.on_false;
+        if constexpr (t.status != 0)
+            return t.status;
+        else
+            return status_reached_from<K, t.node>(req);
     } else {
-      if constexpr (f.on_false.status != 0) return f.on_false.status;
-      else return status_reached_from<K, f.on_false.node>(req);
+        if (eval_request(N, req)) {
+            if constexpr (f.on_true.status != 0)
+                return f.on_true.status;
+            else
+                return status_reached_from<K, f.on_true.node>(req);
+        } else {
+            if constexpr (f.on_false.status != 0)
+                return f.on_false.status;
+            else
+                return status_reached_from<K, f.on_false.node>(req);
+        }
     }
-  }
 }
-}
+} // namespace detail
 
-template <KonstAnswers K>
-constexpr uint16_t walk_compiled(const ReqFacts& req) {
-  return detail::status_reached_from<K, Node::kB13>(req);
+template <KonstAnswers K> constexpr uint16_t walk_compiled(const ReqFacts &req)
+{
+    return detail::status_reached_from<K, Node::kB13>(req);
 }
 
 // RFC 9110: webmachine-ruby's Resource defaults, folded per method.
-constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m) {
-  KonstAnswers k{};
-  k.ans[static_cast<size_t>(Node::kB13)] = true;
-  k.ans[static_cast<size_t>(Node::kB12)] = m != Method::kOther;
-  k.ans[static_cast<size_t>(Node::kB11)] = false;
-  k.ans[static_cast<size_t>(Node::kB10)] = m == Method::kGet || m == Method::kHead;
-  k.ans[static_cast<size_t>(Node::kB9b)] = false;
-  k.ans[static_cast<size_t>(Node::kB8)] = true;
-  k.ans[static_cast<size_t>(Node::kB7)] = false;
-  k.ans[static_cast<size_t>(Node::kB6)] = true;
-  k.ans[static_cast<size_t>(Node::kB5)] = true;
-  k.ans[static_cast<size_t>(Node::kB4)] = true;
-  k.ans[static_cast<size_t>(Node::kG7)] = true;
-  k.ans[static_cast<size_t>(Node::kC4)] = true;
-  k.ans[static_cast<size_t>(Node::kD5)] = true;
-  k.ans[static_cast<size_t>(Node::kE6)] = true;
-  k.ans[static_cast<size_t>(Node::kF7)] = true;
-  k.ans[static_cast<size_t>(Node::kL17)] = true;
-  k.ans[static_cast<size_t>(Node::kM20b)] = true;
-  k.ans[static_cast<size_t>(Node::kO18)] = true;
-  k.ans[static_cast<size_t>(Node::kO18b)] = false;
-  return k;
+constexpr KonstAnswers answers_of_an_unoverridden_resource(Method m)
+{
+    KonstAnswers k{};
+    k.ans[static_cast<size_t>(Node::kB13)] = true;
+    k.ans[static_cast<size_t>(Node::kB12)] = m != Method::kOther;
+    k.ans[static_cast<size_t>(Node::kB11)] = false;
+    k.ans[static_cast<size_t>(Node::kB10)] = m == Method::kGet || m == Method::kHead;
+    k.ans[static_cast<size_t>(Node::kB9b)] = false;
+    k.ans[static_cast<size_t>(Node::kB8)] = true;
+    k.ans[static_cast<size_t>(Node::kB7)] = false;
+    k.ans[static_cast<size_t>(Node::kB6)] = true;
+    k.ans[static_cast<size_t>(Node::kB5)] = true;
+    k.ans[static_cast<size_t>(Node::kB4)] = true;
+    k.ans[static_cast<size_t>(Node::kG7)] = true;
+    k.ans[static_cast<size_t>(Node::kC4)] = true;
+    k.ans[static_cast<size_t>(Node::kD5)] = true;
+    k.ans[static_cast<size_t>(Node::kE6)] = true;
+    k.ans[static_cast<size_t>(Node::kF7)] = true;
+    k.ans[static_cast<size_t>(Node::kL17)] = true;
+    k.ans[static_cast<size_t>(Node::kM20b)] = true;
+    k.ans[static_cast<size_t>(Node::kO18)] = true;
+    k.ans[static_cast<size_t>(Node::kO18b)] = false;
+    return k;
 }
 
 struct KonstSet {
-  KonstAnswers per_method[7];
-  Shortcut shortcut[7];
-  std::string allow = "GET, HEAD";
-  std::string body = "OK";
-  std::string content_type;
-  // RFC 9110: a resource that overrides nothing - webmachine-ruby's defaults.
-  KonstSet() {
-    for (uint8_t m = 0; m < 7; m++) per_method[m] = answers_of_an_unoverridden_resource(static_cast<Method>(m));
-    resolve_shortcuts();
-  }
-  // RFC 9110: the shortcuts are derived from per_method; whoever changes
-  // one must call this.
-  void resolve_shortcuts() {
-    for (uint8_t m = 0; m < 7; m++) {
-      shortcut[m] = shortcut_for(static_cast<Method>(m), per_method[m]);
+    KonstAnswers per_method[7];
+    Shortcut shortcut[7];
+    std::string allow = "GET, HEAD";
+    std::string body = "OK";
+    std::string content_type;
+    // RFC 9110: a resource that overrides nothing - webmachine-ruby's defaults.
+    KonstSet()
+    {
+        for (uint8_t m = 0; m < 7; m++)
+            per_method[m] = answers_of_an_unoverridden_resource(static_cast<Method>(m));
+        resolve_shortcuts();
     }
-  }
+    // RFC 9110: the shortcuts are derived from per_method; whoever changes
+    // one must call this.
+    void resolve_shortcuts()
+    {
+        for (uint8_t m = 0; m < 7; m++) {
+            shortcut[m] = shortcut_for(static_cast<Method>(m), per_method[m]);
+        }
+    }
 };
 
-namespace proof {
+namespace proof
+{
 constexpr ReqFacts get_plain{};
 static_assert(walk(get_plain, answers_of_an_unoverridden_resource(Method::kGet)) == 200,
               "plain GET on the default resource is 200");
@@ -641,9 +761,9 @@ constexpr ReqFacts options{.method = Method::kOptions};
 static_assert(walk(options, answers_of_an_unoverridden_resource(Method::kOptions)) == 405,
               "OPTIONS not in default allowed_methods dies at B10 like anything else");
 constexpr KonstAnswers options_allowed = [] {
-  KonstAnswers k = answers_of_an_unoverridden_resource(Method::kOptions);
-  k.ans[static_cast<size_t>(Node::kB10)] = true;
-  return k;
+    KonstAnswers k = answers_of_an_unoverridden_resource(Method::kOptions);
+    k.ans[static_cast<size_t>(Node::kB10)] = true;
+    return k;
 }();
 static_assert(walk(options, options_allowed) == 200,
               "OPTIONS answers 200 from options() once allowed (B3)");
@@ -655,32 +775,33 @@ static_assert(walk(if_none_match_star, answers_of_an_unoverridden_resource(Metho
               "GET with If-None-Match: * on an existing resource is 304");
 constexpr ReqFacts im_star_missing{.has_if_match = true, .if_match_star = true};
 constexpr KonstAnswers missing = [] {
-  KonstAnswers k = answers_of_an_unoverridden_resource(Method::kGet);
-  k.ans[static_cast<size_t>(Node::kG7)] = false;
-  return k;
+    KonstAnswers k = answers_of_an_unoverridden_resource(Method::kGet);
+    k.ans[static_cast<size_t>(Node::kG7)] = false;
+    return k;
 }();
 static_assert(walk(im_star_missing, missing) == 412,
               "If-Match: * against a missing resource is 412 (H7)");
-static_assert(walk(get_plain, missing) == 404,
-              "GET on a never-existed resource is 404 (L7)");
+static_assert(walk(get_plain, missing) == 404, "GET on a never-existed resource is 404 (L7)");
 static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kGet)>(get_plain) == 200);
 static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kDelete)>(del) == 405);
-static_assert(walk_compiled<answers_of_an_unoverridden_resource(Method::kGet)>(if_none_match_star) == 304);
+static_assert(
+    walk_compiled<answers_of_an_unoverridden_resource(Method::kGet)>(if_none_match_star) == 304);
 static_assert(walk_compiled<missing>(im_star_missing) == 412);
 static_assert(walk_compiled<missing>(get_plain) == 404);
-}
-}
+} // namespace proof
+} // namespace webmachine::flow
 
 // The three classes this library refuses with. Defined here, above the
 // first raise, because a refusal is one of these.
-#define E_WM_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
-#define E_WM_CONFIG_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ConfigError)))
-#define E_WM_ROUTE_ERROR(mrb) \
-  (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(RouteError)))
+#define E_WM_ERROR(mrb)                                                                            \
+    (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
+#define E_WM_CONFIG_ERROR(mrb)                                                                     \
+    (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ConfigError)))
+#define E_WM_ROUTE_ERROR(mrb)                                                                      \
+    (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(RouteError)))
 
-namespace webmachine {
+namespace webmachine
+{
 
 // mruby's GC arena is a stack, and a setup that gives up has to leave it
 // where it found it. A raise here is a C++ throw, so a destructor is the
@@ -691,61 +812,74 @@ namespace webmachine {
 // The same, for what mrb_protect_error hands back rather than leaves in
 // mrb->exc. Only an exception object can be raised, and this returns
 // whatever was pending.
-[[noreturn]] inline void reraise(mrb_state* mrb, mrb_value pending) {
-  if (mrb_exception_p(pending)) mrb_exc_raise(mrb, pending);
-  mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
-  // mrb_noreturn resolves to nothing under -std=c++20 (common.h asks for
-  // __GNUC__ && !__STRICT_ANSI__), so the compiler cannot see that the
-  // two raises above end this function, and it warns that a [[noreturn]]
-  // one returns. Ring::fatal says the same at its own raise.
-  WM_UNREACHABLE();
+[[noreturn]] inline void reraise(mrb_state *mrb, mrb_value pending)
+{
+    if (mrb_exception_p(pending))
+        mrb_exc_raise(mrb, pending);
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
+    // mrb_noreturn resolves to nothing under -std=c++20 (common.h asks for
+    // __GNUC__ && !__STRICT_ANSI__), so the compiler cannot see that the
+    // two raises above end this function, and it warns that a [[noreturn]]
+    // one returns. Ring::fatal says the same at its own raise.
+    WM_UNREACHABLE();
 }
 
-[[noreturn]] inline void rethrow(mrb_state* mrb) {
-  const mrb_value exc = mrb_obj_value(mrb->exc);
-  mrb->exc = nullptr;
-  reraise(mrb, exc);
+[[noreturn]] inline void rethrow(mrb_state *mrb)
+{
+    const mrb_value exc = mrb_obj_value(mrb->exc);
+    mrb->exc = nullptr;
+    reraise(mrb, exc);
 }
 
 // An sqe from this ring, or a raise. A full submission queue is
 // submitted once, and a queue still full after that is raised.
-inline struct io_uring_sqe* sqe_or_raise(mrb_state* mrb, struct io_uring* ring) {
-  struct io_uring_sqe* s = io_uring_get_sqe(ring);
-  if (s != nullptr) return s;
-  io_uring_submit(ring);
-  s = io_uring_get_sqe(ring);
-  if (s == nullptr) mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
-  return s;
+inline struct io_uring_sqe *sqe_or_raise(mrb_state *mrb, struct io_uring *ring)
+{
+    struct io_uring_sqe *s = io_uring_get_sqe(ring);
+    if (s != nullptr)
+        return s;
+    io_uring_submit(ring);
+    s = io_uring_get_sqe(ring);
+    if (s == nullptr)
+        mrb_raise(mrb, E_WM_ERROR(mrb), "the submission queue is full");
+    return s;
 }
 
 // mrb_open runs every gem init, and a gem init that raises leaves its
 // exception in mrb->exc with the VM otherwise standing. Such a VM is
 // not open: the error is printed, the VM is closed, and nullptr says so.
-inline mrb_state* open_vm_or_say(const char* who) {
-  mrb_state* const mrb = mrb_open();
-  if (mrb == nullptr) {
-    std::fprintf(stderr, "%s: mrb_open failed\n", who);
-    return nullptr;
-  }
-  if (mrb->exc != nullptr) {
-    std::fprintf(stderr, "%s: a gem init raised\n", who);
-    mrb_print_error(mrb);
-    mrb_close(mrb);
-    return nullptr;
-  }
-  return mrb;
+inline mrb_state *open_vm_or_say(const char *who)
+{
+    mrb_state *const mrb = mrb_open();
+    if (mrb == nullptr) {
+        std::fprintf(stderr, "%s: mrb_open failed\n", who);
+        return nullptr;
+    }
+    if (mrb->exc != nullptr) {
+        std::fprintf(stderr, "%s: a gem init raised\n", who);
+        mrb_print_error(mrb);
+        mrb_close(mrb);
+        return nullptr;
+    }
+    return mrb;
 }
 
-class ArenaGuard {
- public:
-  explicit ArenaGuard(mrb_state* mrb) : mrb_(mrb), at_(mrb_gc_arena_save(mrb)) {}
-  ~ArenaGuard() { mrb_gc_arena_restore(mrb_, at_); }
-  ArenaGuard(const ArenaGuard&) = delete;
-  ArenaGuard& operator=(const ArenaGuard&) = delete;
+class ArenaGuard
+{
+  public:
+    explicit ArenaGuard(mrb_state *mrb) : mrb_(mrb), at_(mrb_gc_arena_save(mrb))
+    {
+    }
+    ~ArenaGuard()
+    {
+        mrb_gc_arena_restore(mrb_, at_);
+    }
+    ArenaGuard(const ArenaGuard &) = delete;
+    ArenaGuard &operator=(const ArenaGuard &) = delete;
 
- private:
-  mrb_state* const mrb_;
-  const int at_;
+  private:
+    mrb_state *const mrb_;
+    const int at_;
 };
 
 // How many segments of a path one route may bind. It is mruby's own
@@ -763,191 +897,226 @@ inline constexpr size_t kMaxRouteBindings = 16;
 #endif
 
 struct RouteSpans {
-  struct Span {
-    const char* p;
-    size_t n;
-  };
-  Span bind[kMaxRouteBindings];
-  Span splat;
-  uint8_t nbind;
-  bool has_splat;
+    struct Span {
+        const char *p;
+        size_t n;
+    };
+    Span bind[kMaxRouteBindings];
+    Span splat;
+    uint8_t nbind;
+    bool has_splat;
 };
 
-class RouteTable {
- public:
-  enum Kind : uint8_t { kLiteral, kBinding, kSplat };
+class RouteTable
+{
+  public:
+    enum Kind : uint8_t { kLiteral, kBinding, kSplat };
 
-  // route.add: begin a route. abandon() rolls it back whole.
-  void open() {
-    pending_first_ = toks_.size();
-    pending_blob_ = blob_.size();
-    pending_binds_ = 0;
-    pending_splat_ = false;
-  }
-  // RFC 9110 4.2.1: a String token is a literal segment.
-  bool literal(const char* p, size_t n) {
-    if (n > 0xffffu) return false;
-    RouteToken t;
-    t.kind = kLiteral;
-    t.off = static_cast<uint32_t>(blob_.size());
-    t.len = static_cast<uint32_t>(n);
-    blob_.append(p, n);
-    toks_.push_back(t);
-    return true;
-  }
-  // RFC 9110 4.2.1: a Symbol token binds one segment; its id rides along
-  // so the request object can name what a span captured.
-  bool binding(uint32_t sym) {
-    if (pending_binds_ >= kMaxRouteBindings) return false;
-    pending_binds_++;
-    toks_.push_back(RouteToken{kBinding, sym, 0});
-    return true;
-  }
-
-  // The name of a route's i-th binding, in the order match() captured them.
-  uint32_t binding_sym(int route, uint8_t i) const {
-    const Route& rt = routes_[static_cast<size_t>(route)];
-    uint8_t seen = 0;
-    for (uint32_t t = 0; t < rt.count; t++) {
-      const RouteToken& tk = toks_[rt.first + t];
-      if (tk.kind != kBinding) continue;
-      if (seen == i) return tk.off;
-      seen++;
+    // route.add: begin a route. abandon() rolls it back whole.
+    void open()
+    {
+        pending_first_ = toks_.size();
+        pending_blob_ = blob_.size();
+        pending_binds_ = 0;
+        pending_splat_ = false;
     }
-    return 0;
-  }
-  // RFC 9110 4.2.1: :* is the tail, and by construction the last token.
-  void splat() {
-    pending_splat_ = true;
-    toks_.push_back(RouteToken{kSplat, 0, 0});
-  }
-  // Is the route under construction already splatted?
-  bool pending_splat() const { return pending_splat_; }
-  // route.add: the route stands.
-  void commit() {
-    Route r;
-    r.first = static_cast<uint32_t>(pending_first_);
-    r.count = static_cast<uint32_t>(toks_.size() - pending_first_);
-    routes_.push_back(r);
-  }
-  // route.add: a route that failed validation leaves nothing registered.
-  void abandon() {
-    toks_.resize(pending_first_);
-    blob_.resize(pending_blob_);
-  }
-
-  // How many routes this table holds.
-  size_t size() const { return routes_.size(); }
-  // Has this app any route of this kind at all?
-  bool empty() const { return routes_.empty(); }
-
-  // RFC 9110 4.2.1: the first route that matches wins (registration order).
-  // -1 is a miss, and a miss answers 404 before B13.
-  int match(const char* path, size_t len, RouteSpans& out) const {
-    // What the caller may read whatever this returns. The spans behind
-    // them are written only as far as nbind and has_splat admit, which
-    // is what lets RouteSpans stay uninitialized at the top of a
-    // request path.
-    out.nbind = 0;
-    out.has_splat = false;
-    size_t plen = len;
-    for (size_t i = 0; i < len; i++) {
-      if (path[i] == '?') {
-        plen = i;
-        break;
-      }
+    // RFC 9110 4.2.1: a String token is a literal segment.
+    bool literal(const char *p, size_t n)
+    {
+        if (n > 0xffffu)
+            return false;
+        RouteToken t;
+        t.kind = kLiteral;
+        t.off = static_cast<uint32_t>(blob_.size());
+        t.len = static_cast<uint32_t>(n);
+        blob_.append(p, n);
+        toks_.push_back(t);
+        return true;
     }
-    size_t start = 0;
-    if (start < plen && path[start] == '/') start++;
-    const char* blob = blob_.data();
-    const size_t n = routes_.size();
-    for (size_t r = 0; r < n; r++) {
-      const Route& rt = routes_[r];
-      size_t p = start;
-      uint8_t nb = 0;
-      bool ok = true;
-      bool splat = false;
-      for (uint32_t t = 0; t < rt.count; t++) {
-        const RouteToken& tk = toks_[rt.first + t];
-        if (tk.kind == kSplat) {
-          out.splat.p = path + p;
-          out.splat.n = plen - p;
-          p = plen;
-          splat = true;
-          break;
-        }
-        if (p >= plen) {
-          ok = false;
-          break;
-        }
-        const size_t seg = p;
-        while (p < plen && path[p] != '/') p++;
-        const size_t seglen = p - seg;
-        if (tk.kind == kLiteral) {
-          if (seglen != tk.len || std::memcmp(path + seg, blob + tk.off, seglen) != 0) {
-            ok = false;
-            break;
-          }
-        } else {
-          out.bind[nb].p = path + seg;
-          out.bind[nb].n = seglen;
-          nb++;
-        }
-        if (p < plen) p++;
-      }
-      if (!ok) continue;
-      if (!splat && p < plen) continue;
-      out.nbind = nb;
-      out.has_splat = splat;
-      return static_cast<int>(r);
+    // RFC 9110 4.2.1: a Symbol token binds one segment; its id rides along
+    // so the request object can name what a span captured.
+    bool binding(uint32_t sym)
+    {
+        if (pending_binds_ >= kMaxRouteBindings)
+            return false;
+        pending_binds_++;
+        toks_.push_back(RouteToken{kBinding, sym, 0});
+        return true;
     }
-    return -1;
-  }
 
- private:
-  struct RouteToken {
-    Kind kind;
-    uint32_t off;
-    uint32_t len;
-  };
-  struct Route {
-    uint32_t first;
-    uint32_t count;
-  };
-  std::string blob_;
-  std::vector<RouteToken> toks_;
-  std::vector<Route> routes_;
-  size_t pending_first_ = 0;
-  size_t pending_blob_ = 0;
-  size_t pending_binds_ = 0;
-  bool pending_splat_ = false;
+    // The name of a route's i-th binding, in the order match() captured them.
+    uint32_t binding_sym(int route, uint8_t i) const
+    {
+        const Route &rt = routes_[static_cast<size_t>(route)];
+        uint8_t seen = 0;
+        for (uint32_t t = 0; t < rt.count; t++) {
+            const RouteToken &tk = toks_[rt.first + t];
+            if (tk.kind != kBinding)
+                continue;
+            if (seen == i)
+                return tk.off;
+            seen++;
+        }
+        return 0;
+    }
+    // RFC 9110 4.2.1: :* is the tail, and by construction the last token.
+    void splat()
+    {
+        pending_splat_ = true;
+        toks_.push_back(RouteToken{kSplat, 0, 0});
+    }
+    // Is the route under construction already splatted?
+    bool pending_splat() const
+    {
+        return pending_splat_;
+    }
+    // route.add: the route stands.
+    void commit()
+    {
+        Route r;
+        r.first = static_cast<uint32_t>(pending_first_);
+        r.count = static_cast<uint32_t>(toks_.size() - pending_first_);
+        routes_.push_back(r);
+    }
+    // route.add: a route that failed validation leaves nothing registered.
+    void abandon()
+    {
+        toks_.resize(pending_first_);
+        blob_.resize(pending_blob_);
+    }
+
+    // How many routes this table holds.
+    size_t size() const
+    {
+        return routes_.size();
+    }
+    // Has this app any route of this kind at all?
+    bool empty() const
+    {
+        return routes_.empty();
+    }
+
+    // RFC 9110 4.2.1: the first route that matches wins (registration order).
+    // -1 is a miss, and a miss answers 404 before B13.
+    int match(const char *path, size_t len, RouteSpans &out) const
+    {
+        // What the caller may read whatever this returns. The spans behind
+        // them are written only as far as nbind and has_splat admit, which
+        // is what lets RouteSpans stay uninitialized at the top of a
+        // request path.
+        out.nbind = 0;
+        out.has_splat = false;
+        size_t plen = len;
+        for (size_t i = 0; i < len; i++) {
+            if (path[i] == '?') {
+                plen = i;
+                break;
+            }
+        }
+        size_t start = 0;
+        if (start < plen && path[start] == '/')
+            start++;
+        const char *blob = blob_.data();
+        const size_t n = routes_.size();
+        for (size_t r = 0; r < n; r++) {
+            const Route &rt = routes_[r];
+            size_t p = start;
+            uint8_t nb = 0;
+            bool ok = true;
+            bool splat = false;
+            for (uint32_t t = 0; t < rt.count; t++) {
+                const RouteToken &tk = toks_[rt.first + t];
+                if (tk.kind == kSplat) {
+                    out.splat.p = path + p;
+                    out.splat.n = plen - p;
+                    p = plen;
+                    splat = true;
+                    break;
+                }
+                if (p >= plen) {
+                    ok = false;
+                    break;
+                }
+                const size_t seg = p;
+                while (p < plen && path[p] != '/')
+                    p++;
+                const size_t seglen = p - seg;
+                if (tk.kind == kLiteral) {
+                    if (seglen != tk.len || std::memcmp(path + seg, blob + tk.off, seglen) != 0) {
+                        ok = false;
+                        break;
+                    }
+                } else {
+                    out.bind[nb].p = path + seg;
+                    out.bind[nb].n = seglen;
+                    nb++;
+                }
+                if (p < plen)
+                    p++;
+            }
+            if (!ok)
+                continue;
+            if (!splat && p < plen)
+                continue;
+            out.nbind = nb;
+            out.has_splat = splat;
+            return static_cast<int>(r);
+        }
+        return -1;
+    }
+
+  private:
+    struct RouteToken {
+        Kind kind;
+        uint32_t off;
+        uint32_t len;
+    };
+    struct Route {
+        uint32_t first;
+        uint32_t count;
+    };
+    std::string blob_;
+    std::vector<RouteToken> toks_;
+    std::vector<Route> routes_;
+    size_t pending_first_ = 0;
+    size_t pending_blob_ = 0;
+    size_t pending_binds_ = 0;
+    bool pending_splat_ = false;
 };
 
 // route.add: a route is open from its first token until it stands. Every
 // other way out of that window - a token that is not a segment, a class
 // the fold refuses - leaves nothing registered, and every one of those
 // ways out is a raise.
-class OpenRoute {
- public:
-  explicit OpenRoute(RouteTable& table) : table_(table) { table_.open(); }
-  ~OpenRoute() {
-    if (!stands_) table_.abandon();
-  }
-  OpenRoute(const OpenRoute&) = delete;
-  OpenRoute& operator=(const OpenRoute&) = delete;
-  // The route stands: there is nothing left to roll back.
-  void commit() {
-    table_.commit();
-    stands_ = true;
-  }
+class OpenRoute
+{
+  public:
+    explicit OpenRoute(RouteTable &table) : table_(table)
+    {
+        table_.open();
+    }
+    ~OpenRoute()
+    {
+        if (!stands_)
+            table_.abandon();
+    }
+    OpenRoute(const OpenRoute &) = delete;
+    OpenRoute &operator=(const OpenRoute &) = delete;
+    // The route stands: there is nothing left to roll back.
+    void commit()
+    {
+        table_.commit();
+        stands_ = true;
+    }
 
- private:
-  RouteTable& table_;
-  bool stands_ = false;
+  private:
+    RouteTable &table_;
+    bool stands_ = false;
 };
-}
+} // namespace webmachine
 
-namespace webmachine {
+namespace webmachine
+{
 // No RFC - and that is the finding worth writing down. The access log is
 // the NCSA Combined Log Format: something httpd shipped and everyone
 // copied, never specified, so no line here can be checked against a
@@ -955,18 +1124,18 @@ namespace webmachine {
 // spelled onto a line is not. Logger is this server's own plumbing - the
 // records are formatted here and drained by the ring to webmachine-logd.
 struct Logger {
-  bool enabled = false;
-  std::string pending;       // formatted, not yet handed to the ring
-  std::string flight;        // handed over; the kernel owns these bytes
-  bool in_flight = false;
-  int64_t unix_seconds = 0;  // the reactor's cached wall clock, per batch
-  // No RFC: what a log daemon that cannot keep up costs this process.
-  // One write flies at a time, so a slow disk or a daemon rewriting a
-  // capped file leaves every record of every request here until it
-  // catches up - memory the request rate decides. Past the ceiling the
-  // count is kept instead of the record, and the first record that fits
-  // again says on stderr how many there were.
-  size_t dropped = 0;
+    bool enabled = false;
+    std::string pending; // formatted, not yet handed to the ring
+    std::string flight;  // handed over; the kernel owns these bytes
+    bool in_flight = false;
+    int64_t unix_seconds = 0; // the reactor's cached wall clock, per batch
+    // No RFC: what a log daemon that cannot keep up costs this process.
+    // One write flies at a time, so a slow disk or a daemon rewriting a
+    // capped file leaves every record of every request here until it
+    // catches up - memory the request rate decides. Past the ceiling the
+    // count is kept instead of the record, and the first record that fits
+    // again says on stderr how many there were.
+    size_t dropped = 0;
 };
 // The ceiling. Four megabytes is thousands of records, which is minutes
 // of a daemon being slow rather than one of it being gone.
@@ -974,16 +1143,17 @@ inline constexpr size_t kLogQueueCap = 4u * 1024 * 1024;
 
 // True when this record has no room. The caller writes nothing and the
 // count carries what was lost.
-inline bool log_queue_full(Logger& lg) {
-  if (lg.pending.size() > kLogQueueCap) {
-    lg.dropped++;
-    return true;
-  }
-  if (lg.dropped != 0) {
-    std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n", lg.dropped);
-    lg.dropped = 0;
-  }
-  return false;
+inline bool log_queue_full(Logger &lg)
+{
+    if (lg.pending.size() > kLogQueueCap) {
+        lg.dropped++;
+        return true;
+    }
+    if (lg.dropped != 0) {
+        std::fprintf(stderr, "webmachine: the log fell behind - %zu records dropped\n", lg.dropped);
+        lg.dropped = 0;
+    }
+    return false;
 }
 
 // One response as one record. The format is ours (see Logger above); the
@@ -999,16 +1169,16 @@ inline bool log_queue_full(Logger& lg) {
 // The *_len fields are this record's framing, not content: their widths
 // are the truncation caps, which is why log_access clamps to them.
 struct LogRec {
-  uint8_t version;
-  uint8_t flags;
-  uint16_t status_code;
-  uint32_t content_length;
-  int64_t unix_seconds;
-  uint8_t method_token_len;
-  uint8_t peer_len;
-  uint16_t request_target_len;
-  uint16_t referer_len;
-  uint16_t user_agent_len;
+    uint8_t version;
+    uint8_t flags;
+    uint16_t status_code;
+    uint32_t content_length;
+    int64_t unix_seconds;
+    uint8_t method_token_len;
+    uint8_t peer_len;
+    uint16_t request_target_len;
+    uint16_t referer_len;
+    uint16_t user_agent_len;
 };
 inline constexpr uint8_t kLogRecVersion = 3;
 
@@ -1026,80 +1196,92 @@ inline constexpr uint8_t kLogRecVersion = 3;
 // Native widths and native order, because LMDB already refuses a file
 // written by another endianness or word size.
 struct PasswdRec {
-  uint8_t version;
-  uint8_t salt_len;
-  uint8_t hash_len;
-  uint8_t lanes;   // argon2's p
-  uint32_t m_kib;  // argon2's m, in KiB
-  uint32_t t;      // argon2's t
-  // When this user was first written, and when their password last
-  // changed. Seconds, the clock's, and they answer the questions an
-  // operator actually asks of a user list: who is new, and who has not
-  // changed a password since the cost was raised. A record whose m_kib
-  // is below what the machine now uses and whose mtime is old is
-  // exactly the row to ask about.
-  int64_t ctime;
-  int64_t mtime;
-  // salt_len bytes of salt follow, then hash_len bytes of hash.
+    uint8_t version;
+    uint8_t salt_len;
+    uint8_t hash_len;
+    uint8_t lanes;  // argon2's p
+    uint32_t m_kib; // argon2's m, in KiB
+    uint32_t t;     // argon2's t
+    // When this user was first written, and when their password last
+    // changed. Seconds, the clock's, and they answer the questions an
+    // operator actually asks of a user list: who is new, and who has not
+    // changed a password since the cost was raised. A record whose m_kib
+    // is below what the machine now uses and whose mtime is old is
+    // exactly the row to ask about.
+    int64_t ctime;
+    int64_t mtime;
+    // salt_len bytes of salt follow, then hash_len bytes of hash.
 };
 inline constexpr uint8_t kPasswdRecVersion = 1;
 
-inline constexpr uint8_t kLogH2 = 1;       // RFC 9113: the version token
-inline constexpr uint8_t kLogNoTrack = 2;  // no RFC: operator's choice
+inline constexpr uint8_t kLogH2 = 1;      // RFC 9113: the version token
+inline constexpr uint8_t kLogNoTrack = 2; // no RFC: operator's choice
 
 // Combined Log Format: one response as one record. The five views and the
 // four numbers travelled together through fourteen arguments before -
 // see #std-first; this is what they are.
 struct AccessLine {
-  std::string_view peer;           // the socket's address, already spelled
-  std::string_view method_token;   // RFC 9110 9.1
-  std::string_view request_target; // RFC 9112 3.2
-  std::string_view referer;        // RFC 9110 10.1.3 - the RFC misspells it
-  std::string_view user_agent;     // RFC 9110 10.1.5
-  size_t content_length = 0;       // RFC 9110 8.6 - content octets, no headers
-  uint16_t status_code = 0;        // RFC 9110 15
-  uint8_t flags = 0;
+    std::string_view peer;           // the socket's address, already spelled
+    std::string_view method_token;   // RFC 9110 9.1
+    std::string_view request_target; // RFC 9112 3.2
+    std::string_view referer;        // RFC 9110 10.1.3 - the RFC misspells it
+    std::string_view user_agent;     // RFC 9110 10.1.5
+    size_t content_length = 0;       // RFC 9110 8.6 - content octets, no headers
+    uint16_t status_code = 0;        // RFC 9110 15
+    uint8_t flags = 0;
 };
 
 // Truncation caps are the wire fields' widths.
-inline void log_access(Logger& lg, const AccessLine& line) {
-  if (mrb_unlikely(log_queue_full(lg))) return;
-  size_t peer_len = line.peer.size();
-  size_t method_token_len = line.method_token.size();
-  size_t request_target_len = line.request_target.size();
-  size_t referer_len = line.referer.size();
-  size_t user_agent_len = line.user_agent.size();
-  const uint8_t flags = line.flags;
-  const uint16_t status_code = line.status_code;
-  const size_t content_length = line.content_length;
-  const char* peer = line.peer.data();
-  const char* method_token = line.method_token.data();
-  const char* request_target = line.request_target.data();
-  const char* referer = line.referer.data();
-  const char* user_agent = line.user_agent.data();
-  if (method_token_len > 255) method_token_len = 255;
-  if (peer_len > 255) peer_len = 255;
-  if (request_target_len > 65535) request_target_len = 65535;
-  if (referer_len > 65535) referer_len = 65535;
-  if (user_agent_len > 65535) user_agent_len = 65535;
-  LogRec r;
-  r.version = kLogRecVersion;
-  r.flags = flags;
-  r.status_code = status_code;
-  r.content_length =
-      content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
-  r.unix_seconds = lg.unix_seconds;
-  r.method_token_len = static_cast<uint8_t>(method_token_len);
-  r.peer_len = static_cast<uint8_t>(peer_len);
-  r.request_target_len = static_cast<uint16_t>(request_target_len);
-  r.referer_len = static_cast<uint16_t>(referer_len);
-  r.user_agent_len = static_cast<uint16_t>(user_agent_len);
-  lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
-  if (method_token_len != 0) lg.pending.append(method_token, method_token_len);
-  if (peer_len != 0) lg.pending.append(peer, peer_len);
-  if (request_target_len != 0) lg.pending.append(request_target, request_target_len);
-  if (referer_len != 0) lg.pending.append(referer, referer_len);
-  if (user_agent_len != 0) lg.pending.append(user_agent, user_agent_len);
+inline void log_access(Logger &lg, const AccessLine &line)
+{
+    if (mrb_unlikely(log_queue_full(lg)))
+        return;
+    size_t peer_len = line.peer.size();
+    size_t method_token_len = line.method_token.size();
+    size_t request_target_len = line.request_target.size();
+    size_t referer_len = line.referer.size();
+    size_t user_agent_len = line.user_agent.size();
+    const uint8_t flags = line.flags;
+    const uint16_t status_code = line.status_code;
+    const size_t content_length = line.content_length;
+    const char *peer = line.peer.data();
+    const char *method_token = line.method_token.data();
+    const char *request_target = line.request_target.data();
+    const char *referer = line.referer.data();
+    const char *user_agent = line.user_agent.data();
+    if (method_token_len > 255)
+        method_token_len = 255;
+    if (peer_len > 255)
+        peer_len = 255;
+    if (request_target_len > 65535)
+        request_target_len = 65535;
+    if (referer_len > 65535)
+        referer_len = 65535;
+    if (user_agent_len > 65535)
+        user_agent_len = 65535;
+    LogRec r;
+    r.version = kLogRecVersion;
+    r.flags = flags;
+    r.status_code = status_code;
+    r.content_length =
+        content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
+    r.unix_seconds = lg.unix_seconds;
+    r.method_token_len = static_cast<uint8_t>(method_token_len);
+    r.peer_len = static_cast<uint8_t>(peer_len);
+    r.request_target_len = static_cast<uint16_t>(request_target_len);
+    r.referer_len = static_cast<uint16_t>(referer_len);
+    r.user_agent_len = static_cast<uint16_t>(user_agent_len);
+    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
+    if (method_token_len != 0)
+        lg.pending.append(method_token, method_token_len);
+    if (peer_len != 0)
+        lg.pending.append(peer, peer_len);
+    if (request_target_len != 0)
+        lg.pending.append(request_target, request_target_len);
+    if (referer_len != 0)
+        lg.pending.append(referer, referer_len);
+    if (user_agent_len != 0)
+        lg.pending.append(user_agent, user_agent_len);
 }
 
 // One raise as one record. No format specifies this, and most of what is
@@ -1116,30 +1298,30 @@ inline void log_access(Logger& lg, const AccessLine& line) {
 //                         io_uring_prep_send: the daemon reads this
 //                         fixed header, then takes that many bytes.
 struct ErrRec {
-  uint8_t version;
-  uint8_t flags;
-  uint16_t status_code;
-  int64_t unix_seconds;
-  uint8_t peer_len;
-  uint8_t exception_class_len;
-  uint16_t request_target_len;
-  uint16_t message_len;
-  uint16_t backtrace_len;
-  uint8_t method_len;
-  uint8_t steering_len;
-  // What the request carried, capped at kBodyKept - body_full_len is what
-  // it really was, so a record says "50 MB, here are the first 4 KB"
-  // rather than passing a truncation off as the whole of it.
-  uint16_t body_len;
-  uint32_t body_full_len;
-  // #210: the fingerprint of what led here, as the page spells it. The
-  // same 16 bytes in both, so the hash a user reads off a page is the
-  // string that finds this record - no lookup table in between. app_build
-  // is the build it happened in, so a hash from before a deploy is told
-  // apart from one from the running code instead of being chased.
-  char fingerprint[16];
-  char app_build[16];
-  uint32_t dynamic_len;
+    uint8_t version;
+    uint8_t flags;
+    uint16_t status_code;
+    int64_t unix_seconds;
+    uint8_t peer_len;
+    uint8_t exception_class_len;
+    uint16_t request_target_len;
+    uint16_t message_len;
+    uint16_t backtrace_len;
+    uint8_t method_len;
+    uint8_t steering_len;
+    // What the request carried, capped at kBodyKept - body_full_len is what
+    // it really was, so a record says "50 MB, here are the first 4 KB"
+    // rather than passing a truncation off as the whole of it.
+    uint16_t body_len;
+    uint32_t body_full_len;
+    // #210: the fingerprint of what led here, as the page spells it. The
+    // same 16 bytes in both, so the hash a user reads off a page is the
+    // string that finds this record - no lookup table in between. app_build
+    // is the build it happened in, so a hash from before a deploy is told
+    // apart from one from the running code instead of being chased.
+    char fingerprint[16];
+    char app_build[16];
+    uint32_t dynamic_len;
 };
 inline constexpr uint8_t kErrRecVersion = 2;
 inline constexpr size_t kFingerprintLen = 16;
@@ -1176,37 +1358,42 @@ inline constexpr size_t kLendFloor = 4096;
 // yesterday can never point at a line that has moved or a method that is
 // gone. A build property, not a request's: it is the same for every
 // answer this process gives.
-inline uint64_t& app_build_hash() {
-  static uint64_t h = 0;
-  return h;
+inline uint64_t &app_build_hash()
+{
+    static uint64_t h = 0;
+    return h;
 }
 
 // FNV-1a, 64 bit (Fowler/Noll/Vo, offset basis and prime by the reference
 // implementation). One raise's fingerprint is this over everything that
 // led to it, fed piece by piece.
 inline constexpr uint64_t kFnvBasis = 0xcbf29ce484222325ULL;
-inline uint64_t fnv1a(uint64_t h, const void* p, size_t n) {
-  const unsigned char* b = static_cast<const unsigned char*>(p);
-  size_t i = 0;
-  for (; i < n; i++) {
-    h ^= b[i];
-    h *= 0x100000001b3ULL;
-  }
-  return h;
+inline uint64_t fnv1a(uint64_t h, const void *p, size_t n)
+{
+    const unsigned char *b = static_cast<const unsigned char *>(p);
+    size_t i = 0;
+    for (; i < n; i++) {
+        h ^= b[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
 }
 // A length in front of every piece, so two pieces that meet cannot spell
 // what a different pair would: "/a" + "bc" and "/ab" + "c" are two
 // fingerprints, not one.
-inline uint64_t fnv1a_piece(uint64_t h, const void* p, size_t n) {
-  const uint32_t len = static_cast<uint32_t>(n);
-  h = fnv1a(h, &len, sizeof len);
-  return n != 0 ? fnv1a(h, p, n) : h;
+inline uint64_t fnv1a_piece(uint64_t h, const void *p, size_t n)
+{
+    const uint32_t len = static_cast<uint32_t>(n);
+    h = fnv1a(h, &len, sizeof len);
+    return n != 0 ? fnv1a(h, p, n) : h;
 }
 // The 16 lowercase hex digits a page shows and a log carries.
-inline void spell_fingerprint(char* out, uint64_t h) {
-  static const char kHex[] = "0123456789abcdef";
-  size_t i = 0;
-  for (; i < kFingerprintLen; i++) out[i] = kHex[(h >> ((15 - i) * 4)) & 0xf];
+inline void spell_fingerprint(char *out, uint64_t h)
+{
+    static const char kHex[] = "0123456789abcdef";
+    size_t i = 0;
+    for (; i < kFingerprintLen; i++)
+        out[i] = kHex[(h >> ((15 - i) * 4)) & 0xf];
 }
 
 // What one failure was: the request that led there, and the raise that
@@ -1214,95 +1401,107 @@ inline void spell_fingerprint(char* out, uint64_t h) {
 // this and nothing else, so a record and a page cannot disagree about
 // what the hash was taken over.
 struct ErrFacts {
-  const void* peer = nullptr;
-  size_t peer_len = 0;
-  // The request, as far as it steered: the target the client asked for,
-  // the method it asked with, and the fields the server reads because
-  // they change the answer (spell_steering below). Referer and
-  // User-Agent are not among them - they steer nothing.
-  const char* request_target = nullptr;
-  size_t request_target_len = 0;
-  const char* method = nullptr;
-  size_t method_len = 0;
-  const char* steering = nullptr;
-  size_t steering_len = 0;
-  // The raise: what was thrown, what it said, and where from.
-  const char* exception_class = nullptr;
-  size_t exception_class_len = 0;
-  const char* message = nullptr;
-  size_t message_len = 0;
-  const char* backtrace = nullptr;
-  size_t backtrace_len = 0;
-  // What the request carried. Without it a raise inside a handler says
-  // where it happened and not what it was asked to do. body_full is what
-  // arrived; log_error keeps kBodyKept of it and records the rest as a
-  // number.
-  const char* body = nullptr;
-  size_t body_len = 0;
-  size_t body_full = 0;
-  uint16_t status_code = 0;
+    const void *peer = nullptr;
+    size_t peer_len = 0;
+    // The request, as far as it steered: the target the client asked for,
+    // the method it asked with, and the fields the server reads because
+    // they change the answer (spell_steering below). Referer and
+    // User-Agent are not among them - they steer nothing.
+    const char *request_target = nullptr;
+    size_t request_target_len = 0;
+    const char *method = nullptr;
+    size_t method_len = 0;
+    const char *steering = nullptr;
+    size_t steering_len = 0;
+    // The raise: what was thrown, what it said, and where from.
+    const char *exception_class = nullptr;
+    size_t exception_class_len = 0;
+    const char *message = nullptr;
+    size_t message_len = 0;
+    const char *backtrace = nullptr;
+    size_t backtrace_len = 0;
+    // What the request carried. Without it a raise inside a handler says
+    // where it happened and not what it was asked to do. body_full is what
+    // arrived; log_error keeps kBodyKept of it and records the rest as a
+    // number.
+    const char *body = nullptr;
+    size_t body_len = 0;
+    size_t body_full = 0;
+    uint16_t status_code = 0;
 };
 
 // The hash a user reads off the page and an operator greps the log for.
 // Everything that led here goes in, each piece behind its own length; the
 // message does not - the same fault at the same place under the same
 // request is one failure, whatever the exception chose to say about it.
-inline uint64_t fingerprint_of(const ErrFacts& f) {
-  uint64_t h = app_build_hash();
-  h = fnv1a_piece(h, f.method, f.method_len);
-  h = fnv1a_piece(h, f.request_target, f.request_target_len);
-  h = fnv1a_piece(h, f.steering, f.steering_len);
-  h = fnv1a_piece(h, f.exception_class, f.exception_class_len);
-  h = fnv1a_piece(h, f.backtrace, f.backtrace_len);
-  h = fnv1a_piece(h, &f.status_code, sizeof f.status_code);
-  return h;
+inline uint64_t fingerprint_of(const ErrFacts &f)
+{
+    uint64_t h = app_build_hash();
+    h = fnv1a_piece(h, f.method, f.method_len);
+    h = fnv1a_piece(h, f.request_target, f.request_target_len);
+    h = fnv1a_piece(h, f.steering, f.steering_len);
+    h = fnv1a_piece(h, f.exception_class, f.exception_class_len);
+    h = fnv1a_piece(h, f.backtrace, f.backtrace_len);
+    h = fnv1a_piece(h, &f.status_code, sizeof f.status_code);
+    return h;
 }
 
 // One raise as one record: a fixed header whose last field is the size of
 // the second send, then that many bytes - peer, class, target, message,
 // backtrace, method, steering, in that order.
-inline void log_error(Logger& lg, const ErrFacts& f) {
-  if (mrb_unlikely(log_queue_full(lg))) return;
-  // A 4xx is an answer, not a failure: the client asked for something it
-  // may not have, and the server said so. Nothing raised, so there is
-  // nothing to explain and no hash to hand out. Refused here, once, so no
-  // call site has to remember it.
-  if (f.status_code >= 400 && f.status_code < 500) return;
-  const size_t peer_len = f.peer_len > 255 ? 255 : f.peer_len;
-  const size_t class_len = f.exception_class_len > 255 ? 255 : f.exception_class_len;
-  const size_t target_len = f.request_target_len > 65535 ? 65535 : f.request_target_len;
-  const size_t message_len = f.message_len > 65535 ? 65535 : f.message_len;
-  const size_t backtrace_len = f.backtrace_len > 65535 ? 65535 : f.backtrace_len;
-  const size_t method_len = f.method_len > 255 ? 255 : f.method_len;
-  const size_t steering_len = f.steering_len > 255 ? 255 : f.steering_len;
-  const size_t body_len = f.body_len > kBodyKept ? kBodyKept : f.body_len;
-  ErrRec r;
-  r.version = kErrRecVersion;
-  r.flags = 0;  // no RFC, and nothing sets it yet: reserved on the wire
-  r.status_code = f.status_code;
-  r.unix_seconds = lg.unix_seconds;
-  r.peer_len = static_cast<uint8_t>(peer_len);
-  r.exception_class_len = static_cast<uint8_t>(class_len);
-  r.request_target_len = static_cast<uint16_t>(target_len);
-  r.message_len = static_cast<uint16_t>(message_len);
-  r.backtrace_len = static_cast<uint16_t>(backtrace_len);
-  r.method_len = static_cast<uint8_t>(method_len);
-  r.steering_len = static_cast<uint8_t>(steering_len);
-  r.body_len = static_cast<uint16_t>(body_len);
-  r.body_full_len = static_cast<uint32_t>(f.body_full);
-  spell_fingerprint(r.fingerprint, fingerprint_of(f));
-  spell_fingerprint(r.app_build, app_build_hash());
-  r.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
-                                        backtrace_len + method_len + steering_len + body_len);
-  lg.pending.append(reinterpret_cast<const char*>(&r), sizeof r);
-  if (peer_len != 0) lg.pending.append(static_cast<const char*>(f.peer), peer_len);
-  if (class_len != 0) lg.pending.append(f.exception_class, class_len);
-  if (target_len != 0) lg.pending.append(f.request_target, target_len);
-  if (message_len != 0) lg.pending.append(f.message, message_len);
-  if (backtrace_len != 0) lg.pending.append(f.backtrace, backtrace_len);
-  if (method_len != 0) lg.pending.append(f.method, method_len);
-  if (steering_len != 0) lg.pending.append(f.steering, steering_len);
-  if (body_len != 0) lg.pending.append(f.body, body_len);
+inline void log_error(Logger &lg, const ErrFacts &f)
+{
+    if (mrb_unlikely(log_queue_full(lg)))
+        return;
+    // A 4xx is an answer, not a failure: the client asked for something it
+    // may not have, and the server said so. Nothing raised, so there is
+    // nothing to explain and no hash to hand out. Refused here, once, so no
+    // call site has to remember it.
+    if (f.status_code >= 400 && f.status_code < 500)
+        return;
+    const size_t peer_len = f.peer_len > 255 ? 255 : f.peer_len;
+    const size_t class_len = f.exception_class_len > 255 ? 255 : f.exception_class_len;
+    const size_t target_len = f.request_target_len > 65535 ? 65535 : f.request_target_len;
+    const size_t message_len = f.message_len > 65535 ? 65535 : f.message_len;
+    const size_t backtrace_len = f.backtrace_len > 65535 ? 65535 : f.backtrace_len;
+    const size_t method_len = f.method_len > 255 ? 255 : f.method_len;
+    const size_t steering_len = f.steering_len > 255 ? 255 : f.steering_len;
+    const size_t body_len = f.body_len > kBodyKept ? kBodyKept : f.body_len;
+    ErrRec r;
+    r.version = kErrRecVersion;
+    r.flags = 0; // no RFC, and nothing sets it yet: reserved on the wire
+    r.status_code = f.status_code;
+    r.unix_seconds = lg.unix_seconds;
+    r.peer_len = static_cast<uint8_t>(peer_len);
+    r.exception_class_len = static_cast<uint8_t>(class_len);
+    r.request_target_len = static_cast<uint16_t>(target_len);
+    r.message_len = static_cast<uint16_t>(message_len);
+    r.backtrace_len = static_cast<uint16_t>(backtrace_len);
+    r.method_len = static_cast<uint8_t>(method_len);
+    r.steering_len = static_cast<uint8_t>(steering_len);
+    r.body_len = static_cast<uint16_t>(body_len);
+    r.body_full_len = static_cast<uint32_t>(f.body_full);
+    spell_fingerprint(r.fingerprint, fingerprint_of(f));
+    spell_fingerprint(r.app_build, app_build_hash());
+    r.dynamic_len = static_cast<uint32_t>(peer_len + class_len + target_len + message_len +
+                                          backtrace_len + method_len + steering_len + body_len);
+    lg.pending.append(reinterpret_cast<const char *>(&r), sizeof r);
+    if (peer_len != 0)
+        lg.pending.append(static_cast<const char *>(f.peer), peer_len);
+    if (class_len != 0)
+        lg.pending.append(f.exception_class, class_len);
+    if (target_len != 0)
+        lg.pending.append(f.request_target, target_len);
+    if (message_len != 0)
+        lg.pending.append(f.message, message_len);
+    if (backtrace_len != 0)
+        lg.pending.append(f.backtrace, backtrace_len);
+    if (method_len != 0)
+        lg.pending.append(f.method, method_len);
+    if (steering_len != 0)
+        lg.pending.append(f.steering, steering_len);
+    if (body_len != 0)
+        lg.pending.append(f.body, body_len);
 }
 
 // The server's own fault, spelled the same way at every call site: one
@@ -1310,33 +1509,36 @@ inline void log_error(Logger& lg, const ErrFacts& f) {
 // One internal failure as one record. The three views and the status
 // travelled together through eight arguments - see #std-first.
 struct ErrorLine {
-  std::string_view peer;           // the socket's address, already spelled
-  std::string_view request_target; // RFC 9112 3.2
-  std::string_view why;            // no RFC: ours, and it never repeats the request
-  uint16_t status_code = 0;        // RFC 9110 15
+    std::string_view peer;           // the socket's address, already spelled
+    std::string_view request_target; // RFC 9112 3.2
+    std::string_view why;            // no RFC: ours, and it never repeats the request
+    uint16_t status_code = 0;        // RFC 9110 15
 };
 
-inline void log_internal_error(Logger& lg, const ErrorLine& line) {
-  if (mrb_unlikely(log_queue_full(lg))) return;
-  if (!lg.enabled) return;
-  const void* peer = line.peer.data();
-  const size_t peer_len = line.peer.size();
-  const char* request_target = line.request_target.data();
-  const size_t request_target_len = line.request_target.size();
-  const uint16_t status_code = line.status_code;
-  const char* why = line.why.data();
-  const size_t why_len = line.why.size();
-  ErrFacts f;
-  f.peer = peer;
-  f.peer_len = peer_len;
-  f.request_target = request_target;
-  f.request_target_len = request_target_len;
-  f.exception_class = "Webmachine::Error";
-  f.exception_class_len = 17;
-  f.message = why;
-  f.message_len = why_len;
-  f.status_code = status_code;
-  log_error(lg, f);
+inline void log_internal_error(Logger &lg, const ErrorLine &line)
+{
+    if (mrb_unlikely(log_queue_full(lg)))
+        return;
+    if (!lg.enabled)
+        return;
+    const void *peer = line.peer.data();
+    const size_t peer_len = line.peer.size();
+    const char *request_target = line.request_target.data();
+    const size_t request_target_len = line.request_target.size();
+    const uint16_t status_code = line.status_code;
+    const char *why = line.why.data();
+    const size_t why_len = line.why.size();
+    ErrFacts f;
+    f.peer = peer;
+    f.peer_len = peer_len;
+    f.request_target = request_target;
+    f.request_target_len = request_target_len;
+    f.exception_class = "Webmachine::Error";
+    f.exception_class_len = 17;
+    f.message = why;
+    f.message_len = why_len;
+    f.status_code = status_code;
+    log_error(lg, f);
 }
 
 // A raise inside a worker VM, written by the reactor. The exception
@@ -1348,25 +1550,25 @@ inline void log_internal_error(Logger& lg, const ErrorLine& line) {
 // worker's VM made, decoded from CBOR. The step and the worker go into
 // the record's steering field, so the message stays the VM's own.
 struct ComputeFault {
-  std::string_view exception;  // CBOR, may be empty when it could not cross
-  std::string_view step;
-  std::string_view worker_name;
-  std::string_view peer;
-  uint16_t status;
+    std::string_view exception; // CBOR, may be empty when it could not cross
+    std::string_view step;
+    std::string_view worker_name;
+    std::string_view peer;
+    uint16_t status;
 };
-
 
 // A condition the server hit with nobody to answer for it: no request, no
 // peer, no status. The error log is where it belongs and it goes there
 // whole. stderr gets it only when no error log was configured, because
 // then there is nothing else to read - a line printed beside a log that
 // is being read is a line nobody reads.
-inline void say_server_error(Logger* lg, std::string_view why) {
-  if (lg != nullptr && lg->enabled) {
-    log_internal_error(*lg, {{}, {}, why, 0});
-    return;
-  }
-  std::fprintf(stderr, "webmachine: %.*s\n", static_cast<int>(why.size()), why.data());
+inline void say_server_error(Logger *lg, std::string_view why)
+{
+    if (lg != nullptr && lg->enabled) {
+        log_internal_error(*lg, {{}, {}, why, 0});
+        return;
+    }
+    std::fprintf(stderr, "webmachine: %.*s\n", static_cast<int>(why.size()), why.data());
 }
 
 // Which build this is. mruby's enable_debug defines MRB_DEBUG and the
@@ -1387,126 +1589,165 @@ inline constexpr bool kDebugBuild = false;
 // What one raise leaves behind: the record's fields, and the backtrace
 // text they point into.
 struct Raised {
-  ErrFacts& facts;
-  std::string& backtrace;
+    ErrFacts &facts;
+    std::string &backtrace;
 };
-void exception_facts(mrb_state* mrb, Raised out);
+void exception_facts(mrb_state *mrb, Raised out);
 
 // A raise with no request around it: a stream that was answered long ago
 // and is now running app code of its own (SSE, a WebSocket). There is no
 // target and no method to name, so the fingerprint is the build, the
 // class and the place - which is exactly what such a failure is.
-inline void log_raise(Logger& lg, mrb_state* mrb, uint16_t status) {
-  if (!lg.enabled) return;
-  ErrFacts f;
-  std::string backtrace;
-  f.status_code = status;
-  exception_facts(mrb, {f, backtrace});
-  if (f.exception_class == nullptr) return;
-  log_error(lg, f);
+inline void log_raise(Logger &lg, mrb_state *mrb, uint16_t status)
+{
+    if (!lg.enabled)
+        return;
+    ErrFacts f;
+    std::string backtrace;
+    f.status_code = status;
+    exception_facts(mrb, {f, backtrace});
+    if (f.exception_class == nullptr)
+        return;
+    log_error(lg, f);
 }
 
 // Every exception the VM raised and the server does not hand back to a
 // client goes through here: into the error log when there is one, and
 // on screen in a debug build, as the VM made it. Then it is cleared.
-inline void report_raise(Logger* lg, mrb_state* mrb, uint16_t status) {
-  if (mrb->exc == nullptr) return;
-  if (lg != nullptr) log_raise(*lg, mrb, status);
-  if (kDebugBuild) mrb_print_error(mrb);
-  mrb->exc = nullptr;
+inline void report_raise(Logger *lg, mrb_state *mrb, uint16_t status)
+{
+    if (mrb->exc == nullptr)
+        return;
+    if (lg != nullptr)
+        log_raise(*lg, mrb, status);
+    if (kDebugBuild)
+        mrb_print_error(mrb);
+    mrb->exc = nullptr;
 }
-void report_compute_fault(Logger* lg, mrb_state* mrb, const ComputeFault& x);
-}
+void report_compute_fault(Logger *lg, mrb_state *mrb, const ComputeFault &x);
+} // namespace webmachine
 
-namespace webmachine::http {
+namespace webmachine::http
+{
 // RFC 9110 5.1: case-insensitive equality against a lowercase literal.
-constexpr bool tok_eq(std::string_view text, std::string_view lit) {
-  const char* const s = text.data();
-  const size_t n = text.size();
-  if (n != lit.size()) return false;
-  for (size_t i = 0; i < n; i++) {
-    char c = s[i];
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
-    if (c != lit[i]) return false;
-  }
-  return true;
+constexpr bool tok_eq(std::string_view text, std::string_view lit)
+{
+    const char *const s = text.data();
+    const size_t n = text.size();
+    if (n != lit.size())
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c + 32);
+        if (c != lit[i])
+            return false;
+    }
+    return true;
 }
 
 // RFC 9110 13.1.1/13.1.2: If-Match / If-None-Match spell "any" as *.
-constexpr bool star_value(const char* v, size_t n) {
-  if (n == 1 && v[0] == '*') return true;
-  return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
+constexpr bool star_value(const char *v, size_t n)
+{
+    if (n == 1 && v[0] == '*')
+        return true;
+    return n == 3 && v[0] == '"' && v[1] == '*' && v[2] == '"';
 }
 
 // RFC 9110 4.2.1: the query is not part of the path.
-inline size_t path_only(const char* p, size_t n) {
-  for (size_t i = 0; i < n; i++) {
-    if (p[i] == '?') return i;
-  }
-  return n;
+inline size_t path_only(const char *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] == '?')
+            return i;
+    }
+    return n;
 }
 
 // RFC 9110 9.1: methods are case-sensitive tokens.
-inline flow::Method parse_method(const char* m, size_t n) {
-  switch (n) {
-    case 3:
-      if (std::memcmp(m, "GET", 3) == 0) return flow::Method::kGet;
-      if (std::memcmp(m, "PUT", 3) == 0) return flow::Method::kPut;
-      break;
-    case 4:
-      if (std::memcmp(m, "HEAD", 4) == 0) return flow::Method::kHead;
-      if (std::memcmp(m, "POST", 4) == 0) return flow::Method::kPost;
-      break;
-    case 6:
-      if (std::memcmp(m, "DELETE", 6) == 0) return flow::Method::kDelete;
-      break;
-    case 7:
-      if (std::memcmp(m, "OPTIONS", 7) == 0) return flow::Method::kOptions;
-      break;
-    default:
-      break;
-  }
-  return flow::Method::kOther;
+inline flow::Method parse_method(const char *m, size_t n)
+{
+    switch (n) {
+        case 3:
+            if (std::memcmp(m, "GET", 3) == 0)
+                return flow::Method::kGet;
+            if (std::memcmp(m, "PUT", 3) == 0)
+                return flow::Method::kPut;
+            break;
+        case 4:
+            if (std::memcmp(m, "HEAD", 4) == 0)
+                return flow::Method::kHead;
+            if (std::memcmp(m, "POST", 4) == 0)
+                return flow::Method::kPost;
+            break;
+        case 6:
+            if (std::memcmp(m, "DELETE", 6) == 0)
+                return flow::Method::kDelete;
+            break;
+        case 7:
+            if (std::memcmp(m, "OPTIONS", 7) == 0)
+                return flow::Method::kOptions;
+            break;
+        default:
+            break;
+    }
+    return flow::Method::kOther;
 }
 
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and every writer goes through here.
-inline std::string with_charset(const std::string& type) {
-  if (type.size() < 5 || !tok_eq({type.data(), 5}, "text/")) return type;
-  if (type.find(';') != std::string::npos) return type;
-  return type + "; charset=utf-8";
+inline std::string with_charset(const std::string &type)
+{
+    if (type.size() < 5 || !tok_eq({type.data(), 5}, "text/"))
+        return type;
+    if (type.find(';') != std::string::npos)
+        return type;
+    return type + "; charset=utf-8";
 }
 
 // A literal's length, at compile time.
-constexpr size_t clen(const char* s) {
-  size_t n = 0;
-  while (s[n] != '\0') n++;
-  return n;
+constexpr size_t clen(const char *s)
+{
+    size_t n = 0;
+    while (s[n] != '\0')
+        n++;
+    return n;
 }
 // RFC 6839 / RFC 9110 8.3: is a body of this type worth compressing?
 // Structural, conservative downward, decided once per resource.
-constexpr bool compressible_media_type(const char* v, size_t n) {
-  size_t tn = 0;
-  while (tn < n && v[tn] != ';') tn++;
-  if (tn >= 5 && tok_eq({v, 5}, "text/")) return true;
-  if (tn >= 5 && tok_eq({v + tn - 5, 5}, "+json")) return true;
-  if (tn >= 4 && tok_eq({v + tn - 4, 4}, "+xml")) return true;
-  constexpr const char* kExact[] = {
-      "application/json", "application/javascript", "application/xml",
-      "application/wasm", "image/svg+xml",
-  };
-  for (const char* lit : kExact) {
-    if (tok_eq({v, tn}, lit)) return true;
-  }
-  return false;
+constexpr bool compressible_media_type(const char *v, size_t n)
+{
+    size_t tn = 0;
+    while (tn < n && v[tn] != ';')
+        tn++;
+    if (tn >= 5 && tok_eq({v, 5}, "text/"))
+        return true;
+    if (tn >= 5 && tok_eq({v + tn - 5, 5}, "+json"))
+        return true;
+    if (tn >= 4 && tok_eq({v + tn - 4, 4}, "+xml"))
+        return true;
+    constexpr const char *kExact[] = {
+        "application/json", "application/javascript", "application/xml",
+        "application/wasm", "image/svg+xml",
+    };
+    for (const char *lit : kExact) {
+        if (tok_eq({v, tn}, lit))
+            return true;
+    }
+    return false;
 }
 // RFC 6839: the same question, from a std::string.
-inline bool compressible_media_type(const std::string& v) {
-  return compressible_media_type(v.data(), v.size());
+inline bool compressible_media_type(const std::string &v)
+{
+    return compressible_media_type(v.data(), v.size());
 }
-namespace proof {
+namespace proof
+{
 // The table's own self-check, at compile time.
-constexpr bool ct(const char* s) { return compressible_media_type(s, clen(s)); }
+constexpr bool ct(const char *s)
+{
+    return compressible_media_type(s, clen(s));
+}
 static_assert(ct("text/html"), "text/* compresses");
 static_assert(ct("text/html; charset=utf-8"), "a parameter does not hide the media type");
 static_assert(ct("application/json"));
@@ -1519,226 +1760,271 @@ static_assert(ct("application/rss+xml"), "RFC 6839 +xml suffix");
 static_assert(!ct("image/png"), "already-compressed media stays no");
 static_assert(!ct("application/octet-stream"), "unknown is conservative no");
 static_assert(!ct(""), "empty is no, not a crash");
-}
+} // namespace proof
 
 // RFC 9110 15: the status names.
-constexpr const char* reason(uint16_t status) {
-  switch (status) {
-    case 200: return "OK";
-    case 201: return "Created";
-    case 202: return "Accepted";
-    case 204: return "No Content";
-    case 206: return "Partial Content";
-    case 300: return "Multiple Choices";
-    case 301: return "Moved Permanently";
-    case 303: return "See Other";
-    case 304: return "Not Modified";
-    case 307: return "Temporary Redirect";
-    case 400: return "Bad Request";
-    case 401: return "Unauthorized";
-    case 403: return "Forbidden";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 406: return "Not Acceptable";
-    case 409: return "Conflict";
-    case 410: return "Gone";
-    case 411: return "Length Required";
-    case 412: return "Precondition Failed";
-    case 413: return "Content Too Large";
-    case 414: return "URI Too Long";
-    case 415: return "Unsupported Media Type";
-    case 416: return "Range Not Satisfiable";
-    case 431: return "Request Header Fields Too Large";
-    case 500: return "Internal Server Error";
-    case 501: return "Not Implemented";
-    case 503: return "Service Unavailable";
-  }
-  return "Response";
+constexpr const char *reason(uint16_t status)
+{
+    switch (status) {
+        case 200:
+            return "OK";
+        case 201:
+            return "Created";
+        case 202:
+            return "Accepted";
+        case 204:
+            return "No Content";
+        case 206:
+            return "Partial Content";
+        case 300:
+            return "Multiple Choices";
+        case 301:
+            return "Moved Permanently";
+        case 303:
+            return "See Other";
+        case 304:
+            return "Not Modified";
+        case 307:
+            return "Temporary Redirect";
+        case 400:
+            return "Bad Request";
+        case 401:
+            return "Unauthorized";
+        case 403:
+            return "Forbidden";
+        case 404:
+            return "Not Found";
+        case 405:
+            return "Method Not Allowed";
+        case 406:
+            return "Not Acceptable";
+        case 409:
+            return "Conflict";
+        case 410:
+            return "Gone";
+        case 411:
+            return "Length Required";
+        case 412:
+            return "Precondition Failed";
+        case 413:
+            return "Content Too Large";
+        case 414:
+            return "URI Too Long";
+        case 415:
+            return "Unsupported Media Type";
+        case 416:
+            return "Range Not Satisfiable";
+        case 431:
+            return "Request Header Fields Too Large";
+        case 500:
+            return "Internal Server Error";
+        case 501:
+            return "Not Implemented";
+        case 503:
+            return "Service Unavailable";
+    }
+    return "Response";
 }
 
 inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
 // Two digits, zero-padded, at out[0..1].
-inline void write_two_digits(char* out, int v) {
-  out[0] = static_cast<char>('0' + v / 10);
-  out[1] = static_cast<char>('0' + v % 10);
+inline void write_two_digits(char *out, int v)
+{
+    out[0] = static_cast<char>('0' + v / 10);
+    out[1] = static_cast<char>('0' + v % 10);
 }
 
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
-inline void date_core(char out[kDateLen], const struct tm& tm) {
-  static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  std::memcpy(out, kDay[tm.tm_wday], 3);
-  out[3] = ',';
-  out[4] = ' ';
-  write_two_digits(out + 5, tm.tm_mday);
-  out[7] = ' ';
-  std::memcpy(out + 8, kMon[tm.tm_mon], 3);
-  out[11] = ' ';
-  const int year = tm.tm_year + 1900;
-  write_two_digits(out + 12, year / 100);
-  write_two_digits(out + 14, year % 100);
-  out[16] = ' ';
-  write_two_digits(out + 17, tm.tm_hour);
-  out[19] = ':';
-  write_two_digits(out + 20, tm.tm_min);
-  out[22] = ':';
-  write_two_digits(out + 23, tm.tm_sec);
-  out[25] = ' ';
-  std::memcpy(out + 26, "GMT", 3);
+inline void date_core(char out[kDateLen], const struct tm &tm)
+{
+    static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    std::memcpy(out, kDay[tm.tm_wday], 3);
+    out[3] = ',';
+    out[4] = ' ';
+    write_two_digits(out + 5, tm.tm_mday);
+    out[7] = ' ';
+    std::memcpy(out + 8, kMon[tm.tm_mon], 3);
+    out[11] = ' ';
+    const int year = tm.tm_year + 1900;
+    write_two_digits(out + 12, year / 100);
+    write_two_digits(out + 14, year % 100);
+    out[16] = ' ';
+    write_two_digits(out + 17, tm.tm_hour);
+    out[19] = ':';
+    write_two_digits(out + 20, tm.tm_min);
+    out[22] = ':';
+    write_two_digits(out + 23, tm.tm_sec);
+    out[25] = ' ';
+    std::memcpy(out + 26, "GMT", 3);
 }
 
 // RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
-inline size_t spell_content_length(char (&buf)[40], size_t len) {
-  std::memcpy(buf, "Content-Length: ", 16);
-  size_t at = 16;
-  char digits[20];
-  size_t d = 0;
-  size_t v = len;
-  do {
-    digits[d++] = static_cast<char>('0' + v % 10);
-    v /= 10;
-  } while (v != 0);
-  while (d != 0) buf[at++] = digits[--d];
-  buf[at++] = '\r';
-  buf[at++] = '\n';
-  buf[at++] = '\r';
-  buf[at++] = '\n';
-  return at;
+inline size_t spell_content_length(char (&buf)[40], size_t len)
+{
+    std::memcpy(buf, "Content-Length: ", 16);
+    size_t at = 16;
+    char digits[20];
+    size_t d = 0;
+    size_t v = len;
+    do {
+        digits[d++] = static_cast<char>('0' + v % 10);
+        v /= 10;
+    } while (v != 0);
+    while (d != 0)
+        buf[at++] = digits[--d];
+    buf[at++] = '\r';
+    buf[at++] = '\n';
+    buf[at++] = '\r';
+    buf[at++] = '\n';
+    return at;
 }
 
 // RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
-inline int hex_digit(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-  return -1;
+inline int hex_digit(char ch)
+{
+    if (ch >= '0' && ch <= '9')
+        return ch - '0';
+    if (ch >= 'a' && ch <= 'f')
+        return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F')
+        return ch - 'A' + 10;
+    return -1;
 }
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
-inline ClStatus parse_content_length(std::string_view v, size_t* out) {
-  const char* const s = v.data();
-  const size_t n = v.size();
-  if (n == 0) return ClStatus::kBad;
-  size_t acc = 0;
-  for (size_t j = 0; j < n; j++) {
-    const char ch = s[j];
-    if (ch < '0' || ch > '9') return ClStatus::kBad;
-    size_t t = 0;
-    if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &t) ||
-        __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &acc)) {
-      return ClStatus::kOverflow;
+inline ClStatus parse_content_length(std::string_view v, size_t *out)
+{
+    const char *const s = v.data();
+    const size_t n = v.size();
+    if (n == 0)
+        return ClStatus::kBad;
+    size_t acc = 0;
+    for (size_t j = 0; j < n; j++) {
+        const char ch = s[j];
+        if (ch < '0' || ch > '9')
+            return ClStatus::kBad;
+        size_t t = 0;
+        if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &t) ||
+            __builtin_add_overflow(t, static_cast<size_t>(ch - '0'), &acc)) {
+            return ClStatus::kOverflow;
+        }
     }
-  }
-  *out = acc;
-  return ClStatus::kOk;
+    *out = acc;
+    return ClStatus::kOk;
 }
 
 // RFC 9110: the ten fields Resource#request hands back by name. The one
 // pass over the field array notes where each one sits; a later ask is a bit
 // test and an index, never a second walk over the fields.
 enum class NamedField : uint8_t {
-  kContentType,
-  kContentLength,
-  kAuthorization,
-  kAccept,
-  kAcceptEncoding,
-  kIfMatch,
-  kIfNoneMatch,
-  kIfModifiedSince,
-  kIfUnmodifiedSince,
-  kHost,
-  kCount
+    kContentType,
+    kContentLength,
+    kAuthorization,
+    kAccept,
+    kAcceptEncoding,
+    kIfMatch,
+    kIfNoneMatch,
+    kIfModifiedSince,
+    kIfUnmodifiedSince,
+    kHost,
+    kCount
 };
 
 // The parsed field array and how many fields it holds - the pair every
 // stored position is only meaningful against.
 struct HeaderList {
-  const struct phr_header* items;
-  size_t count;
+    const struct phr_header *items;
+    size_t count;
 };
 
 struct NamedFieldIndex {
-  // The index never leaves. A stored position means something only for
-  // the array it was taken from, so reading one means handing that array
-  // back in: `find` applies the index and answers nullptr for anything
-  // it cannot reach. Nobody outside can apply it to another array.
-  //
-  // The static_assert below fixes the byte width, and `find` checks the
-  // length of this request's array.
-  //
-  // Declared here, defined in request.cpp, where the framer's header has
-  // been included and phr_header is complete.
-  const struct phr_header* find(NamedField f, HeaderList hs) const;
+    // The index never leaves. A stored position means something only for
+    // the array it was taken from, so reading one means handing that array
+    // back in: `find` applies the index and answers nullptr for anything
+    // it cannot reach. Nobody outside can apply it to another array.
+    //
+    // The static_assert below fixes the byte width, and `find` checks the
+    // length of this request's array.
+    //
+    // Declared here, defined in request.cpp, where the framer's header has
+    // been included and phr_header is complete.
+    const struct phr_header *find(NamedField f, HeaderList hs) const;
 
-  constexpr void note(NamedField f, size_t i) {
-    // The framer kept no slot for this one (its field array was full), so
-    // there is no place to point at and the bit stays clear.
-    if (i > 255) return;
-    const auto b = static_cast<uint8_t>(f);
-    // RFC 9110 5.2: a repeated field is one list, and the first occurrence
-    // is where it starts. A second Host is the framer's 400, not ours.
-    if (((present >> b) & 1u) != 0) return;
-    present = static_cast<uint16_t>(present | (1u << b));
-    at[b] = static_cast<uint8_t>(i);
-  }
-  constexpr bool carries(NamedField f) const {
-    return ((present >> static_cast<uint8_t>(f)) & 1u) != 0;
-  }
+    constexpr void note(NamedField f, size_t i)
+    {
+        // The framer kept no slot for this one (its field array was full), so
+        // there is no place to point at and the bit stays clear.
+        if (i > 255)
+            return;
+        const auto b = static_cast<uint8_t>(f);
+        // RFC 9110 5.2: a repeated field is one list, and the first occurrence
+        // is where it starts. A second Host is the framer's 400, not ours.
+        if (((present >> b) & 1u) != 0)
+            return;
+        present = static_cast<uint16_t>(present | (1u << b));
+        at[b] = static_cast<uint8_t>(i);
+    }
+    constexpr bool carries(NamedField f) const
+    {
+        return ((present >> static_cast<uint8_t>(f)) & 1u) != 0;
+    }
 
- private:
-  // One bit per NamedField. A field the request did not carry has no
-  // position, and the bit is how that is said.
-  uint16_t present = 0;
-  // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
-  uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
+  private:
+    // One bit per NamedField. A field the request did not carry has no
+    // position, and the bit is how that is said.
+    uint16_t present = 0;
+    // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
+    uint8_t at[static_cast<size_t>(NamedField::kCount)] = {};
 };
 struct ReqValues {
-  const char* log_ref = nullptr;
-  size_t log_ref_len = 0;
-  const char* log_ua = nullptr;
-  size_t log_ua_len = 0;
+    const char *log_ref = nullptr;
+    size_t log_ref_len = 0;
+    const char *log_ua = nullptr;
+    size_t log_ua_len = 0;
 
-  const char* accept_encoding = nullptr;
-  size_t accept_encoding_len = 0;
-  const char* if_match = nullptr;
-  size_t if_match_len = 0;
-  const char* if_none_match = nullptr;
-  size_t if_none_match_len = 0;
-  const char* range = nullptr;
-  size_t range_len = 0;
-  const char* if_range = nullptr;
-  size_t if_range_len = 0;
+    const char *accept_encoding = nullptr;
+    size_t accept_encoding_len = 0;
+    const char *if_match = nullptr;
+    size_t if_match_len = 0;
+    const char *if_none_match = nullptr;
+    size_t if_none_match_len = 0;
+    const char *range = nullptr;
+    size_t range_len = 0;
+    const char *if_range = nullptr;
+    size_t if_range_len = 0;
 
-  // Handed to a callback that declared the parameter: b8 gets
-  // Authorization (RFC 9110 11.6.2), b5 gets Content-Type (8.3).
-  const char* authorization = nullptr;
-  size_t authorization_len = 0;
-  const char* content_type = nullptr;
-  size_t content_type_len = 0;
-  // The values the 1:1 runtime reads: c4 negotiates against Accept
-  // (12.5.1), request.base_uri and request.cookies read Host (7.2) and
-  // Cookie (RFC 6265).
-  const char* accept = nullptr;
-  size_t accept_len = 0;
-  const char* host = nullptr;
-  size_t host_len = 0;
-  const char* cookie = nullptr;
-  size_t cookie_len = 0;
-  // If-Unmodified-Since / If-Modified-Since, parsed at the switch
-  // (5.6.7); valid only when the facts' if_unmodified_since_valid/if_modified_since_valid bit says.
-  int64_t if_unmodified_since_epoch = 0;
-  int64_t if_modified_since_epoch = 0;
-  NamedFieldIndex named;
-  // RFC 9110 5.3: the field came more than once. The span above is the
-  // first line's; a reader that wants all of them joins the field array
-  // (join_repeated_fields). RFC 9113 8.2.3 lets an h2 client split
-  // Cookie, and a list field may come split on either protocol.
-  bool cookie_repeats = false;
-  bool if_none_match_repeats = false;
+    // Handed to a callback that declared the parameter: b8 gets
+    // Authorization (RFC 9110 11.6.2), b5 gets Content-Type (8.3).
+    const char *authorization = nullptr;
+    size_t authorization_len = 0;
+    const char *content_type = nullptr;
+    size_t content_type_len = 0;
+    // The values the 1:1 runtime reads: c4 negotiates against Accept
+    // (12.5.1), request.base_uri and request.cookies read Host (7.2) and
+    // Cookie (RFC 6265).
+    const char *accept = nullptr;
+    size_t accept_len = 0;
+    const char *host = nullptr;
+    size_t host_len = 0;
+    const char *cookie = nullptr;
+    size_t cookie_len = 0;
+    // If-Unmodified-Since / If-Modified-Since, parsed at the switch
+    // (5.6.7); valid only when the facts' if_unmodified_since_valid/if_modified_since_valid bit
+    // says.
+    int64_t if_unmodified_since_epoch = 0;
+    int64_t if_modified_since_epoch = 0;
+    NamedFieldIndex named;
+    // RFC 9110 5.3: the field came more than once. The span above is the
+    // first line's; a reader that wants all of them joins the field array
+    // (join_repeated_fields). RFC 9113 8.2.3 lets an h2 client split
+    // Cookie, and a list field may come split on either protocol.
+    bool cookie_repeats = false;
+    bool if_none_match_repeats = false;
 };
 
 // #80: every pointer in ReqValues, in one place. A parked run rebases
@@ -1748,11 +2034,11 @@ struct ReqValues {
 //
 // The size assert is the guard: add a field to the struct above and the
 // build stops until it is listed here too.
-inline constexpr const char* ReqValues::*kReqValueSpans[] = {
-    &ReqValues::log_ref,       &ReqValues::log_ua,        &ReqValues::accept_encoding,
-    &ReqValues::if_match,      &ReqValues::if_none_match, &ReqValues::range,
-    &ReqValues::if_range,      &ReqValues::authorization, &ReqValues::content_type,
-    &ReqValues::accept,        &ReqValues::host,          &ReqValues::cookie,
+inline constexpr const char *ReqValues::*kReqValueSpans[] = {
+    &ReqValues::log_ref,  &ReqValues::log_ua,        &ReqValues::accept_encoding,
+    &ReqValues::if_match, &ReqValues::if_none_match, &ReqValues::range,
+    &ReqValues::if_range, &ReqValues::authorization, &ReqValues::content_type,
+    &ReqValues::accept,   &ReqValues::host,          &ReqValues::cookie,
 };
 static_assert(sizeof(ReqValues) == 224,
               "ReqValues changed shape: a new field belongs in kReqValueSpans, and a "
@@ -1761,10 +2047,12 @@ static_assert(sizeof(ReqValues) == 224,
 // Move every span in `v` by `delta`. A null span stays null: it names no
 // bytes, so there is nothing to move and an offset from nullptr is
 // undefined besides.
-inline void rebase(ReqValues& v, ptrdiff_t delta) {
-  for (const char* ReqValues::*m : kReqValueSpans) {
-    if (v.*m != nullptr) v.*m += delta;
-  }
+inline void rebase(ReqValues &v, ptrdiff_t delta)
+{
+    for (const char *ReqValues::*m : kReqValueSpans) {
+        if (v.*m != nullptr)
+            v.*m += delta;
+    }
 }
 
 // #210: the fields this request steered by, one per line, for the error
@@ -1778,54 +2066,59 @@ inline void rebase(ReqValues& v, ptrdiff_t delta) {
 // 7616, and whatever else the IANA registry grows). Which scheme ran
 // decides which code ran; the credential decides nothing and belongs in
 // no file. Cookie is named without its value for the same reason.
-inline void spell_steering(const ReqValues* v, std::string& out) {
-  out.clear();
-  if (v == nullptr) return;
-  const char* p = nullptr;
-  size_t n = 0;
-  const auto put = [&out](const char* name, const char* val, size_t len) {
-    if (val == nullptr || len == 0) return;
-    out.append(name);
-    out.append(": ", 2);
-    out.append(val, len);
-    out.push_back('\n');
-  };
-  put("accept", v->accept, v->accept_len);
-  put("accept-encoding", v->accept_encoding, v->accept_encoding_len);
-  put("content-type", v->content_type, v->content_type_len);
-  put("host", v->host, v->host_len);
-  put("range", v->range, v->range_len);
-  put("if-range", v->if_range, v->if_range_len);
-  put("if-match", v->if_match, v->if_match_len);
-  put("if-none-match", v->if_none_match, v->if_none_match_len);
-  // The scheme is the first token; a line with no space is a scheme on
-  // its own, which is all that goes down either way.
-  if (v->authorization != nullptr && v->authorization_len != 0) {
-    p = v->authorization;
-    n = 0;
-    while (n < v->authorization_len && p[n] != ' ' && p[n] != '\t') n++;
-    put("authorization", p, n);
-  }
-  if (v->cookie != nullptr && v->cookie_len != 0) put("cookie", "sent", 4);
+inline void spell_steering(const ReqValues *v, std::string &out)
+{
+    out.clear();
+    if (v == nullptr)
+        return;
+    const char *p = nullptr;
+    size_t n = 0;
+    const auto put = [&out](const char *name, const char *val, size_t len) {
+        if (val == nullptr || len == 0)
+            return;
+        out.append(name);
+        out.append(": ", 2);
+        out.append(val, len);
+        out.push_back('\n');
+    };
+    put("accept", v->accept, v->accept_len);
+    put("accept-encoding", v->accept_encoding, v->accept_encoding_len);
+    put("content-type", v->content_type, v->content_type_len);
+    put("host", v->host, v->host_len);
+    put("range", v->range, v->range_len);
+    put("if-range", v->if_range, v->if_range_len);
+    put("if-match", v->if_match, v->if_match_len);
+    put("if-none-match", v->if_none_match, v->if_none_match_len);
+    // The scheme is the first token; a line with no space is a scheme on
+    // its own, which is all that goes down either way.
+    if (v->authorization != nullptr && v->authorization_len != 0) {
+        p = v->authorization;
+        n = 0;
+        while (n < v->authorization_len && p[n] != ' ' && p[n] != '\t')
+            n++;
+        put("authorization", p, n);
+    }
+    if (v->cookie != nullptr && v->cookie_len != 0)
+        put("cookie", "sent", 4);
 }
-
 
 // A run of digits at v[i], cursor left on the first that is not one.
 // False = none there, or the value does not fit a size_t.
-inline bool read_size(const char* v, size_t n, size_t& i, size_t* out) {
-  bool any = false;
-  size_t val = 0;
-  while (i < n && v[i] >= '0' && v[i] <= '9') {
-    size_t t = 0;
-    if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
-        __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
-      return false;
+inline bool read_size(const char *v, size_t n, size_t &i, size_t *out)
+{
+    bool any = false;
+    size_t val = 0;
+    while (i < n && v[i] >= '0' && v[i] <= '9') {
+        size_t t = 0;
+        if (__builtin_mul_overflow(val, static_cast<size_t>(10), &t) ||
+            __builtin_add_overflow(t, static_cast<size_t>(v[i] - '0'), &val)) {
+            return false;
+        }
+        any = true;
+        i++;
     }
-    any = true;
-    i++;
-  }
-  *out = val;
-  return any;
+    *out = val;
+    return any;
 }
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
@@ -1834,234 +2127,271 @@ enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
 // The Range field's value, and the length of the representation it is
 // measured against.
 struct RangeField {
-  std::string_view value;
-  size_t complete;
+    std::string_view value;
+    size_t complete;
 };
 
 // The one range it named, inclusive at both ends.
 struct ByteRange {
-  size_t first;
-  size_t last;
+    size_t first;
+    size_t last;
 };
 
-inline RangeParse parse_range(RangeField field, ByteRange& out) {
-  const char* const v = field.value.data();
-  const size_t n = field.value.size();
-  const size_t complete = field.complete;
-  size_t* const first = &out.first;
-  size_t* const last = &out.last;
-  if (n < 7 || !tok_eq({v, 6}, "bytes=")) return RangeParse::kNone;
-  size_t i = 6;
-  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
-  size_t a = 0, b = 0;
-  const bool have_a = read_size(v, n, i, &a);
-  if (i >= n || v[i] != '-') return RangeParse::kNone;
-  i++;
-  const bool have_b = read_size(v, n, i, &b);
-  while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
-  if (i != n) return RangeParse::kNone;
-  if (!have_a && !have_b) return RangeParse::kNone;
-  if (complete == 0) return RangeParse::kUnsat;
-  if (!have_a) {
-    if (b == 0) return RangeParse::kUnsat;
-    *first = b >= complete ? 0 : complete - b;
-    *last = complete - 1;
+inline RangeParse parse_range(RangeField field, ByteRange &out)
+{
+    const char *const v = field.value.data();
+    const size_t n = field.value.size();
+    const size_t complete = field.complete;
+    size_t *const first = &out.first;
+    size_t *const last = &out.last;
+    if (n < 7 || !tok_eq({v, 6}, "bytes="))
+        return RangeParse::kNone;
+    size_t i = 6;
+    while (i < n && (v[i] == ' ' || v[i] == '\t'))
+        i++;
+    size_t a = 0, b = 0;
+    const bool have_a = read_size(v, n, i, &a);
+    if (i >= n || v[i] != '-')
+        return RangeParse::kNone;
+    i++;
+    const bool have_b = read_size(v, n, i, &b);
+    while (i < n && (v[i] == ' ' || v[i] == '\t'))
+        i++;
+    if (i != n)
+        return RangeParse::kNone;
+    if (!have_a && !have_b)
+        return RangeParse::kNone;
+    if (complete == 0)
+        return RangeParse::kUnsat;
+    if (!have_a) {
+        if (b == 0)
+            return RangeParse::kUnsat;
+        *first = b >= complete ? 0 : complete - b;
+        *last = complete - 1;
+        return RangeParse::kOne;
+    }
+    if (have_b && b < a)
+        return RangeParse::kNone;
+    if (a >= complete)
+        return RangeParse::kUnsat;
+    *first = a;
+    *last = have_b ? (b < complete - 1 ? b : complete - 1) : complete - 1;
     return RangeParse::kOne;
-  }
-  if (have_b && b < a) return RangeParse::kNone;
-  if (a >= complete) return RangeParse::kUnsat;
-  *first = a;
-  *last = have_b ? (b < complete - 1 ? b : complete - 1) : complete - 1;
-  return RangeParse::kOne;
 }
 
 // RFC 9110 14.2: one validator, compared strongly; a date reads as no match.
-inline bool if_range_matches(std::string_view v, std::string_view tag) {
-  const char* const p = v.data();
-  const size_t n = v.size();
-  const size_t taglen = tag.size();
-  size_t i = 0;
-  while (i < n && (p[i] == ' ' || p[i] == '\t')) i++;
-  size_t e = n;
-  while (e > i && (p[e - 1] == ' ' || p[e - 1] == '\t')) e--;
-  return e - i == taglen && std::memcmp(p + i, tag.data(), taglen) == 0;
+inline bool if_range_matches(std::string_view v, std::string_view tag)
+{
+    const char *const p = v.data();
+    const size_t n = v.size();
+    const size_t taglen = tag.size();
+    size_t i = 0;
+    while (i < n && (p[i] == ' ' || p[i] == '\t'))
+        i++;
+    size_t e = n;
+    while (e > i && (p[e - 1] == ' ' || p[e - 1] == '\t'))
+        e--;
+    return e - i == taglen && std::memcmp(p + i, tag.data(), taglen) == 0;
 }
 
 // RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
 // never reaches this parse.
-inline bool gzip_acceptable(const char* v, size_t n) {
-  bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
-  size_t i = 0;
-  while (i < n) {
-    while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
-    const size_t ts = i;
-    while (i < n && v[i] != ',' && v[i] != ';' && v[i] != ' ' && v[i] != '\t') i++;
-    const size_t tl = i - ts;
-    bool q_nonzero = true;
-    while (i < n && v[i] != ',') {
-      if (v[i] != ';') {
-        i++;
-        continue;
-      }
-      i++;
-      while (i < n && (v[i] == ' ' || v[i] == '\t')) i++;
-      if (i < n && (v[i] == 'q' || v[i] == 'Q')) {
-        size_t j = i + 1;
-        while (j < n && (v[j] == ' ' || v[j] == '\t')) j++;
-        if (j < n && v[j] == '=') {
-          j++;
-          q_nonzero = false;
-          while (j < n && v[j] != ',' && v[j] != ';') {
-            if (v[j] >= '1' && v[j] <= '9') q_nonzero = true;
-            j++;
-          }
-          i = j;
+inline bool gzip_acceptable(const char *v, size_t n)
+{
+    bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
+    size_t i = 0;
+    while (i < n) {
+        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
+            i++;
+        const size_t ts = i;
+        while (i < n && v[i] != ',' && v[i] != ';' && v[i] != ' ' && v[i] != '\t')
+            i++;
+        const size_t tl = i - ts;
+        bool q_nonzero = true;
+        while (i < n && v[i] != ',') {
+            if (v[i] != ';') {
+                i++;
+                continue;
+            }
+            i++;
+            while (i < n && (v[i] == ' ' || v[i] == '\t'))
+                i++;
+            if (i < n && (v[i] == 'q' || v[i] == 'Q')) {
+                size_t j = i + 1;
+                while (j < n && (v[j] == ' ' || v[j] == '\t'))
+                    j++;
+                if (j < n && v[j] == '=') {
+                    j++;
+                    q_nonzero = false;
+                    while (j < n && v[j] != ',' && v[j] != ';') {
+                        if (v[j] >= '1' && v[j] <= '9')
+                            q_nonzero = true;
+                        j++;
+                    }
+                    i = j;
+                }
+            }
         }
-      }
+        if (tl != 0) {
+            if (tok_eq({v + ts, tl}, "gzip") || tok_eq({v + ts, tl}, "x-gzip")) {
+                gz_seen = true;
+                gz_ok = q_nonzero;
+            } else if (tl == 1 && v[ts] == '*') {
+                star_seen = true;
+                star_ok = q_nonzero;
+            }
+        }
     }
-    if (tl != 0) {
-      if (tok_eq({v + ts, tl}, "gzip") || tok_eq({v + ts, tl}, "x-gzip")) {
-        gz_seen = true;
-        gz_ok = q_nonzero;
-      } else if (tl == 1 && v[ts] == '*') {
-        star_seen = true;
-        star_ok = q_nonzero;
-      }
-    }
-  }
-  if (gz_seen) return gz_ok;
-  if (star_seen) return star_ok;
-  return false;
+    if (gz_seen)
+        return gz_ok;
+    if (star_seen)
+        return star_ok;
+    return false;
 }
 
 // RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
 // representation's own tag, and which comparison applies - strong for
 // If-Match, weak for If-None-Match.
 struct EtagMatch {
-  std::string_view list;
-  std::string_view tag;
-  bool weak;
+    std::string_view list;
+    std::string_view tag;
+    bool weak;
 };
 
-inline bool etag_list_match(EtagMatch m) {
-  const char* const v = m.list.data();
-  const size_t n = m.list.size();
-  const char* const tag = m.tag.data();
-  const size_t taglen = m.tag.size();
-  const bool weak = m.weak;
-  size_t i = 0;
-  while (i < n) {
-    while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ',')) i++;
-    if (i >= n) break;
-    bool member_weak = false;
-    if (i + 1 < n && v[i] == 'W' && v[i + 1] == '/') {
-      member_weak = true;
-      i += 2;
+inline bool etag_list_match(EtagMatch m)
+{
+    const char *const v = m.list.data();
+    const size_t n = m.list.size();
+    const char *const tag = m.tag.data();
+    const size_t taglen = m.tag.size();
+    const bool weak = m.weak;
+    size_t i = 0;
+    while (i < n) {
+        while (i < n && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
+            i++;
+        if (i >= n)
+            break;
+        bool member_weak = false;
+        if (i + 1 < n && v[i] == 'W' && v[i + 1] == '/') {
+            member_weak = true;
+            i += 2;
+        }
+        if (i >= n || v[i] != '"') {
+            while (i < n && v[i] != ',')
+                i++;
+            continue;
+        }
+        const size_t start = i;
+        i++;
+        while (i < n && v[i] != '"')
+            i++;
+        if (i >= n)
+            break;
+        i++;
+        const size_t mlen = i - start;
+        if ((weak || !member_weak) && mlen == taglen && std::memcmp(v + start, tag, taglen) == 0) {
+            return true;
+        }
     }
-    if (i >= n || v[i] != '"') {
-      while (i < n && v[i] != ',') i++;
-      continue;
-    }
-    const size_t start = i;
-    i++;
-    while (i < n && v[i] != '"') i++;
-    if (i >= n) break;
-    i++;
-    const size_t mlen = i - start;
-    if ((weak || !member_weak) && mlen == taglen &&
-        std::memcmp(v + start, tag, taglen) == 0) {
-      return true;
-    }
-  }
-  return false;
+    return false;
 }
 
 // Exactly k digits at p[at], as one number. -1 = one of them is not a digit.
-inline int read_fixed_digits(const char* p, size_t at, size_t k) {
-  int v = 0;
-  for (size_t i = 0; i < k; i++) {
-    if (p[at + i] < '0' || p[at + i] > '9') return -1;
-    v = v * 10 + (p[at + i] - '0');
-  }
-  return v;
+inline int read_fixed_digits(const char *p, size_t at, size_t k)
+{
+    int v = 0;
+    for (size_t i = 0; i < k; i++) {
+        if (p[at + i] < '0' || p[at + i] > '9')
+            return -1;
+        v = v * 10 + (p[at + i] - '0');
+    }
+    return v;
 }
 
 // The three-letter month name at p[at], 1..12. -1 = none of them.
-inline int read_month_name(const char* p, size_t at) {
-  static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  for (int m = 0; m < 12; m++) {
-    if (std::memcmp(p + at, kMon[m], 3) == 0) return m + 1;
-  }
-  return -1;
+inline int read_month_name(const char *p, size_t at)
+{
+    static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    for (int m = 0; m < 12; m++) {
+        if (std::memcmp(p + at, kMon[m], 3) == 0)
+            return m + 1;
+    }
+    return -1;
 }
 
 // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
 // One civil date and time, as the fields a Date line spells.
 struct Civil {
-  int y;
-  int m;
-  int d;
-  int hh;
-  int mm;
-  int ss;
+    int y;
+    int m;
+    int d;
+    int hh;
+    int mm;
+    int ss;
 };
 
-inline int64_t epoch_from_civil(Civil c) {
-  int y = c.y;
-  const int m = c.m, d = c.d, hh = c.hh, mm = c.mm, ss = c.ss;
-  y -= m <= 2;
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const int yoe = y - era * 400;
-  const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  const int64_t days = int64_t{era} * 146097 + doe - 719468;
-  return days * 86400 + hh * 3600 + mm * 60 + ss;
+inline int64_t epoch_from_civil(Civil c)
+{
+    int y = c.y;
+    const int m = c.m, d = c.d, hh = c.hh, mm = c.mm, ss = c.ss;
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = y - era * 400;
+    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = int64_t{era} * 146097 + doe - 719468;
+    return days * 86400 + hh * 3600 + mm * 60 + ss;
 }
 
 // RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
 // ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
 // ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
 // ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
-inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
-  int y, mo, d, hh, mm, ss;
-  if (n == 29 && p[3] == ',' && p[4] == ' ') {  // IMF-fixdate
-    d = read_fixed_digits(p, 5, 2);
-    mo = read_month_name(p, 8);
-    y = read_fixed_digits(p, 12, 4);
-    hh = read_fixed_digits(p, 17, 2);
-    mm = read_fixed_digits(p, 20, 2);
-    ss = read_fixed_digits(p, 23, 2);
-    if (std::memcmp(p + 25, " GMT", 4) != 0) return false;
-  } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
-             static_cast<const char*>(std::memchr(p, ',', n)) != nullptr) {  // RFC 850
-    const char* c = static_cast<const char*>(std::memchr(p, ',', n));
-    const size_t at = static_cast<size_t>(c - p) + 2;
-    if (at + 18 + 4 != n || at + 18 > n) return false;
-    d = read_fixed_digits(p, at, 2);
-    if (p[at + 2] != '-' || p[at + 6] != '-') return false;
-    mo = read_month_name(p, at + 3);
-    y = read_fixed_digits(p, at + 7, 2);
-    if (y >= 0) y += y < 70 ? 2000 : 1900;  // 5.6.7's two-digit rule
-    hh = read_fixed_digits(p, at + 10, 2);
-    mm = read_fixed_digits(p, at + 13, 2);
-    ss = read_fixed_digits(p, at + 16, 2);
-  } else if (n == 24 && p[3] == ' ' && p[7] == ' ') {  // asctime
-    mo = read_month_name(p, 4);
-    d = p[8] == ' ' ? read_fixed_digits(p, 9, 1) : read_fixed_digits(p, 8, 2);
-    hh = read_fixed_digits(p, 11, 2);
-    mm = read_fixed_digits(p, 14, 2);
-    ss = read_fixed_digits(p, 17, 2);
-    y = read_fixed_digits(p, 20, 4);
-  } else {
-    return false;
-  }
-  if (y < 0 || mo < 0 || d <= 0 || d > 31 || hh < 0 || hh > 23 || mm < 0 || mm > 59 ||
-      ss < 0 || ss > 60) {
-    return false;
-  }
-  *out = epoch_from_civil({y, mo, d, hh, mm, ss});
-  return true;
+inline bool parse_http_date(const char *p, size_t n, int64_t *out)
+{
+    int y, mo, d, hh, mm, ss;
+    if (n == 29 && p[3] == ',' && p[4] == ' ') { // IMF-fixdate
+        d = read_fixed_digits(p, 5, 2);
+        mo = read_month_name(p, 8);
+        y = read_fixed_digits(p, 12, 4);
+        hh = read_fixed_digits(p, 17, 2);
+        mm = read_fixed_digits(p, 20, 2);
+        ss = read_fixed_digits(p, 23, 2);
+        if (std::memcmp(p + 25, " GMT", 4) != 0)
+            return false;
+    } else if (n >= 28 && n <= 33 && std::memcmp(p + n - 4, " GMT", 4) == 0 &&
+               static_cast<const char *>(std::memchr(p, ',', n)) != nullptr) { // RFC 850
+        const char *c = static_cast<const char *>(std::memchr(p, ',', n));
+        const size_t at = static_cast<size_t>(c - p) + 2;
+        if (at + 18 + 4 != n || at + 18 > n)
+            return false;
+        d = read_fixed_digits(p, at, 2);
+        if (p[at + 2] != '-' || p[at + 6] != '-')
+            return false;
+        mo = read_month_name(p, at + 3);
+        y = read_fixed_digits(p, at + 7, 2);
+        if (y >= 0)
+            y += y < 70 ? 2000 : 1900; // 5.6.7's two-digit rule
+        hh = read_fixed_digits(p, at + 10, 2);
+        mm = read_fixed_digits(p, at + 13, 2);
+        ss = read_fixed_digits(p, at + 16, 2);
+    } else if (n == 24 && p[3] == ' ' && p[7] == ' ') { // asctime
+        mo = read_month_name(p, 4);
+        d = p[8] == ' ' ? read_fixed_digits(p, 9, 1) : read_fixed_digits(p, 8, 2);
+        hh = read_fixed_digits(p, 11, 2);
+        mm = read_fixed_digits(p, 14, 2);
+        ss = read_fixed_digits(p, 17, 2);
+        y = read_fixed_digits(p, 20, 4);
+    } else {
+        return false;
+    }
+    if (y < 0 || mo < 0 || d <= 0 || d > 31 || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 ||
+        ss > 60) {
+        return false;
+    }
+    *out = epoch_from_civil({y, mo, d, hh, mm, ss});
+    return true;
 }
 
 // RFC 9110 12.5.1: choose among the provided types given an Accept
@@ -2072,8 +2402,8 @@ inline bool parse_http_date(const char* p, size_t n, int64_t* out) {
 // RFC 9110 12.5.1: the media types this resource provides, and the Accept
 // the request sent.
 struct Conneg {
-  std::span<const std::string> provided;
-  std::string_view accept;
+    std::span<const std::string> provided;
+    std::string_view accept;
 };
 
 // RFC 9110 12.5.1: an exact type/subtype is the most specific match a
@@ -2084,181 +2414,205 @@ struct Conneg {
 // Deliberately narrow: a parameter on that first range, or a case that
 // does not match byte for byte, falls back to choose_media_type, which
 // is case-insensitive and weighs q properly.
-inline bool accept_is_exact(std::string_view accept, std::string_view type) {
-  const char* const a = accept.data();
-  const size_t n = accept.size();
-  size_t i = 0;
-  while (i < n && (a[i] == ' ' || a[i] == '\t')) i++;
-  if (n - i < type.size()) return false;
-  if (std::memcmp(a + i, type.data(), type.size()) != 0) return false;
-  i += type.size();
-  while (i < n && (a[i] == ' ' || a[i] == '\t')) i++;
-  return i == n || a[i] == ',';
+inline bool accept_is_exact(std::string_view accept, std::string_view type)
+{
+    const char *const a = accept.data();
+    const size_t n = accept.size();
+    size_t i = 0;
+    while (i < n && (a[i] == ' ' || a[i] == '\t'))
+        i++;
+    if (n - i < type.size())
+        return false;
+    if (std::memcmp(a + i, type.data(), type.size()) != 0)
+        return false;
+    i += type.size();
+    while (i < n && (a[i] == ' ' || a[i] == '\t'))
+        i++;
+    return i == n || a[i] == ',';
 }
 
-inline int choose_media_type(Conneg c) {
-  const std::string* const types = c.provided.data();
-  const size_t ntypes = c.provided.size();
-  const char* const av = c.accept.data();
-  const size_t alen = c.accept.size();
-  struct Range {
-    const char* t;
-    size_t tn;
-    const char* sub;
-    size_t sn;
-    int q1000;
-  };
-  Range ranges[32];
-  size_t nr = 0;
-  size_t i = 0;
-  while (i < alen && nr < 32) {
-    while (i < alen && (av[i] == ' ' || av[i] == '\t' || av[i] == ',')) i++;
-    if (i >= alen) break;
-    const size_t start = i;
-    while (i < alen && av[i] != ',') i++;
-    const size_t end = i;
-    int q = 1000;
-    size_t semi = start;
-    while (semi < end && av[semi] != ';') semi++;
-    size_t tend = semi;
-    while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t')) tend--;
-    size_t pi = semi;
-    while (pi < end) {
-      pi++;
-      while (pi < end && (av[pi] == ' ' || av[pi] == '\t')) pi++;
-      if (pi + 2 <= end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
-        size_t v = pi + 2;
-        int whole = 0, frac = 0, fdig = 0;
-        if (v < end && (av[v] >= '0' && av[v] <= '9')) {
-          whole = av[v] - '0';
-          v++;
+inline int choose_media_type(Conneg c)
+{
+    const std::string *const types = c.provided.data();
+    const size_t ntypes = c.provided.size();
+    const char *const av = c.accept.data();
+    const size_t alen = c.accept.size();
+    struct Range {
+        const char *t;
+        size_t tn;
+        const char *sub;
+        size_t sn;
+        int q1000;
+    };
+    Range ranges[32];
+    size_t nr = 0;
+    size_t i = 0;
+    while (i < alen && nr < 32) {
+        while (i < alen && (av[i] == ' ' || av[i] == '\t' || av[i] == ','))
+            i++;
+        if (i >= alen)
+            break;
+        const size_t start = i;
+        while (i < alen && av[i] != ',')
+            i++;
+        const size_t end = i;
+        int q = 1000;
+        size_t semi = start;
+        while (semi < end && av[semi] != ';')
+            semi++;
+        size_t tend = semi;
+        while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t'))
+            tend--;
+        size_t pi = semi;
+        while (pi < end) {
+            pi++;
+            while (pi < end && (av[pi] == ' ' || av[pi] == '\t'))
+                pi++;
+            if (pi + 2 <= end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
+                size_t v = pi + 2;
+                int whole = 0, frac = 0, fdig = 0;
+                if (v < end && (av[v] >= '0' && av[v] <= '9')) {
+                    whole = av[v] - '0';
+                    v++;
+                }
+                if (v < end && av[v] == '.') {
+                    v++;
+                    while (v < end && (av[v] >= '0' && av[v] <= '9') && fdig < 3) {
+                        frac = frac * 10 + (av[v] - '0');
+                        fdig++;
+                        v++;
+                    }
+                }
+                while (fdig < 3) {
+                    frac *= 10;
+                    fdig++;
+                }
+                q = whole * 1000 + frac;
+                if (q > 1000)
+                    q = 1000;
+            }
+            while (pi < end && av[pi] != ';')
+                pi++;
         }
-        if (v < end && av[v] == '.') {
-          v++;
-          while (v < end && (av[v] >= '0' && av[v] <= '9') && fdig < 3) {
-            frac = frac * 10 + (av[v] - '0');
-            fdig++;
-            v++;
-          }
+        const char *slash = static_cast<const char *>(std::memchr(av + start, '/', tend - start));
+        if (slash != nullptr) {
+            ranges[nr].t = av + start;
+            ranges[nr].tn = static_cast<size_t>(slash - (av + start));
+            ranges[nr].sub = slash + 1;
+            ranges[nr].sn = tend - static_cast<size_t>(slash + 1 - av);
+            ranges[nr].q1000 = q;
+            nr++;
         }
-        while (fdig < 3) {
-          frac *= 10;
-          fdig++;
+    }
+    int best = -1;
+    int best_q = 0;
+    int best_spec = -1;
+    for (size_t t = 0; t < ntypes; t++) {
+        const std::string &full = types[t];
+        size_t tn = full.find(';');
+        if (tn == std::string::npos)
+            tn = full.size();
+        while (tn > 0 && full[tn - 1] == ' ')
+            tn--;
+        const char *tp = full.data();
+        const size_t sl = full.find('/');
+        if (sl == std::string::npos || sl >= tn)
+            continue;
+        const size_t main_n = sl;
+        const char *sub_p = tp + sl + 1;
+        const size_t sub_n = tn - sl - 1;
+        int q = -1;
+        int spec = -1;
+        for (size_t r = 0; r < nr; r++) {
+            const Range &rg = ranges[r];
+            int this_spec;
+            if (rg.tn == 1 && rg.t[0] == '*') {
+                this_spec = 0;
+            } else if (!tok_eq({rg.t, rg.tn}, {tp, main_n})) {
+                continue;
+            } else if (rg.sn == 1 && rg.sub[0] == '*') {
+                this_spec = 1;
+            } else if (tok_eq({rg.sub, rg.sn}, {sub_p, sub_n})) {
+                this_spec = 2;
+            } else {
+                continue;
+            }
+            if (this_spec > spec) {
+                spec = this_spec;
+                q = rg.q1000;
+            }
         }
-        q = whole * 1000 + frac;
-        if (q > 1000) q = 1000;
-      }
-      while (pi < end && av[pi] != ';') pi++;
+        if (spec < 0 || q == 0)
+            continue;
+        if (q > best_q || (q == best_q && spec > best_spec)) {
+            best = static_cast<int>(t);
+            best_q = q;
+            best_spec = spec;
+        }
     }
-    const char* slash = static_cast<const char*>(std::memchr(av + start, '/', tend - start));
-    if (slash != nullptr) {
-      ranges[nr].t = av + start;
-      ranges[nr].tn = static_cast<size_t>(slash - (av + start));
-      ranges[nr].sub = slash + 1;
-      ranges[nr].sn = tend - static_cast<size_t>(slash + 1 - av);
-      ranges[nr].q1000 = q;
-      nr++;
-    }
-  }
-  int best = -1;
-  int best_q = 0;
-  int best_spec = -1;
-  for (size_t t = 0; t < ntypes; t++) {
-    const std::string& full = types[t];
-    size_t tn = full.find(';');
-    if (tn == std::string::npos) tn = full.size();
-    while (tn > 0 && full[tn - 1] == ' ') tn--;
-    const char* tp = full.data();
-    const size_t sl = full.find('/');
-    if (sl == std::string::npos || sl >= tn) continue;
-    const size_t main_n = sl;
-    const char* sub_p = tp + sl + 1;
-    const size_t sub_n = tn - sl - 1;
-    int q = -1;
-    int spec = -1;
-    for (size_t r = 0; r < nr; r++) {
-      const Range& rg = ranges[r];
-      int this_spec;
-      if (rg.tn == 1 && rg.t[0] == '*') {
-        this_spec = 0;
-      } else if (!tok_eq({rg.t, rg.tn}, {tp, main_n})) {
-        continue;
-      } else if (rg.sn == 1 && rg.sub[0] == '*') {
-        this_spec = 1;
-      } else if (tok_eq({rg.sub, rg.sn}, {sub_p, sub_n})) {
-        this_spec = 2;
-      } else {
-        continue;
-      }
-      if (this_spec > spec) {
-        spec = this_spec;
-        q = rg.q1000;
-      }
-    }
-    if (spec < 0 || q == 0) continue;
-    if (q > best_q || (q == best_q && spec > best_spec)) {
-      best = static_cast<int>(t);
-      best_q = q;
-      best_spec = spec;
-    }
-  }
-  return best;
+    return best;
 }
 
 // RFC 9110 8.8.3: spell an application-supplied ETag for the wire - an
 // already-quoted or weak form passes verbatim, bare bytes are quoted
 // (webmachine ETag.new semantics).
-inline void etag_spell(const char* raw, size_t n, std::string& out) {
-  out.clear();
-  if ((n >= 2 && raw[0] == '"') || (n >= 3 && raw[0] == 'W' && raw[1] == '/')) {
+inline void etag_spell(const char *raw, size_t n, std::string &out)
+{
+    out.clear();
+    if ((n >= 2 && raw[0] == '"') || (n >= 3 && raw[0] == 'W' && raw[1] == '/')) {
+        out.append(raw, n);
+        return;
+    }
+    out.push_back('"');
     out.append(raw, n);
-    return;
-  }
-  out.push_back('"');
-  out.append(raw, n);
-  out.push_back('"');
+    out.push_back('"');
 }
 
 // RFC 3986 5.3: a reference and the base it is resolved against.
 struct UriRef {
-  std::string_view base;
-  std::string_view ref;
+    std::string_view base;
+    std::string_view ref;
 };
 
 // The n11 subset: join create_path onto a base. A full URI passes
 // verbatim; an absolute-path ref replaces the base's path; a relative
 // segment appends after the base's last '/'.
-inline void uri_join(UriRef r, std::string& out) {
-  const char* const base = r.base.data();
-  const size_t blen = r.base.size();
-  const char* const path = r.ref.data();
-  const size_t payload_length = r.ref.size();
-  out.clear();
-  if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
-    const char* colon = static_cast<const char*>(std::memchr(path, ':', payload_length));
-    if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
-      out.append(path, payload_length);
-      return;
+inline void uri_join(UriRef r, std::string &out)
+{
+    const char *const base = r.base.data();
+    const size_t blen = r.base.size();
+    const char *const path = r.ref.data();
+    const size_t payload_length = r.ref.size();
+    out.clear();
+    if (payload_length >= 8 && std::memcmp(path, "http", 4) == 0) {
+        const char *colon = static_cast<const char *>(std::memchr(path, ':', payload_length));
+        if (colon != nullptr && static_cast<size_t>(colon - path) <= 5) {
+            out.append(path, payload_length);
+            return;
+        }
     }
-  }
-  if (payload_length > 0 && path[0] == '/') {
-    size_t slashes = 0, i = 0;
-    for (; i < blen; i++) {
-      if (base[i] == '/') {
-        slashes++;
-        if (slashes == 3) break;
-      }
+    if (payload_length > 0 && path[0] == '/') {
+        size_t slashes = 0, i = 0;
+        for (; i < blen; i++) {
+            if (base[i] == '/') {
+                slashes++;
+                if (slashes == 3)
+                    break;
+            }
+        }
+        out.append(base, i);
+        out.append(path, payload_length);
+        return;
     }
-    out.append(base, i);
+    size_t cut = blen;
+    while (cut > 0 && base[cut - 1] != '/')
+        cut--;
+    if (cut == 0)
+        cut = blen;
+    out.append(base, cut);
+    if (!out.empty() && out.back() != '/')
+        out.push_back('/');
     out.append(path, payload_length);
-    return;
-  }
-  size_t cut = blen;
-  while (cut > 0 && base[cut - 1] != '/') cut--;
-  if (cut == 0) cut = blen;
-  out.append(base, cut);
-  if (!out.empty() && out.back() != '/') out.push_back('/');
-  out.append(path, payload_length);
 }
 
 // RFC 9110 5.1 / 5.6.2: a field name is a token. Both writers that put
@@ -2276,57 +2630,68 @@ inline void uri_join(UriRef r, std::string& out) {
 // second copy on the wire. Two Content-Length fields are what a proxy
 // and this server then disagree about, which is a response desync; over
 // HTTP/2 the hop-by-hop names are refused outright (RFC 9113 8.2.2).
-inline bool field_name_is_the_servers(const char* p, size_t n) {
-  static constexpr const char* kOurs[] = {"content-length", "transfer-encoding", "connection",
-                                          "keep-alive",     "upgrade",           "te",
-                                          "proxy-connection"};
-  for (const char* ours : kOurs) {
-    size_t i = 0;
-    for (; i < n && ours[i] != '\0'; i++) {
-      const unsigned char c = static_cast<unsigned char>(p[i]);
-      const unsigned char lc = (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c;
-      if (lc != static_cast<unsigned char>(ours[i])) break;
+inline bool field_name_is_the_servers(const char *p, size_t n)
+{
+    static constexpr const char *kOurs[] = {"content-length",  "transfer-encoding", "connection",
+                                            "keep-alive",      "upgrade",           "te",
+                                            "proxy-connection"};
+    for (const char *ours : kOurs) {
+        size_t i = 0;
+        for (; i < n && ours[i] != '\0'; i++) {
+            const unsigned char c = static_cast<unsigned char>(p[i]);
+            const unsigned char lc =
+                (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c;
+            if (lc != static_cast<unsigned char>(ours[i]))
+                break;
+        }
+        if (i == n && ours[i] == '\0')
+            return true;
     }
-    if (i == n && ours[i] == '\0') return true;
-  }
-  return false;
+    return false;
 }
 
-inline bool field_name_ok(const char* p, size_t n) {
-  if (n == 0) return false;
-  for (size_t i = 0; i < n; i++) {
-    const unsigned char c = static_cast<unsigned char>(p[i]);
-    const bool tchar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                       (c >= '0' && c <= '9') || c == '!' || c == '#' || c == '$' ||
-                       c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
-                       c == '-' || c == '.' || c == '^' || c == '_' || c == '`' ||
-                       c == '|' || c == '~';
-    if (!tchar) return false;
-  }
-  return true;
+inline bool field_name_ok(const char *p, size_t n)
+{
+    if (n == 0)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = static_cast<unsigned char>(p[i]);
+        const bool tchar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '!' || c == '#' || c == '$' || c == '%' ||
+                           c == '&' || c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+                           c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+        if (!tchar)
+            return false;
+    }
+    return true;
 }
 
 // RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
 // is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
 // byte a malformed h2 field, so one rule serves both writers.
-inline bool field_value_ok(const char* p, size_t n) {
-  for (size_t i = 0; i < n; i++) {
-    if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0') return false;
-  }
-  return true;
+inline bool field_value_ok(const char *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0')
+            return false;
+    }
+    return true;
 }
 
 // RFC 9110 5.1: a field name is known by its length first. The switches
 // below have a case for these and no other, so a name of any other length is
 // none of them - one shift and one test, before a byte is compared. The mask
 // is derived from the list, so a new case cannot forget to widen it.
-constexpr uint32_t lengths_mask(const size_t* v, size_t n) {
-  uint32_t m = 0;
-  for (size_t i = 0; i < n; i++) m |= 1u << v[i];
-  return m;
+constexpr uint32_t lengths_mask(const size_t *v, size_t n)
+{
+    uint32_t m = 0;
+    for (size_t i = 0; i < n; i++)
+        m |= 1u << v[i];
+    return m;
 }
-constexpr bool length_is_one_of(size_t nlen, uint32_t mask) {
-  return nlen < 32 && ((mask >> nlen) & 1u) != 0;
+constexpr bool length_is_one_of(size_t nlen, uint32_t mask)
+{
+    return nlen < 32 && ((mask >> nlen) & 1u) != 0;
 }
 
 // RFC 9110: dnt(3) host(4) range(5) accept/cookie(6) sec-gpc(7)
@@ -2339,268 +2704,275 @@ inline constexpr uint32_t kFieldLengthMask =
 
 // One header field as it lies in the head: its name and its value.
 struct Field {
-  std::string_view name;
-  std::string_view value;
+    std::string_view name;
+    std::string_view value;
 };
 
 // Where one request's parsed facts are being filled: the facts themselves,
 // the values that point back into the head, and the index of the field
 // being read - a value's own position is how the framer finds it again.
 struct FactSink {
-  flow::ReqFacts& facts;
-  ReqValues& vals;
-  size_t at;
+    flow::ReqFacts &facts;
+    ReqValues &vals;
+    size_t at;
 };
 
 // RFC 9110: one length-switch per header. The 9110 facts are filled here;
 // true means the name is not one of them and the framer must read it.
-static inline bool header_switch(Field f, FactSink into) {
-  const char* const name = f.name.data();
-  const size_t nlen = f.name.size();
-  const char* const value = f.value.data();
-  const size_t vlen = f.value.size();
-  flow::ReqFacts& facts = into.facts;
-  ReqValues& vals = into.vals;
-  const size_t at = into.at;
-  if (!length_is_one_of(nlen, kFieldLengthMask)) return true;
-  switch (nlen) {
-    case 3:
-      if (tok_eq({name, nlen}, "dnt")) {
-        if (vlen == 1 && value[0] == '1') facts.no_track = true;
-        return false;
-      }
-      break;
-    case 4:
-      if (tok_eq({name, nlen}, "host")) {
-        // The value is 9110's (request.base_uri reads it); the
-        // presence check stays the framer's (9112 requires Host), so
-        // this arm both keeps the bytes and falls through to the wire
-        // functor.
-        vals.host = value;
-        vals.host_len = vlen;
-        vals.named.note(NamedField::kHost, at);
-        break;
-      }
-      break;
-    case 5:
-      if (tok_eq({name, nlen}, "range")) {
-        vals.range = value;
-        vals.range_len = vlen;
-        return false;
-      }
-      break;
-    case 6:
-      if (tok_eq({name, nlen}, "accept")) {
-        // Not plain = false: has_accept is asked separately by answer(),
-        // so the request path can clear it when the Accept turns out to
-        // name exactly what the route offers - a negotiation with one
-        // outcome, back on the shortcut. Everything else that clears
-        // plain stays as it is.
-        facts.has_accept = true;
-        vals.accept = value;
-        vals.accept_len = vlen;
-        vals.named.note(NamedField::kAccept, at);
-        return false;
-      }
-      if (tok_eq({name, nlen}, "cookie")) {
-        if (vals.cookie != nullptr) {
-          vals.cookie_repeats = true;
-          return false;
-        }
-        vals.cookie = value;
-        vals.cookie_len = vlen;
-        return false;
-      }
-      break;
-    case 7:
-      if (tok_eq({name, nlen}, "sec-gpc")) {
-        if (vlen == 1 && value[0] == '1') facts.no_track = true;
-        return false;
-      }
-      break;
-    case 8:
-      if (tok_eq({name, nlen}, "if-range")) {
-        vals.if_range = value;
-        vals.if_range_len = vlen;
-        return false;
-      }
-      if (tok_eq({name, nlen}, "if-match")) {
-        facts.has_if_match = true;
-        facts.plain = false;
-        facts.if_match_star = star_value(value, vlen);
-        vals.if_match = value;
-        vals.if_match_len = vlen;
-        vals.named.note(NamedField::kIfMatch, at);
-        return false;
-      }
-      break;
-    case 12:
-      if (tok_eq({name, nlen}, "content-type")) {
-        // RFC 9110 8.3: b5's argument and accept_helper's key.
-        vals.content_type = value;
-        vals.content_type_len = vlen;
-        vals.named.note(NamedField::kContentType, at);
-        return false;
-      }
-      break;
-    case 13:
-      if (tok_eq({name, nlen}, "authorization")) {
-        // RFC 9110 11.6.2: b8's argument.
-        vals.authorization = value;
-        vals.authorization_len = vlen;
-        vals.named.note(NamedField::kAuthorization, at);
-        return false;
-      }
-      if (tok_eq({name, nlen}, "if-none-match")) {
-        facts.has_if_none_match = true;
-        facts.plain = false;
-        if (vals.if_none_match != nullptr) {
-          // A star on any line is a star; the lines are joined by the reader.
-          if (star_value(value, vlen)) facts.if_none_match_star = true;
-          vals.if_none_match_repeats = true;
-          return false;
-        }
-        facts.if_none_match_star = star_value(value, vlen);
-        vals.if_none_match = value;
-        vals.if_none_match_len = vlen;
-        vals.named.note(NamedField::kIfNoneMatch, at);
-        return false;
-      }
-      break;
-    case 14:
-      if (tok_eq({name, nlen}, "accept-charset")) {
-        facts.has_accept_charset = true;
-        facts.plain = false;
-        return false;
-      }
-      break;
-    case 15:
-      if (tok_eq({name, nlen}, "accept-language")) {
-        facts.has_accept_language = true;
-        facts.plain = false;
-        return false;
-      }
-      if (tok_eq({name, nlen}, "accept-encoding")) {
-        facts.has_accept_encoding = true;
-        facts.plain = false;
-        vals.accept_encoding = value;
-        vals.accept_encoding_len = vlen;
-        vals.named.note(NamedField::kAcceptEncoding, at);
-        return false;
-      }
-      break;
-    case 17:
-      if (tok_eq({name, nlen}, "if-modified-since")) {
-        facts.has_if_modified_since = true;
-        facts.plain = false;
-        // 13.1.3: an unparseable date reads as "field absent" (l14).
-        vals.named.note(NamedField::kIfModifiedSince, at);
-        facts.if_modified_since_valid = parse_http_date(value, vlen, &vals.if_modified_since_epoch);
-        // 13.1.3: a date in the future is ignored (l15).
-        if (facts.if_modified_since_valid) {
-          facts.if_modified_since_future =
-              vals.if_modified_since_epoch > ::time(nullptr);
-        }
-        return false;
-      }
-      break;
-    case 19:
-      if (tok_eq({name, nlen}, "if-unmodified-since")) {
-        facts.has_if_unmodified_since = true;
-        facts.plain = false;
-        // 13.1.4: same rule as IMS (h11).
-        vals.named.note(NamedField::kIfUnmodifiedSince, at);
-        facts.if_unmodified_since_valid =
-            parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
-        return false;
-      }
-      break;
-    default:
-      break;
-  }
-  return true;
+static inline bool header_switch(Field f, FactSink into)
+{
+    const char *const name = f.name.data();
+    const size_t nlen = f.name.size();
+    const char *const value = f.value.data();
+    const size_t vlen = f.value.size();
+    flow::ReqFacts &facts = into.facts;
+    ReqValues &vals = into.vals;
+    const size_t at = into.at;
+    if (!length_is_one_of(nlen, kFieldLengthMask))
+        return true;
+    switch (nlen) {
+        case 3:
+            if (tok_eq({name, nlen}, "dnt")) {
+                if (vlen == 1 && value[0] == '1')
+                    facts.no_track = true;
+                return false;
+            }
+            break;
+        case 4:
+            if (tok_eq({name, nlen}, "host")) {
+                // The value is 9110's (request.base_uri reads it); the
+                // presence check stays the framer's (9112 requires Host), so
+                // this arm both keeps the bytes and falls through to the wire
+                // functor.
+                vals.host = value;
+                vals.host_len = vlen;
+                vals.named.note(NamedField::kHost, at);
+                break;
+            }
+            break;
+        case 5:
+            if (tok_eq({name, nlen}, "range")) {
+                vals.range = value;
+                vals.range_len = vlen;
+                return false;
+            }
+            break;
+        case 6:
+            if (tok_eq({name, nlen}, "accept")) {
+                // Not plain = false: has_accept is asked separately by answer(),
+                // so the request path can clear it when the Accept turns out to
+                // name exactly what the route offers - a negotiation with one
+                // outcome, back on the shortcut. Everything else that clears
+                // plain stays as it is.
+                facts.has_accept = true;
+                vals.accept = value;
+                vals.accept_len = vlen;
+                vals.named.note(NamedField::kAccept, at);
+                return false;
+            }
+            if (tok_eq({name, nlen}, "cookie")) {
+                if (vals.cookie != nullptr) {
+                    vals.cookie_repeats = true;
+                    return false;
+                }
+                vals.cookie = value;
+                vals.cookie_len = vlen;
+                return false;
+            }
+            break;
+        case 7:
+            if (tok_eq({name, nlen}, "sec-gpc")) {
+                if (vlen == 1 && value[0] == '1')
+                    facts.no_track = true;
+                return false;
+            }
+            break;
+        case 8:
+            if (tok_eq({name, nlen}, "if-range")) {
+                vals.if_range = value;
+                vals.if_range_len = vlen;
+                return false;
+            }
+            if (tok_eq({name, nlen}, "if-match")) {
+                facts.has_if_match = true;
+                facts.plain = false;
+                facts.if_match_star = star_value(value, vlen);
+                vals.if_match = value;
+                vals.if_match_len = vlen;
+                vals.named.note(NamedField::kIfMatch, at);
+                return false;
+            }
+            break;
+        case 12:
+            if (tok_eq({name, nlen}, "content-type")) {
+                // RFC 9110 8.3: b5's argument and accept_helper's key.
+                vals.content_type = value;
+                vals.content_type_len = vlen;
+                vals.named.note(NamedField::kContentType, at);
+                return false;
+            }
+            break;
+        case 13:
+            if (tok_eq({name, nlen}, "authorization")) {
+                // RFC 9110 11.6.2: b8's argument.
+                vals.authorization = value;
+                vals.authorization_len = vlen;
+                vals.named.note(NamedField::kAuthorization, at);
+                return false;
+            }
+            if (tok_eq({name, nlen}, "if-none-match")) {
+                facts.has_if_none_match = true;
+                facts.plain = false;
+                if (vals.if_none_match != nullptr) {
+                    // A star on any line is a star; the lines are joined by the reader.
+                    if (star_value(value, vlen))
+                        facts.if_none_match_star = true;
+                    vals.if_none_match_repeats = true;
+                    return false;
+                }
+                facts.if_none_match_star = star_value(value, vlen);
+                vals.if_none_match = value;
+                vals.if_none_match_len = vlen;
+                vals.named.note(NamedField::kIfNoneMatch, at);
+                return false;
+            }
+            break;
+        case 14:
+            if (tok_eq({name, nlen}, "accept-charset")) {
+                facts.has_accept_charset = true;
+                facts.plain = false;
+                return false;
+            }
+            break;
+        case 15:
+            if (tok_eq({name, nlen}, "accept-language")) {
+                facts.has_accept_language = true;
+                facts.plain = false;
+                return false;
+            }
+            if (tok_eq({name, nlen}, "accept-encoding")) {
+                facts.has_accept_encoding = true;
+                facts.plain = false;
+                vals.accept_encoding = value;
+                vals.accept_encoding_len = vlen;
+                vals.named.note(NamedField::kAcceptEncoding, at);
+                return false;
+            }
+            break;
+        case 17:
+            if (tok_eq({name, nlen}, "if-modified-since")) {
+                facts.has_if_modified_since = true;
+                facts.plain = false;
+                // 13.1.3: an unparseable date reads as "field absent" (l14).
+                vals.named.note(NamedField::kIfModifiedSince, at);
+                facts.if_modified_since_valid =
+                    parse_http_date(value, vlen, &vals.if_modified_since_epoch);
+                // 13.1.3: a date in the future is ignored (l15).
+                if (facts.if_modified_since_valid) {
+                    facts.if_modified_since_future = vals.if_modified_since_epoch > ::time(nullptr);
+                }
+                return false;
+            }
+            break;
+        case 19:
+            if (tok_eq({name, nlen}, "if-unmodified-since")) {
+                facts.has_if_unmodified_since = true;
+                facts.plain = false;
+                // 13.1.4: same rule as IMS (h11).
+                vals.named.note(NamedField::kIfUnmodifiedSince, at);
+                facts.if_unmodified_since_valid =
+                    parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
+                return false;
+            }
+            break;
+        default:
+            break;
+    }
+    return true;
 }
-}
+} // namespace webmachine::http
 
-namespace webmachine {
+namespace webmachine
+{
 // RFC 9110 3.4: one request message, as the parser left it - every field
 // lent, nothing copied, valid for the frame that dispatches it. This is
 // what a run may read; it is not what a run may keep.
 struct ReqView {
-  // RFC 9112 3.2 / RFC 9113 8.3.1: the request-target, and how much of it
-  // is RFC 3986 3.3's path.
-  const char* request_target = nullptr;
-  size_t request_target_len = 0;
-  size_t path_len = 0;
-  // RFC 9110 9: the method, folded to what the flow branches on and kept
-  // verbatim for what has to spell it back (405's Allow, the access line).
-  flow::Method method = flow::Method::kGet;
-  const char* method_token = nullptr;
-  size_t method_token_len = 0;
-  // No RFC: this server's route table and what the match captured.
-  const RouteTable* table = nullptr;
-  int route = -1;
-  // Lent, not carried. The match loop's RouteSpans lives in the frame
-  // this view is read from, so pointing at it costs one store where a
-  // copy costs 280 bytes. nullptr where nothing matched.
-  const RouteSpans* spans = nullptr;
-  // RFC 9110 6.3: the header field section, in the parser's own layout.
-  // Only request.headers reads it - it is the one caller that asked for
-  // all of them. Every named accessor reads `values` instead.
-  const void* fields = nullptr;
-  size_t field_count = 0;
-  // Where the one pass found the ten fields Resource#request names. The
-  // field array is walked once; answering request.accept by walking it
-  // again would be that same work a second time.
-  const http::ReqValues* values = nullptr;
-  // RFC 9110 4.2.2: the listener this came in on serves TLS, so
-  // request.base_uri says https.
-  bool tls = false;
-  // RFC 9110 6.4: the request's content, lent for the frame like
-  // everything else here - the framer collected it (bounded by its own
-  // 413) and it dies with the dispatch. Null = no content arrived.
-  const char* content = nullptr;
-  size_t content_len = 0;
-  // RFC 9110 6.4: a body of kBodySpill or more is in a file, not in the
-  // connection's buffer, so `content` is null and this names it instead.
-  // -1 says the body is where `content` points. content_len is the
-  // length either way.
-  int content_fd = -1;
-  // RFC 9110 6.4: is the whole body here? False says the client declared
-  // content that has not all arrived. The flow walks the head either
-  // way, and the three nodes that read content stop rather than ask a
-  // callback about a body that is still coming.
-  bool content_ready = true;
-  // RFC 9110 8.6: how many octets the client declared, which is not the
-  // same number as content_len. content_len is what is bound and
-  // readable now, and it is zero while the body is still coming. B4
-  // asks valid_entity_length? about the declared number, at the head,
-  // before one octet of content is read.
-  size_t declared_len = 0;
+    // RFC 9112 3.2 / RFC 9113 8.3.1: the request-target, and how much of it
+    // is RFC 3986 3.3's path.
+    const char *request_target = nullptr;
+    size_t request_target_len = 0;
+    size_t path_len = 0;
+    // RFC 9110 9: the method, folded to what the flow branches on and kept
+    // verbatim for what has to spell it back (405's Allow, the access line).
+    flow::Method method = flow::Method::kGet;
+    const char *method_token = nullptr;
+    size_t method_token_len = 0;
+    // No RFC: this server's route table and what the match captured.
+    const RouteTable *table = nullptr;
+    int route = -1;
+    // Lent, not carried. The match loop's RouteSpans lives in the frame
+    // this view is read from, so pointing at it costs one store where a
+    // copy costs 280 bytes. nullptr where nothing matched.
+    const RouteSpans *spans = nullptr;
+    // RFC 9110 6.3: the header field section, in the parser's own layout.
+    // Only request.headers reads it - it is the one caller that asked for
+    // all of them. Every named accessor reads `values` instead.
+    const void *fields = nullptr;
+    size_t field_count = 0;
+    // Where the one pass found the ten fields Resource#request names. The
+    // field array is walked once; answering request.accept by walking it
+    // again would be that same work a second time.
+    const http::ReqValues *values = nullptr;
+    // RFC 9110 4.2.2: the listener this came in on serves TLS, so
+    // request.base_uri says https.
+    bool tls = false;
+    // RFC 9110 6.4: the request's content, lent for the frame like
+    // everything else here - the framer collected it (bounded by its own
+    // 413) and it dies with the dispatch. Null = no content arrived.
+    const char *content = nullptr;
+    size_t content_len = 0;
+    // RFC 9110 6.4: a body of kBodySpill or more is in a file, not in the
+    // connection's buffer, so `content` is null and this names it instead.
+    // -1 says the body is where `content` points. content_len is the
+    // length either way.
+    int content_fd = -1;
+    // RFC 9110 6.4: is the whole body here? False says the client declared
+    // content that has not all arrived. The flow walks the head either
+    // way, and the three nodes that read content stop rather than ask a
+    // callback about a body that is still coming.
+    bool content_ready = true;
+    // RFC 9110 8.6: how many octets the client declared, which is not the
+    // same number as content_len. content_len is what is bound and
+    // readable now, and it is zero while the body is still coming. B4
+    // asks valid_entity_length? about the declared number, at the head,
+    // before one octet of content is read.
+    size_t declared_len = 0;
 };
 
 // RFC 9110 5.3: every line of one field, joined with `sep`, in the
 // order they came. Written for the rare request whose field came more
 // than once; the one-pass span in ReqValues is the first line only.
-void join_repeated_fields(const ReqView* v, std::string_view name, std::string_view sep,
-                          std::string& out);
+void join_repeated_fields(const ReqView *v, std::string_view name, std::string_view sep,
+                          std::string &out);
 
-void request_init(mrb_state* mrb, struct RClass* wm);
+void request_init(mrb_state *mrb, struct RClass *wm);
 
-void request_bind(const ReqView* view);
+void request_bind(const ReqView *view);
 
 // RFC 9110 12.5: the ReqValues a parked h2 stream no longer has, re-derived
 // from the fields it copied. Cold, and it lives in request.cpp so that
 // h2_dispatch stays header_switch's only caller in http2.cpp - two callers
 // there and the switch stops being inlined into the hot path.
-void values_of_copied_fields(http::HeaderList h, http::ReqValues& out);
+void values_of_copied_fields(http::HeaderList h, http::ReqValues &out);
 
 // RFC 9110: n11's create_path names a new disp_path for this run;
 // request_bind clears the override. request.cpp owns the storage.
-void request_disp_override(const char* p, size_t n);
-}
+void request_disp_override(const char *p, size_t n);
+} // namespace webmachine
 
-namespace webmachine {
+namespace webmachine
+{
 // Webmachine's names, and they stay. Every cb_* below is a callback of
 // webmachine-ruby's Webmachine::Resource::Callbacks, spelled exactly as
 // an app spells it: content_types_provided, generate_etag,
@@ -2615,8 +2987,7 @@ namespace webmachine {
 // mrb_get_args, so the function never reads the callinfo and may be
 // entered straight from C++ - which is what makes it cheaper than the
 // same callback written in Ruby, instead of dearer.
-using NativeCb = mrb_value (*)(mrb_state* mrb, mrb_value self, mrb_int argc,
-                               const mrb_value* argv);
+using NativeCb = mrb_value (*)(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv);
 
 // Define one on a resource class. Ruby can still call it - a wrapper is
 // registered as an ordinary method - but the fold records the raw
@@ -2624,11 +2995,11 @@ using NativeCb = mrb_value (*)(mrb_state* mrb, mrb_value self, mrb_int argc,
 // One native callback to register: the name Ruby calls it by, the C++ body
 // the engine calls instead, and the argument spec the wrapper declares.
 struct Native {
-  mrb_sym sym;
-  NativeCb fn;
-  mrb_aspec aspec = MRB_ARGS_ANY();
+    mrb_sym sym;
+    NativeCb fn;
+    mrb_aspec aspec = MRB_ARGS_ANY();
 };
-void define_native(mrb_state* mrb, struct RClass* c, Native n);
+void define_native(mrb_state *mrb, struct RClass *c, Native n);
 
 // #210: a run may hand over one of these (response.error_asset). The
 // definition is further down, with the tier that owns it - a run only
@@ -2651,466 +3022,467 @@ enum : uint8_t { kJobNode = 0, kJobEtag = 1, kJobLastModified = 2, kJobExpires =
 
 struct Resource {
 
-  flow::KonstSet konst;
-  mrb_state* mrb = nullptr;
-  struct RClass* klass = nullptr;
-  // The class's own class - where a `def self.x` lives. Kept because
-  // entering such a method directly needs the class it was found in, and
-  // the fold freezes klass, so this pointer is as stable as klass itself.
-  struct RClass* meta_klass = nullptr;
-  uint64_t dynamic = 0;
-  // #80: one bit per node whose callback a worker answers. A subset of
-  // `dynamic` - only a node the VM decides can be promised at all - and
-  // read in the same load, so a run knows before it enters the VM
-  // whether this node can stop. Zero for every resource that never says
-  // `compute`, which is what keeps the pool out of a server that has no
-  // use for it.
-  uint64_t compute = 0;
-  // #30: which nodes answer with a Webmachine::Watcher. Declared with
-  // `watch :is_authorized?`, the same shape as `compute` and for the
-  // same reason: the frame that can hold a stopped run is chosen before
-  // any callback runs, so the resource has to say so in advance.
-  //
-  // Unlike a compute task, the block here is never dumped - it runs in
-  // this VM, on this thread - so it may keep its environment and the
-  // callback may live on the instance.
-  uint64_t watch = 0;
-  mrb_sym node_sym[flow::kNodeCount] = {};
-  mrb_method_t node_m[flow::kNodeCount] = {};
-  bool node_irep[flow::kNodeCount] = {};
-  NativeCb node_native[flow::kNodeCount] = {};
-  // One bit per node: its callback answers on the class, not on the live
-  // instance. Same reason as ValueCb::on_class - the method is resolved
-  // once, here, and never searched again.
-  uint64_t node_on_class = 0;
-  bool dynamic_body = false;
-  bool gzip_offered = false;
-  // The engine frame is entered as a C++ call, not a Ruby one: no
-  // hidden class, no proc, no per-resource object for the GC to mark.
-  bool init_needed = false;
-  // mruby: the initialize the fold resolved, entered directly by the run.
-  // Object's is undef'd on Webmachine::Resource, so init_needed means
-  // "the author wrote one".
-  //
-  // mrb_obj_new is never used: it would search for this same method
-  // twice per request to arrive where the fold already stands.
-  mrb_method_t init_m = {};
-  bool init_irep = false;
-  enum mrb_vtype live_tt = MRB_TT_OBJECT;
+    flow::KonstSet konst;
+    mrb_state *mrb = nullptr;
+    struct RClass *klass = nullptr;
+    // The class's own class - where a `def self.x` lives. Kept because
+    // entering such a method directly needs the class it was found in, and
+    // the fold freezes klass, so this pointer is as stable as klass itself.
+    struct RClass *meta_klass = nullptr;
+    uint64_t dynamic = 0;
+    // #80: one bit per node whose callback a worker answers. A subset of
+    // `dynamic` - only a node the VM decides can be promised at all - and
+    // read in the same load, so a run knows before it enters the VM
+    // whether this node can stop. Zero for every resource that never says
+    // `compute`, which is what keeps the pool out of a server that has no
+    // use for it.
+    uint64_t compute = 0;
+    // #30: which nodes answer with a Webmachine::Watcher. Declared with
+    // `watch :is_authorized?`, the same shape as `compute` and for the
+    // same reason: the frame that can hold a stopped run is chosen before
+    // any callback runs, so the resource has to say so in advance.
+    //
+    // Unlike a compute task, the block here is never dumped - it runs in
+    // this VM, on this thread - so it may keep its environment and the
+    // callback may live on the instance.
+    uint64_t watch = 0;
+    mrb_sym node_sym[flow::kNodeCount] = {};
+    mrb_method_t node_m[flow::kNodeCount] = {};
+    bool node_irep[flow::kNodeCount] = {};
+    NativeCb node_native[flow::kNodeCount] = {};
+    // One bit per node: its callback answers on the class, not on the live
+    // instance. Same reason as ValueCb::on_class - the method is resolved
+    // once, here, and never searched again.
+    uint64_t node_on_class = 0;
+    bool dynamic_body = false;
+    bool gzip_offered = false;
+    // The engine frame is entered as a C++ call, not a Ruby one: no
+    // hidden class, no proc, no per-resource object for the GC to mark.
+    bool init_needed = false;
+    // mruby: the initialize the fold resolved, entered directly by the run.
+    // Object's is undef'd on Webmachine::Resource, so init_needed means
+    // "the author wrote one".
+    //
+    // mrb_obj_new is never used: it would search for this same method
+    // twice per request to arrive where the fold already stands.
+    mrb_method_t init_m = {};
+    bool init_irep = false;
+    enum mrb_vtype live_tt = MRB_TT_OBJECT;
 
-  // How many arguments each node's callback asked for, read once at
-  // fold from its own signature. webmachine-ruby hands several of them
-  // one - is_authorized?(header), uri_too_long?(uri),
-  // known_content_type?(type), valid_content_headers?(headers),
-  // valid_entity_length?(length) - and a method that declared the
-  // parameter must not be called with nothing.
-  uint8_t node_argc[flow::kNodeCount] = {};
+    // How many arguments each node's callback asked for, read once at
+    // fold from its own signature. webmachine-ruby hands several of them
+    // one - is_authorized?(header), uri_too_long?(uri),
+    // known_content_type?(type), valid_content_headers?(headers),
+    // valid_entity_length?(length) - and a method that declared the
+    // parameter must not be called with nothing.
+    uint8_t node_argc[flow::kNodeCount] = {};
 
-  // A value callback: it answers with a String/Array/Time/Hash the
-  // engine marshals into C++ right after the yield, not with a
-  // truthiness the graph consumes. Resolved at fold like every other
-  // callback; `has` false = webmachine-ruby's default stands in C++.
-  struct ValueCb {
-    bool has = false;
-    mrb_sym sym = {};
-    mrb_method_t m = {};
-    bool irep = false;
-    // A C++ callback registered through define_native, and the reason it
-    // is a separate pointer rather than "call the cfunc we resolved":
-    // mruby hands a cfunc its arguments through the callinfo the VM
-    // pushed (vm.c: check_argument_count, then MRB_METHOD_FUNC(m)(mrb,
-    // self)), so calling one from a C++ frame gives it the caller's
-    // registers and mrb_get_args reads a stranger's. Only a function
-    // whose convention we set can be entered directly - the same trick
-    // the VM plays on mrb_attr_reader, which it recognises by pointer.
-    NativeCb native = nullptr;
-    // Which receiver: the live instance, or the class itself. The fold
-    // resolves both kinds, so neither is looked up again per request - an
-    // undefined m used to be the marker for "class-only", and it cost a
-    // full mrb_funcall_argv every time it was read.
-    bool on_class = false;
-  };
-  ValueCb cb_known_methods;   // instance-level; class-level folds konst
-  ValueCb cb_allowed_methods;
-  ValueCb cb_content_types_provided;     // instance content_types_provided
-  ValueCb cb_content_types_accepted;     // content_types_accepted (accept_helper)
-  ValueCb cb_options;         // b3: Hash of extra response fields
-  ValueCb cb_variances;       // Vary's tail (helpers.rb variances)
-  ValueCb cb_generate_etag;            // generate_etag
-  ValueCb cb_last_modified;
-  ValueCb cb_expires;
-  ValueCb cb_moved_permanently;      // i4/k5: String/URI = Location + 301
-  ValueCb cb_moved_temporarily;      // l5: String/URI = Location + 307
-  ValueCb cb_post_is_create;  // n11's fork
-  ValueCb cb_create_path;
-  ValueCb cb_base_uri;
-  ValueCb cb_process_post;
-  ValueCb cb_finish_request;  // after the walk, always (fsm.rb ensure)
-
-  // `dynamic` above answers "is this flow node decided by the VM" in one
-  // load. `cb_mask` answers "does this value callback exist" the same
-  // way, one bit per ValueCb.
-  //
-  // So a node handler that only needs the yes or no never loads the
-  // ValueCb itself; its payload is touched once the bit says yes. Set at
-  // the fold, read every run.
-  enum CbBit : uint32_t {
-    kCbKnownMethods = 1u << 0,
-    kCbAllowedMethods = 1u << 1,
-    kCbContentTypesProvided = 1u << 2,
-    kCbContentTypesAccepted = 1u << 3,
-    kCbOptions = 1u << 4,
-    kCbVariances = 1u << 5,
-    kCbGenerateEtag = 1u << 6,
-    kCbLastModified = 1u << 7,
-    kCbExpires = 1u << 8,
-    kCbMovedPermanently = 1u << 9,
-    kCbMovedTemporarily = 1u << 10,
-    kCbPostIsCreate = 1u << 11,
-    kCbCreatePath = 1u << 12,
-    kCbBaseUri = 1u << 13,
-    kCbProcessPost = 1u << 14,
-    kCbFinishRequest = 1u << 15,
-  };
-  uint32_t cb_mask = 0;
-  // The mask of the three callbacks that read the request body. A
-  // resource reaches the body through kN11 (post_is_create? ->
-  // create_path or process_post) or through kO14 and kP3 (is_conflict?
-  // -> content_types_accepted). A resource that defines none of them
-  // has no node that can ask for the body.
-  static constexpr uint32_t kCbBodyReaders =
-      kCbContentTypesAccepted | kCbCreatePath | kCbProcessPost;
-  // Can any node of this resource read the request body? Folded once,
-  // so both writers can decide on the head alone whether to keep the
-  // octets of a body or to step over them.
-  bool takes_body = false;
-  // #54: the callbacks `reads_body` named, and the ones it named with
-  // `save: true`. Every stop this server makes is declared, and waiting
-  // for octets is a stop.
-  //
-  // A body that a callback may save goes to a file whatever its size,
-  // so request.body.save is a link and never a second write. That is
-  // what the head reads this for, before the first octet.
-  bool saves_body = false;
-  // The callbacks `reads_body` named. One of process_post and
-  // create_path, or a handler that content_types_accepted points at -
-  // that callback is the one a body reaches, and the mapping itself
-  // never sees one.
-  std::vector<mrb_sym> body_readers;
-  std::vector<mrb_sym> body_savers;
-  // RFC 9110 15.5.14: what this resource accepts as a request body, in
-  // octets, from `def self.max_body`. -1 means this resource said
-  // nothing, and the application's number answers instead.
-  //
-  // The nearest answer wins: the resource, then conf.max_body, then
-  // kMaxBodyDefault. A resource that serves uploads raises its own
-  // limit without raising it for every route of the application.
-  long long max_body = -1;
-  // The media types this resource asked to sniff, from `sniff: true` on
-  // a content_types_accepted row. Only the class form of that callback
-  // can be read at fold time, and only what is read here can refuse a
-  // body at its first buffer; the row is checked again when the flow
-  // reaches accept_helper, which is what an instance-level
-  // content_types_accepted gets instead.
-  //
-  // A resource accepts a handful of types, so this is a short list and
-  // a walk over it is cheaper than anything with a hash in it.
-  std::vector<std::string> sniff_types;
-
-  // Konst-folded content_types_provided: [type, handler] in the
-  // resource's own order, [0] the default choice (c3 with no Accept).
-  // Never empty after fold - the default is [["text/html", :to_html]].
-  struct TypedHandler {
-    std::string type;
-    mrb_sym handler = {};
-    mrb_method_t m = {};
-    bool irep = false;
-    NativeCb native = nullptr;
-    // cb.rb: a handler written as `def self.x` is asked once, at setup -
-    // the same rule the first pair has always followed. `baked` is what it
-    // answered; without it a negotiated second type would look the handler
-    // up on the instance and find whatever Object happens to define.
-    std::string baked;
-    bool has_baked = false;
-  };
-  std::vector<TypedHandler> content_types_provided;
-
-  // #80: everything one request writes on the way through, in one place.
-  //
-  // A run that parks is why it is one struct: the next request on the
-  // same route would otherwise write these while the parked run still
-  // needs them. The parked run takes the whole struct with it and gives
-  // it back on the way in - one move each way, and no member list that
-  // can be short by one.
-  struct RunState {
-    mrb_value live = {};
-    // #80: where the walk stands. A run that parks returns out of the
-    // node loop, and these three are what it re-enters with - the node
-    // it stopped before, the status it had collected, and the media type
-    // conneg had settled on. Nothing of a Ruby stack is here, because
-    // the stop is between callbacks and never inside one.
-    flow::Node stop_node = flow::Node::kB13;
-    uint16_t stop_status = 0;
-    int chosen = 0;
-    // May this run stop at all? The konst tier and the error resource
-    // say no: they are not called through a frame that could hold a
-    // parked run, and a stop with nobody to resume it is a hang.
-    bool can_park = false;
-    // It stopped, and the reactor has the job now.
-    bool stopped = false;
-    // #36: the third reason a run stops, beside a worker and a watcher.
-    // This one owes nothing to the reactor: the connection is already
-    // reading the body, and the run goes on when the last octet lands.
-    bool wants_body = false;
-    // #36: the walk asked about content once. Set at the first of the
-    // three nodes that read it, so a walk that comes back to that node
-    // does not stop on it a second time.
-    bool content_seen = false;
-    // The worker answered, and the answer is `answer`. The node the run
-    // re-enters reads this instead of calling its callback - that is the
-    // whole of "the graph carries on from B8".
-    bool answered = false;
-    mrb_value answer = {};
-    // #80: what the stopped run owes a worker - which block, and the
-    // arguments this request built for it. The arguments are an Array
-    // in this VM until the reactor turns them into CBOR.
-    // The block itself, until the reactor interns it. It is a value of
-    // this VM, so it never leaves this struct - what leaves is the id
-    // the intern answers with.
-    struct HeldTask {
-      mrb_value block = {};
-      mrb_value args = {};
-      double deadline = 0.0;
-      // Which answer this task is: a node's own callback, or one of the
-      // values a round asks for at the same time.
-      uint8_t what = 0;
+    // A value callback: it answers with a String/Array/Time/Hash the
+    // engine marshals into C++ right after the yield, not with a
+    // truthiness the graph consumes. Resolved at fold like every other
+    // callback; `has` false = webmachine-ruby's default stands in C++.
+    struct ValueCb {
+        bool has = false;
+        mrb_sym sym = {};
+        mrb_method_t m = {};
+        bool irep = false;
+        // A C++ callback registered through define_native, and the reason it
+        // is a separate pointer rather than "call the cfunc we resolved":
+        // mruby hands a cfunc its arguments through the callinfo the VM
+        // pushed (vm.c: check_argument_count, then MRB_METHOD_FUNC(m)(mrb,
+        // self)), so calling one from a C++ frame gives it the caller's
+        // registers and mrb_get_args reads a stranger's. Only a function
+        // whose convention we set can be entered directly - the same trick
+        // the VM plays on mrb_attr_reader, which it recognises by pointer.
+        NativeCb native = nullptr;
+        // Which receiver: the live instance, or the class itself. The fold
+        // resolves both kinds, so neither is looked up again per request - an
+        // undefined m used to be the marker for "class-only", and it cost a
+        // full mrb_funcall_argv every time it was read.
+        bool on_class = false;
     };
-    HeldTask compute_task[kValueJobs];
-    // How many tasks this stop holds. One for a node's own callback.
-    uint8_t compute_task_count = 0;
-    // #30: the Watcher this run stopped on. A value of this VM, held
-    // until the frame hands it to the connection - the connection's hash
-    // is what roots it while the run waits.
-    // #30: what the application itself carries from one callback to the
-    // next. A Hash, made when a callback first asks for it, and let go
-    // when the run ends. The run frame is its whole life - a value put
-    // here in generate_etag is there in to_html, and it is gone before
-    // the next request on this connection.
-    // #30: `response.userdata` - one slot the application carries from
-    // one callback of this run to the next. Undef until something is
-    // put there, so a run that never uses it allocates nothing and
-    // Ruby never sees the undef. The server never reads what is in it.
-    mrb_value userdata = {};
-    bool userdata_held = false;
-    mrb_value watch[kValueJobs] = {};
-    uint8_t watch_what[kValueJobs] = {};
-    uint8_t watch_count = 0;
-    // #30: the value round started. It starts once per run, at the
-    // first node that needs any of its answers.
-    bool values_started = false;
-    const flow::ReqFacts* facts = nullptr;
-    std::string* body = nullptr;
-    bool have_body = false;
-    // #210 response.error_asset: the entry, not its bytes. The error
-    // assets are mapped for the life of the process, and both writers
-    // already know how to put a mapped entry on the wire.
-    //
-    // So this run hands over the same handle the asset tier does, and
-    // nothing is rooted, copied or released for it.
-    const AssetEntry* asset = nullptr;
-    uint16_t status = 0;
-    // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
-    // own String is frozen and rooted and lent to the writer, instead of
-    // being copied into run_body. 0 = never lend, which is every caller
-    // that does not pass a threshold.
-    size_t zc_min = 0;
-    mrb_value zc = {};
-    bool zc_have = false;
+    ValueCb cb_known_methods; // instance-level; class-level folds konst
+    ValueCb cb_allowed_methods;
+    ValueCb cb_content_types_provided; // instance content_types_provided
+    ValueCb cb_content_types_accepted; // content_types_accepted (accept_helper)
+    ValueCb cb_options;                // b3: Hash of extra response fields
+    ValueCb cb_variances;              // Vary's tail (helpers.rb variances)
+    ValueCb cb_generate_etag;          // generate_etag
+    ValueCb cb_last_modified;
+    ValueCb cb_expires;
+    ValueCb cb_moved_permanently; // i4/k5: String/URI = Location + 301
+    ValueCb cb_moved_temporarily; // l5: String/URI = Location + 307
+    ValueCb cb_post_is_create;    // n11's fork
+    ValueCb cb_create_path;
+    ValueCb cb_base_uri;
+    ValueCb cb_process_post;
+    ValueCb cb_finish_request; // after the walk, always (fsm.rb ensure)
 
-    // Per-request slots for the runtime tier, all reset by resource_run
-    // at frame entry. `run_headers` takes the field lines this request
-    // produced; the writer appends it between the prebuilt head and
-    // Content-Length, which is exactly where the prebuilt head stops, so
-    // no prebuilt byte moves.
-    std::string* headers = nullptr;
-    const http::ReqValues* vals = nullptr;
-    const ReqView* req = nullptr;
-    // response.code= / response.do_redirect (response.cpp writes these;
-    // the flow's halt seeds run_resp_code, finish_request may change it
-    // - fsm.rb's respond order).
-    uint16_t resp_code = 0;
-    bool redirect = false;
-    // The conneg choice when the head cannot stay prebuilt: non-empty
-    // means the writer spells this Content-Type in a dynamic head.
-    // Empty means the prebuilt path.
+    // `dynamic` above answers "is this flow node decided by the VM" in one
+    // load. `cb_mask` answers "does this value callback exist" the same
+    // way, one bit per ValueCb.
     //
-    // There is no flag saying "the head went dynamic", because these two
-    // buffers already say it: a run needs its own head exactly when it
-    // negotiated a Content-Type (this) or produced a field line
-    // (run_headers).
-    std::string content_type;
-    // n11: create_path's override of request.disp_path.
-    std::string disp_path;
-    bool disp_set = false;
-    // response.file = "rel/path": the name only. Nothing is opened here - the
-    // reactor does that through the ring, so a callback never blocks on a
-    // disk. run_file_bad is a name this process refused before the kernel saw
-    // it (empty, embedded NUL); it answers 404 in the same shape a rejected
-    // resolve does, so neither is distinguishable from a plain miss.
-    std::string file;
-    bool have_file = false;
-    bool file_bad = false;
+    // So a node handler that only needs the yes or no never loads the
+    // ValueCb itself; its payload is touched once the bit says yes. Set at
+    // the fold, read every run.
+    enum CbBit : uint32_t {
+        kCbKnownMethods = 1u << 0,
+        kCbAllowedMethods = 1u << 1,
+        kCbContentTypesProvided = 1u << 2,
+        kCbContentTypesAccepted = 1u << 3,
+        kCbOptions = 1u << 4,
+        kCbVariances = 1u << 5,
+        kCbGenerateEtag = 1u << 6,
+        kCbLastModified = 1u << 7,
+        kCbExpires = 1u << 8,
+        kCbMovedPermanently = 1u << 9,
+        kCbMovedTemporarily = 1u << 10,
+        kCbPostIsCreate = 1u << 11,
+        kCbCreatePath = 1u << 12,
+        kCbBaseUri = 1u << 13,
+        kCbProcessPost = 1u << 14,
+        kCbFinishRequest = 1u << 15,
+    };
+    uint32_t cb_mask = 0;
+    // The mask of the three callbacks that read the request body. A
+    // resource reaches the body through kN11 (post_is_create? ->
+    // create_path or process_post) or through kO14 and kP3 (is_conflict?
+    // -> content_types_accepted). A resource that defines none of them
+    // has no node that can ask for the body.
+    static constexpr uint32_t kCbBodyReaders =
+        kCbContentTypesAccepted | kCbCreatePath | kCbProcessPost;
+    // Can any node of this resource read the request body? Folded once,
+    // so both writers can decide on the head alone whether to keep the
+    // octets of a body or to step over them.
+    bool takes_body = false;
+    // #54: the callbacks `reads_body` named, and the ones it named with
+    // `save: true`. Every stop this server makes is declared, and waiting
+    // for octets is a stop.
+    //
+    // A body that a callback may save goes to a file whatever its size,
+    // so request.body.save is a link and never a second write. That is
+    // what the head reads this for, before the first octet.
+    bool saves_body = false;
+    // The callbacks `reads_body` named. One of process_post and
+    // create_path, or a handler that content_types_accepted points at -
+    // that callback is the one a body reaches, and the mapping itself
+    // never sees one.
+    std::vector<mrb_sym> body_readers;
+    std::vector<mrb_sym> body_savers;
+    // RFC 9110 15.5.14: what this resource accepts as a request body, in
+    // octets, from `def self.max_body`. -1 means this resource said
+    // nothing, and the application's number answers instead.
+    //
+    // The nearest answer wins: the resource, then conf.max_body, then
+    // kMaxBodyDefault. A resource that serves uploads raises its own
+    // limit without raising it for every route of the application.
+    long long max_body = -1;
+    // The media types this resource asked to sniff, from `sniff: true` on
+    // a content_types_accepted row. Only the class form of that callback
+    // can be read at fold time, and only what is read here can refuse a
+    // body at its first buffer; the row is checked again when the flow
+    // reaches accept_helper, which is what an instance-level
+    // content_types_accepted gets instead.
+    //
+    // A resource accepts a handful of types, so this is a short list and
+    // a walk over it is cheaper than anything with a hash in it.
+    std::vector<std::string> sniff_types;
 
-    // Once-per-run memos: generate_etag / last_modified / expires are
-    // asked at most once (g11+k13+o18 share etag; h12+l17+o18 share
-    // last_modified), whatever the graph visits.
-    bool etag_asked = false;
-    bool etag_present = false;
-    std::string etag_value;  // spelled, quoted form
-    bool last_modified_asked = false;
-    bool last_modified_present = false;
-    int64_t last_modified_epoch = 0;
-    bool expires_asked = false;
-    bool expires_present = false;
-    int64_t expires_epoch = 0;
-    // Marshalled once per run where the app answered dynamically;
-    // capacity survives across requests.
-    // The dynamic content_types_provided, marshalled from the app's Array.
-    // It survives the run on purpose: the handler's method is resolved here,
-    // and re-resolving it per request is a method search per request on the
-    // path that renders every body. marshal_ct compares the app's fresh
-    // answer against this and only rebuilds when it actually differs - which
-    // for every resource that answers the same list each time is never.
+    // Konst-folded content_types_provided: [type, handler] in the
+    // resource's own order, [0] the default choice (c3 with no Accept).
+    // Never empty after fold - the default is [["text/html", :to_html]].
+    struct TypedHandler {
+        std::string type;
+        mrb_sym handler = {};
+        mrb_method_t m = {};
+        bool irep = false;
+        NativeCb native = nullptr;
+        // cb.rb: a handler written as `def self.x` is asked once, at setup -
+        // the same rule the first pair has always followed. `baked` is what it
+        // answered; without it a negotiated second type would look the handler
+        // up on the instance and find whatever Object happens to define.
+        std::string baked;
+        bool has_baked = false;
+    };
     std::vector<TypedHandler> content_types_provided;
-    bool content_types_marshalled = false;
-    std::vector<std::string> methods;
-    std::vector<std::string> variances;
-  };
-  mutable RunState run;
-  // #202: what a `def self.x` answered, once, while the app was being set
-  // up. That is what the class form is for - the value belongs to the
-  // process, not to a request, so no request ever enters the VM for it.
-  // `asked` says the class form existed and was evaluated; `present` says
-  // its answer was neither nil nor false.
-  struct KonstValue {
-    bool asked = false;
-    bool present = false;
-    std::string text;   // RFC 9110 8.8.3: the ETag, already spelled
-    int64_t epoch = 0;  // RFC 9110 5.6.7: the moment, for the date fields
-  };
-  KonstValue konst_etag;
-  KonstValue konst_last_modified;
-  KonstValue konst_expires;
-  // #202: whether this resource has any of the three caching answers to
-  // give - a class form that answered at setup, or a callback still to
-  // ask. Decided once when the resource is baked, because the answer
-  // cannot change afterwards, and o18 asks it on every GET.
-  // #30: which values a round asks a worker for, one bit per kJob*.
-  // The flow never lets one of them choose an edge, so all of them can
-  // be out at the same time.
-  uint8_t value_jobs = 0;
-  // #30: the same, for values a watcher answers. A descriptor says when
-  // the value is there; the flow reads it in the same places.
-  uint8_t value_watch = 0;
-  bool has_caching = false;
+
+    // #80: everything one request writes on the way through, in one place.
+    //
+    // A run that parks is why it is one struct: the next request on the
+    // same route would otherwise write these while the parked run still
+    // needs them. The parked run takes the whole struct with it and gives
+    // it back on the way in - one move each way, and no member list that
+    // can be short by one.
+    struct RunState {
+        mrb_value live = {};
+        // #80: where the walk stands. A run that parks returns out of the
+        // node loop, and these three are what it re-enters with - the node
+        // it stopped before, the status it had collected, and the media type
+        // conneg had settled on. Nothing of a Ruby stack is here, because
+        // the stop is between callbacks and never inside one.
+        flow::Node stop_node = flow::Node::kB13;
+        uint16_t stop_status = 0;
+        int chosen = 0;
+        // May this run stop at all? The konst tier and the error resource
+        // say no: they are not called through a frame that could hold a
+        // parked run, and a stop with nobody to resume it is a hang.
+        bool can_park = false;
+        // It stopped, and the reactor has the job now.
+        bool stopped = false;
+        // #36: the third reason a run stops, beside a worker and a watcher.
+        // This one owes nothing to the reactor: the connection is already
+        // reading the body, and the run goes on when the last octet lands.
+        bool wants_body = false;
+        // #36: the walk asked about content once. Set at the first of the
+        // three nodes that read it, so a walk that comes back to that node
+        // does not stop on it a second time.
+        bool content_seen = false;
+        // The worker answered, and the answer is `answer`. The node the run
+        // re-enters reads this instead of calling its callback - that is the
+        // whole of "the graph carries on from B8".
+        bool answered = false;
+        mrb_value answer = {};
+        // #80: what the stopped run owes a worker - which block, and the
+        // arguments this request built for it. The arguments are an Array
+        // in this VM until the reactor turns them into CBOR.
+        // The block itself, until the reactor interns it. It is a value of
+        // this VM, so it never leaves this struct - what leaves is the id
+        // the intern answers with.
+        struct HeldTask {
+            mrb_value block = {};
+            mrb_value args = {};
+            double deadline = 0.0;
+            // Which answer this task is: a node's own callback, or one of the
+            // values a round asks for at the same time.
+            uint8_t what = 0;
+        };
+        HeldTask compute_task[kValueJobs];
+        // How many tasks this stop holds. One for a node's own callback.
+        uint8_t compute_task_count = 0;
+        // #30: the Watcher this run stopped on. A value of this VM, held
+        // until the frame hands it to the connection - the connection's hash
+        // is what roots it while the run waits.
+        // #30: what the application itself carries from one callback to the
+        // next. A Hash, made when a callback first asks for it, and let go
+        // when the run ends. The run frame is its whole life - a value put
+        // here in generate_etag is there in to_html, and it is gone before
+        // the next request on this connection.
+        // #30: `response.userdata` - one slot the application carries from
+        // one callback of this run to the next. Undef until something is
+        // put there, so a run that never uses it allocates nothing and
+        // Ruby never sees the undef. The server never reads what is in it.
+        mrb_value userdata = {};
+        bool userdata_held = false;
+        mrb_value watch[kValueJobs] = {};
+        uint8_t watch_what[kValueJobs] = {};
+        uint8_t watch_count = 0;
+        // #30: the value round started. It starts once per run, at the
+        // first node that needs any of its answers.
+        bool values_started = false;
+        const flow::ReqFacts *facts = nullptr;
+        std::string *body = nullptr;
+        bool have_body = false;
+        // #210 response.error_asset: the entry, not its bytes. The error
+        // assets are mapped for the life of the process, and both writers
+        // already know how to put a mapped entry on the wire.
+        //
+        // So this run hands over the same handle the asset tier does, and
+        // nothing is rooted, copied or released for it.
+        const AssetEntry *asset = nullptr;
+        uint16_t status = 0;
+        // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
+        // own String is frozen and rooted and lent to the writer, instead of
+        // being copied into run_body. 0 = never lend, which is every caller
+        // that does not pass a threshold.
+        size_t zc_min = 0;
+        mrb_value zc = {};
+        bool zc_have = false;
+
+        // Per-request slots for the runtime tier, all reset by resource_run
+        // at frame entry. `run_headers` takes the field lines this request
+        // produced; the writer appends it between the prebuilt head and
+        // Content-Length, which is exactly where the prebuilt head stops, so
+        // no prebuilt byte moves.
+        std::string *headers = nullptr;
+        const http::ReqValues *vals = nullptr;
+        const ReqView *req = nullptr;
+        // response.code= / response.do_redirect (response.cpp writes these;
+        // the flow's halt seeds run_resp_code, finish_request may change it
+        // - fsm.rb's respond order).
+        uint16_t resp_code = 0;
+        bool redirect = false;
+        // The conneg choice when the head cannot stay prebuilt: non-empty
+        // means the writer spells this Content-Type in a dynamic head.
+        // Empty means the prebuilt path.
+        //
+        // There is no flag saying "the head went dynamic", because these two
+        // buffers already say it: a run needs its own head exactly when it
+        // negotiated a Content-Type (this) or produced a field line
+        // (run_headers).
+        std::string content_type;
+        // n11: create_path's override of request.disp_path.
+        std::string disp_path;
+        bool disp_set = false;
+        // response.file = "rel/path": the name only. Nothing is opened here - the
+        // reactor does that through the ring, so a callback never blocks on a
+        // disk. run_file_bad is a name this process refused before the kernel saw
+        // it (empty, embedded NUL); it answers 404 in the same shape a rejected
+        // resolve does, so neither is distinguishable from a plain miss.
+        std::string file;
+        bool have_file = false;
+        bool file_bad = false;
+
+        // Once-per-run memos: generate_etag / last_modified / expires are
+        // asked at most once (g11+k13+o18 share etag; h12+l17+o18 share
+        // last_modified), whatever the graph visits.
+        bool etag_asked = false;
+        bool etag_present = false;
+        std::string etag_value; // spelled, quoted form
+        bool last_modified_asked = false;
+        bool last_modified_present = false;
+        int64_t last_modified_epoch = 0;
+        bool expires_asked = false;
+        bool expires_present = false;
+        int64_t expires_epoch = 0;
+        // Marshalled once per run where the app answered dynamically;
+        // capacity survives across requests.
+        // The dynamic content_types_provided, marshalled from the app's Array.
+        // It survives the run on purpose: the handler's method is resolved here,
+        // and re-resolving it per request is a method search per request on the
+        // path that renders every body. marshal_ct compares the app's fresh
+        // answer against this and only rebuilds when it actually differs - which
+        // for every resource that answers the same list each time is never.
+        std::vector<TypedHandler> content_types_provided;
+        bool content_types_marshalled = false;
+        std::vector<std::string> methods;
+        std::vector<std::string> variances;
+    };
+    mutable RunState run;
+    // #202: what a `def self.x` answered, once, while the app was being set
+    // up. That is what the class form is for - the value belongs to the
+    // process, not to a request, so no request ever enters the VM for it.
+    // `asked` says the class form existed and was evaluated; `present` says
+    // its answer was neither nil nor false.
+    struct KonstValue {
+        bool asked = false;
+        bool present = false;
+        std::string text;  // RFC 9110 8.8.3: the ETag, already spelled
+        int64_t epoch = 0; // RFC 9110 5.6.7: the moment, for the date fields
+    };
+    KonstValue konst_etag;
+    KonstValue konst_last_modified;
+    KonstValue konst_expires;
+    // #202: whether this resource has any of the three caching answers to
+    // give - a class form that answered at setup, or a callback still to
+    // ask. Decided once when the resource is baked, because the answer
+    // cannot change afterwards, and o18 asks it on every GET.
+    // #30: which values a round asks a worker for, one bit per kJob*.
+    // The flow never lets one of them choose an edge, so all of them can
+    // be out at the same time.
+    uint8_t value_jobs = 0;
+    // #30: the same, for values a watcher answers. A descriptor says when
+    // the value is there; the flow reads it in the same places.
+    uint8_t value_watch = 0;
+    bool has_caching = false;
 };
 
-void resource_fold(mrb_state* mrb, mrb_value klass, Resource& out);
+void resource_fold(mrb_state *mrb, mrb_value klass, Resource &out);
 
 // One request as a bound run receives it: what the parse settled, the
 // header values the calling frame still holds, the bytes themselves, and
 // the smallest body worth lending rather than copying. That last one is
 // 0 where nothing downstream could hold a lend.
 struct RunAsk {
-  const flow::ReqFacts& facts;
-  const http::ReqValues* vals;
-  const ReqView* req;
-  size_t zc_min = 0;
-  // #80: may this run stop at a promised node? Only a caller that holds
-  // a frame able to keep the parked run says yes. The konst tier and the
-  // error resource say no, and then `compute` costs one branch and
-  // changes nothing else.
-  bool can_park = false;
+    const flow::ReqFacts &facts;
+    const http::ReqValues *vals;
+    const ReqView *req;
+    size_t zc_min = 0;
+    // #80: may this run stop at a promised node? Only a caller that holds
+    // a frame able to keep the parked run says yes. The konst tier and the
+    // error resource say no, and then `compute` costs one branch and
+    // changes nothing else.
+    bool can_park = false;
 };
 
 // Where a bound run writes what it produced: the body it spelled, whether
 // it spelled one at all, and the field lines it named.
 struct RunAnswer {
-  std::string* body;
-  bool* have_body;
-  std::string* headers;
+    std::string *body;
+    bool *have_body;
+    std::string *headers;
 };
 
 // The walk, once. It answers a status, or it stopped: `run_stopped`
 // says which, and the job the reactor owes a worker is read with
 // `resource_job`. A stopped run keeps everything it wrote in res.run,
 // which the caller takes with it.
-uint16_t resource_run(const Resource& res, RunAsk ask, RunAnswer out);
+uint16_t resource_run(const Resource &res, RunAsk ask, RunAnswer out);
 // #80: the same walk, re-entered at the node it stopped before, with the
 // worker's answer standing in for that node's callback.
 // #30: what a round answered. One entry per job: the value, and which
 // answer it is (kJob*). A node's own callback is one entry of kJobNode.
 struct RunRound {
-  const std::array<mrb_value, kValueJobs>& answers;
-  const std::array<uint8_t, kValueJobs>& what;
-  // #30: response.userdata a worker changed, per job, or nothing.
-  const std::array<mrb_value, kValueJobs>& user;
-  const std::array<bool, kValueJobs>& user_have;
-  // How many entries are the round's. An index past it is a throw.
-  uint8_t n;
+    const std::array<mrb_value, kValueJobs> &answers;
+    const std::array<uint8_t, kValueJobs> &what;
+    // #30: response.userdata a worker changed, per job, or nothing.
+    const std::array<mrb_value, kValueJobs> &user;
+    const std::array<bool, kValueJobs> &user_have;
+    // How many entries are the round's. An index past it is a throw.
+    uint8_t n;
 };
 // A checked index into a round's arrays, for code that runs under
 // mrb_protect_error: mruby catches what this raises, and a
 // std::out_of_range would pass that protect by and unwind the VM.
 template <typename Array>
-const typename Array::value_type& round_at(mrb_state* mrb, const Array& a, size_t i) {
-  if (mrb_unlikely(i >= a.size())) {
-    mrb_raisef(mrb, E_INDEX_ERROR, "round entry %d of %d", static_cast<mrb_int>(i),
-               static_cast<mrb_int>(a.size()));
-    WM_UNREACHABLE();
-  }
-  return a[i];
+const typename Array::value_type &round_at(mrb_state *mrb, const Array &a, size_t i)
+{
+    if (mrb_unlikely(i >= a.size())) {
+        mrb_raisef(mrb, E_INDEX_ERROR, "round entry %d of %d", static_cast<mrb_int>(i),
+                   static_cast<mrb_int>(a.size()));
+        WM_UNREACHABLE();
+    }
+    return a[i];
 }
-uint16_t resource_resume(const Resource& res, RunAnswer out, const RunRound& round);
-void resource_forget_userdata(const Resource& res);
-void resource_abandon(const Resource& res, Resource::RunState& state);
-bool run_stopped(const Resource& res);
+uint16_t resource_resume(const Resource &res, RunAnswer out, const RunRound &round);
+void resource_forget_userdata(const Resource &res);
+void resource_abandon(const Resource &res, Resource::RunState &state);
+bool run_stopped(const Resource &res);
 
-bool resource_exception_take(const Resource& res, mrb_value* out);
+bool resource_exception_take(const Resource &res, mrb_value *out);
 
 // The body a bound run lent rather than copied: the value the connection
 // has to hold until its send drains, and the bytes it may point at.
 // What a run lent: the value the connection has to hold until its send
 // drains, and the bytes it may point at.
 struct LentBody {
-  mrb_value value;
-  std::string_view bytes;
+    mrb_value value;
+    std::string_view bytes;
 };
-bool resource_body_lent(const Resource& res, LentBody& out);
+bool resource_body_lent(const Resource &res, LentBody &out);
 
 // Hand a lent body back - the only legal end of the window opened above.
-void resource_body_unlend(mrb_state* mrb, mrb_value v);
+void resource_body_unlend(mrb_state *mrb, mrb_value v);
 
 // Did this run name a file instead of spelling a body? Same hand-off shape
 // as resource_body_lent: the run is over, so the slot leaves the Resource.
 // The file a run named, and whether the name was one this server refuses
 // to open at all.
 struct WantedFile {
-  std::string_view name;
-  bool bad;
+    std::string_view name;
+    bool bad;
 };
-bool resource_file_wanted(const Resource& res, WantedFile& out);
+bool resource_file_wanted(const Resource &res, WantedFile &out);
 
 // RFC 9110: Webmachine::Response - the object a runtime callback
 // writes to. Handles over the run slots above, nothing owns storage;
 // response.cpp owns every line. response_bind mirrors request_bind:
 // the run frame points it at this run's Resource, and at nothing
 // after it.
-void response_init(mrb_state* mrb, struct RClass* wm);
-void response_bind(const Resource* res);
+void response_init(mrb_state *mrb, struct RClass *wm);
+void response_bind(const Resource *res);
 // Assets is declared further down - this only needs the name.
 class Assets;
-void response_bind_error_assets(Assets* a);
+void response_bind_error_assets(Assets *a);
 
 // #80: the compute pool. Threads that answer a compute task, fed and heard
 // through io_uring's own MSG_RING - see src/compute_task.cpp for why that is
@@ -3137,24 +3509,24 @@ void response_bind_error_assets(Assets* a);
 // A callback that is declared `compute` and answers anything else is a
 // mistake this tree names rather than guesses at.
 struct ComputeTaskAsk {
-  // The block, and the arguments it is called with. Both belong to the
-  // reactor's VM; the crossing turns them into bytes.
-  mrb_value block = {};
-  mrb_value args = {};
-  // Seconds. mruby-chrono spells it: 50.ms is 0.05.
-  double max_runtime = 0.0;
+    // The block, and the arguments it is called with. Both belong to the
+    // reactor's VM; the crossing turns them into bytes.
+    mrb_value block = {};
+    mrb_value args = {};
+    // Seconds. mruby-chrono spells it: 50.ms is 0.05.
+    double max_runtime = 0.0;
 };
 // Reads the three fields off a Promise, or answers false. It raises
 // when the value is not a Promise at all, because a callback that
 // declared one owes one.
-bool compute_task_of(mrb_state* mrb, mrb_value v, ComputeTaskAsk* out);
-void compute_task_init_class(mrb_state* mrb, struct RClass* wm);
+bool compute_task_of(mrb_state *mrb, mrb_value v, ComputeTaskAsk *out);
+void compute_task_init_class(mrb_state *mrb, struct RClass *wm);
 
 // src/passwd.cpp: Webmachine::Passwd - the database webmachine-passwd
 // writes, read for one question: is this password right for this
 // user. Meant to be built once per worker, through
 // Webmachine::Workers::Registry, and used inside a compute block.
-void passwd_init_class(mrb_state* mrb, struct RClass* wm);
+void passwd_init_class(mrb_state *mrb, struct RClass *wm);
 
 // #80: a declared callback, ready to cross into a worker. Filled at
 // fold, read by every worker when the pool starts. The id is the index -
@@ -3164,13 +3536,13 @@ void passwd_init_class(mrb_state* mrb, struct RClass* wm);
 // irep, which every worker loads once. A native one travels as nothing
 // at all: the pointer is the same number in every VM of this process.
 struct ComputeTaskCode {
-  // The block, dumped once. A worker loads it once and calls it many
-  // times.
-  std::string irep;
-  // Seconds, from max_runtime:. Admission is arithmetic over this, and
-  // a worker ends a Task that runs past it. It comes from the same
-  // Promise the block came from, so it is read once as well.
-  double max_runtime = 0.0;
+    // The block, dumped once. A worker loads it once and calls it many
+    // times.
+    std::string irep;
+    // Seconds, from max_runtime:. Admission is arithmetic over this, and
+    // a worker ends a Task that runs past it. It comes from the same
+    // Promise the block came from, so it is read once as well.
+    double max_runtime = 0.0;
 };
 // #80: what a worker keeps between jobs. A block carries no
 // environment, so it cannot hold a database or a connection - and
@@ -3187,13 +3559,13 @@ struct ComputeTaskCode {
 // The key crosses as a string, not as a symbol. An mrb_sym is a number
 // one VM handed out, and it means nothing in another.
 struct WorkerBuild {
-  std::string key;
-  std::string irep;
+    std::string key;
+    std::string irep;
 };
 // Registered from the main VM at startup. Answers false when the pool
 // has already started - a key set then exists in no worker.
-bool worker_build_register(mrb_state* mrb, std::string key, mrb_value block);
-const std::vector<WorkerBuild>& worker_builds();
+bool worker_build_register(mrb_state *mrb, std::string key, mrb_value block);
+const std::vector<WorkerBuild> &worker_builds();
 // Said once, when the first worker starts. After it a registration is
 // refused rather than silently missing from every worker.
 void worker_builds_close();
@@ -3210,84 +3582,86 @@ inline constexpr unsigned kComputeTaskNoCode = ~0u;
 // So the first request through the node pays one dump - 0.63 us,
 // measured - and every request after it pays a lookup. The same code at
 // the same place carries the same irep, whatever RProc is around it.
-unsigned compute_task_intern(mrb_state* mrb, mrb_value block, double max_runtime);
+unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime);
 // The bytes and the deadline of one entry, copied out under the lock.
 // A worker calls this the first time it meets an id, and never again
 // for that id.
-bool compute_task_code_of(unsigned id, std::string* irep, double* max_runtime);
-
+bool compute_task_code_of(unsigned id, std::string *irep, double *max_runtime);
 
 // What one job left behind. The bytes are the answer; the rest is what
 // the reactor needs to write a failure down, because a worker cannot -
 // the error log belongs to the reactor's thread.
 struct ComputeAnswer {
-  std::string bytes;  // the answer as CBOR, empty when the job raised
-  // #30: response.userdata on the way back, when the worker changed it.
-  // Same bytes as on the way out otherwise, and then nobody looks.
-  std::string user_bytes;
-  bool user_changed = false;
-  bool raised = false;
-  // The task ran past its max_runtime and the worker ended it. Not a
-  // raise: the author's number was wrong, and a retry costs the same
-  //.
-  bool over_deadline = false;
-  // What the worker raised, as CBOR, decoded on the reactor to the same
-  // exception; and the step of the job it raised in.
-  std::string exception;
-  std::string step;
-  // The thread that ran it, as the name a backtrace shows.
-  std::string worker_name;
+    std::string bytes; // the answer as CBOR, empty when the job raised
+    // #30: response.userdata on the way back, when the worker changed it.
+    // Same bytes as on the way out otherwise, and then nobody looks.
+    std::string user_bytes;
+    bool user_changed = false;
+    bool raised = false;
+    // The task ran past its max_runtime and the worker ended it. Not a
+    // raise: the author's number was wrong, and a retry costs the same
+    //.
+    bool over_deadline = false;
+    // What the worker raised, as CBOR, decoded on the reactor to the same
+    // exception; and the step of the job it raised in.
+    std::string exception;
+    std::string step;
+    // The thread that ran it, as the name a backtrace shows.
+    std::string worker_name;
 };
 
-class ComputePool {
- public:
+class ComputePool
+{
+  public:
+    ComputePool() = default;
+    ~ComputePool()
+    {
+        stop();
+    }
+    ComputePool(const ComputePool &) = delete;
+    ComputePool &operator=(const ComputePool &) = delete;
 
-  ComputePool() = default;
-  ~ComputePool() { stop(); }
-  ComputePool(const ComputePool&) = delete;
-  ComputePool& operator=(const ComputePool&) = delete;
+    // nullptr, or the reason it could not start. A pool that cannot be
+    // built refuses startup rather than falling back to the reactor's
+    // core, which is the thing it exists to keep free.
+    const char *start(unsigned workers, unsigned depth, struct io_uring *home);
+    void stop();
 
-  // nullptr, or the reason it could not start. A pool that cannot be
-  // built refuses startup rather than falling back to the reactor's
-  // core, which is the thing it exists to keep free.
-  const char* start(unsigned workers, unsigned depth, struct io_uring* home);
-  void stop();
+    // One declared callback, sent to a worker. `arg` is the argument as
+    // CBOR - bytes, because an mrb_value belongs to one VM. False when
+    // every slot is taken; the caller decides what a full pool means, and
+    // this layer does not invent a refusal for it.
+    // False means every slot is taken. The sqe itself is never the reason:
+    // a full submission queue is a raise (sqe_or_raise).
+    bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, std::string_view user,
+                double deadline, uint64_t answer);
+    // A worker began the job in `slot`, its `gen`th taking. The deadline
+    // to arm for it, or 0 when it has none or the slot moved on.
+    double started(unsigned slot, uint16_t gen);
+    // The deadline passed. This is the one thing the reactor does to a
+    // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
+    // is safe from this thread. The job is named by its slot and the
+    // taking of it, and only when that job is the one its worker runs now
+    // is the worker interrupted.
+    void interrupt(unsigned slot, uint16_t gen);
+    // What the worker answered. Reading it frees the slot: the answer is
+    // handed over once.
+    bool take(uint64_t answer, ComputeAnswer *out);
+    unsigned workers() const;
 
-  // One declared callback, sent to a worker. `arg` is the argument as
-  // CBOR - bytes, because an mrb_value belongs to one VM. False when
-  // every slot is taken; the caller decides what a full pool means, and
-  // this layer does not invent a refusal for it.
-  // False means every slot is taken. The sqe itself is never the reason:
-  // a full submission queue is a raise (sqe_or_raise).
-  bool submit(mrb_state* mrb, unsigned code_id, std::string_view arg, std::string_view user,
-              double deadline, uint64_t answer);
-  // A worker began the job in `slot`, its `gen`th taking. The deadline
-  // to arm for it, or 0 when it has none or the slot moved on.
-  double started(unsigned slot, uint16_t gen);
-  // The deadline passed. This is the one thing the reactor does to a
-  // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
-  // is safe from this thread. The job is named by its slot and the
-  // taking of it, and only when that job is the one its worker runs now
-  // is the worker interrupted.
-  void interrupt(unsigned slot, uint16_t gen);
-  // What the worker answered. Reading it frees the slot: the answer is
-  // handed over once.
-  bool take(uint64_t answer, ComputeAnswer* out);
-  unsigned workers() const;
+    struct Impl;
 
-  struct Impl;
-
- private:
-  static void worker(Impl* impl, unsigned me);
-  Impl* impl_ = nullptr;
+  private:
+    static void worker(Impl *impl, unsigned me);
+    Impl *impl_ = nullptr;
 };
 
 // Webmachine::Watcher - a description, never a registration. Ruby builds
 // one and hands it back; the server arms it. The mask, the abort flag and
 // the handle live in its CDATA and not in its iv table, which holds
 // exactly the two things a GC has to see: the source and the block.
-void watcher_init_class(mrb_state* mrb, struct RClass* wm);
-bool watcher_p(mrb_state* mrb, mrb_value v);
+void watcher_init_class(mrb_state *mrb, struct RClass *wm);
+bool watcher_p(mrb_state *mrb, mrb_value v);
 unsigned watcher_events_mask(mrb_value v);
 bool watcher_aborted_p(mrb_value v);
 // The seconds a watcher may stay quiet, as `timeout:` gave them.
@@ -3295,7 +3669,7 @@ double watcher_timeout(mrb_value v);
 // The deadline passed. The block runs with the `:timeout` event and
 // answers what happens next: true says the watcher waits again, false
 // says it aborted and the run goes on without it.
-bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said);
+bool watcher_deadline_passed(mrb_state *mrb, mrb_value v, mrb_value *said);
 int watcher_fd(mrb_value v);
 int watcher_slot(mrb_value v);
 // #30: when this watcher may be asked why it is quiet, as the whole
@@ -3308,83 +3682,95 @@ void watcher_set_deadline_at(mrb_value v, int64_t at);
 // points into the coroutine frame that parked - the one thing that
 // holds everything about that run - so each watcher finds its own,
 // and a connection carrying many runs keeps them apart.
-Resource::RunState* watcher_run(mrb_value v);
-void watcher_set_run(mrb_value v, Resource::RunState* run);
+Resource::RunState *watcher_run(mrb_value v);
+void watcher_set_run(mrb_value v, Resource::RunState *run);
 // #30: which job of the round this watcher answers.
 int watcher_job(mrb_value v);
 void watcher_set_job(mrb_value v, int job);
 void watcher_set_slot(mrb_value v, int slot);
-void watcher_armed(mrb_value v, struct io_uring* ring, uint64_t tag);
+void watcher_armed(mrb_value v, struct io_uring *ring, uint64_t tag);
 void watcher_unarmed(mrb_value v);
 uint64_t watcher_armed_tag(mrb_value v);
 void watcher_disarm(mrb_value v);
-mrb_value watcher_source_of(mrb_state* mrb, mrb_value v);
-mrb_value watcher_block_of(mrb_state* mrb, mrb_value v);
-}
+mrb_value watcher_source_of(mrb_state *mrb, mrb_value v);
+mrb_value watcher_block_of(mrb_state *mrb, mrb_value v);
+} // namespace webmachine
 
-namespace webmachine::gzip {
+namespace webmachine::gzip
+{
 inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff};
 
 // RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
 // identity - compression never fails a response.
-inline bool compress(const std::string& in, std::string& out) {
-  if (in.size() >= std::numeric_limits<uint32_t>::max()) return false;
-  z_stream strm{};
-  if (deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-    return false;
-  }
-  const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
-  out.assign(reinterpret_cast<const char*>(kHeader), sizeof(kHeader));
-  const size_t body_off = out.size();
-  out.resize(body_off + bound);
-  strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-  strm.avail_in = static_cast<uInt>(in.size());
-  strm.next_out = reinterpret_cast<Bytef*>(&out[0]) + body_off;
-  strm.avail_out = static_cast<uInt>(bound);
-  const int rc = deflate(&strm, Z_FINISH);
-  const size_t produced = strm.total_out;
-  deflateEnd(&strm);
-  if (rc != Z_STREAM_END) return false;
-  out.resize(body_off + produced);
+inline bool compress(const std::string &in, std::string &out)
+{
+    if (in.size() >= std::numeric_limits<uint32_t>::max())
+        return false;
+    z_stream strm{};
+    if (deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return false;
+    }
+    const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
+    out.assign(reinterpret_cast<const char *>(kHeader), sizeof(kHeader));
+    const size_t body_off = out.size();
+    out.resize(body_off + bound);
+    strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.data()));
+    strm.avail_in = static_cast<uInt>(in.size());
+    strm.next_out = reinterpret_cast<Bytef *>(&out[0]) + body_off;
+    strm.avail_out = static_cast<uInt>(bound);
+    const int rc = deflate(&strm, Z_FINISH);
+    const size_t produced = strm.total_out;
+    deflateEnd(&strm);
+    if (rc != Z_STREAM_END)
+        return false;
+    out.resize(body_off + produced);
 
-  const uint32_t crc = static_cast<uint32_t>(
-      crc32_z(0, reinterpret_cast<const Bytef*>(in.data()), in.size()));
-  const uint32_t isize = static_cast<uint32_t>(in.size());
-  unsigned char trailer[8];
-  trailer[0] = static_cast<unsigned char>(crc);
-  trailer[1] = static_cast<unsigned char>(crc >> 8);
-  trailer[2] = static_cast<unsigned char>(crc >> 16);
-  trailer[3] = static_cast<unsigned char>(crc >> 24);
-  trailer[4] = static_cast<unsigned char>(isize);
-  trailer[5] = static_cast<unsigned char>(isize >> 8);
-  trailer[6] = static_cast<unsigned char>(isize >> 16);
-  trailer[7] = static_cast<unsigned char>(isize >> 24);
-  out.append(reinterpret_cast<const char*>(trailer), sizeof(trailer));
-  return true;
+    const uint32_t crc =
+        static_cast<uint32_t>(crc32_z(0, reinterpret_cast<const Bytef *>(in.data()), in.size()));
+    const uint32_t isize = static_cast<uint32_t>(in.size());
+    unsigned char trailer[8];
+    trailer[0] = static_cast<unsigned char>(crc);
+    trailer[1] = static_cast<unsigned char>(crc >> 8);
+    trailer[2] = static_cast<unsigned char>(crc >> 16);
+    trailer[3] = static_cast<unsigned char>(crc >> 24);
+    trailer[4] = static_cast<unsigned char>(isize);
+    trailer[5] = static_cast<unsigned char>(isize >> 8);
+    trailer[6] = static_cast<unsigned char>(isize >> 16);
+    trailer[7] = static_cast<unsigned char>(isize >> 24);
+    out.append(reinterpret_cast<const char *>(trailer), sizeof(trailer));
+    return true;
 }
-}
+} // namespace webmachine::gzip
 
-namespace webmachine {
+namespace webmachine
+{
 // RFC 9110 8.3: Content-Type needs a media type, and the mapping from a
 // file's extension to one is not specified by any RFC - it is the
 // platform's database (mime.types / shared-mime-info). This class is that
 // lookup and says which file answered, because the answer differs per host.
-class MimeDb {
- public:
-  void load(mrb_state* mrb, const char* configured);
-  // RFC 9110 8.3: which media-type database answered.
-  const std::string& source() const { return source_; }
-  // RFC 9110 8.3: how many extensions it holds.
-  size_t size() const { return by_ext_.size(); }
-  const char* type_of(const std::string& name) const;
+class MimeDb
+{
+  public:
+    void load(mrb_state *mrb, const char *configured);
+    // RFC 9110 8.3: which media-type database answered.
+    const std::string &source() const
+    {
+        return source_;
+    }
+    // RFC 9110 8.3: how many extensions it holds.
+    size_t size() const
+    {
+        return by_ext_.size();
+    }
+    const char *type_of(const std::string &name) const;
 
- private:
-  void take(const char* type, size_t tlen, const char* ext, size_t elen);
-  void parse_types(const char* p, const char* end);
-  void parse_globs2(const char* p, const char* end);
+  private:
+    void take(const char *type, size_t tlen, const char *ext, size_t elen);
+    void parse_types(const char *p, const char *end);
+    void parse_globs2(const char *p, const char *end);
 
-  std::vector<std::pair<std::string, std::string>> by_ext_;
-  std::string source_;
+    std::vector<std::pair<std::string, std::string>> by_ext_;
+    std::string source_;
 };
 
 // Two sources, and the split runs right through this struct. The store is
@@ -3401,41 +3787,41 @@ class MimeDb {
 // their Date (RFC 9110 6.6.1), which is why each one remembers where its
 // Date sits and which second it spells.
 struct AssetEntry {
-  std::string file_name;
-  const char* file_data = nullptr;
-  size_t compressed_size = 0;
-  size_t uncompressed_size = 0;
-  uint32_t crc32 = 0;
-  bool deflated = false;
-  bool last_modified_valid = false;
-  char etag[10] = {};
-  char last_modified[http::kDateLen] = {};
-  std::string content_type;
-  // APPNOTE 4.5: the pack's own extra field 0x574D, which holds the whole
-  // <img> for this picture - src, size and alt - as a page emits it. Null
-  // on an entry that carries none.
-  const char* img_tag = nullptr;
-  size_t img_tag_len = 0;
-  // The pack's extra field 0x574E: this entry's Cache-Control value,
-  // baked into the prebuilt 200 and 304 heads at open. Empty when the
-  // pack says nothing, and then no answer names the field.
-  std::string cache_control;
+    std::string file_name;
+    const char *file_data = nullptr;
+    size_t compressed_size = 0;
+    size_t uncompressed_size = 0;
+    uint32_t crc32 = 0;
+    bool deflated = false;
+    bool last_modified_valid = false;
+    char etag[10] = {};
+    char last_modified[http::kDateLen] = {};
+    std::string content_type;
+    // APPNOTE 4.5: the pack's own extra field 0x574D, which holds the whole
+    // <img> for this picture - src, size and alt - as a page emits it. Null
+    // on an entry that carries none.
+    const char *img_tag = nullptr;
+    size_t img_tag_len = 0;
+    // The pack's extra field 0x574E: this entry's Cache-Control value,
+    // baked into the prebuilt 200 and 304 heads at open. Empty when the
+    // pack says nothing, and then no answer names the field.
+    std::string cache_control;
 
-  // RFC 9112 2.1: a status-line and a header section, complete, ending in
-  // the empty line - everything of a response except its content.
-  struct Head {
-    std::string bytes;
-    size_t date_offset = 0;
-    time_t unix_seconds = 0;
-  };
-  Head head_200[3];  // RFC 9110 15.3.1
-  Head head_304[3];  // RFC 9110 15.4.5
+    // RFC 9112 2.1: a status-line and a header section, complete, ending in
+    // the empty line - everything of a response except its content.
+    struct Head {
+        std::string bytes;
+        size_t date_offset = 0;
+        time_t unix_seconds = 0;
+    };
+    Head head_200[3]; // RFC 9110 15.3.1
+    Head head_304[3]; // RFC 9110 15.4.5
 
-  unsigned char gzip_header[10] = {};
-  unsigned char gzip_trailer[8] = {};
+    unsigned char gzip_header[10] = {};
+    unsigned char gzip_trailer[8] = {};
 
-  std::string h2_head_200;  // RFC 9113 8.3 / RFC 7541: the same, encoded
-  std::string h2_head_304;
+    std::string h2_head_200; // RFC 9113 8.3 / RFC 7541: the same, encoded
+    std::string h2_head_304;
 };
 
 // PKWARE APPNOTE: the store. One mapping of one ZIP file, its entries
@@ -3444,90 +3830,95 @@ struct AssetEntry {
 // head flavours differ only in their Connection field line (RFC 9110
 // 7.6.1, "connection option"), which is why they are not called variants
 // - RFC 9110 12.1 already means something else by that word.
-class Assets {
- public:
-  enum ConnectionOption : uint8_t { kNoConnectionField = 0, kKeepAlive = 1, kConnClose = 2 };
-  static constexpr const char* kConnectionLine[3] = {"", "Connection: keep-alive\r\n",
-                                                     "Connection: close\r\n"};
+class Assets
+{
+  public:
+    enum ConnectionOption : uint8_t { kNoConnectionField = 0, kKeepAlive = 1, kConnClose = 2 };
+    static constexpr const char *kConnectionLine[3] = {"", "Connection: keep-alive\r\n",
+                                                       "Connection: close\r\n"};
 
-  Assets() = default;
-  ~Assets();
-  Assets(const Assets&) = delete;
-  Assets& operator=(const Assets&) = delete;
+    Assets() = default;
+    ~Assets();
+    Assets(const Assets &) = delete;
+    Assets &operator=(const Assets &) = delete;
 
-  void open(mrb_state* mrb, const char* zip_path, const MimeDb& mime);
+    void open(mrb_state *mrb, const char *zip_path, const MimeDb &mime);
 
-  AssetEntry* find(const char* path, size_t len);
+    AssetEntry *find(const char *path, size_t len);
 
-  // What the asset tier weighs one request by: the facts the parse settled
-  // - the method among them - and the header values behind them.
-  struct AssetRequest {
-    const flow::ReqFacts& facts;
-    const http::ReqValues& vals;
-  };
-  uint16_t verdict(const AssetEntry& e, const AssetRequest& r) const;
+    // What the asset tier weighs one request by: the facts the parse settled
+    // - the method among them - and the header values behind them.
+    struct AssetRequest {
+        const flow::ReqFacts &facts;
+        const http::ReqValues &vals;
+    };
+    uint16_t verdict(const AssetEntry &e, const AssetRequest &r) const;
 
-  // Everything this tier needs to spell one head: the entry it describes,
-  // the status it carries, whether the connection stays open, the Date
-  // line for this second and the second it stands for, the satisfied range
-  // where the status is 206, and - where the caller already holds an error
-  // page - the type and length that page must be declared with. The page's
-  // bytes are the caller's to append: this tier spells heads and lends its
-  // own file data, and a page is neither.
-  struct HeadAsk {
-    AssetEntry& entry;
-    uint16_t status_code = 0;
-    ConnectionOption conn = kNoConnectionField;
-    const char* date = nullptr;
-    time_t unix_seconds = 0;
-    size_t first_byte_pos = 0;
-    size_t last_byte_pos = 0;
-    const char* body_type = nullptr;
-    size_t body_len = 0;
-  };
+    // Everything this tier needs to spell one head: the entry it describes,
+    // the status it carries, whether the connection stays open, the Date
+    // line for this second and the second it stands for, the satisfied range
+    // where the status is 206, and - where the caller already holds an error
+    // page - the type and length that page must be declared with. The page's
+    // bytes are the caller's to append: this tier spells heads and lends its
+    // own file data, and a page is neither.
+    struct HeadAsk {
+        AssetEntry &entry;
+        uint16_t status_code = 0;
+        ConnectionOption conn = kNoConnectionField;
+        const char *date = nullptr;
+        time_t unix_seconds = 0;
+        size_t first_byte_pos = 0;
+        size_t last_byte_pos = 0;
+        const char *body_type = nullptr;
+        size_t body_len = 0;
+    };
 
-  void answer_head(const HeadAsk& ask, std::string& sink);
-  void answer_206_head(const HeadAsk& ask, std::string& sink);
-  void answer_416_head(const HeadAsk& ask, std::string& sink);
+    void answer_head(const HeadAsk &ask, std::string &sink);
+    void answer_206_head(const HeadAsk &ask, std::string &sink);
+    void answer_416_head(const HeadAsk &ask, std::string &sink);
 
-  // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
-  // header and 8 trailer octets of a gzip member, or the stored bytes
-  // alone when nothing was deflated.
-  static size_t wire_len(const AssetEntry& e) {
-    return e.deflated ? e.compressed_size + 18 : e.compressed_size;
-  }
-  // RFC 1952 2.2: [off, off+n) of that body without copying it, which is
-  // why it returns a count: a gzip member is three separate spans - our
-  // header, the mapping, our trailer - so one logical window is up to
-  // three iovecs, and only the middle one is the file.
-  // A half-open window of the wire body: where it starts and how long
-  // it is.
-  struct Window {
-    size_t off;
-    size_t n;
-  };
-  static unsigned wire_iov(const AssetEntry& e, Window w, iovec* iov);
-  static void copy_wire(const AssetEntry& e, Window w, std::string& out);
+    // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
+    // header and 8 trailer octets of a gzip member, or the stored bytes
+    // alone when nothing was deflated.
+    static size_t wire_len(const AssetEntry &e)
+    {
+        return e.deflated ? e.compressed_size + 18 : e.compressed_size;
+    }
+    // RFC 1952 2.2: [off, off+n) of that body without copying it, which is
+    // why it returns a count: a gzip member is three separate spans - our
+    // header, the mapping, our trailer - so one logical window is up to
+    // three iovecs, and only the middle one is the file.
+    // A half-open window of the wire body: where it starts and how long
+    // it is.
+    struct Window {
+        size_t off;
+        size_t n;
+    };
+    static unsigned wire_iov(const AssetEntry &e, Window w, iovec *iov);
+    static void copy_wire(const AssetEntry &e, Window w, std::string &out);
 
-  // ZIP (APPNOTE): the entry table, for the h2 setup half.
-  std::vector<AssetEntry>& entries() { return entries_; }
+    // ZIP (APPNOTE): the entry table, for the h2 setup half.
+    std::vector<AssetEntry> &entries()
+    {
+        return entries_;
+    }
 
- private:
-  const AssetEntry* find_exact(const char* name, size_t len) const;
-  // The Date line for one second, and the second it stands for - what
-  // patch_date compares before it rewrites a prebuilt head.
-  struct DateStamp {
-    const char* line;
-    time_t unix_seconds;
-  };
-  static void patch_date(AssetEntry::Head& h, DateStamp when);
+  private:
+    const AssetEntry *find_exact(const char *name, size_t len) const;
+    // The Date line for one second, and the second it stands for - what
+    // patch_date compares before it rewrites a prebuilt head.
+    struct DateStamp {
+        const char *line;
+        time_t unix_seconds;
+    };
+    static void patch_date(AssetEntry::Head &h, DateStamp when);
 
-  // munmap(addr, length) - the names of the arguments they become.
-  const char* map_addr_ = nullptr;
-  size_t map_length_ = 0;
-  std::vector<AssetEntry> entries_;
-  AssetEntry::Head s405_[3];  // RFC 9110 15.5.6
-  AssetEntry::Head s406_[3];  // RFC 9110 15.5.7
+    // munmap(addr, length) - the names of the arguments they become.
+    const char *map_addr_ = nullptr;
+    size_t map_length_ = 0;
+    std::vector<AssetEntry> entries_;
+    AssetEntry::Head s405_[3]; // RFC 9110 15.5.6
+    AssetEntry::Head s406_[3]; // RFC 9110 15.5.7
 };
 
 // RFC 9110 15: what a status is called and who registered it. reason()
@@ -3537,10 +3928,10 @@ class Assets {
 // XDG Base Directory Specification over FHS: where the shipped error
 // pack is looked for when nobody named one. Empty when there is none -
 // a missing picture is no reason not to start.
-std::string error_assets_path(const char* configured);
+std::string error_assets_path(const char *configured);
 
-const char* status_title(uint16_t status);
-const char* status_source(uint16_t status);
+const char *status_title(uint16_t status);
+const char *status_source(uint16_t status);
 
 // #210: the error resource. Always there, never routed - the route that
 // produced the error calls it, so an error is delivered by whoever made
@@ -3551,118 +3942,122 @@ const char* status_source(uint16_t status);
 // Rendered per response: a 404 names what was not found, so the set of
 // bodies is the set of request targets and there is nothing a boot could
 // have prepared.
-class ErrorPages {
- public:
-  ErrorPages() = default;
-  ~ErrorPages();
-  ErrorPages(const ErrorPages&) = delete;
-  ErrorPages& operator=(const ErrorPages&) = delete;
+class ErrorPages
+{
+  public:
+    ErrorPages() = default;
+    ~ErrorPages();
+    ErrorPages(const ErrorPages &) = delete;
+    ErrorPages &operator=(const ErrorPages &) = delete;
 
-  // One instance of the class, and the handlers it answers to. A class
-  // that answers to none, or that raises being built, is a startup
-  // refusal with a name.
-  void open(mrb_state* mrb, Assets* assets, Logger* elog);
-  bool ready() const { return ready_; }
+    // One instance of the class, and the handlers it answers to. A class
+    // that answers to none, or that raises being built, is a startup
+    // refusal with a name.
+    void open(mrb_state *mrb, Assets *assets, Logger *elog);
+    bool ready() const
+    {
+        return ready_;
+    }
 
-  // RFC 9110 12.5.1: which form this client can read, as an index into
-  // what the error resource offers. -1 when it offers nothing.
-  int media_for(uint16_t status, const char* accept, size_t len) const;
-  // The picture is the answer for an image form: not rendered, lent out
-  // of the error assets's mapping. nullptr when this slot is not one, or when
-  // this status has no cat.
-  const char* pack_body(uint16_t status, int slot, size_t* len) const;
-  // #210: the page for a status in a form, rendered once at boot and
-  // lent from there. Every 4xx is one of these - it names no failure and
-  // repeats nothing the client sent, so two answers with the same status
-  // are the same bytes. Null for a status no page was prepared for, and
-  // for any answer that has something of its own to say.
-  const char* prepared_body(uint16_t status, int slot, size_t* len) const;
-  const char* media_type(int slot) const;
-  bool named_ours(const char* accept, size_t len) const;
-  static bool names_anything(const char* accept, size_t len);
+    // RFC 9110 12.5.1: which form this client can read, as an index into
+    // what the error resource offers. -1 when it offers nothing.
+    int media_for(uint16_t status, const char *accept, size_t len) const;
+    // The picture is the answer for an image form: not rendered, lent out
+    // of the error assets's mapping. nullptr when this slot is not one, or when
+    // this status has no cat.
+    const char *pack_body(uint16_t status, int slot, size_t *len) const;
+    // #210: the page for a status in a form, rendered once at boot and
+    // lent from there. Every 4xx is one of these - it names no failure and
+    // repeats nothing the client sent, so two answers with the same status
+    // are the same bytes. Null for a status no page was prepared for, and
+    // for any answer that has something of its own to say.
+    const char *prepared_body(uint16_t status, int slot, size_t *len) const;
+    const char *media_type(int slot) const;
+    bool named_ours(const char *accept, size_t len) const;
+    static bool names_anything(const char *accept, size_t len);
 
-  // fsm.rb handle_exception, on the error resource and nowhere else.
-  bool exception_text(mrb_value exc, std::string& out);
+    // fsm.rb handle_exception, on the error resource and nowhere else.
+    bool exception_text(mrb_value exc, std::string &out);
 
-  // What one answer adds to the status. Nothing the client sent is in
-  // here: a page that repeated the target back would be reflecting a
-  // request into a document, and the target is in the error log, which
-  // is where a request belongs. What is left is ours - what
-  // handle_exception made of the exception, and the fingerprint of the
-  // failure, which is what a user can read out and an operator can grep.
-  struct Fields {
-    const char* message = nullptr;
-    size_t message_len = 0;
-    const char* backtrace = nullptr;
-    size_t backtrace_len = 0;
-    // kFingerprintLen hex digits, not terminated. Null on a page that
-    // stands for no failure - every 4xx.
-    const char* fingerprint = nullptr;
-  };
-  // One error page being asked for: the status it explains, the media slot
-  // it renders in, and the words #210 filled in.
-  struct Page {
-    uint16_t status;
-    int slot;
-    const Fields& fields;
-  };
+    // What one answer adds to the status. Nothing the client sent is in
+    // here: a page that repeated the target back would be reflecting a
+    // request into a document, and the target is in the error log, which
+    // is where a request belongs. What is left is ours - what
+    // handle_exception made of the exception, and the fingerprint of the
+    // failure, which is what a user can read out and an operator can grep.
+    struct Fields {
+        const char *message = nullptr;
+        size_t message_len = 0;
+        const char *backtrace = nullptr;
+        size_t backtrace_len = 0;
+        // kFingerprintLen hex digits, not terminated. Null on a page that
+        // stands for no failure - every 4xx.
+        const char *fingerprint = nullptr;
+    };
+    // One error page being asked for: the status it explains, the media slot
+    // it renders in, and the words #210 filled in.
+    struct Page {
+        uint16_t status;
+        int slot;
+        const Fields &fields;
+    };
 
-  // false when there is no page to offer - the caller still owes an
-  // answer and falls back to the bodyless status.
-  bool render(const Page& p, std::string& out);
-  // The bytes this status answers with, whichever way this build has
-  // them: the picture where the error assets hold one, the page prepared
-  // at boot where the answer names no failure of its own, a render where
-  // it does. `held` is the caller's storage and is used for that last
-  // case only - the other two are lent where they lie. Null when this
-  // build can spell no page at all.
-  const char* body_for(const Page& p, std::string& held, size_t* len);
+    // false when there is no page to offer - the caller still owes an
+    // answer and falls back to the bodyless status.
+    bool render(const Page &p, std::string &out);
+    // The bytes this status answers with, whichever way this build has
+    // them: the picture where the error assets hold one, the page prepared
+    // at boot where the answer names no failure of its own, a render where
+    // it does. `held` is the caller's storage and is used for that last
+    // case only - the other two are lent where they lie. Null when this
+    // build can spell no page at all.
+    const char *body_for(const Page &p, std::string &held, size_t *len);
 
- private:
-  struct Handler {
-    mrb_sym sym = 0;
-    std::string type;
-    // An image form is answered from the error assets, so no method is called
-    // and none has to exist.
-    bool from_pack = false;
-  };
-  struct Cat {
-    const AssetEntry* entry = nullptr;
-  };
-  void read_cats(Assets& assets);
-  void read_prepared();
+  private:
+    struct Handler {
+        mrb_sym sym = 0;
+        std::string type;
+        // An image form is answered from the error assets, so no method is called
+        // and none has to exist.
+        bool from_pack = false;
+    };
+    struct Cat {
+        const AssetEntry *entry = nullptr;
+    };
+    void read_cats(Assets &assets);
+    void read_prepared();
 
-  mrb_state* mrb_ = nullptr;
-  mrb_value res_ = mrb_nil_value();
-  mrb_sym exc_sym_ = 0;
-  std::vector<Handler> have_;
-  // The same strings again, laid out the way choose_media_type wants them.
-  std::vector<std::string> types_;
-  // The way out when Accept matches nothing offered: text/plain, by name.
-  int plain_ = 0;
-  // And what a client with no Accept at all gets: the first form that is
-  // not a picture.
-  int html_ = 0;
-  // Both tables below are indexed by status - kFirstError: an answer under
-  // 400 did not fail and has no page, and 600 is not a status.
-  static constexpr uint16_t kFirstError = 400;
-  static constexpr uint16_t kPastLastError = 600;
-  // The same shape the status store uses: a slot per status into a dense
-  // list, 0 for the statuses these error assets has no picture for.
-  std::vector<Cat> cats_;
-  std::array<int16_t, kPastLastError - kFirstError> cat_index_ {};
-  // One page per status and rendered form, status-major with a row of
-  // have_.size(). 0 in the index is "this status has none prepared".
-  std::vector<std::string> prepared_;
-  std::array<int16_t, kPastLastError - kFirstError> prep_index_ {};
-  bool ready_ = false;
-  // Where a handler's raise is reported. Set at open, may be null.
-  Logger* elog_ = nullptr;
+    mrb_state *mrb_ = nullptr;
+    mrb_value res_ = mrb_nil_value();
+    mrb_sym exc_sym_ = 0;
+    std::vector<Handler> have_;
+    // The same strings again, laid out the way choose_media_type wants them.
+    std::vector<std::string> types_;
+    // The way out when Accept matches nothing offered: text/plain, by name.
+    int plain_ = 0;
+    // And what a client with no Accept at all gets: the first form that is
+    // not a picture.
+    int html_ = 0;
+    // Both tables below are indexed by status - kFirstError: an answer under
+    // 400 did not fail and has no page, and 600 is not a status.
+    static constexpr uint16_t kFirstError = 400;
+    static constexpr uint16_t kPastLastError = 600;
+    // The same shape the status store uses: a slot per status into a dense
+    // list, 0 for the statuses these error assets has no picture for.
+    std::vector<Cat> cats_;
+    std::array<int16_t, kPastLastError - kFirstError> cat_index_{};
+    // One page per status and rendered form, status-major with a row of
+    // have_.size(). 0 in the index is "this status has none prepared".
+    std::vector<std::string> prepared_;
+    std::array<int16_t, kPastLastError - kFirstError> prep_index_{};
+    bool ready_ = false;
+    // Where a handler's raise is reported. Set at open, may be null.
+    Logger *elog_ = nullptr;
 };
-}
+} // namespace webmachine
 
-
-namespace webmachine {
+namespace webmachine
+{
 // No specification, and that is the entry. Nothing below is HTTP or the
 // kernel's; these are operating decisions.
 //
@@ -3734,113 +4129,115 @@ inline constexpr size_t kMaxBodyMax = 1u << 30;
 // The WebSocket and event-stream resources are the connection layer's
 // (http1.hpp). An application folds them and holds them, through these.
 struct WsResource;
-void ws_fold(mrb_state* mrb, mrb_value klass, WsResource& out);
-WsResource* ws_resource_new();
-void ws_resource_free(WsResource* r);
-void ws_init(mrb_state* mrb, struct RClass* wm);
+void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out);
+WsResource *ws_resource_new();
+void ws_resource_free(WsResource *r);
+void ws_init(mrb_state *mrb, struct RClass *wm);
 struct SseResource;
-void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out);
-SseResource* sse_resource_new();
-void sse_resource_free(SseResource* r);
-void sse_init(mrb_state* mrb, struct RClass* wm);
+void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out);
+SseResource *sse_resource_new();
+void sse_resource_free(SseResource *r);
+void sse_init(mrb_state *mrb, struct RClass *wm);
 
 struct AppSpec {
-  enum class Form : uint8_t { kNone, kPort, kUnix, kUrl };
-  Form form = Form::kNone;
-  int port = 0;
-  std::string unix_path;
-  std::string url_host;
-  std::string bound_url;
-  bool bound = false;
-  RouteTable table;
-  std::vector<std::unique_ptr<Resource>> resources;
-  RouteTable ws_table;
-  std::vector<std::unique_ptr<WsResource, void (*)(WsResource*)>> ws_resources;
-  RouteTable sse_table;
-  std::vector<std::unique_ptr<SseResource, void (*)(SseResource*)>> sse_resources;
-  mrb_value ready = mrb_nil_value();
-  bool have_ready = false;
-  // The Webmachine::Config struct this app was configured through,
-  // kept because app_mark_bound writes the bound listener back into
-  // its url slot - conf.url reads the ask before the bind and the
-  // truth after it. GC-registered at Application.new.
-  mrb_value conf = mrb_nil_value();
-  bool registered = false;
-  // conf.disable_http_cats = true; -1 = this app said nothing. The pack
-  // is one mount for the process, so the first app with an opinion is the
-  // one it follows - the same order every other conf answer here takes.
-  int8_t disable_http_cats = -1;
-  // conf.zero_copy_threshold = N; -1 = this app said nothing.
-  long long zero_copy_threshold = -1;
-  // conf.file_map_threshold = N; -1 = this app said nothing.
-  long long file_map_threshold = -1;
-  // conf.max_body = N; -1 = this app said nothing, so kMaxBodyDefault.
-  long long max_body = -1;
-  // conf.docroot = PATH; empty = this app said nothing. The docroot is
-  // one anchor for the process, so the first app that names one decides.
-  std::string docroot;
-  // conf.spill_dir = PATH; empty = this app said nothing, so the
-  // platform decides (TMPDIR, then /tmp).
-  //
-  // RFC-free, and it decides one thing that shows: a body that is
-  // placed by request_body_path is linked when its temporary file and
-  // its destination share a filesystem, and copied when they do not.
-  // /tmp is tmpfs on most machines, so a body spilled there is memory
-  // and every placement is a copy. Naming a directory on the disk the
-  // uploads live on makes every placement a link.
-  std::string spill_dir;
-  // conf.assets = FILE.zip; empty = this app said nothing. The pack is
-  // one mapping for the process, so the first app that names one decides.
-  std::string assets;
-  // conf.certificate = PATH, conf.private_key = PATH, and whether
-  // conf.url said https. All three have to agree, and server.cpp is
-  // where that is checked - a listener either serves TLS or does not.
-  std::string cert_path;
-  std::string key_path;
-  bool tls = false;
+    enum class Form : uint8_t { kNone, kPort, kUnix, kUrl };
+    Form form = Form::kNone;
+    int port = 0;
+    std::string unix_path;
+    std::string url_host;
+    std::string bound_url;
+    bool bound = false;
+    RouteTable table;
+    std::vector<std::unique_ptr<Resource>> resources;
+    RouteTable ws_table;
+    std::vector<std::unique_ptr<WsResource, void (*)(WsResource *)>> ws_resources;
+    RouteTable sse_table;
+    std::vector<std::unique_ptr<SseResource, void (*)(SseResource *)>> sse_resources;
+    mrb_value ready = mrb_nil_value();
+    bool have_ready = false;
+    // The Webmachine::Config struct this app was configured through,
+    // kept because app_mark_bound writes the bound listener back into
+    // its url slot - conf.url reads the ask before the bind and the
+    // truth after it. GC-registered at Application.new.
+    mrb_value conf = mrb_nil_value();
+    bool registered = false;
+    // conf.disable_http_cats = true; -1 = this app said nothing. The pack
+    // is one mount for the process, so the first app with an opinion is the
+    // one it follows - the same order every other conf answer here takes.
+    int8_t disable_http_cats = -1;
+    // conf.zero_copy_threshold = N; -1 = this app said nothing.
+    long long zero_copy_threshold = -1;
+    // conf.file_map_threshold = N; -1 = this app said nothing.
+    long long file_map_threshold = -1;
+    // conf.max_body = N; -1 = this app said nothing, so kMaxBodyDefault.
+    long long max_body = -1;
+    // conf.docroot = PATH; empty = this app said nothing. The docroot is
+    // one anchor for the process, so the first app that names one decides.
+    std::string docroot;
+    // conf.spill_dir = PATH; empty = this app said nothing, so the
+    // platform decides (TMPDIR, then /tmp).
+    //
+    // RFC-free, and it decides one thing that shows: a body that is
+    // placed by request_body_path is linked when its temporary file and
+    // its destination share a filesystem, and copied when they do not.
+    // /tmp is tmpfs on most machines, so a body spilled there is memory
+    // and every placement is a copy. Naming a directory on the disk the
+    // uploads live on makes every placement a link.
+    std::string spill_dir;
+    // conf.assets = FILE.zip; empty = this app said nothing. The pack is
+    // one mapping for the process, so the first app that names one decides.
+    std::string assets;
+    // conf.certificate = PATH, conf.private_key = PATH, and whether
+    // conf.url said https. All three have to agree, and server.cpp is
+    // where that is checked - a listener either serves TLS or does not.
+    std::string cert_path;
+    std::string key_path;
+    bool tls = false;
 };
 
 // The octets a body begins with, against the type its head declared.
 // See src/sniff.cpp: the table is the WHATWG MIME Sniffing Standard's.
-namespace sniff {
+namespace sniff
+{
 enum class Verdict : uint8_t { kAgrees, kContradicts, kUnknown };
 bool known(std::string_view declared);
-bool wants(const std::vector<std::string>& types, std::string_view declared);
+bool wants(const std::vector<std::string> &types, std::string_view declared);
 size_t bytes_wanted();
 Verdict check(std::string_view declared, std::string_view head);
-}
+} // namespace sniff
 
 // The answer's body, set by something that is not a callback of the
 // resource. See response.cpp.
-bool response_take_body(mrb_state* mrb, std::string_view s);
+bool response_take_body(mrb_state *mrb, std::string_view s);
 // Did the resource being answered declare `reads_body ..., save: true`?
-bool response_saves_body(mrb_state* mrb);
+bool response_saves_body(mrb_state *mrb);
 
-void application_init(mrb_state* mrb, struct RClass* wm);
+void application_init(mrb_state *mrb, struct RClass *wm);
 
-void app_load(mrb_state* mrb, const char* path);
+void app_load(mrb_state *mrb, const char *path);
 
 // Where every registered application goes, and how many listeners this
 // build can carry - one more than that is a refusal, not a truncation.
 struct Registered {
-  std::vector<AppSpec*>& specs;
-  size_t max_listeners;
+    std::vector<AppSpec *> &specs;
+    size_t max_listeners;
 };
-void app_registered_all(mrb_state* mrb, Registered out);
+void app_registered_all(mrb_state *mrb, Registered out);
 
-AppSpec* app_assets_only();
+AppSpec *app_assets_only();
 
-void app_mark_bound(mrb_state* mrb, AppSpec& spec, const char* unix_path, int port);
+void app_mark_bound(mrb_state *mrb, AppSpec &spec, const char *unix_path, int port);
 
-void app_ready_run(mrb_state* mrb, AppSpec& spec);
-}
+void app_ready_run(mrb_state *mrb, AppSpec &spec);
+} // namespace webmachine
 
-namespace webmachine {
+namespace webmachine
+{
 // server.docroot: the one directory response.file may reach, resolved to a
 // canonical absolute path and opened O_DIRECTORY|O_PATH once at startup. That
 // fd is what RESOLVE_BENEATH anchors against - the kernel does the
 // confinement, this code never does path math of its own.
-void docroot_open(mrb_state* mrb, const char* path);
+void docroot_open(mrb_state *mrb, const char *path);
 
 // Did an operator configure one? response.file= refuses by name when not.
 bool docroot_ready();
@@ -3850,8 +4247,8 @@ int docroot_fd();
 // RFC-free: the directory a request body spills into, or nullptr for
 // the platform's own choice. One directory for the process, settled
 // before the first accept, the way the docroot is.
-const char* spill_dir();
-void spill_dir_set(const char* path);
+const char *spill_dir();
+void spill_dir_set(const char *path);
 // RFC 9110 6.4: the count of request body files this process holds
 // open. take answers false when kBodyFilesMax are open, and give returns
 // one. BodySpill::open_file and close_file are the only callers in src/.
@@ -3861,10 +4258,10 @@ void body_file_slot_give();
 uint32_t body_files_open();
 
 // The canonical absolute path, for the refusals that have to name it.
-const char* docroot_path();
+const char *docroot_path();
 
 // The open_how every response.file open uses - built once, never per request.
-const struct open_how* docroot_how();
+const struct open_how *docroot_how();
 
 // What main() resolved: the CLI flags and the [server]/[log]/[tune]
 // sections, merged, with the CLI winning. cli_* keeps its prefix on
@@ -3883,45 +4280,44 @@ const struct open_how* docroot_how();
 // --unix, --port, --assets and --docroot beside --app, which is why
 // these four are null in every run that loads one.
 struct ServerOptions {
-  // #210: the file an error answer may hand over - the shipped one by
-  // default, or the operator's, in which case whatever they put in it is
-  // what response.error_asset can name.
-  const char* error_assets_path = nullptr;
-  const char* mime_types_path = nullptr;
-  const char* log_path = nullptr;
-  const char* log_privacy = nullptr;
-  const char* error_log_path = nullptr;
-  unsigned long long log_max_bytes = 500ull * 1024 * 1024;
-  int stop_fd = -1;
-  const char* app_path = nullptr;
-  unsigned sq_entries = 0;
-  int backlog = 0;
-  int header_timeout = 0;
-  int send_timeout = 0;
-  int idle_timeout = 0;
-  // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
-  long long zero_copy_threshold = -1;
-  // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
-  long long file_map_threshold = -1;
+    // #210: the file an error answer may hand over - the shipped one by
+    // default, or the operator's, in which case whatever they put in it is
+    // what response.error_asset can name.
+    const char *error_assets_path = nullptr;
+    const char *mime_types_path = nullptr;
+    const char *log_path = nullptr;
+    const char *log_privacy = nullptr;
+    const char *error_log_path = nullptr;
+    unsigned long long log_max_bytes = 500ull * 1024 * 1024;
+    int stop_fd = -1;
+    const char *app_path = nullptr;
+    unsigned sq_entries = 0;
+    int backlog = 0;
+    int header_timeout = 0;
+    int send_timeout = 0;
+    int idle_timeout = 0;
+    // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
+    long long zero_copy_threshold = -1;
+    // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+    long long file_map_threshold = -1;
 
-  // --standalone: files only. No app is loaded, no route table exists,
-  // and no request enters the VM. The four below are that application's
-  // listener, pack and docroot, and they are set in no other run.
-  bool standalone = false;
-  const char* standalone_unix_path = nullptr;
-  int standalone_port = 0;
-  const char* standalone_assets_path = nullptr;
-  const char* standalone_docroot_path = nullptr;
+    // --standalone: files only. No app is loaded, no route table exists,
+    // and no request enters the VM. The four below are that application's
+    // listener, pack and docroot, and they are set in no other run.
+    bool standalone = false;
+    const char *standalone_unix_path = nullptr;
+    int standalone_port = 0;
+    const char *standalone_assets_path = nullptr;
+    const char *standalone_docroot_path = nullptr;
 };
 
-
-void server_options(const ServerOptions& opts);
+void server_options(const ServerOptions &opts);
 
 void server_backend_say();
 
-void server_init(mrb_state* mrb, struct RClass* wm);
+void server_init(mrb_state *mrb, struct RClass *wm);
 
-int server_run(mrb_state* mrb);
+int server_run(mrb_state *mrb);
 
 bool server_entered();
 
@@ -3930,38 +4326,39 @@ bool server_entered();
 // watchers hold one. A file scope object dies at exit, and mrb_close
 // runs before that, so the owner of the VM calls this first.
 void server_release();
-}
+} // namespace webmachine
 
-namespace webmachine {
+namespace webmachine
+{
 // The TOML file as read, one member per key, grouped as the file groups
 // them: [server], then [log], then [tune]. Nothing is defaulted here -
 // absence has to stay visible, or --flag and conf.* cannot beat it.
 struct Config {
-  std::string path;
+    std::string path;
 
-  std::string unix_path;
-  int port = 0;
-  std::string app;
-  std::string assets;
-  std::string docroot;
-  std::string mime_types;
-  std::string error_assets;
-  std::string pidfile;
+    std::string unix_path;
+    int port = 0;
+    std::string app;
+    std::string assets;
+    std::string docroot;
+    std::string mime_types;
+    std::string error_assets;
+    std::string pidfile;
 
-  std::string log_file;
-  std::string log_privacy;
-  std::string error_log_file;
-  unsigned long long log_max_bytes = 0;
+    std::string log_file;
+    std::string log_privacy;
+    std::string error_log_file;
+    unsigned long long log_max_bytes = 0;
 
-  int backlog = 0;
-  unsigned sq_entries = 0;
-  int header_timeout = 0;
-  int send_timeout = 0;
-  int idle_timeout = 0;
-  // 0 is a choice here ("never lend"), so absence is -1 and not 0.
-  long long zero_copy_threshold = -1;
-  // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
-  long long file_map_threshold = -1;
+    int backlog = 0;
+    unsigned sq_entries = 0;
+    int header_timeout = 0;
+    int send_timeout = 0;
+    int idle_timeout = 0;
+    // 0 is a choice here ("never lend"), so absence is -1 and not 0.
+    long long zero_copy_threshold = -1;
+    // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+    long long file_map_threshold = -1;
 };
 
 // webmachine.toml, written because somebody asked - --write-config, and
@@ -3974,15 +4371,13 @@ struct Config {
 // False when the path already exists: it is never written over.
 // `error_assets` names the archive the written file points at, or is
 // null for the commented example line.
-bool config_write_default(const char* path, const char* error_assets);
+bool config_write_default(const char *path, const char *error_assets);
 
-void config_load(mrb_state* mrb, const char* path, Config& out);
-}
+void config_load(mrb_state *mrb, const char *path, Config &out);
+} // namespace webmachine
 
 #ifndef SO_MEMINFO
 #define SO_MEMINFO 55
 #endif
-
-
 
 #endif

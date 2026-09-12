@@ -13,190 +13,211 @@
 #include <liburing.h>
 #include <poll.h>
 
-namespace webmachine {
-namespace {
+namespace webmachine
+{
+namespace
+{
 
 // Nothing here is a Ruby object; `source` and `block` are, and live in
 // the iv table. RData carries both (mruby/data.h).
 struct WatcherData {
-  // Taken once in initialize; the destructor cannot ask a sweeping GC
-  // for it. int, not a handle type - Windows CRT hands out int fds too.
-  int fd = -1;
-  // #30: the key on Http1::Conn's hash, and bits 48..55 of the tag.
-  int slot = -1;
-  // #30: which job of the round this watcher answers. A round waits on
-  // several at once, and each answer has its own place.
-  int job = 0;
-  // #30: the state of the run this watcher belongs to. It lives in the
-  // coroutine frame that parked, and the frame outlives every wait it
-  // started.
-  Resource::RunState* run = nullptr;
-  // #30: the round of that run - where this watcher leaves its answer.
-  Http1::Conn::Round* round = nullptr;
-  // #30: the whole second this watcher may stay quiet until, or 0.
-  int64_t deadline_at = 0;
-  // POLLIN, POLLOUT or both.
-  unsigned events = POLLIN;
-  // Set by watcher.abort, read after the block returns.
-  bool aborted = false;
-  // #30: how many seconds this watcher may stay quiet. A descriptor
-  // that says nothing is the usual end of a wait, so a watcher owes a
-  // deadline the same way a compute task owes max_runtime. What the two
-  // do at the deadline differs, and only that.
-  double timeout = 0.0;
-  struct io_uring* ring = nullptr;
-  // The tag the armed poll carries, so a cancel names exactly it and
-  // never another watcher's poll on the same descriptor.
-  uint64_t tag = 0;
-  bool armed = false;
+    // Taken once in initialize; the destructor cannot ask a sweeping GC
+    // for it. int, not a handle type - Windows CRT hands out int fds too.
+    int fd = -1;
+    // #30: the key on Http1::Conn's hash, and bits 48..55 of the tag.
+    int slot = -1;
+    // #30: which job of the round this watcher answers. A round waits on
+    // several at once, and each answer has its own place.
+    int job = 0;
+    // #30: the state of the run this watcher belongs to. It lives in the
+    // coroutine frame that parked, and the frame outlives every wait it
+    // started.
+    Resource::RunState *run = nullptr;
+    // #30: the round of that run - where this watcher leaves its answer.
+    Http1::Conn::Round *round = nullptr;
+    // #30: the whole second this watcher may stay quiet until, or 0.
+    int64_t deadline_at = 0;
+    // POLLIN, POLLOUT or both.
+    unsigned events = POLLIN;
+    // Set by watcher.abort, read after the block returns.
+    bool aborted = false;
+    // #30: how many seconds this watcher may stay quiet. A descriptor
+    // that says nothing is the usual end of a wait, so a watcher owes a
+    // deadline the same way a compute task owes max_runtime. What the two
+    // do at the deadline differs, and only that.
+    double timeout = 0.0;
+    struct io_uring *ring = nullptr;
+    // The tag the armed poll carries, so a cancel names exactly it and
+    // never another watcher's poll on the same descriptor.
+    uint64_t tag = 0;
+    bool armed = false;
 };
 
 // Reached only when nobody disarmed first - a raise out of a callback.
 // Http1::Conn::watchers_drop empties the CDATA, so the usual sweep finds
 // nothing here.
-void watcher_free(mrb_state*, void* p) {
-  auto* d = static_cast<WatcherData*>(p);
-  if (d == nullptr) return;
-  // No VM to raise into here: the GC is freeing this. A full queue is
-  // submitted and tried once more, and a cancel that still finds no
-  // room is said on stderr.
-  if (d->armed && d->ring != nullptr) {
-    struct io_uring_sqe* s = io_uring_get_sqe(d->ring);
-    if (s == nullptr) {
-      io_uring_submit(d->ring);
-      s = io_uring_get_sqe(d->ring);
+void watcher_free(mrb_state *, void *p)
+{
+    auto *d = static_cast<WatcherData *>(p);
+    if (d == nullptr)
+        return;
+    // No VM to raise into here: the GC is freeing this. A full queue is
+    // submitted and tried once more, and a cancel that still finds no
+    // room is said on stderr.
+    if (d->armed && d->ring != nullptr) {
+        struct io_uring_sqe *s = io_uring_get_sqe(d->ring);
+        if (s == nullptr) {
+            io_uring_submit(d->ring);
+            s = io_uring_get_sqe(d->ring);
+        }
+        if (s == nullptr) {
+            std::fprintf(stderr, "webmachine: watcher on fd %d could not be cancelled: SQ full\n",
+                         d->fd);
+        } else {
+            io_uring_prep_poll_remove(s, d->tag);
+            io_uring_sqe_set_data64(s, 0);
+            io_uring_submit(d->ring);
+        }
     }
-    if (s == nullptr) {
-      std::fprintf(stderr, "webmachine: watcher on fd %d could not be cancelled: SQ full\n",
-                   d->fd);
-    } else {
-      io_uring_prep_poll_remove(s, d->tag);
-      io_uring_sqe_set_data64(s, 0);
-      io_uring_submit(d->ring);
-    }
-  }
-  delete d;
+    delete d;
 }
 
 const struct mrb_data_type watcher_type = {"Webmachine::Watcher", watcher_free};
 
-WatcherData* live(mrb_state* mrb, mrb_value self) {
-  auto* d = static_cast<WatcherData*>(DATA_PTR(self));
-  if (d == nullptr) mrb_raise(mrb, E_WM_ERROR(mrb), "this watcher was never initialized");
-  return d;
+WatcherData *live(mrb_state *mrb, mrb_value self)
+{
+    auto *d = static_cast<WatcherData *>(DATA_PTR(self));
+    if (d == nullptr)
+        mrb_raise(mrb, E_WM_ERROR(mrb), "this watcher was never initialized");
+    return d;
 }
 
 // What may be ordered. What arrives (revents) is a wider set. Each
 // direction has two names: :r or :in, :w or :out, :rw or :inout.
-unsigned mask_of(mrb_state* mrb, mrb_value v) {
-  if (!mrb_symbol_p(v)) {
+unsigned mask_of(mrb_state *mrb, mrb_value v)
+{
+    if (!mrb_symbol_p(v)) {
+        mrb_raisef(mrb, E_ARGUMENT_ERROR,
+                   "a watcher waits for :r (:in), :w (:out) or :rw (:inout), not %v", v);
+    }
+    const mrb_sym s = mrb_symbol(v);
+    if (s == MRB_SYM(r) || s == MRB_SYM(in))
+        return POLLIN;
+    if (s == MRB_SYM(w) || s == MRB_SYM(out))
+        return POLLOUT;
+    if (s == MRB_SYM(rw) || s == MRB_SYM(inout))
+        return POLLIN | POLLOUT;
     mrb_raisef(mrb, E_ARGUMENT_ERROR,
                "a watcher waits for :r (:in), :w (:out) or :rw (:inout), not %v", v);
-  }
-  const mrb_sym s = mrb_symbol(v);
-  if (s == MRB_SYM(r) || s == MRB_SYM(in)) return POLLIN;
-  if (s == MRB_SYM(w) || s == MRB_SYM(out)) return POLLOUT;
-  if (s == MRB_SYM(rw) || s == MRB_SYM(inout)) return POLLIN | POLLOUT;
-  mrb_raisef(mrb, E_ARGUMENT_ERROR,
-             "a watcher waits for :r (:in), :w (:out) or :rw (:inout), not %v", v);
-  return 0;
+    return 0;
 }
 
-mrb_value sym_of(mrb_state* mrb, unsigned mask) {
-  const unsigned rw = mask & (POLLIN | POLLOUT);
-  if (rw == (POLLIN | POLLOUT)) return mrb_symbol_value(MRB_SYM(rw));
-  if (rw == POLLOUT) return mrb_symbol_value(MRB_SYM(w));
-  return mrb_symbol_value(MRB_SYM(r));
+mrb_value sym_of(mrb_state *mrb, unsigned mask)
+{
+    const unsigned rw = mask & (POLLIN | POLLOUT);
+    if (rw == (POLLIN | POLLOUT))
+        return mrb_symbol_value(MRB_SYM(rw));
+    if (rw == POLLOUT)
+        return mrb_symbol_value(MRB_SYM(w));
+    return mrb_symbol_value(MRB_SYM(r));
 }
 
 // Watcher.new(source, :r, timeout: 5.0) { |revents, watcher| ... } - a
 // description. Arming happens when a resource hands one back; see #30.
 //: (untyped, ?untyped) { (Webmachine::Watcher) -> void } -> Webmachine::Watcher
-mrb_value watcher_init(mrb_state* mrb, mrb_value self) {
-  mrb_value source;
-  mrb_value events = mrb_symbol_value(MRB_SYM(r));
-  mrb_value blk = mrb_nil_value();
-  // mruby checks keywords against a declared table. timeout is declared
-  // optional, so the refusal below is ours and says why a deadline is
-  // owed. The slot starts as undef, because mrb_get_args leaves a key
-  // that was not given untouched.
-  const mrb_sym kw_names[] = {MRB_SYM(timeout)};
-  mrb_value kw_values[1] = {mrb_undef_value()};
-  const mrb_kwargs kwargs = {1, 0, kw_names, kw_values, nullptr};
-  mrb_get_args(mrb, "o|o:&", &source, &events, &kwargs, &blk);
+mrb_value watcher_init(mrb_state *mrb, mrb_value self)
+{
+    mrb_value source;
+    mrb_value events = mrb_symbol_value(MRB_SYM(r));
+    mrb_value blk = mrb_nil_value();
+    // mruby checks keywords against a declared table. timeout is declared
+    // optional, so the refusal below is ours and says why a deadline is
+    // owed. The slot starts as undef, because mrb_get_args leaves a key
+    // that was not given untouched.
+    const mrb_sym kw_names[] = {MRB_SYM(timeout)};
+    mrb_value kw_values[1] = {mrb_undef_value()};
+    const mrb_kwargs kwargs = {1, 0, kw_names, kw_values, nullptr};
+    mrb_get_args(mrb, "o|o:&", &source, &events, &kwargs, &blk);
 
-  if (mrb_nil_p(blk)) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR,
-              "a watcher without a block would have nothing to do when it fires");
-  }
+    if (mrb_nil_p(blk)) {
+        mrb_raise(mrb, E_ARGUMENT_ERROR,
+                  "a watcher without a block would have nothing to do when it fires");
+    }
 
-  const mrb_value wait = mrb_undef_p(kw_values[0]) ? mrb_nil_value() : kw_values[0];
-  if (mrb_nil_p(wait)) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR,
-              "a watcher wants timeout: - without a deadline it waits for a wakeup that "
-              "can stop coming, and the run waits with it");
-  }
-  const mrb_float secs = mrb_as_float(mrb, wait);
-  if (!(secs > 0.0)) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "timeout: %v is not a time a watcher could wait", wait);
-  }
+    const mrb_value wait = mrb_undef_p(kw_values[0]) ? mrb_nil_value() : kw_values[0];
+    if (mrb_nil_p(wait)) {
+        mrb_raise(mrb, E_ARGUMENT_ERROR,
+                  "a watcher wants timeout: - without a deadline it waits for a wakeup that "
+                  "can stop coming, and the run waits with it");
+    }
+    const mrb_float secs = mrb_as_float(mrb, wait);
+    if (!(secs > 0.0)) {
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "timeout: %v is not a time a watcher could wait", wait);
+    }
 
-  // An Integer passes through; anything else is asked for fileno.
-  // mruby-hiredis hands its event callbacks a bare int.
-  const mrb_int fd = mrb_integer(mrb_type_convert(mrb, source, MRB_TT_INTEGER, MRB_SYM(fileno)));
-  if (fd < 0) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher needs a descriptor, and this one is %i", fd);
-  }
+    // An Integer passes through; anything else is asked for fileno.
+    // mruby-hiredis hands its event callbacks a bare int.
+    const mrb_int fd = mrb_integer(mrb_type_convert(mrb, source, MRB_TT_INTEGER, MRB_SYM(fileno)));
+    if (fd < 0) {
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "a watcher needs a descriptor, and this one is %i", fd);
+    }
 
-  auto* d = new WatcherData();
-  d->fd = static_cast<int>(fd);
-  d->events = mask_of(mrb, events);
-  d->timeout = static_cast<double>(secs);
-  mrb_data_init(self, d, &watcher_type);
+    auto *d = new WatcherData();
+    d->fd = static_cast<int>(fd);
+    d->events = mask_of(mrb, events);
+    d->timeout = static_cast<double>(secs);
+    mrb_data_init(self, d, &watcher_type);
 
-  // The only two the GC has to see.
-  mrb_iv_set(mrb, self, MRB_IVSYM(source), source);
-  mrb_iv_set(mrb, self, MRB_IVSYM(block), blk);
-  return self;
+    // The only two the GC has to see.
+    mrb_iv_set(mrb, self, MRB_IVSYM(source), source);
+    mrb_iv_set(mrb, self, MRB_IVSYM(block), blk);
+    return self;
 }
 
-mrb_value watcher_source(mrb_state* mrb, mrb_value self) {
-  return mrb_iv_get(mrb, self, MRB_IVSYM(source));
+mrb_value watcher_source(mrb_state *mrb, mrb_value self)
+{
+    return mrb_iv_get(mrb, self, MRB_IVSYM(source));
 }
 
 //: () -> Proc
-mrb_value watcher_block(mrb_state* mrb, mrb_value self) {
-  return mrb_iv_get(mrb, self, MRB_IVSYM(block));
+mrb_value watcher_block(mrb_state *mrb, mrb_value self)
+{
+    return mrb_iv_get(mrb, self, MRB_IVSYM(block));
 }
 
 //: () -> Symbol
-mrb_value watcher_events(mrb_state* mrb, mrb_value self) {
-  return sym_of(mrb, live(mrb, self)->events);
+mrb_value watcher_events(mrb_state *mrb, mrb_value self)
+{
+    return sym_of(mrb, live(mrb, self)->events);
 }
 
 // IORING_POLL_UPDATE_EVENTS on the armed poll; no re-registration.
 //: (Symbol) -> Symbol
-mrb_value watcher_events_set(mrb_state* mrb, mrb_value self) {
-  mrb_value v;
-  mrb_get_args(mrb, "o", &v);
-  live(mrb, self)->events = mask_of(mrb, v);
-  return v;
+mrb_value watcher_events_set(mrb_state *mrb, mrb_value self)
+{
+    mrb_value v;
+    mrb_get_args(mrb, "o", &v);
+    live(mrb, self)->events = mask_of(mrb, v);
+    return v;
 }
 
 //: () -> Webmachine::Watcher
-mrb_value watcher_abort(mrb_state* mrb, mrb_value self) {
-  live(mrb, self)->aborted = true;
-  return self;
+mrb_value watcher_abort(mrb_state *mrb, mrb_value self)
+{
+    live(mrb, self)->aborted = true;
+    return self;
 }
 
 //: () -> (TrueClass | FalseClass)
-mrb_value watcher_aborted(mrb_state* mrb, mrb_value self) {
-  return mrb_bool_value(live(mrb, self)->aborted);
+mrb_value watcher_aborted(mrb_state *mrb, mrb_value self)
+{
+    return mrb_bool_value(live(mrb, self)->aborted);
 }
 
 //: () -> Float
-mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
-  return mrb_float_value(mrb, live(mrb, self)->timeout);
+mrb_value watcher_timeout_m(mrb_state *mrb, mrb_value self)
+{
+    return mrb_float_value(mrb, live(mrb, self)->timeout);
 }
 
 // #30: the peer said nothing for `timeout` seconds. That is the world
@@ -208,33 +229,38 @@ mrb_value watcher_timeout_m(mrb_state* mrb, mrb_value self) {
 // The block answers with what it does: it calls abort to give up, or it
 // returns and waits again. The reactor reads that answer here.
 //: () -> (TrueClass | FalseClass)
-mrb_value watcher_deadline_passed_m(mrb_state* mrb, mrb_value self) {
-  live(mrb, self);
-  const mrb_value blk = mrb_iv_get(mrb, self, MRB_IVSYM(block));
-  const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), self};
-  mrb_yield_argv(mrb, blk, 2, argv);
-  // The block can abort, and abort frees nothing - the CDATA is still
-  // here, so it is read after the call and not before.
-  return mrb_bool_value(!live(mrb, self)->aborted);
+mrb_value watcher_deadline_passed_m(mrb_state *mrb, mrb_value self)
+{
+    live(mrb, self);
+    const mrb_value blk = mrb_iv_get(mrb, self, MRB_IVSYM(block));
+    const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), self};
+    mrb_yield_argv(mrb, blk, 2, argv);
+    // The block can abort, and abort frees nothing - the CDATA is still
+    // here, so it is read after the call and not before.
+    return mrb_bool_value(!live(mrb, self)->aborted);
 }
 
-}  // namespace
+} // namespace
 
-bool watcher_p(mrb_state* mrb, mrb_value v) {
-  return mrb_data_p(v) && DATA_TYPE(v) == &watcher_type;
+bool watcher_p(mrb_state *mrb, mrb_value v)
+{
+    return mrb_data_p(v) && DATA_TYPE(v) == &watcher_type;
 }
 
-unsigned watcher_events_mask(mrb_value v) {
-  return static_cast<const WatcherData*>(DATA_PTR(v))->events;
+unsigned watcher_events_mask(mrb_value v)
+{
+    return static_cast<const WatcherData *>(DATA_PTR(v))->events;
 }
 
-bool watcher_aborted_p(mrb_value v) {
-  return static_cast<const WatcherData*>(DATA_PTR(v))->aborted;
+bool watcher_aborted_p(mrb_value v)
+{
+    return static_cast<const WatcherData *>(DATA_PTR(v))->aborted;
 }
 
-double watcher_timeout(mrb_value v) {
-  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->timeout : 0.0;
+double watcher_timeout(mrb_value v)
+{
+    const auto *d = static_cast<const WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->timeout : 0.0;
 }
 
 // The block, run under mrb_protect_error: a raise inside it comes back
@@ -242,265 +268,322 @@ double watcher_timeout(mrb_value v) {
 // has given up, so the watcher is aborted and the exception is its
 // answer. The run that resumes raises it again, and the 500 page and
 // the error log carry the message.
-namespace {
+namespace
+{
 struct BlockRun {
-  mrb_value block;
-  mrb_value argv[2];
+    mrb_value block;
+    mrb_value argv[2];
 };
 
-mrb_value block_run_body(mrb_state* mrb, void* ud) {
-  const BlockRun* b = static_cast<const BlockRun*>(ud);
-  return mrb_yield_argv(mrb, b->block, 2, b->argv);
+mrb_value block_run_body(mrb_state *mrb, void *ud)
+{
+    const BlockRun *b = static_cast<const BlockRun *>(ud);
+    return mrb_yield_argv(mrb, b->block, 2, b->argv);
 }
 
-mrb_value run_block(mrb_state* mrb, mrb_value watcher, mrb_value event) {
-  BlockRun b{mrb_iv_get(mrb, watcher, MRB_IVSYM(block)), {event, watcher}};
-  mrb_bool raised = FALSE;
-  const mrb_value answer = mrb_protect_error(mrb, block_run_body, &b, &raised);
-  if (raised) live(mrb, watcher)->aborted = true;
-  return answer;
+mrb_value run_block(mrb_state *mrb, mrb_value watcher, mrb_value event)
+{
+    BlockRun b{mrb_iv_get(mrb, watcher, MRB_IVSYM(block)), {event, watcher}};
+    mrb_bool raised = FALSE;
+    const mrb_value answer = mrb_protect_error(mrb, block_run_body, &b, &raised);
+    if (raised)
+        live(mrb, watcher)->aborted = true;
+    return answer;
 }
-}  // namespace
+} // namespace
 
 // The deadline, delivered. The answer says whether the wait goes on, and
 // `said` takes the block's own value - a watcher that gives up still has
 // something to say, and dropping it would make every timeout answer nil.
-bool watcher_deadline_passed(mrb_state* mrb, mrb_value v, mrb_value* said) {
-  const mrb_value answer = run_block(mrb, v, mrb_symbol_value(MRB_SYM(timeout)));
-  if (said != nullptr) *said = answer;
-  // The block can abort, and abort frees nothing - the CDATA is still
-  // here, so it is read after the call and not before.
-  return !live(mrb, v)->aborted;
+bool watcher_deadline_passed(mrb_state *mrb, mrb_value v, mrb_value *said)
+{
+    const mrb_value answer = run_block(mrb, v, mrb_symbol_value(MRB_SYM(timeout)));
+    if (said != nullptr)
+        *said = answer;
+    // The block can abort, and abort frees nothing - the CDATA is still
+    // here, so it is read after the call and not before.
+    return !live(mrb, v)->aborted;
 }
 
-int watcher_fd(mrb_value v) {
-  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->fd : -1;
+int watcher_fd(mrb_value v)
+{
+    const auto *d = static_cast<const WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->fd : -1;
 }
 
-int watcher_slot(mrb_value v) {
-  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->slot : -1;
+int watcher_slot(mrb_value v)
+{
+    const auto *d = static_cast<const WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->slot : -1;
 }
 
-int64_t watcher_deadline_at(mrb_value v) {
-  const WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->deadline_at : 0;
+int64_t watcher_deadline_at(mrb_value v)
+{
+    const WatcherData *const d = static_cast<WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->deadline_at : 0;
 }
 
-void watcher_set_deadline_at(mrb_value v, int64_t at) {
-  static_cast<WatcherData*>(DATA_PTR(v))->deadline_at = at;
+void watcher_set_deadline_at(mrb_value v, int64_t at)
+{
+    static_cast<WatcherData *>(DATA_PTR(v))->deadline_at = at;
 }
 
 // #30: the round this watcher answers into. Both stay in this file:
 // nothing outside it asks a watcher which round it belongs to.
-Http1::Conn::Round* watcher_round(mrb_value v) {
-  WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->round : nullptr;
+Http1::Conn::Round *watcher_round(mrb_value v)
+{
+    WatcherData *const d = static_cast<WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->round : nullptr;
 }
 
-void watcher_set_round(mrb_value v, Http1::Conn::Round* r) {
-  static_cast<WatcherData*>(DATA_PTR(v))->round = r;
+void watcher_set_round(mrb_value v, Http1::Conn::Round *r)
+{
+    static_cast<WatcherData *>(DATA_PTR(v))->round = r;
 }
 
-Resource::RunState* watcher_run(mrb_value v) {
-  WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->run : nullptr;
+Resource::RunState *watcher_run(mrb_value v)
+{
+    WatcherData *const d = static_cast<WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->run : nullptr;
 }
 
-void watcher_set_run(mrb_value v, Resource::RunState* run) {
-  static_cast<WatcherData*>(DATA_PTR(v))->run = run;
+void watcher_set_run(mrb_value v, Resource::RunState *run)
+{
+    static_cast<WatcherData *>(DATA_PTR(v))->run = run;
 }
 
-int watcher_job(mrb_value v) {
-  const WatcherData* const d = static_cast<WatcherData*>(DATA_PTR(v));
-  return d != nullptr ? d->job : 0;
+int watcher_job(mrb_value v)
+{
+    const WatcherData *const d = static_cast<WatcherData *>(DATA_PTR(v));
+    return d != nullptr ? d->job : 0;
 }
 
-void watcher_set_job(mrb_value v, int job) {
-  static_cast<WatcherData*>(DATA_PTR(v))->job = job;
+void watcher_set_job(mrb_value v, int job)
+{
+    static_cast<WatcherData *>(DATA_PTR(v))->job = job;
 }
 
-void watcher_set_slot(mrb_value v, int slot) {
-  static_cast<WatcherData*>(DATA_PTR(v))->slot = slot;
+void watcher_set_slot(mrb_value v, int slot)
+{
+    static_cast<WatcherData *>(DATA_PTR(v))->slot = slot;
 }
 
-void watcher_armed(mrb_value v, struct io_uring* ring, uint64_t tag) {
-  auto* d = static_cast<WatcherData*>(DATA_PTR(v));
-  d->ring = ring;
-  d->tag = tag;
-  d->armed = true;
+void watcher_armed(mrb_value v, struct io_uring *ring, uint64_t tag)
+{
+    auto *d = static_cast<WatcherData *>(DATA_PTR(v));
+    d->ring = ring;
+    d->tag = tag;
+    d->armed = true;
 }
 
 // The poll completed, or was removed: nothing is in the ring for it.
-void watcher_unarmed(mrb_value v) {
-  auto* d = static_cast<WatcherData*>(DATA_PTR(v));
-  if (d != nullptr) d->armed = false;
+void watcher_unarmed(mrb_value v)
+{
+    auto *d = static_cast<WatcherData *>(DATA_PTR(v));
+    if (d != nullptr)
+        d->armed = false;
 }
 
-uint64_t watcher_armed_tag(mrb_value v) {
-  const auto* d = static_cast<const WatcherData*>(DATA_PTR(v));
-  return d != nullptr && d->armed ? d->tag : 0;
+uint64_t watcher_armed_tag(mrb_value v)
+{
+    const auto *d = static_cast<const WatcherData *>(DATA_PTR(v));
+    return d != nullptr && d->armed ? d->tag : 0;
 }
 
 // Empties the CDATA after the caller has cancelled, so watcher_free
 // finds nothing.
-void watcher_disarm(mrb_value v) {
-  auto* d = static_cast<WatcherData*>(DATA_PTR(v));
-  if (d == nullptr) return;
-  delete d;
-  DATA_PTR(v) = nullptr;
-  DATA_TYPE(v) = nullptr;
+void watcher_disarm(mrb_value v)
+{
+    auto *d = static_cast<WatcherData *>(DATA_PTR(v));
+    if (d == nullptr)
+        return;
+    delete d;
+    DATA_PTR(v) = nullptr;
+    DATA_TYPE(v) = nullptr;
 }
 
-mrb_value watcher_source_of(mrb_state* mrb, mrb_value v) {
-  return mrb_iv_get(mrb, v, MRB_IVSYM(source));
+mrb_value watcher_source_of(mrb_state *mrb, mrb_value v)
+{
+    return mrb_iv_get(mrb, v, MRB_IVSYM(source));
 }
 
-mrb_value watcher_block_of(mrb_state* mrb, mrb_value v) {
-  return mrb_iv_get(mrb, v, MRB_IVSYM(block));
+mrb_value watcher_block_of(mrb_state *mrb, mrb_value v)
+{
+    return mrb_iv_get(mrb, v, MRB_IVSYM(block));
 }
 
-void watcher_init_class(mrb_state* mrb, struct RClass* wm) {
-  struct RClass* c = mrb_define_class_under_id(mrb, wm, MRB_SYM(Watcher), mrb->object_class);
-  MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
-  mrb_define_method_id(mrb, c, MRB_SYM(initialize), watcher_init,
-                       MRB_ARGS_ARG(1, 1) | MRB_ARGS_KEY(1, 0) | MRB_ARGS_BLOCK());
-  mrb_define_method_id(mrb, c, MRB_SYM(source), watcher_source, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM(block), watcher_block, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM(events), watcher_events, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM_E(events), watcher_events_set, MRB_ARGS_REQ(1));
-  mrb_define_method_id(mrb, c, MRB_SYM(abort), watcher_abort, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM_Q(aborted), watcher_aborted, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM(timeout), watcher_timeout_m, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, c, MRB_SYM(deadline_passed), watcher_deadline_passed_m,
-                       MRB_ARGS_NONE());
+void watcher_init_class(mrb_state *mrb, struct RClass *wm)
+{
+    struct RClass *c = mrb_define_class_under_id(mrb, wm, MRB_SYM(Watcher), mrb->object_class);
+    MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
+    mrb_define_method_id(mrb, c, MRB_SYM(initialize), watcher_init,
+                         MRB_ARGS_ARG(1, 1) | MRB_ARGS_KEY(1, 0) | MRB_ARGS_BLOCK());
+    mrb_define_method_id(mrb, c, MRB_SYM(source), watcher_source, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM(block), watcher_block, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM(events), watcher_events, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM_E(events), watcher_events_set, MRB_ARGS_REQ(1));
+    mrb_define_method_id(mrb, c, MRB_SYM(abort), watcher_abort, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM_Q(aborted), watcher_aborted, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM(timeout), watcher_timeout_m, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, c, MRB_SYM(deadline_passed), watcher_deadline_passed_m,
+                         MRB_ARGS_NONE());
 }
 
-}  // namespace webmachine
+} // namespace webmachine
 
 // #30: the reactor's half. Everything above describes a watcher; this
 // is what the server does with one, and it runs on the reactor's thread
 // with the reactor's VM - the same rule the compute task follows.
-namespace webmachine {
+namespace webmachine
+{
 
 // The watcher a stopped run left, filed under a slot on the connection.
 // The connection's hash is what roots it: the run's own frame is gone
 // one line later, and a watcher nobody holds is collected while the
 // descriptor is still in the ring.
-bool Http1::watch_hand_over(Conn& st, Conn::Round& round, int park, const Resource& res) {
-  (void)park;
-  if (res.run.watch_count == 0) return false;
-  // Every watcher of the round takes a job of its own, after the tasks
-  // a worker answers. A connection that can hold no more says so, and
-  // the run is answered rather than left waiting.
-  for (uint8_t i = 0; i < res.run.watch_count; i++) {
-    const int slot = st.watchers_add(res.mrb, res.run.watch[i]);
-    if (slot < 0) return false;
-    const int job = static_cast<int>(round.jobs_owed);
-    if (job >= Conn::kJobSlots) return false;
-    watcher_set_job(res.run.watch[i], job);
-    watcher_set_round(res.run.watch[i], &round);
-    round.w_slot.at(job) = slot;
-    round.job_what.at(job) = res.run.watch_what[i];
-    round.jobs_owed = static_cast<uint8_t>(job + 1);
-  }
-  return true;
+bool Http1::watch_hand_over(Conn &st, Conn::Round &round, int park, const Resource &res)
+{
+    (void)park;
+    if (res.run.watch_count == 0)
+        return false;
+    // Every watcher of the round takes a job of its own, after the tasks
+    // a worker answers. A connection that can hold no more says so, and
+    // the run is answered rather than left waiting.
+    for (uint8_t i = 0; i < res.run.watch_count; i++) {
+        const int slot = st.watchers_add(res.mrb, res.run.watch[i]);
+        if (slot < 0)
+            return false;
+        const int job = static_cast<int>(round.jobs_owed);
+        if (job >= Conn::kJobSlots)
+            return false;
+        watcher_set_job(res.run.watch[i], job);
+        watcher_set_round(res.run.watch[i], &round);
+        round.w_slot.at(job) = slot;
+        round.job_what.at(job) = res.run.watch_what[i];
+        round.jobs_owed = static_cast<uint8_t>(job + 1);
+    }
+    return true;
 }
 
 // #30: one job of the round answered. The run goes on when the last one
 // does - a single watcher ends its round at once.
-void Http1::round_answered(Conn::Round& r, int job, mrb_value v) {
-  if (job < 0 || job >= Conn::kJobSlots) return;
-  r.answer_value.at(job) = v;
-  if (r.jobs_answered < r.jobs_owed) r.jobs_answered++;
-  r.answer_ready = r.jobs_owed == 0 || r.jobs_answered >= r.jobs_owed;
+void Http1::round_answered(Conn::Round &r, int job, mrb_value v)
+{
+    if (job < 0 || job >= Conn::kJobSlots)
+        return;
+    r.answer_value.at(job) = v;
+    if (r.jobs_answered < r.jobs_owed)
+        r.jobs_answered++;
+    r.answer_ready = r.jobs_owed == 0 || r.jobs_answered >= r.jobs_owed;
 }
 
 // #30: every watcher of this stop, told where its run waits. The frame
 // says so after the park, because only then does it hold its own state.
-void Http1::watch_run_is(Conn& st, Conn::Round& round, Resource::RunState* run) {
-  for (const int slot : round.w_slot) {
-    if (slot < 0) continue;
+void Http1::watch_run_is(Conn &st, Conn::Round &round, Resource::RunState *run)
+{
+    for (const int slot : round.w_slot) {
+        if (slot < 0)
+            continue;
+        const mrb_value w = st.watchers_at(slot);
+        if (!mrb_nil_p(w))
+            watcher_set_run(w, run);
+    }
+}
+
+int Http1::watcher_descriptor(Conn &st, int slot)
+{
     const mrb_value w = st.watchers_at(slot);
-    if (!mrb_nil_p(w)) watcher_set_run(w, run);
-  }
+    return mrb_nil_p(w) ? -1 : watcher_fd(w);
 }
 
-int Http1::watcher_descriptor(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  return mrb_nil_p(w) ? -1 : watcher_fd(w);
+void Http1::watcher_is_armed(Conn &st, int slot, struct io_uring *ring, uint64_t tag)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (!mrb_nil_p(w))
+        watcher_armed(w, ring, tag);
 }
 
-void Http1::watcher_is_armed(Conn& st, int slot, struct io_uring* ring, uint64_t tag) {
-  const mrb_value w = st.watchers_at(slot);
-  if (!mrb_nil_p(w)) watcher_armed(w, ring, tag);
+void Http1::watcher_is_unarmed(Conn &st, int slot)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (!mrb_nil_p(w))
+        watcher_unarmed(w);
 }
 
-void Http1::watcher_is_unarmed(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  if (!mrb_nil_p(w)) watcher_unarmed(w);
-}
-
-uint64_t Http1::watcher_poll_tag(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  return mrb_nil_p(w) ? 0 : watcher_armed_tag(w);
+uint64_t Http1::watcher_poll_tag(Conn &st, int slot)
+{
+    const mrb_value w = st.watchers_at(slot);
+    return mrb_nil_p(w) ? 0 : watcher_armed_tag(w);
 }
 
 // The wait is over, however it ended. The watcher goes, and with it the
 // descriptor's place in the ring.
-void Http1::watchers_drop_slot(Conn& st, int slot) {
-  // The round this watcher answered stops naming it. Which round that
-  // is, the watcher itself says - a connection can hold several.
-  const mrb_value w = st.watchers_at(slot);
-  Conn::Round* const r = mrb_nil_p(w) ? nullptr : watcher_round(w);
-  if (r != nullptr) {
-    for (int& at : r->w_slot) {
-      if (at == slot) at = -1;
+void Http1::watchers_drop_slot(Conn &st, int slot)
+{
+    // The round this watcher answered stops naming it. Which round that
+    // is, the watcher itself says - a connection can hold several.
+    const mrb_value w = st.watchers_at(slot);
+    Conn::Round *const r = mrb_nil_p(w) ? nullptr : watcher_round(w);
+    if (r != nullptr) {
+        for (int &at : r->w_slot) {
+            if (at == slot)
+                at = -1;
+        }
     }
-  }
-  st.watchers_drop(slot);
+    st.watchers_drop(slot);
 }
 
-void Http1::watcher_armed_at(Conn& st, int slot, int64_t at) {
-  const mrb_value w = st.watchers_at(slot);
-  if (!mrb_nil_p(w)) watcher_set_deadline_at(w, at);
+void Http1::watcher_armed_at(Conn &st, int slot, int64_t at)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (!mrb_nil_p(w))
+        watcher_set_deadline_at(w, at);
 }
 
-int64_t Http1::watchers_soonest_deadline(Conn& st) {
-  int64_t soonest = 0;
-  for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
-    const mrb_value w = st.watchers_at(i);
-    if (mrb_nil_p(w)) continue;
-    const int64_t at = watcher_deadline_at(w);
-    if (at != 0 && (soonest == 0 || at < soonest)) soonest = at;
-  }
-  return soonest;
+int64_t Http1::watchers_soonest_deadline(Conn &st)
+{
+    int64_t soonest = 0;
+    for (int i = 0; i < static_cast<int>(kMaxWatchers); i++) {
+        const mrb_value w = st.watchers_at(i);
+        if (mrb_nil_p(w))
+            continue;
+        const int64_t at = watcher_deadline_at(w);
+        if (at != 0 && (soonest == 0 || at < soonest))
+            soonest = at;
+    }
+    return soonest;
 }
 
-size_t Http1::watchers_over_deadline(Conn& st, int64_t now, int* slots, size_t max) {
-  size_t n = 0;
-  for (int i = 0; i < static_cast<int>(kMaxWatchers) && n < max; i++) {
-    const mrb_value w = st.watchers_at(i);
-    if (mrb_nil_p(w)) continue;
-    const int64_t at = watcher_deadline_at(w);
-    if (at == 0 || at >= now) continue;
-    watcher_set_deadline_at(w, 0);
-    slots[n++] = i;
-  }
-  return n;
+size_t Http1::watchers_over_deadline(Conn &st, int64_t now, int *slots, size_t max)
+{
+    size_t n = 0;
+    for (int i = 0; i < static_cast<int>(kMaxWatchers) && n < max; i++) {
+        const mrb_value w = st.watchers_at(i);
+        if (mrb_nil_p(w))
+            continue;
+        const int64_t at = watcher_deadline_at(w);
+        if (at == 0 || at >= now)
+            continue;
+        watcher_set_deadline_at(w, 0);
+        slots[n++] = i;
+    }
+    return n;
 }
 
-unsigned Http1::watcher_mask(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  if (mrb_nil_p(w)) return 0;
-  return watcher_events_mask(w);
+unsigned Http1::watcher_mask(Conn &st, int slot)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (mrb_nil_p(w))
+        return 0;
+    return watcher_events_mask(w);
 }
 
-double Http1::watcher_quiet_seconds(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  if (mrb_nil_p(w)) return 0.0;
-  return watcher_timeout(w);
+double Http1::watcher_quiet_seconds(Conn &st, int slot)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (mrb_nil_p(w))
+        return 0.0;
+    return watcher_timeout(w);
 }
 
 // #30: the run this watcher belongs to, for as long as its block runs.
@@ -512,87 +595,97 @@ double Http1::watcher_quiet_seconds(Conn& st, int slot) {
 // and the run that resumes finds it. The reactor answers no other
 // connection in the middle of a block, so one run at a time holds it.
 struct RunLent {
-  const Resource* res = nullptr;
-  Resource::RunState* from = nullptr;
-  RunLent(const Resource* r, Resource::RunState* parked) {
-    if (r == nullptr || parked == nullptr) return;
-    res = r;
-    from = parked;
-    // What the last request on this route left here. The move below
-    // takes it away and the destructor zeroes what is left, so the
-    // root it holds would never be given back - one object pinned for
-    // the life of the process, per watcher event.
-    resource_forget_userdata(*res);
-    res->run = std::move(*from);
-    request_bind(res->run.req);
-    response_bind(res);
-  }
-  ~RunLent() {
-    if (res == nullptr) return;
-    request_bind(nullptr);
-    response_bind(nullptr);
-    *from = std::move(res->run);
-    res->run = Resource::RunState{};
-  }
-  RunLent(const RunLent&) = delete;
-  RunLent& operator=(const RunLent&) = delete;
+    const Resource *res = nullptr;
+    Resource::RunState *from = nullptr;
+    RunLent(const Resource *r, Resource::RunState *parked)
+    {
+        if (r == nullptr || parked == nullptr)
+            return;
+        res = r;
+        from = parked;
+        // What the last request on this route left here. The move below
+        // takes it away and the destructor zeroes what is left, so the
+        // root it holds would never be given back - one object pinned for
+        // the life of the process, per watcher event.
+        resource_forget_userdata(*res);
+        res->run = std::move(*from);
+        request_bind(res->run.req);
+        response_bind(res);
+    }
+    ~RunLent()
+    {
+        if (res == nullptr)
+            return;
+        request_bind(nullptr);
+        response_bind(nullptr);
+        *from = std::move(res->run);
+        res->run = Resource::RunState{};
+    }
+    RunLent(const RunLent &) = delete;
+    RunLent &operator=(const RunLent &) = delete;
 };
 
-Http1::WatchStep Http1::watcher_event(Conn& st, int slot, unsigned revents) {
-  const mrb_value w = st.watchers_at(slot);
-  if (mrb_nil_p(w)) return WatchStep::kDone;
-  mrb_state* const mrb = st.w_mrb;
-  const int ai = mrb_gc_arena_save(mrb);
-  const unsigned before = watcher_events_mask(w);
-  // #30: the block belongs to a run that is parked, and `response[:key]`
-  // is that run's scratch. It lives on the connection for this reason -
-  // the run's own state travelled with the frame.
-  mrb_value said;
-  {
-    const Conn::Round* const own = watcher_round(w);
-    const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
-    said = run_block(mrb, w, sym_of(mrb, revents));
-  }
-  if (watcher_aborted_p(w)) {
-    // Root it first. The block's answer is held by the arena and by
-    // nothing else; restoring the arena before registering it hands the
-    // collector a value the run is about to read.
-    Conn::Round* const r = watcher_round(w);
-    if (r != nullptr) round_answered(*r, watcher_job(w), said);
-    mrb_gc_register(mrb, said);
+Http1::WatchStep Http1::watcher_event(Conn &st, int slot, unsigned revents)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (mrb_nil_p(w))
+        return WatchStep::kDone;
+    mrb_state *const mrb = st.w_mrb;
+    const int ai = mrb_gc_arena_save(mrb);
+    const unsigned before = watcher_events_mask(w);
+    // #30: the block belongs to a run that is parked, and `response[:key]`
+    // is that run's scratch. It lives on the connection for this reason -
+    // the run's own state travelled with the frame.
+    mrb_value said;
+    {
+        const Conn::Round *const own = watcher_round(w);
+        const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
+        said = run_block(mrb, w, sym_of(mrb, revents));
+    }
+    if (watcher_aborted_p(w)) {
+        // Root it first. The block's answer is held by the arena and by
+        // nothing else; restoring the arena before registering it hands the
+        // collector a value the run is about to read.
+        Conn::Round *const r = watcher_round(w);
+        if (r != nullptr)
+            round_answered(*r, watcher_job(w), said);
+        mrb_gc_register(mrb, said);
+        mrb_gc_arena_restore(mrb, ai);
+        return WatchStep::kDone;
+    }
     mrb_gc_arena_restore(mrb, ai);
-    return WatchStep::kDone;
-  }
-  mrb_gc_arena_restore(mrb, ai);
-  return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
+    return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
 }
 
-Http1::WatchStep Http1::watcher_deadline(Conn& st, int slot) {
-  const mrb_value w = st.watchers_at(slot);
-  if (mrb_nil_p(w)) return WatchStep::kDone;
-  mrb_state* const mrb = st.w_mrb;
-  const int ai = mrb_gc_arena_save(mrb);
-  const unsigned before = watcher_events_mask(w);
-  // The block hears :timeout and answers whether the wait goes on. A
-  // watcher over its deadline is usually the world - the peer said
-  // nothing - and that is a fact the application has to learn, not a
-  // failure of its own.
-  mrb_value said = mrb_nil_value();
-  bool again;
-  {
-    const Conn::Round* const own = watcher_round(w);
-    const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
-    again = watcher_deadline_passed(mrb, w, &said);
-  }
-  if (!again) {
-    Conn::Round* const r = watcher_round(w);
-    if (r != nullptr) round_answered(*r, watcher_job(w), said);
-    mrb_gc_register(mrb, said);
+Http1::WatchStep Http1::watcher_deadline(Conn &st, int slot)
+{
+    const mrb_value w = st.watchers_at(slot);
+    if (mrb_nil_p(w))
+        return WatchStep::kDone;
+    mrb_state *const mrb = st.w_mrb;
+    const int ai = mrb_gc_arena_save(mrb);
+    const unsigned before = watcher_events_mask(w);
+    // The block hears :timeout and answers whether the wait goes on. A
+    // watcher over its deadline is usually the world - the peer said
+    // nothing - and that is a fact the application has to learn, not a
+    // failure of its own.
+    mrb_value said = mrb_nil_value();
+    bool again;
+    {
+        const Conn::Round *const own = watcher_round(w);
+        const RunLent lent(own != nullptr ? own->job_res : nullptr, watcher_run(w));
+        again = watcher_deadline_passed(mrb, w, &said);
+    }
+    if (!again) {
+        Conn::Round *const r = watcher_round(w);
+        if (r != nullptr)
+            round_answered(*r, watcher_job(w), said);
+        mrb_gc_register(mrb, said);
+        mrb_gc_arena_restore(mrb, ai);
+        return WatchStep::kDone;
+    }
     mrb_gc_arena_restore(mrb, ai);
-    return WatchStep::kDone;
-  }
-  mrb_gc_arena_restore(mrb, ai);
-  return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
+    return watcher_events_mask(w) != before ? WatchStep::kRearm : WatchStep::kWait;
 }
 
-}  // namespace webmachine
+} // namespace webmachine

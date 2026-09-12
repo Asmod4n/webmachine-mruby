@@ -40,7 +40,8 @@
 
 #include "../../src/webmachine.hpp"
 
-namespace {
+namespace
+{
 // The body all four resources answer with - one literal, so a byte
 // difference on the wire can only come from the dispatch, never from
 // the payload. examples/cpp_resource.rb spells the same string.
@@ -49,140 +50,146 @@ const char kBody[] = "<html><body>Hello from a C++ resource</body></html>";
 // webmachine: a native callback takes its arguments as arguments. It
 // never calls mrb_get_args, which is exactly what allows the engine to
 // enter it without pushing a callinfo first.
-mrb_value body_html(mrb_state* mrb, mrb_value, mrb_int, const mrb_value*) {
-  return mrb_str_new_lit(mrb, "<html><body>Hello from a C++ resource</body></html>");
+mrb_value body_html(mrb_state *mrb, mrb_value, mrb_int, const mrb_value *)
+{
+    return mrb_str_new_lit(mrb, "<html><body>Hello from a C++ resource</body></html>");
 }
 
 // webmachine-ruby allowed_methods: the list this resource answers.
-mrb_value allowed_methods(mrb_state* mrb, mrb_value, mrb_int, const mrb_value*) {
-  mrb_value a = mrb_ary_new_capa(mrb, 3);
-  mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "GET"));
-  mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "HEAD"));
-  mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "OPTIONS"));
-  return a;
+mrb_value allowed_methods(mrb_state *mrb, mrb_value, mrb_int, const mrb_value *)
+{
+    mrb_value a = mrb_ary_new_capa(mrb, 3);
+    mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "GET"));
+    mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "HEAD"));
+    mrb_ary_push(mrb, a, mrb_str_new_lit(mrb, "OPTIONS"));
+    return a;
 }
 
 // webmachine-ruby generate_etag: RFC 9110 8.8.3, spelled by the writer.
-mrb_value generate_etag(mrb_state* mrb, mrb_value, mrb_int, const mrb_value*) {
-  return mrb_str_new_lit(mrb, "v1");
+mrb_value generate_etag(mrb_state *mrb, mrb_value, mrb_int, const mrb_value *)
+{
+    return mrb_str_new_lit(mrb, "v1");
 }
 
 // The two C++ resources. A subclass of Webmachine::Resource is all a
 // route needs; define_native is what makes its methods the cheap tier.
-void define_resources(mrb_state* mrb) {
-  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-  struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
+void define_resources(mrb_state *mrb)
+{
+    struct RClass *wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    struct RClass *base = mrb_class_get_under_id(mrb, wm, MRB_SYM(Resource));
 
-  // Static: the method lives on the class, so the fold runs it once and
-  // bakes the String. Registering it natively saves that ONE call - the
-  // point here is that the wire answer is identical to Ruby's.
-  struct RClass* konst = mrb_define_class_id(mrb, MRB_SYM(CppKonst), base);
-  webmachine::define_native(mrb, mrb_singleton_class_ptr(mrb, mrb_obj_value(konst)),
-                            {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
+    // Static: the method lives on the class, so the fold runs it once and
+    // bakes the String. Registering it natively saves that ONE call - the
+    // point here is that the wire answer is identical to Ruby's.
+    struct RClass *konst = mrb_define_class_id(mrb, MRB_SYM(CppKonst), base);
+    webmachine::define_native(mrb, mrb_singleton_class_ptr(mrb, mrb_obj_value(konst)),
+                              {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
 
-  // Dynamic: instance methods, run per request.
-  struct RClass* run = mrb_define_class_id(mrb, MRB_SYM(CppRun), base);
-  webmachine::define_native(mrb, run, {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
-  webmachine::define_native(mrb, run,
-                            {MRB_SYM(allowed_methods), allowed_methods, MRB_ARGS_NONE()});
-  webmachine::define_native(mrb, run,
-                            {MRB_SYM(generate_etag), generate_etag, MRB_ARGS_NONE()});
+    // Dynamic: instance methods, run per request.
+    struct RClass *run = mrb_define_class_id(mrb, MRB_SYM(CppRun), base);
+    webmachine::define_native(mrb, run, {MRB_SYM(to_html), body_html, MRB_ARGS_NONE()});
+    webmachine::define_native(mrb, run,
+                              {MRB_SYM(allowed_methods), allowed_methods, MRB_ARGS_NONE()});
+    webmachine::define_native(mrb, run, {MRB_SYM(generate_etag), generate_etag, MRB_ARGS_NONE()});
 }
 
-}
+} // namespace
 
 // The CLI is the server's, minus every knob an example does not need.
 // What this invocation serves, and what it needs to say so.
 struct Invocation {
-  webmachine::ServerOptions opts;
-  int argc = 0;
-  char** argv = nullptr;
+    webmachine::ServerOptions opts;
+    int argc = 0;
+    char **argv = nullptr;
 };
 
 // What the example serves, once the VM is up. TypedArgs parses the
 // command line in Ruby, so a malformed flag is a raise like every other
 // start-up refusal.
-int serve(mrb_state* mrb, Invocation& in) {
-  webmachine::ServerOptions& opts = in.opts;
+int serve(mrb_state *mrb, Invocation &in)
+{
+    webmachine::ServerOptions &opts = in.opts;
 
-  mrb_value av = mrb_ary_new_capa(mrb, in.argc > 1 ? in.argc - 1 : 0);
-  for (int i = 1; i < in.argc; i++) {
-    mrb_ary_push(mrb, av, mrb_str_new_static_frozen(mrb, in.argv[i], std::strlen(in.argv[i])));
-  }
-  mrb_obj_freeze(mrb, av);
-  mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(ARGV), av);
+    mrb_value av = mrb_ary_new_capa(mrb, in.argc > 1 ? in.argc - 1 : 0);
+    for (int i = 1; i < in.argc; i++) {
+        mrb_ary_push(mrb, av, mrb_str_new_static_frozen(mrb, in.argv[i], std::strlen(in.argv[i])));
+    }
+    mrb_obj_freeze(mrb, av);
+    mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(ARGV), av);
 
-  const mrb_value h = mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get(mrb, "TypedArgs")),
-                                     MRB_SYM(opts), 0);
-  mrb_gc_register(mrb, h);
+    const mrb_value h =
+        mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get(mrb, "TypedArgs")), MRB_SYM(opts), 0);
+    mrb_gc_register(mrb, h);
 
-  const mrb_value app = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "app"));
-  if (!mrb_string_p(app)) {
-    std::fprintf(stderr,
-                 "usage: webmachine-example --app=examples/cpp_resource.mrb\n"
-                 "\n"
-                 "The app names its listener in its conf. It routes CppKonst and\n"
-                 "CppRun - defined in C++, in this binary - beside their Ruby\n"
-                 "twins, so the same bytes can be asked for over both.\n");
-    return 1;
-  }
-  opts.app_path = mrb_string_cstr(mrb, app);
+    const mrb_value app = mrb_hash_get(mrb, h, mrb_str_new_lit(mrb, "app"));
+    if (!mrb_string_p(app)) {
+        std::fprintf(stderr, "usage: webmachine-example --app=examples/cpp_resource.mrb\n"
+                             "\n"
+                             "The app names its listener in its conf. It routes CppKonst and\n"
+                             "CppRun - defined in C++, in this binary - beside their Ruby\n"
+                             "twins, so the same bytes can be asked for over both.\n");
+        return 1;
+    }
+    opts.app_path = mrb_string_cstr(mrb, app);
 
-  // main() blocked these before it made a thread. The fd is the only
-  // reader; this process installs no signal handler.
-  sigset_t mask;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGTERM);
-  sigaddset(&mask, SIGINT);
-  opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
-  webmachine::server_options(opts);
+    // main() blocked these before it made a thread. The fd is the only
+    // reader; this process installs no signal handler.
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGINT);
+    opts.stop_fd = signalfd(-1, &mask, SFD_CLOEXEC);
+    webmachine::server_options(opts);
 
-  webmachine::app_load(mrb, opts.app_path);
-  if (webmachine::server_entered()) return 0;
-  return webmachine::server_run(mrb);
+    webmachine::app_load(mrb, opts.app_path);
+    if (webmachine::server_entered())
+        return 0;
+    return webmachine::server_run(mrb);
 }
 
 // The same frame tools/webmachine-server/main.cpp spells: every step
 // after mrb_open raises to refuse, and the catch is where a raise lands.
-int main(int argc, char** argv) {
-  Invocation in;
-  sigset_t stop_signals;
-  mrb_state* mrb = nullptr;
-  mrb_jmpbuf frame;
-  int rc = 0;
+int main(int argc, char **argv)
+{
+    Invocation in;
+    sigset_t stop_signals;
+    mrb_state *mrb = nullptr;
+    mrb_jmpbuf frame;
+    int rc = 0;
 
-  in.argc = argc;
-  in.argv = argv;
+    in.argc = argc;
+    in.argv = argv;
 
-  // Before the first thread: mrb_open() makes one, and a thread inherits
-  // the mask of the thread that makes it.
-  sigemptyset(&stop_signals);
-  sigaddset(&stop_signals, SIGTERM);
-  sigaddset(&stop_signals, SIGINT);
-  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
+    // Before the first thread: mrb_open() makes one, and a thread inherits
+    // the mask of the thread that makes it.
+    sigemptyset(&stop_signals);
+    sigaddset(&stop_signals, SIGTERM);
+    sigaddset(&stop_signals, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
-  mrb = mrb_open();
-  if (mrb == nullptr) {
-    std::fprintf(stderr, "webmachine-example: mrb_open failed\n");
-    return 1;
-  }
-  mrb->jmp = &frame;
-  try {
-    if (mrb->exc != nullptr) mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
-    define_resources(mrb);
-    rc = serve(mrb, in);
-  } catch (mrb_jmpbuf*) {
-    mrb_print_error(mrb);
-    mrb->exc = nullptr;
-    rc = 1;
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "webmachine-example: %s\n", e.what());
-    rc = 1;
-  } catch (...) {
-    std::fprintf(stderr, "webmachine-example: an unknown exception ended the start\n");
-    rc = 1;
-  }
-  mrb->jmp = nullptr;
-  mrb_close(mrb);
-  return rc;
+    mrb = mrb_open();
+    if (mrb == nullptr) {
+        std::fprintf(stderr, "webmachine-example: mrb_open failed\n");
+        return 1;
+    }
+    mrb->jmp = &frame;
+    try {
+        if (mrb->exc != nullptr)
+            mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+        define_resources(mrb);
+        rc = serve(mrb, in);
+    } catch (mrb_jmpbuf *) {
+        mrb_print_error(mrb);
+        mrb->exc = nullptr;
+        rc = 1;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "webmachine-example: %s\n", e.what());
+        rc = 1;
+    } catch (...) {
+        std::fprintf(stderr, "webmachine-example: an unknown exception ended the start\n");
+        rc = 1;
+    }
+    mrb->jmp = nullptr;
+    mrb_close(mrb);
+    return rc;
 }

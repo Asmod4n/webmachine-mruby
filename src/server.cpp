@@ -20,13 +20,15 @@
 #include <string>
 #include <vector>
 
-namespace webmachine {
-namespace {
+namespace webmachine
+{
+namespace
+{
 ServerOptions opts_;
-std::vector<AppSpec*> specs_;
-std::vector<std::vector<const Resource*>> resources_;
-std::vector<std::vector<const WsResource*>> ws_resources_;
-std::vector<std::vector<const SseResource*>> sse_resources_;
+std::vector<AppSpec *> specs_;
+std::vector<std::vector<const Resource *>> resources_;
+std::vector<std::vector<const WsResource *>> ws_resources_;
+std::vector<std::vector<const SseResource *>> sse_resources_;
 int log_fd_ = -1;
 int err_fd_ = -1;
 Assets assets_;
@@ -43,15 +45,16 @@ std::string error_assets_note_;
 // Assets::open, and what it opens: the pack, its path, and the media
 // types every entry's Content-Type comes from.
 struct OpenPack {
-  Assets* pack;
-  const char* path;
-  const MimeDb* mime;
+    Assets *pack;
+    const char *path;
+    const MimeDb *mime;
 };
 
-mrb_value open_pack_body(mrb_state* mrb, void* ud) {
-  OpenPack* p = static_cast<OpenPack*>(ud);
-  p->pack->open(mrb, p->path, *p->mime);
-  return mrb_nil_value();
+mrb_value open_pack_body(mrb_state *mrb, void *ud)
+{
+    OpenPack *p = static_cast<OpenPack *>(ud);
+    p->pack->open(mrb, p->path, *p->mime);
+    return mrb_nil_value();
 }
 MimeDb mime_;
 std::unique_ptr<Http1> http_;
@@ -64,51 +67,52 @@ bool entered_ = false;
 // for an error log), and the size at which it rolls. The two call
 // sites say why an access log has a ceiling and an error log has none.
 struct LogdSpawn {
-  const char* mode;
-  const char* path;
-  const char* privacy;
-  unsigned long long max_bytes;
+    const char *mode;
+    const char *path;
+    const char *privacy;
+    unsigned long long max_bytes;
 };
 
-int spawn_logd(mrb_state* mrb, const LogdSpawn& log) {
-  const char* const mode = log.mode;
-  const char* const path = log.path;
-  const char* const privacy = log.privacy;
-  const unsigned long long max_bytes = log.max_bytes;
-  int sp[2];
-  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
-    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: socketpair: %s", mode, std::strerror(errno));
-  }
-  char self[4096];
-  const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
-  std::string logd = "webmachine-logd";
-  if (sl > 0) {
-    self[sl] = '\0';
-    if (char* slash = std::strrchr(self, '/')) {
-      *slash = '\0';
-      logd = std::string(self) + "/webmachine-logd";
+int spawn_logd(mrb_state *mrb, const LogdSpawn &log)
+{
+    const char *const mode = log.mode;
+    const char *const path = log.path;
+    const char *const privacy = log.privacy;
+    const unsigned long long max_bytes = log.max_bytes;
+    int sp[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) {
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: socketpair: %s", mode, std::strerror(errno));
     }
-  }
-  char cap[24];
-  std::snprintf(cap, sizeof cap, "%llu", max_bytes);
-  const pid_t pid = ::fork();
-  if (pid < 0) {
-    const int err = errno;
+    char self[4096];
+    const ssize_t sl = ::readlink("/proc/self/exe", self, sizeof(self) - 1);
+    std::string logd = "webmachine-logd";
+    if (sl > 0) {
+        self[sl] = '\0';
+        if (char *slash = std::strrchr(self, '/')) {
+            *slash = '\0';
+            logd = std::string(self) + "/webmachine-logd";
+        }
+    }
+    char cap[24];
+    std::snprintf(cap, sizeof cap, "%llu", max_bytes);
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        const int err = errno;
+        ::close(sp[0]);
+        ::close(sp[1]);
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: fork: %s", mode, std::strerror(err));
+    }
+    if (pid == 0) {
+        ::dup2(sp[0], 0);
+        ::close(sp[0]);
+        ::close(sp[1]);
+        ::execl(logd.c_str(), "webmachine-logd", mode, path, cap, privacy, (char *)nullptr);
+        std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
+        ::_exit(127);
+    }
     ::close(sp[0]);
-    ::close(sp[1]);
-    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: fork: %s", mode, std::strerror(err));
-  }
-  if (pid == 0) {
-    ::dup2(sp[0], 0);
-    ::close(sp[0]);
-    ::close(sp[1]);
-    ::execl(logd.c_str(), "webmachine-logd", mode, path, cap, privacy, (char*)nullptr);
-    std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
-    ::_exit(127);
-  }
-  ::close(sp[0]);
-  ::signal(SIGCHLD, SIG_IGN);
-  return sp[1];
+    ::signal(SIGCHLD, SIG_IGN);
+    return sp[1];
 }
 
 // The PEM bytes a TLS listener answers with. Read at boot and kept
@@ -119,441 +123,482 @@ std::vector<std::string> pem_;
 // One PEM file: its path, and the conf key that named it, which is what
 // a refusal says back to the operator.
 struct PemFile {
-  const std::string& path;
-  const char* what;
+    const std::string &path;
+    const char *what;
 };
 
-void read_pem(mrb_state* mrb, PemFile f, std::string& out) {
-  const std::string& path = f.path;
-  const char* const what = f.what;
-  std::FILE* fp = std::fopen(path.c_str(), "rb");
-  if (fp == nullptr) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: %s", what, path.c_str(),
-               std::strerror(errno));
-  }
-  out.clear();
-  char buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, fp)) != 0) out.append(buf, n);
-  const bool bad = std::ferror(fp) != 0;
-  std::fclose(fp);
-  if (bad) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: read failed", what, path.c_str());
-  }
-  if (out.empty()) {
-    mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s is empty", what, path.c_str());
-  }
+void read_pem(mrb_state *mrb, PemFile f, std::string &out)
+{
+    const std::string &path = f.path;
+    const char *const what = f.what;
+    std::FILE *fp = std::fopen(path.c_str(), "rb");
+    if (fp == nullptr) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: %s", what, path.c_str(),
+                   std::strerror(errno));
+    }
+    out.clear();
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, fp)) != 0)
+        out.append(buf, n);
+    const bool bad = std::ferror(fp) != 0;
+    std::fclose(fp);
+    if (bad) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: read failed", what, path.c_str());
+    }
+    if (out.empty()) {
+        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s is empty", what, path.c_str());
+    }
 }
 
 // https, a certificate and a key are one decision spelled three ways, so
 // naming any of them means naming all of them.
-void build_listener_tls(mrb_state* mrb, RingConfig& cfg) {
-  pem_.assign(specs_.size() * 2, std::string());
-  for (size_t i = 0; i < specs_.size(); i++) {
-    const AppSpec& spec = *specs_[i];
-    const bool named_files = !spec.cert_path.empty() || !spec.key_path.empty();
-    if (!spec.tls && !named_files) continue;
-    if (!spec.tls) {
-      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                 "application %i names a certificate but its listener is not https - "
-                 "conf.url = \"https://...\" is what turns TLS on",
-                 static_cast<mrb_int>(i));
+void build_listener_tls(mrb_state *mrb, RingConfig &cfg)
+{
+    pem_.assign(specs_.size() * 2, std::string());
+    for (size_t i = 0; i < specs_.size(); i++) {
+        const AppSpec &spec = *specs_[i];
+        const bool named_files = !spec.cert_path.empty() || !spec.key_path.empty();
+        if (!spec.tls && !named_files)
+            continue;
+        if (!spec.tls) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                       "application %i names a certificate but its listener is not https - "
+                       "conf.url = \"https://...\" is what turns TLS on",
+                       static_cast<mrb_int>(i));
+        }
+        if (spec.cert_path.empty() || spec.key_path.empty()) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                       "application %i serves https and needs both conf.certificate and "
+                       "conf.private_key; it named %s",
+                       static_cast<mrb_int>(i),
+                       spec.cert_path.empty() ? "only the key" : "only the certificate");
+        }
+        std::string &cert = pem_[i * 2];
+        std::string &key = pem_[i * 2 + 1];
+        read_pem(mrb, {spec.cert_path, "certificate"}, cert);
+        read_pem(mrb, {spec.key_path, "private_key"}, key);
+        cfg.listeners[i].cert_pem = cert.data();
+        cfg.listeners[i].cert_len = cert.size();
+        cfg.listeners[i].key_pem = key.data();
+        cfg.listeners[i].key_len = key.size();
     }
-    if (spec.cert_path.empty() || spec.key_path.empty()) {
-      mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                 "application %i serves https and needs both conf.certificate and "
-                 "conf.private_key; it named %s",
-                 static_cast<mrb_int>(i),
-                 spec.cert_path.empty() ? "only the key" : "only the certificate");
-    }
-    std::string& cert = pem_[i * 2];
-    std::string& key = pem_[i * 2 + 1];
-    read_pem(mrb, {spec.cert_path, "certificate"}, cert);
-    read_pem(mrb, {spec.key_path, "private_key"}, key);
-    cfg.listeners[i].cert_pem = cert.data();
-    cfg.listeners[i].cert_len = cert.size();
-    cfg.listeners[i].key_pem = key.data();
-    cfg.listeners[i].key_len = key.size();
-  }
 }
 
 // The listener table, in registration order. A standalone server has
 // one application, made by app_assets_only, and --unix or --port is
 // its listener; every other application names its own.
-void build_listeners(mrb_state* mrb, RingConfig& cfg) {
-  cfg.nlisteners = static_cast<uint32_t>(specs_.size());
-  cfg.stop_fd = opts_.stop_fd;
-  if (opts_.standalone_unix_path != nullptr) {
-    cfg.listeners[0].unix_path = opts_.standalone_unix_path;
-    return;
-  }
-  if (opts_.standalone_port != 0) {
-    cfg.listeners[0].port = opts_.standalone_port;
-    return;
-  }
-  for (size_t i = 0; i < specs_.size(); i++) {
-    switch (specs_[i]->form) {
-      case AppSpec::Form::kUnix:
-        cfg.listeners[i].unix_path = specs_[i]->unix_path.c_str();
-        break;
-      case AppSpec::Form::kPort:
-      case AppSpec::Form::kUrl: cfg.listeners[i].port = specs_[i]->port; break;
-      case AppSpec::Form::kNone:
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                   "application %i has no listener - its configure block names one "
-                   "(conf.port / conf.unix_path / conf.url)",
-                   static_cast<mrb_int>(i));
+void build_listeners(mrb_state *mrb, RingConfig &cfg)
+{
+    cfg.nlisteners = static_cast<uint32_t>(specs_.size());
+    cfg.stop_fd = opts_.stop_fd;
+    if (opts_.standalone_unix_path != nullptr) {
+        cfg.listeners[0].unix_path = opts_.standalone_unix_path;
+        return;
     }
-  }
+    if (opts_.standalone_port != 0) {
+        cfg.listeners[0].port = opts_.standalone_port;
+        return;
+    }
+    for (size_t i = 0; i < specs_.size(); i++) {
+        switch (specs_[i]->form) {
+            case AppSpec::Form::kUnix:
+                cfg.listeners[i].unix_path = specs_[i]->unix_path.c_str();
+                break;
+            case AppSpec::Form::kPort:
+            case AppSpec::Form::kUrl:
+                cfg.listeners[i].port = specs_[i]->port;
+                break;
+            case AppSpec::Form::kNone:
+                mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                           "application %i has no listener - its configure block names one "
+                           "(conf.port / conf.unix_path / conf.url)",
+                           static_cast<mrb_int>(i));
+        }
+    }
 }
-}
+} // namespace
 
 #include "slipstream_syscall.h"
 
 // Which side answers this process's rings, said at startup. When the
 // kernel refuses io_uring, slipstream's engine answers every call
 // underneath liburing, and this banner says so. Silence is the kernel.
-void server_backend_say() {
-  if (slipstream_syscall_uses_engine()) {
-    char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
-    char buf[32] = "";
-    const int fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) {
-      const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
-      ::close(fd);
-      if (n > 0) {
-        buf[n] = '\0';
-        if (buf[0] == '2') {
-          std::snprintf(why, sizeof(why),
-                        "sysctl kernel.io_uring_disabled=2 - io_uring is off for every "
-                        "process on this machine");
-        } else if (buf[0] == '1') {
-          char grp[32] = "";
-          const int g = ::open("/proc/sys/kernel/io_uring_group", O_RDONLY | O_CLOEXEC);
-          if (g >= 0) {
-            const ssize_t m = ::read(g, grp, sizeof(grp) - 1);
-            ::close(g);
-            if (m > 0) grp[m] = '\0';
-          }
-          std::snprintf(why, sizeof(why),
-                        "sysctl kernel.io_uring_disabled=1 - only members of group %s "
-                        "(kernel.io_uring_group) may, and this process is not one",
-                        grp[0] != '\0' ? grp : "?");
+void server_backend_say()
+{
+    if (slipstream_syscall_uses_engine()) {
+        char why[192] = "the kernel is too old, or a seccomp profile or an LSM blocks it";
+        char buf[32] = "";
+        const int fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+            ::close(fd);
+            if (n > 0) {
+                buf[n] = '\0';
+                if (buf[0] == '2') {
+                    std::snprintf(why, sizeof(why),
+                                  "sysctl kernel.io_uring_disabled=2 - io_uring is off for every "
+                                  "process on this machine");
+                } else if (buf[0] == '1') {
+                    char grp[32] = "";
+                    const int g = ::open("/proc/sys/kernel/io_uring_group", O_RDONLY | O_CLOEXEC);
+                    if (g >= 0) {
+                        const ssize_t m = ::read(g, grp, sizeof(grp) - 1);
+                        ::close(g);
+                        if (m > 0)
+                            grp[m] = '\0';
+                    }
+                    std::snprintf(why, sizeof(why),
+                                  "sysctl kernel.io_uring_disabled=1 - only members of group %s "
+                                  "(kernel.io_uring_group) may, and this process is not one",
+                                  grp[0] != '\0' ? grp : "?");
+                }
+            }
         }
-      }
+        std::fprintf(
+            stderr,
+            "webmachine: ================================================================\n"
+            "webmachine: == IO: slipstream's engine answers this process's rings\n"
+            "webmachine: == why: %s\n"
+            "webmachine: == cost: correct, not fast - every socket op is readiness plus\n"
+            "webmachine: ==   a classic syscall, files ride a worker thread\n"
+            "webmachine: == fast: the same binary, on a host that allows io_uring\n"
+            "webmachine: ================================================================\n",
+            why);
     }
-    std::fprintf(stderr,
-                 "webmachine: ================================================================\n"
-                 "webmachine: == IO: slipstream's engine answers this process's rings\n"
-                 "webmachine: == why: %s\n"
-                 "webmachine: == cost: correct, not fast - every socket op is readiness plus\n"
-                 "webmachine: ==   a classic syscall, files ride a worker thread\n"
-                 "webmachine: == fast: the same binary, on a host that allows io_uring\n"
-                 "webmachine: ================================================================\n",
-                 why);
-  }
 }
 
-namespace {
+namespace
+{
 // Everything before the first accept, once.
-void build(mrb_state* mrb) {
-  if (built_) return;
-  server_backend_say();
+void build(mrb_state *mrb)
+{
+    if (built_)
+        return;
+    server_backend_say();
 
-  app_registered_all(mrb, {specs_, kMaxListeners});
-  RingConfig cfg;
-  cfg.sq_entries = opts_.sq_entries;
-  // The gem is embedded: a reactor that has to give up raises into this
-  // VM instead of ending someone else's process.
-  cfg.mrb = mrb;
-  cfg.backlog = opts_.backlog;
-  cfg.header_timeout = opts_.header_timeout;
-  cfg.send_timeout = opts_.send_timeout;
-  cfg.idle_timeout = opts_.idle_timeout;
-  build_listeners(mrb, cfg);
-  build_listener_tls(mrb, cfg);
+    app_registered_all(mrb, {specs_, kMaxListeners});
+    RingConfig cfg;
+    cfg.sq_entries = opts_.sq_entries;
+    // The gem is embedded: a reactor that has to give up raises into this
+    // VM instead of ending someone else's process.
+    cfg.mrb = mrb;
+    cfg.backlog = opts_.backlog;
+    cfg.header_timeout = opts_.header_timeout;
+    cfg.send_timeout = opts_.send_timeout;
+    cfg.idle_timeout = opts_.idle_timeout;
+    build_listeners(mrb, cfg);
+    build_listener_tls(mrb, cfg);
 
-  // The docroot: a standalone server's --docroot or [server] docroot, or
-  // the first application that names one in its conf. The canonical path
-  // is settled here, before the first accept, so no request can race the
-  // anchor RESOLVE_BENEATH measures against. A docroot that is missing or
-  // is not a directory refuses the start by name.
-  {
-    const char* dr = opts_.standalone_docroot_path;
-    for (size_t i = 0; dr == nullptr && i < specs_.size(); i++) {
-      if (!specs_[i]->docroot.empty()) dr = specs_[i]->docroot.c_str();
+    // The docroot: a standalone server's --docroot or [server] docroot, or
+    // the first application that names one in its conf. The canonical path
+    // is settled here, before the first accept, so no request can race the
+    // anchor RESOLVE_BENEATH measures against. A docroot that is missing or
+    // is not a directory refuses the start by name.
+    {
+        const char *dr = opts_.standalone_docroot_path;
+        for (size_t i = 0; dr == nullptr && i < specs_.size(); i++) {
+            if (!specs_[i]->docroot.empty())
+                dr = specs_[i]->docroot.c_str();
+        }
+        if (dr != nullptr) {
+            docroot_open(mrb, dr);
+            std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
+        }
     }
-    if (dr != nullptr) {
-      docroot_open(mrb, dr);
-      std::fprintf(stderr, "webmachine: docroot %s\n", docroot_path());
-    }
-  }
 
-  // conf.spill_dir: where a request body that outgrows memory is
-  // written. The first application that names one decides, the same
-  // rule the docroot keeps. Nobody naming one leaves the platform's
-  // own choice, which is TMPDIR and then /tmp - and /tmp is tmpfs on
-  // most machines, so a large upload is memory there.
-  {
+    // conf.spill_dir: where a request body that outgrows memory is
+    // written. The first application that names one decides, the same
+    // rule the docroot keeps. Nobody naming one leaves the platform's
+    // own choice, which is TMPDIR and then /tmp - and /tmp is tmpfs on
+    // most machines, so a large upload is memory there.
+    {
+        for (size_t i = 0; i < specs_.size(); i++) {
+            if (specs_[i]->spill_dir.empty())
+                continue;
+            spill_dir_set(specs_[i]->spill_dir.c_str());
+            std::fprintf(stderr, "webmachine: request bodies spill into %s\n", spill_dir());
+            break;
+        }
+    }
+
+    // conf.disable_http_cats: the first app with an opinion decides, the way
+    // every other conf answer is taken. Asked before the pack is looked for,
+    // because "off" means it is never opened, not opened and ignored.
+    int8_t no_cats = -1;
+    for (size_t i = 0; no_cats < 0 && i < specs_.size(); i++) {
+        no_cats = specs_[i]->disable_http_cats;
+    }
+    const std::string error_assets_file =
+        no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
+    const bool standalone = opts_.standalone;
+    const char *assets_path = opts_.standalone_assets_path;
+    for (size_t i = 0; assets_path == nullptr && i < specs_.size(); i++) {
+        if (!specs_[i]->assets.empty())
+            assets_path = specs_[i]->assets.c_str();
+    }
+    if (assets_path != nullptr || !error_assets_file.empty() || (standalone && docroot_fd() >= 0)) {
+        mime_.load(mrb, opts_.mime_types_path);
+        std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
+                     mime_.source().c_str(), mime_.size());
+    }
+    if (assets_path != nullptr)
+        assets_.open(mrb, assets_path, mime_);
+    if (!error_assets_file.empty()) {
+        // Caught on purpose, the one start-up refusal that is not one: a
+        // picture is no reason not to serve. The reason goes to the error
+        // log, and the pages render without it.
+        OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
+        mrb_bool raised = FALSE;
+        const mrb_value e = mrb_protect_error(mrb, open_pack_body, &pack, &raised);
+        if (!raised) {
+            error_assets_up_ = true;
+            std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
+        } else {
+            const mrb_value said = mrb_obj_as_string(mrb, e);
+            error_assets_note_ =
+                "error assets at " + error_assets_file + " unusable (" +
+                std::string(RSTRING_PTR(said), static_cast<size_t>(RSTRING_LEN(said))) +
+                ") - pages without pictures";
+        }
+    } else if (no_cats == 1) {
+        // Asked for, so not a complaint: the pages still render, they just
+        // show no picture, and nothing is mounted at /error_assets/.
+        std::fprintf(stderr, "webmachine: conf.disable_http_cats - error pages without pictures\n");
+    } else {
+        // Without a pack the errors answer in plain text. That is no reason
+        // to refuse the start, but the operator hears it once.
+        std::fprintf(stderr, "webmachine: no error assets found - errors answer in plain text. "
+                             "Name a file with --error-assets=FILE.zip, or install one as "
+                             "<prefix>/share/webmachine-mruby/error-assets.zip\n");
+    }
+
+    if (opts_.log_path != nullptr) {
+        if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
+            std::fprintf(
+                stderr,
+                "webmachine: --log-privacy=none writes full client addresses to the log.\n"
+                "webmachine: an IP address is personal data (GDPR art. 4(1)); logging it\n"
+                "webmachine: needs a legal basis (art. 6). Security logging with short\n"
+                "webmachine: retention usually rides legitimate interest plus a privacy\n"
+                "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
+                "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
+        }
+        // The access log is a window - it answers what happened in the last
+        // so-many bytes. Dropping the oldest is its semantics, not a loss.
+        const LogdSpawn access = {"access", opts_.log_path,
+                                  opts_.log_privacy != nullptr ? opts_.log_privacy : "anon",
+                                  opts_.log_max_bytes};
+        log_fd_ = spawn_logd(mrb, access);
+        cfg.log_fd = log_fd_;
+    }
+    if (opts_.error_log_path != nullptr) {
+        // No ceiling (0 disables the cap in webmachine-logd). An error log is
+        // not a window: what lands here is a 500 or a Ruby exception with its
+        // backtrace, never ordinary traffic, so it does not grow on its own.
+        // It grows in a fault storm - and that is the one moment where the
+        // first entry is the one that names the cause and everything after it
+        // is consequence. A ceiling that keeps the newest half would throw
+        // away exactly the line worth having.
+        err_fd_ = spawn_logd(mrb, {"error", opts_.error_log_path, nullptr, 0});
+        cfg.err_fd = err_fd_;
+    }
+
+    resources_.resize(specs_.size());
+    ws_resources_.resize(specs_.size());
+    sse_resources_.resize(specs_.size());
+    std::vector<Http1::AppInput> inputs(specs_.size());
     for (size_t i = 0; i < specs_.size(); i++) {
-      if (specs_[i]->spill_dir.empty()) continue;
-      spill_dir_set(specs_[i]->spill_dir.c_str());
-      std::fprintf(stderr, "webmachine: request bodies spill into %s\n", spill_dir());
-      break;
+        resources_[i].reserve(specs_[i]->resources.size());
+        for (const auto &r : specs_[i]->resources)
+            resources_[i].push_back(r.get());
+        ws_resources_[i].reserve(specs_[i]->ws_resources.size());
+        for (const auto &r : specs_[i]->ws_resources)
+            ws_resources_[i].push_back(r.get());
+        sse_resources_[i].reserve(specs_[i]->sse_resources.size());
+        for (const auto &r : specs_[i]->sse_resources)
+            sse_resources_[i].push_back(r.get());
+        inputs[i] = Http1::AppInput{
+            &specs_[i]->table,
+            resources_[i].data(),
+            resources_[i].size(),
+            &specs_[i]->ws_table,
+            ws_resources_[i].data(),
+            ws_resources_[i].size(),
+            &specs_[i]->sse_table,
+            sse_resources_[i].data(),
+            sse_resources_[i].size(),
+            specs_[i]->tls,
+            specs_[i]->max_body >= 0 ? static_cast<size_t>(specs_[i]->max_body) : kMaxBodyDefault};
     }
-  }
-
-  // conf.disable_http_cats: the first app with an opinion decides, the way
-  // every other conf answer is taken. Asked before the pack is looked for,
-  // because "off" means it is never opened, not opened and ignored.
-  int8_t no_cats = -1;
-  for (size_t i = 0; no_cats < 0 && i < specs_.size(); i++) {
-    no_cats = specs_[i]->disable_http_cats;
-  }
-  const std::string error_assets_file =
-      no_cats == 1 ? std::string() : error_assets_path(opts_.error_assets_path);
-  const bool standalone = opts_.standalone;
-  const char* assets_path = opts_.standalone_assets_path;
-  for (size_t i = 0; assets_path == nullptr && i < specs_.size(); i++) {
-    if (!specs_[i]->assets.empty()) assets_path = specs_[i]->assets.c_str();
-  }
-  if (assets_path != nullptr || !error_assets_file.empty() ||
-      (standalone && docroot_fd() >= 0)) {
-    mime_.load(mrb, opts_.mime_types_path);
-    std::fprintf(stderr, "webmachine: media types from %s (%zu extensions)\n",
-                 mime_.source().c_str(), mime_.size());
-  }
-  if (assets_path != nullptr) assets_.open(mrb, assets_path, mime_);
-  if (!error_assets_file.empty()) {
-    // Caught on purpose, the one start-up refusal that is not one: a
-    // picture is no reason not to serve. The reason goes to the error
-    // log, and the pages render without it.
-    OpenPack pack{&error_assets_, error_assets_file.c_str(), &mime_};
-    mrb_bool raised = FALSE;
-    const mrb_value e = mrb_protect_error(mrb, open_pack_body, &pack, &raised);
-    if (!raised) {
-      error_assets_up_ = true;
-      std::fprintf(stderr, "webmachine: error assets from %s\n", error_assets_file.c_str());
-    } else {
-      const mrb_value said = mrb_obj_as_string(mrb, e);
-      error_assets_note_ = "error assets at " + error_assets_file + " unusable (" +
-                           std::string(RSTRING_PTR(said), static_cast<size_t>(RSTRING_LEN(said))) +
-                           ") - pages without pictures";
+    http_.reset(
+        new Http1(inputs.data(), inputs.size(), assets_path != nullptr ? &assets_ : nullptr));
+    // Standalone: nobody wrote a resource, so the docroot answers through
+    // the folded graph and the VM is never entered for a request.
+    if (standalone && docroot_fd() >= 0) {
+        http_->serve_docroot(&mime_);
+        std::fprintf(stderr, "webmachine: standalone - the docroot answers, no app\n");
     }
-  } else if (no_cats == 1) {
-    // Asked for, so not a complaint: the pages still render, they just
-    // show no picture, and nothing is mounted at /error_assets/.
-    std::fprintf(stderr, "webmachine: conf.disable_http_cats - error pages without pictures\n");
-  } else {
-    // Without a pack the errors answer in plain text. That is no reason
-    // to refuse the start, but the operator hears it once.
-    std::fprintf(stderr, "webmachine: no error assets found - errors answer in plain text. "
-                         "Name a file with --error-assets=FILE.zip, or install one as "
-                         "<prefix>/share/webmachine-mruby/error-assets.zip\n");
-  }
-
-  if (opts_.log_path != nullptr) {
-    if (opts_.log_privacy != nullptr && std::strcmp(opts_.log_privacy, "none") == 0) {
-      std::fprintf(stderr,
-                   "webmachine: --log-privacy=none writes full client addresses to the log.\n"
-                   "webmachine: an IP address is personal data (GDPR art. 4(1)); logging it\n"
-                   "webmachine: needs a legal basis (art. 6). Security logging with short\n"
-                   "webmachine: retention usually rides legitimate interest plus a privacy\n"
-                   "webmachine: notice; using the addresses beyond that (analytics, tracking)\n"
-                   "webmachine: needs consent. DNT/Sec-GPC peers are capped to anon either way.\n");
+    // #210: the error pages render in the app's VM. A template the pack
+    // carries that does not parse refuses the start by name, here and not
+    // on the first 404.
+    http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
+    // #210: and the same assets under response.error_asset("404.jpg"),
+    // so an app can answer with one of these pictures wherever it likes,
+    // not only where the error resource does.
+    response_bind_error_assets(error_assets_up_ ? &error_assets_ : nullptr);
+    if (opts_.log_path != nullptr)
+        http_->enable_access_log();
+    if (opts_.error_log_path != nullptr)
+        http_->enable_error_log();
+    if (!error_assets_note_.empty()) {
+        say_server_error(http_->error_log(), error_assets_note_);
+        error_assets_note_.clear();
     }
-    // The access log is a window - it answers what happened in the last
-    // so-many bytes. Dropping the oldest is its semantics, not a loss.
-    const LogdSpawn access = {
-        "access", opts_.log_path,
-        opts_.log_privacy != nullptr ? opts_.log_privacy : "anon", opts_.log_max_bytes};
-    log_fd_ = spawn_logd(mrb, access);
-    cfg.log_fd = log_fd_;
-  }
-  if (opts_.error_log_path != nullptr) {
-    // No ceiling (0 disables the cap in webmachine-logd). An error log is
-    // not a window: what lands here is a 500 or a Ruby exception with its
-    // backtrace, never ordinary traffic, so it does not grow on its own.
-    // It grows in a fault storm - and that is the one moment where the
-    // first entry is the one that names the cause and everything after it
-    // is consequence. A ceiling that keeps the newest half would throw
-    // away exactly the line worth having.
-    err_fd_ = spawn_logd(mrb, {"error", opts_.error_log_path, nullptr, 0});
-    cfg.err_fd = err_fd_;
-  }
-
-  resources_.resize(specs_.size());
-  ws_resources_.resize(specs_.size());
-  sse_resources_.resize(specs_.size());
-  std::vector<Http1::AppInput> inputs(specs_.size());
-  for (size_t i = 0; i < specs_.size(); i++) {
-    resources_[i].reserve(specs_[i]->resources.size());
-    for (const auto& r : specs_[i]->resources) resources_[i].push_back(r.get());
-    ws_resources_[i].reserve(specs_[i]->ws_resources.size());
-    for (const auto& r : specs_[i]->ws_resources) ws_resources_[i].push_back(r.get());
-    sse_resources_[i].reserve(specs_[i]->sse_resources.size());
-    for (const auto& r : specs_[i]->sse_resources) sse_resources_[i].push_back(r.get());
-    inputs[i] = Http1::AppInput{&specs_[i]->table,
-                                resources_[i].data(),
-                                resources_[i].size(),
-                                &specs_[i]->ws_table,
-                                ws_resources_[i].data(),
-                                ws_resources_[i].size(),
-                                &specs_[i]->sse_table,
-                                sse_resources_[i].data(),
-                                sse_resources_[i].size(),
-                                specs_[i]->tls,
-                                specs_[i]->max_body >= 0
-                                    ? static_cast<size_t>(specs_[i]->max_body)
-                                    : kMaxBodyDefault};
-  }
-  http_.reset(new Http1(inputs.data(), inputs.size(),
-                        assets_path != nullptr ? &assets_ : nullptr));
-  // Standalone: nobody wrote a resource, so the docroot answers through
-  // the folded graph and the VM is never entered for a request.
-  if (standalone && docroot_fd() >= 0) {
-    http_->serve_docroot(&mime_);
-    std::fprintf(stderr, "webmachine: standalone - the docroot answers, no app\n");
-  }
-  // #210: the error pages render in the app's VM. A template the pack
-  // carries that does not parse refuses the start by name, here and not
-  // on the first 404.
-  http_->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
-  // #210: and the same assets under response.error_asset("404.jpg"),
-  // so an app can answer with one of these pictures wherever it likes,
-  // not only where the error resource does.
-  response_bind_error_assets(error_assets_up_ ? &error_assets_ : nullptr);
-  if (opts_.log_path != nullptr) http_->enable_access_log();
-  if (opts_.error_log_path != nullptr) http_->enable_error_log();
-  if (!error_assets_note_.empty()) {
-    say_server_error(http_->error_log(), error_assets_note_);
-    error_assets_note_.clear();
-  }
-  // A flag and [tune] beat the app's conf, and all three beat the
-  // built-in default.
-  long long zct = opts_.zero_copy_threshold;
-  for (size_t i = 0; zct < 0 && i < specs_.size(); i++) {
-    zct = specs_[i]->zero_copy_threshold;
-  }
-  if (zct >= 0) http_->set_zero_copy_threshold(static_cast<size_t>(zct));
-  long long fmt = opts_.file_map_threshold;
-  for (size_t i = 0; fmt < 0 && i < specs_.size(); i++) {
-    fmt = specs_[i]->file_map_threshold;
-  }
-  if (fmt >= 0) http_->set_file_map_threshold(static_cast<size_t>(fmt));
-
-  // Built into a local first: a refusal from init unwinds through this
-  // one's destructor, and ring_ is only ever a ring that came up.
-  auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*http_));
-  ring->init(cfg);
-  ring_ = std::move(ring);
-
-  for (size_t i = 0; i < specs_.size(); i++) {
-    app_mark_bound(mrb, *specs_[i], cfg.listeners[i].unix_path,
-                   ring_->bound_port(static_cast<uint32_t>(i)));
-    app_ready_run(mrb, *specs_[i]);
-  }
-
-  std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)\n", getpid(),
-               cfg.nlisteners);
-  for (uint32_t i = 0; i < cfg.nlisteners; i++) {
-    if (cfg.listeners[i].unix_path != nullptr) {
-      std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i, cfg.listeners[i].unix_path);
-    } else {
-      std::fprintf(stderr, "webmachine:   [%u] tcp port %d%s\n", i, ring_->bound_port(i),
-                   cfg.listeners[i].cert_pem != nullptr ? ", tls" : "");
+    // A flag and [tune] beat the app's conf, and all three beat the
+    // built-in default.
+    long long zct = opts_.zero_copy_threshold;
+    for (size_t i = 0; zct < 0 && i < specs_.size(); i++) {
+        zct = specs_[i]->zero_copy_threshold;
     }
-  }
-  built_ = true;
+    if (zct >= 0)
+        http_->set_zero_copy_threshold(static_cast<size_t>(zct));
+    long long fmt = opts_.file_map_threshold;
+    for (size_t i = 0; fmt < 0 && i < specs_.size(); i++) {
+        fmt = specs_[i]->file_map_threshold;
+    }
+    if (fmt >= 0)
+        http_->set_file_map_threshold(static_cast<size_t>(fmt));
+
+    // Built into a local first: a refusal from init unwinds through this
+    // one's destructor, and ring_ is only ever a ring that came up.
+    auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*http_));
+    ring->init(cfg);
+    ring_ = std::move(ring);
+
+    for (size_t i = 0; i < specs_.size(); i++) {
+        app_mark_bound(mrb, *specs_[i], cfg.listeners[i].unix_path,
+                       ring_->bound_port(static_cast<uint32_t>(i)));
+        app_ready_run(mrb, *specs_[i]);
+    }
+
+    std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)\n", getpid(), cfg.nlisteners);
+    for (uint32_t i = 0; i < cfg.nlisteners; i++) {
+        if (cfg.listeners[i].unix_path != nullptr) {
+            std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i, cfg.listeners[i].unix_path);
+        } else {
+            std::fprintf(stderr, "webmachine:   [%u] tcp port %d%s\n", i, ring_->bound_port(i),
+                         cfg.listeners[i].cert_pem != nullptr ? ", tls" : "");
+        }
+    }
+    built_ = true;
 }
 
 // Webmachine.run, .tick, .fd and .stopped need the server built. This
 // builds it and marks it entered.
-void ensure(mrb_state* mrb) {
-  build(mrb);
-  entered_ = true;
+void ensure(mrb_state *mrb)
+{
+    build(mrb);
+    entered_ = true;
 }
 
 // Webmachine.run: block, serve, return when the stop signal lands.
-mrb_value wm_run(mrb_state* mrb, mrb_value self) {
-  ensure(mrb);
-  ring_->run();
-  return self;
+mrb_value wm_run(mrb_state *mrb, mrb_value self)
+{
+    ensure(mrb);
+    ring_->run();
+    return self;
 }
 
 // Webmachine.tick(budget): one bounded step - the budget bounds the work.
-mrb_value wm_tick(mrb_state* mrb, mrb_value) {
-  mrb_value budget = mrb_nil_value();
-  mrb_get_args(mrb, "|o", &budget);
-  ensure(mrb);
-  if (mrb_nil_p(budget)) return mrb_bool_value(ring_->tick(nullptr));
-  const auto ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, budget);
-  if (ns.count() < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.tick wants a duration, not a negative one");
-  }
-  struct __kernel_timespec ts {ns.count() / 1000000000, ns.count() % 1000000000};
-  return mrb_bool_value(ring_->tick(&ts));
+mrb_value wm_tick(mrb_state *mrb, mrb_value)
+{
+    mrb_value budget = mrb_nil_value();
+    mrb_get_args(mrb, "|o", &budget);
+    ensure(mrb);
+    if (mrb_nil_p(budget))
+        return mrb_bool_value(ring_->tick(nullptr));
+    const auto ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, budget);
+    if (ns.count() < 0) {
+        mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.tick wants a duration, not a negative one");
+    }
+    struct __kernel_timespec ts {
+        ns.count() / 1000000000, ns.count() % 1000000000
+    };
+    return mrb_bool_value(ring_->tick(&ts));
 }
 
 // Webmachine.fd: what an embedder polls between ticks.
-mrb_value wm_fd(mrb_state* mrb, mrb_value) {
-  ensure(mrb);
-  const int fd = ring_->fd();
-  if (fd < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR,
-              "this io backend has no pollable descriptor - drive it with "
-              "Webmachine.tick(budget) instead of waiting on an fd");
-  }
-  return mrb_fixnum_value(fd);
+mrb_value wm_fd(mrb_state *mrb, mrb_value)
+{
+    ensure(mrb);
+    const int fd = ring_->fd();
+    if (fd < 0) {
+        mrb_raise(mrb, E_RUNTIME_ERROR,
+                  "this io backend has no pollable descriptor - drive it with "
+                  "Webmachine.tick(budget) instead of waiting on an fd");
+    }
+    return mrb_fixnum_value(fd);
 }
 
 // Webmachine.stop(grace): drain, then forget. Process-wide, and named so.
-mrb_value wm_stop(mrb_state* mrb, mrb_value self) {
-  mrb_value grace = mrb_nil_value();
-  mrb_get_args(mrb, "|o", &grace);
-  if (!built_) return self;
-  int64_t ns = 0;
-  if (!mrb_nil_p(grace)) {
-    ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, grace).count();
-    if (ns < 0) {
-      mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.stop wants a grace, not a negative one");
+mrb_value wm_stop(mrb_state *mrb, mrb_value self)
+{
+    mrb_value grace = mrb_nil_value();
+    mrb_get_args(mrb, "|o", &grace);
+    if (!built_)
+        return self;
+    int64_t ns = 0;
+    if (!mrb_nil_p(grace)) {
+        ns = mrb_chrono::as<std::chrono::nanoseconds>(mrb, grace).count();
+        if (ns < 0) {
+            mrb_raise(mrb, E_RUNTIME_ERROR, "Webmachine.stop wants a grace, not a negative one");
+        }
     }
-  }
-  ring_->drain(ns);
-  return self;
+    ring_->drain(ns);
+    return self;
 }
 
 // Did the stop signal's completion land?
-mrb_value wm_stopped(mrb_state* mrb, mrb_value) {
-  ensure(mrb);
-  return mrb_bool_value(ring_->stopped());
+mrb_value wm_stopped(mrb_state *mrb, mrb_value)
+{
+    ensure(mrb);
+    return mrb_bool_value(ring_->stopped());
 }
-}
+} // namespace
 
 // What the invocation decides; not reachable from Ruby, deliberately.
-void server_options(const ServerOptions& opts) { opts_ = opts; }
+void server_options(const ServerOptions &opts)
+{
+    opts_ = opts;
+}
 
 // Did `main` serve already through run or tick?
-bool server_entered() { return entered_; }
+bool server_entered()
+{
+    return entered_;
+}
 
 // Webmachine.run / .tick / .fd / .stop, next to the Application.
-void server_init(mrb_state* mrb, struct RClass* wm) {
-  mrb_define_module_function_id(mrb, wm, MRB_SYM(run), wm_run, MRB_ARGS_NONE());
-  mrb_define_module_function_id(mrb, wm, MRB_SYM(tick), wm_tick, MRB_ARGS_OPT(1));
-  mrb_define_module_function_id(mrb, wm, MRB_SYM(fd), wm_fd, MRB_ARGS_NONE());
-  mrb_define_module_function_id(mrb, wm, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
-  struct RClass* app = mrb_class_get_under_id(mrb, wm, MRB_SYM(Application));
-  mrb_define_method_id(mrb, app, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
-  mrb_define_module_function_id(mrb, wm, MRB_SYM_Q(stopped), wm_stopped, MRB_ARGS_NONE());
+void server_init(mrb_state *mrb, struct RClass *wm)
+{
+    mrb_define_module_function_id(mrb, wm, MRB_SYM(run), wm_run, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, wm, MRB_SYM(tick), wm_tick, MRB_ARGS_OPT(1));
+    mrb_define_module_function_id(mrb, wm, MRB_SYM(fd), wm_fd, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, wm, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
+    struct RClass *app = mrb_class_get_under_id(mrb, wm, MRB_SYM(Application));
+    mrb_define_method_id(mrb, app, MRB_SYM(stop), wm_stop, MRB_ARGS_OPT(1));
+    mrb_define_module_function_id(mrb, wm, MRB_SYM_Q(stopped), wm_stopped, MRB_ARGS_NONE());
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.
-int server_run(mrb_state* mrb) {
-  build(mrb);
-  entered_ = true;
-  ring_->run();
-  server_release();
-  return 0;
+int server_run(mrb_state *mrb)
+{
+    build(mrb);
+    entered_ = true;
+    ring_->run();
+    server_release();
+    return 0;
 }
 
 // Both die here, while the VM stands: the error pages hold a root in it,
@@ -563,8 +608,9 @@ int server_run(mrb_state* mrb) {
 // raise carried the stack past the line above, main closed the VM, and
 // ~ErrorPages called mrb_gc_unregister on it. The owner of the VM calls
 // this before mrb_close, on every way out.
-void server_release() {
-  ring_.reset();
-  http_.reset();
+void server_release()
+{
+    ring_.reset();
+    http_.reset();
 }
-}
+} // namespace webmachine

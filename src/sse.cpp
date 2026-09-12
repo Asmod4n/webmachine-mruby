@@ -13,205 +13,234 @@
 #include <cstdio>
 #include <cstring>
 
-namespace webmachine {
+namespace webmachine
+{
 struct SseResource {
-  mrb_state* mrb = nullptr;
-  struct RClass* klass = nullptr;
-  bool have_close = false;
-  int64_t heartbeat = 15;
+    mrb_state *mrb = nullptr;
+    struct RClass *klass = nullptr;
+    bool have_close = false;
+    int64_t heartbeat = 15;
 };
 
 struct SseStream {
-  const SseResource* res = nullptr;
-  Logger* elog = nullptr;
-  mrb_value self = mrb_nil_value();
-  int64_t last_out_s = 0;
-  int64_t last_tick_s = 0;
+    const SseResource *res = nullptr;
+    Logger *elog = nullptr;
+    mrb_value self = mrb_nil_value();
+    int64_t last_out_s = 0;
+    int64_t last_tick_s = 0;
 };
 
-namespace {
+namespace
+{
 // WHATWG HTML: one "field: value" line; a value with newlines is
 // several lines of the same field.
-void field(std::string& out, http::Field f) {
-  const char* const name = f.name.data();
-  const size_t nlen = f.name.size();
-  const char* const v = f.value.data();
-  const size_t vlen = f.value.size();
-  // WHATWG HTML: a line of an event stream ends at CR, at LF, or at CR
-  // LF, and all three are this field's end. The split looked for LF
-  // alone, so a bare CR stayed inside the value and the client read it
-  // as a line of its own - an `id:` or an `event:` spelled by whatever
-  // string the application relayed.
-  size_t i = 0;
-  for (;;) {
-    size_t end = i;
-    while (end < vlen && v[end] != '\n' && v[end] != '\r') end++;
-    out.append(name, nlen).append(": ", 2).append(v + i, end - i).append("\n", 1);
-    if (end >= vlen) break;
-    i = end + 1;
-    if (v[end] == '\r' && i < vlen && v[i] == '\n') i++;
-  }
+void field(std::string &out, http::Field f)
+{
+    const char *const name = f.name.data();
+    const size_t nlen = f.name.size();
+    const char *const v = f.value.data();
+    const size_t vlen = f.value.size();
+    // WHATWG HTML: a line of an event stream ends at CR, at LF, or at CR
+    // LF, and all three are this field's end. The split looked for LF
+    // alone, so a bare CR stayed inside the value and the client read it
+    // as a line of its own - an `id:` or an `event:` spelled by whatever
+    // string the application relayed.
+    size_t i = 0;
+    for (;;) {
+        size_t end = i;
+        while (end < vlen && v[end] != '\n' && v[end] != '\r')
+            end++;
+        out.append(name, nlen).append(": ", 2).append(v + i, end - i).append("\n", 1);
+        if (end >= vlen)
+            break;
+        i = end + 1;
+        if (v[end] == '\r' && i < vlen && v[i] == '\n')
+            i++;
+    }
 }
 
 // WHATWG HTML: the same line, from a Ruby value.
-void field(std::string& out, const char* name, const mrb_value& v) {
-  if (!mrb_string_p(v)) return;
-  field(out, {name, {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
+void field(std::string &out, const char *name, const mrb_value &v)
+{
+    if (!mrb_string_p(v))
+        return;
+    field(out, {name, {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
 }
 
 // WHATWG HTML: one event out of what on_tick returned.
-bool spell_event(mrb_state* mrb, const mrb_value& v, std::string& out) {
-  if (mrb_string_p(v)) {
-    field(out, {"data", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
+bool spell_event(mrb_state *mrb, const mrb_value &v, std::string &out)
+{
+    if (mrb_string_p(v)) {
+        field(out, {"data", {RSTRING_PTR(v), static_cast<size_t>(RSTRING_LEN(v))}});
+        out.append("\n", 1);
+        return true;
+    }
+    if (!mrb_hash_p(v))
+        return false;
+    const mrb_value ev = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(event)));
+    const mrb_value id = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(id)));
+    const mrb_value rt = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(retry)));
+    const mrb_value da = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(data)));
+    field(out, "event", ev);
+    field(out, "id", id);
+    if (mrb_fixnum_p(rt)) {
+        char buf[24];
+        const int n =
+            std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(mrb_fixnum(rt)));
+        if (n > 0)
+            field(out, {"retry", {buf, static_cast<size_t>(n)}});
+    }
+    if (mrb_array_p(da)) {
+        const mrb_int n = RARRAY_LEN(da);
+        for (mrb_int i = 0; i < n; i++)
+            field(out, "data", mrb_ary_entry(da, i));
+    } else {
+        field(out, "data", da);
+    }
     out.append("\n", 1);
     return true;
-  }
-  if (!mrb_hash_p(v)) return false;
-  const mrb_value ev = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(event)));
-  const mrb_value id = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(id)));
-  const mrb_value rt = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(retry)));
-  const mrb_value da = mrb_hash_get(mrb, v, mrb_symbol_value(MRB_SYM(data)));
-  field(out, "event", ev);
-  field(out, "id", id);
-  if (mrb_fixnum_p(rt)) {
-    char buf[24];
-    const int n = std::snprintf(buf, sizeof buf, "%lld",
-                                static_cast<long long>(mrb_fixnum(rt)));
-    if (n > 0) field(out, {"retry", {buf, static_cast<size_t>(n)}});
-  }
-  if (mrb_array_p(da)) {
-    const mrb_int n = RARRAY_LEN(da);
-    for (mrb_int i = 0; i < n; i++) field(out, "data", mrb_ary_entry(da, i));
-  } else {
-    field(out, "data", da);
-  }
-  out.append("\n", 1);
-  return true;
 }
 
 // RFC 9112 7.1: one chunk - size in hex, CRLF around the data.
-void chunk(std::string& sink, const std::string& body) {
-  if (body.empty()) return;
-  char hdr[24];
-  const int n = std::snprintf(hdr, sizeof hdr, "%zx\r\n", body.size());
-  sink.append(hdr, static_cast<size_t>(n));
-  sink.append(body);
-  sink.append("\r\n", 2);
+void chunk(std::string &sink, const std::string &body)
+{
+    if (body.empty())
+        return;
+    char hdr[24];
+    const int n = std::snprintf(hdr, sizeof hdr, "%zx\r\n", body.size());
+    sink.append(hdr, static_cast<size_t>(n));
+    sink.append(body);
+    sink.append("\r\n", 2);
 }
 
 // WHATWG HTML: on_close, once, however the stream ended.
-void report_close(SseStream* s) {
-  if (!s->res->have_close) return;
-  mrb_state* mrb = s->res->mrb;
-  const int ai = mrb_gc_arena_save(mrb);
-  mrb_funcall_argv(mrb, s->self, MRB_SYM(on_close), 0, nullptr);
-  if (mrb->exc != nullptr) {
-    report_raise(s->elog, mrb, 0);
-  }
-  mrb_gc_arena_restore(mrb, ai);
+void report_close(SseStream *s)
+{
+    if (!s->res->have_close)
+        return;
+    mrb_state *mrb = s->res->mrb;
+    const int ai = mrb_gc_arena_save(mrb);
+    mrb_funcall_argv(mrb, s->self, MRB_SYM(on_close), 0, nullptr);
+    if (mrb->exc != nullptr) {
+        report_raise(s->elog, mrb, 0);
+    }
+    mrb_gc_arena_restore(mrb, ai);
 }
-}
+} // namespace
 
 // WHATWG HTML: Webmachine::SseResource, the class a route may name.
-void sse_init(mrb_state* mrb, struct RClass* wm) {
-  mrb_define_class_under_id(mrb, wm, MRB_SYM(SseResource), mrb->object_class);
+void sse_init(mrb_state *mrb, struct RClass *wm)
+{
+    mrb_define_class_under_id(mrb, wm, MRB_SYM(SseResource), mrb->object_class);
 }
 
 // WHATWG HTML: one route's folded resource.
-SseResource* sse_resource_new() { return new SseResource(); }
+SseResource *sse_resource_new()
+{
+    return new SseResource();
+}
 
 // WHATWG HTML: unique_ptr's deleter across the TU boundary.
-void sse_resource_free(SseResource* r) { delete r; }
+void sse_resource_free(SseResource *r)
+{
+    delete r;
+}
 
 // WHATWG HTML: fold a resource class for an SSE route, once, at route.sse.
-void sse_fold(mrb_state* mrb, mrb_value klass, SseResource& out) {
-  if (!mrb_class_p(klass)) {
-    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-               "route.sse wants a class inheriting Webmachine::SseResource, not %v", klass);
-  }
-  struct RClass* wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-  struct RClass* base = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
-  bool ok = false;
-  for (struct RClass* k = mrb_class_ptr(klass)->super; k != nullptr; k = k->super) {
-    if (k == base) {
-      ok = true;
-      break;
-    }
-  }
-  if (!ok) {
-    mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-               "route.sse: %v does not inherit Webmachine::SseResource - an event stream is "
-               "not a Webmachine::Resource: no status to negotiate, no representation to "
-               "compare, no end to declare",
-               klass);
-  }
-  out.mrb = mrb;
-  out.klass = mrb_class_ptr(klass);
-
-  {
-    struct RClass* owner = out.klass;
-    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_tick)))) {
-      mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
-                "route.sse: the resource defines no on_tick - that is the one method an SSE "
-                "resource is, asked once a second for what it has to say");
-    }
-  }
-  {
-    struct RClass* owner = out.klass;
-    out.have_close = !MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_close)));
-  }
-
-  {
-    struct RClass* meta = mrb_class(mrb, klass);
-    if (!MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &meta, MRB_SYM(heartbeat)))) {
-      const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(heartbeat), 0, nullptr);
-      if (mrb->exc != nullptr) rethrow(mrb);
-      const auto secs = mrb_chrono::ceil<std::chrono::seconds>(mrb, v);
-      if (secs.count() < 0 || secs.count() > 86400) {
+void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out)
+{
+    if (!mrb_class_p(klass)) {
         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
-                   "route.sse: heartbeat is a duration from 0 (never) to a day - 15.s is the "
-                   "default, %v is not in range",
-                   v);
-      }
-      out.heartbeat = static_cast<int64_t>(secs.count());
+                   "route.sse wants a class inheriting Webmachine::SseResource, not %v", klass);
     }
-  }
+    struct RClass *wm = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    struct RClass *base = mrb_class_get_under_id(mrb, wm, MRB_SYM(SseResource));
+    bool ok = false;
+    for (struct RClass *k = mrb_class_ptr(klass)->super; k != nullptr; k = k->super) {
+        if (k == base) {
+            ok = true;
+            break;
+        }
+    }
+    if (!ok) {
+        mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
+                   "route.sse: %v does not inherit Webmachine::SseResource - an event stream is "
+                   "not a Webmachine::Resource: no status to negotiate, no representation to "
+                   "compare, no end to declare",
+                   klass);
+    }
+    out.mrb = mrb;
+    out.klass = mrb_class_ptr(klass);
 
-  mrb_obj_freeze(mrb, klass);
+    {
+        struct RClass *owner = out.klass;
+        if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_tick)))) {
+            mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
+                      "route.sse: the resource defines no on_tick - that is the one method an SSE "
+                      "resource is, asked once a second for what it has to say");
+        }
+    }
+    {
+        struct RClass *owner = out.klass;
+        out.have_close = !MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(on_close)));
+    }
+
+    {
+        struct RClass *meta = mrb_class(mrb, klass);
+        if (!MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &meta, MRB_SYM(heartbeat)))) {
+            const mrb_value v = mrb_funcall_argv(mrb, klass, MRB_SYM(heartbeat), 0, nullptr);
+            if (mrb->exc != nullptr)
+                rethrow(mrb);
+            const auto secs = mrb_chrono::ceil<std::chrono::seconds>(mrb, v);
+            if (secs.count() < 0 || secs.count() > 86400) {
+                mrb_raisef(
+                    mrb, E_WM_ROUTE_ERROR(mrb),
+                    "route.sse: heartbeat is a duration from 0 (never) to a day - 15.s is the "
+                    "default, %v is not in range",
+                    v);
+            }
+            out.heartbeat = static_cast<int64_t>(secs.count());
+        }
+    }
+
+    mrb_obj_freeze(mrb, klass);
 }
 
 // WHATWG HTML: build this stream's resource; its initialize is the open hook.
-SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
-  uint16_t& status = code;
-  status = 0;
-  mrb_state* mrb = r->mrb;
-  const int ai = mrb_gc_arena_save(mrb);
-  const mrb_value obj =
-      mrb_obj_value(mrb_obj_alloc(mrb, MRB_INSTANCE_TT(r->klass), r->klass));
-  mrb_gc_register(mrb, obj);
-  const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
-  if (mrb->exc != nullptr) {
-    report_raise(log, mrb, 500);
-    mrb_gc_unregister(mrb, obj);
+SseStream *sse_open(const SseResource *r, Logger *log, uint16_t &code)
+{
+    uint16_t &status = code;
+    status = 0;
+    mrb_state *mrb = r->mrb;
+    const int ai = mrb_gc_arena_save(mrb);
+    const mrb_value obj = mrb_obj_value(mrb_obj_alloc(mrb, MRB_INSTANCE_TT(r->klass), r->klass));
+    mrb_gc_register(mrb, obj);
+    const mrb_value out = mrb_funcall_argv(mrb, obj, MRB_SYM(initialize), 0, nullptr);
+    if (mrb->exc != nullptr) {
+        report_raise(log, mrb, 500);
+        mrb_gc_unregister(mrb, obj);
+        mrb_gc_arena_restore(mrb, ai);
+        status = 500;
+        return nullptr;
+    }
+    if (mrb_symbol_p(out)) {
+        const mrb_sym w = mrb_symbol(out);
+        if (w == MRB_SYM(not_found))
+            status = 404;
+        else if (w == MRB_SYM(bad_request))
+            status = 400;
+        else
+            status = 403;
+        mrb_gc_unregister(mrb, obj);
+        mrb_gc_arena_restore(mrb, ai);
+        return nullptr;
+    }
+    auto *s = new SseStream();
+    s->res = r;
+    s->elog = log;
+    s->self = obj;
     mrb_gc_arena_restore(mrb, ai);
-    status = 500;
-    return nullptr;
-  }
-  if (mrb_symbol_p(out)) {
-    const mrb_sym w = mrb_symbol(out);
-    if (w == MRB_SYM(not_found)) status = 404;
-    else if (w == MRB_SYM(bad_request)) status = 400;
-    else status = 403;
-    mrb_gc_unregister(mrb, obj);
-    mrb_gc_arena_restore(mrb, ai);
-    return nullptr;
-  }
-  auto* s = new SseStream();
-  s->res = r;
-  s->elog = log;
-  s->self = obj;
-  mrb_gc_arena_restore(mrb, ai);
-  return s;
+    return s;
 }
 
 // WHATWG HTML: one second has passed - ask the resource, and hand back
@@ -221,71 +250,79 @@ SseStream* sse_open(const SseResource* r, Logger* log, uint16_t& code) {
 // differently: h1 wraps each tick in a chunk (RFC 9112 7.1) and h2 puts
 // the same bytes in DATA frames against the stream window (RFC 9113
 // 6.1). What the resource said is the same either way.
-bool sse_tick(SseStream* s, int64_t now_s, std::string& body) {
-  const SseResource* r = s->res;
-  mrb_state* mrb = r->mrb;
-  if (s->last_tick_s == now_s) return true;
-  s->last_tick_s = now_s;
+bool sse_tick(SseStream *s, int64_t now_s, std::string &body)
+{
+    const SseResource *r = s->res;
+    mrb_state *mrb = r->mrb;
+    if (s->last_tick_s == now_s)
+        return true;
+    s->last_tick_s = now_s;
 
-  const int ai = mrb_gc_arena_save(mrb);
-  const mrb_value out = mrb_funcall_argv(mrb, s->self, MRB_SYM(on_tick), 0, nullptr);
-  if (mrb->exc != nullptr) {
-    report_raise(s->elog, mrb, 0);
-    mrb_gc_arena_restore(mrb, ai);
-    return false;
-  }
-
-  bool go_on = true;
-  if (mrb_symbol_p(out)) {
-    if (mrb_symbol(out) != MRB_SYM(close)) {
-      std::fprintf(stderr, "webmachine: SSE on_tick answered :%s - only :close is a word here\n",
-                   mrb_sym_name(mrb, mrb_symbol(out)));
+    const int ai = mrb_gc_arena_save(mrb);
+    const mrb_value out = mrb_funcall_argv(mrb, s->self, MRB_SYM(on_tick), 0, nullptr);
+    if (mrb->exc != nullptr) {
+        report_raise(s->elog, mrb, 0);
+        mrb_gc_arena_restore(mrb, ai);
+        return false;
     }
-    go_on = false;
-  } else if (mrb_array_p(out)) {
-    const mrb_int n = RARRAY_LEN(out);
-    for (mrb_int i = 0; i < n && go_on; i++) {
-      if (!spell_event(mrb, mrb_ary_entry(out, i), body)) {
-        std::fprintf(stderr, "webmachine: SSE on_tick answered an Array holding something "
-                             "that is neither a String nor a Hash\n");
+
+    bool go_on = true;
+    if (mrb_symbol_p(out)) {
+        if (mrb_symbol(out) != MRB_SYM(close)) {
+            std::fprintf(stderr,
+                         "webmachine: SSE on_tick answered :%s - only :close is a word here\n",
+                         mrb_sym_name(mrb, mrb_symbol(out)));
+        }
         go_on = false;
-      }
+    } else if (mrb_array_p(out)) {
+        const mrb_int n = RARRAY_LEN(out);
+        for (mrb_int i = 0; i < n && go_on; i++) {
+            if (!spell_event(mrb, mrb_ary_entry(out, i), body)) {
+                std::fprintf(stderr, "webmachine: SSE on_tick answered an Array holding something "
+                                     "that is neither a String nor a Hash\n");
+                go_on = false;
+            }
+        }
+    } else if (!mrb_nil_p(out) && !mrb_false_p(out)) {
+        if (!spell_event(mrb, out, body)) {
+            std::fprintf(stderr,
+                         "webmachine: SSE on_tick answered %s - a String, a Hash, an Array "
+                         "of those, nil or :close\n",
+                         mrb_obj_classname(mrb, out));
+            go_on = false;
+        }
     }
-  } else if (!mrb_nil_p(out) && !mrb_false_p(out)) {
-    if (!spell_event(mrb, out, body)) {
-      std::fprintf(stderr, "webmachine: SSE on_tick answered %s - a String, a Hash, an Array "
-                           "of those, nil or :close\n",
-                   mrb_obj_classname(mrb, out));
-      go_on = false;
-    }
-  }
-  mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_arena_restore(mrb, ai);
 
-  if (!body.empty()) {
-    s->last_out_s = now_s;
-  } else if (go_on && r->heartbeat != 0 && now_s - s->last_out_s >= r->heartbeat) {
-    // WHATWG HTML: a comment line, so a proxy in the middle sees traffic.
-    body.assign(":\n\n");
-    s->last_out_s = now_s;
-  }
-  return go_on;
+    if (!body.empty()) {
+        s->last_out_s = now_s;
+    } else if (go_on && r->heartbeat != 0 && now_s - s->last_out_s >= r->heartbeat) {
+        // WHATWG HTML: a comment line, so a proxy in the middle sees traffic.
+        body.assign(":\n\n");
+        s->last_out_s = now_s;
+    }
+    return go_on;
 }
 
 // RFC 9112 7.1: h1's framing of one tick - a chunk, and a last chunk when
 // the stream ends.
-bool sse_second(SseStream* s, int64_t now_s, std::string& sink) {
-  std::string body;
-  const bool go_on = sse_tick(s, now_s, body);
-  chunk(sink, body);
-  if (!go_on) sink.append("0\r\n\r\n", 5);
-  return go_on;
+bool sse_second(SseStream *s, int64_t now_s, std::string &sink)
+{
+    std::string body;
+    const bool go_on = sse_tick(s, now_s, body);
+    chunk(sink, body);
+    if (!go_on)
+        sink.append("0\r\n\r\n", 5);
+    return go_on;
 }
 
 // WHATWG HTML: the stream ends; the resource hears about it once.
-void sse_free(SseStream* s) {
-  if (s == nullptr) return;
-  report_close(s);
-  mrb_gc_unregister(s->res->mrb, s->self);
-  delete s;
+void sse_free(SseStream *s)
+{
+    if (s == nullptr)
+        return;
+    report_close(s);
+    mrb_gc_unregister(s->res->mrb, s->self);
+    delete s;
 }
-}
+} // namespace webmachine

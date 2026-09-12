@@ -8,8 +8,10 @@
 
 #include <cstring>
 
-namespace webmachine {
-namespace {
+namespace webmachine
+{
+namespace
+{
 constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 constexpr size_t kH2FragBudget = kMaxHead * 2;
 // RFC 9113 8.1.1: how many streams one connection may lose to a request
@@ -20,162 +22,193 @@ constexpr uint32_t kH2LieBudget = 4;
 constexpr size_t kH2MergeBody = 1024;
 
 // RFC 9113 4.1: a 32-bit field, network order.
-void put_u32(unsigned char* p, uint32_t v) {
-  p[0] = static_cast<unsigned char>(v >> 24);
-  p[1] = static_cast<unsigned char>(v >> 16);
-  p[2] = static_cast<unsigned char>(v >> 8);
-  p[3] = static_cast<unsigned char>(v);
+void put_u32(unsigned char *p, uint32_t v)
+{
+    p[0] = static_cast<unsigned char>(v >> 24);
+    p[1] = static_cast<unsigned char>(v >> 16);
+    p[2] = static_cast<unsigned char>(v >> 8);
+    p[3] = static_cast<unsigned char>(v);
 }
 
 // RFC 9113 6: one control frame - its type, its flags, the stream it names
 // (0 = the connection itself), and its fixed payload.
 struct H2Control {
-  uint8_t type;
-  uint8_t flags;
-  uint32_t stream;
-  std::span<const unsigned char> payload;
+    uint8_t type;
+    uint8_t flags;
+    uint32_t stream;
+    std::span<const unsigned char> payload;
 };
 
 // Header + payload, into the sink.
-void emit_control(std::string& sink, const H2Control& c) {
-  const uint32_t len = static_cast<uint32_t>(c.payload.size());
-  unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, {len, c.type, c.flags, c.stream});
-  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  if (len != 0) sink.append(reinterpret_cast<const char*>(c.payload.data()), len);
+void emit_control(std::string &sink, const H2Control &c)
+{
+    const uint32_t len = static_cast<uint32_t>(c.payload.size());
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, {len, c.type, c.flags, c.stream});
+    sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+    if (len != 0)
+        sink.append(reinterpret_cast<const char *>(c.payload.data()), len);
 }
 
 // RFC 9113 6.9: every DATA frame counts against the connection window,
 // a refused one as well. The credit for it goes back at once.
-void h2_credit_connection(std::string& sink, uint32_t flen) {
-  if (flen == 0) return;
-  unsigned char inc[4];
-  put_u32(inc, flen);
-  emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+void h2_credit_connection(std::string &sink, uint32_t flen)
+{
+    if (flen == 0)
+        return;
+    unsigned char inc[4];
+    put_u32(inc, flen);
+    emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
 }
 
 // RFC 7541 5.2: a string length, 7-bit prefix, H bit 0 - no Huffman out.
-void hp_len(std::string& out, size_t n) {
-  if (n < 127) {
+void hp_len(std::string &out, size_t n)
+{
+    if (n < 127) {
+        out.push_back(static_cast<char>(n));
+        return;
+    }
+    out.push_back(0x7f);
+    n -= 127;
+    while (n >= 128) {
+        out.push_back(static_cast<char>(0x80 | (n & 0x7f)));
+        n >>= 7;
+    }
     out.push_back(static_cast<char>(n));
-    return;
-  }
-  out.push_back(0x7f);
-  n -= 127;
-  while (n >= 128) {
-    out.push_back(static_cast<char>(0x80 | (n & 0x7f)));
-    n >>= 7;
-  }
-  out.push_back(static_cast<char>(n));
 }
 
 // RFC 7541 6.2.2: literal without indexing, indexed name, 4-bit prefix.
-void hp_name_idx(std::string& out, uint32_t idx) {
-  if (idx < 15) {
+void hp_name_idx(std::string &out, uint32_t idx)
+{
+    if (idx < 15) {
+        out.push_back(static_cast<char>(idx));
+        return;
+    }
+    out.push_back(0x0f);
+    idx -= 15;
+    while (idx >= 128) {
+        out.push_back(static_cast<char>(0x80 | (idx & 0x7f)));
+        idx >>= 7;
+    }
     out.push_back(static_cast<char>(idx));
-    return;
-  }
-  out.push_back(0x0f);
-  idx -= 15;
-  while (idx >= 128) {
-    out.push_back(static_cast<char>(0x80 | (idx & 0x7f)));
-    idx >>= 7;
-  }
-  out.push_back(static_cast<char>(idx));
 }
-}
+} // namespace
 
 // RFC 9113: the connection's state dies with the connection.
-void h2_free(H2State* h2) { delete h2; }
+void h2_free(H2State *h2)
+{
+    delete h2;
+}
 
 // RFC 9110 4.2.1: a parked request's view - its bytes are the stream's own
 // copy, so the spans have to be captured again.
-const ReqView* Http1::h2_parked_view(Conn& st0, Parked p) {
-  const std::string_view target = p.target;
-  ReqView& out = p.view;
-  if (target.empty()) return nullptr;
-  const AppSlot& slot = apps_[st0.listener];
-  const int r = slot.table->match(target.data(), target.size(), p.spans);
-  if (r < 0) return nullptr;
-  out.spans = &p.spans;
-  out.request_target = target.data();
-  out.request_target_len = target.size();
-  out.path_len = http::path_only(target.data(), target.size());
-  out.table = slot.table;
-  out.route = r;
-  return &out;
+const ReqView *Http1::h2_parked_view(Conn &st0, Parked p)
+{
+    const std::string_view target = p.target;
+    ReqView &out = p.view;
+    if (target.empty())
+        return nullptr;
+    const AppSlot &slot = apps_[st0.listener];
+    const int r = slot.table->match(target.data(), target.size(), p.spans);
+    if (r < 0)
+        return nullptr;
+    out.spans = &p.spans;
+    out.request_target = target.data();
+    out.request_target_len = target.size();
+    out.path_len = http::path_only(target.data(), target.size());
+    out.table = slot.table;
+    out.route = r;
+    return &out;
 }
 
 // RFC 7541 6.1/6.2.2: lane 1 - a precomputed block of what never changes.
-void Http1::h2_build_block(H2Block& b, const H2BlockFields& f) {
-  const uint16_t status = f.status;
-  const std::string* const ctype = f.ctype;
-  const std::string* const allow = f.allow;
-  b.bytes.clear();
-  switch (status) {
-    case 200: b.bytes.push_back(static_cast<char>(0x88)); break;
-    case 204: b.bytes.push_back(static_cast<char>(0x89)); break;
-    case 206: b.bytes.push_back(static_cast<char>(0x8a)); break;
-    case 304: b.bytes.push_back(static_cast<char>(0x8b)); break;
-    case 400: b.bytes.push_back(static_cast<char>(0x8c)); break;
-    case 404: b.bytes.push_back(static_cast<char>(0x8d)); break;
-    case 500: b.bytes.push_back(static_cast<char>(0x8e)); break;
-    default: {
-      hp_name_idx(b.bytes, 8);
-      char d[3];
-      d[0] = static_cast<char>('0' + status / 100);
-      d[1] = static_cast<char>('0' + (status / 10) % 10);
-      d[2] = static_cast<char>('0' + status % 10);
-      hp_len(b.bytes, 3);
-      b.bytes.append(d, 3);
-      break;
+void Http1::h2_build_block(H2Block &b, const H2BlockFields &f)
+{
+    const uint16_t status = f.status;
+    const std::string *const ctype = f.ctype;
+    const std::string *const allow = f.allow;
+    b.bytes.clear();
+    switch (status) {
+        case 200:
+            b.bytes.push_back(static_cast<char>(0x88));
+            break;
+        case 204:
+            b.bytes.push_back(static_cast<char>(0x89));
+            break;
+        case 206:
+            b.bytes.push_back(static_cast<char>(0x8a));
+            break;
+        case 304:
+            b.bytes.push_back(static_cast<char>(0x8b));
+            break;
+        case 400:
+            b.bytes.push_back(static_cast<char>(0x8c));
+            break;
+        case 404:
+            b.bytes.push_back(static_cast<char>(0x8d));
+            break;
+        case 500:
+            b.bytes.push_back(static_cast<char>(0x8e));
+            break;
+        default: {
+            hp_name_idx(b.bytes, 8);
+            char d[3];
+            d[0] = static_cast<char>('0' + status / 100);
+            d[1] = static_cast<char>('0' + (status / 10) % 10);
+            d[2] = static_cast<char>('0' + status % 10);
+            hp_len(b.bytes, 3);
+            b.bytes.append(d, 3);
+            break;
+        }
     }
-  }
-  if (ctype != nullptr && !ctype->empty()) {
-    hp_name_idx(b.bytes, 31);
-    hp_len(b.bytes, ctype->size());
-    b.bytes.append(*ctype);
-  }
-  if (allow != nullptr && !allow->empty()) {
-    b.bytes.push_back(0x00);
-    hp_len(b.bytes, 5);
-    b.bytes.append("allow", 5);
-    hp_len(b.bytes, allow->size());
-    b.bytes.append(*allow);
-  }
+    if (ctype != nullptr && !ctype->empty()) {
+        hp_name_idx(b.bytes, 31);
+        hp_len(b.bytes, ctype->size());
+        b.bytes.append(*ctype);
+    }
+    if (allow != nullptr && !allow->empty()) {
+        b.bytes.push_back(0x00);
+        hp_len(b.bytes, 5);
+        b.bytes.append("allow", 5);
+        hp_len(b.bytes, allow->size());
+        b.bytes.append(*allow);
+    }
 }
 
 // RFC 9113 3.4: this side's half of the preface, a SETTINGS frame.
-bool Http1::h2_begin(Conn& st, std::string& sink) {
-  st.h2 = new H2State();
-  // The encoder allocates; without it there is no answer to send, so the
-  // connection ends here rather than at the first field.
-  if (!st.h2->hpack_ready) return false;
-  unsigned char payload[12];
-  payload[0] = 0;
-  payload[1] = kH2SettingsMaxConcurrentStreams;
-  put_u32(payload + 2, kH2MaxConcurrentStreams);
-  // RFC 8441 3: a WebSocket reaches an h2 stream through the extended
-  // CONNECT, and a client may only send one when the server said this.
-  payload[6] = 0;
-  payload[7] = kH2SettingsEnableConnectProtocol;
-  put_u32(payload + 8, 1);
-  emit_control(sink, {kH2Settings, 0, 0, payload});
-  return true;
+bool Http1::h2_begin(Conn &st, std::string &sink)
+{
+    st.h2 = new H2State();
+    // The encoder allocates; without it there is no answer to send, so the
+    // connection ends here rather than at the first field.
+    if (!st.h2->hpack_ready)
+        return false;
+    unsigned char payload[12];
+    payload[0] = 0;
+    payload[1] = kH2SettingsMaxConcurrentStreams;
+    put_u32(payload + 2, kH2MaxConcurrentStreams);
+    // RFC 8441 3: a WebSocket reaches an h2 stream through the extended
+    // CONNECT, and a client may only send one when the server said this.
+    payload[6] = 0;
+    payload[7] = kH2SettingsEnableConnectProtocol;
+    put_u32(payload + 8, 1);
+    emit_control(sink, {kH2Settings, 0, 0, payload});
+    return true;
 }
 
 // RFC 9113 6.8: GOAWAY, and the connection is done.
-bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
-  H2State& h2 = *st.h2;
-  st.carry.clear();
-  if (!h2.goaway_sent) {
-    unsigned char payload[8];
-    put_u32(payload, h2.last_stream);
-    put_u32(payload + 4, code);
-    emit_control(sink, {kH2Goaway, 0, 0, payload});
-    h2.goaway_sent = true;
-  }
-  return false;
+bool Http1::h2_error(Conn &st, uint32_t code, std::string &sink)
+{
+    H2State &h2 = *st.h2;
+    st.carry.clear();
+    if (!h2.goaway_sent) {
+        unsigned char payload[8];
+        put_u32(payload, h2.last_stream);
+        put_u32(payload + 4, code);
+        emit_control(sink, {kH2Goaway, 0, 0, payload});
+        h2.goaway_sent = true;
+    }
+    return false;
 }
 
 // RFC 9113 5.1: an id above everything ever accepted is idle.
@@ -185,80 +218,87 @@ bool Http1::h2_error(Conn& st, uint32_t code, std::string& sink) {
 // RFC 9113 8.1.2: what a content-length field claimed, if one did - a
 // second one is the protocol error this returns false for.
 struct ClaimedLength {
-  bool have = false;
-  size_t value = 0;
+    bool have = false;
+    size_t value = 0;
 };
 
-bool h2_wire_header_ok(http::Field f, ClaimedLength& claimed) {
-  const char* const n = f.name.data();
-  const size_t nl = f.name.size();
-  const char* const v = f.value.data();
-  const size_t vl = f.value.size();
-  // te(2) upgrade(7) connection/keep-alive(10) content-length(14)
-  // transfer-encoding(17).
-  static constexpr size_t kLengths[] = {2, 7, 10, 14, 17};
-  static constexpr uint32_t kMask =
-      http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
-  if (!http::length_is_one_of(nl, kMask)) return true;
-  switch (nl) {
-    case 2:
-      if (http::tok_eq({n, nl}, "te") && !(vl == 8 && http::tok_eq({v, vl}, "trailers"))) {
-        return false;
-      }
-      break;
-    case 14:
-      if (http::tok_eq({n, nl}, "content-length")) {
-        if (claimed.have) return false;
-        claimed.have = true;
-        if (http::parse_content_length({v, vl}, &claimed.value) != http::ClStatus::kOk) {
-          return false;
-        }
-      }
-      break;
-    case 10:
-      if (http::tok_eq({n, nl}, "connection") || http::tok_eq({n, nl}, "keep-alive")) {
-        return false;
-      }
-      break;
-    case 17:
-      if (http::tok_eq({n, nl}, "transfer-encoding")) return false;
-      break;
-    case 7:
-      if (http::tok_eq({n, nl}, "upgrade")) return false;
-      break;
-    default:
-      break;
-  }
-  return true;
+bool h2_wire_header_ok(http::Field f, ClaimedLength &claimed)
+{
+    const char *const n = f.name.data();
+    const size_t nl = f.name.size();
+    const char *const v = f.value.data();
+    const size_t vl = f.value.size();
+    // te(2) upgrade(7) connection/keep-alive(10) content-length(14)
+    // transfer-encoding(17).
+    static constexpr size_t kLengths[] = {2, 7, 10, 14, 17};
+    static constexpr uint32_t kMask =
+        http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
+    if (!http::length_is_one_of(nl, kMask))
+        return true;
+    switch (nl) {
+        case 2:
+            if (http::tok_eq({n, nl}, "te") && !(vl == 8 && http::tok_eq({v, vl}, "trailers"))) {
+                return false;
+            }
+            break;
+        case 14:
+            if (http::tok_eq({n, nl}, "content-length")) {
+                if (claimed.have)
+                    return false;
+                claimed.have = true;
+                if (http::parse_content_length({v, vl}, &claimed.value) != http::ClStatus::kOk) {
+                    return false;
+                }
+            }
+            break;
+        case 10:
+            if (http::tok_eq({n, nl}, "connection") || http::tok_eq({n, nl}, "keep-alive")) {
+                return false;
+            }
+            break;
+        case 17:
+            if (http::tok_eq({n, nl}, "transfer-encoding"))
+                return false;
+            break;
+        case 7:
+            if (http::tok_eq({n, nl}, "upgrade"))
+                return false;
+            break;
+        default:
+            break;
+    }
+    return true;
 }
 
 // RFC 9113 8.1: a trailer field name the head owns alone. A trailer says
 // nothing about framing, about the connection, or about the length of the
 // body it closes.
-bool h2_trailer_name_ok(const char* n, size_t nl) {
-  // te(2) host(4) upgrade(7) connection/keep-alive(10) content-length(14)
-  // transfer-encoding(17).
-  static constexpr size_t kLengths[] = {2, 4, 7, 10, 14, 17};
-  static constexpr uint32_t kMask =
-      http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
-  if (!http::length_is_one_of(nl, kMask)) return true;
-  switch (nl) {
-    case 2:
-      return !http::tok_eq({n, nl}, "te");
-    case 4:
-      return !http::tok_eq({n, nl}, "host");
-    case 7:
-      return !http::tok_eq({n, nl}, "upgrade");
-    case 10:
-      return !http::tok_eq({n, nl}, "connection") && !http::tok_eq({n, nl}, "keep-alive");
-    case 14:
-      return !http::tok_eq({n, nl}, "content-length");
-    case 17:
-      return !http::tok_eq({n, nl}, "transfer-encoding");
-    default:
-      break;
-  }
-  return true;
+bool h2_trailer_name_ok(const char *n, size_t nl)
+{
+    // te(2) host(4) upgrade(7) connection/keep-alive(10) content-length(14)
+    // transfer-encoding(17).
+    static constexpr size_t kLengths[] = {2, 4, 7, 10, 14, 17};
+    static constexpr uint32_t kMask =
+        http::lengths_mask(kLengths, sizeof(kLengths) / sizeof(kLengths[0]));
+    if (!http::length_is_one_of(nl, kMask))
+        return true;
+    switch (nl) {
+        case 2:
+            return !http::tok_eq({n, nl}, "te");
+        case 4:
+            return !http::tok_eq({n, nl}, "host");
+        case 7:
+            return !http::tok_eq({n, nl}, "upgrade");
+        case 10:
+            return !http::tok_eq({n, nl}, "connection") && !http::tok_eq({n, nl}, "keep-alive");
+        case 14:
+            return !http::tok_eq({n, nl}, "content-length");
+        case 17:
+            return !http::tok_eq({n, nl}, "transfer-encoding");
+        default:
+            break;
+    }
+    return true;
 }
 
 // RFC 9110 5.6.2 / RFC 9113 8.2.1: which octets may stand in a field
@@ -266,19 +306,23 @@ bool h2_trailer_name_ok(const char* n, size_t nl) {
 // letters out of it. One table of 256 flags, so the scan is one load
 // and one test per octet. The tchar set is the one field_name_ok in
 // webmachine.hpp spells, without 'A' to 'Z'.
-constexpr std::array<bool, 256> h2_name_octets() {
-  std::array<bool, 256> t{};
-  for (unsigned c = 0; c < 256; c++) {
-    t[c] = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '!' || c == '#' ||
-           c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' ||
-           c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
-  }
-  return t;
+constexpr std::array<bool, 256> h2_name_octets()
+{
+    std::array<bool, 256> t{};
+    for (unsigned c = 0; c < 256; c++) {
+        t[c] = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '!' || c == '#' ||
+               c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' || c == '+' || c == '-' ||
+               c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+    }
+    return t;
 }
 constexpr std::array<bool, 256> kH2NameOctet = h2_name_octets();
 
 // RFC 9113 8.2.1: SP and HTAB may not start or end a field value.
-constexpr bool h2_is_blank(char c) { return c == ' ' || c == '\t'; }
+constexpr bool h2_is_blank(char c)
+{
+    return c == ' ' || c == '\t';
+}
 
 // RFC 9113 8.2.1: one field of a request, head or trailer. The name is
 // a lowercase token. The value carries no NUL, CR or LF, and it neither
@@ -297,19 +341,23 @@ constexpr bool h2_is_blank(char c) { return c == ' ' || c == '\t'; }
 // h2_dispatch compares such a name whole against the five it serves.
 // It refuses every other one, so the token rule does not run on a
 // pseudo-header here. Its value takes the value rule like any other.
-__attribute__((noinline)) bool h2_field_ok(http::Field f, bool name_known) {
-  const char* const n = f.name.data();
-  const size_t nl = f.name.size();
-  if (nl == 0) return false;
-  if (!name_known && n[0] != ':') {
-    for (size_t i = 0; i < nl; i++) {
-      if (!kH2NameOctet[static_cast<unsigned char>(n[i])]) return false;
+__attribute__((noinline)) bool h2_field_ok(http::Field f, bool name_known)
+{
+    const char *const n = f.name.data();
+    const size_t nl = f.name.size();
+    if (nl == 0)
+        return false;
+    if (!name_known && n[0] != ':') {
+        for (size_t i = 0; i < nl; i++) {
+            if (!kH2NameOctet[static_cast<unsigned char>(n[i])])
+                return false;
+        }
     }
-  }
-  const char* const v = f.value.data();
-  const size_t vl = f.value.size();
-  if (vl != 0 && (h2_is_blank(v[0]) || h2_is_blank(v[vl - 1]))) return false;
-  return http::field_value_ok(v, vl);
+    const char *const v = f.value.data();
+    const size_t vl = f.value.size();
+    if (vl != 0 && (h2_is_blank(v[0]) || h2_is_blank(v[vl - 1])))
+        return false;
+    return http::field_value_ok(v, vl);
 }
 
 // RFC 9113 8.3.1: :path is not empty, and it is "*" or it starts with
@@ -318,30 +366,39 @@ __attribute__((noinline)) bool h2_field_ok(http::Field f, bool name_known) {
 // h1 and h2 refuse the same octets. An octet of 0x80 or more passes on
 // both. A "*" with any method reaches the router and misses, as it
 // does on h1. False = malformed (RFC 9113 8.1.1).
-__attribute__((noinline)) bool h2_path_ok(const char* p, size_t n) {
-  if (n == 0) return false;
-  if (p[0] != '/' && !(n == 1 && p[0] == '*')) return false;
-  for (size_t i = 0; i < n; i++) {
-    const unsigned char c = static_cast<unsigned char>(p[i]);
-    if (c <= 0x20 || c == 0x7f) return false;
-  }
-  return true;
+__attribute__((noinline)) bool h2_path_ok(const char *p, size_t n)
+{
+    if (n == 0)
+        return false;
+    if (p[0] != '/' && !(n == 1 && p[0] == '*'))
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = static_cast<unsigned char>(p[i]);
+        if (c <= 0x20 || c == 0x7f)
+            return false;
+    }
+    return true;
 }
 
-static bool h2_is_idle(const H2State& h2, uint32_t id) { return id > h2.highest_opened; }
+static bool h2_is_idle(const H2State &h2, uint32_t id)
+{
+    return id > h2.highest_opened;
+}
 
 // RFC 9113 6.2: one whole HEADERS frame - the route's prebuilt block, the
 // per-answer fields, and the date - laid down for the cache to replay.
-void Http1::cache_headers(std::string& out, const CachedHead& head) {
-  const size_t clen = head.fields.size();
-  const size_t dlen = head.date.size();
-  unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, {static_cast<uint32_t>(head.block.bytes.size() + clen + dlen),
-                           kH2Headers, kH2FlagEndHeaders, 0});
-  out.assign(reinterpret_cast<const char*>(fh), sizeof(fh));
-  out.append(head.block.bytes);
-  if (clen != 0) out.append(reinterpret_cast<const char*>(head.fields.data()), clen);
-  out.append(reinterpret_cast<const char*>(head.date.data()), dlen);
+void Http1::cache_headers(std::string &out, const CachedHead &head)
+{
+    const size_t clen = head.fields.size();
+    const size_t dlen = head.date.size();
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, {static_cast<uint32_t>(head.block.bytes.size() + clen + dlen),
+                             kH2Headers, kH2FlagEndHeaders, 0});
+    out.assign(reinterpret_cast<const char *>(fh), sizeof(fh));
+    out.append(head.block.bytes);
+    if (clen != 0)
+        out.append(reinterpret_cast<const char *>(head.fields.data()), clen);
+    out.append(reinterpret_cast<const char *>(head.date.data()), dlen);
 }
 
 // RFC 9113 8.1.2.6: one request said one length and sent another. The
@@ -350,19 +407,22 @@ void Http1::cache_headers(std::string& out, const CachedHead& head) {
 // route match, a buffer or a file, and the octets already read.
 //
 // False = the connection is going away, and the caller stops feeding it.
-bool Http1::h2_count_lie(Conn& st, uint32_t id, std::string& sink) {
-  h2_rst(st, id, kH2ProtocolError, sink);
-  st.h2->lies++;
-  if (st.h2->lies < kH2LieBudget) return true;
-  return h2_error(st, kH2EnhanceYourCalm, sink);
+bool Http1::h2_count_lie(Conn &st, uint32_t id, std::string &sink)
+{
+    h2_rst(st, id, kH2ProtocolError, sink);
+    st.h2->lies++;
+    if (st.h2->lies < kH2LieBudget)
+        return true;
+    return h2_error(st, kH2EnhanceYourCalm, sink);
 }
 
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
-void Http1::h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink) {
-  unsigned char payload[4];
-  put_u32(payload, code);
-  emit_control(sink, {kH2RstStream, 0, id, payload});
-  st.h2->close_stream(id);
+void Http1::h2_rst(Conn &st, uint32_t id, uint32_t code, std::string &sink)
+{
+    unsigned char payload[4];
+    put_u32(payload, code);
+    emit_control(sink, {kH2RstStream, 0, id, payload});
+    st.h2->close_stream(id);
 }
 
 // RFC 9113 5.1.2: a client opens streams as fast as the settings allow,
@@ -375,66 +435,70 @@ void Http1::h2_rst(Conn& st, uint32_t id, uint32_t code, std::string& sink) {
 //
 // Out of line on purpose: this runs once per large body, and inline it
 // cost h2_dispatch 90 bytes. nm -S on the host build decided it.
-__attribute__((noinline)) bool Http1::h2_body_file_open(Conn& st0, H2Stream& stx,
-                                                        uint32_t stream_id,
-                                                        std::string& sink) {
-  size_t open_files = 0;
-  for (const H2Stream& other : st0.h2->streams) {
-    if (other.spill.fd >= 0) open_files++;
-  }
-  if (mrb_unlikely(open_files >= kH2SpillFilesMax)) {
-    h2_rst(st0, stream_id, kH2RefusedStream, sink);
-    return false;
-  }
-  const SpillOpen opened = stx.spill.open_file();
-  if (mrb_unlikely(opened != SpillOpen::kOpen)) {
-    h2_rst(st0, stream_id,
-           opened == SpillOpen::kNoSlot ? kH2RefusedStream : kH2InternalError, sink);
-    return false;
-  }
-  return true;
+__attribute__((noinline)) bool Http1::h2_body_file_open(Conn &st0, H2Stream &stx,
+                                                        uint32_t stream_id, std::string &sink)
+{
+    size_t open_files = 0;
+    for (const H2Stream &other : st0.h2->streams) {
+        if (other.spill.fd >= 0)
+            open_files++;
+    }
+    if (mrb_unlikely(open_files >= kH2SpillFilesMax)) {
+        h2_rst(st0, stream_id, kH2RefusedStream, sink);
+        return false;
+    }
+    const SpillOpen opened = stx.spill.open_file();
+    if (mrb_unlikely(opened != SpillOpen::kOpen)) {
+        h2_rst(st0, stream_id, opened == SpillOpen::kNoSlot ? kH2RefusedStream : kH2InternalError,
+               sink);
+        return false;
+    }
+    return true;
 }
 
 // #210 / #146: the page h1 spells for this status, framed for h2. False =
 // there is nothing to say and the prebuilt bodyless block stands.
-bool Http1::h2_error_page(const H2ErrorAsk& a, H2ErrorPage& p, H2Answer& out) {
-  const http::ReqValues* vals = a.vals;
-  const int m = err_pages_.media_for(a.status, vals != nullptr ? vals->accept : nullptr,
-                                     vals != nullptr ? vals->accept_len : 0);
-  size_t plen = 0;
-  const char* pbody =
-      err_pages_.body_for({a.status, m, a.fields}, p.rendered, &plen);
-  if (pbody == nullptr) return false;
-  const std::string ctype(err_pages_.media_type(m));
-  // RFC 9110 15.5.6: a 405 says which methods it would take, and the page
-  // it now carries must not cost it that field.
-  const Bundle* b = a.bundle;
-  const std::string* allow =
-      (a.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
-  h2_build_block(p.block, {a.status, &ctype, allow});
-  // Lent where it lies, whether that is the picture in the mapping or the
-  // page prepared at boot; a render lands in p.rendered, which
-  // outlives the framing at the call site either way.
-  out.body = pbody;
-  out.blen = plen;
-  out.blk = &p.block;
-  return true;
+bool Http1::h2_error_page(const H2ErrorAsk &a, H2ErrorPage &p, H2Answer &out)
+{
+    const http::ReqValues *vals = a.vals;
+    const int m = err_pages_.media_for(a.status, vals != nullptr ? vals->accept : nullptr,
+                                       vals != nullptr ? vals->accept_len : 0);
+    size_t plen = 0;
+    const char *pbody = err_pages_.body_for({a.status, m, a.fields}, p.rendered, &plen);
+    if (pbody == nullptr)
+        return false;
+    const std::string ctype(err_pages_.media_type(m));
+    // RFC 9110 15.5.6: a 405 says which methods it would take, and the page
+    // it now carries must not cost it that field.
+    const Bundle *b = a.bundle;
+    const std::string *allow =
+        (a.status == 405 && b != nullptr && !b->konst.allow.empty()) ? &b->konst.allow : nullptr;
+    h2_build_block(p.block, {a.status, &ctype, allow});
+    // Lent where it lies, whether that is the picture in the mapping or the
+    // page prepared at boot; a render lands in p.rendered, which
+    // outlives the framing at the call site either way.
+    out.body = pbody;
+    out.blen = plen;
+    out.blk = &p.block;
+    return true;
 }
 
 // RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
 // either answer or park the facts on the stream.
 // RFC 9113 8.1: the fields a parked stream copied when its HEADERS came,
 // rebuilt over the blob that outlived hdrbuf. Returns how many.
-size_t Http1::h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv) {
-  size_t nh = stp.field_spans.size() / 4;
-  if (nh > kH2MaxFields) nh = kH2MaxFields;
-  for (size_t i = 0; i < nh; i++) {
-    hv[i].name = stp.field_blob.data() + stp.field_spans[i * 4];
-    hv[i].name_len = stp.field_spans[i * 4 + 1];
-    hv[i].value = stp.field_blob.data() + stp.field_spans[i * 4 + 2];
-    hv[i].value_len = stp.field_spans[i * 4 + 3];
-  }
-  return nh;
+size_t Http1::h2_fields_of_parked(const H2Stream &stp, struct phr_header *hv)
+{
+    size_t nh = stp.field_spans.size() / 4;
+    if (nh > kH2MaxFields)
+        nh = kH2MaxFields;
+    for (size_t i = 0; i < nh; i++) {
+        hv[i].name = stp.field_blob.data() + stp.field_spans[i * 4];
+        hv[i].name_len = stp.field_spans[i * 4 + 1];
+        hv[i].value = stp.field_blob.data() + stp.field_spans[i * 4 + 2];
+        hv[i].value_len = stp.field_spans[i * 4 + 3];
+    }
+    return nh;
 }
 
 // A stream that parked at its HEADERS is served now: its request ended
@@ -447,11 +511,13 @@ size_t Http1::h2_fields_of_parked(const H2Stream& stp, struct phr_header* hv) {
 // with a connection and a generation and has no field for a stream.
 // An upload is a run of large frames, so the streams take turns at the
 // rate the disk allows rather than each waiting for its own turn.
-BodySpill* Http1::spill_waiting_h2(Conn& st) {
-  for (H2Stream& s : st.h2->streams) {
-    if (s.spill.owes_write()) return &s.spill;
-  }
-  return nullptr;
+BodySpill *Http1::spill_waiting_h2(Conn &st)
+{
+    for (H2Stream &s : st.h2->streams) {
+        if (s.spill.owes_write())
+            return &s.spill;
+    }
+    return nullptr;
 }
 
 // #53: the octets a run stopped for have all arrived. The run is in
@@ -462,702 +528,783 @@ BodySpill* Http1::spill_waiting_h2(Conn& st) {
 // False = no run of this stream is waiting on a body, so the caller
 // serves the stream itself. That is every stream whose flow has not run
 // yet: an asset, a konst route, or a connection already at kParkSlots.
-bool Http1::h2_body_ready(Conn& st, uint32_t stream_id) {
-  for (Conn::H2Parked& p : st.h2_parked) {
-    if (p.stream_id != stream_id) continue;
+bool Http1::h2_body_ready(Conn &st, uint32_t stream_id)
+{
+    for (Conn::H2Parked &p : st.h2_parked) {
+        if (p.stream_id != stream_id)
+            continue;
 
-    Conn::Round* const r = st.park_at(p.run.co.promise().park);
-    if (r == nullptr || !r->wants_body) return false;
+        Conn::Round *const r = st.park_at(p.run.co.promise().park);
+        if (r == nullptr || !r->wants_body)
+            return false;
 
-    r->answer_ready = true;
-    return true;
-  }
-  return false;
+        r->answer_ready = true;
+        return true;
+    }
+    return false;
 }
 
-bool Http1::h2_serve_parked(Conn& st0, H2Stream& stp, std::string& sink, bool complete) {
-  const uint32_t stream_id = stp.id;
-  // RFC 9113 5.1: only the end of the request closes this half. A stream
-  // served while its body is still arriving is not half closed yet.
-  if (complete) stp.half_closed_remote = true;
-  const flow::ReqFacts facts = stp.facts;
-  const bool head_only = stp.head_method;
-  const AssetEntry* asset = stp.parked_asset;
-  const uint16_t asset_status = stp.parked_status;
-  const size_t asset_off = stp.parked_first;
-  const size_t asset_end = stp.parked_end;
-  const uint16_t route = stp.route;
-  const std::string target = stp.request_target;
-  if (asset != nullptr) {
-    const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
-    if (!h2_asset_answer(st0, ask, sink)) return false;
-    h2_log(st0, {facts, target});
+bool Http1::h2_serve_parked(Conn &st0, H2Stream &stp, std::string &sink, bool complete)
+{
+    const uint32_t stream_id = stp.id;
+    // RFC 9113 5.1: only the end of the request closes this half. A stream
+    // served while its body is still arriving is not half closed yet.
+    if (complete)
+        stp.half_closed_remote = true;
+    const flow::ReqFacts facts = stp.facts;
+    const bool head_only = stp.head_method;
+    const AssetEntry *asset = stp.parked_asset;
+    const uint16_t asset_status = stp.parked_status;
+    const size_t asset_off = stp.parked_first;
+    const size_t asset_end = stp.parked_end;
+    const uint16_t route = stp.route;
+    const std::string target = stp.request_target;
+    if (asset != nullptr) {
+        const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
+        if (!h2_asset_answer(st0, ask, sink))
+            return false;
+        h2_log(st0, {facts, target});
+        return true;
+    }
+    std::string body;
+    body.swap(stp.request_content);
+    // RFC 9110 6.4: a spilled body reaches request.body as a descriptor.
+    // The file stays this stream's until close_stream drops the entry, so
+    // a parked run still finds it when it asks.
+    const int body_fd = stp.spill.fd;
+    const size_t body_fd_len = stp.spill.written;
+    // #36: is the whole body here? A stream served while its DATA is
+    // still coming says no, and the walk stops at the first node that
+    // reads content.
+    const bool body_whole = complete;
+    struct phr_header hv[kH2MaxFields];
+    const size_t nh = h2_fields_of_parked(stp, hv);
+    http::ReqValues pvals;
+    values_of_copied_fields({hv, nh}, pvals);
+    ReqView rv;
+    rv.tls = apps_[st0.listener].tls;
+    RouteSpans pspans;
+    rv.method = facts.method;
+    rv.content_ready = body_whole;
+    // What the client declared. A stream with content declares it or it
+    // is refused at the head, so this is the number B4 asks about even
+    // while the octets are still coming.
+    rv.declared_len = stp.content_length_given ? stp.content_length : body.size();
+    if (!body_whole) {
+        // Nothing is bound while octets are still coming. The walk stops at
+        // the first node that reads content, and the resume binds the whole
+        // body - a part of one never reaches a callback.
+    } else if (body_fd >= 0) {
+        rv.content_fd = body_fd;
+        rv.content_len = body_fd_len;
+        stp.spill.bound = true;
+    } else {
+        rv.content = body.empty() ? nullptr : body.data();
+        rv.content_len = body.size();
+    }
+    rv.fields = hv;
+    rv.field_count = nh;
+    rv.values = &pvals;
+    const ReqView *rvp = h2_parked_view(st0, {target, rv, pspans});
+    H2Request q{stream_id,
+                facts,
+                &pvals,
+                rvp,
+                target,
+                route,
+                head_only,
+                stp.field_blob.data(),
+                stp.field_blob.size()};
+    q.complete = body_whole;
+    q.bundle = route == kNoRoute ? nullptr : &bundles_[apps_[st0.listener].base + route];
+    const H2Served served = h2_serve(st0, q, sink);
+    if (served == H2Served::kClosed)
+        return false;
+    // A parked run logs from its own tail, with its own status.
+    if (served == H2Served::kAnswered)
+        h2_log(st0, {facts, target});
     return true;
-  }
-  std::string body;
-  body.swap(stp.request_content);
-  // RFC 9110 6.4: a spilled body reaches request.body as a descriptor.
-  // The file stays this stream's until close_stream drops the entry, so
-  // a parked run still finds it when it asks.
-  const int body_fd = stp.spill.fd;
-  const size_t body_fd_len = stp.spill.written;
-  // #36: is the whole body here? A stream served while its DATA is
-  // still coming says no, and the walk stops at the first node that
-  // reads content.
-  const bool body_whole = complete;
-  struct phr_header hv[kH2MaxFields];
-  const size_t nh = h2_fields_of_parked(stp, hv);
-  http::ReqValues pvals;
-  values_of_copied_fields({hv, nh}, pvals);
-  ReqView rv;
-  rv.tls = apps_[st0.listener].tls;
-  RouteSpans pspans;
-  rv.method = facts.method;
-  rv.content_ready = body_whole;
-  // What the client declared. A stream with content declares it or it
-  // is refused at the head, so this is the number B4 asks about even
-  // while the octets are still coming.
-  rv.declared_len = stp.content_length_given ? stp.content_length : body.size();
-  if (!body_whole) {
-    // Nothing is bound while octets are still coming. The walk stops at
-    // the first node that reads content, and the resume binds the whole
-    // body - a part of one never reaches a callback.
-  } else if (body_fd >= 0) {
-    rv.content_fd = body_fd;
-    rv.content_len = body_fd_len;
-    stp.spill.bound = true;
-  } else {
-    rv.content = body.empty() ? nullptr : body.data();
-    rv.content_len = body.size();
-  }
-  rv.fields = hv;
-  rv.field_count = nh;
-  rv.values = &pvals;
-  const ReqView* rvp = h2_parked_view(st0, {target, rv, pspans});
-  H2Request q{stream_id, facts,    &pvals,
-              rvp,       target,   route,
-              head_only, stp.field_blob.data(), stp.field_blob.size()};
-  q.complete = body_whole;
-  q.bundle = route == kNoRoute ? nullptr : &bundles_[apps_[st0.listener].base + route];
-  const H2Served served = h2_serve(st0, q, sink);
-  if (served == H2Served::kClosed) return false;
-  // A parked run logs from its own tail, with its own status.
-  if (served == H2Served::kAnswered) h2_log(st0, {facts, target});
-  return true;
 }
 
 // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
 // Anything else that carries :protocol is malformed.
-bool Http1::h2_extended_connect(Conn& st0, const H2Connect& ask, std::string& sink) {
-  const bool is_connect = ask.method.size() == 7 && std::memcmp(ask.method.data(), "CONNECT", 7) == 0;
-  const bool is_ws = ask.protocol.size() == 9 && http::tok_eq(ask.protocol, "websocket");
-  if (!is_connect || !is_ws || apps_[st0.listener].ws_table == nullptr) {
-    h2_rst(st0, ask.stream_id, kH2ProtocolError, sink);
-    return true;
-  }
-  RouteSpans wspans;
-  const int wr = apps_[st0.listener].ws_table->match(ask.path.data(), ask.path.size(), wspans);
-  if (wr < 0) {
-    h2_rst(st0, ask.stream_id, kH2RefusedStream, sink);
-    return true;
-  }
-  const H2WsAsk wask = {ask.stream_id, static_cast<uint16_t>(wr), ask.path, &wspans,
-                        ask.fields,    ask.nfields,               ask.vals};
-  return h2_ws_begin(st0, wask, sink);
+bool Http1::h2_extended_connect(Conn &st0, const H2Connect &ask, std::string &sink)
+{
+    const bool is_connect =
+        ask.method.size() == 7 && std::memcmp(ask.method.data(), "CONNECT", 7) == 0;
+    const bool is_ws = ask.protocol.size() == 9 && http::tok_eq(ask.protocol, "websocket");
+    if (!is_connect || !is_ws || apps_[st0.listener].ws_table == nullptr) {
+        h2_rst(st0, ask.stream_id, kH2ProtocolError, sink);
+        return true;
+    }
+    RouteSpans wspans;
+    const int wr = apps_[st0.listener].ws_table->match(ask.path.data(), ask.path.size(), wspans);
+    if (wr < 0) {
+        h2_rst(st0, ask.stream_id, kH2RefusedStream, sink);
+        return true;
+    }
+    const H2WsAsk wask = {
+        ask.stream_id, static_cast<uint16_t>(wr), ask.path, &wspans, ask.fields, ask.nfields,
+        ask.vals};
+    return h2_ws_begin(st0, wask, sink);
 }
 
-bool Http1::h2_dispatch(Conn& st0, const H2Headers& h, std::string& sink) {
-  const uint32_t stream_id = h.stream_id;
-  const bool end_stream = h.end_stream;
-  const unsigned char* const blk = h.block.data();
-  const size_t blk_len = h.block.size();
-  H2State& h2 = *st0.h2;
+bool Http1::h2_dispatch(Conn &st0, const H2Headers &h, std::string &sink)
+{
+    const uint32_t stream_id = h.stream_id;
+    const bool end_stream = h.end_stream;
+    const unsigned char *const blk = h.block.data();
+    const size_t blk_len = h.block.size();
+    H2State &h2 = *st0.h2;
 
-  uint32_t quads[4 * kH2MaxFields];
-  // RFC 7541 B: which static entry each name came from, or 0. One byte
-  // per field, beside the four offsets.
-  uint8_t hidx[kH2MaxFields];
-  size_t nq = 0;
-  size_t used = 0;
-  const unsigned char* p = blk;
-  const unsigned char* end = p + blk_len;
-  while (p < end) {
-    if (nq + 4 > 4 * kH2MaxFields) return h2_error(st0, kH2EnhanceYourCalm, sink);
-    if (used > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
-    if (h2.hdrbuf.size() < used + 4096) h2.hdrbuf.resize(used + 4096);
-    lsxpack_header_t xh;
-    lsxpack_header_prepare_decode(&xh, &h2.hdrbuf[used], 0, 4096);
-    if (lshpack_dec_decode(&h2.dec, &p, end, &xh) != 0) {
-      return h2_error(st0, kH2CompressionError, sink);
+    uint32_t quads[4 * kH2MaxFields];
+    // RFC 7541 B: which static entry each name came from, or 0. One byte
+    // per field, beside the four offsets.
+    uint8_t hidx[kH2MaxFields];
+    size_t nq = 0;
+    size_t used = 0;
+    const unsigned char *p = blk;
+    const unsigned char *end = p + blk_len;
+    while (p < end) {
+        if (nq + 4 > 4 * kH2MaxFields)
+            return h2_error(st0, kH2EnhanceYourCalm, sink);
+        if (used > kH2FragBudget)
+            return h2_error(st0, kH2EnhanceYourCalm, sink);
+        if (h2.hdrbuf.size() < used + 4096)
+            h2.hdrbuf.resize(used + 4096);
+        lsxpack_header_t xh;
+        lsxpack_header_prepare_decode(&xh, &h2.hdrbuf[used], 0, 4096);
+        if (lshpack_dec_decode(&h2.dec, &p, end, &xh) != 0) {
+            return h2_error(st0, kH2CompressionError, sink);
+        }
+        // RFC 7541 B: the decoder resolved this name out of the static
+        // table and says which entry it was. That integer is the name, so
+        // the scan below does not spell it out of the buffer again. A
+        // literal name says LSHPACK_HDR_UNKNOWN and is compared as before.
+        hidx[nq / 4] = xh.hpack_index;
+        quads[nq++] = static_cast<uint32_t>(used + xh.name_offset);
+        quads[nq++] = xh.name_len;
+        quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
+        quads[nq++] = xh.val_len;
+        // lshpack.h states what one decode writes into the buffer we lent:
+        // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
+        // val_offset + val_len is short by exactly those extra bytes (the
+        // HTTP/1.x CRLF the decoder appends), so the next field's window
+        // began inside bytes this one had just written. Their number, not
+        // ours.
+        used += static_cast<size_t>(xh.name_len) + xh.val_len + lshpack_dec_extra_bytes(&h2.dec);
     }
-    // RFC 7541 B: the decoder resolved this name out of the static
-    // table and says which entry it was. That integer is the name, so
-    // the scan below does not spell it out of the buffer again. A
-    // literal name says LSHPACK_HDR_UNKNOWN and is compared as before.
-    hidx[nq / 4] = xh.hpack_index;
-    quads[nq++] = static_cast<uint32_t>(used + xh.name_offset);
-    quads[nq++] = xh.name_len;
-    quads[nq++] = static_cast<uint32_t>(used + xh.val_offset);
-    quads[nq++] = xh.val_len;
-    // lshpack.h states what one decode writes into the buffer we lent:
-    // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
-    // val_offset + val_len is short by exactly those extra bytes (the
-    // HTTP/1.x CRLF the decoder appends), so the next field's window
-    // began inside bytes this one had just written. Their number, not
-    // ours.
-    used += static_cast<size_t>(xh.name_len) + xh.val_len + lshpack_dec_extra_bytes(&h2.dec);
-  }
-  h2.frag.clear();
+    h2.frag.clear();
 
-  H2Stream* existing = h2.find(stream_id);
-  if (existing != nullptr && existing->end_headers) {
-    // RFC 9113 8.1: a second field block on an open stream is the
-    // trailer section, and END_STREAM is the only way it comes.
-    //
-    // A stream that is not a request has none. A websocket or an event
-    // stream carries a tunnel, not a flow, and serving one here would
-    // run the route its entry never named - route 0, with facts nobody
-    // sent - and free the tunnel under the handler that is using it.
-    if (!end_stream || existing->half_closed_remote || existing->ws != nullptr ||
-        existing->sse != nullptr || existing->streaming) {
-      return h2_error(st0, kH2ProtocolError, sink);
+    H2Stream *existing = h2.find(stream_id);
+    if (existing != nullptr && existing->end_headers) {
+        // RFC 9113 8.1: a second field block on an open stream is the
+        // trailer section, and END_STREAM is the only way it comes.
+        //
+        // A stream that is not a request has none. A websocket or an event
+        // stream carries a tunnel, not a flow, and serving one here would
+        // run the route its entry never named - route 0, with facts nobody
+        // sent - and free the tunnel under the handler that is using it.
+        if (!end_stream || existing->half_closed_remote || existing->ws != nullptr ||
+            existing->sse != nullptr || existing->streaming) {
+            return h2_error(st0, kH2ProtocolError, sink);
+        }
+        // RFC 9113 8.1: a trailer section carries no pseudo-header, and the
+        // rules on a field name and a field value (8.2.1) hold there as they
+        // do in the head. The block was decoded and then thrown away, so a
+        // trailer could spell anything at all.
+        // RFC 9113 8.1.1: a malformed request is a stream error. The stream
+        // ends with PROTOCOL_ERROR. The connection stays open.
+        for (size_t i = 0; i < nq; i += 4) {
+            const char *const tname = h2.hdrbuf.data() + quads[i];
+            const size_t tlen = quads[i + 1];
+            const char *const tval = h2.hdrbuf.data() + quads[i + 2];
+            const size_t tvlen = quads[i + 3];
+            const bool tknown = hidx[i / 4] != LSHPACK_HDR_UNKNOWN;
+            if (!h2_field_ok({{tname, tlen}, {tval, tvlen}}, tknown) || tname[0] == ':' ||
+                !h2_trailer_name_ok(tname, tlen)) {
+                h2_rst(st0, stream_id, kH2ProtocolError, sink);
+                return true;
+            }
+        }
+        // The two gates the last DATA frame of a body passes. A trailer
+        // section ends the body, so it answers to both: the octets have to
+        // be the number the head declared, and a body in a file is whole
+        // only once its last write has landed.
+        if (existing->content_length_given &&
+            existing->content_received != existing->content_length) {
+            return h2_count_lie(st0, stream_id, sink);
+        }
+        existing->spill.ended = true;
+        if (mrb_unlikely(existing->spill.fd >= 0 && !existing->spill.drained()))
+            return true;
+        return h2_serve_parked(st0, *existing, sink, true);
     }
-    // RFC 9113 8.1: a trailer section carries no pseudo-header, and the
-    // rules on a field name and a field value (8.2.1) hold there as they
-    // do in the head. The block was decoded and then thrown away, so a
-    // trailer could spell anything at all.
-    // RFC 9113 8.1.1: a malformed request is a stream error. The stream
-    // ends with PROTOCOL_ERROR. The connection stays open.
-    for (size_t i = 0; i < nq; i += 4) {
-      const char* const tname = h2.hdrbuf.data() + quads[i];
-      const size_t tlen = quads[i + 1];
-      const char* const tval = h2.hdrbuf.data() + quads[i + 2];
-      const size_t tvlen = quads[i + 3];
-      const bool tknown = hidx[i / 4] != LSHPACK_HDR_UNKNOWN;
-      if (!h2_field_ok({{tname, tlen}, {tval, tvlen}}, tknown) || tname[0] == ':' ||
-          !h2_trailer_name_ok(tname, tlen)) {
+
+    flow::ReqFacts facts;
+    http::ReqValues vals;
+    const char *path_val = nullptr;
+    size_t path_vlen = 0;
+    bool ok = true, saw_regular = false;
+    bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
+    ClaimedLength claimed;
+    // RFC 9113 8.3: the request's own fields, in the shape h1 hands down,
+    // so request.headers and every by-name accessor answer the same way on
+    // both protocols. Filled in the loop that already holds the pointers -
+    // the pseudo-fields are not among them, because the branch below takes
+    // them first, which is also what h1 means by a header.
+    struct phr_header hv[kH2MaxFields];
+    size_t nh = 0;
+    // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
+    // and the method as the client spelled it - CONNECT is not one of the
+    // methods the flow knows, so parse_method answers kOther for it.
+    const char *protocol_val = nullptr;
+    size_t protocol_vlen = 0;
+    const char *method_val = nullptr;
+    size_t method_vlen = 0;
+    for (size_t i = 0; ok && i < nq; i += 4) {
+        const char *name = h2.hdrbuf.data() + quads[i];
+        const size_t nlen = quads[i + 1];
+        const char *val = h2.hdrbuf.data() + quads[i + 2];
+        const size_t vlen = quads[i + 3];
+        const uint8_t known = hidx[i / 4];
+        // RFC 9113 8.2.1: the name is a lowercase token. The value carries
+        // no NUL, CR or LF and no blank at either end. A field that breaks
+        // one of these rules makes the request malformed. One call per
+        // field; the scan is the helper's, not this function's. A name the
+        // decoder took from the static table is a token already and skips
+        // the scan.
+        if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
+            ok = false;
+            break;
+        }
+        // RFC 8441 4 / RFC 9113 8.3: the colon says a field is a
+        // pseudo-header, and nothing else may. The static index says which
+        // one it is, and that is all it is used for below - a name the
+        // decoder resolved is not spelled out of the buffer again. It may
+        // not stand in for the colon: :status is a static entry too, and a
+        // request that carries one is refused by the arm at the end.
+        if (name[0] == ':') {
+            if (saw_regular) {
+                ok = false;
+                break;
+            }
+            // RFC 9113 8.2.1: the value rule holds for a pseudo-header as it
+            // holds for every other field. The name carries a colon, so
+            // h2_field_ok runs no token scan on it, and the switch below is
+            // what refuses a name that is not one of the five.
+            if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
+                ok = false;
+                break;
+            }
+            // One switch on the index, and the memcmp chain only for a name
+            // the decoder did not resolve. The chain that tested the index
+            // and the name together cost more than the memcmp it replaced:
+            // a field low in the chain paid every compare above it.
+            enum : uint8_t { kNone, kMethod, kPath, kScheme, kAuthority, kProtocol };
+            uint8_t which = kNone;
+            switch (known) {
+                case LSHPACK_HDR_METHOD_GET:
+                case LSHPACK_HDR_METHOD_POST:
+                    which = kMethod;
+                    break;
+                case LSHPACK_HDR_PATH:
+                case LSHPACK_HDR_PATH_INDEX_HTML:
+                    which = kPath;
+                    break;
+                case LSHPACK_HDR_SCHEME_HTTP:
+                case LSHPACK_HDR_SCHEME_HTTPS:
+                    which = kScheme;
+                    break;
+                case LSHPACK_HDR_AUTHORITY:
+                    which = kAuthority;
+                    break;
+                case LSHPACK_HDR_UNKNOWN:
+                    if (nlen == 7 && std::memcmp(name, ":method", 7) == 0)
+                        which = kMethod;
+                    else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0)
+                        which = kPath;
+                    else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0)
+                        which = kScheme;
+                    else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0)
+                        which = kAuthority;
+                    else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0)
+                        which = kProtocol;
+                    break;
+                default:
+                    break;
+            }
+            if (which == kMethod) {
+                if (have_method) {
+                    ok = false;
+                    break;
+                }
+                have_method = true;
+                method_val = val;
+                method_vlen = vlen;
+                facts.method = http::parse_method(val, vlen);
+            } else if (which == kPath) {
+                if (path_val != nullptr) {
+                    ok = false;
+                    break;
+                }
+                have_path = true;
+                path_val = val;
+                path_vlen = vlen;
+            } else if (which == kScheme) {
+                if (have_scheme) {
+                    ok = false;
+                    break;
+                }
+                have_scheme = true;
+            } else if (which == kAuthority) {
+                if (have_authority) {
+                    ok = false;
+                    break;
+                }
+                have_authority = true;
+            } else if (which == kProtocol) {
+                // RFC 8441 4: only an extended CONNECT carries it, and only once.
+                if (protocol_val != nullptr) {
+                    ok = false;
+                    break;
+                }
+                protocol_val = val;
+                protocol_vlen = vlen;
+            } else {
+                ok = false;
+            }
+            continue;
+        }
+        saw_regular = true;
+        // Where this field lands, for vals.named to point at. A block past
+        // kH2MaxFields keeps no slot, and SIZE_MAX says so.
+        size_t at = SIZE_MAX;
+        if (nh < kH2MaxFields) {
+            hv[nh].name = name;
+            hv[nh].name_len = nlen;
+            hv[nh].value = val;
+            hv[nh].value_len = vlen;
+            at = nh;
+            nh++;
+        }
+        if (http::header_switch({{name, nlen}, {val, vlen}}, {facts, vals, at}) &&
+            !h2_wire_header_ok({{name, nlen}, {val, vlen}}, claimed)) {
+            ok = false;
+        }
+    }
+    // RFC 9113 8.3.1: the :path came, and it has the shape of a target.
+    // have_path is tested first, so path_val is never null here.
+    if (!ok || !have_method || !have_path || !have_scheme || !h2_path_ok(path_val, path_vlen)) {
         h2_rst(st0, stream_id, kH2ProtocolError, sink);
         return true;
-      }
     }
-    // The two gates the last DATA frame of a body passes. A trailer
-    // section ends the body, so it answers to both: the octets have to
-    // be the number the head declared, and a body in a file is whole
-    // only once its last write has landed.
-    if (existing->content_length_given &&
-        existing->content_received != existing->content_length) {
-      return h2_count_lie(st0, stream_id, sink);
-    }
-    existing->spill.ended = true;
-    if (mrb_unlikely(existing->spill.fd >= 0 && !existing->spill.drained())) return true;
-    return h2_serve_parked(st0, *existing, sink, true);
-  }
 
-  flow::ReqFacts facts;
-  http::ReqValues vals;
-  const char* path_val = nullptr;
-  size_t path_vlen = 0;
-  bool ok = true, saw_regular = false;
-  bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
-  ClaimedLength claimed;
-  // RFC 9113 8.3: the request's own fields, in the shape h1 hands down,
-  // so request.headers and every by-name accessor answer the same way on
-  // both protocols. Filled in the loop that already holds the pointers -
-  // the pseudo-fields are not among them, because the branch below takes
-  // them first, which is also what h1 means by a header.
-  struct phr_header hv[kH2MaxFields];
-  size_t nh = 0;
-  // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
-  // and the method as the client spelled it - CONNECT is not one of the
-  // methods the flow knows, so parse_method answers kOther for it.
-  const char* protocol_val = nullptr;
-  size_t protocol_vlen = 0;
-  const char* method_val = nullptr;
-  size_t method_vlen = 0;
-  for (size_t i = 0; ok && i < nq; i += 4) {
-    const char* name = h2.hdrbuf.data() + quads[i];
-    const size_t nlen = quads[i + 1];
-    const char* val = h2.hdrbuf.data() + quads[i + 2];
-    const size_t vlen = quads[i + 3];
-    const uint8_t known = hidx[i / 4];
-    // RFC 9113 8.2.1: the name is a lowercase token. The value carries
-    // no NUL, CR or LF and no blank at either end. A field that breaks
-    // one of these rules makes the request malformed. One call per
-    // field; the scan is the helper's, not this function's. A name the
-    // decoder took from the static table is a token already and skips
-    // the scan.
-    if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
-      ok = false;
-      break;
+    if (stream_id > h2.last_stream)
+        h2.last_stream = stream_id;
+    if (stream_id > h2.highest_opened)
+        h2.highest_opened = stream_id;
+    if (h2.streams.size() >= kH2MaxConcurrentStreams) {
+        h2_rst(st0, stream_id, kH2RefusedStream, sink);
+        return true;
     }
-    // RFC 8441 4 / RFC 9113 8.3: the colon says a field is a
-    // pseudo-header, and nothing else may. The static index says which
-    // one it is, and that is all it is used for below - a name the
-    // decoder resolved is not spelled out of the buffer again. It may
-    // not stand in for the colon: :status is a static entry too, and a
-    // request that carries one is refused by the arm at the end.
-    if (name[0] == ':') {
-      if (saw_regular) {
-        ok = false;
-        break;
-      }
-      // RFC 9113 8.2.1: the value rule holds for a pseudo-header as it
-      // holds for every other field. The name carries a colon, so
-      // h2_field_ok runs no token scan on it, and the switch below is
-      // what refuses a name that is not one of the five.
-      if (!h2_field_ok({{name, nlen}, {val, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
-        ok = false;
-        break;
-      }
-      // One switch on the index, and the memcmp chain only for a name
-      // the decoder did not resolve. The chain that tested the index
-      // and the name together cost more than the memcmp it replaced:
-      // a field low in the chain paid every compare above it.
-      enum : uint8_t { kNone, kMethod, kPath, kScheme, kAuthority, kProtocol };
-      uint8_t which = kNone;
-      switch (known) {
-        case LSHPACK_HDR_METHOD_GET:
-        case LSHPACK_HDR_METHOD_POST: which = kMethod; break;
-        case LSHPACK_HDR_PATH:
-        case LSHPACK_HDR_PATH_INDEX_HTML: which = kPath; break;
-        case LSHPACK_HDR_SCHEME_HTTP:
-        case LSHPACK_HDR_SCHEME_HTTPS: which = kScheme; break;
-        case LSHPACK_HDR_AUTHORITY: which = kAuthority; break;
-        case LSHPACK_HDR_UNKNOWN:
-          if (nlen == 7 && std::memcmp(name, ":method", 7) == 0) which = kMethod;
-          else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0) which = kPath;
-          else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0) which = kScheme;
-          else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0) which = kAuthority;
-          else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0) which = kProtocol;
-          break;
-        default: break;
-      }
-      if (which == kMethod) {
-        if (have_method) { ok = false; break; }
-        have_method = true;
-        method_val = val;
-        method_vlen = vlen;
-        facts.method = http::parse_method(val, vlen);
-      } else if (which == kPath) {
-        if (path_val != nullptr) { ok = false; break; }
-        have_path = true;
-        path_val = val;
-        path_vlen = vlen;
-      } else if (which == kScheme) {
-        if (have_scheme) { ok = false; break; }
-        have_scheme = true;
-      } else if (which == kAuthority) {
-        if (have_authority) { ok = false; break; }
-        have_authority = true;
-      } else if (which == kProtocol) {
-        // RFC 8441 4: only an extended CONNECT carries it, and only once.
-        if (protocol_val != nullptr) { ok = false; break; }
-        protocol_val = val;
-        protocol_vlen = vlen;
-      } else {
-        ok = false;
-      }
-      continue;
-    }
-    saw_regular = true;
-    // Where this field lands, for vals.named to point at. A block past
-    // kH2MaxFields keeps no slot, and SIZE_MAX says so.
-    size_t at = SIZE_MAX;
-    if (nh < kH2MaxFields) {
-      hv[nh].name = name;
-      hv[nh].name_len = nlen;
-      hv[nh].value = val;
-      hv[nh].value_len = vlen;
-      at = nh;
-      nh++;
-    }
-    if (http::header_switch({{name, nlen}, {val, vlen}}, {facts, vals, at}) &&
-        !h2_wire_header_ok({{name, nlen}, {val, vlen}}, claimed)) {
-      ok = false;
-    }
-  }
-  // RFC 9113 8.3.1: the :path came, and it has the shape of a target.
-  // have_path is tested first, so path_val is never null here.
-  if (!ok || !have_method || !have_path || !have_scheme || !h2_path_ok(path_val, path_vlen)) {
-    h2_rst(st0, stream_id, kH2ProtocolError, sink);
-    return true;
-  }
+    const bool head_only = facts.method == flow::Method::kHead;
 
-  if (stream_id > h2.last_stream) h2.last_stream = stream_id;
-  if (stream_id > h2.highest_opened) h2.highest_opened = stream_id;
-  if (h2.streams.size() >= kH2MaxConcurrentStreams) {
-    h2_rst(st0, stream_id, kH2RefusedStream, sink);
-    return true;
-  }
-  const bool head_only = facts.method == flow::Method::kHead;
-
-  const AssetEntry* asset = nullptr;
-  uint16_t asset_status = 0;
-  size_t asset_off = 0;
-  size_t asset_end = 0;
-  if (assets_ != nullptr) {
-    if (AssetEntry* ae = assets_->find(path_val, path_vlen)) {
-      asset = ae;
-      asset_status = assets_->verdict(*ae, {facts, vals});
-      asset_end = Assets::wire_len(*ae);
-      if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
-          vals.range != nullptr &&
-          (vals.if_range == nullptr ||
-           http::if_range_matches({vals.if_range, vals.if_range_len},
-                                  {ae->etag, sizeof(ae->etag)}))) {
-        http::ByteRange r = {0, 0};
-        switch (http::parse_range({{vals.range, vals.range_len}, asset_end}, r)) {
-          case http::RangeParse::kOne:
-            asset_status = 206;
-            asset_off = r.first;
-            asset_end = r.last + 1;
-            break;
-          case http::RangeParse::kUnsat: asset_status = 416; break;
-          case http::RangeParse::kNone: break;
+    const AssetEntry *asset = nullptr;
+    uint16_t asset_status = 0;
+    size_t asset_off = 0;
+    size_t asset_end = 0;
+    if (assets_ != nullptr) {
+        if (AssetEntry *ae = assets_->find(path_val, path_vlen)) {
+            asset = ae;
+            asset_status = assets_->verdict(*ae, {facts, vals});
+            asset_end = Assets::wire_len(*ae);
+            if (asset_status == 200 && !head_only && facts.method == flow::Method::kGet &&
+                vals.range != nullptr &&
+                (vals.if_range == nullptr ||
+                 http::if_range_matches({vals.if_range, vals.if_range_len},
+                                        {ae->etag, sizeof(ae->etag)}))) {
+                http::ByteRange r = {0, 0};
+                switch (http::parse_range({{vals.range, vals.range_len}, asset_end}, r)) {
+                    case http::RangeParse::kOne:
+                        asset_status = 206;
+                        asset_off = r.first;
+                        asset_end = r.last + 1;
+                        break;
+                    case http::RangeParse::kUnsat:
+                        asset_status = 416;
+                        break;
+                    case http::RangeParse::kNone:
+                        break;
+                }
+            }
         }
-      }
     }
-  }
 
-  // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
-  if (mrb_unlikely(protocol_val != nullptr)) {
-    const H2Connect ask = {stream_id, {method_val, method_vlen}, {protocol_val, protocol_vlen},
-                           {path_val, path_vlen}, hv, nh, &vals};
-    return h2_extended_connect(st0, ask, sink);
-  }
+    // RFC 8441 4: an extended CONNECT opens a WebSocket on this stream.
+    if (mrb_unlikely(protocol_val != nullptr)) {
+        const H2Connect ask = {stream_id,
+                               {method_val, method_vlen},
+                               {protocol_val, protocol_vlen},
+                               {path_val, path_vlen},
+                               hv,
+                               nh,
+                               &vals};
+        return h2_extended_connect(st0, ask, sink);
+    }
 
-  RouteSpans spans;
-  // WHATWG HTML: an event stream route answers before the ordinary
-  // table, the same order h1 asks in (feed_parse).
-  if (mrb_unlikely(apps_[st0.listener].sse_table != nullptr)) {
-    RouteSpans sspans;
-    const int sr = apps_[st0.listener].sse_table->match(path_val, path_vlen, sspans);
-    if (sr >= 0) {
-      const H2SseAsk ask = {stream_id, static_cast<uint16_t>(sr), {path_val, path_vlen},
-                            &sspans,   hv,                       nh,
-                            &vals};
-      return h2_sse_begin(st0, ask, sink);
-    }
-  }
-  const int r = apps_[st0.listener].table->match(path_val, path_vlen, spans);
-  const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
-  const Bundle* b = r < 0 ? nullptr : &bundles_[apps_[st0.listener].base + route];
-
-  if (end_stream) {
-    if (claimed.have && claimed.value != 0) {
-      h2_rst(st0, stream_id, kH2ProtocolError, sink);
-      return true;
-    }
-    if (asset != nullptr) {
-      const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
-      if (!h2_asset_answer(st0, ask, sink)) return false;
-      h2_log(st0, {facts, {path_val, path_vlen}});
-      return true;
-    }
-    // Only a bound resource reads a request view: a konst route answers
-    // from the flow table and the head alone, so nothing is filled for it.
-    const bool bound = b != nullptr && b->bound;
-    ReqView rv;
-    if (bound) {
-      rv.tls = apps_[st0.listener].tls;
-      rv.request_target = path_val;
-      rv.request_target_len = path_vlen;
-      rv.path_len = http::path_only(path_val, path_vlen);
-      rv.method = facts.method;
-      rv.table = apps_[st0.listener].table;
-      rv.route = r;
-      rv.spans = &spans;
-      rv.declared_len = claimed.have ? claimed.value : 0;
-      // hdrbuf is still the block this dispatch decoded, so the fields can
-      // be lent for the length of the answer.
-      rv.fields = hv;
-      rv.field_count = nh;
-      rv.values = &vals;
-    }
-    H2Request q{stream_id,
-                facts,
-                &vals,
-                bound ? &rv : nullptr,
-                {path_val, path_vlen},
-                route,
-                head_only,
-                h2.hdrbuf.data(),
-                h2.hdrbuf.size()};
-    q.bundle = b;
-    // The straight line: a run that cannot stop needs no frame and no
-    // held head, so it skips h2_serve and what h2_serve computes for one.
-    bool answered;
-    if (!h2_can_stop(b)) {
-      if (!h2_answer(st0, q, sink)) return false;
-      answered = true;
-    } else {
-      const H2Served served = h2_serve(st0, q, sink);
-      if (served == H2Served::kClosed) return false;
-      answered = served == H2Served::kAnswered;
-    }
-    if (answered) h2_log(st0, {facts, {path_val, path_vlen}});
-    return true;
-  }
-  H2Stream& stx = h2.open(stream_id);
-  // Decide, then do: what every DATA frame of this stream earns, worked
-  // out once here instead of per frame in the feed.
-  //
-  // RFC 9110 15.5.14: the nearest limit answers. The application's
-  // number holds until this route's resource names its own with
-  // `def self.max_body`.
-  stx.max_body = apps_[st0.listener].max_body;
-  if (route != kNoRoute) {
-    const Bundle& lb = bundles_[apps_[st0.listener].base + route];
-    if (lb.bound && lb.res->max_body >= 0) stx.max_body = static_cast<size_t>(lb.res->max_body);
-  }
-  if (asset != nullptr || route == kNoRoute) {
-    stx.data = H2Stream::Data::kDrop;
-  } else {
-    const Bundle& db = bundles_[apps_[st0.listener].base + route];
-    const bool reads = db.bound && db.res->takes_body;
-    // RFC 9110 6.4: the declared length picks where the octets land,
-    // here, before the first one arrives. A body of kBodySpill or more
-    // opens its file now, so no octet is ever moved from memory into it
-    // part way through; a smaller one takes its buffer once.
-    if (!reads || (claimed.have && claimed.value > stx.max_body)) {
-      // A declared length above the limit opens no file and reserves no
-      // buffer. The first DATA frame crosses the limit and the stream
-      // is refused there, before an octet is stored.
-      stx.data = H2Stream::Data::kDrop;
-    } else if (!claimed.have && !db.res->saves_body) {
-      // RFC 9110 8.6: nothing was declared, so nothing is known. The
-      // body starts in memory and the count moves it to a file when it
-      // grows. No reserve: the size is what arrives.
-      stx.data = H2Stream::Data::kMem;
-    } else if (claimed.value >= kBodySpill || db.res->saves_body) {
-      // One descriptor per large body, and two ceilings on how many are
-      // open: this connection's and the process's. Over either the
-      // stream is refused, and the client sends it again later.
-      if (mrb_unlikely(!h2_body_file_open(st0, stx, stream_id, sink))) return true;
-      stx.data = H2Stream::Data::kFile;
-    } else {
-      // No reserve for a number the client only declared. 256 streams
-      // that each name 255 KiB and send nothing took 64 MiB of this
-      // process, per connection. The string grows with what arrives,
-      // which is geometric and bounded by kBodySpill - over that the
-      // body moves to a file.
-      stx.data = H2Stream::Data::kMem;
-    }
-  }
-  stx.end_headers = true;
-  stx.facts = facts;
-  stx.head_method = head_only;
-  stx.parked_asset = asset;
-  stx.parked_status = asset_status;
-  stx.parked_first = asset_off;
-  stx.parked_end = asset_end;
-  stx.route = route;
-  stx.request_target.assign(path_val, path_vlen);
-  stx.field_blob.clear();
-  stx.field_spans.clear();
-  stx.field_spans.reserve(nh * 4);
-  for (size_t i = 0; i < nh; i++) {
-    stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
-    stx.field_spans.push_back(static_cast<uint32_t>(hv[i].name_len));
-    stx.field_blob.append(hv[i].name, hv[i].name_len);
-    stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
-    stx.field_spans.push_back(static_cast<uint32_t>(hv[i].value_len));
-    stx.field_blob.append(hv[i].value, hv[i].value_len);
-  }
-  stx.content_length = claimed.value;
-  stx.content_length_given = claimed.have;
-
-  // #53: the flow walks on the head, and the body waits behind it.
-  //
-  // A request this server was always going to refuse - 401 from
-  // is_authorized?, 403, 404 from resource_exists?, 405, 406, 412 - is
-  // refused now, before its octets arrive. h1 has answered that way
-  // since #36. h2 waited for the whole body first, so an upload to a
-  // route that answers 404 was taken in full, and the body file opened
-  // at this head held a slot of the process-wide count (kBodyFilesMax)
-  // for as long as the upload lasted. An unauthenticated peer could
-  // hold those slots against every other upload of the process.
-  //
-  // Only a run that can stop may walk here. A route that cannot stop,
-  // or a connection with no park slot left, would take h2_serve's
-  // straight path and answer from a body that has not arrived - a wrong
-  // answer rather than a late one. Those wait, as they did before.
-  if (asset == nullptr && route != kNoRoute && stx.data != H2Stream::Data::kDrop) {
-    const Bundle& eb = bundles_[apps_[st0.listener].base + route];
-    // Any bound resource may be asked to wait for a body, so what
-    // matters here is a park slot to wait in, not what the resource
-    // declares. Without one the stream waits for its body as before.
-    if (eb.bound && eb.res != nullptr &&
-        st0.h2_parked.size() < static_cast<size_t>(Conn::kParkSlots)) {
-      // The stream table may move under the serve, so nothing of stx is
-      // read after this call.
-      if (!h2_serve_parked(st0, stx, sink, false)) return false;
-
-      bool parked_now = false;
-      for (const Conn::H2Parked& p : st0.h2_parked) {
-        if (p.stream_id == stream_id) {
-          parked_now = true;
-          break;
+    RouteSpans spans;
+    // WHATWG HTML: an event stream route answers before the ordinary
+    // table, the same order h1 asks in (feed_parse).
+    if (mrb_unlikely(apps_[st0.listener].sse_table != nullptr)) {
+        RouteSpans sspans;
+        const int sr = apps_[st0.listener].sse_table->match(path_val, path_vlen, sspans);
+        if (sr >= 0) {
+            const H2SseAsk ask = {
+                stream_id, static_cast<uint16_t>(sr), {path_val, path_vlen}, &sspans, hv, nh,
+                &vals};
+            return h2_sse_begin(st0, ask, sink);
         }
-      }
-      if (!parked_now) {
-        // RFC 9113 8.1: the answer is whole and the request is not. The
-        // peer is told to stop rather than left sending a body into a
-        // stream that is finished with it. NO_ERROR, because nothing
-        // went wrong - the answer simply needed none of it.
-        h2_rst(st0, stream_id, kH2NoError, sink);
-      }
     }
-  }
-  return true;
+    const int r = apps_[st0.listener].table->match(path_val, path_vlen, spans);
+    const uint16_t route = r < 0 ? kNoRoute : static_cast<uint16_t>(r);
+    const Bundle *b = r < 0 ? nullptr : &bundles_[apps_[st0.listener].base + route];
+
+    if (end_stream) {
+        if (claimed.have && claimed.value != 0) {
+            h2_rst(st0, stream_id, kH2ProtocolError, sink);
+            return true;
+        }
+        if (asset != nullptr) {
+            const H2Asset ask = {stream_id, *asset, asset_status, head_only, asset_off, asset_end};
+            if (!h2_asset_answer(st0, ask, sink))
+                return false;
+            h2_log(st0, {facts, {path_val, path_vlen}});
+            return true;
+        }
+        // Only a bound resource reads a request view: a konst route answers
+        // from the flow table and the head alone, so nothing is filled for it.
+        const bool bound = b != nullptr && b->bound;
+        ReqView rv;
+        if (bound) {
+            rv.tls = apps_[st0.listener].tls;
+            rv.request_target = path_val;
+            rv.request_target_len = path_vlen;
+            rv.path_len = http::path_only(path_val, path_vlen);
+            rv.method = facts.method;
+            rv.table = apps_[st0.listener].table;
+            rv.route = r;
+            rv.spans = &spans;
+            rv.declared_len = claimed.have ? claimed.value : 0;
+            // hdrbuf is still the block this dispatch decoded, so the fields can
+            // be lent for the length of the answer.
+            rv.fields = hv;
+            rv.field_count = nh;
+            rv.values = &vals;
+        }
+        H2Request q{stream_id,
+                    facts,
+                    &vals,
+                    bound ? &rv : nullptr,
+                    {path_val, path_vlen},
+                    route,
+                    head_only,
+                    h2.hdrbuf.data(),
+                    h2.hdrbuf.size()};
+        q.bundle = b;
+        // The straight line: a run that cannot stop needs no frame and no
+        // held head, so it skips h2_serve and what h2_serve computes for one.
+        bool answered;
+        if (!h2_can_stop(b)) {
+            if (!h2_answer(st0, q, sink))
+                return false;
+            answered = true;
+        } else {
+            const H2Served served = h2_serve(st0, q, sink);
+            if (served == H2Served::kClosed)
+                return false;
+            answered = served == H2Served::kAnswered;
+        }
+        if (answered)
+            h2_log(st0, {facts, {path_val, path_vlen}});
+        return true;
+    }
+    H2Stream &stx = h2.open(stream_id);
+    // Decide, then do: what every DATA frame of this stream earns, worked
+    // out once here instead of per frame in the feed.
+    //
+    // RFC 9110 15.5.14: the nearest limit answers. The application's
+    // number holds until this route's resource names its own with
+    // `def self.max_body`.
+    stx.max_body = apps_[st0.listener].max_body;
+    if (route != kNoRoute) {
+        const Bundle &lb = bundles_[apps_[st0.listener].base + route];
+        if (lb.bound && lb.res->max_body >= 0)
+            stx.max_body = static_cast<size_t>(lb.res->max_body);
+    }
+    if (asset != nullptr || route == kNoRoute) {
+        stx.data = H2Stream::Data::kDrop;
+    } else {
+        const Bundle &db = bundles_[apps_[st0.listener].base + route];
+        const bool reads = db.bound && db.res->takes_body;
+        // RFC 9110 6.4: the declared length picks where the octets land,
+        // here, before the first one arrives. A body of kBodySpill or more
+        // opens its file now, so no octet is ever moved from memory into it
+        // part way through; a smaller one takes its buffer once.
+        if (!reads || (claimed.have && claimed.value > stx.max_body)) {
+            // A declared length above the limit opens no file and reserves no
+            // buffer. The first DATA frame crosses the limit and the stream
+            // is refused there, before an octet is stored.
+            stx.data = H2Stream::Data::kDrop;
+        } else if (!claimed.have && !db.res->saves_body) {
+            // RFC 9110 8.6: nothing was declared, so nothing is known. The
+            // body starts in memory and the count moves it to a file when it
+            // grows. No reserve: the size is what arrives.
+            stx.data = H2Stream::Data::kMem;
+        } else if (claimed.value >= kBodySpill || db.res->saves_body) {
+            // One descriptor per large body, and two ceilings on how many are
+            // open: this connection's and the process's. Over either the
+            // stream is refused, and the client sends it again later.
+            if (mrb_unlikely(!h2_body_file_open(st0, stx, stream_id, sink)))
+                return true;
+            stx.data = H2Stream::Data::kFile;
+        } else {
+            // No reserve for a number the client only declared. 256 streams
+            // that each name 255 KiB and send nothing took 64 MiB of this
+            // process, per connection. The string grows with what arrives,
+            // which is geometric and bounded by kBodySpill - over that the
+            // body moves to a file.
+            stx.data = H2Stream::Data::kMem;
+        }
+    }
+    stx.end_headers = true;
+    stx.facts = facts;
+    stx.head_method = head_only;
+    stx.parked_asset = asset;
+    stx.parked_status = asset_status;
+    stx.parked_first = asset_off;
+    stx.parked_end = asset_end;
+    stx.route = route;
+    stx.request_target.assign(path_val, path_vlen);
+    stx.field_blob.clear();
+    stx.field_spans.clear();
+    stx.field_spans.reserve(nh * 4);
+    for (size_t i = 0; i < nh; i++) {
+        stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
+        stx.field_spans.push_back(static_cast<uint32_t>(hv[i].name_len));
+        stx.field_blob.append(hv[i].name, hv[i].name_len);
+        stx.field_spans.push_back(static_cast<uint32_t>(stx.field_blob.size()));
+        stx.field_spans.push_back(static_cast<uint32_t>(hv[i].value_len));
+        stx.field_blob.append(hv[i].value, hv[i].value_len);
+    }
+    stx.content_length = claimed.value;
+    stx.content_length_given = claimed.have;
+
+    // #53: the flow walks on the head, and the body waits behind it.
+    //
+    // A request this server was always going to refuse - 401 from
+    // is_authorized?, 403, 404 from resource_exists?, 405, 406, 412 - is
+    // refused now, before its octets arrive. h1 has answered that way
+    // since #36. h2 waited for the whole body first, so an upload to a
+    // route that answers 404 was taken in full, and the body file opened
+    // at this head held a slot of the process-wide count (kBodyFilesMax)
+    // for as long as the upload lasted. An unauthenticated peer could
+    // hold those slots against every other upload of the process.
+    //
+    // Only a run that can stop may walk here. A route that cannot stop,
+    // or a connection with no park slot left, would take h2_serve's
+    // straight path and answer from a body that has not arrived - a wrong
+    // answer rather than a late one. Those wait, as they did before.
+    if (asset == nullptr && route != kNoRoute && stx.data != H2Stream::Data::kDrop) {
+        const Bundle &eb = bundles_[apps_[st0.listener].base + route];
+        // Any bound resource may be asked to wait for a body, so what
+        // matters here is a park slot to wait in, not what the resource
+        // declares. Without one the stream waits for its body as before.
+        if (eb.bound && eb.res != nullptr &&
+            st0.h2_parked.size() < static_cast<size_t>(Conn::kParkSlots)) {
+            // The stream table may move under the serve, so nothing of stx is
+            // read after this call.
+            if (!h2_serve_parked(st0, stx, sink, false))
+                return false;
+
+            bool parked_now = false;
+            for (const Conn::H2Parked &p : st0.h2_parked) {
+                if (p.stream_id == stream_id) {
+                    parked_now = true;
+                    break;
+                }
+            }
+            if (!parked_now) {
+                // RFC 9113 8.1: the answer is whole and the request is not. The
+                // peer is told to stop rather than left sending a body into a
+                // stream that is finished with it. NO_ERROR, because nothing
+                // went wrong - the answer simply needed none of it.
+                h2_rst(st0, stream_id, kH2NoError, sink);
+            }
+        }
+    }
+    return true;
 }
 
 // RFC 7541 Appendix A: never-indexed blocks per asset entry, at setup.
-void Http1::h2_build_asset_blocks(AssetEntry& e) {
-  std::string& b = e.h2_head_200;
-  b.clear();
-  b.push_back(static_cast<char>(0x88));
-  hp_name_idx(b, 31);
-  hp_len(b, e.content_type.size());
-  b.append(e.content_type);
-  if (e.deflated) {
-    hp_name_idx(b, 26);
-    hp_len(b, 4);
-    b.append("gzip", 4);
-    hp_name_idx(b, 59);
-    hp_len(b, 15);
-    b.append("Accept-Encoding", 15);
-  }
-  hp_name_idx(b, 34);
-  hp_len(b, sizeof(e.etag));
-  b.append(e.etag, sizeof(e.etag));
-  if (e.last_modified_valid) {
-    hp_name_idx(b, 44);
-    hp_len(b, sizeof(e.last_modified));
-    b.append(e.last_modified, sizeof(e.last_modified));
-  }
-  hp_name_idx(b, 18);
-  hp_len(b, 5);
-  b.append("bytes", 5);
+void Http1::h2_build_asset_blocks(AssetEntry &e)
+{
+    std::string &b = e.h2_head_200;
+    b.clear();
+    b.push_back(static_cast<char>(0x88));
+    hp_name_idx(b, 31);
+    hp_len(b, e.content_type.size());
+    b.append(e.content_type);
+    if (e.deflated) {
+        hp_name_idx(b, 26);
+        hp_len(b, 4);
+        b.append("gzip", 4);
+        hp_name_idx(b, 59);
+        hp_len(b, 15);
+        b.append("Accept-Encoding", 15);
+    }
+    hp_name_idx(b, 34);
+    hp_len(b, sizeof(e.etag));
+    b.append(e.etag, sizeof(e.etag));
+    if (e.last_modified_valid) {
+        hp_name_idx(b, 44);
+        hp_len(b, sizeof(e.last_modified));
+        b.append(e.last_modified, sizeof(e.last_modified));
+    }
+    hp_name_idx(b, 18);
+    hp_len(b, 5);
+    b.append("bytes", 5);
 
-  std::string& c = e.h2_head_304;
-  c.clear();
-  c.push_back(static_cast<char>(0x8b));
-  hp_name_idx(c, 34);
-  hp_len(c, sizeof(e.etag));
-  c.append(e.etag, sizeof(e.etag));
-  if (e.deflated) {
-    hp_name_idx(c, 59);
-    hp_len(c, 15);
-    c.append("Accept-Encoding", 15);
-  }
+    std::string &c = e.h2_head_304;
+    c.clear();
+    c.push_back(static_cast<char>(0x8b));
+    hp_name_idx(c, 34);
+    hp_len(c, sizeof(e.etag));
+    c.append(e.etag, sizeof(e.etag));
+    if (e.deflated) {
+        hp_name_idx(c, 59);
+        hp_len(c, 15);
+        c.append("Accept-Encoding", 15);
+    }
 }
 
 // RFC 7541: the asset tier's shared 405 and 406 blocks.
-void Http1::h2_build_asset_shared() {
-  static const std::string kAllow = "GET, HEAD";
-  h2_build_block(h2_asset405_, {405, nullptr, &kAllow});
-  h2_build_block(h2_asset406_, {406});
-  hp_name_idx(h2_asset406_.bytes, 59);
-  hp_len(h2_asset406_.bytes, 15);
-  h2_asset406_.bytes.append("Accept-Encoding", 15);
+void Http1::h2_build_asset_shared()
+{
+    static const std::string kAllow = "GET, HEAD";
+    h2_build_block(h2_asset405_, {405, nullptr, &kAllow});
+    h2_build_block(h2_asset406_, {406});
+    hp_name_idx(h2_asset406_.bytes, 59);
+    hp_len(h2_asset406_.bytes, 15);
+    h2_asset406_.bytes.append("Accept-Encoding", 15);
 }
 
 // RFC 9113 6.1/6.9: the asset answer - body as segments over the mapping,
 // window-refused remainder parked.
-bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
-  const uint32_t stream_id = a.stream_id;
-  const AssetEntry& e = a.entry;
-  const uint16_t status = a.status;
-  const bool head_only = a.head_only;
-  const size_t win_off = a.win_off;
-  const size_t win_end = a.win_end;
-  H2State& h2 = *st0.h2;
-  std::string rblk;
-  const std::string* blk;
-  switch (status) {
-    case 200: blk = &e.h2_head_200; break;
-    case 206: {
-      rblk.push_back(static_cast<char>(0x8a));
-      hp_name_idx(rblk, 31);
-      hp_len(rblk, e.content_type.size());
-      rblk.append(e.content_type);
-      if (e.deflated) {
-        hp_name_idx(rblk, 26);
-        hp_len(rblk, 4);
-        rblk.append("gzip", 4);
-        hp_name_idx(rblk, 59);
-        hp_len(rblk, 15);
-        rblk.append("Accept-Encoding", 15);
-      }
-      hp_name_idx(rblk, 34);
-      hp_len(rblk, sizeof(e.etag));
-      rblk.append(e.etag, sizeof(e.etag));
-      hp_name_idx(rblk, 30);
-      const std::string cr = "bytes " + std::to_string(win_off) + "-" +
-                             std::to_string(win_end - 1) + "/" +
-                             std::to_string(Assets::wire_len(e));
-      hp_len(rblk, cr.size());
-      rblk.append(cr);
-      blk = &rblk;
-      break;
+bool Http1::h2_asset_answer(Conn &st0, const H2Asset &a, std::string &sink)
+{
+    const uint32_t stream_id = a.stream_id;
+    const AssetEntry &e = a.entry;
+    const uint16_t status = a.status;
+    const bool head_only = a.head_only;
+    const size_t win_off = a.win_off;
+    const size_t win_end = a.win_end;
+    H2State &h2 = *st0.h2;
+    std::string rblk;
+    const std::string *blk;
+    switch (status) {
+        case 200:
+            blk = &e.h2_head_200;
+            break;
+        case 206: {
+            rblk.push_back(static_cast<char>(0x8a));
+            hp_name_idx(rblk, 31);
+            hp_len(rblk, e.content_type.size());
+            rblk.append(e.content_type);
+            if (e.deflated) {
+                hp_name_idx(rblk, 26);
+                hp_len(rblk, 4);
+                rblk.append("gzip", 4);
+                hp_name_idx(rblk, 59);
+                hp_len(rblk, 15);
+                rblk.append("Accept-Encoding", 15);
+            }
+            hp_name_idx(rblk, 34);
+            hp_len(rblk, sizeof(e.etag));
+            rblk.append(e.etag, sizeof(e.etag));
+            hp_name_idx(rblk, 30);
+            const std::string cr = "bytes " + std::to_string(win_off) + "-" +
+                                   std::to_string(win_end - 1) + "/" +
+                                   std::to_string(Assets::wire_len(e));
+            hp_len(rblk, cr.size());
+            rblk.append(cr);
+            blk = &rblk;
+            break;
+        }
+        case 416: {
+            hp_name_idx(rblk, 8);
+            hp_len(rblk, 3);
+            rblk.append("416", 3);
+            if (e.deflated) {
+                hp_name_idx(rblk, 59);
+                hp_len(rblk, 15);
+                rblk.append("Accept-Encoding", 15);
+            }
+            hp_name_idx(rblk, 30);
+            const std::string cr = "bytes */" + std::to_string(Assets::wire_len(e));
+            hp_len(rblk, cr.size());
+            rblk.append(cr);
+            blk = &rblk;
+            break;
+        }
+        case 304:
+            blk = &e.h2_head_304;
+            break;
+        case 405:
+            blk = &h2_asset405_.bytes;
+            break;
+        case 406:
+            blk = &h2_asset406_.bytes;
+            break;
+        default:
+            blk = &h2_store_[index_[status]].bytes;
+            break;
     }
-    case 416: {
-      hp_name_idx(rblk, 8);
-      hp_len(rblk, 3);
-      rblk.append("416", 3);
-      if (e.deflated) {
-        hp_name_idx(rblk, 59);
-        hp_len(rblk, 15);
-        rblk.append("Accept-Encoding", 15);
-      }
-      hp_name_idx(rblk, 30);
-      const std::string cr = "bytes */" + std::to_string(Assets::wire_len(e));
-      hp_len(rblk, cr.size());
-      rblk.append(cr);
-      blk = &rblk;
-      break;
+
+    const bool has_body = status == 200 || status == 206;
+    const size_t blen = has_body ? win_end - win_off : 0;
+    const bool no_data = head_only || blen == 0;
+    alog_status_ = status;
+    alog_bytes_ = no_data ? 0 : blen;
+
+    // Without an insert: an insert here would move every index a cached
+    // konst head holds, and nothing counts it there.
+    unsigned char dbuf[64];
+    unsigned char *dp = dbuf;
+    if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
+                      {"date", {date_, sizeof(date_)}, false})) {
+        return h2_error(st0, kH2InternalError, sink);
     }
-    case 304: blk = &e.h2_head_304; break;
-    case 405: blk = &h2_asset405_.bytes; break;
-    case 406: blk = &h2_asset406_.bytes; break;
-    default: blk = &h2_store_[index_[status]].bytes; break;
-  }
+    const size_t dlen = static_cast<size_t>(dp - dbuf);
 
-  const bool has_body = status == 200 || status == 206;
-  const size_t blen = has_body ? win_end - win_off : 0;
-  const bool no_data = head_only || blen == 0;
-  alog_status_ = status;
-  alog_bytes_ = no_data ? 0 : blen;
+    unsigned char fh[kH2FrameHeaderLen];
+    const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+    h2_put_frame_header(
+        fh, {static_cast<uint32_t>(blk->size() + dlen), kH2Headers, head_flags, stream_id});
+    sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+    sink.append(*blk);
+    sink.append(reinterpret_cast<const char *>(dbuf), dlen);
 
-  // Without an insert: an insert here would move every index a cached
-  // konst head holds, and nothing counts it there.
-  unsigned char dbuf[64];
-  unsigned char* dp = dbuf;
-  if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
-                    {"date", {date_, sizeof(date_)}, false})) {
-    return h2_error(st0, kH2InternalError, sink);
-  }
-  const size_t dlen = static_cast<size_t>(dp - dbuf);
+    if (no_data) {
+        h2.close_stream(stream_id);
+        return true;
+    }
 
-  unsigned char fh[kH2FrameHeaderLen];
-  const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
-  h2_put_frame_header(
-      fh, {static_cast<uint32_t>(blk->size() + dlen), kH2Headers, head_flags, stream_id});
-  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  sink.append(*blk);
-  sink.append(reinterpret_cast<const char*>(dbuf), dlen);
-
-  if (no_data) {
-    h2.close_stream(stream_id);
+    H2Stream &keep = h2.open(stream_id);
+    keep.response_content.take_asset(&e, win_off, win_end);
+    keep.end_headers = true;
+    keep.half_closed_remote = true;
     return true;
-  }
-
-  H2Stream& keep = h2.open(stream_id);
-  keep.response_content.take_asset(&e, win_off, win_end);
-  keep.end_headers = true;
-  keep.half_closed_remote = true;
-  return true;
 }
 
 // RFC 9113 6.2/6.9.1: HEADERS and DATA for one stream; DATA beyond
@@ -1165,121 +1312,128 @@ bool Http1::h2_asset_answer(Conn& st0, const H2Asset& a, std::string& sink) {
 // RFC 9110 15.6.1: see the declaration. A run that named a file never
 // lends its body either (see the O18 body handler in resource.cpp), so
 // lent_have is already false here and there is nothing to unwind.
-uint16_t Http1::h2_refuse_file(Conn& st, const ReqView* req) {
-  static const char kWhy[] =
-      "response.file is not wired for HTTP/2 yet - this stream would have been "
-      "answered with an empty body, so it is refused instead";
-  log_internal_error(elog_, {{static_cast<const char*>(st.peer), st.peer_len},
-                             req != nullptr
-                                 ? std::string_view{req->request_target, req->request_target_len}
-                                 : std::string_view{},
-                             {kWhy, sizeof(kWhy) - 1},
-                             500});
-  body_.clear();
-  rhdrs_.clear();
-  return 500;
+uint16_t Http1::h2_refuse_file(Conn &st, const ReqView *req)
+{
+    static const char kWhy[] =
+        "response.file is not wired for HTTP/2 yet - this stream would have been "
+        "answered with an empty body, so it is refused instead";
+    log_internal_error(elog_, {{static_cast<const char *>(st.peer), st.peer_len},
+                               req != nullptr
+                                   ? std::string_view{req->request_target, req->request_target_len}
+                                   : std::string_view{},
+                               {kWhy, sizeof(kWhy) - 1},
+                               500});
+    body_.clear();
+    rhdrs_.clear();
+    return 500;
 }
 
 // #30: what the run left, read after it answered. A run that parked
 // answers long after h2_produce returned, so this is its own step - the
 // straight path calls it at once, and the coroutine calls it when the
 // round is done.
-void Http1::h2_after_run(Conn& st0, const H2Request& q, H2Produced& p, uint16_t status) {
-  const Bundle* const b = p.b;
-  if (b == nullptr || !b->bound) return;
-  LentBody lent_body;
-  p.lent_have = resource_body_lent(*b->res, lent_body);
-  p.lent_v = lent_body.value;
-  p.lent = lent_body.bytes.data();
-  p.lent_len = lent_body.bytes.size();
-  if (p.lent_have) p.lent_mrb = b->res->mrb;
-  // response.file is h1-only for now: the deferred open lives on the
-  // connection, and h2 multiplexes streams that would each need one.
-  //
-  // The slot is taken either way, because left set it would answer the
-  // next request through this Resource. A run that named a file is
-  // refused here rather than served an empty body it never meant.
-  {
-    WantedFile wanted;
-    if (resource_file_wanted(*b->res, wanted)) {
-      p.have_body = false;
-      status = h2_refuse_file(st0, q.req);
+void Http1::h2_after_run(Conn &st0, const H2Request &q, H2Produced &p, uint16_t status)
+{
+    const Bundle *const b = p.b;
+    if (b == nullptr || !b->bound)
+        return;
+    LentBody lent_body;
+    p.lent_have = resource_body_lent(*b->res, lent_body);
+    p.lent_v = lent_body.value;
+    p.lent = lent_body.bytes.data();
+    p.lent_len = lent_body.bytes.size();
+    if (p.lent_have)
+        p.lent_mrb = b->res->mrb;
+    // response.file is h1-only for now: the deferred open lives on the
+    // connection, and h2 multiplexes streams that would each need one.
+    //
+    // The slot is taken either way, because left set it would answer the
+    // next request through this Resource. A run that named a file is
+    // refused here rather than served an empty body it never meant.
+    {
+        WantedFile wanted;
+        if (resource_file_wanted(*b->res, wanted)) {
+            p.have_body = false;
+            status = h2_refuse_file(st0, q.req);
+        }
     }
-  }
-  p.status = status;
-  p.dynamic = (!b->res->run.content_type.empty() || !p.rhdrs->empty()) && status != 500;
+    p.status = status;
+    p.dynamic = (!b->res->run.content_type.empty() || !p.rhdrs->empty()) && status != 500;
 }
 
 // #30: the walk. `can_park` says whether the caller holds a frame that
 // can keep a stopped run - the h2 dispatcher does not, the coroutine
 // does. It is the same question run_parkable answers for h1.
-void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced& p) {
-  const flow::ReqFacts& facts = q.facts;
-  const http::ReqValues* vals = q.vals;
-  const ReqView* req = q.req;
-  const uint16_t route = q.route;
-  const bool head_only = q.head_only;
+void Http1::h2_produce(Conn &st0, const H2Request &q, bool can_park, H2Produced &p)
+{
+    const flow::ReqFacts &facts = q.facts;
+    const http::ReqValues *vals = q.vals;
+    const ReqView *req = q.req;
+    const uint16_t route = q.route;
+    const bool head_only = q.head_only;
 
-  p.idx = &index_;
-  const Bundle* b = nullptr;
-  uint16_t status;
-  bool have_body = false;
-  bool dynamic = false;
-  // What this run lent instead of copying, if anything: not yet owned by a
-  // stream, so every path out of here below still has to place or free it.
-  if (route == kNoRoute) {
-    status = 404;
-  } else {
-    b = q.bundle != nullptr ? q.bundle : &bundles_[apps_[st0.listener].base + route];
-    p.idx = &b->index;
-    if (b->bound) {
-      // The Values die with the frame that carried them, so a run reached
-      // from here - parked or not - gets none.
-      // The same [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
-      // to lend, and h2 has no gzip path for a dynamic body to collide with.
-      const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_, can_park};
-      const RunAnswer answer = {p.body, &have_body, p.rhdrs};
-      status = resource_run(*b->res, asked, answer);
-      p.b = b;
-      p.status = status;
-      p.have_body = have_body;
-      // #30: the walk stopped. What it left cannot be read yet - it has
-      // not answered - so the caller parks and calls h2_after_run when
-      // the answer is back. Only a caller that can park ever sees this.
-      if (mrb_unlikely(run_stopped(*b->res))) return;
-      h2_after_run(st0, q, p, status);
-      return;
+    p.idx = &index_;
+    const Bundle *b = nullptr;
+    uint16_t status;
+    bool have_body = false;
+    bool dynamic = false;
+    // What this run lent instead of copying, if anything: not yet owned by a
+    // stream, so every path out of here below still has to place or free it.
+    if (route == kNoRoute) {
+        status = 404;
     } else {
-      // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
-      // they belong to the stream - so the one negotiated bit is answered on
-      // a copy, and only when the client sent an Accept at all.
-      // A stream reached from a parked frame carries facts but no Values -
-      // the bytes died with the frame. No Accept bytes, nothing to weigh,
-      // and c3 already sent this request the way it went before.
-      // The copy is made only for a request that sent an Accept: every
-      // other one answers on the facts as they stand. One call to
-      // flow::answer, because it is inlined at each call it has.
-      const flow::ReqFacts* use = &facts;
-      std::optional<flow::ReqFacts> cf;
-      if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
-        cf.emplace(facts);
-        if (http::accept_is_exact({vals->accept, vals->accept_len}, b->accept_type)) {
-          cf->has_accept = false;
+        b = q.bundle != nullptr ? q.bundle : &bundles_[apps_[st0.listener].base + route];
+        p.idx = &b->index;
+        if (b->bound) {
+            // The Values die with the frame that carried them, so a run reached
+            // from here - parked or not - gets none.
+            // The same [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
+            // to lend, and h2 has no gzip path for a dynamic body to collide with.
+            const RunAsk asked = {facts, vals, req, head_only ? 0 : zc_min_, can_park};
+            const RunAnswer answer = {p.body, &have_body, p.rhdrs};
+            status = resource_run(*b->res, asked, answer);
+            p.b = b;
+            p.status = status;
+            p.have_body = have_body;
+            // #30: the walk stopped. What it left cannot be read yet - it has
+            // not answered - so the caller parks and calls h2_after_run when
+            // the answer is back. Only a caller that can park ever sees this.
+            if (mrb_unlikely(run_stopped(*b->res)))
+                return;
+            h2_after_run(st0, q, p, status);
+            return;
         } else {
-          cf->plain = false;
-          cf->accept_ok =
-              http::choose_media_type({{&b->accept_type, 1}, {vals->accept, vals->accept_len}}) >= 0;
+            // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
+            // they belong to the stream - so the one negotiated bit is answered on
+            // a copy, and only when the client sent an Accept at all.
+            // A stream reached from a parked frame carries facts but no Values -
+            // the bytes died with the frame. No Accept bytes, nothing to weigh,
+            // and c3 already sent this request the way it went before.
+            // The copy is made only for a request that sent an Accept: every
+            // other one answers on the facts as they stand. One call to
+            // flow::answer, because it is inlined at each call it has.
+            const flow::ReqFacts *use = &facts;
+            std::optional<flow::ReqFacts> cf;
+            if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
+                cf.emplace(facts);
+                if (http::accept_is_exact({vals->accept, vals->accept_len}, b->accept_type)) {
+                    cf->has_accept = false;
+                } else {
+                    cf->plain = false;
+                    cf->accept_ok =
+                        http::choose_media_type(
+                            {{&b->accept_type, 1}, {vals->accept, vals->accept_len}}) >= 0;
+                }
+                use = &*cf;
+            }
+            const size_t mi = static_cast<size_t>(use->method);
+            status = flow::answer(*use, {b->konst.per_method[mi], b->konst.shortcut[mi]});
         }
-        use = &*cf;
-      }
-      const size_t mi = static_cast<size_t>(use->method);
-      status = flow::answer(*use, {b->konst.per_method[mi], b->konst.shortcut[mi]});
     }
-  }
-  p.b = b;
-  p.status = status;
-  p.have_body = have_body;
-  p.dynamic = dynamic;
+    p.b = b;
+    p.status = status;
+    p.have_body = have_body;
+    p.dynamic = dynamic;
 }
 
 // #30: a stream whose resource can stop takes the coroutine; every
@@ -1298,93 +1452,95 @@ void Http1::h2_produce(Conn& st0, const H2Request& q, bool can_park, H2Produced&
 // `sec-websocket-extensions` field of the CONNECT, and the answer goes
 // back as one of the response. The compression is the WebSocket's, not
 // the transport's, so nothing about it is h2's business.
-bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
-  H2State& h2 = *st0.h2;
-  const AppSlot& slot = apps_[st0.listener];
+bool Http1::h2_ws_begin(Conn &st0, const H2WsAsk &ask, std::string &sink)
+{
+    H2State &h2 = *st0.h2;
+    const AppSlot &slot = apps_[st0.listener];
 
-  ReqView rv;
-  rv.tls = apps_[st0.listener].tls;
-  rv.request_target = ask.target.data();
-  rv.request_target_len = ask.target.size();
-  rv.path_len = http::path_only(ask.target.data(), ask.target.size());
-  rv.method = flow::Method::kGet;
-  rv.table = slot.ws_table;
-  rv.route = ask.route;
-  rv.spans = ask.spans;
-  rv.fields = ask.fields;
-  rv.field_count = ask.nfields;
-  rv.values = ask.vals;
-  request_bind(&rv);
-  std::string proto;
-  uint16_t refused = 0;
-  WsConn* const c = ws_admit(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)],
-                             elog_.enabled ? &elog_ : nullptr, {proto, refused});
-  request_bind(nullptr);
-  if (c == nullptr) {
-    const uint16_t status = refused == 0 ? 403 : refused;
-    alog_status_ = status;
-    alog_bytes_ = 0;
-    H2Block blk;
-    h2_build_block(blk, {status, nullptr});
-    unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()), kH2Headers,
-                             static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
-                             ask.stream_id});
-    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    sink.append(blk.bytes);
-    return true;
-  }
-
-  // RFC 7692 5.1: the first offer this endpoint can accept, or none.
-  wsdeflate::Params dparams;
-  std::string ext_answer;
-  if (ws_wants_deflate(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)])) {
-    const struct phr_header* const hs = static_cast<const struct phr_header*>(ask.fields);
-    for (size_t i = 0; i < ask.nfields && !dparams.on; i++) {
-      if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions")) continue;
-      wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
+    ReqView rv;
+    rv.tls = apps_[st0.listener].tls;
+    rv.request_target = ask.target.data();
+    rv.request_target_len = ask.target.size();
+    rv.path_len = http::path_only(ask.target.data(), ask.target.size());
+    rv.method = flow::Method::kGet;
+    rv.table = slot.ws_table;
+    rv.route = ask.route;
+    rv.spans = ask.spans;
+    rv.fields = ask.fields;
+    rv.field_count = ask.nfields;
+    rv.values = ask.vals;
+    request_bind(&rv);
+    std::string proto;
+    uint16_t refused = 0;
+    WsConn *const c = ws_admit(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)],
+                               elog_.enabled ? &elog_ : nullptr, {proto, refused});
+    request_bind(nullptr);
+    if (c == nullptr) {
+        const uint16_t status = refused == 0 ? 403 : refused;
+        alog_status_ = status;
+        alog_bytes_ = 0;
+        H2Block blk;
+        h2_build_block(blk, {status, nullptr});
+        unsigned char fh[kH2FrameHeaderLen];
+        h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()), kH2Headers,
+                                 static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
+                                 ask.stream_id});
+        sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+        sink.append(blk.bytes);
+        return true;
     }
-  }
 
-  H2Block blk;
-  h2_build_block(blk, {200, nullptr});
-  unsigned char ebuf[256];
-  unsigned char* ep = ebuf;
-  unsigned char* const eend = ebuf + sizeof(ebuf);
-  bool enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}});
-  h2.enc_ins++;
-  if (enc_ok && !proto.empty()) {
-    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
-    h2.enc_ins++;
-  }
-  if (enc_ok && dparams.on) {
-    // RFC 9113 8.2: a field name on the wire is lower case, always.
-    enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-extensions", ext_answer});
-    h2.enc_ins++;
-  }
-  if (!enc_ok) {
-    ws_free(c);
-    return h2_error(st0, kH2InternalError, sink);
-  }
-  const size_t elen = static_cast<size_t>(ep - ebuf);
-  unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
-                           kH2FlagEndHeaders, ask.stream_id});
-  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  sink.append(blk.bytes);
-  sink.append(reinterpret_cast<const char*>(ebuf), elen);
+    // RFC 7692 5.1: the first offer this endpoint can accept, or none.
+    wsdeflate::Params dparams;
+    std::string ext_answer;
+    if (ws_wants_deflate(ws_res_[slot.ws_base + static_cast<size_t>(ask.route)])) {
+        const struct phr_header *const hs = static_cast<const struct phr_header *>(ask.fields);
+        for (size_t i = 0; i < ask.nfields && !dparams.on; i++) {
+            if (!http::tok_eq({hs[i].name, hs[i].name_len}, "sec-websocket-extensions"))
+                continue;
+            wsdeflate::negotiate({hs[i].value, hs[i].value_len}, {dparams, ext_answer});
+        }
+    }
 
-  ws_open(c, dparams);
-  H2Stream& stp = h2.open(ask.stream_id);
-  stp.ws = c;
-  stp.streaming = true;
-  stp.end_headers = true;
-  // Not half-closed: the peer keeps sending, and its DATA frames are the
-  // WebSocket's own.
-  stp.half_closed_remote = false;
-  alog_status_ = 200;
-  alog_bytes_ = 0;
-  return true;
+    H2Block blk;
+    h2_build_block(blk, {200, nullptr});
+    unsigned char ebuf[256];
+    unsigned char *ep = ebuf;
+    unsigned char *const eend = ebuf + sizeof(ebuf);
+    bool enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}});
+    h2.enc_ins++;
+    if (enc_ok && !proto.empty()) {
+        enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-protocol", proto});
+        h2.enc_ins++;
+    }
+    if (enc_ok && dparams.on) {
+        // RFC 9113 8.2: a field name on the wire is lower case, always.
+        enc_ok = h2_enc_field({&h2.enc, ep, eend}, {"sec-websocket-extensions", ext_answer});
+        h2.enc_ins++;
+    }
+    if (!enc_ok) {
+        ws_free(c);
+        return h2_error(st0, kH2InternalError, sink);
+    }
+    const size_t elen = static_cast<size_t>(ep - ebuf);
+    unsigned char fh[kH2FrameHeaderLen];
+    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
+                             kH2FlagEndHeaders, ask.stream_id});
+    sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+    sink.append(blk.bytes);
+    sink.append(reinterpret_cast<const char *>(ebuf), elen);
+
+    ws_open(c, dparams);
+    H2Stream &stp = h2.open(ask.stream_id);
+    stp.ws = c;
+    stp.streaming = true;
+    stp.end_headers = true;
+    // Not half-closed: the peer keeps sending, and its DATA frames are the
+    // WebSocket's own.
+    stp.half_closed_remote = false;
+    alog_status_ = 200;
+    alog_bytes_ = 0;
+    return true;
 }
 
 // WHATWG HTML over RFC 9113: an event stream on one h2 stream.
@@ -1397,660 +1553,716 @@ bool Http1::h2_ws_begin(Conn& st0, const H2WsAsk& ask, std::string& sink) {
 // It is per stream, not per connection. An h2 connection multiplexes,
 // so one client can hold several event streams at once, and each one
 // keeps its own resource object.
-bool Http1::h2_sse_begin(Conn& st0, const H2SseAsk& ask, std::string& sink) {
-  H2State& h2 = *st0.h2;
-  const AppSlot& slot = apps_[st0.listener];
+bool Http1::h2_sse_begin(Conn &st0, const H2SseAsk &ask, std::string &sink)
+{
+    H2State &h2 = *st0.h2;
+    const AppSlot &slot = apps_[st0.listener];
 
-  ReqView rv;
-  rv.tls = apps_[st0.listener].tls;
-  rv.request_target = ask.target.data();
-  rv.request_target_len = ask.target.size();
-  rv.path_len = http::path_only(ask.target.data(), ask.target.size());
-  rv.method = flow::Method::kGet;
-  rv.table = slot.sse_table;
-  rv.route = ask.route;
-  rv.spans = ask.spans;
-  rv.fields = ask.fields;
-  rv.field_count = ask.nfields;
-  rv.values = ask.vals;
-  request_bind(&rv);
-  uint16_t refused = 0;
-  SseStream* const s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(ask.route)],
-                                elog_.enabled ? &elog_ : nullptr, refused);
-  request_bind(nullptr);
-  if (s == nullptr) {
-    // RFC 9110 15.5.4: a stream the app would not open is a 403 unless
-    // the app named a status of its own.
-    const uint16_t status = refused == 0 ? 403 : refused;
-    alog_status_ = status;
-    alog_bytes_ = 0;
+    ReqView rv;
+    rv.tls = apps_[st0.listener].tls;
+    rv.request_target = ask.target.data();
+    rv.request_target_len = ask.target.size();
+    rv.path_len = http::path_only(ask.target.data(), ask.target.size());
+    rv.method = flow::Method::kGet;
+    rv.table = slot.sse_table;
+    rv.route = ask.route;
+    rv.spans = ask.spans;
+    rv.fields = ask.fields;
+    rv.field_count = ask.nfields;
+    rv.values = ask.vals;
+    request_bind(&rv);
+    uint16_t refused = 0;
+    SseStream *const s = sse_open(sse_res_[slot.sse_base + static_cast<size_t>(ask.route)],
+                                  elog_.enabled ? &elog_ : nullptr, refused);
+    request_bind(nullptr);
+    if (s == nullptr) {
+        // RFC 9110 15.5.4: a stream the app would not open is a 403 unless
+        // the app named a status of its own.
+        const uint16_t status = refused == 0 ? 403 : refused;
+        alog_status_ = status;
+        alog_bytes_ = 0;
+        H2Block blk;
+        h2_build_block(blk, {status, nullptr});
+        unsigned char fh[kH2FrameHeaderLen];
+        h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()), kH2Headers,
+                                 static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
+                                 ask.stream_id});
+        sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+        sink.append(blk.bytes);
+        return true;
+    }
+
+    static const std::string kEventStream = "text/event-stream";
     H2Block blk;
-    h2_build_block(blk, {status, nullptr});
+    h2_build_block(blk, {200, &kEventStream});
+    unsigned char ebuf[256];
+    unsigned char *ep = ebuf;
+    unsigned char *const eend = ebuf + sizeof(ebuf);
+    if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}}) ||
+        !h2_enc_field({&h2.enc, ep, eend}, {"cache-control", "no-store"})) {
+        sse_free(s);
+        return h2_error(st0, kH2InternalError, sink);
+    }
+    h2.enc_ins += 2;
+    const size_t elen = static_cast<size_t>(ep - ebuf);
     unsigned char fh[kH2FrameHeaderLen];
-    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size()),
-                             kH2Headers, static_cast<uint8_t>(kH2FlagEndHeaders | kH2FlagEndStream),
-                             ask.stream_id});
-    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
+    h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
+                             kH2FlagEndHeaders, ask.stream_id});
+    sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
     sink.append(blk.bytes);
+    sink.append(reinterpret_cast<const char *>(ebuf), elen);
+
+    H2Stream &stp = h2.open(ask.stream_id);
+    stp.sse = s;
+    stp.streaming = true;
+    stp.end_headers = true;
+    stp.half_closed_remote = true;
+    alog_status_ = 200;
+    alog_bytes_ = 0;
     return true;
-  }
-
-  static const std::string kEventStream = "text/event-stream";
-  H2Block blk;
-  h2_build_block(blk, {200, &kEventStream});
-  unsigned char ebuf[256];
-  unsigned char* ep = ebuf;
-  unsigned char* const eend = ebuf + sizeof(ebuf);
-  if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}}) ||
-      !h2_enc_field({&h2.enc, ep, eend}, {"cache-control", "no-store"})) {
-    sse_free(s);
-    return h2_error(st0, kH2InternalError, sink);
-  }
-  h2.enc_ins += 2;
-  const size_t elen = static_cast<size_t>(ep - ebuf);
-  unsigned char fh[kH2FrameHeaderLen];
-  h2_put_frame_header(fh, {static_cast<uint32_t>(blk.bytes.size() + elen), kH2Headers,
-                           kH2FlagEndHeaders, ask.stream_id});
-  sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-  sink.append(blk.bytes);
-  sink.append(reinterpret_cast<const char*>(ebuf), elen);
-
-  H2Stream& stp = h2.open(ask.stream_id);
-  stp.sse = s;
-  stp.streaming = true;
-  stp.end_headers = true;
-  stp.half_closed_remote = true;
-  alog_status_ = 200;
-  alog_bytes_ = 0;
-  return true;
 }
 
 // WHATWG HTML: one second has passed. Every event stream this connection
 // carries is asked, and what it says goes on its own stream.
-void Http1::h2_sse_second(Conn& st0, std::string& sink) {
-  H2State& h2 = *st0.h2;
-  for (size_t i = 0; i < h2.streams.size(); i++) {
-    H2Stream& stp = h2.streams[i];
-    if (stp.sse == nullptr) continue;
-    std::string body;
-    const bool go_on = sse_tick(stp.sse, sec_, body);
-    if (!body.empty()) stp.response_content.append_owned(body.data(), body.size());
-    // A client that reads its socket but never credits the stream. The
-    // tick speaks every second whatever the window says, so what the
-    // resource hands over piles up with nothing to bound it.
-    if (mrb_unlikely(stp.response_content.owed_bytes() > kTunnelOutCap)) {
-      const uint32_t id = stp.id;
-      stp.streaming = false;
-      stp.response_content.clear();
-      h2_rst(st0, id, kH2EnhanceYourCalm, sink);
-      h2.close_stream(id);
-      i--;
-      continue;
+void Http1::h2_sse_second(Conn &st0, std::string &sink)
+{
+    H2State &h2 = *st0.h2;
+    for (size_t i = 0; i < h2.streams.size(); i++) {
+        H2Stream &stp = h2.streams[i];
+        if (stp.sse == nullptr)
+            continue;
+        std::string body;
+        const bool go_on = sse_tick(stp.sse, sec_, body);
+        if (!body.empty())
+            stp.response_content.append_owned(body.data(), body.size());
+        // A client that reads its socket but never credits the stream. The
+        // tick speaks every second whatever the window says, so what the
+        // resource hands over piles up with nothing to bound it.
+        if (mrb_unlikely(stp.response_content.owed_bytes() > kTunnelOutCap)) {
+            const uint32_t id = stp.id;
+            stp.streaming = false;
+            stp.response_content.clear();
+            h2_rst(st0, id, kH2EnhanceYourCalm, sink);
+            h2.close_stream(id);
+            i--;
+            continue;
+        }
+        if (go_on)
+            continue;
+        // The resource said :close. The stream ends when what it already
+        // handed over has left, so END_STREAM rides the last DATA frame.
+        // A stream that owes nothing gets an empty one, or the peer waits
+        // for an end that never comes.
+        sse_free(stp.sse);
+        stp.sse = nullptr;
+        stp.streaming = false;
+        if (!stp.response_content.owes()) {
+            unsigned char eh[kH2FrameHeaderLen];
+            h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stp.id});
+            sink.append(reinterpret_cast<const char *>(eh), sizeof(eh));
+            h2.close_stream(stp.id);
+            i--;
+        }
     }
-    if (go_on) continue;
-    // The resource said :close. The stream ends when what it already
-    // handed over has left, so END_STREAM rides the last DATA frame.
-    // A stream that owes nothing gets an empty one, or the peer waits
-    // for an end that never comes.
-    sse_free(stp.sse);
-    stp.sse = nullptr;
-    stp.streaming = false;
-    if (!stp.response_content.owes()) {
-      unsigned char eh[kH2FrameHeaderLen];
-      h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stp.id});
-      sink.append(reinterpret_cast<const char*>(eh), sizeof(eh));
-      h2.close_stream(stp.id);
-      i--;
-    }
-  }
 }
 
-Http1::H2Served Http1::h2_serve(Conn& st0, const H2Request& q, std::string& sink) {
-  const Bundle* b = q.bundle;
-  // #53: h2_can_stop asks whether the resource has a compute task or a
-  // watcher - whether it can stop for a worker. A body is the other
-  // reason to stop, and it belongs to no resource: any route may be
-  // asked to wait for one. So a request whose body has not arrived takes
-  // the parkable path whatever the resource declares. The straight path
-  // runs the walk with can_park false, and the body stop is gated on
-  // that, so it would answer from a body that is not there.
-  if (q.complete && !h2_can_stop(b)) {
-    return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
-  }
-  // A connection holds as many stopped runs as a tag can name. Past
-  // that the request is answered the straight way: it cannot stop, so a
-  // compute task runs here and a watcher is refused by name. A caller
-  // serving an incomplete body checks for a slot before it asks, and
-  // nothing between that check and this one takes one.
-  if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
-    return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
-  }
-  // #54: the range this request's fields sit in, and not one octet
-  // more. The decode buffer holds every field of every stream this
-  // dispatch read, and a run that stops copies what it is given - so
-  // it is given this request's own span. A HEADERS block decodes in
-  // one run, so the span is contiguous.
-  const char* head_at = q.head_at;
-  size_t head_len = q.head_len;
-  if (q.req != nullptr && q.req->field_count != 0 && q.head_at != nullptr) {
-    const auto* h = static_cast<const struct phr_header*>(q.req->fields);
-    const char* lo = nullptr;
-    const char* hi = nullptr;
-    for (size_t i = 0; i < q.req->field_count; i++) {
-      if (h[i].name != nullptr && (lo == nullptr || h[i].name < lo)) lo = h[i].name;
-      if (h[i].value != nullptr && (hi == nullptr || h[i].value + h[i].value_len > hi)) {
-        hi = h[i].value + h[i].value_len;
-      }
+Http1::H2Served Http1::h2_serve(Conn &st0, const H2Request &q, std::string &sink)
+{
+    const Bundle *b = q.bundle;
+    // #53: h2_can_stop asks whether the resource has a compute task or a
+    // watcher - whether it can stop for a worker. A body is the other
+    // reason to stop, and it belongs to no resource: any route may be
+    // asked to wait for one. So a request whose body has not arrived takes
+    // the parkable path whatever the resource declares. The straight path
+    // runs the walk with can_park false, and the body stop is gated on
+    // that, so it would answer from a body that is not there.
+    if (q.complete && !h2_can_stop(b)) {
+        return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
     }
-    // The target is read beside the fields and lands in the same
-    // buffer, so the span has to hold it as well.
-    if (!q.target.empty()) {
-      if (lo == nullptr || q.target.data() < lo) lo = q.target.data();
-      if (hi == nullptr || q.target.data() + q.target.size() > hi) {
-        hi = q.target.data() + q.target.size();
-      }
+    // A connection holds as many stopped runs as a tag can name. Past
+    // that the request is answered the straight way: it cannot stop, so a
+    // compute task runs here and a watcher is refused by name. A caller
+    // serving an incomplete body checks for a slot before it asks, and
+    // nothing between that check and this one takes one.
+    if (st0.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
+        return h2_answer(st0, q, sink) ? H2Served::kAnswered : H2Served::kClosed;
     }
-    if (lo != nullptr && hi != nullptr && lo >= q.head_at && hi <= q.head_at + q.head_len) {
-      head_at = lo;
-      head_len = static_cast<size_t>(hi - lo);
+    // #54: the range this request's fields sit in, and not one octet
+    // more. The decode buffer holds every field of every stream this
+    // dispatch read, and a run that stops copies what it is given - so
+    // it is given this request's own span. A HEADERS block decodes in
+    // one run, so the span is contiguous.
+    const char *head_at = q.head_at;
+    size_t head_len = q.head_len;
+    if (q.req != nullptr && q.req->field_count != 0 && q.head_at != nullptr) {
+        const auto *h = static_cast<const struct phr_header *>(q.req->fields);
+        const char *lo = nullptr;
+        const char *hi = nullptr;
+        for (size_t i = 0; i < q.req->field_count; i++) {
+            if (h[i].name != nullptr && (lo == nullptr || h[i].name < lo))
+                lo = h[i].name;
+            if (h[i].value != nullptr && (hi == nullptr || h[i].value + h[i].value_len > hi)) {
+                hi = h[i].value + h[i].value_len;
+            }
+        }
+        // The target is read beside the fields and lands in the same
+        // buffer, so the span has to hold it as well.
+        if (!q.target.empty()) {
+            if (lo == nullptr || q.target.data() < lo)
+                lo = q.target.data();
+            if (hi == nullptr || q.target.data() + q.target.size() > hi) {
+                hi = q.target.data() + q.target.size();
+            }
+        }
+        if (lo != nullptr && hi != nullptr && lo >= q.head_at && hi <= q.head_at + q.head_len) {
+            head_at = lo;
+            head_len = static_cast<size_t>(hi - lo);
+        }
     }
-  }
-  RunStart start;
-  start.proto = RunStart::Proto::kH2;
-  start.h2.stream_id = q.stream_id;
-  start.h2.route = q.route;
-  start.h2.head_only = q.head_only;
-  start.h2.facts = q.facts;
-  start.h2.target.assign(q.target);
-  // #54: the request, and the bytes it points into. The run holds both
-  // before it can stop.
-  start.h2.view = q.req;
-  start.h2.head_at = head_at;
-  start.h2.head_len = head_len;
-  Run r = run_parkable(st0, std::move(start), &sink, nullptr);
-  if (r.done()) {
-    // It never stopped. The answer is already in the sink.
-    return r.status() != 0 ? H2Served::kAnswered : H2Served::kClosed;
-  }
-  // The stream keeps an entry while the run is parked, so a RST_STREAM
-  // closes it and a WINDOW_UPDATE credits it. The sweep leaves a parked
-  // entry alone, and the run's tail clears the mark before it answers.
-  H2Stream& keep = st0.h2->open(q.stream_id);
-  keep.parked = true;
-  keep.end_headers = true;
-  // RFC 9113 5.1: only the end of the request closes this half. A run
-  // that stopped for its body is waiting on DATA that has not arrived,
-  // so the stream is still open to the peer.
-  if (q.complete) keep.half_closed_remote = true;
-  st0.h2_parked.push_back({q.stream_id, std::move(r)});
-  return H2Served::kParked;
+    RunStart start;
+    start.proto = RunStart::Proto::kH2;
+    start.h2.stream_id = q.stream_id;
+    start.h2.route = q.route;
+    start.h2.head_only = q.head_only;
+    start.h2.facts = q.facts;
+    start.h2.target.assign(q.target);
+    // #54: the request, and the bytes it points into. The run holds both
+    // before it can stop.
+    start.h2.view = q.req;
+    start.h2.head_at = head_at;
+    start.h2.head_len = head_len;
+    Run r = run_parkable(st0, std::move(start), &sink, nullptr);
+    if (r.done()) {
+        // It never stopped. The answer is already in the sink.
+        return r.status() != 0 ? H2Served::kAnswered : H2Served::kClosed;
+    }
+    // The stream keeps an entry while the run is parked, so a RST_STREAM
+    // closes it and a WINDOW_UPDATE credits it. The sweep leaves a parked
+    // entry alone, and the run's tail clears the mark before it answers.
+    H2Stream &keep = st0.h2->open(q.stream_id);
+    keep.parked = true;
+    keep.end_headers = true;
+    // RFC 9113 5.1: only the end of the request closes this half. A run
+    // that stopped for its body is waiting on DATA that has not arrived,
+    // so the stream is still open to the peer.
+    if (q.complete)
+        keep.half_closed_remote = true;
+    st0.h2_parked.push_back({q.stream_id, std::move(r)});
+    return H2Served::kParked;
 }
 
 // RFC 9110 15.5.12: the stream sent content and declared no length. The
 // answer is the head's, not a run's: the request view carries the head
 // and no content, because none of it may be read.
 //
-bool Http1::h2_answer(Conn& st0, const H2Request& q, std::string& sink) {
-  H2Produced p;
-  p.body = &body_;
-  p.rhdrs = &rhdrs_;
-  h2_produce(st0, q, false, p);
-  return h2_frame(st0, q, sink, p);
+bool Http1::h2_answer(Conn &st0, const H2Request &q, std::string &sink)
+{
+    H2Produced p;
+    p.body = &body_;
+    p.rhdrs = &rhdrs_;
+    h2_produce(st0, q, false, p);
+    return h2_frame(st0, q, sink, p);
 }
 
-
-bool Http1::h2_frame(Conn& st0, const H2Request& q, std::string& sink, H2Produced& p) {
-  const uint32_t stream_id = q.stream_id;
-  const http::ReqValues* vals = q.vals;
-  const ReqView* req = q.req;
-  const uint16_t route = q.route;
-  const bool head_only = q.head_only;
-  const flow::ReqFacts& facts = q.facts;
-  (void)facts;
-  H2State& h2 = *st0.h2;
-  H2Answer wire;
-  H2Block dynblk;
-  // #210 / #146: an error carries the same page here that h1 spells. It
-  // outlives the framing below, because a body the window cannot finish
-  // is copied onto the stream from this buffer.
-  H2ErrorPage err_page;
-  // #210 response.error_asset: the run named an entry of the error
-  // assets, and this stream carries it the way the asset tier's own
-  // streams carry one - Content::Src::kAsset, parked and framed by
-  // h2_flush_pending against the window. Nothing is rooted: the entry
-  // lives in a mapping that outlives every stream that parks on it.
-  const AssetEntry* run_asset =
-      (p.b != nullptr && p.b->res != nullptr) ? p.b->res->run.asset : nullptr;
-  // Its wire length is the answer's length: what h2_build_block declares,
-  // what the access log counts, and what END_STREAM is measured against.
-  const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
-  if (p.dynamic) {
-    const bool bodyless = p.status == 204 || p.status == 304;
-    if (bodyless || !p.have_body) (*p.body).clear();
-    // The same bake h1 names: a `def self.to_html` renders at setup, and the
-    // block being built here is not the prebuilt one that carries it.
-    const bool baked = !bodyless && !p.have_body && !p.lent_have && p.status == 200 &&
-                       !p.b->dynamic_body && !p.b->konst.body.empty();
-    std::string ctype;
-    std::string epage;
-    // The same debt h1 pays here: a 4xx or 5xx whose run wrote a field of
-    // its own never reaches h2_error_page, and would go out as a bare
-    // p.status with the page missing.
-    if (p.status >= 400 && !bodyless && !p.have_body && !p.lent_have && run_asset == nullptr) {
-      const int em = err_pages_.media_for(p.status, vals != nullptr ? vals->accept : nullptr,
-                                          vals != nullptr ? vals->accept_len : 0);
-      size_t elen = 0;
-      const ErrorPages::Fields none;
-      const char* ep = err_pages_.body_for({p.status, em, none}, epage, &elen);
-      if (ep != nullptr) {
-        (*p.body).assign(ep, elen);
-        p.have_body = true;
-        ctype = err_pages_.media_type(em);
-      }
-    }
-    if (!bodyless && ctype.empty()) {
-      if (!p.b->res->run.content_type.empty()) ctype = http::with_charset(p.b->res->run.content_type);
-      else if (p.have_body || baked) ctype = p.b->konst.content_type;
-    }
-    h2_build_block(dynblk, {p.status, ctype.empty() ? nullptr : &ctype});
-    // A p.status that sends no body cleared (*p.body) above, and a lend it does
-    // not carry is handed back below - the same order h1 spells it in.
-    const bool use_lent = p.lent_have && !bodyless && p.have_body;
-    const bool use_asset = run_asset != nullptr && !bodyless && p.have_body;
-    // An asset's octets are never framed from `body` - h2_flush_pending
-    // reads them out of the mapping - so only its length is set here.
-    wire.body =
-        use_asset ? nullptr : (use_lent ? p.lent : (baked ? p.b->konst.body.data() : (*p.body).data()));
-    wire.blen = use_asset ? asset_len
-                          : (use_lent ? p.lent_len : (baked ? p.b->konst.body.size() : (*p.body).size()));
-    wire.blk = &dynblk;
-  } else if (p.have_body && p.status == 200) {
-    wire.body = run_asset != nullptr ? nullptr : (p.lent_have ? p.lent : (*p.body).data());
-    wire.blen = run_asset != nullptr ? asset_len : (p.lent_have ? p.lent_len : (*p.body).size());
-    wire.blk = &h2_store_[(*p.idx)[200]];
-  } else if (p.status == 500 && p.b != nullptr && p.b->bound) {
-    // #210: what led here, gathered once - the record and the page carry
-    // the same hash because they are taken over the same facts.
-    ErrFacts ef;
-    std::string ef_backtrace;
-    std::string ef_steering;
-    char ef_hash[kFingerprintLen] = {};
-    ef.peer = st0.peer;
-    ef.peer_len = st0.peer_len;
-    ef.request_target = req != nullptr ? req->request_target : nullptr;
-    ef.request_target_len = req != nullptr ? req->request_target_len : 0;
-    ef.method = req != nullptr ? req->method_token : nullptr;
-    ef.method_len = req != nullptr ? req->method_token_len : 0;
-    spell_steering(vals, ef_steering);
-    ef.steering = ef_steering.data();
-    ef.steering_len = ef_steering.size();
-    ef.body = req != nullptr ? req->content : nullptr;
-    ef.body_len = req != nullptr ? req->content_len : 0;
-    ef.body_full = ef.body_len;
-    ef.status_code = 500;
-    exception_facts(p.b->res->mrb, {ef, ef_backtrace});
-    spell_fingerprint(ef_hash, fingerprint_of(ef));
-    if (elog_.enabled) log_error(elog_, ef);
-    // #210: handle_exception lives on the error resource and nowhere
-    // else, so the exception object itself is what crosses over.
-    std::string message;
-    mrb_value exc = mrb_nil_value();
-    if (resource_exception_take(*p.b->res, &exc)) err_pages_.exception_text(exc, message);
-    ErrorPages::Fields f;
-    f.message = message.data();
-    f.message_len = message.size();
-    f.fingerprint = ef_hash;
-    // A ship build says what was thrown and where the log has the rest; a
-    // debug build is already telling you about itself, so the trace goes
-    // on the page too.
-    if (kDebugBuild) {
-      f.backtrace = ef.backtrace;
-      f.backtrace_len = ef.backtrace_len;
-    }
-    const H2ErrorAsk ask = {500, f, vals, p.b};
-    if (!h2_error_page(ask, err_page, wire)) {
-      wire.blk = &h2_store_[(*p.idx)[500]];
-    }
-  } else if (p.status == 200) {
-    wire.body = p.b->konst.body.data();
-    wire.blen = p.b->konst.body.size();
-    wire.blk = &h2_store_[(*p.idx)[200]];
-  } else {
-    // RFC 9110 15: only a 4xx or 5xx has something to explain.
-    bool spelled = false;
-    if (p.status >= 400) {
-      ErrorPages::Fields f;
-      const H2ErrorAsk ask = {p.status, f, vals, p.b};
-      spelled = h2_error_page(ask, err_page, wire);
-    }
-    if (!spelled) wire.blk = &h2_store_[(*p.idx)[p.status]];
-  }
-
-  const bool no_data = head_only || wire.blen == 0;
-
-  // A lend the chain above did not adopt (a bodyless p.status, a 500 that
-  // spelled its own body) never reached a plan, so this is its release.
-  if (p.lent_have && (no_data || wire.body != p.lent)) {
-    resource_body_unlend(p.lent_mrb, p.lent_v);
-    p.lent_have = false;
-  }
-  // And one that was adopted becomes the stream's before anything below can
-  // fail: from here on close_stream and ~H2State own it, so no error path
-  // can strand a rooted body nobody comes back for.
-  if (p.lent_have) {
-    H2Stream& keep = h2.open(stream_id);
-    keep.response_content.take_lent(p.lent_mrb, p.lent_v, p.lent, p.lent_len);
-    keep.end_headers = true;
-    keep.half_closed_remote = true;
-  }
-  // #210: an asset parks the way the asset tier parks one, with the same
-  // Src. h2_flush_pending frames it out of the mapping, and the sweep
-  // there closes the stream once the window has let all of it through.
-  //
-  // A head-only answer, or a status that sends nothing, takes no stream:
-  // no_data covers both.
-  const bool asset_data = run_asset != nullptr && !no_data;
-  if (asset_data) {
-    H2Stream& keep = h2.open(stream_id);
-    keep.response_content.take_asset(run_asset, 0, wire.blen);
-    keep.end_headers = true;
-    keep.half_closed_remote = true;
-  }
-
-  alog_status_ = p.status;
-  alog_bytes_ = no_data ? 0 : wire.blen;
-
-  H2Stream* stp = no_data ? nullptr : h2.find(stream_id);
-  int64_t budget = 0;
-  if (!no_data) {
-    const int64_t swin = stp != nullptr ? stp->flow_window : h2.peer_initial_window;
-    budget = h2.flow_window < swin ? h2.flow_window : swin;
-  }
-
-  bool merged = false;
-  if (p.dynamic) {
-    // RFC 7541: lane 1 spells :p.status and Content-Type, lane 2 the Date and
-    // every field line this run produced. A per-request head is never cached.
-    unsigned char ebuf[2048];
-    unsigned char* ep = ebuf;
-    unsigned char* const eend = ebuf + sizeof(ebuf);
-    // Indexed, unlike the cached path's: this head is spelled once and
-    // thrown away, so an insert here costs nothing to replay - but it
-    // does move every index a cached head may be holding, which is what
-    // enc_ins counts.
-    if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}})) {
-      return h2_error(st0, kH2InternalError, sink);
-    }
-    h2.enc_ins++;
-    std::string name;
-    size_t at = 0;
-    while (at < (*p.rhdrs).size()) {
-      const size_t eol = (*p.rhdrs).find("\r\n", at);
-      if (eol == std::string::npos) break;
-      const size_t colon = (*p.rhdrs).find(':', at);
-      if (colon != std::string::npos && colon < eol) {
-        size_t vs = colon + 1;
-        while (vs < eol && ((*p.rhdrs)[vs] == ' ' || (*p.rhdrs)[vs] == '\t')) vs++;
-        name.assign((*p.rhdrs), at, colon - at);
-        for (char& c : name) {
-          if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+bool Http1::h2_frame(Conn &st0, const H2Request &q, std::string &sink, H2Produced &p)
+{
+    const uint32_t stream_id = q.stream_id;
+    const http::ReqValues *vals = q.vals;
+    const ReqView *req = q.req;
+    const uint16_t route = q.route;
+    const bool head_only = q.head_only;
+    const flow::ReqFacts &facts = q.facts;
+    (void)facts;
+    H2State &h2 = *st0.h2;
+    H2Answer wire;
+    H2Block dynblk;
+    // #210 / #146: an error carries the same page here that h1 spells. It
+    // outlives the framing below, because a body the window cannot finish
+    // is copied onto the stream from this buffer.
+    H2ErrorPage err_page;
+    // #210 response.error_asset: the run named an entry of the error
+    // assets, and this stream carries it the way the asset tier's own
+    // streams carry one - Content::Src::kAsset, parked and framed by
+    // h2_flush_pending against the window. Nothing is rooted: the entry
+    // lives in a mapping that outlives every stream that parks on it.
+    const AssetEntry *run_asset =
+        (p.b != nullptr && p.b->res != nullptr) ? p.b->res->run.asset : nullptr;
+    // Its wire length is the answer's length: what h2_build_block declares,
+    // what the access log counts, and what END_STREAM is measured against.
+    const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
+    if (p.dynamic) {
+        const bool bodyless = p.status == 204 || p.status == 304;
+        if (bodyless || !p.have_body)
+            (*p.body).clear();
+        // The same bake h1 names: a `def self.to_html` renders at setup, and the
+        // block being built here is not the prebuilt one that carries it.
+        const bool baked = !bodyless && !p.have_body && !p.lent_have && p.status == 200 &&
+                           !p.b->dynamic_body && !p.b->konst.body.empty();
+        std::string ctype;
+        std::string epage;
+        // The same debt h1 pays here: a 4xx or 5xx whose run wrote a field of
+        // its own never reaches h2_error_page, and would go out as a bare
+        // p.status with the page missing.
+        if (p.status >= 400 && !bodyless && !p.have_body && !p.lent_have && run_asset == nullptr) {
+            const int em = err_pages_.media_for(p.status, vals != nullptr ? vals->accept : nullptr,
+                                                vals != nullptr ? vals->accept_len : 0);
+            size_t elen = 0;
+            const ErrorPages::Fields none;
+            const char *ep = err_pages_.body_for({p.status, em, none}, epage, &elen);
+            if (ep != nullptr) {
+                (*p.body).assign(ep, elen);
+                p.have_body = true;
+                ctype = err_pages_.media_type(em);
+            }
         }
-        if (!h2_enc_field({&h2.enc, ep, eend}, {name, {(*p.rhdrs).data() + vs, eol - vs}})) {
-          return h2_error(st0, kH2InternalError, sink);
+        if (!bodyless && ctype.empty()) {
+            if (!p.b->res->run.content_type.empty())
+                ctype = http::with_charset(p.b->res->run.content_type);
+            else if (p.have_body || baked)
+                ctype = p.b->konst.content_type;
+        }
+        h2_build_block(dynblk, {p.status, ctype.empty() ? nullptr : &ctype});
+        // A p.status that sends no body cleared (*p.body) above, and a lend it does
+        // not carry is handed back below - the same order h1 spells it in.
+        const bool use_lent = p.lent_have && !bodyless && p.have_body;
+        const bool use_asset = run_asset != nullptr && !bodyless && p.have_body;
+        // An asset's octets are never framed from `body` - h2_flush_pending
+        // reads them out of the mapping - so only its length is set here.
+        wire.body = use_asset
+                        ? nullptr
+                        : (use_lent ? p.lent : (baked ? p.b->konst.body.data() : (*p.body).data()));
+        wire.blen = use_asset ? asset_len
+                              : (use_lent ? p.lent_len
+                                          : (baked ? p.b->konst.body.size() : (*p.body).size()));
+        wire.blk = &dynblk;
+    } else if (p.have_body && p.status == 200) {
+        wire.body = run_asset != nullptr ? nullptr : (p.lent_have ? p.lent : (*p.body).data());
+        wire.blen =
+            run_asset != nullptr ? asset_len : (p.lent_have ? p.lent_len : (*p.body).size());
+        wire.blk = &h2_store_[(*p.idx)[200]];
+    } else if (p.status == 500 && p.b != nullptr && p.b->bound) {
+        // #210: what led here, gathered once - the record and the page carry
+        // the same hash because they are taken over the same facts.
+        ErrFacts ef;
+        std::string ef_backtrace;
+        std::string ef_steering;
+        char ef_hash[kFingerprintLen] = {};
+        ef.peer = st0.peer;
+        ef.peer_len = st0.peer_len;
+        ef.request_target = req != nullptr ? req->request_target : nullptr;
+        ef.request_target_len = req != nullptr ? req->request_target_len : 0;
+        ef.method = req != nullptr ? req->method_token : nullptr;
+        ef.method_len = req != nullptr ? req->method_token_len : 0;
+        spell_steering(vals, ef_steering);
+        ef.steering = ef_steering.data();
+        ef.steering_len = ef_steering.size();
+        ef.body = req != nullptr ? req->content : nullptr;
+        ef.body_len = req != nullptr ? req->content_len : 0;
+        ef.body_full = ef.body_len;
+        ef.status_code = 500;
+        exception_facts(p.b->res->mrb, {ef, ef_backtrace});
+        spell_fingerprint(ef_hash, fingerprint_of(ef));
+        if (elog_.enabled)
+            log_error(elog_, ef);
+        // #210: handle_exception lives on the error resource and nowhere
+        // else, so the exception object itself is what crosses over.
+        std::string message;
+        mrb_value exc = mrb_nil_value();
+        if (resource_exception_take(*p.b->res, &exc))
+            err_pages_.exception_text(exc, message);
+        ErrorPages::Fields f;
+        f.message = message.data();
+        f.message_len = message.size();
+        f.fingerprint = ef_hash;
+        // A ship build says what was thrown and where the log has the rest; a
+        // debug build is already telling you about itself, so the trace goes
+        // on the page too.
+        if (kDebugBuild) {
+            f.backtrace = ef.backtrace;
+            f.backtrace_len = ef.backtrace_len;
+        }
+        const H2ErrorAsk ask = {500, f, vals, p.b};
+        if (!h2_error_page(ask, err_page, wire)) {
+            wire.blk = &h2_store_[(*p.idx)[500]];
+        }
+    } else if (p.status == 200) {
+        wire.body = p.b->konst.body.data();
+        wire.blen = p.b->konst.body.size();
+        wire.blk = &h2_store_[(*p.idx)[200]];
+    } else {
+        // RFC 9110 15: only a 4xx or 5xx has something to explain.
+        bool spelled = false;
+        if (p.status >= 400) {
+            ErrorPages::Fields f;
+            const H2ErrorAsk ask = {p.status, f, vals, p.b};
+            spelled = h2_error_page(ask, err_page, wire);
+        }
+        if (!spelled)
+            wire.blk = &h2_store_[(*p.idx)[p.status]];
+    }
+
+    const bool no_data = head_only || wire.blen == 0;
+
+    // A lend the chain above did not adopt (a bodyless p.status, a 500 that
+    // spelled its own body) never reached a plan, so this is its release.
+    if (p.lent_have && (no_data || wire.body != p.lent)) {
+        resource_body_unlend(p.lent_mrb, p.lent_v);
+        p.lent_have = false;
+    }
+    // And one that was adopted becomes the stream's before anything below can
+    // fail: from here on close_stream and ~H2State own it, so no error path
+    // can strand a rooted body nobody comes back for.
+    if (p.lent_have) {
+        H2Stream &keep = h2.open(stream_id);
+        keep.response_content.take_lent(p.lent_mrb, p.lent_v, p.lent, p.lent_len);
+        keep.end_headers = true;
+        keep.half_closed_remote = true;
+    }
+    // #210: an asset parks the way the asset tier parks one, with the same
+    // Src. h2_flush_pending frames it out of the mapping, and the sweep
+    // there closes the stream once the window has let all of it through.
+    //
+    // A head-only answer, or a status that sends nothing, takes no stream:
+    // no_data covers both.
+    const bool asset_data = run_asset != nullptr && !no_data;
+    if (asset_data) {
+        H2Stream &keep = h2.open(stream_id);
+        keep.response_content.take_asset(run_asset, 0, wire.blen);
+        keep.end_headers = true;
+        keep.half_closed_remote = true;
+    }
+
+    alog_status_ = p.status;
+    alog_bytes_ = no_data ? 0 : wire.blen;
+
+    H2Stream *stp = no_data ? nullptr : h2.find(stream_id);
+    int64_t budget = 0;
+    if (!no_data) {
+        const int64_t swin = stp != nullptr ? stp->flow_window : h2.peer_initial_window;
+        budget = h2.flow_window < swin ? h2.flow_window : swin;
+    }
+
+    bool merged = false;
+    if (p.dynamic) {
+        // RFC 7541: lane 1 spells :p.status and Content-Type, lane 2 the Date and
+        // every field line this run produced. A per-request head is never cached.
+        unsigned char ebuf[2048];
+        unsigned char *ep = ebuf;
+        unsigned char *const eend = ebuf + sizeof(ebuf);
+        // Indexed, unlike the cached path's: this head is spelled once and
+        // thrown away, so an insert here costs nothing to replay - but it
+        // does move every index a cached head may be holding, which is what
+        // enc_ins counts.
+        if (!h2_enc_field({&h2.enc, ep, eend}, {"date", {date_, sizeof(date_)}})) {
+            return h2_error(st0, kH2InternalError, sink);
         }
         h2.enc_ins++;
-      }
-      at = eol + 2;
-    }
-    const size_t elen = static_cast<size_t>(ep - ebuf);
-    unsigned char fh[kH2FrameHeaderLen];
-    const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
-    h2_put_frame_header(fh, {static_cast<uint32_t>(wire.blk->bytes.size() + elen), kH2Headers,
-                             head_flags, stream_id});
-    sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-    sink.append(wire.blk->bytes);
-    sink.append(reinterpret_cast<const char*>(ebuf), elen);
-  } else {
-    if (h2.head_cache.status != p.status || h2.head_cache.route != route ||
-        h2.head_cache.sec != sec_ || h2.head_cache.enc_ins != h2.enc_ins) {
-      // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
-      // answer this route ever gives, so it goes into the peer's p.dynamic
-      // table once and is a one-byte reference after that. Encoded
-      // twice: ls-hpack answers the first call with the insert and the
-      // second with the index it just made, which is exactly the two
-      // forms this cache needs. Only the 200 has one - the shared p.status
-      // blocks carry no content-type, and a bound route never reaches
-      // this branch.
-      const std::string* ct =
-          (p.status == 200 && p.b != nullptr && !p.b->konst.content_type.empty())
-              ? &p.b->konst.content_type
-              : nullptr;
-      unsigned char pbuf[256];
-      unsigned char rbuf[256];
-      size_t plen = 0;
-      size_t rlen = 0;
-      if (ct != nullptr) {
-        unsigned char* pp = pbuf;
-        unsigned char* rp = rbuf;
-        if (!h2_enc_field({&h2.enc, pp, pbuf + sizeof(pbuf)}, {"content-type", *ct}) ||
-            !h2_enc_field({&h2.enc, rp, rbuf + sizeof(rbuf)}, {"content-type", *ct})) {
-          return h2_error(st0, kH2InternalError, sink);
+        std::string name;
+        size_t at = 0;
+        while (at < (*p.rhdrs).size()) {
+            const size_t eol = (*p.rhdrs).find("\r\n", at);
+            if (eol == std::string::npos)
+                break;
+            const size_t colon = (*p.rhdrs).find(':', at);
+            if (colon != std::string::npos && colon < eol) {
+                size_t vs = colon + 1;
+                while (vs < eol && ((*p.rhdrs)[vs] == ' ' || (*p.rhdrs)[vs] == '\t'))
+                    vs++;
+                name.assign((*p.rhdrs), at, colon - at);
+                for (char &c : name) {
+                    if (c >= 'A' && c <= 'Z')
+                        c = static_cast<char>(c + 32);
+                }
+                if (!h2_enc_field({&h2.enc, ep, eend},
+                                  {name, {(*p.rhdrs).data() + vs, eol - vs}})) {
+                    return h2_error(st0, kH2InternalError, sink);
+                }
+                h2.enc_ins++;
+            }
+            at = eol + 2;
         }
-        plen = static_cast<size_t>(pp - pbuf);
-        rlen = static_cast<size_t>(rp - rbuf);
-        h2.enc_ins++;
-        // The block that carried the literal is the wrong one now: the
-        // shared 200 spells :p.status and nothing else.
-        wire.blk = &h2_store_[index_[200]];
-      }
-      unsigned char dbuf[64];
-      unsigned char* dp = dbuf;
-      // Not indexed: these bytes are kept and sent again for every
-      // answer of this second, and an insert replayed is an insert the
-      // peer performs again each time. content-type above may be
-      // indexed for the opposite reason - it is inserted once and the
-      // cache then replays the reference, never the insert.
-      if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
-                        {"date", {date_, sizeof(date_)}, false})) {
-        return h2_error(st0, kH2InternalError, sink);
-      }
-      const size_t dlen = static_cast<size_t>(dp - dbuf);
-      cache_headers(h2.head_cache.bytes, {*wire.blk, {rbuf, rlen}, {dbuf, dlen}});
-      h2.head_cache.head_len = h2.head_cache.bytes.size();
-      h2.head_cache.primed = ct == nullptr;
-      if (ct != nullptr) {
-        cache_headers(h2.head_cache.prime, {*wire.blk, {pbuf, plen}, {dbuf, dlen}});
-      }
-      h2.head_cache.has_data = p.b != nullptr && !p.b->bound && p.status == 200 &&
-                               !p.b->konst.body.empty() &&
-                               p.b->konst.body.size() <= kH2MergeBody;
-      if (h2.head_cache.has_data) h2.head_cache.bytes.append(p.b->h2_data200);
-      h2.head_cache.status = p.status;
-      h2.head_cache.route = route;
-      h2.head_cache.sec = sec_;
-      // Taken after the encodes above, so the reference this head holds
-      // and the table it points into are recorded together.
-      h2.head_cache.enc_ins = h2.enc_ins;
-    }
-    // One answer per connection carries the insert; it is never merged
-    // with a DATA frame, because it is one response in a second and the
-    // merge exists for the other thousands.
-    const bool prime = !h2.head_cache.primed;
-    merged = !prime && !no_data && h2.head_cache.has_data &&
-             budget >= static_cast<int64_t>(wire.blen) && wire.blen <= h2.peer_max_frame;
-    const size_t hoff = sink.size();
-    if (prime) {
-      sink.append(h2.head_cache.prime);
-      h2.head_cache.primed = true;
-    } else if (merged) {
-      sink.append(h2.head_cache.bytes);
+        const size_t elen = static_cast<size_t>(ep - ebuf);
+        unsigned char fh[kH2FrameHeaderLen];
+        const uint8_t head_flags = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+        h2_put_frame_header(fh, {static_cast<uint32_t>(wire.blk->bytes.size() + elen), kH2Headers,
+                                 head_flags, stream_id});
+        sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+        sink.append(wire.blk->bytes);
+        sink.append(reinterpret_cast<const char *>(ebuf), elen);
     } else {
-      sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
+        if (h2.head_cache.status != p.status || h2.head_cache.route != route ||
+            h2.head_cache.sec != sec_ || h2.head_cache.enc_ins != h2.enc_ins) {
+            // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
+            // answer this route ever gives, so it goes into the peer's p.dynamic
+            // table once and is a one-byte reference after that. Encoded
+            // twice: ls-hpack answers the first call with the insert and the
+            // second with the index it just made, which is exactly the two
+            // forms this cache needs. Only the 200 has one - the shared p.status
+            // blocks carry no content-type, and a bound route never reaches
+            // this branch.
+            const std::string *ct =
+                (p.status == 200 && p.b != nullptr && !p.b->konst.content_type.empty())
+                    ? &p.b->konst.content_type
+                    : nullptr;
+            unsigned char pbuf[256];
+            unsigned char rbuf[256];
+            size_t plen = 0;
+            size_t rlen = 0;
+            if (ct != nullptr) {
+                unsigned char *pp = pbuf;
+                unsigned char *rp = rbuf;
+                if (!h2_enc_field({&h2.enc, pp, pbuf + sizeof(pbuf)}, {"content-type", *ct}) ||
+                    !h2_enc_field({&h2.enc, rp, rbuf + sizeof(rbuf)}, {"content-type", *ct})) {
+                    return h2_error(st0, kH2InternalError, sink);
+                }
+                plen = static_cast<size_t>(pp - pbuf);
+                rlen = static_cast<size_t>(rp - rbuf);
+                h2.enc_ins++;
+                // The block that carried the literal is the wrong one now: the
+                // shared 200 spells :p.status and nothing else.
+                wire.blk = &h2_store_[index_[200]];
+            }
+            unsigned char dbuf[64];
+            unsigned char *dp = dbuf;
+            // Not indexed: these bytes are kept and sent again for every
+            // answer of this second, and an insert replayed is an insert the
+            // peer performs again each time. content-type above may be
+            // indexed for the opposite reason - it is inserted once and the
+            // cache then replays the reference, never the insert.
+            if (!h2_enc_field({&h2.enc, dp, dbuf + sizeof(dbuf)},
+                              {"date", {date_, sizeof(date_)}, false})) {
+                return h2_error(st0, kH2InternalError, sink);
+            }
+            const size_t dlen = static_cast<size_t>(dp - dbuf);
+            cache_headers(h2.head_cache.bytes, {*wire.blk, {rbuf, rlen}, {dbuf, dlen}});
+            h2.head_cache.head_len = h2.head_cache.bytes.size();
+            h2.head_cache.primed = ct == nullptr;
+            if (ct != nullptr) {
+                cache_headers(h2.head_cache.prime, {*wire.blk, {pbuf, plen}, {dbuf, dlen}});
+            }
+            h2.head_cache.has_data = p.b != nullptr && !p.b->bound && p.status == 200 &&
+                                     !p.b->konst.body.empty() &&
+                                     p.b->konst.body.size() <= kH2MergeBody;
+            if (h2.head_cache.has_data)
+                h2.head_cache.bytes.append(p.b->h2_data200);
+            h2.head_cache.status = p.status;
+            h2.head_cache.route = route;
+            h2.head_cache.sec = sec_;
+            // Taken after the encodes above, so the reference this head holds
+            // and the table it points into are recorded together.
+            h2.head_cache.enc_ins = h2.enc_ins;
+        }
+        // One answer per connection carries the insert; it is never merged
+        // with a DATA frame, because it is one response in a second and the
+        // merge exists for the other thousands.
+        const bool prime = !h2.head_cache.primed;
+        merged = !prime && !no_data && h2.head_cache.has_data &&
+                 budget >= static_cast<int64_t>(wire.blen) && wire.blen <= h2.peer_max_frame;
+        const size_t hoff = sink.size();
+        if (prime) {
+            sink.append(h2.head_cache.prime);
+            h2.head_cache.primed = true;
+        } else if (merged) {
+            sink.append(h2.head_cache.bytes);
+        } else {
+            sink.append(h2.head_cache.bytes, 0, h2.head_cache.head_len);
+        }
+        unsigned char *hp = reinterpret_cast<unsigned char *>(&sink[hoff]);
+        hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
+        h2_patch_stream_id(hp, stream_id);
+        if (merged)
+            h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
     }
-    unsigned char* hp = reinterpret_cast<unsigned char*>(&sink[hoff]);
-    hp[4] = kH2FlagEndHeaders | (no_data ? kH2FlagEndStream : 0);
-    h2_patch_stream_id(hp, stream_id);
-    if (merged) h2_patch_stream_id(hp + h2.head_cache.head_len, stream_id);
-  }
 
-  // RFC 9113 6.9.1: not one byte of a lent body is framed here. All of it
-  // is parked on the stream and h2_flush_pending - the only place holding a
-  // plan - gives it the window, the frames and the external segment, the
-  // same way the asset tier's `src` is delivered.
-  size_t give = 0;
-  if (!p.lent_have && !asset_data && !no_data) {
-    if (merged) {
-      give = wire.blen;
-    } else {
-      give = wire.blen;
-      if (budget <= 0) {
-        give = 0;
-      } else if (static_cast<int64_t>(give) > budget) {
-        give = static_cast<size_t>(budget);
-      }
-      unsigned char fh[kH2FrameHeaderLen];
-      size_t off = 0;
-      while (off < give) {
-        size_t n = give - off;
-        if (n > h2.peer_max_frame) n = h2.peer_max_frame;
-        const bool last = off + n == wire.blen;
-        const uint8_t end_flag = last ? kH2FlagEndStream : 0;
-        h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, stream_id});
-        sink.append(reinterpret_cast<const char*>(fh), sizeof(fh));
-        sink.append(wire.body + off, n);
-        off += n;
-      }
+    // RFC 9113 6.9.1: not one byte of a lent body is framed here. All of it
+    // is parked on the stream and h2_flush_pending - the only place holding a
+    // plan - gives it the window, the frames and the external segment, the
+    // same way the asset tier's `src` is delivered.
+    size_t give = 0;
+    if (!p.lent_have && !asset_data && !no_data) {
+        if (merged) {
+            give = wire.blen;
+        } else {
+            give = wire.blen;
+            if (budget <= 0) {
+                give = 0;
+            } else if (static_cast<int64_t>(give) > budget) {
+                give = static_cast<size_t>(budget);
+            }
+            unsigned char fh[kH2FrameHeaderLen];
+            size_t off = 0;
+            while (off < give) {
+                size_t n = give - off;
+                if (n > h2.peer_max_frame)
+                    n = h2.peer_max_frame;
+                const bool last = off + n == wire.blen;
+                const uint8_t end_flag = last ? kH2FlagEndStream : 0;
+                h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, stream_id});
+                sink.append(reinterpret_cast<const char *>(fh), sizeof(fh));
+                sink.append(wire.body + off, n);
+                off += n;
+            }
+        }
+        const bool had_stream = stp != nullptr;
+        h2.flow_window -= static_cast<int64_t>(give);
+        if (had_stream)
+            stp->flow_window -= static_cast<int64_t>(give);
+        if (give < wire.blen) {
+            H2Stream &keep = h2.open(stream_id);
+            keep.response_content.take_owned(wire.body + give, wire.blen - give);
+            keep.end_headers = true;
+            keep.half_closed_remote = true;
+            if (!had_stream)
+                keep.flow_window -= static_cast<int64_t>(give);
+        }
     }
-    const bool had_stream = stp != nullptr;
-    h2.flow_window -= static_cast<int64_t>(give);
-    if (had_stream) stp->flow_window -= static_cast<int64_t>(give);
-    if (give < wire.blen) {
-      H2Stream& keep = h2.open(stream_id);
-      keep.response_content.take_owned(wire.body + give, wire.blen - give);
-      keep.end_headers = true;
-      keep.half_closed_remote = true;
-      if (!had_stream) keep.flow_window -= static_cast<int64_t>(give);
-    }
-  }
-  // A p.lent stream is never closed here: its bytes have not been framed yet,
-  // and the sweep at the end of h2_flush_pending closes it once they are.
-  if (!p.lent_have && !asset_data && (no_data || give == wire.blen)) h2.close_stream(stream_id);
-  return true;
+    // A p.lent stream is never closed here: its bytes have not been framed yet,
+    // and the sweep at the end of h2_flush_pending closes it once they are.
+    if (!p.lent_have && !asset_data && (no_data || give == wire.blen))
+        h2.close_stream(stream_id);
+    return true;
 }
 
-namespace {
+namespace
+{
 struct RoundOut {
-  std::string& sink;
-  Http1::Plan* plan;
-  size_t emitted = 0;
+    std::string &sink;
+    Http1::Plan *plan;
+    size_t emitted = 0;
 
-  // RFC 9113: claim the sink bytes this round started with - a plan naming
-  // any sink range describes the sink completely.
-  void prime() {
-    if (plan == nullptr || plan->iovlen != 0 || sink.empty()) return;
-    plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
-    plan->byte_total += sink.size();
-  }
-
-  // RFC 9113 6.1: room for one more DATA frame - its header plus up to three
-  // payload spans. Every gate sits before the frame, never inside one.
-  bool room_for_frame() const {
-    if (plan == nullptr) return emitted < kDeliverChunk;
-    if (plan->iovlen + 4 > Http1::Plan::kSegs) return false;
-    return plan->byte_cap == 0 || plan->byte_total < plan->byte_cap;
-  }
-
-  // RFC 9113: framing bytes, coalesced into the open sink run.
-  void bytes(const char* p, size_t n) {
-    if (plan == nullptr) {
-      sink.append(p, n);
-      emitted += n;
-      return;
+    // RFC 9113: claim the sink bytes this round started with - a plan naming
+    // any sink range describes the sink completely.
+    void prime()
+    {
+        if (plan == nullptr || plan->iovlen != 0 || sink.empty())
+            return;
+        plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, 0, sink.size()};
+        plan->byte_total += sink.size();
     }
-    prime();
-    const size_t at = sink.size();
-    sink.append(p, n);
-    if (plan->iovlen > 0) {
-      Http1::Plan::Seg& open = plan->iov[plan->iovlen - 1];
-      if (open.iov_base == nullptr && open.off + open.iov_len == at) {
-        open.iov_len += n;
+
+    // RFC 9113 6.1: room for one more DATA frame - its header plus up to three
+    // payload spans. Every gate sits before the frame, never inside one.
+    bool room_for_frame() const
+    {
+        if (plan == nullptr)
+            return emitted < kDeliverChunk;
+        if (plan->iovlen + 4 > Http1::Plan::kSegs)
+            return false;
+        return plan->byte_cap == 0 || plan->byte_total < plan->byte_cap;
+    }
+
+    // RFC 9113: framing bytes, coalesced into the open sink run.
+    void bytes(const char *p, size_t n)
+    {
+        if (plan == nullptr) {
+            sink.append(p, n);
+            emitted += n;
+            return;
+        }
+        prime();
+        const size_t at = sink.size();
+        sink.append(p, n);
+        if (plan->iovlen > 0) {
+            Http1::Plan::Seg &open = plan->iov[plan->iovlen - 1];
+            if (open.iov_base == nullptr && open.off + open.iov_len == at) {
+                open.iov_len += n;
+                plan->byte_total += n;
+                return;
+            }
+        }
+        plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, at, n};
         plan->byte_total += n;
-        return;
-      }
     }
-    plan->iov[plan->iovlen++] = Http1::Plan::Seg{nullptr, at, n};
-    plan->byte_total += n;
-  }
 
-  static constexpr size_t kCopyFloor = 4096;
+    static constexpr size_t kCopyFloor = 4096;
 
-  // RFC 1952: asset payload as pointers into the mapping; small pieces are
-  // copied instead (one page is the measured line).
-  void span(const AssetEntry& e, size_t off, size_t n) {
-    if (plan == nullptr) {
-      Assets::copy_wire(e, {off, n}, sink);
-      emitted += n;
-      return;
+    // RFC 1952: asset payload as pointers into the mapping; small pieces are
+    // copied instead (one page is the measured line).
+    void span(const AssetEntry &e, size_t off, size_t n)
+    {
+        if (plan == nullptr) {
+            Assets::copy_wire(e, {off, n}, sink);
+            emitted += n;
+            return;
+        }
+        prime();
+        struct iovec iv[3];
+        const unsigned k = Assets::wire_iov(e, {off, n}, iv);
+        for (unsigned i = 0; i < k; i++) {
+            if (iv[i].iov_len < kCopyFloor) {
+                bytes(static_cast<const char *>(iv[i].iov_base), iv[i].iov_len);
+                continue;
+            }
+            plan->iov[plan->iovlen++] =
+                Http1::Plan::Seg{static_cast<const char *>(iv[i].iov_base), 0, iv[i].iov_len};
+            plan->byte_total += iv[i].iov_len;
+        }
     }
-    prime();
-    struct iovec iv[3];
-    const unsigned k = Assets::wire_iov(e, {off, n}, iv);
-    for (unsigned i = 0; i < k; i++) {
-      if (iv[i].iov_len < kCopyFloor) {
-        bytes(static_cast<const char*>(iv[i].iov_base), iv[i].iov_len);
-        continue;
-      }
-      plan->iov[plan->iovlen++] =
-          Http1::Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
-      plan->byte_total += iv[i].iov_len;
-    }
-  }
 
-  // RFC 9110 8.6: the body a run lent, as a pointer into its own frozen
-  // String. Without a plan there is no segment to hang it on, so the round
-  // copies - correct either way, since the lend outlives this round.
-  void lent(const char* p, size_t n) {
-    if (plan == nullptr) {
-      sink.append(p, n);
-      emitted += n;
-      return;
+    // RFC 9110 8.6: the body a run lent, as a pointer into its own frozen
+    // String. Without a plan there is no segment to hang it on, so the round
+    // copies - correct either way, since the lend outlives this round.
+    void lent(const char *p, size_t n)
+    {
+        if (plan == nullptr) {
+            sink.append(p, n);
+            emitted += n;
+            return;
+        }
+        prime();
+        plan->iov[plan->iovlen++] = Http1::Plan::Seg{p, 0, n};
+        plan->byte_total += n;
     }
-    prime();
-    plan->iov[plan->iovlen++] = Http1::Plan::Seg{p, 0, n};
-    plan->byte_total += n;
-  }
 };
-}
+} // namespace
 
 #define WM_H2_LOG_DEFINED
 // RFC 9113 8.3: the method column, from the enum - the wire bytes are gone.
-static const char* alog_method(flow::Method m, size_t* n) {
-  switch (m) {
-    case flow::Method::kGet: *n = 3; return "GET";
-    case flow::Method::kHead: *n = 4; return "HEAD";
-    case flow::Method::kPost: *n = 4; return "POST";
-    case flow::Method::kPut: *n = 3; return "PUT";
-    case flow::Method::kDelete: *n = 6; return "DELETE";
-    case flow::Method::kOptions: *n = 7; return "OPTIONS";
-    default: *n = 1; return "-";
-  }
+static const char *alog_method(flow::Method m, size_t *n)
+{
+    switch (m) {
+        case flow::Method::kGet:
+            *n = 3;
+            return "GET";
+        case flow::Method::kHead:
+            *n = 4;
+            return "HEAD";
+        case flow::Method::kPost:
+            *n = 4;
+            return "POST";
+        case flow::Method::kPut:
+            *n = 3;
+            return "PUT";
+        case flow::Method::kDelete:
+            *n = 6;
+            return "DELETE";
+        case flow::Method::kOptions:
+            *n = 7;
+            return "OPTIONS";
+        default:
+            *n = 1;
+            return "-";
+    }
 }
 
 // RFC 9113: one answer, one access line, written where :path still lives.
-void Http1::h2_log(Conn& st, const H2Logged& l) {
-  if (!alog_.enabled) return;
-  const flow::ReqFacts& facts = l.facts;
-  const char* const target = l.target.data();
-  const size_t tlen = l.target.size();
-  size_t mn = 0;
-  const char* m = alog_method(facts.method, &mn);
-  log_access(alog_, {{static_cast<const char*>(st.peer), st.peer_len},
-                     {m, mn},
-                     {target, tlen},
-                     {}, {},
-                     alog_bytes_,
-                     alog_status_,
-                     static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0))});
+void Http1::h2_log(Conn &st, const H2Logged &l)
+{
+    if (!alog_.enabled)
+        return;
+    const flow::ReqFacts &facts = l.facts;
+    const char *const target = l.target.data();
+    const size_t tlen = l.target.size();
+    size_t mn = 0;
+    const char *m = alog_method(facts.method, &mn);
+    log_access(alog_, {{static_cast<const char *>(st.peer), st.peer_len},
+                       {m, mn},
+                       {target, tlen},
+                       {},
+                       {},
+                       alog_bytes_,
+                       alog_status_,
+                       static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0))});
 }
 
 // RFC 9113 6.9: one round of parked streams, as segments; the cursor keeps
@@ -2062,598 +2274,671 @@ void Http1::h2_log(Conn& st, const H2Logged& l) {
 // ends.
 // One stream, and what it may put on the wire this round.
 struct H2Sending {
-  const H2Stream& stream;
-  const Http1::H2SendStep& step;
-  size_t max_frame;
+    const H2Stream &stream;
+    const Http1::H2SendStep &step;
+    size_t max_frame;
 };
 
-static size_t h2_emit(RoundOut& out, const H2Sending& sending) {
-  const H2Stream& s = sending.stream;
-  const Http1::H2SendStep& step = sending.step;
-  const size_t max_frame = sending.max_frame;
-  size_t off = 0;
-  while (off < step.give) {
-    if (!out.room_for_frame()) break;
-    size_t n = step.give - off;
-    if (n > max_frame) n = max_frame;
-    // WHATWG HTML: an event stream drains between ticks and is not over.
-    const bool last = !s.streaming && step.start + off + n == step.total;
-    unsigned char fh[kH2FrameHeaderLen];
-    const uint8_t end_flag = last ? kH2FlagEndStream : 0;
-    h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, s.id});
-    out.bytes(reinterpret_cast<const char*>(fh), sizeof(fh));
-    switch (s.response_content.src) {
-      case H2Stream::Content::Src::kAsset:
-        out.span(*s.response_content.asset, step.start + off, n);
-        break;
-      case H2Stream::Content::Src::kLent: out.lent(s.response_content.lent + step.start + off, n); break;
-      case H2Stream::Content::Src::kOwned:
-        out.bytes(s.response_content.owned.data() + step.start + off, n);
-        break;
-      case H2Stream::Content::Src::kNone: break;
+static size_t h2_emit(RoundOut &out, const H2Sending &sending)
+{
+    const H2Stream &s = sending.stream;
+    const Http1::H2SendStep &step = sending.step;
+    const size_t max_frame = sending.max_frame;
+    size_t off = 0;
+    while (off < step.give) {
+        if (!out.room_for_frame())
+            break;
+        size_t n = step.give - off;
+        if (n > max_frame)
+            n = max_frame;
+        // WHATWG HTML: an event stream drains between ticks and is not over.
+        const bool last = !s.streaming && step.start + off + n == step.total;
+        unsigned char fh[kH2FrameHeaderLen];
+        const uint8_t end_flag = last ? kH2FlagEndStream : 0;
+        h2_put_frame_header(fh, {static_cast<uint32_t>(n), kH2Data, end_flag, s.id});
+        out.bytes(reinterpret_cast<const char *>(fh), sizeof(fh));
+        switch (s.response_content.src) {
+            case H2Stream::Content::Src::kAsset:
+                out.span(*s.response_content.asset, step.start + off, n);
+                break;
+            case H2Stream::Content::Src::kLent:
+                out.lent(s.response_content.lent + step.start + off, n);
+                break;
+            case H2Stream::Content::Src::kOwned:
+                out.bytes(s.response_content.owned.data() + step.start + off, n);
+                break;
+            case H2Stream::Content::Src::kNone:
+                break;
+        }
+        off += n;
     }
-    off += n;
-  }
-  return off;
+    return off;
 }
 
 // Both windows and the body's one cursor, from what really went out. An
 // offset says this for free; erasing from the front of a buffer would
 // cost a memmove per round.
-static void h2_advance(H2State& h2, H2Stream& s, size_t sent) {
-  if (sent == 0) return;
-  h2.flow_window -= static_cast<int64_t>(sent);
-  s.flow_window -= static_cast<int64_t>(sent);
-  s.response_content.sent += sent;
+static void h2_advance(H2State &h2, H2Stream &s, size_t sent)
+{
+    if (sent == 0)
+        return;
+    h2.flow_window -= static_cast<int64_t>(sent);
+    s.flow_window -= static_cast<int64_t>(sent);
+    s.response_content.sent += sent;
 }
 
-void Http1::h2_flush_pending(Conn& st0, std::string& sink, Plan* plan) {
-  H2State& h2 = *st0.h2;
-  RoundOut out{sink, plan};
-  const size_t n_streams = h2.streams.size();
-  if (n_streams == 0) return;
-  size_t walked = 0;
-  for (; walked < n_streams; walked++) {
-    if (!out.room_for_frame()) break;
-    H2Stream& stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
-    const H2SendStep step = h2_send_step(stp, {h2.flow_window, kDeliverChunk});
-    if (step.give == 0) continue;
-    const size_t sent = h2_emit(out, {stp, step, h2.peer_max_frame});
-    h2_advance(h2, stp, sent);
-  }
-  h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
-  for (size_t i = 0; i < h2.streams.size();) {
-    H2Stream& stp = h2.streams[i];
-    if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes() &&
-        !stp.streaming && !stp.parked) {
-      // close_stream retires the lend rather than freeing it: its last
-      // frames are in the round being built, not yet on the wire.
-      h2.close_stream(stp.id);
-    } else {
-      i++;
+void Http1::h2_flush_pending(Conn &st0, std::string &sink, Plan *plan)
+{
+    H2State &h2 = *st0.h2;
+    RoundOut out{sink, plan};
+    const size_t n_streams = h2.streams.size();
+    if (n_streams == 0)
+        return;
+    size_t walked = 0;
+    for (; walked < n_streams; walked++) {
+        if (!out.room_for_frame())
+            break;
+        H2Stream &stp = h2.streams[(h2.flush_cursor + walked) % n_streams];
+        const H2SendStep step = h2_send_step(stp, {h2.flow_window, kDeliverChunk});
+        if (step.give == 0)
+            continue;
+        const size_t sent = h2_emit(out, {stp, step, h2.peer_max_frame});
+        h2_advance(h2, stp, sent);
     }
-  }
+    h2.flush_cursor = n_streams != 0 ? (h2.flush_cursor + walked) % n_streams : 0;
+    for (size_t i = 0; i < h2.streams.size();) {
+        H2Stream &stp = h2.streams[i];
+        if (stp.end_headers && stp.half_closed_remote && !stp.response_content.owes() &&
+            !stp.streaming && !stp.parked) {
+            // close_stream retires the lend rather than freeing it: its last
+            // frames are in the round being built, not yet on the wire.
+            h2.close_stream(stp.id);
+        } else {
+            i++;
+        }
+    }
 }
 
 // Does this connection still owe bytes? Asked before a send, for MSG_MORE.
-bool Http1::pending(const Conn& st) const {
-  if (st.h2 != nullptr) {
-    for (const H2Stream& s : st.h2->streams) {
-      if (s.response_content.owes()) return true;
+bool Http1::pending(const Conn &st) const
+{
+    if (st.h2 != nullptr) {
+        for (const H2Stream &s : st.h2->streams) {
+            if (s.response_content.owes())
+                return true;
+        }
+        return false;
     }
-    return false;
-  }
-  // A file the reactor is still opening owes bytes too - and saying so is
-  // what keeps spell_next_round from re-feeding the carry ahead of that answer.
-  // kDone is deliberately not owed bytes: its last lend has drained and it
-  // only has bookkeeping left. Counting it here cost 60 us per request -
-  // MSG_MORE corked the final send, and on_send took the arm_meminfo
-  // detour (an io-wq round trip) in front of a round that sends nothing.
-  return st.asset != nullptr ||
-         (st.file != nullptr && st.file->stage != FileStage::kNone &&
-          st.file->stage != FileStage::kDone);
+    // A file the reactor is still opening owes bytes too - and saying so is
+    // what keeps spell_next_round from re-feeding the carry ahead of that answer.
+    // kDone is deliberately not owed bytes: its last lend has drained and it
+    // only has bookkeeping left. Counting it here cost 60 us per request -
+    // MSG_MORE corked the final send, and on_send took the arm_meminfo
+    // detour (an io-wq round trip) in front of a round that sends nothing.
+    return st.asset != nullptr || (st.file != nullptr && st.file->stage != FileStage::kNone &&
+                                   st.file->stage != FileStage::kDone);
 }
 
 // The continuation both protocols share: the sink has fully drained.
-bool Http1::spell_next_round(Conn& st, std::string& sink, Plan& plan) {
-  // The release point: the Ring reaches here only once a whole round has
-  // drained, so a body lent to that round is off the wire. Before the next
-  // one is built, so a connection never holds two.
-  st.zc_release();
-  // #80: a run stopped on this connection. This is where it may go on and
-  // nowhere else - the sink and the plan it writes into exist here, and
-  // did not exist at the completion that said its answer had arrived.
-  if (mrb_unlikely(st.run_parked())) {
-    // Still owed. Nothing else may speak for this connection while a run
-    // is stopped, least of all a pipelined request behind it: RFC 9112
-    // 9.3.2 puts the responses out in the order the requests came.
-    // #30: the round of the run that stopped here. The frame holds it;
-    // the connection knows which park slot it took.
-    Conn::Round* const parked_round = st.park_at(st.parked.co.promise().park);
-    if (parked_round == nullptr || !parked_round->answer_ready) return true;
-    parked_round->answer_ready = false;
-    // What the round holds is not cleared here. The run reads it after
-    // this resume, and the next stop starts it at zero anyway.
-    auto& p = st.parked.co.promise();
-    p.sink = &sink;
-    p.plan = &plan;
-    st.parked.co.resume();
-    if (!st.parked.done()) return true;
-    const bool persist = p.persist;
-    st.parked.destroy();
-    return persist;
-  }
-  // response.file, spelled: the head, then the window buffer or a chunk of
-  // the mapping lent as an external segment - the same door the asset tier
-  // and a lent body use, so the bytes reach the kernel without a copy.
-  if (st.file != nullptr && (st.file->stage == FileStage::kDeliver ||
-                                         st.file->stage == FileStage::kDone)) {
-    // The round is computed first and performed second. Which window,
-    // whether the mapping may go back, whether the access line is owed:
-    // one value, and file_apply is the only thing that writes.
-    const FileStep step = file_step(*st.file, send_chunk_);
-    if (step.head) sink.append(st.file->head);
-    if (step.src != FileStep::Src::kNone) {
-      const char* base = step.src == FileStep::Src::kMapping ? st.file->map_addr
-                                                             : st.file->buf.data();
-      lend_body(st, sink, {{base + step.start, step.give}, plan});
+bool Http1::spell_next_round(Conn &st, std::string &sink, Plan &plan)
+{
+    // The release point: the Ring reaches here only once a whole round has
+    // drained, so a body lent to that round is off the wire. Before the next
+    // one is built, so a connection never holds two.
+    st.zc_release();
+    // #80: a run stopped on this connection. This is where it may go on and
+    // nowhere else - the sink and the plan it writes into exist here, and
+    // did not exist at the completion that said its answer had arrived.
+    if (mrb_unlikely(st.run_parked())) {
+        // Still owed. Nothing else may speak for this connection while a run
+        // is stopped, least of all a pipelined request behind it: RFC 9112
+        // 9.3.2 puts the responses out in the order the requests came.
+        // #30: the round of the run that stopped here. The frame holds it;
+        // the connection knows which park slot it took.
+        Conn::Round *const parked_round = st.park_at(st.parked.co.promise().park);
+        if (parked_round == nullptr || !parked_round->answer_ready)
+            return true;
+        parked_round->answer_ready = false;
+        // What the round holds is not cleared here. The run reads it after
+        // this resume, and the next stop starts it at zero anyway.
+        auto &p = st.parked.co.promise();
+        p.sink = &sink;
+        p.plan = &plan;
+        st.parked.co.resume();
+        if (!st.parked.done())
+            return true;
+        const bool persist = p.persist;
+        st.parked.destroy();
+        return persist;
     }
-    file_apply(st, step);
-    // Still owed: this round is spent.
-    if (!step.clear) return true;
-    // Over, and the connection ends with it.
-    if (!step.persist) return false;
-    // Over, and the connection lives: the kDone round put nothing on the
-    // wire, so it does not get to consume the round - a pipelined request
-    // waiting in the carry speaks below, in this same one. (Consuming it
-    // wedged `response.file answers pipelined requests in order`: the
-    // carry had no later round to be fed from.)
-  }
-  // The ring still owes the answer: nothing else may speak for this
-  // connection until it lands, least of all the carry behind it.
-  if (st.file != nullptr && st.file->stage != FileStage::kNone) return true;
-  if (st.sse != nullptr) return sse_second(st.sse, sec_, sink);
-  if (st.h2 != nullptr) {
-    // WHATWG HTML: every event stream this connection carries, asked
-    // once per second, before the frames go out.
-    h2_sse_second(st, sink);
-    // RFC 9110 6.4: a stream whose body is whole on the wire and whole
-    // in its file as well. The DATA frame that ended it could not
-    // answer, because the last octets were still on their way to the
-    // disk. `ended` is cleared here, so a stream is served once.
-    for (size_t i = 0; i < st.h2->streams.size(); i++) {
-      H2Stream& s = st.h2->streams[i];
-      if (!s.spill.ended || s.spill.fd < 0 || !s.spill.drained()) continue;
-      s.spill.ended = false;
-      s.half_closed_remote = true;
-      if (!h2_body_ready(st, s.id)) {
-        if (!h2_serve_parked(st, s, sink, true)) return false;
-      }
+    // response.file, spelled: the head, then the window buffer or a chunk of
+    // the mapping lent as an external segment - the same door the asset tier
+    // and a lent body use, so the bytes reach the kernel without a copy.
+    if (st.file != nullptr &&
+        (st.file->stage == FileStage::kDeliver || st.file->stage == FileStage::kDone)) {
+        // The round is computed first and performed second. Which window,
+        // whether the mapping may go back, whether the access line is owed:
+        // one value, and file_apply is the only thing that writes.
+        const FileStep step = file_step(*st.file, send_chunk_);
+        if (step.head)
+            sink.append(st.file->head);
+        if (step.src != FileStep::Src::kNone) {
+            const char *base =
+                step.src == FileStep::Src::kMapping ? st.file->map_addr : st.file->buf.data();
+            lend_body(st, sink, {{base + step.start, step.give}, plan});
+        }
+        file_apply(st, step);
+        // Still owed: this round is spent.
+        if (!step.clear)
+            return true;
+        // Over, and the connection ends with it.
+        if (!step.persist)
+            return false;
+        // Over, and the connection lives: the kDone round put nothing on the
+        // wire, so it does not get to consume the round - a pipelined request
+        // waiting in the carry speaks below, in this same one. (Consuming it
+        // wedged `response.file answers pipelined requests in order`: the
+        // carry had no later round to be fed from.)
     }
-    // #30: every run this connection stopped whose round is done. Each
-    // one frames its own stream, so several may go out in one round.
-    for (size_t i = 0; i < st.h2_parked.size();) {
-      Conn::H2Parked& p = st.h2_parked[i];
-      Conn::Round* const r = st.park_at(p.run.co.promise().park);
-      if (r == nullptr || !r->answer_ready) {
-        i++;
-        continue;
-      }
-      r->answer_ready = false;
-      auto& pr = p.run.co.promise();
-      pr.sink = &sink;
-      pr.plan = &plan;
-      p.run.co.resume();
-      if (!p.run.done()) {
-        i++;
-        continue;
-      }
-      const bool lives = pr.status != 0;
-      st.h2_parked.erase(st.h2_parked.begin() + static_cast<long>(i));
-      if (!lives) return false;
+    // The ring still owes the answer: nothing else may speak for this
+    // connection until it lands, least of all the carry behind it.
+    if (st.file != nullptr && st.file->stage != FileStage::kNone)
+        return true;
+    if (st.sse != nullptr)
+        return sse_second(st.sse, sec_, sink);
+    if (st.h2 != nullptr) {
+        // WHATWG HTML: every event stream this connection carries, asked
+        // once per second, before the frames go out.
+        h2_sse_second(st, sink);
+        // RFC 9110 6.4: a stream whose body is whole on the wire and whole
+        // in its file as well. The DATA frame that ended it could not
+        // answer, because the last octets were still on their way to the
+        // disk. `ended` is cleared here, so a stream is served once.
+        for (size_t i = 0; i < st.h2->streams.size(); i++) {
+            H2Stream &s = st.h2->streams[i];
+            if (!s.spill.ended || s.spill.fd < 0 || !s.spill.drained())
+                continue;
+            s.spill.ended = false;
+            s.half_closed_remote = true;
+            if (!h2_body_ready(st, s.id)) {
+                if (!h2_serve_parked(st, s, sink, true))
+                    return false;
+            }
+        }
+        // #30: every run this connection stopped whose round is done. Each
+        // one frames its own stream, so several may go out in one round.
+        for (size_t i = 0; i < st.h2_parked.size();) {
+            Conn::H2Parked &p = st.h2_parked[i];
+            Conn::Round *const r = st.park_at(p.run.co.promise().park);
+            if (r == nullptr || !r->answer_ready) {
+                i++;
+                continue;
+            }
+            r->answer_ready = false;
+            auto &pr = p.run.co.promise();
+            pr.sink = &sink;
+            pr.plan = &plan;
+            p.run.co.resume();
+            if (!p.run.done()) {
+                i++;
+                continue;
+            }
+            const bool lives = pr.status != 0;
+            st.h2_parked.erase(st.h2_parked.begin() + static_cast<long>(i));
+            if (!lives)
+                return false;
+        }
+        h2_flush_pending(st, sink, &plan);
+        return true;
     }
-    h2_flush_pending(st, sink, &plan);
-    return true;
-  }
-  if (st.asset != nullptr) {
-    const AssetEntry& e = *st.asset;
-    const size_t lim = st.asset_end;
-    size_t take = lim - st.asset_off;
-    if (plan.byte_cap != 0 && take > plan.byte_cap) take = plan.byte_cap;
-    struct iovec iv[3];
-    const unsigned k = Assets::wire_iov(e, {st.asset_off, take}, iv);
-    for (unsigned i = 0; i < k; i++) {
-      plan.iov[plan.iovlen++] =
-          Plan::Seg{static_cast<const char*>(iv[i].iov_base), 0, iv[i].iov_len};
+    if (st.asset != nullptr) {
+        const AssetEntry &e = *st.asset;
+        const size_t lim = st.asset_end;
+        size_t take = lim - st.asset_off;
+        if (plan.byte_cap != 0 && take > plan.byte_cap)
+            take = plan.byte_cap;
+        struct iovec iv[3];
+        const unsigned k = Assets::wire_iov(e, {st.asset_off, take}, iv);
+        for (unsigned i = 0; i < k; i++) {
+            plan.iov[plan.iovlen++] =
+                Plan::Seg{static_cast<const char *>(iv[i].iov_base), 0, iv[i].iov_len};
+        }
+        plan.byte_total = take;
+        st.asset_off += take;
+        if (st.asset_off == lim) {
+            st.asset = nullptr;
+            st.become(ConnMode::kHead);
+            st.asset_off = 0;
+            st.asset_end = 0;
+        }
+        return true;
     }
-    plan.byte_total = take;
-    st.asset_off += take;
-    if (st.asset_off == lim) {
-      st.asset = nullptr;
-      st.become(ConnMode::kHead);
-      st.asset_off = 0;
-      st.asset_end = 0;
-    }
-    return true;
-  }
-  if (st.carry.empty()) return true;
-  std::string held;
-  held.swap(st.carry);
-  return feed(st, held, {sink, &plan});
+    if (st.carry.empty())
+        return true;
+    std::string held;
+    held.swap(st.carry);
+    return feed(st, held, {sink, &plan});
 }
 
 // RFC 9113 4/6: the frame loop. A header block owns the connection until
 // END_HEADERS (6.10).
-bool Http1::h2_feed(Conn& st0, std::string_view in, Sink out) {
-  const char* const data = in.data();
-  const size_t len = in.size();
-  std::string& sink = out.bytes;
-  Plan* const plan = out.plan;
-  H2State& h2 = *st0.h2;
-  const bool in_place = st0.carry.empty();
-  const char* view = data;
-  size_t viewlen = len;
-  if (!in_place) {
-    st0.carry.append(data, len);
-    view = st0.carry.data();
-    viewlen = st0.carry.size();
-  }
-
-  size_t off = 0;
-  while (viewlen - off >= kH2FrameHeaderLen) {
-    const unsigned char* fh = reinterpret_cast<const unsigned char*>(view) + off;
-    const uint32_t flen = h2_u24(fh);
-    if (flen > kH2MaxFrameSize) return h2_error(st0, kH2FrameSizeError, sink);
-    if (viewlen - off - kH2FrameHeaderLen < flen) break;
-    const uint8_t type = fh[3];
-    const uint8_t flags = fh[4];
-    const uint32_t stream = h2_u31(fh + 5);
-    const unsigned char* p = fh + kH2FrameHeaderLen;
-    off += kH2FrameHeaderLen + flen;
-
-    if (h2.frag_active && type != kH2Continuation) {
-      return h2_error(st0, kH2ProtocolError, sink);
+bool Http1::h2_feed(Conn &st0, std::string_view in, Sink out)
+{
+    const char *const data = in.data();
+    const size_t len = in.size();
+    std::string &sink = out.bytes;
+    Plan *const plan = out.plan;
+    H2State &h2 = *st0.h2;
+    const bool in_place = st0.carry.empty();
+    const char *view = data;
+    size_t viewlen = len;
+    if (!in_place) {
+        st0.carry.append(data, len);
+        view = st0.carry.data();
+        viewlen = st0.carry.size();
     }
 
-    switch (type) {
-      case kH2Data: {
-        if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
-        H2Stream* stp = h2.find(stream);
-        if (stp == nullptr) {
-          if (h2_is_idle(h2, stream)) return h2_error(st0, kH2ProtocolError, sink);
-          h2_credit_connection(sink, flen);
-          h2_rst(st0, stream, kH2StreamClosed, sink);
-          break;
-        }
-        if (!stp->end_headers || stp->half_closed_remote) {
-          h2_credit_connection(sink, flen);
-          h2_rst(st0, stream, kH2StreamClosed, sink);
-          break;
-        }
-        const unsigned char* dp = p;
-        size_t dlen = flen;
-        if (flags & kH2FlagPadded) {
-          if (dlen < 1) return h2_error(st0, kH2ProtocolError, sink);
-          const uint8_t pad = dp[0];
-          dp++;
-          dlen--;
-          if (pad > dlen) return h2_error(st0, kH2ProtocolError, sink);
-          dlen -= pad;
-        }
-        // RFC 8441: on a WebSocket stream the DATA frames are the
-        // WebSocket. What the handler answers goes back on the same
-        // stream, against its window, like an event stream's ticks.
-        if (mrb_unlikely(stp->ws != nullptr)) {
-          // RFC 9113 6.9: the credit goes back first. These bytes are
-          // consumed the moment ws_feed reads them, and a websocket that
-          // never returns its window stalls the moment the peer has sent
-          // 65535 of them - which is one Autobahn case, not an edge.
-          if (flen != 0) {
-            unsigned char inc[4];
-            put_u32(inc, flen);
-            emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
-            emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
-          }
-          std::string out;
-          const bool go_on = ws_feed(stp->ws, {reinterpret_cast<const char*>(dp), dlen}, out);
-          if (!out.empty()) stp->response_content.append_owned(out.data(), out.size());
-          // RFC 9113 5.1: END_STREAM closes the peer's half, so no more
-          // of the tunnel can arrive and this websocket is over - the
-          // same end a handler reaches when it says so. Without this the
-          // stream and its WsConn stood until the connection went, and
-          // DATA after END_STREAM was still read.
-          // The peer's own window is shut and it keeps sending. The
-          // credit above let it, so what this handler answers has
-          // nowhere to go and nothing bounded it.
-          if (mrb_unlikely(stp->response_content.owed_bytes() > kTunnelOutCap)) {
-            stp->streaming = false;
-            stp->response_content.clear();
-            h2_rst(st0, stream, kH2EnhanceYourCalm, sink);
-            h2.close_stream(stream);
+    size_t off = 0;
+    while (viewlen - off >= kH2FrameHeaderLen) {
+        const unsigned char *fh = reinterpret_cast<const unsigned char *>(view) + off;
+        const uint32_t flen = h2_u24(fh);
+        if (flen > kH2MaxFrameSize)
+            return h2_error(st0, kH2FrameSizeError, sink);
+        if (viewlen - off - kH2FrameHeaderLen < flen)
             break;
-          }
-          if (!go_on || (flags & kH2FlagEndStream) != 0) {
-            // RFC 6455 7: the handler said the connection is over. What
-            // it still owes leaves first, and END_STREAM rides the last
-            // frame of it.
-            ws_free(stp->ws);
-            stp->ws = nullptr;
-            stp->streaming = false;
-            stp->half_closed_remote = true;
-            if (!stp->response_content.owes()) {
-              unsigned char eh[kH2FrameHeaderLen];
-              h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stream});
-              sink.append(reinterpret_cast<const char*>(eh), sizeof(eh));
-              h2.close_stream(stream);
-            }
-          }
-          break;
-        }
-        if (stp->content_received + dlen > stp->max_body) {
-          h2_credit_connection(sink, flen);
-          h2_rst(st0, stream, kH2RefusedStream, sink);
-          break;
-        }
-        // RFC 9113 8.1.2.6: the octets that arrive are counted against
-        // the length the request declared, and the frame that passes it
-        // is the frame that ends the stream. Waiting for END_STREAM
-        // would store a body the request already disowned.
-        if (stp->content_length_given && stp->content_received + dlen > stp->content_length) {
-          h2_credit_connection(sink, flen);
-          if (!h2_count_lie(st0, stream, sink)) return false;
-          break;
-        }
-        stp->content_received += dlen;
-        // RFC 9110 6.4: stored only where a node of this resource can
-        // read them, and in the place the head chose. Only
-        // content_types_accepted, create_path and process_post read a
-        // body, and the fold wrote that answer on the resource; the
-        // head wrote it and the destination on the stream. A konst
-        // route's octets, a miss's, and a resource that reads no body
-        // at all are counted and dropped, so an idle stream cannot hold
-        // megabytes nobody will ever ask for.
-        //
-        // Neither writer below tests where the octets belong. That is
-        // the same switch the frame already needed.
-        {
-          const char* const bp = reinterpret_cast<const char*>(dp);
-          bool wrote = true;
-          switch (stp->data) {
-            case H2Stream::Data::kMem: wrote = MemWriter{&stp->request_content}.put(bp, dlen); break;
-            case H2Stream::Data::kFile: wrote = FileWriter{&stp->spill}.put(bp, dlen); break;
-            case H2Stream::Data::kDrop: break;
-          }
-          // The one move: a body that named no length has outgrown
-          // memory. What memory holds goes to the file now, and every
-          // frame after this one is a file write. The count decides, so
-          // the test is a comparison the frame already loaded.
-          if (mrb_unlikely(wrote && stp->data == H2Stream::Data::kMem &&
-                           stp->request_content.size() >= kBodySpill)) {
-            // RFC 9113 8.7: no slot for the file is load, and REFUSED_STREAM
-            // says the client may send the request again. No node that
-            // reads content has run: each one waits for END_STREAM.
-            const SpillOpen opened = stp->spill.open_file();
-            if (mrb_unlikely(opened == SpillOpen::kNoSlot)) {
-              h2_credit_connection(sink, flen);
-              h2_rst(st0, stream, kH2RefusedStream, sink);
-              break;
-            }
-            wrote = opened == SpillOpen::kOpen &&
-                    FileWriter{&stp->spill}.put(stp->request_content.data(),
-                                                stp->request_content.size());
-            if (wrote) {
-              stp->request_content.clear();
-              stp->request_content.shrink_to_fit();
-              stp->data = H2Stream::Data::kFile;
-            }
-          }
-          if (mrb_unlikely(!wrote)) {
-            stp->spill.close_file();
-            h2_credit_connection(sink, flen);
-            h2_rst(st0, stream, kH2InternalError, sink);
-            break;
-          }
-        }
-        if (flen != 0) {
-          unsigned char inc[4];
-          put_u32(inc, flen);
-          emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
-          emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
-        }
-        if (flags & kH2FlagEndStream) {
-          // The other half of the same rule: a body that ends short of
-          // what it declared.
-          if (stp->content_length_given && stp->content_received != stp->content_length) {
-            if (!h2_count_lie(st0, stream, sink)) return false;
-            break;
-          }
-          // RFC 9110 6.4: the body is whole on the wire, and it may not
-          // be whole in its file. The descriptor a run reads from must
-          // hold every octet, so the answer waits for the last write.
-          // The reactor serves this stream when the file is drained.
-          stp->spill.ended = true;
-          if (mrb_unlikely(stp->spill.fd >= 0 && !stp->spill.drained())) break;
-          // #53: a run that walked on the head and stopped for this body
-          // is resumed. Only a stream with no such run is served here.
-          stp->half_closed_remote = true;
-          if (!h2_body_ready(st0, stream)) {
-            if (!h2_serve_parked(st0, *stp, sink, true)) return false;
-          }
-        }
-        break;
-      }
+        const uint8_t type = fh[3];
+        const uint8_t flags = fh[4];
+        const uint32_t stream = h2_u31(fh + 5);
+        const unsigned char *p = fh + kH2FrameHeaderLen;
+        off += kH2FrameHeaderLen + flen;
 
-      case kH2Headers: {
-        if (stream == 0 || (stream & 1) == 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (h2.find(stream) == nullptr && !h2_is_idle(h2, stream)) {
-          return h2_error(st0, kH2ProtocolError, sink);
+        if (h2.frag_active && type != kH2Continuation) {
+            return h2_error(st0, kH2ProtocolError, sink);
         }
-        const unsigned char* hp = p;
-        size_t hlen = flen;
-        if (flags & kH2FlagPadded) {
-          if (hlen < 1) return h2_error(st0, kH2ProtocolError, sink);
-          const uint8_t pad = hp[0];
-          hp++;
-          hlen--;
-          if (pad > hlen) return h2_error(st0, kH2ProtocolError, sink);
-          hlen -= pad;
-        }
-        if (flags & kH2FlagPriority) {
-          if (hlen < 5) return h2_error(st0, kH2FrameSizeError, sink);
-          if (h2_u31(hp) == stream) return h2_error(st0, kH2ProtocolError, sink);
-          hp += 5;
-          hlen -= 5;
-        }
-        if (flags & kH2FlagEndHeaders) {
-          // The whole block is already contiguous in the recv buffer, so
-          // it is decoded where it lies; frag exists for the split that
-          // CONTINUATION makes, and this is not one.
-          h2.frag_active = false;
-          const H2Headers head = {stream, (flags & kH2FlagEndStream) != 0, {hp, hlen}};
-          if (!h2_dispatch(st0, head, sink)) return false;
-          break;
-        }
-        if (hlen > kH2FragBudget) return h2_error(st0, kH2EnhanceYourCalm, sink);
-        h2.frag.assign(reinterpret_cast<const char*>(hp), hlen);
-        h2.frag_stream = stream;
-        h2.frag_flags = flags;
-        h2.frag_active = true;
-        break;
-      }
 
-      case kH2Continuation: {
-        if (!h2.frag_active || stream != h2.frag_stream) {
-          return h2_error(st0, kH2ProtocolError, sink);
-        }
-        if (h2.frag.size() + flen > kH2FragBudget) {
-          return h2_error(st0, kH2EnhanceYourCalm, sink);
-        }
-        h2.frag.append(reinterpret_cast<const char*>(p), flen);
-        if (flags & kH2FlagEndHeaders) {
-          h2.frag_active = false;
-          const H2Headers head = {
-              h2.frag_stream, (h2.frag_flags & kH2FlagEndStream) != 0,
-              {reinterpret_cast<const unsigned char*>(h2.frag.data()), h2.frag.size()}};
-          if (!h2_dispatch(st0, head, sink)) return false;
-        }
-        break;
-      }
-
-      case kH2Priority:
-        if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (flen != 5) return h2_error(st0, kH2FrameSizeError, sink);
-        if (h2_u31(p) == stream) return h2_error(st0, kH2ProtocolError, sink);
-        break;
-
-      case kH2RstStream:
-        if (stream == 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (flen != 4) return h2_error(st0, kH2FrameSizeError, sink);
-        if (h2.find(stream) == nullptr && h2_is_idle(h2, stream)) {
-          return h2_error(st0, kH2ProtocolError, sink);
-        }
-        h2.close_stream(stream);
-        break;
-
-      case kH2Settings: {
-        if (stream != 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (flags & kH2FlagAck) {
-          if (flen != 0) return h2_error(st0, kH2FrameSizeError, sink);
-          break;
-        }
-        if (flen % 6 != 0) return h2_error(st0, kH2FrameSizeError, sink);
-        for (uint32_t e = 0; e < flen; e += 6) {
-          const uint16_t id = h2_u16(p + e);
-          const uint32_t v = h2_u32(p + e + 2);
-          switch (id) {
-            case kH2SettingsHeaderTableSize:
-              // Clamped, never forwarded raw: this is a peer-chosen
-              // 32-bit number and neither RFC 9113 6.5.2 nor RFC 7541
-              // 4.2 bounds it. Encoding with a smaller table than the
-              // peer permits is always legal, so the ceiling is ours.
-              lshpack_enc_set_max_capacity(&h2.enc,
-                                           v > kH2EncTableMax ? kH2EncTableMax : v);
-              break;
-            case kH2SettingsEnablePush:
-              if (v > 1) return h2_error(st0, kH2ProtocolError, sink);
-              break;
-            case kH2SettingsInitialWindowSize: {
-              if (v > kH2WindowCeiling) return h2_error(st0, kH2FlowControlError, sink);
-              const int64_t delta = static_cast<int64_t>(v) - h2.peer_initial_window;
-              // RFC 9113 6.9.2: the change applies to every open stream,
-              // and a stream that would go over the ceiling is a
-              // FLOW_CONTROL_ERROR rather than a window this server
-              // quietly carries.
-              for (const H2Stream& stp : h2.streams) {
-                if (stp.flow_window + delta > kH2WindowCeiling) {
-                  return h2_error(st0, kH2FlowControlError, sink);
+        switch (type) {
+            case kH2Data: {
+                if (stream == 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                H2Stream *stp = h2.find(stream);
+                if (stp == nullptr) {
+                    if (h2_is_idle(h2, stream))
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    h2_credit_connection(sink, flen);
+                    h2_rst(st0, stream, kH2StreamClosed, sink);
+                    break;
                 }
-              }
-              h2.peer_initial_window = static_cast<int64_t>(v);
-              for (H2Stream& stp : h2.streams) stp.flow_window += delta;
-              break;
+                if (!stp->end_headers || stp->half_closed_remote) {
+                    h2_credit_connection(sink, flen);
+                    h2_rst(st0, stream, kH2StreamClosed, sink);
+                    break;
+                }
+                const unsigned char *dp = p;
+                size_t dlen = flen;
+                if (flags & kH2FlagPadded) {
+                    if (dlen < 1)
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    const uint8_t pad = dp[0];
+                    dp++;
+                    dlen--;
+                    if (pad > dlen)
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    dlen -= pad;
+                }
+                // RFC 8441: on a WebSocket stream the DATA frames are the
+                // WebSocket. What the handler answers goes back on the same
+                // stream, against its window, like an event stream's ticks.
+                if (mrb_unlikely(stp->ws != nullptr)) {
+                    // RFC 9113 6.9: the credit goes back first. These bytes are
+                    // consumed the moment ws_feed reads them, and a websocket that
+                    // never returns its window stalls the moment the peer has sent
+                    // 65535 of them - which is one Autobahn case, not an edge.
+                    if (flen != 0) {
+                        unsigned char inc[4];
+                        put_u32(inc, flen);
+                        emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+                        emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
+                    }
+                    std::string out;
+                    const bool go_on =
+                        ws_feed(stp->ws, {reinterpret_cast<const char *>(dp), dlen}, out);
+                    if (!out.empty())
+                        stp->response_content.append_owned(out.data(), out.size());
+                    // RFC 9113 5.1: END_STREAM closes the peer's half, so no more
+                    // of the tunnel can arrive and this websocket is over - the
+                    // same end a handler reaches when it says so. Without this the
+                    // stream and its WsConn stood until the connection went, and
+                    // DATA after END_STREAM was still read.
+                    // The peer's own window is shut and it keeps sending. The
+                    // credit above let it, so what this handler answers has
+                    // nowhere to go and nothing bounded it.
+                    if (mrb_unlikely(stp->response_content.owed_bytes() > kTunnelOutCap)) {
+                        stp->streaming = false;
+                        stp->response_content.clear();
+                        h2_rst(st0, stream, kH2EnhanceYourCalm, sink);
+                        h2.close_stream(stream);
+                        break;
+                    }
+                    if (!go_on || (flags & kH2FlagEndStream) != 0) {
+                        // RFC 6455 7: the handler said the connection is over. What
+                        // it still owes leaves first, and END_STREAM rides the last
+                        // frame of it.
+                        ws_free(stp->ws);
+                        stp->ws = nullptr;
+                        stp->streaming = false;
+                        stp->half_closed_remote = true;
+                        if (!stp->response_content.owes()) {
+                            unsigned char eh[kH2FrameHeaderLen];
+                            h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stream});
+                            sink.append(reinterpret_cast<const char *>(eh), sizeof(eh));
+                            h2.close_stream(stream);
+                        }
+                    }
+                    break;
+                }
+                if (stp->content_received + dlen > stp->max_body) {
+                    h2_credit_connection(sink, flen);
+                    h2_rst(st0, stream, kH2RefusedStream, sink);
+                    break;
+                }
+                // RFC 9113 8.1.2.6: the octets that arrive are counted against
+                // the length the request declared, and the frame that passes it
+                // is the frame that ends the stream. Waiting for END_STREAM
+                // would store a body the request already disowned.
+                if (stp->content_length_given &&
+                    stp->content_received + dlen > stp->content_length) {
+                    h2_credit_connection(sink, flen);
+                    if (!h2_count_lie(st0, stream, sink))
+                        return false;
+                    break;
+                }
+                stp->content_received += dlen;
+                // RFC 9110 6.4: stored only where a node of this resource can
+                // read them, and in the place the head chose. Only
+                // content_types_accepted, create_path and process_post read a
+                // body, and the fold wrote that answer on the resource; the
+                // head wrote it and the destination on the stream. A konst
+                // route's octets, a miss's, and a resource that reads no body
+                // at all are counted and dropped, so an idle stream cannot hold
+                // megabytes nobody will ever ask for.
+                //
+                // Neither writer below tests where the octets belong. That is
+                // the same switch the frame already needed.
+                {
+                    const char *const bp = reinterpret_cast<const char *>(dp);
+                    bool wrote = true;
+                    switch (stp->data) {
+                        case H2Stream::Data::kMem:
+                            wrote = MemWriter{&stp->request_content}.put(bp, dlen);
+                            break;
+                        case H2Stream::Data::kFile:
+                            wrote = FileWriter{&stp->spill}.put(bp, dlen);
+                            break;
+                        case H2Stream::Data::kDrop:
+                            break;
+                    }
+                    // The one move: a body that named no length has outgrown
+                    // memory. What memory holds goes to the file now, and every
+                    // frame after this one is a file write. The count decides, so
+                    // the test is a comparison the frame already loaded.
+                    if (mrb_unlikely(wrote && stp->data == H2Stream::Data::kMem &&
+                                     stp->request_content.size() >= kBodySpill)) {
+                        // RFC 9113 8.7: no slot for the file is load, and REFUSED_STREAM
+                        // says the client may send the request again. No node that
+                        // reads content has run: each one waits for END_STREAM.
+                        const SpillOpen opened = stp->spill.open_file();
+                        if (mrb_unlikely(opened == SpillOpen::kNoSlot)) {
+                            h2_credit_connection(sink, flen);
+                            h2_rst(st0, stream, kH2RefusedStream, sink);
+                            break;
+                        }
+                        wrote = opened == SpillOpen::kOpen &&
+                                FileWriter{&stp->spill}.put(stp->request_content.data(),
+                                                            stp->request_content.size());
+                        if (wrote) {
+                            stp->request_content.clear();
+                            stp->request_content.shrink_to_fit();
+                            stp->data = H2Stream::Data::kFile;
+                        }
+                    }
+                    if (mrb_unlikely(!wrote)) {
+                        stp->spill.close_file();
+                        h2_credit_connection(sink, flen);
+                        h2_rst(st0, stream, kH2InternalError, sink);
+                        break;
+                    }
+                }
+                if (flen != 0) {
+                    unsigned char inc[4];
+                    put_u32(inc, flen);
+                    emit_control(sink, {kH2WindowUpdate, 0, 0, inc});
+                    emit_control(sink, {kH2WindowUpdate, 0, stream, inc});
+                }
+                if (flags & kH2FlagEndStream) {
+                    // The other half of the same rule: a body that ends short of
+                    // what it declared.
+                    if (stp->content_length_given && stp->content_received != stp->content_length) {
+                        if (!h2_count_lie(st0, stream, sink))
+                            return false;
+                        break;
+                    }
+                    // RFC 9110 6.4: the body is whole on the wire, and it may not
+                    // be whole in its file. The descriptor a run reads from must
+                    // hold every octet, so the answer waits for the last write.
+                    // The reactor serves this stream when the file is drained.
+                    stp->spill.ended = true;
+                    if (mrb_unlikely(stp->spill.fd >= 0 && !stp->spill.drained()))
+                        break;
+                    // #53: a run that walked on the head and stopped for this body
+                    // is resumed. Only a stream with no such run is served here.
+                    stp->half_closed_remote = true;
+                    if (!h2_body_ready(st0, stream)) {
+                        if (!h2_serve_parked(st0, *stp, sink, true))
+                            return false;
+                    }
+                }
+                break;
             }
-            case kH2SettingsMaxFrameSize:
-              if (v < 16384 || v > 16777215) return h2_error(st0, kH2ProtocolError, sink);
-              h2.peer_max_frame = v > kH2MaxFrameSize ? kH2MaxFrameSize : v;
-              break;
+
+            case kH2Headers: {
+                if (stream == 0 || (stream & 1) == 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (h2.find(stream) == nullptr && !h2_is_idle(h2, stream)) {
+                    return h2_error(st0, kH2ProtocolError, sink);
+                }
+                const unsigned char *hp = p;
+                size_t hlen = flen;
+                if (flags & kH2FlagPadded) {
+                    if (hlen < 1)
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    const uint8_t pad = hp[0];
+                    hp++;
+                    hlen--;
+                    if (pad > hlen)
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    hlen -= pad;
+                }
+                if (flags & kH2FlagPriority) {
+                    if (hlen < 5)
+                        return h2_error(st0, kH2FrameSizeError, sink);
+                    if (h2_u31(hp) == stream)
+                        return h2_error(st0, kH2ProtocolError, sink);
+                    hp += 5;
+                    hlen -= 5;
+                }
+                if (flags & kH2FlagEndHeaders) {
+                    // The whole block is already contiguous in the recv buffer, so
+                    // it is decoded where it lies; frag exists for the split that
+                    // CONTINUATION makes, and this is not one.
+                    h2.frag_active = false;
+                    const H2Headers head = {stream, (flags & kH2FlagEndStream) != 0, {hp, hlen}};
+                    if (!h2_dispatch(st0, head, sink))
+                        return false;
+                    break;
+                }
+                if (hlen > kH2FragBudget)
+                    return h2_error(st0, kH2EnhanceYourCalm, sink);
+                h2.frag.assign(reinterpret_cast<const char *>(hp), hlen);
+                h2.frag_stream = stream;
+                h2.frag_flags = flags;
+                h2.frag_active = true;
+                break;
+            }
+
+            case kH2Continuation: {
+                if (!h2.frag_active || stream != h2.frag_stream) {
+                    return h2_error(st0, kH2ProtocolError, sink);
+                }
+                if (h2.frag.size() + flen > kH2FragBudget) {
+                    return h2_error(st0, kH2EnhanceYourCalm, sink);
+                }
+                h2.frag.append(reinterpret_cast<const char *>(p), flen);
+                if (flags & kH2FlagEndHeaders) {
+                    h2.frag_active = false;
+                    const H2Headers head = {
+                        h2.frag_stream,
+                        (h2.frag_flags & kH2FlagEndStream) != 0,
+                        {reinterpret_cast<const unsigned char *>(h2.frag.data()), h2.frag.size()}};
+                    if (!h2_dispatch(st0, head, sink))
+                        return false;
+                }
+                break;
+            }
+
+            case kH2Priority:
+                if (stream == 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (flen != 5)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                if (h2_u31(p) == stream)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                break;
+
+            case kH2RstStream:
+                if (stream == 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (flen != 4)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                if (h2.find(stream) == nullptr && h2_is_idle(h2, stream)) {
+                    return h2_error(st0, kH2ProtocolError, sink);
+                }
+                h2.close_stream(stream);
+                break;
+
+            case kH2Settings: {
+                if (stream != 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (flags & kH2FlagAck) {
+                    if (flen != 0)
+                        return h2_error(st0, kH2FrameSizeError, sink);
+                    break;
+                }
+                if (flen % 6 != 0)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                for (uint32_t e = 0; e < flen; e += 6) {
+                    const uint16_t id = h2_u16(p + e);
+                    const uint32_t v = h2_u32(p + e + 2);
+                    switch (id) {
+                        case kH2SettingsHeaderTableSize:
+                            // Clamped, never forwarded raw: this is a peer-chosen
+                            // 32-bit number and neither RFC 9113 6.5.2 nor RFC 7541
+                            // 4.2 bounds it. Encoding with a smaller table than the
+                            // peer permits is always legal, so the ceiling is ours.
+                            lshpack_enc_set_max_capacity(&h2.enc,
+                                                         v > kH2EncTableMax ? kH2EncTableMax : v);
+                            break;
+                        case kH2SettingsEnablePush:
+                            if (v > 1)
+                                return h2_error(st0, kH2ProtocolError, sink);
+                            break;
+                        case kH2SettingsInitialWindowSize: {
+                            if (v > kH2WindowCeiling)
+                                return h2_error(st0, kH2FlowControlError, sink);
+                            const int64_t delta = static_cast<int64_t>(v) - h2.peer_initial_window;
+                            // RFC 9113 6.9.2: the change applies to every open stream,
+                            // and a stream that would go over the ceiling is a
+                            // FLOW_CONTROL_ERROR rather than a window this server
+                            // quietly carries.
+                            for (const H2Stream &stp : h2.streams) {
+                                if (stp.flow_window + delta > kH2WindowCeiling) {
+                                    return h2_error(st0, kH2FlowControlError, sink);
+                                }
+                            }
+                            h2.peer_initial_window = static_cast<int64_t>(v);
+                            for (H2Stream &stp : h2.streams)
+                                stp.flow_window += delta;
+                            break;
+                        }
+                        case kH2SettingsMaxFrameSize:
+                            if (v < 16384 || v > 16777215)
+                                return h2_error(st0, kH2ProtocolError, sink);
+                            h2.peer_max_frame = v > kH2MaxFrameSize ? kH2MaxFrameSize : v;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                emit_control(sink, {kH2Settings, kH2FlagAck, 0, {}});
+                break;
+            }
+
+            case kH2PushPromise:
+                return h2_error(st0, kH2ProtocolError, sink);
+
+            case kH2Ping:
+                // RFC 9113 6.7: a PING on a stream is a PROTOCOL_ERROR, and only
+                // a length other than 8 is a FRAME_SIZE_ERROR. One code for both
+                // told the peer the wrong thing about its own mistake.
+                if (stream != 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (flen != 8)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                if (!(flags & kH2FlagAck))
+                    emit_control(sink, {kH2Ping, kH2FlagAck, 0, {p, 8}});
+                break;
+
+            case kH2Goaway:
+                if (flen < 8)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                h2.goaway_recv = true;
+                break;
+
+            case kH2WindowUpdate: {
+                if (flen != 4)
+                    return h2_error(st0, kH2FrameSizeError, sink);
+                const uint32_t inc = h2_u31(p);
+                if (inc == 0)
+                    return h2_error(st0, kH2ProtocolError, sink);
+                if (stream == 0) {
+                    h2.flow_window += inc;
+                    if (h2.flow_window > kH2WindowCeiling) {
+                        return h2_error(st0, kH2FlowControlError, sink);
+                    }
+                } else if (H2Stream *stp = h2.find(stream)) {
+                    stp->flow_window += inc;
+                    if (stp->flow_window > kH2WindowCeiling) {
+                        h2_rst(st0, stream, kH2FlowControlError, sink);
+                        break;
+                    }
+                } else if (h2_is_idle(h2, stream)) {
+                    return h2_error(st0, kH2ProtocolError, sink);
+                }
+                h2_flush_pending(st0, sink, nullptr);
+                break;
+            }
+
             default:
-              break;
-          }
+                break;
         }
-        emit_control(sink, {kH2Settings, kH2FlagAck, 0, {}});
-        break;
-      }
-
-      case kH2PushPromise:
-        return h2_error(st0, kH2ProtocolError, sink);
-
-      case kH2Ping:
-        // RFC 9113 6.7: a PING on a stream is a PROTOCOL_ERROR, and only
-        // a length other than 8 is a FRAME_SIZE_ERROR. One code for both
-        // told the peer the wrong thing about its own mistake.
-        if (stream != 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (flen != 8) return h2_error(st0, kH2FrameSizeError, sink);
-        if (!(flags & kH2FlagAck)) emit_control(sink, {kH2Ping, kH2FlagAck, 0, {p, 8}});
-        break;
-
-      case kH2Goaway:
-        if (flen < 8) return h2_error(st0, kH2FrameSizeError, sink);
-        h2.goaway_recv = true;
-        break;
-
-      case kH2WindowUpdate: {
-        if (flen != 4) return h2_error(st0, kH2FrameSizeError, sink);
-        const uint32_t inc = h2_u31(p);
-        if (inc == 0) return h2_error(st0, kH2ProtocolError, sink);
-        if (stream == 0) {
-          h2.flow_window += inc;
-          if (h2.flow_window > kH2WindowCeiling) {
-            return h2_error(st0, kH2FlowControlError, sink);
-          }
-        } else if (H2Stream* stp = h2.find(stream)) {
-          stp->flow_window += inc;
-          if (stp->flow_window > kH2WindowCeiling) {
-            h2_rst(st0, stream, kH2FlowControlError, sink);
-            break;
-          }
-        } else if (h2_is_idle(h2, stream)) {
-          return h2_error(st0, kH2ProtocolError, sink);
-        }
-        h2_flush_pending(st0, sink, nullptr);
-        break;
-      }
-
-      default:
-        break;
     }
-  }
 
-  if (in_place) {
-    if (off < viewlen) st0.carry.assign(view + off, viewlen - off);
-  } else {
-    st0.carry.erase(0, off);
-  }
-  h2_flush_pending(st0, sink, plan);
-  return !h2.goaway_recv;
+    if (in_place) {
+        if (off < viewlen)
+            st0.carry.assign(view + off, viewlen - off);
+    } else {
+        st0.carry.erase(0, off);
+    }
+    h2_flush_pending(st0, sink, plan);
+    return !h2.goaway_recv;
 }
-}
+} // namespace webmachine
