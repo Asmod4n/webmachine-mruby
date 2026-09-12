@@ -138,17 +138,17 @@ empty` for an empty String. The error class is `Webmachine::ConfigError`.
 | Key | Type | Default | Ceiling | What it does |
 | --- | --- | --- | --- | --- |
 | `port` | Integer | none | 65535 | The TCP port to listen on. `0` is legal: the OS picks a port at bind time, readable back through `app.ready`. Exactly one of `port`, `unix_path` or `url` may be set per application; a second form is refused. An application with none of the three is refused at build. |
-| `unix_path` | String, not empty | none | — | The unix socket path to listen on, instead of a port. |
-| `url` | String | none | — | The listener, and optionally settings, in one string: `scheme://host[:port][?setting=value&...]` or `unix:///path[?setting=value&...]`. See below. |
-| `docroot` | String, not empty | none | — | The directory `response.file` serves from. Process-wide: the first app that names one decides. |
-| `assets` | String, not empty | none | — | The zip pack a standalone or app server answers from. Process-wide: the first app that names one decides. |
-| `certificate` | String, not empty | none | — | Path to the PEM certificate file. Only valid with a `https` listener. |
-| `private_key` | String, not empty | none | — | Path to the PEM private key file. Only valid with a `https` listener; both `certificate` and `private_key` are required together. |
+| `unix_path` | String, not empty | none | -  | The unix socket path to listen on, instead of a port. |
+| `url` | String | none | -  | The listener, and optionally settings, in one string: `scheme://host[:port][?setting=value&...]` or `unix:///path[?setting=value&...]`. See below. |
+| `docroot` | String, not empty | none | -  | The directory `response.file` serves from. Process-wide: the first app that names one decides. |
+| `assets` | String, not empty | none | -  | The zip pack a standalone or app server answers from. Process-wide: the first app that names one decides. |
+| `certificate` | String, not empty | none | -  | Path to the PEM certificate file. Only valid with a `https` listener. |
+| `private_key` | String, not empty | none | -  | Path to the PEM private key file. Only valid with a `https` listener; both `certificate` and `private_key` are required together. |
 | `file_map_threshold` | Integer | 262144 (256 KiB) | 1073741824 (1 GiB) | From this size up, a `response.file` file is mapped and handed to one send instead of read window by window. `0` means never map. A `--file-map-threshold` flag or `[tune] file_map_threshold` in the config file beats this. |
 | `zero_copy_threshold` | Integer | 131072 (128 KiB) | 1073741824 (1 GiB) | From this size up, a body is lent to the kernel instead of copied. `0` means never lend. A `--zero-copy-threshold` flag or `[tune] zero_copy_threshold` in the config file beats this. |
-| `disable_http_cats` | any, read for truthiness | false | — | When true, the error assets zip is never opened, and error pages have no picture. Process-wide: the first app with an opinion decides. |
+| `disable_http_cats` | any, read for truthiness | false | -  | When true, the error assets zip is never opened, and error pages have no picture. Process-wide: the first app with an opinion decides. |
 | `max_body` | Integer | 1048576 (1 MiB) | 1073741824 (1 GiB) | The largest request body this application accepts. A larger declared `Content-Length` gets 413 before one byte of the body is read. Per application, not process-wide. Order of precedence: the resource's `def self.max_body`, then `conf.max_body`, then the default. |
-| `spill_dir` | String, not empty | the platform's own (`TMPDIR`, then `/tmp`) | — | The directory a request body spills into once it outgrows memory. Process-wide: the first app that names one decides. Naming a directory on the disk the uploads live on makes `request.body.save` a link instead of a copy. |
+| `spill_dir` | String, not empty | the platform's own (`TMPDIR`, then `/tmp`) | -  | The directory a request body spills into once it outgrows memory. Process-wide: the first app that names one decides. Naming a directory on the disk the uploads live on makes `request.body.save` a link instead of a copy. |
 
 ### conf.url
 
