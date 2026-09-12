@@ -146,11 +146,12 @@ BodySpill *Http1::spill_waiting(Conn &conn)
 
 bool Http1::chunk_tchar(char conn)
 {
-    const unsigned char u = static_cast<unsigned char>(conn);
-    return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') ||
-           conn == '!' || conn == '#' || conn == '$' || conn == '%' || conn == '&' ||
-           conn == '\'' || conn == '*' || conn == '+' || conn == '-' || conn == '.' ||
-           conn == '^' || conn == '_' || conn == '`' || conn == '|' || conn == '~';
+    const unsigned char decoded = static_cast<unsigned char>(conn);
+    return (decoded >= 'a' && decoded <= 'z') || (decoded >= 'A' && decoded <= 'Z') ||
+           (decoded >= '0' && decoded <= '9') || conn == '!' || conn == '#' || conn == '$' ||
+           conn == '%' || conn == '&' || conn == '\'' || conn == '*' || conn == '+' ||
+           conn == '-' || conn == '.' || conn == '^' || conn == '_' || conn == '`' || conn == '|' ||
+           conn == '~';
 }
 
 bool Http1::chunk_hex(char conn)
@@ -507,7 +508,7 @@ const Http1::Variants &Http1::prefixes(uint16_t status) const
     return store_prefix_[index_[status]];
 }
 
-Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
+Http1::AnswerStep Http1::spell_answer(Round &round, Spelling spelling)
 {
     Conn &st = round.st;
     const Bundle *const b = round.b;
@@ -519,17 +520,17 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
     const size_t method_len = round.method_len;
     const char *const path = round.path;
     const size_t path_len = round.path_len;
-    std::string &sink = sp.sink;
-    Plan *const plan = sp.plan;
-    const uint16_t status = sp.status;
-    const char *const lent = sp.lent;
-    const size_t lent_len = sp.lent_len;
-    const bool answered = sp.answered;
-    const bool have_body = sp.have_body;
-    const bool accept_gzip = sp.accept_gzip;
-    const std::array<uint16_t, 600> *const idx = sp.idx;
+    std::string &sink = spelling.sink;
+    Plan *const plan = spelling.plan;
+    const uint16_t status = spelling.status;
+    const char *const lent = spelling.lent;
+    const size_t lent_len = spelling.lent_len;
+    const bool answered = spelling.answered;
+    const bool have_body = spelling.have_body;
+    const bool accept_gzip = spelling.accept_gzip;
+    const std::array<uint16_t, 600> *const idx = spelling.idx;
     AnswerStep astep =
-        answer_step({status, sp.body.size(), lent_len, answered, have_body, lent != nullptr,
+        answer_step({status, spelling.body.size(), lent_len, answered, have_body, lent != nullptr,
                      b != nullptr && b->gzip_ok, b != nullptr && b->bound});
     mrb_value exc_value = mrb_nil_value();
     // #210: what led here, gathered once - the record and the page carry
@@ -570,9 +571,9 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
         case AnswerStep::Shape::kAlready:
             break;
         case AnswerStep::Shape::kLent: {
-            const Variants &pv = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
-            const Resp &pfx =
-                minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
+            const Variants &prefix_variants = b->gzip_ok ? b->ok_prefix_vary : b->ok_prefix;
+            const Resp &pfx = minor >= 1 ? (persist ? prefix_variants.plain : prefix_variants.close)
+                                         : (persist ? prefix_variants.keep : prefix_variants.close);
             sink.append(pfx.bytes);
             char content_length[40];
             sink.append(content_length, http::spell_content_length(content_length, lent_len));
@@ -587,20 +588,21 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
                 minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
                            : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
             assemble_dynamic(
-                {prefix_id, prefix_gz, sp.body, accept_gzip && st.packetized, head_only}, sink);
+                {prefix_id, prefix_gz, spelling.body, accept_gzip && st.packetized, head_only},
+                sink);
             break;
         }
         case AnswerStep::Shape::kPlain: {
             const Resp &prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                             : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-            answer_assemble(sink, {prefix, sp.body, head_only});
+            answer_assemble(sink, {prefix, spelling.body, head_only});
             break;
         }
         case AnswerStep::Shape::kException: {
             std::string message;
             err_pages_.exception_text(exc_value, message);
-            const Variants &pv = store_prefix_[(*idx)[500]];
-            const Variants &bv = store_[(*idx)[500]];
+            const Variants &prefix_variants = store_prefix_[(*idx)[500]];
+            const Variants &body_variants = store_[(*idx)[500]];
             ErrorPages::Fields field;
             field.message = message.data();
             field.message_len = message.size();
@@ -612,10 +614,12 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
                 field.backtrace = ef.backtrace;
                 field.backtrace_len = ef.backtrace_len;
             }
-            const Resp &prefix =
-                minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
-            const Resp &bodyless =
-                minor >= 1 ? (persist ? bv.plain : bv.close) : (persist ? bv.keep : bv.close);
+            const Resp &prefix = minor >= 1
+                                     ? (persist ? prefix_variants.plain : prefix_variants.close)
+                                     : (persist ? prefix_variants.keep : prefix_variants.close);
+            const Resp &bodyless = minor >= 1
+                                       ? (persist ? body_variants.plain : body_variants.close)
+                                       : (persist ? body_variants.keep : body_variants.close);
             spell_error({prefix, bodyless, 500,
                          err_pages_.media_pick_for_status(500, vals.accept, vals.accept_len), field,
                          head_only},
@@ -623,16 +627,19 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling sp)
             break;
         }
         case AnswerStep::Shape::kStatus: {
-            const Variants &sv = (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
-            const Resp &bodyless =
-                minor >= 1 ? (persist ? sv.plain : sv.close) : (persist ? sv.keep : sv.close);
+            const Variants &status_variants =
+                (head_only && status == 200) ? b->ok_head : store_[(*idx)[status]];
+            const Resp &bodyless = minor >= 1
+                                       ? (persist ? status_variants.plain : status_variants.close)
+                                       : (persist ? status_variants.keep : status_variants.close);
             // RFC 9110 15: only a 4xx or 5xx has something to explain. A 204,
             // a 304 or a redirect is an answer, and answers carry no page.
             if (status >= 400) {
-                const Variants &pv = store_prefix_[(*idx)[status]];
+                const Variants &prefix_variants = store_prefix_[(*idx)[status]];
                 const ErrorPages::Fields field;
-                const Resp &prefix =
-                    minor >= 1 ? (persist ? pv.plain : pv.close) : (persist ? pv.keep : pv.close);
+                const Resp &prefix = minor >= 1
+                                         ? (persist ? prefix_variants.plain : prefix_variants.close)
+                                         : (persist ? prefix_variants.keep : prefix_variants.close);
                 spell_error({prefix, bodyless, status,
                              err_pages_.media_pick_for_status(status, vals.accept, vals.accept_len),
                              field, head_only},

@@ -45,7 +45,7 @@ struct FdBudget {
     uint32_t extra_slots = 0;
 };
 
-uint32_t derive_max_conns(FdBudget b);
+uint32_t derive_max_conns(FdBudget block);
 
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
@@ -153,7 +153,7 @@ uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx);
 // #30: which watcher, on top of which connection - 8 bits of the tag,
 // so kMaxWatchers of them (declared further up, where Conn needs it).
 uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot);
-uint8_t watch_slot(uint64_t ud);
+uint8_t watch_slot(uint64_t user_data);
 // #30: the same 8 bits for a compute job. A value round hands over
 // several at one stop, so an answer has to say which one it is.
 // Four bits name the stopped run and four name its job, so one byte
@@ -180,7 +180,7 @@ enum : uint32_t {
 };
 
 // Which stage of the setup chain a failing CQE belongs to.
-const char *stage_name(uint32_t st);
+const char *stage_name(uint32_t conn);
 } // namespace detail
 
 } // namespace webmachine

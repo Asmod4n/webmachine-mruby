@@ -317,27 +317,27 @@ void write_two_digits(char *out_value, int value)
     out_value[1] = static_cast<char>('0' + value % 10);
 }
 
-void date_core(char out_value[kDateLen], const struct tm &tm)
+void date_core(char out_value[kDateLen], const struct tm &broken_time)
 {
     static const char kDay[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     static const char kMon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    std::memcpy(out_value, kDay[tm.tm_wday], 3);
+    std::memcpy(out_value, kDay[broken_time.tm_wday], 3);
     out_value[3] = ',';
     out_value[4] = ' ';
-    write_two_digits(out_value + 5, tm.tm_mday);
+    write_two_digits(out_value + 5, broken_time.tm_mday);
     out_value[7] = ' ';
-    std::memcpy(out_value + 8, kMon[tm.tm_mon], 3);
+    std::memcpy(out_value + 8, kMon[broken_time.tm_mon], 3);
     out_value[11] = ' ';
-    const int year = tm.tm_year + 1900;
+    const int year = broken_time.tm_year + 1900;
     write_two_digits(out_value + 12, year / 100);
     write_two_digits(out_value + 14, year % 100);
     out_value[16] = ' ';
-    write_two_digits(out_value + 17, tm.tm_hour);
+    write_two_digits(out_value + 17, broken_time.tm_hour);
     out_value[19] = ':';
-    write_two_digits(out_value + 20, tm.tm_min);
+    write_two_digits(out_value + 20, broken_time.tm_min);
     out_value[22] = ':';
-    write_two_digits(out_value + 23, tm.tm_sec);
+    write_two_digits(out_value + 23, broken_time.tm_sec);
     out_value[25] = ' ';
     std::memcpy(out_value + 26, "GMT", 3);
 }
@@ -362,14 +362,14 @@ size_t spell_content_length(char (&buf)[40], size_t length)
     return at;
 }
 
-int hex_digit(char ch)
+int hex_digit(char character)
 {
-    if (ch >= '0' && ch <= '9')
-        return ch - '0';
-    if (ch >= 'a' && ch <= 'f')
-        return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F')
-        return ch - 'A' + 10;
+    if (character >= '0' && character <= '9')
+        return character - '0';
+    if (character >= 'a' && character <= 'f')
+        return character - 'a' + 10;
+    if (character >= 'A' && character <= 'F')
+        return character - 'A' + 10;
     return -1;
 }
 
@@ -381,12 +381,12 @@ ClStatus parse_content_length(std::string_view value, size_t *out_value)
         return ClStatus::kBad;
     size_t acc = 0;
     for (size_t j = 0; j < count; j++) {
-        const char ch = sqe[j];
-        if (ch < '0' || ch > '9')
+        const char character = sqe[j];
+        if (character < '0' || character > '9')
             return ClStatus::kBad;
         size_t text = 0;
         if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &text) ||
-            __builtin_add_overflow(text, static_cast<size_t>(ch - '0'), &acc)) {
+            __builtin_add_overflow(text, static_cast<size_t>(character - '0'), &acc)) {
             return ClStatus::kOverflow;
         }
     }
@@ -511,34 +511,35 @@ bool if_range_matches(std::string_view value, std::string_view poll_tag)
     return e - i == taglen && std::memcmp(bytes + i, poll_tag.data(), taglen) == 0;
 }
 
-bool gzip_acceptable(const char *value, size_t n)
+bool gzip_acceptable(const char *value, size_t length)
 {
     bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;
     size_t i = 0;
-    while (i < n) {
-        while (i < n && (value[i] == ' ' || value[i] == '\t' || value[i] == ','))
+    while (i < length) {
+        while (i < length && (value[i] == ' ' || value[i] == '\t' || value[i] == ','))
             i++;
-        const size_t ts = i;
-        while (i < n && value[i] != ',' && value[i] != ';' && value[i] != ' ' && value[i] != '\t')
+        const size_t timestamp = i;
+        while (i < length && value[i] != ',' && value[i] != ';' && value[i] != ' ' &&
+               value[i] != '\t')
             i++;
-        const size_t tl = i - ts;
+        const size_t tls = i - timestamp;
         bool q_nonzero = true;
-        while (i < n && value[i] != ',') {
+        while (i < length && value[i] != ',') {
             if (value[i] != ';') {
                 i++;
                 continue;
             }
             i++;
-            while (i < n && (value[i] == ' ' || value[i] == '\t'))
+            while (i < length && (value[i] == ' ' || value[i] == '\t'))
                 i++;
-            if (i < n && (value[i] == 'q' || value[i] == 'Q')) {
+            if (i < length && (value[i] == 'q' || value[i] == 'Q')) {
                 size_t j = i + 1;
-                while (j < n && (value[j] == ' ' || value[j] == '\t'))
+                while (j < length && (value[j] == ' ' || value[j] == '\t'))
                     j++;
-                if (j < n && value[j] == '=') {
+                if (j < length && value[j] == '=') {
                     j++;
                     q_nonzero = false;
-                    while (j < n && value[j] != ',' && value[j] != ';') {
+                    while (j < length && value[j] != ',' && value[j] != ';') {
                         if (value[j] >= '1' && value[j] <= '9')
                             q_nonzero = true;
                         j++;
@@ -547,11 +548,12 @@ bool gzip_acceptable(const char *value, size_t n)
                 }
             }
         }
-        if (tl != 0) {
-            if (tok_eq({value + ts, tl}, "gzip") || tok_eq({value + ts, tl}, "x-gzip")) {
+        if (tls != 0) {
+            if (tok_eq({value + timestamp, tls}, "gzip") ||
+                tok_eq({value + timestamp, tls}, "x-gzip")) {
                 gz_seen = true;
                 gz_ok = q_nonzero;
-            } else if (tl == 1 && value[ts] == '*') {
+            } else if (tls == 1 && value[timestamp] == '*') {
                 star_seen = true;
                 star_ok = q_nonzero;
             }
@@ -705,7 +707,7 @@ int choose_media_type(Conneg conn)
 {
     const std::string *const types = conn.provided.data();
     const size_t ntypes = conn.provided.size();
-    const char *const av = conn.accept.data();
+    const char *const arguments = conn.accept.data();
     const size_t alen = conn.accept.size();
     struct Range {
         const char *t;
@@ -715,40 +717,43 @@ int choose_media_type(Conneg conn)
         int q1000;
     };
     Range ranges[32];
-    size_t nr = 0;
+    size_t number = 0;
     size_t i = 0;
-    while (i < alen && nr < 32) {
-        while (i < alen && (av[i] == ' ' || av[i] == '\t' || av[i] == ','))
+    while (i < alen && number < 32) {
+        while (i < alen && (arguments[i] == ' ' || arguments[i] == '\t' || arguments[i] == ','))
             i++;
         if (i >= alen)
             break;
         const size_t start = i;
-        while (i < alen && av[i] != ',')
+        while (i < alen && arguments[i] != ',')
             i++;
         const size_t text_end = i;
-        int q = 1000;
+        int request = 1000;
         size_t semi = start;
-        while (semi < text_end && av[semi] != ';')
+        while (semi < text_end && arguments[semi] != ';')
             semi++;
         size_t tend = semi;
-        while (tend > start && (av[tend - 1] == ' ' || av[tend - 1] == '\t'))
+        while (tend > start && (arguments[tend - 1] == ' ' || arguments[tend - 1] == '\t'))
             tend--;
-        size_t pi = semi;
-        while (pi < text_end) {
-            pi++;
-            while (pi < text_end && (av[pi] == ' ' || av[pi] == '\t'))
-                pi++;
-            if (pi + 2 <= text_end && (av[pi] == 'q' || av[pi] == 'Q') && av[pi + 1] == '=') {
-                size_t value = pi + 2;
+        size_t picture = semi;
+        while (picture < text_end) {
+            picture++;
+            while (picture < text_end && (arguments[picture] == ' ' || arguments[picture] == '\t'))
+                picture++;
+            if (picture + 2 <= text_end &&
+                (arguments[picture] == 'q' || arguments[picture] == 'Q') &&
+                arguments[picture + 1] == '=') {
+                size_t value = picture + 2;
                 int whole = 0, frac = 0, fdig = 0;
-                if (value < text_end && (av[value] >= '0' && av[value] <= '9')) {
-                    whole = av[value] - '0';
+                if (value < text_end && (arguments[value] >= '0' && arguments[value] <= '9')) {
+                    whole = arguments[value] - '0';
                     value++;
                 }
-                if (value < text_end && av[value] == '.') {
+                if (value < text_end && arguments[value] == '.') {
                     value++;
-                    while (value < text_end && (av[value] >= '0' && av[value] <= '9') && fdig < 3) {
-                        frac = frac * 10 + (av[value] - '0');
+                    while (value < text_end &&
+                           (arguments[value] >= '0' && arguments[value] <= '9') && fdig < 3) {
+                        frac = frac * 10 + (arguments[value] - '0');
                         fdig++;
                         value++;
                     }
@@ -757,21 +762,22 @@ int choose_media_type(Conneg conn)
                     frac *= 10;
                     fdig++;
                 }
-                q = whole * 1000 + frac;
-                if (q > 1000)
-                    q = 1000;
+                request = whole * 1000 + frac;
+                if (request > 1000)
+                    request = 1000;
             }
-            while (pi < text_end && av[pi] != ';')
-                pi++;
+            while (picture < text_end && arguments[picture] != ';')
+                picture++;
         }
-        const char *slash = static_cast<const char *>(std::memchr(av + start, '/', tend - start));
+        const char *slash =
+            static_cast<const char *>(std::memchr(arguments + start, '/', tend - start));
         if (slash != nullptr) {
-            ranges[nr].t = av + start;
-            ranges[nr].tn = static_cast<size_t>(slash - (av + start));
-            ranges[nr].sub = slash + 1;
-            ranges[nr].sn = tend - static_cast<size_t>(slash + 1 - av);
-            ranges[nr].q1000 = q;
-            nr++;
+            ranges[number].t = arguments + start;
+            ranges[number].tn = static_cast<size_t>(slash - (arguments + start));
+            ranges[number].sub = slash + 1;
+            ranges[number].sn = tend - static_cast<size_t>(slash + 1 - arguments);
+            ranges[number].q1000 = request;
+            number++;
         }
     }
     int best = -1;
@@ -779,44 +785,44 @@ int choose_media_type(Conneg conn)
     int best_spec = -1;
     for (size_t t = 0; t < ntypes; t++) {
         const std::string &full = types[t];
-        size_t tn = full.find(';');
-        if (tn == std::string::npos)
-            tn = full.size();
-        while (tn > 0 && full[tn - 1] == ' ')
-            tn--;
-        const char *tp = full.data();
+        size_t name = full.find(';');
+        if (name == std::string::npos)
+            name = full.size();
+        while (name > 0 && full[name - 1] == ' ')
+            name--;
+        const char *type = full.data();
         const size_t slot = full.find('/');
-        if (slot == std::string::npos || slot >= tn)
+        if (slot == std::string::npos || slot >= name)
             continue;
         const size_t main_n = slot;
-        const char *sub_p = tp + slot + 1;
-        const size_t sub_n = tn - slot - 1;
-        int q = -1;
+        const char *sub_p = type + slot + 1;
+        const size_t sub_n = name - slot - 1;
+        int request = -1;
         int spec = -1;
-        for (size_t round = 0; round < nr; round++) {
-            const Range &rg = ranges[round];
+        for (size_t round = 0; round < number; round++) {
+            const Range &range = ranges[round];
             int this_spec;
-            if (rg.tn == 1 && rg.t[0] == '*') {
+            if (range.tn == 1 && range.t[0] == '*') {
                 this_spec = 0;
-            } else if (!tok_eq({rg.t, rg.tn}, {tp, main_n})) {
+            } else if (!tok_eq({range.t, range.tn}, {type, main_n})) {
                 continue;
-            } else if (rg.sn == 1 && rg.sub[0] == '*') {
+            } else if (range.sn == 1 && range.sub[0] == '*') {
                 this_spec = 1;
-            } else if (tok_eq({rg.sub, rg.sn}, {sub_p, sub_n})) {
+            } else if (tok_eq({range.sub, range.sn}, {sub_p, sub_n})) {
                 this_spec = 2;
             } else {
                 continue;
             }
             if (this_spec > spec) {
                 spec = this_spec;
-                q = rg.q1000;
+                request = range.q1000;
             }
         }
-        if (spec < 0 || q == 0)
+        if (spec < 0 || request == 0)
             continue;
-        if (q > best_q || (q == best_q && spec > best_spec)) {
+        if (request > best_q || (request == best_q && spec > best_spec)) {
             best = static_cast<int>(t);
-            best_q = q;
+            best_q = request;
             best_spec = spec;
         }
     }
@@ -882,9 +888,9 @@ bool field_name_is_the_servers(const char *bytes, size_t count)
         size_t i = 0;
         for (; i < count && ours[i] != '\0'; i++) {
             const unsigned char conn = static_cast<unsigned char>(bytes[i]);
-            const unsigned char lc =
+            const unsigned char lowercase =
                 (conn >= 'A' && conn <= 'Z') ? static_cast<unsigned char>(conn + 32) : conn;
-            if (lc != static_cast<unsigned char>(ours[i]))
+            if (lowercase != static_cast<unsigned char>(ours[i]))
                 break;
         }
         if (i == count && ours[i] == '\0')
@@ -923,20 +929,20 @@ bool field_value_ok(const char *bytes, size_t count)
 
 namespace webmachine::gzip
 {
-bool compress(const std::string &in, std::string &out_value)
+bool compress(const std::string &incoming, std::string &out_value)
 {
-    if (in.size() >= std::numeric_limits<uint32_t>::max())
+    if (incoming.size() >= std::numeric_limits<uint32_t>::max())
         return false;
     z_stream strm{};
     if (deflateInit2(&strm, Z_BEST_SPEED, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
         return false;
     }
-    const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(in.size()));
+    const unsigned long bound = deflateBound(&strm, static_cast<unsigned long>(incoming.size()));
     out_value.assign(reinterpret_cast<const char *>(kHeader), sizeof(kHeader));
     const size_t body_off = out_value.size();
     out_value.resize(body_off + bound);
-    strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.data()));
-    strm.avail_in = static_cast<uInt>(in.size());
+    strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(incoming.data()));
+    strm.avail_in = static_cast<uInt>(incoming.size());
     strm.next_out = reinterpret_cast<Bytef *>(&out_value[0]) + body_off;
     strm.avail_out = static_cast<uInt>(bound);
     const int status = deflate(&strm, Z_FINISH);
@@ -946,9 +952,9 @@ bool compress(const std::string &in, std::string &out_value)
         return false;
     out_value.resize(body_off + produced);
 
-    const uint32_t crc =
-        static_cast<uint32_t>(crc32_z(0, reinterpret_cast<const Bytef *>(in.data()), in.size()));
-    const uint32_t isize = static_cast<uint32_t>(in.size());
+    const uint32_t crc = static_cast<uint32_t>(
+        crc32_z(0, reinterpret_cast<const Bytef *>(incoming.data()), incoming.size()));
+    const uint32_t isize = static_cast<uint32_t>(incoming.size());
     unsigned char trailer[8];
     trailer[0] = static_cast<unsigned char>(crc);
     trailer[1] = static_cast<unsigned char>(crc >> 8);

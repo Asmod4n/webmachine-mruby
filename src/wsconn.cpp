@@ -587,11 +587,11 @@ struct FeedCall {
 // RFC 6455 5.3: the reader - unmasked straight into the mruby String.
 mrb_value feed_in_protected_call(mrb_state *mrb, void *user_data)
 {
-    FeedCall *f = static_cast<FeedCall *>(user_data);
-    WsConn *conn = f->conn;
-    std::string &sink = *f->sink;
-    const char *bytes = f->data;
-    size_t length = f->length;
+    FeedCall *facts = static_cast<FeedCall *>(user_data);
+    WsConn *conn = facts->conn;
+    std::string &sink = *facts->sink;
+    const char *bytes = facts->data;
+    size_t length = facts->length;
     bool alive = true;
 
     while (length != 0) {

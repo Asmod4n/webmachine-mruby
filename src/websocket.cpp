@@ -14,9 +14,9 @@ namespace ws
 namespace
 {
 // RFC 6455 4.2.2 step 5.4: the 20-byte digest as 28 base64 characters.
-void base64_encode_digest(const unsigned char in[20], char out[28])
+void base64_encode_digest(const unsigned char incoming[20], char out[28])
 {
-    simdutf::binary_to_base64(reinterpret_cast<const char *>(in), 20, out);
+    simdutf::binary_to_base64(reinterpret_cast<const char *>(incoming), 20, out);
 }
 
 // RFC 6455 4.2.1 step 5: the alphabet a Sec-WebSocket-Key is spelled in.
@@ -73,10 +73,10 @@ size_t close_payload_build(Close close, char out[125])
 {
     out[0] = static_cast<char>((close.code >> 8) & 0xff);
     out[1] = static_cast<char>(close.code & 0xff);
-    const size_t n = close.reason.size() > 123 ? 123 : close.reason.size();
-    if (n != 0)
-        std::memcpy(out + 2, close.reason.data(), n);
-    return n + 2;
+    const size_t length = close.reason.size() > 123 ? 123 : close.reason.size();
+    if (length != 0)
+        std::memcpy(out + 2, close.reason.data(), length);
+    return length + 2;
 }
 
 bool close_read(std::string_view payload, Close &out)

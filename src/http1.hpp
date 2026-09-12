@@ -223,15 +223,15 @@ inline constexpr const char *conn_mode_name(ConnMode method)
 // Which move is legal. A connection reads heads until it becomes
 // something else, and only an asset comes back - an upgrade and an
 // event stream end with the connection.
-inline constexpr bool conn_move_ok(ConnMode from, ConnMode to)
+inline constexpr bool conn_move_ok(ConnMode from, ConnMode target_ring)
 {
-    if (from == to)
+    if (from == target_ring)
         return true;
     switch (from) {
         case ConnMode::kHead:
             return true;
         case ConnMode::kAsset:
-            return to == ConnMode::kHead;
+            return target_ring == ConnMode::kHead;
         case ConnMode::kWs:
             return false;
         case ConnMode::kSse:
@@ -1109,15 +1109,15 @@ class Http1
         ConnMode mode = ConnMode::kHead;
         // The only way the state changes. The debug build refuses a move
         // the machine does not have; the ship build stores the byte.
-        void become(ConnMode to)
+        void become(ConnMode target_ring)
         {
-            if (kDebugBuild && !conn_move_ok(mode, to)) {
+            if (kDebugBuild && !conn_move_ok(mode, target_ring)) {
                 std::fprintf(stderr,
                              "webmachine: a connection went from %s to %s, which it cannot\n",
-                             conn_mode_name(mode), conn_mode_name(to));
+                             conn_mode_name(mode), conn_mode_name(target_ring));
                 std::abort();
             }
-            mode = to;
+            mode = target_ring;
         }
         // Do the pointers say what the mode says? The debug build asks once
         // per buffer, so a state that drifted fails a test rather than
@@ -2631,7 +2631,7 @@ class Http1
     // reach it from inside a coroutine while the konst tier keeps calling it
     // straight - a run that can never stop must not pay for a frame.
     // Returns the step it took, because the access line counts what it wrote.
-    AnswerStep spell_answer(Round &round, Spelling sp);
+    AnswerStep spell_answer(Round &round, Spelling spelling);
 
     // RFC 9110 6.3: response.file named a file, so no body is spelled here
     // - the framing goes onto the connection and the reactor drives
@@ -2657,7 +2657,7 @@ class Http1
     };
     void file_spell(Conn &conn, FileHead head);
     void file_prebuilt(Conn &conn, uint16_t status_code);
-    bool ws_upgrade(Conn &conn, const WsUpgrade &up, std::string &sink);
+    bool ws_upgrade(Conn &conn, const WsUpgrade &upgrade, std::string &sink);
 
     bool sse_begin(Conn &conn, const SseBegin &request, std::string &sink);
 
@@ -2729,7 +2729,7 @@ class Http1
         const flow::ReqFacts &facts;
         std::string_view target;
     };
-    void h2_log(Conn &conn, const H2Logged &l);
+    void h2_log(Conn &conn, const H2Logged &logged);
     // `target` rides beside `req` because an error answer needs it even
     // when no route matched - a 404 names what was not found, and that is
     // exactly the case where there is no ReqView (#210).
@@ -2768,9 +2768,9 @@ class Http1
     // #30: the walk, and the framing, are two functions - a run can stop
     // between them. One framer serves both paths.
     struct H2Produced;
-    void h2_produce(Conn &conn, const H2Request &q, bool can_park, H2Produced &bytes);
-    void h2_after_run(Conn &conn, const H2Request &q, H2Produced &bytes, uint16_t status);
-    bool h2_answer(Conn &conn, const H2Request &q, std::string &sink);
+    void h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Produced &bytes);
+    void h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes, uint16_t status);
+    bool h2_answer(Conn &conn, const H2Request &request, std::string &sink);
     // RFC 9110 15.5.12: the 411 itself, and the stream that earns one -
     // content whose length the client did not declare.
     // #30: which of the two an h2 request takes - the straight answer, or
@@ -2779,7 +2779,7 @@ class Http1
     // What h2_serve did with the request: answered it into the sink,
     // parked a run for it, or closed the connection.
     enum class H2Served : uint8_t { kAnswered, kParked, kClosed };
-    H2Served h2_serve(Conn &conn, const H2Request &q, std::string &sink);
+    H2Served h2_serve(Conn &conn, const H2Request &request, std::string &sink);
     // WHATWG HTML over RFC 9113: what an event stream needs to open on one
     // h2 stream. The request's own bytes, because sse_open runs the
     // resource's initialize and that reads `request`.
@@ -2807,7 +2807,7 @@ class Http1
         const http::ReqValues *vals;
     };
     bool h2_ws_begin(Conn &conn, const H2WsAsk &request_ask, std::string &sink);
-    bool h2_frame(Conn &conn, const H2Request &q, std::string &sink, H2Produced &bytes);
+    bool h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2Produced &bytes);
     void h2_flush_pending(Conn &conn, std::string &sink, Plan *plan);
     void h2_build_asset_blocks(AssetEntry &entry);
     void h2_build_asset_shared();

@@ -222,18 +222,18 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
     // client with no opinion gets.
     {
         HandlerCall c{mrb_obj_value(klass), MRB_SYM(content_types_provided), mrb_nil_value()};
-        const mrb_value v = mrb_protect_error(mrb, handler_call_with_no_args, &c, &raised);
+        const mrb_value value = mrb_protect_error(mrb, handler_call_with_no_args, &c, &raised);
         if (raised)
-            reraise(mrb, v);
-        if (!mrb_array_p(v)) {
+            reraise(mrb, value);
+        if (!mrb_array_p(value)) {
             mrb_raisef(mrb, E_WM_ERROR(mrb),
                        "error pages: ErrorResource.content_types_provided must answer "
                        "[[type, handler]] pairs, not %v",
-                       v);
+                       value);
         }
-        const size_t count = ruby_array_length(v);
+        const size_t count = ruby_array_length(value);
         for (size_t i = 0; i < count; i++) {
-            const mrb_value pair = mrb_ary_ref(mrb, v, static_cast<mrb_int>(i));
+            const mrb_value pair = mrb_ary_ref(mrb, value, static_cast<mrb_int>(i));
             if (!mrb_array_p(pair) || ruby_array_length(pair) < 2)
                 continue;
             const mrb_value type = mrb_ary_ref(mrb, pair, 0);

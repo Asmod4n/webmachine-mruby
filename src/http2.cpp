@@ -687,27 +687,28 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
         if (h2_state.hdrbuf.size() < used + 4096)
             h2_state.hdrbuf.resize(used + 4096);
-        lsxpack_header_t xh;
-        lsxpack_header_prepare_decode(&xh, &h2_state.hdrbuf[used], 0, 4096);
-        if (lshpack_dec_decode(&h2_state.dec, &bytes, text_end, &xh) != 0) {
+        lsxpack_header_t hpack_field;
+        lsxpack_header_prepare_decode(&hpack_field, &h2_state.hdrbuf[used], 0, 4096);
+        if (lshpack_dec_decode(&h2_state.dec, &bytes, text_end, &hpack_field) != 0) {
             return h2_error(conn, kH2CompressionError, sink);
         }
         // RFC 7541 B: the decoder resolved this name out of the static
         // table and says which entry it was. That integer is the name, so
         // the scan below does not spell it out of the buffer again. A
         // literal name says LSHPACK_HDR_UNKNOWN and is compared as before.
-        hidx[next_request / 4] = xh.hpack_index;
-        quads[next_request++] = static_cast<uint32_t>(used + xh.name_offset);
-        quads[next_request++] = xh.name_len;
-        quads[next_request++] = static_cast<uint32_t>(used + xh.val_offset);
-        quads[next_request++] = xh.val_len;
+        hidx[next_request / 4] = hpack_field.hpack_index;
+        quads[next_request++] = static_cast<uint32_t>(used + hpack_field.name_offset);
+        quads[next_request++] = hpack_field.name_len;
+        quads[next_request++] = static_cast<uint32_t>(used + hpack_field.val_offset);
+        quads[next_request++] = hpack_field.val_len;
         // lshpack.h states what one decode writes into the buffer we lent:
         // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
         // val_offset + val_len is short by exactly those extra bytes (the
         // HTTP/1.x CRLF the decoder appends), so the next field's window
         // began inside bytes this one had just written. Their number, not
         // ours.
-        used += static_cast<size_t>(xh.name_len) + xh.val_len + lshpack_dec_extra_bytes(&h2.dec);
+        used += static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
+                lshpack_dec_extra_bytes(&h2.dec);
     }
     h2_state.frag.clear();
 
@@ -974,10 +975,10 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // table, the same order h1 asks in (feed_parse).
     if (mrb_unlikely(apps_[conn.listener].sse_table != nullptr)) {
         RouteSpans sspans;
-        const int sr = apps_[conn.listener].sse_table->match(path_val, path_vlen, sspans);
-        if (sr >= 0) {
+        const int sse_route = apps_[conn.listener].sse_table->match(path_val, path_vlen, sspans);
+        if (sse_route >= 0) {
             const H2SseAsk request_ask = {stream_id,
-                                          static_cast<uint16_t>(sr),
+                                          static_cast<uint16_t>(sse_route),
                                           {path_val, path_vlen},
                                           &sspans,
                                           header_vector,
@@ -1059,9 +1060,9 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // `def self.max_body`.
     file_stat.max_body = apps_[conn.listener].max_body;
     if (route != kNoRoute) {
-        const Bundle &lb = bundles_[apps_[conn.listener].base + route];
-        if (lb.bound && lb.res->max_body >= 0)
-            file_stat.max_body = static_cast<size_t>(lb.res->max_body);
+        const Bundle &listener_bundle = bundles_[apps_[conn.listener].base + route];
+        if (listener_bundle.bound && listener_bundle.res->max_body >= 0)
+            file_stat.max_body = static_cast<size_t>(listener_bundle.res->max_body);
     }
     if (asset != nullptr || route == kNoRoute) {
         file_stat.data = H2Stream::Data::kDrop;
@@ -1137,11 +1138,11 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // straight path and answer from a body that has not arrived - a wrong
     // answer rather than a late one. Those wait, as they did before.
     if (asset == nullptr && route != kNoRoute && file_stat.data != H2Stream::Data::kDrop) {
-        const Bundle &eb = bundles_[apps_[conn.listener].base + route];
+        const Bundle &error_bundle = bundles_[apps_[conn.listener].base + route];
         // Any bound resource may be asked to wait for a body, so what
         // matters here is a park slot to wait in, not what the resource
         // declares. Without one the stream waits for its body as before.
-        if (eb.bound && eb.res != nullptr &&
+        if (error_bundle.bound && error_bundle.res != nullptr &&
             conn.h2_parked.size() < static_cast<size_t>(Conn::kParkSlots)) {
             // The stream table may move under the serve, so nothing of stx is
             // read after this call.
@@ -1254,11 +1255,11 @@ bool Http1::h2_asset_answer(Conn &conn, const H2Asset &asset_ask, std::string &s
             hpack_length_spell(rblk, sizeof(entry.etag));
             rblk.append(entry.etag, sizeof(entry.etag));
             hpack_name_index_spell(rblk, 30);
-            const std::string cr = "bytes " + std::to_string(win_off) + "-" +
-                                   std::to_string(win_end - 1) + "/" +
-                                   std::to_string(Assets::wire_len(entry));
-            hpack_length_spell(rblk, cr.size());
-            rblk.append(cr);
+            const std::string content_range = "bytes " + std::to_string(win_off) + "-" +
+                                              std::to_string(win_end - 1) + "/" +
+                                              std::to_string(Assets::wire_len(entry));
+            hpack_length_spell(rblk, content_range.size());
+            rblk.append(content_range);
             block = &rblk;
             break;
         }
@@ -1272,9 +1273,9 @@ bool Http1::h2_asset_answer(Conn &conn, const H2Asset &asset_ask, std::string &s
                 rblk.append("Accept-Encoding", 15);
             }
             hpack_name_index_spell(rblk, 30);
-            const std::string cr = "bytes */" + std::to_string(Assets::wire_len(entry));
-            hpack_length_spell(rblk, cr.size());
-            rblk.append(cr);
+            const std::string content_range = "bytes */" + std::to_string(Assets::wire_len(entry));
+            hpack_length_spell(rblk, content_range.size());
+            rblk.append(content_range);
             block = &rblk;
             break;
         }
@@ -1450,8 +1451,9 @@ void Http1::h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Pr
                 }
                 use = &*cf;
             }
-            const size_t mi = static_cast<size_t>(use->method);
-            status = flow::answer(*use, {block->konst.per_method[mi], block->konst.shortcut[mi]});
+            const size_t method_index = static_cast<size_t>(use->method);
+            status = flow::answer(
+                *use, {block->konst.per_method[method_index], block->konst.shortcut[method_index]});
         }
     }
     bytes.b = block;
@@ -1684,9 +1686,9 @@ void Http1::h2_sse_second(Conn &conn, std::string &sink)
         stream.sse = nullptr;
         stream.streaming = false;
         if (!stream.response_content.owes()) {
-            unsigned char eh[kH2FrameHeaderLen];
-            h2_put_frame_header(eh, {0, kH2Data, kH2FlagEndStream, stream.id});
-            sink.append(reinterpret_cast<const char *>(eh), sizeof(eh));
+            unsigned char end_head[kH2FrameHeaderLen];
+            h2_put_frame_header(end_head, {0, kH2Data, kH2FlagEndStream, stream.id});
+            sink.append(reinterpret_cast<const char *>(end_head), sizeof(end_head));
             h2_state.close_stream(stream.id);
             i--;
         }
@@ -1880,27 +1882,29 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
     } else if (bytes.status == 500 && bytes.b != nullptr && bytes.b->bound) {
         // #210: what led here, gathered once - the record and the page carry
         // the same hash because they are taken over the same facts.
-        ErrFacts ef;
+        ErrFacts error_facts;
         std::string ef_backtrace;
         std::string ef_steering;
         char ef_hash[kFingerprintLen] = {};
-        ef.peer = conn.peer;
-        ef.peer_len = conn.peer_len;
-        ef.request_target = request_view != nullptr ? request_view->request_target : nullptr;
-        ef.request_target_len = request_view != nullptr ? request_view->request_target_len : 0;
-        ef.method = request_view != nullptr ? request_view->method_token : nullptr;
-        ef.method_len = request_view != nullptr ? request_view->method_token_len : 0;
+        error_facts.peer = conn.peer;
+        error_facts.peer_len = conn.peer_len;
+        error_facts.request_target =
+            request_view != nullptr ? request_view->request_target : nullptr;
+        error_facts.request_target_len =
+            request_view != nullptr ? request_view->request_target_len : 0;
+        error_facts.method = request_view != nullptr ? request_view->method_token : nullptr;
+        error_facts.method_len = request_view != nullptr ? request_view->method_token_len : 0;
         spell_steering(vals, ef_steering);
-        ef.steering = ef_steering.data();
-        ef.steering_len = ef_steering.size();
-        ef.body = request_view != nullptr ? request_view->content : nullptr;
-        ef.body_len = request_view != nullptr ? request_view->content_len : 0;
-        ef.body_full = ef.body_len;
-        ef.status_code = 500;
-        exception_facts(bytes.b->res->mrb, {ef, ef_backtrace});
-        spell_fingerprint(ef_hash, fingerprint_of(ef));
+        error_facts.steering = ef_steering.data();
+        error_facts.steering_len = ef_steering.size();
+        error_facts.body = request_view != nullptr ? request_view->content : nullptr;
+        error_facts.body_len = request_view != nullptr ? request_view->content_len : 0;
+        error_facts.body_full = error_facts.body_len;
+        error_facts.status_code = 500;
+        exception_facts(bytes.b->res->mrb, {error_facts, ef_backtrace});
+        spell_fingerprint(ef_hash, fingerprint_of(error_facts));
         if (elog_.enabled)
-            log_error(elog_, ef);
+            log_error(elog_, error_facts);
         // #210: handle_exception lives on the error resource and nowhere
         // else, so the exception object itself is what crosses over.
         std::string message;
@@ -1915,8 +1919,8 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
         // debug build is already telling you about itself, so the trace goes
         // on the page too.
         if (kDebugBuild) {
-            field.backtrace = ef.backtrace;
-            field.backtrace_len = ef.backtrace_len;
+            field.backtrace = error_facts.backtrace;
+            field.backtrace_len = error_facts.backtrace_len;
         }
         const H2ErrorAsk request_ask = {500, field, vals, bytes.b};
         if (!h2_error_page(request_ask, err_page, wire)) {
@@ -2002,16 +2006,18 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                 break;
             const size_t colon = (*bytes.rhdrs).find(':', index);
             if (colon != std::string::npos && colon < eol) {
-                size_t vs = colon + 1;
-                while (vs < eol && ((*bytes.rhdrs)[vs] == ' ' || (*bytes.rhdrs)[vs] == '\t'))
-                    vs++;
+                size_t value_start = colon + 1;
+                while (value_start < eol &&
+                       ((*bytes.rhdrs)[value_start] == ' ' || (*bytes.rhdrs)[value_start] == '\t'))
+                    value_start++;
                 name.assign((*bytes.rhdrs), index, colon - index);
                 for (char &c : name) {
                     if (c >= 'A' && c <= 'Z')
                         c = static_cast<char>(c + 32);
                 }
-                if (!h2_enc_field({&h2_state.enc, error_page, eend},
-                                  {name, {(*bytes.rhdrs).data() + vs, eol - vs}})) {
+                if (!h2_enc_field(
+                        {&h2_state.enc, error_page, eend},
+                        {name, {(*bytes.rhdrs).data() + value_start, eol - value_start}})) {
                     return h2_error(conn, kH2InternalError, sink);
                 }
                 h2_state.enc_ins++;
@@ -2046,16 +2052,16 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
             size_t plen = 0;
             size_t rlen = 0;
             if (ct != nullptr) {
-                unsigned char *pp = pbuf;
-                unsigned char *rp = rbuf;
-                if (!h2_enc_field({&h2_state.enc, pp, pbuf + sizeof(pbuf)},
+                unsigned char *pseudo_cursor = pbuf;
+                unsigned char *regular_cursor = rbuf;
+                if (!h2_enc_field({&h2_state.enc, pseudo_cursor, pbuf + sizeof(pbuf)},
                                   {"content-type", *ct}) ||
-                    !h2_enc_field({&h2_state.enc, rp, rbuf + sizeof(rbuf)},
+                    !h2_enc_field({&h2_state.enc, regular_cursor, rbuf + sizeof(rbuf)},
                                   {"content-type", *ct})) {
                     return h2_error(conn, kH2InternalError, sink);
                 }
-                plen = static_cast<size_t>(pp - pbuf);
-                rlen = static_cast<size_t>(rp - rbuf);
+                plen = static_cast<size_t>(pseudo_cursor - pbuf);
+                rlen = static_cast<size_t>(regular_cursor - rbuf);
                 h2_state.enc_ins++;
                 // The block that carried the literal is the wrong one now: the
                 // shared 200 spells :p.status and nothing else.
@@ -2286,13 +2292,13 @@ static const char *access_log_method_name(flow::Method method, size_t *length)
 }
 
 // RFC 9113: one answer, one access line, written where :path still lives.
-void Http1::h2_log(Conn &conn, const H2Logged &l)
+void Http1::h2_log(Conn &conn, const H2Logged &logged)
 {
     if (!alog_.enabled)
         return;
-    const flow::ReqFacts &facts = l.facts;
-    const char *const target = l.target.data();
-    const size_t tlen = l.target.size();
+    const flow::ReqFacts &facts = logged.facts;
+    const char *const target = logged.target.data();
+    const size_t tlen = logged.target.size();
     size_t mn = 0;
     const char *method = access_log_method_name(facts.method, &mn);
     log_access(alog_, {{static_cast<const char *>(conn.peer), conn.peer_len},
@@ -2516,15 +2522,15 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
                 continue;
             }
             round->answer_ready = false;
-            auto &pr = bytes.run.co.promise();
-            pr.sink = &sink;
-            pr.plan = &plan;
+            auto &promise = bytes.run.co.promise();
+            promise.sink = &sink;
+            promise.plan = &plan;
             bytes.run.co.resume();
             if (!bytes.run.done()) {
                 i++;
                 continue;
             }
-            const bool lives = pr.status != 0;
+            const bool lives = promise.status != 0;
             conn.h2_parked.erase(conn.h2_parked.begin() + static_cast<long>(i));
             if (!lives)
                 return false;
@@ -2563,10 +2569,10 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
 
 // RFC 9113 4/6: the frame loop. A header block owns the connection until
 // END_HEADERS (6.10).
-bool Http1::h2_feed(Conn &conn, std::string_view in, Sink out_answer)
+bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
 {
-    const char *const data = in.data();
-    const size_t length = in.size();
+    const char *const data = incoming.data();
+    const size_t length = incoming.size();
     std::string &sink = out_answer.bytes;
     Plan *const plan = out_answer.plan;
     H2State &h2_state = *conn.h2;
@@ -2671,10 +2677,10 @@ bool Http1::h2_feed(Conn &conn, std::string_view in, Sink out_answer)
                         stream->streaming = false;
                         stream->half_closed_remote = true;
                         if (!stream->response_content.owes()) {
-                            unsigned char eh[kH2FrameHeaderLen];
-                            h2_put_frame_header(eh,
+                            unsigned char end_head[kH2FrameHeaderLen];
+                            h2_put_frame_header(end_head,
                                                 {0, kH2Data, kH2FlagEndStream, frame_stream_id});
-                            sink.append(reinterpret_cast<const char *>(eh), sizeof(eh));
+                            sink.append(reinterpret_cast<const char *>(end_head), sizeof(end_head));
                             h2_state.close_stream(frame_stream_id);
                         }
                     }

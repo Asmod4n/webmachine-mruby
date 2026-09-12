@@ -923,14 +923,14 @@ class RouteTable
     // The name of a route's i-th binding, in the order match() captured them.
     uint32_t binding_sym(int route, uint8_t i) const
     {
-        const Route &rt = routes_[static_cast<size_t>(route)];
+        const Route &retry = routes_[static_cast<size_t>(route)];
         uint8_t seen = 0;
-        for (uint32_t t = 0; t < rt.count; t++) {
-            const RouteToken &tk = toks_[rt.first + t];
-            if (tk.kind != kBinding)
+        for (uint32_t t = 0; t < retry.count; t++) {
+            const RouteToken &token = toks_[retry.first + t];
+            if (token.kind != kBinding)
                 continue;
             if (seen == i)
-                return tk.off;
+                return token.off;
             seen++;
         }
         return 0;
@@ -995,14 +995,14 @@ class RouteTable
         const char *blob = blob_.data();
         const size_t count = routes_.size();
         for (size_t r = 0; r < count; r++) {
-            const Route &rt = routes_[r];
+            const Route &retry = routes_[r];
             size_t bytes = start;
-            uint8_t nb = 0;
+            uint8_t name_bytes = 0;
             bool accepted = true;
             bool splat = false;
-            for (uint32_t text = 0; text < rt.count; text++) {
-                const RouteToken &tk = toks_[rt.first + text];
-                if (tk.kind == kSplat) {
+            for (uint32_t text = 0; text < retry.count; text++) {
+                const RouteToken &token = toks_[retry.first + text];
+                if (token.kind == kSplat) {
                     out_value.splat.p = path + bytes;
                     out_value.splat.n = plen - bytes;
                     bytes = plen;
@@ -1017,15 +1017,16 @@ class RouteTable
                 while (bytes < plen && path[bytes] != '/')
                     bytes++;
                 const size_t seglen = bytes - seg;
-                if (tk.kind == kLiteral) {
-                    if (seglen != tk.len || std::memcmp(path + seg, blob + tk.off, seglen) != 0) {
+                if (token.kind == kLiteral) {
+                    if (seglen != token.len ||
+                        std::memcmp(path + seg, blob + token.off, seglen) != 0) {
                         accepted = false;
                         break;
                     }
                 } else {
-                    out_value.bind[nb].p = path + seg;
-                    out_value.bind[nb].n = seglen;
-                    nb++;
+                    out_value.bind[name_bytes].p = path + seg;
+                    out_value.bind[name_bytes].n = seglen;
+                    name_bytes++;
                 }
                 if (bytes < plen)
                     bytes++;
@@ -1034,7 +1035,7 @@ class RouteTable
                 continue;
             if (!splat && bytes < plen)
                 continue;
-            out_value.nbind = nb;
+            out_value.nbind = name_bytes;
             out_value.has_splat = splat;
             return static_cast<int>(r);
         }
@@ -1566,13 +1567,13 @@ inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 void write_two_digits(char *out_value, int value);
 
 // RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
-void date_core(char out_value[kDateLen], const struct tm &tm);
+void date_core(char out_value[kDateLen], const struct tm &broken_time);
 
 // RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
 size_t spell_content_length(char (&buf)[40], size_t length);
 
 // RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
-int hex_digit(char ch);
+int hex_digit(char character);
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
@@ -2825,7 +2826,7 @@ class ComputePool
     struct Impl;
 
   private:
-    static void worker(Impl *impl, unsigned me);
+    static void worker(Impl *impl, unsigned worker_number);
     Impl *impl_ = nullptr;
 };
 
@@ -2875,7 +2876,7 @@ inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0
 
 // RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
 // identity - compression never fails a response.
-bool compress(const std::string &in, std::string &out_value);
+bool compress(const std::string &incoming, std::string &out_value);
 } // namespace webmachine::gzip
 
 namespace webmachine

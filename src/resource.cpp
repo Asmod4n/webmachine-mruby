@@ -1329,7 +1329,7 @@ void value_round_answer_take(const Resource &resource, uint8_t what, mrb_value v
 // #30: the round starts here. Every declared value callback is asked
 // for its ComputeTask now, and all of them go to the pool together.
 // The walk stops once, before the node that needed the first answer.
-bool value_round_begin(Run &run, Node n, uint16_t status)
+bool value_round_begin(Run &run, Node length, uint16_t status)
 {
     const Resource &resource = run.resource;
     resource.run.values_started = true;
@@ -1388,7 +1388,7 @@ bool value_round_begin(Run &run, Node n, uint16_t status)
     if (count == 0 && watchers == 0)
         return false;
     resource.run.compute_task_count = count;
-    resource.run.stop_node = n;
+    resource.run.stop_node = length;
     resource.run.stop_status = status;
     resource.run.chosen = run.chosen;
     resource.run.stopped = true;
@@ -3049,11 +3049,11 @@ struct Thrown {
     mrb_bool raised;
 };
 
-uint16_t run_settle(const Resource &resource, RunAnswer out_value, Thrown t)
+uint16_t run_settle(const Resource &resource, RunAnswer out_value, Thrown text)
 {
     mrb_state *mrb = resource.mrb;
-    const mrb_value thrown = t.value;
-    const mrb_bool raised = t.raised;
+    const mrb_value thrown = text.value;
+    const mrb_bool raised = text.raised;
     uint16_t status = resource.run.resp_code;
     // A raise voids whatever the run lent: the rescue path spells its own
     // body, and a root nobody comes back for outlives the process.

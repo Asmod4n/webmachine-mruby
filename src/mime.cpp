@@ -17,21 +17,21 @@ using ExtType = std::pair<std::string, std::string>;
 // The extension order type_of then searches in. Types, not function
 // pointers: the sort inlines the comparison the way it did the lambdas.
 struct ExtBefore {
-    bool operator()(const ExtType &a, const ExtType &b) const
+    bool operator()(const ExtType &cross_ask, const ExtType &block) const
     {
-        return a.first < b.first;
+        return cross_ask.first < block.first;
     }
 };
 struct SameExt {
-    bool operator()(const ExtType &a, const ExtType &b) const
+    bool operator()(const ExtType &cross_ask, const ExtType &block) const
     {
-        return a.first == b.first;
+        return cross_ask.first == block.first;
     }
 };
 struct ExtBeforeKey {
-    bool operator()(const ExtType &a, const std::string &b) const
+    bool operator()(const ExtType &cross_ask, const std::string &block) const
     {
-        return a.first < b;
+        return cross_ask.first < block;
     }
 };
 

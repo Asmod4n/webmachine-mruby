@@ -607,9 +607,9 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     AssetEntry *asset_entry = tier->find(apath, alen);
     if (asset_entry == nullptr)
         return Took::kNo;
-    const uint16_t as = tier->entry_verdict(*asset_entry, {round.facts, round.vals});
+    const uint16_t asset_status = tier->entry_verdict(*asset_entry, {round.facts, round.vals});
     const AssetStep step =
-        asset_step(*asset_entry, {as, round.head_only, round.facts.method, round.vals});
+        asset_step(*asset_entry, {asset_status, round.head_only, round.facts.method, round.vals});
     const Assets::ConnectionOption conn =
         round.minor >= 1 ? (round.persist ? Assets::kNoConnectionField : Assets::kConnClose)
                          : (round.persist ? Assets::kKeepAlive : Assets::kConnClose);
@@ -645,14 +645,16 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
         case AssetStep::HeadKind::kRefusal: {
             // 412 and 501 carry no field of this tier's own, so they are spelled
             // the way every other status of theirs is.
-            const Variants &pv = prefixes(step.status_code);
-            const Variants &sv = variants(step.status_code);
+            const Variants &prefix_variants = prefixes(step.status_code);
+            const Variants &status_variants = variants(step.status_code);
             const bool plain = round.minor >= 1;
             const ErrorPages::Fields none;
-            const Resp &prefix = plain ? (round.persist ? pv.plain : pv.close)
-                                       : (round.persist ? pv.keep : pv.close);
-            const Resp &bodyless = plain ? (round.persist ? sv.plain : sv.close)
-                                         : (round.persist ? sv.keep : sv.close);
+            const Resp &prefix =
+                plain ? (round.persist ? prefix_variants.plain : prefix_variants.close)
+                      : (round.persist ? prefix_variants.keep : prefix_variants.close);
+            const Resp &bodyless =
+                plain ? (round.persist ? status_variants.plain : status_variants.close)
+                      : (round.persist ? status_variants.keep : status_variants.close);
             spell_error({prefix, bodyless, step.status_code,
                          err_pages_.media_pick_for_status(step.status_code, round.vals.accept,
                                                           round.vals.accept_len),
@@ -957,14 +959,17 @@ void Http1::body_lend(Conn &conn, std::string &sink, Lending lend)
 // Content-Length: 0 while the same miss on a pack answered a page.
 void Http1::file_prebuilt(Conn &conn, uint16_t status_code)
 {
-    const Variants &sv = variants(status_code);
-    const Resp &bodyless = conn.file->minor >= 1 ? (conn.file->persist ? sv.plain : sv.close)
-                                                 : (conn.file->persist ? sv.keep : sv.close);
+    const Variants &status_variants = variants(status_code);
+    const Resp &bodyless =
+        conn.file->minor >= 1 ? (conn.file->persist ? status_variants.plain : status_variants.close)
+                              : (conn.file->persist ? status_variants.keep : status_variants.close);
     conn.file->head.clear();
     if (status_code >= 400) {
-        const Variants &pv = prefixes(status_code);
-        const Resp &prefix = conn.file->minor >= 1 ? (conn.file->persist ? pv.plain : pv.close)
-                                                   : (conn.file->persist ? pv.keep : pv.close);
+        const Variants &prefix_variants = prefixes(status_code);
+        const Resp &prefix =
+            conn.file->minor >= 1
+                ? (conn.file->persist ? prefix_variants.plain : prefix_variants.close)
+                : (conn.file->persist ? prefix_variants.keep : prefix_variants.close);
         const ErrorPages::Fields field;
         spell_error(
             {prefix, bodyless, status_code, conn.file->err_media, field, conn.file->head_only},
@@ -1804,7 +1809,7 @@ Http1::Run Http1::run_parkable(Conn &conn, RunStart start, std::string *sink, Pl
                 }
             } parked_roots{&resource, &mine, &mine_round};
 
-            Run::promise_type &pr = co_await Park{};
+            Run::promise_type &promise = co_await Park{};
             parked_roots.resource = nullptr;
             stopped = true;
 
@@ -1818,9 +1823,9 @@ Http1::Run Http1::run_parkable(Conn &conn, RunStart start, std::string *sink, Pl
             // itself - its version and its Connection field - before the run
             // began. It travels in this frame, and `spell_next_round` reads it back out of
             // the promise_type once the run is done.
-            sink = pr.sink;
-            plan = pr.plan;
-            pr.persist = text.persist;
+            sink = promise.sink;
+            plan = promise.plan;
+            promise.persist = text.persist;
             // What the resource holds now is another request's leftovers, and
             // its userdata root would be lost under the move.
             resource_forget_userdata(resource);
@@ -2098,10 +2103,11 @@ bool Http1::h1_upgrade_or_stream(Conn &conn, const H1Head &headers, std::string 
     if (mrb_unlikely(apps_[conn.listener].sse_table != nullptr)) {
         const AppSlot &sslot = apps_[conn.listener];
         RouteSpans sspans;
-        const int sr = sslot.sse_table->match(headers.path.data(), headers.path.size(), sspans);
-        if (sr >= 0) {
+        const int sse_route =
+            sslot.sse_table->match(headers.path.data(), headers.path.size(), sspans);
+        if (sse_route >= 0) {
             const SseBegin req{sslot,
-                               sr,
+                               sse_route,
                                headers.method,
                                headers.path,
                                sspans,
@@ -2173,14 +2179,14 @@ __attribute__((noinline)) static uint16_t body_take_status(BodyTake took)
     }
 }
 
-bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
+bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
 {
-    const char *data = in.data();
-    size_t length = in.size();
+    const char *data = incoming.data();
+    size_t length = incoming.size();
     std::string &sink = out_answer.bytes;
     Plan *const plan = out_answer.plan;
     if (conn.h2 != nullptr)
-        return h2_feed(conn, in, out_answer);
+        return h2_feed(conn, incoming, out_answer);
     if (conn.fresh) {
         size_t consumed = 0;
         switch (h1_preface(conn, data, length, sink, &consumed)) {
@@ -2332,7 +2338,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
     }
 
     if (mrb_unlikely(conn.websocket != nullptr))
-        return ws_feed(conn.websocket, in, sink);
+        return ws_feed(conn.websocket, incoming, sink);
     if (mrb_unlikely(conn.sse != nullptr))
         return true;
 
@@ -2467,13 +2473,13 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
             RouteSpans probe_spans;
             const int probe = probe_slot.table->match(path, path_len, probe_spans);
             if (probe >= 0) {
-                const Bundle &pb = bundles_[probe_slot.base + static_cast<size_t>(probe)];
-                body_read = pb.bound && pb.res->takes_body;
+                const Bundle &probe_bundle = bundles_[probe_slot.base + static_cast<size_t>(probe)];
+                body_read = probe_bundle.bound && probe_bundle.res->takes_body;
                 // RFC 9110 15.5.14: the nearest limit answers. This route's
                 // resource holds one when it said `def self.max_body`, and the
                 // application's number answers for every route that did not.
-                if (pb.bound && pb.res->max_body >= 0) {
-                    limit = static_cast<size_t>(pb.res->max_body);
+                if (probe_bundle.bound && probe_bundle.res->max_body >= 0) {
+                    limit = static_cast<size_t>(probe_bundle.res->max_body);
                 }
             }
             if (!body_read)
@@ -2640,10 +2646,10 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
                     conn.body_hold.clear();
                     conn.body_to = Conn::Body::kChunkMem;
                     conn.run_wants_body = true;
-                    const char *cp = view + offset + head_len;
+                    const char *content_start = view + offset + head_len;
                     size_t clen = body_here;
                     const BodyTake read_bytes =
-                        take_chunked(conn, MemWriter{&conn.body_hold}, cp, clen);
+                        take_chunked(conn, MemWriter{&conn.body_hold}, content_start, clen);
                     chunk_used = body_here - clen;
                     if (mrb_unlikely(read_bytes != BodyTake::kMore &&
                                      read_bytes != BodyTake::kWhole)) {
@@ -2769,22 +2775,22 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
                          head_len, in_place, method,  method_len, path,
                          path_len, minor,    persist, head_only,  window.content_length,
                          lflags,   facts,    vals};
-                BoundOut bo;
+                BoundOut bound_out;
                 // body_ and rhdrs_ are this writer's own scratch, reused request
                 // after request. The straight path hands them in; a parked run
                 // will hand in a pair of its own.
                 const BoundAsk basked = {headers, num_headers, spans, slot.table, route,
                                          plan,    sink,        body_, rhdrs_};
-                if (mrb_unlikely(answer_bound(br, basked, bo) == Took::kOwed)) {
+                if (mrb_unlikely(answer_bound(br, basked, bound_out) == Took::kOwed)) {
                     have_body = false;
                     return true;
                 }
-                status = bo.status;
-                have_body = bo.have_body;
-                answered = bo.answered;
-                lent = bo.lent;
-                lent_len = bo.lent_len;
-                accept_gzip = bo.accept_gzip;
+                status = bound_out.status;
+                have_body = bound_out.have_body;
+                answered = bound_out.answered;
+                lent = bound_out.lent;
+                lent_len = bound_out.lent_len;
+                accept_gzip = bound_out.accept_gzip;
             } else {
                 // RFC 9110 12.5.1: c4 belongs to the client. The fold left this
                 // resource with exactly one media type (two would have bound it), so
@@ -2802,9 +2808,9 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
                                 {{&block->accept_type, 1}, {vals.accept, vals.accept_len}}) >= 0;
                     }
                 }
-                const size_t mi = static_cast<size_t>(facts.method);
-                status =
-                    flow::answer(facts, {block->konst.per_method[mi], block->konst.shortcut[mi]});
+                const size_t method_index = static_cast<size_t>(facts.method);
+                status = flow::answer(facts, {block->konst.per_method[method_index],
+                                              block->konst.shortcut[method_index]});
             }
         }
 
@@ -2883,17 +2889,17 @@ bool Http1::feed_parse(Conn &conn, std::string_view in, Sink out_answer)
 }
 
 // RFC 6455 4.2.2: the handshake's answer, 101 or the refusal the route earned.
-bool Http1::ws_upgrade(Conn &conn, const WsUpgrade &up, std::string &sink)
+bool Http1::ws_upgrade(Conn &conn, const WsUpgrade &upgrade, std::string &sink)
 {
-    const AppSlot &slot = up.slot;
-    const int route = up.route;
-    const std::string_view path = up.path;
-    const RouteSpans &spans = up.spans;
-    const void *hdrs = up.hdrs;
-    const size_t nhdr = up.nhdr;
-    const http::ReqValues &vals = up.vals;
+    const AppSlot &slot = upgrade.slot;
+    const int route = upgrade.route;
+    const std::string_view path = upgrade.path;
+    const RouteSpans &spans = upgrade.spans;
+    const void *hdrs = upgrade.hdrs;
+    const size_t nhdr = upgrade.nhdr;
+    const http::ReqValues &vals = upgrade.vals;
     char accept[28];
-    if (!ws::accept_key_compute(up.key.data(), up.key.size(), accept))
+    if (!ws::accept_key_compute(upgrade.key.data(), upgrade.key.size(), accept))
         return connection_fail(conn, 400, sink);
 
     const WsResource *resource = ws_res_[slot.ws_base + static_cast<size_t>(route)];
@@ -2945,29 +2951,29 @@ bool Http1::ws_upgrade(Conn &conn, const WsUpgrade &up, std::string &sink)
     conn.become(ConnMode::kWs);
     conn.carry.clear();
     conn.content_skip = 0;
-    if (!up.rest.empty())
-        return ws_feed(conn.websocket, up.rest, sink);
+    if (!upgrade.rest.empty())
+        return ws_feed(conn.websocket, upgrade.rest, sink);
     return true;
 }
 
 // One line of the access log for an event stream that got an answer.
-void Http1::log_sse(Logger &lg, const Conn &conn, const SseLine &line)
+void Http1::log_sse(Logger &logger, const Conn &conn, const SseLine &line)
 {
-    if (!lg.enabled)
+    if (!logger.enabled)
         return;
     const std::string_view method = line.method;
     const std::string_view path = line.path;
     const http::ReqValues &vals = line.vals;
     const uint8_t lflags = line.lflags;
     const uint16_t status = line.status;
-    log_access(lg, {{static_cast<const char *>(conn.peer), conn.peer_len},
-                    method,
-                    path,
-                    {vals.log_ref, vals.log_ref_len},
-                    {vals.log_ua, vals.log_ua_len},
-                    0,
-                    status,
-                    lflags});
+    log_access(logger, {{static_cast<const char *>(conn.peer), conn.peer_len},
+                        method,
+                        path,
+                        {vals.log_ref, vals.log_ref_len},
+                        {vals.log_ua, vals.log_ua_len},
+                        0,
+                        status,
+                        lflags});
 }
 
 // WHATWG HTML: the event stream's head - RFC 9112 7.1 chunked, RFC 9111

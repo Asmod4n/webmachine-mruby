@@ -146,9 +146,9 @@ mrb_value request_get_path_info(mrb_state *mrb, mrb_value)
 mrb_value request_get_path_tokens(mrb_state *mrb, mrb_value)
 {
     const ReqView *view = request_being_answered(mrb);
-    mrb_value a = mrb_ary_new(mrb);
+    mrb_value cross_ask = mrb_ary_new(mrb);
     if (view->spans == nullptr || !view->spans->has_splat)
-        return a;
+        return cross_ask;
     const char *path_bytes = view->spans->splat.p;
     size_t length = view->spans->splat.n;
     size_t offset = 0;
@@ -159,12 +159,12 @@ mrb_value request_get_path_tokens(mrb_state *mrb, mrb_value)
         size_t seg = offset;
         while (offset < length && path_bytes[offset] != '/')
             offset++;
-        mrb_ary_push(mrb, a, mrb_str_new(mrb, path_bytes + seg, offset - seg));
+        mrb_ary_push(mrb, cross_ask, mrb_str_new(mrb, path_bytes + seg, offset - seg));
         mrb_gc_arena_restore(mrb, arena);
         if (offset < length)
             offset++;
     }
-    return a;
+    return cross_ask;
 }
 
 // RFC 9110 4.2.1: the raw query, without the '?'.
@@ -515,13 +515,13 @@ void body_save_perform(mrb_state *mrb, SaveAsk &save_ask)
         return;
 
     if (view->content_fd >= 0) {
-        const int rc = slipstream_tmpfile_link(view->content_fd, path.c_str());
-        if (rc == 0 || rc == -EEXIST)
+        const int status = slipstream_tmpfile_link(view->content_fd, path.c_str());
+        if (status == 0 || status == -EEXIST)
             return;
         // -ENOENT is a temporary file the mkstemp arm made, which has no
         // name to link from; -EXDEV is another filesystem. Both are a copy.
-        if (rc != -ENOENT && rc != -EXDEV && rc != -EOPNOTSUPP) {
-            save_ask.out_error = std::strerror(-rc);
+        if (status != -ENOENT && status != -EXDEV && status != -EOPNOTSUPP) {
+            save_ask.out_error = std::strerror(-status);
             return;
         }
     }
@@ -662,17 +662,17 @@ void join_repeated_fields(const ReqView *view, std::string_view name, std::strin
 
 namespace
 {
-mrb_value request_get_named_field(mrb_state *mrb, http::NamedField f)
+mrb_value request_get_named_field(mrb_state *mrb, http::NamedField facts)
 {
     const ReqView *view = request_being_answered(mrb);
-    if (view->values == nullptr || !view->values->named.carries(f))
+    if (view->values == nullptr || !view->values->named.carries(facts))
         return mrb_nil_value();
     // The index is applied by the thing that stored it, against the array
     // it is being applied to - see http::NamedFieldIndex. A position this
     // request's array cannot reach reads as "no such field" instead of
     // reading past the end.
     const struct phr_header *headers = view->values->named.find(
-        f, {static_cast<const struct phr_header *>(view->fields), view->field_count});
+        facts, {static_cast<const struct phr_header *>(view->fields), view->field_count});
     if (headers == nullptr)
         return mrb_nil_value();
     return mrb_str_new(mrb, headers->value, headers->value_len);
@@ -781,14 +781,14 @@ mrb_value request_get_cookies(mrb_state *mrb, mrb_value)
             offset++; // skip ';'
         if (end <= start)
             continue;
-        size_t eq = start;
-        while (eq < end && path_bytes[eq] != '=')
-            eq++;
-        if (eq >= end)
+        size_t equals = start;
+        while (equals < end && path_bytes[equals] != '=')
+            equals++;
+        if (equals >= end)
             continue;
         // Frozen key: hash.c h_key_for would otherwise dup it (ea96df2).
-        mrb_hash_set(mrb, headers, mrb_str_new_frozen(mrb, path_bytes + start, eq - start),
-                     mrb_str_new(mrb, path_bytes + eq + 1, end - eq - 1));
+        mrb_hash_set(mrb, headers, mrb_str_new_frozen(mrb, path_bytes + start, equals - start),
+                     mrb_str_new(mrb, path_bytes + equals + 1, end - equals - 1));
         mrb_gc_arena_restore(mrb, arena);
     }
     return headers;
@@ -856,8 +856,8 @@ mrb_value resource_get_request(mrb_state *mrb, mrb_value)
 {
     request_being_answered(mrb);
     struct RClass *webmachine_module = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
-    struct RClass *rc = mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(Request));
-    return mrb_obj_value(mrb_data_object_alloc(mrb, rc, nullptr, &request_type));
+    struct RClass *status = mrb_class_get_under_id(mrb, webmachine_module, MRB_SYM(Request));
+    return mrb_obj_value(mrb_data_object_alloc(mrb, status, nullptr, &request_type));
 }
 } // namespace
 
@@ -944,11 +944,11 @@ void request_init(mrb_state *mrb, struct RClass *webmachine_module)
 // only forward-declares it.
 namespace http
 {
-const struct phr_header *NamedFieldIndex::find(NamedField f, HeaderList fields) const
+const struct phr_header *NamedFieldIndex::find(NamedField facts, HeaderList fields) const
 {
-    if (fields.items == nullptr || !carries(f))
+    if (fields.items == nullptr || !carries(facts))
         return nullptr;
-    const uint8_t i = index[static_cast<uint8_t>(f)];
+    const uint8_t i = index[static_cast<uint8_t>(facts)];
     // A position this array cannot reach is no field. Every producer
     // builds the index beside the array it came from, so this branch
     // should never be taken - and "should" is not what may stand between

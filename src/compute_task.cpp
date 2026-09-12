@@ -359,7 +359,7 @@ void Http1::compute_task_answered(Conn &conn, int park, int slot, const ComputeA
     // #30: response.userdata, when the worker left something else there.
     round->user_have.at(slot) = false;
     if (answered.user_changed && !answered.user_bytes.empty()) {
-        const mrb_value u = mrb_cbor_decode_fast(
+        const mrb_value decoded = mrb_cbor_decode_fast(
             mrb, mrb_str_new(mrb, answered.user_bytes.data(), answered.user_bytes.size()));
         if (mrb->exc != nullptr) {
             // The exception is the round's answer: the run raises it as its
@@ -370,8 +370,8 @@ void Http1::compute_task_answered(Conn &conn, int park, int slot, const ComputeA
             mrb_gc_arena_restore(mrb, arena);
             return;
         } else {
-            round->user_value.at(slot) = u;
-            mrb_gc_register(mrb, u);
+            round->user_value.at(slot) = decoded;
+            mrb_gc_register(mrb, decoded);
             round->user_have.at(slot) = true;
         }
     }
@@ -419,8 +419,9 @@ struct CrossAsk {
 };
 mrb_value cross_in_protected_call(mrb_state *, void *user_data)
 {
-    auto *const a = static_cast<CrossAsk *>(user_data);
-    a->crossed = a->server->compute_task_cross(*a->conn, *a->round, a->park, *a->resource);
+    auto *const cross_ask = static_cast<CrossAsk *>(user_data);
+    cross_ask->crossed = cross_ask->server->compute_task_cross(
+        *cross_ask->conn, *cross_ask->round, cross_ask->park, *cross_ask->resource);
     return mrb_nil_value();
 }
 } // namespace
@@ -682,14 +683,16 @@ struct WorkerVm {
     };
     static mrb_value build_one(mrb_state *mrb, void *user_data)
     {
-        BuildOne &o = *static_cast<BuildOne *>(user_data);
-        const mrb_value proc = mrb_proc_from_irep(mrb, o.build->irep.data(), o.build->irep.size());
+        BuildOne &build = *static_cast<BuildOne *>(user_data);
+        const mrb_value proc =
+            mrb_proc_from_irep(mrb, build.build->irep.data(), build.build->irep.size());
         if (!mrb_proc_p(proc))
             mrb_raise(mrb, E_WM_ERROR(mrb), "the build proc could not be loaded");
         const mrb_value value = mrb_yield_argv(mrb, proc, 0, nullptr);
-        mrb_hash_set(mrb, o.table,
-                     mrb_symbol_value(mrb_intern(mrb, o.build->key.data(), o.build->key.size())),
-                     value);
+        mrb_hash_set(
+            mrb, build.table,
+            mrb_symbol_value(mrb_intern(mrb, build.build->key.data(), build.build->key.size())),
+            value);
         return mrb_nil_value();
     }
     bool build_registry()
@@ -766,16 +769,16 @@ void fault_report(Logger *logger, mrb_state *mrb, const ComputeFault &fault)
         where.append(" (").append(fault.worker_name).append(")");
     if (mrb->exc != nullptr) {
         if (logger != nullptr && logger->enabled) {
-            ErrFacts f;
+            ErrFacts facts;
             std::string backtrace;
-            f.status_code = fault.status;
-            f.peer = fault.peer.data();
-            f.peer_len = fault.peer.size();
-            f.steering = where.data();
-            f.steering_len = where.size();
-            exception_facts(mrb, {f, backtrace});
-            if (f.exception_class != nullptr)
-                log_error(*logger, f);
+            facts.status_code = fault.status;
+            facts.peer = fault.peer.data();
+            facts.peer_len = fault.peer.size();
+            facts.steering = where.data();
+            facts.steering_len = where.size();
+            exception_facts(mrb, {facts, backtrace});
+            if (facts.exception_class != nullptr)
+                log_error(*logger, facts);
         }
         if (kDebugBuild)
             mrb_print_error(mrb);
@@ -960,14 +963,14 @@ void job_run(WorkerVm &worker_vm, Slot &slot, std::atomic<bool> &asked_stop)
 }
 
 // One worker: block, run what the slot names, answer, repeat.
-void ComputePool::worker(Impl *impl, unsigned me)
+void ComputePool::worker(Impl *impl, unsigned worker_number)
 {
-    struct io_uring *ring = &impl->rings[me];
+    struct io_uring *ring = &impl->rings[worker_number];
     // The name an error record gives this worker. It is not the OS
     // thread's name: the workers are std::thread, and C++ has no call for
     // that.
     char thread_name[16];
-    std::snprintf(thread_name, sizeof(thread_name), "wm-compute%u", me);
+    std::snprintf(thread_name, sizeof(thread_name), "wm-compute%u", worker_number);
     // The VM this worker answers in, built once. A worker that cannot
     // open one answers nothing: it goes, and the pool is short one
     // thread rather than quietly running a job on the wrong VM.
@@ -992,7 +995,7 @@ void ComputePool::worker(Impl *impl, unsigned me)
     // VM stands, and taken back before it closes, so the reactor never
     // holds a pointer to a VM that is being built or torn down.
     if (!boot_failed)
-        impl->vms[me].store(worker_vm.mrb, std::memory_order_release);
+        impl->vms[worker_number].store(worker_vm.mrb, std::memory_order_release);
 
     // The starter waits for this word. It comes after a good open and
     // after a bad one, so a worker that has no VM does not hold the pool.
@@ -1008,7 +1011,7 @@ void ComputePool::worker(Impl *impl, unsigned me)
         if (status < 0) {
             if (status == -EINTR)
                 continue;
-            impl->vms[me].store(nullptr, std::memory_order_release);
+            impl->vms[worker_number].store(nullptr, std::memory_order_release);
             worker_vm.close();
             return;
         }
@@ -1038,7 +1041,8 @@ void ComputePool::worker(Impl *impl, unsigned me)
             slot.worker_name = thread_name;
             // The reactor arms the deadline from this message: the clock
             // starts when the job starts, not when it was queued.
-            impl->running[me].store(static_cast<unsigned>(job), std::memory_order_release);
+            impl->running[worker_number].store(static_cast<unsigned>(job),
+                                               std::memory_order_release);
             if (slot.deadline > 0.0) {
                 struct io_uring_sqe *began = nullptr;
                 while ((began = io_uring_get_sqe(ring)) == nullptr)
@@ -1059,8 +1063,8 @@ void ComputePool::worker(Impl *impl, unsigned me)
             } else {
                 job_run(worker_vm, slot, impl->asked_stop[static_cast<size_t>(job)]);
             }
-            impl->running[me].store(static_cast<unsigned>(impl->slots.size()),
-                                    std::memory_order_release);
+            impl->running[worker_number].store(static_cast<unsigned>(impl->slots.size()),
+                                               std::memory_order_release);
 
             // The answer goes home as a completion. The reactor wrote the slot
             // before the job was sent and reads it after this arrives, so the
@@ -1081,7 +1085,7 @@ void ComputePool::worker(Impl *impl, unsigned me)
         if (answers != 0)
             io_uring_submit(ring);
         if (told_to_stop) {
-            impl->vms[me].store(nullptr, std::memory_order_release);
+            impl->vms[worker_number].store(nullptr, std::memory_order_release);
             worker_vm.close();
             return;
         }
@@ -1227,18 +1231,18 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     // A free slot, or no. Full means every worker is busy with a full
     // queue behind it, and the caller decides what that means - this
     // layer does not invent a refusal for it.
-    size_t at = impl->slots.size();
+    size_t slot_index = impl->slots.size();
     for (size_t i = 0; i < impl->slots.size(); i++) {
         if (!impl->slots[i].busy) {
-            at = i;
+            slot_index = i;
             break;
         }
     }
-    if (at == impl->slots.size())
+    if (slot_index == impl->slots.size())
         return false;
 
-    Slot &slot = impl->slots[at];
-    impl->asked_stop[at].store(false, std::memory_order_relaxed);
+    Slot &slot = impl->slots[slot_index];
+    impl->asked_stop[slot_index].store(false, std::memory_order_relaxed);
     slot.code_id = code_id;
     slot.deadline = deadline;
     slot.arg.assign(arg.data(), arg.size());
@@ -1251,7 +1255,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     slot.gen++;
     slot.busy = true;
 
-    const unsigned to = impl->next++ % static_cast<unsigned>(impl->rings.size());
+    const unsigned target_ring = impl->next++ % static_cast<unsigned>(impl->rings.size());
     struct io_uring_sqe *sqe = nullptr;
     try {
         sqe = sqe_or_raise(mrb, impl->home);
@@ -1259,9 +1263,10 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
         slot.busy = false;
         throw;
     }
-    slot.worker = to;
+    slot.worker = target_ring;
     WM_HANDOVER_SEND(&slot);
-    io_uring_prep_msg_ring(sqe, impl->rings[to].ring_fd, 0, static_cast<uint64_t>(at), 0);
+    io_uring_prep_msg_ring(sqe, impl->rings[target_ring].ring_fd, 0,
+                           static_cast<uint64_t>(slot_index), 0);
     // The submission itself owes no completion to anyone: the answer comes
     // from the worker, not from the act of sending.
     io_uring_sqe_set_data64(sqe, detail::tag(detail::kComputeTask, 0, 0));

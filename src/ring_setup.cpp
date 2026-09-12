@@ -18,10 +18,10 @@ void raise_memlock()
     (void)::setrlimit(RLIMIT_MEMLOCK, &want);
 }
 
-uint32_t derive_max_conns(FdBudget b)
+uint32_t derive_max_conns(FdBudget block)
 {
-    const uint64_t nofile_limit = b.nofile_limit;
-    const uint32_t extra_slots = b.extra_slots;
+    const uint64_t nofile_limit = block.nofile_limit;
+    const uint32_t extra_slots = block.extra_slots;
     const uint64_t taken =
         static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners + extra_slots;
     if (nofile_limit <= taken)
@@ -57,11 +57,11 @@ uint64_t raise_nofile()
     rlim_t target = rl.rlim_max;
     if (target == RLIM_INFINITY) {
         uint64_t nr_open = 1u << 20;
-        if (std::FILE *f = std::fopen("/proc/sys/fs/nr_open", "re")) {
-            unsigned long long v = 0;
-            if (std::fscanf(f, "%llu", &v) == 1 && v > 0)
-                nr_open = v;
-            std::fclose(f);
+        if (std::FILE *facts = std::fopen("/proc/sys/fs/nr_open", "re")) {
+            unsigned long long value = 0;
+            if (std::fscanf(facts, "%llu", &value) == 1 && value > 0)
+                nr_open = value;
+            std::fclose(facts);
         }
         target = static_cast<rlim_t>(nr_open);
     }
@@ -89,9 +89,9 @@ uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot)
     return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
 }
 
-uint8_t watch_slot(uint64_t ud)
+uint8_t watch_slot(uint64_t user_data)
 {
-    return static_cast<uint8_t>(ud >> 48);
+    return static_cast<uint8_t>(user_data >> 48);
 }
 
 uint64_t compute_deadline_tag(unsigned slot, uint16_t gen)
@@ -111,9 +111,9 @@ uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job,
     return tag(kComputeTask, gen, word) | (static_cast<uint64_t>(both) << 48);
 }
 
-const char *stage_name(uint32_t st)
+const char *stage_name(uint32_t conn)
 {
-    switch (st) {
+    switch (conn) {
         case kStSocket:
             return "socket";
         case kStSockopt:

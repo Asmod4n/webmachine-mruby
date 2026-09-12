@@ -98,19 +98,19 @@ struct H2FrameHead {
 };
 
 // The 9 bytes they make; stream id at offset 5.
-void h2_put_frame_header(unsigned char *p, H2FrameHead f);
+void h2_put_frame_header(unsigned char *bytes, H2FrameHead facts);
 
 // RFC 9113 4.1: the 4 stream-id bytes of an already-emitted frame header.
-void h2_patch_stream_id(unsigned char *p, uint32_t stream);
+void h2_patch_stream_id(unsigned char *bytes, uint32_t stream);
 
 // RFC 9113 4.1: a frame's length field.
-uint32_t h2_u24(const unsigned char *p);
+uint32_t h2_u24(const unsigned char *bytes);
 // RFC 9113 4.1: a 32-bit field, network order.
-uint32_t h2_u32(const unsigned char *p);
+uint32_t h2_u32(const unsigned char *bytes);
 // RFC 9113 4.1: a stream id, reserved bit masked off.
-uint32_t h2_u31(const unsigned char *p);
+uint32_t h2_u31(const unsigned char *bytes);
 // RFC 9113 6.5.1: a settings identifier.
-uint16_t h2_u16(const unsigned char *p);
+uint16_t h2_u16(const unsigned char *bytes);
 
 // One HPACK block under construction: the encoder whose dynamic table it
 // moves, the cursor the next field lands at, and the end it may not pass.
@@ -139,7 +139,7 @@ struct H2Field {
 // wants name and value in one buffer with the offsets named, so the pair
 // is spelled out here first. Returns false when the field would not fit -
 // the caller then has an error to name, not a truncated block.
-bool h2_enc_field(H2BlockOut out, const H2Field &f);
+bool h2_enc_field(H2BlockOut out, const H2Field &facts);
 } // namespace webmachine
 
 #endif // WEBMACHINE_H2_WIRE_HPP

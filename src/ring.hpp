@@ -672,16 +672,16 @@ template <class App> class Ring
         const std::string why = field.err < 0
                                     ? std::string(field.what) + ": " + std::strerror(-field.err)
                                     : std::string(field.what);
-        Logger *el = app_.error_log();
-        if (el != nullptr && el->enabled) {
+        Logger *element = app_.error_log();
+        if (element != nullptr && element->enabled) {
             log_internal_error(
-                *el, {conn.peer != nullptr
-                          ? std::string_view{reinterpret_cast<const char *>(&conn.peer->addr),
-                                             static_cast<size_t>(conn.peer->addrlen)}
-                          : std::string_view{},
-                      {},
-                      why,
-                      0});
+                *element, {conn.peer != nullptr
+                               ? std::string_view{reinterpret_cast<const char *>(&conn.peer->addr),
+                                                  static_cast<size_t>(conn.peer->addrlen)}
+                               : std::string_view{},
+                           {},
+                           why,
+                           0});
             return;
         }
         for (unsigned i = 0; i < said_count_; i++) {
@@ -738,18 +738,18 @@ template <class App> class Ring
     {
         if (log_fd_ < 0)
             return;
-        Logger *al = app_.access_log();
-        if (al == nullptr || al->in_flight || al->pending.empty())
+        Logger *allow = app_.access_log();
+        if (allow == nullptr || allow->in_flight || allow->pending.empty())
             return;
-        al->pending.swap(al->flight);
-        al->in_flight = true;
-        arm_access_write(al);
+        allow->pending.swap(allow->flight);
+        allow->in_flight = true;
+        arm_access_write(allow);
     }
     // send, not write: a dead daemon must be -EPIPE in a CQE, not a SIGPIPE.
-    void arm_access_write(Logger *al)
+    void arm_access_write(Logger *allow)
     {
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_send(sqe, log_fd_, al->flight.data(), al->flight.size(), MSG_NOSIGNAL);
+        io_uring_prep_send(sqe, log_fd_, allow->flight.data(), allow->flight.size(), MSG_NOSIGNAL);
         io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 0, kStreamAccess));
     }
 
@@ -758,31 +758,31 @@ template <class App> class Ring
     {
         if (err_fd_ < 0)
             return;
-        Logger *el = app_.error_log();
-        if (el == nullptr || el->in_flight || el->pending.size() < sizeof(ErrRec))
+        Logger *element = app_.error_log();
+        if (element == nullptr || element->in_flight || element->pending.size() < sizeof(ErrRec))
             return;
         ErrRec round;
-        std::memcpy(&round, el->pending.data(), sizeof round);
+        std::memcpy(&round, element->pending.data(), sizeof round);
         const size_t whole = sizeof(ErrRec) + round.dynamic_len;
-        if (el->pending.size() < whole)
+        if (element->pending.size() < whole)
             return;
-        el->flight.assign(el->pending, 0, whole);
-        el->pending.erase(0, whole);
-        el->in_flight = true;
-        arm_error_write(el);
+        element->flight.assign(element->pending, 0, whole);
+        element->pending.erase(0, whole);
+        element->in_flight = true;
+        arm_error_write(element);
     }
     // MSG_WAITALL is what makes the link safe: IO_LINK breaks only on failure,
     // and a short send is not one.
-    void arm_error_write(Logger *el)
+    void arm_error_write(Logger *element)
     {
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_send(sqe, err_fd_, el->flight.data(), sizeof(ErrRec),
+        io_uring_prep_send(sqe, err_fd_, element->flight.data(), sizeof(ErrRec),
                            MSG_NOSIGNAL | MSG_WAITALL);
         sqe->flags |= IOSQE_IO_LINK;
         io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 1, kStreamError));
         sqe = sqe_or_submit();
-        io_uring_prep_send(sqe, err_fd_, el->flight.data() + sizeof(ErrRec),
-                           el->flight.size() - sizeof(ErrRec), MSG_NOSIGNAL | MSG_WAITALL);
+        io_uring_prep_send(sqe, err_fd_, element->flight.data() + sizeof(ErrRec),
+                           element->flight.size() - sizeof(ErrRec), MSG_NOSIGNAL | MSG_WAITALL);
         io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 0, kStreamError));
     }
 
@@ -1215,16 +1215,17 @@ template <class App> class Ring
             text.ku_msg.msg_iovlen = 1;
             text.ku_msg.msg_control = text.ku_control;
             text.ku_msg.msg_controllen = sizeof text.ku_control;
-            struct cmsghdr *cm = CMSG_FIRSTHDR(&text.ku_msg);
-            cm->cmsg_level = ktls_sol_tls();
-            cm->cmsg_type = cmsg_type;
-            cm->cmsg_len = CMSG_LEN(1);
-            if (mrb_likely(ktls_record_type_encode(KTLS_RECORD_HANDSHAKE, CMSG_DATA(cm), 1) == 1)) {
+            struct cmsghdr *comma = CMSG_FIRSTHDR(&text.ku_msg);
+            comma->cmsg_level = ktls_sol_tls();
+            comma->cmsg_type = cmsg_type;
+            comma->cmsg_len = CMSG_LEN(1);
+            if (mrb_likely(ktls_record_type_encode(KTLS_RECORD_HANDSHAKE, CMSG_DATA(comma), 1) ==
+                           1)) {
                 text.ku_msg.msg_controllen = CMSG_SPACE(1);
-                struct io_uring_sqe *ks = sqe_or_submit();
-                io_uring_prep_sendmsg(ks, static_cast<int>(index), &text.ku_msg, MSG_NOSIGNAL);
-                ks->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
-                io_uring_sqe_set_data64(ks, detail::tag(detail::kTlsBye, c.gen, index));
+                struct io_uring_sqe *keys = sqe_or_submit();
+                io_uring_prep_sendmsg(keys, static_cast<int>(index), &text.ku_msg, MSG_NOSIGNAL);
+                keys->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+                io_uring_sqe_set_data64(keys, detail::tag(detail::kTlsBye, c.gen, index));
             }
         }
         struct io_uring_sqe *sqe = sqe_or_submit();
@@ -1368,11 +1369,11 @@ template <class App> class Ring
         t.bye_msg.msg_iovlen = 1;
         t.bye_msg.msg_control = t.bye_control;
         t.bye_msg.msg_controllen = sizeof t.bye_control;
-        struct cmsghdr *cm = CMSG_FIRSTHDR(&t.bye_msg);
-        cm->cmsg_level = ktls_sol_tls();
-        cm->cmsg_type = cmsg_type;
-        cm->cmsg_len = CMSG_LEN(1);
-        if (mrb_unlikely(ktls_record_type_encode(KTLS_RECORD_ALERT, CMSG_DATA(cm), 1) != 1))
+        struct cmsghdr *comma = CMSG_FIRSTHDR(&t.bye_msg);
+        comma->cmsg_level = ktls_sol_tls();
+        comma->cmsg_type = cmsg_type;
+        comma->cmsg_len = CMSG_LEN(1);
+        if (mrb_unlikely(ktls_record_type_encode(KTLS_RECORD_ALERT, CMSG_DATA(comma), 1) != 1))
             return;
         t.bye_msg.msg_controllen = CMSG_SPACE(1);
 
@@ -1507,11 +1508,11 @@ template <class App> class Ring
             // handshake and hung up has already put this one in CLOSE_WAIT.
             // Here the accept has just returned, so there is no such window.
             static const char kUlp[] = "tls";
-            struct io_uring_sqe *u = sqe_or_submit();
-            io_uring_prep_cmd_sock(u, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(index),
+            struct io_uring_sqe *decoded = sqe_or_submit();
+            io_uring_prep_cmd_sock(decoded, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(index),
                                    IPPROTO_TCP, TCP_ULP, const_cast<char *>(kUlp), sizeof kUlp);
-            u->flags |= IOSQE_FIXED_FILE;
-            io_uring_sqe_set_data64(u, detail::tag(detail::kTlsUlp, c.gen, index));
+            decoded->flags |= IOSQE_FIXED_FILE;
+            io_uring_sqe_set_data64(decoded, detail::tag(detail::kTlsUlp, c.gen, index));
         }
         arm_meminfo(index);
         if (log_fd_ >= 0 && !unix_listener_[listener_index])
@@ -2141,14 +2142,14 @@ template <class App> class Ring
         Conn &c = conns_[index];
         if (c.spill_writing)
             return;
-        BodySpill *const sp = App::spill_waiting(c.app);
-        if (mrb_likely(sp == nullptr))
+        BodySpill *const spelling = App::spill_waiting(c.app);
+        if (mrb_likely(spelling == nullptr))
             return;
-        sp->fly_into(c.spill_out);
+        spelling->fly_into(c.spill_out);
         c.spill_writing = true;
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_write(sqe, sp->fd, c.spill_out.data(),
-                            static_cast<unsigned>(c.spill_out.size()), sp->offset);
+        io_uring_prep_write(sqe, spelling->fd, c.spill_out.data(),
+                            static_cast<unsigned>(c.spill_out.size()), spelling->offset);
         io_uring_sqe_set_data64(sqe, detail::tag(detail::kSpillWrite, c.gen, index));
     }
 
@@ -2487,15 +2488,15 @@ template <class App> class Ring
         conn.plan_byte_total = 0;
         bool sink_covered = false;
         for (unsigned i = 0; i < request.iovlen; i++) {
-            const typename App::Plan::Seg &sg = request.iov[i];
-            if (sg.iov_base != nullptr) {
-                out_iov[conn.msg_iovlen].iov_base = const_cast<char *>(sg.iov_base);
+            const typename App::Plan::Seg &segment = request.iov[i];
+            if (segment.iov_base != nullptr) {
+                out_iov[conn.msg_iovlen].iov_base = const_cast<char *>(segment.iov_base);
             } else {
-                out_iov[conn.msg_iovlen].iov_base = conn.out.data() + sg.off;
+                out_iov[conn.msg_iovlen].iov_base = conn.out.data() + segment.off;
                 sink_covered = true;
             }
-            out_iov[conn.msg_iovlen].iov_len = sg.iov_len;
-            conn.plan_byte_total += sg.iov_len;
+            out_iov[conn.msg_iovlen].iov_len = segment.iov_len;
+            conn.plan_byte_total += segment.iov_len;
             conn.msg_iovlen++;
         }
         if (!sink_covered && !conn.out.empty()) {
@@ -2562,10 +2563,10 @@ template <class App> class Ring
     // One completion, by tag.
     void handle(struct io_uring_cqe *completion)
     {
-        const uint64_t ud = io_uring_cqe_get_data64(completion);
-        const uint8_t kind = static_cast<uint8_t>(ud >> 56);
-        const uint16_t generation = static_cast<uint16_t>(ud >> 32);
-        const uint32_t index = static_cast<uint32_t>(ud);
+        const uint64_t user_data = io_uring_cqe_get_data64(completion);
+        const uint8_t kind = static_cast<uint8_t>(user_data >> 56);
+        const uint16_t generation = static_cast<uint16_t>(user_data >> 32);
+        const uint32_t index = static_cast<uint32_t>(user_data);
         // The try is here and not around a dispatch() of its own. This is
         // the hottest path in the reactor, and a separate function takes
         // on_send back out of line: measured, that cost 5%.

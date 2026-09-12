@@ -87,7 +87,7 @@ bool negotiate(std::string_view value, Negotiated out_value)
             const size_t pn_len = i - pn_at;
             while (i < length && detail::is_ows(v[i]))
                 i++;
-            const char *pv = nullptr;
+            const char *prefix_variants = nullptr;
             size_t pv_len = 0;
             bool have_value = false;
             if (i < length && v[i] == '=') {
@@ -97,20 +97,20 @@ bool negotiate(std::string_view value, Negotiated out_value)
                 have_value = true;
                 if (i < length && v[i] == '"') {
                     i++;
-                    pv = v + i;
+                    prefix_variants = v + i;
                     while (i < length && v[i] != '"') {
                         if (v[i] == '\\' && i + 1 < length)
                             i++;
                         i++;
                     }
-                    pv_len = static_cast<size_t>(v + i - pv);
+                    pv_len = static_cast<size_t>(v + i - prefix_variants);
                     if (i < length)
                         i++;
                 } else {
-                    pv = v + i;
+                    prefix_variants = v + i;
                     while (i < length && detail::is_tchar(v[i]))
                         i++;
-                    pv_len = static_cast<size_t>(v + i - pv);
+                    pv_len = static_cast<size_t>(v + i - prefix_variants);
                 }
             }
             if (!accepted)
@@ -132,7 +132,8 @@ bool negotiate(std::string_view value, Negotiated out_value)
                 bytes.client_no_context_takeover = true;
             } else if (detail::ci_eq({v + pn_at, pn_len}, "server_max_window_bits")) {
                 uint8_t block = 0;
-                if (seen_smwb || !have_value || !detail::window_bits(pv, pv_len, block) ||
+                if (seen_smwb || !have_value ||
+                    !detail::window_bits(prefix_variants, pv_len, block) ||
                     block < kMinRawWindowBits) {
                     accepted = false;
                     continue;
@@ -147,7 +148,7 @@ bool negotiate(std::string_view value, Negotiated out_value)
                 seen_cmwb = true;
                 if (have_value) {
                     uint8_t block = 0;
-                    if (!detail::window_bits(pv, pv_len, block)) {
+                    if (!detail::window_bits(prefix_variants, pv_len, block)) {
                         accepted = false;
                         continue;
                     }
