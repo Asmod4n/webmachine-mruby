@@ -24,13 +24,18 @@ on:
       - 'docs/**'
       - '**.md'
 
-# One run per branch at a time. A second push while the first run is
-# still going cancels it, because the older commit is not what anybody
-# waits for. The sanitizer jobs take seven minutes each, so two live runs
-# of the same branch spend the runners twice over.
+# One run per branch at a time. A second push to a topic branch cancels
+# the run the first one started, because the older commit is not what
+# anybody waits for, and the sanitizer jobs take seven minutes each.
+#
+# `next` and `master` are the exception, and this cost three recorded
+# results before it was written down: a merge into `next` cancelled the
+# run of the commit before it, so the branch every other branch is cut
+# from had no answer of its own. A long-lived branch finishes every run
+# it starts.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/next' && github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
