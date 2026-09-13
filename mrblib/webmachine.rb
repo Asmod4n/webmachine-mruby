@@ -14,24 +14,6 @@ CBOR.register_tag(5900) do
 end
 
 module Webmachine
-  module Workers
-    # #30: the response a compute task speaks to. It has one thing, and
-    # it is the same one the run has at home: what the application
-    # carries from one callback to the next. The worker fills it before
-    # the block runs and reads it after.
-    class Response
-      attr_accessor :userdata
-    end
-
-    #: () -> Webmachine::Workers::Response
-    def self.response
-      @response ||= Response.new
-    end
-
-  end
-end
-
-module Webmachine
   class Application
     attr_reader :conf
   end

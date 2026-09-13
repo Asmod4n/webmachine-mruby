@@ -1253,9 +1253,6 @@ class Http1
                 unsigned code = 0;
                 std::string bytes;
                 double deadline = 0.0;
-                // #30: response.userdata as CBOR, or empty when the run put
-                // nothing there. Every job of a round gets the same bytes.
-                std::string user_bytes;
                 // The reactor has not armed this one yet.
                 bool waiting = false;
             };
@@ -1264,10 +1261,6 @@ class Http1
             // node's own callback. A watcher fills its place here too, and it
             // has no Job: nothing crosses to a worker for it.
             std::array<uint8_t, kJobSlots> job_what{};
-            // #30: response.userdata as the worker left it, per job, when the
-            // worker changed it. Rooted like an answer, read at the resume.
-            std::array<mrb_value, kJobSlots> user_value{};
-            std::array<bool, kJobSlots> user_have{};
             // How many jobs this stop handed over, and how many answered. The
             // run goes on when the two are equal.
             uint8_t jobs_owed = 0;
@@ -1826,8 +1819,6 @@ class Http1
     static double watcher_quiet_seconds(Conn &conn, int slot);
     // The work a stopped run left, or false. Taken, not read: the reactor
     // arms it once and the connection stops naming it - exactly file_take.
-    // #30: response.userdata for this job, as the crossing left it.
-    static std::string_view compute_task_user(const Conn &conn, int park, int job);
     static bool compute_task_take(Conn &conn, int park, int job, unsigned *code, std::string &bytes,
                                   double *deadline);
     // response.file, the reactor's half. A bound run may name a file instead

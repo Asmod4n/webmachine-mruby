@@ -1863,11 +1863,6 @@ Http1::Run Http1::run_parkable(Conn &conn, RunStart start, std::string *sink, Pl
                             mrb_gc_unregister(resource->mrb, a);
                         a = mrb_nil_value();
                     }
-                    for (int i = 0; i < Conn::kJobSlots; i++) {
-                        if (round->user_have.at(i))
-                            mrb_gc_unregister(resource->mrb, round->user_value.at(i));
-                        round->user_have.at(i) = false;
-                    }
                 }
             } parked_roots{&resource, &mine, &mine_round};
 
@@ -1963,15 +1958,13 @@ Http1::Run Http1::run_parkable(Conn &conn, RunStart start, std::string *sink, Pl
                 resource.run.wants_body = false;
                 mine_round.wants_body = false;
                 status = resource_resume(resource, {&body, &have_body, &rhdrs},
-                                         {mine_round.answer_value, mine_round.job_what,
-                                          mine_round.user_value, mine_round.user_have, 0});
+                                         {mine_round.answer_value, mine_round.job_what, 0});
             } else {
                 // #30: the whole round, in the order the stop handed it over.
                 // A watcher and a single task are one entry of it.
                 const uint8_t owed = mine_round.jobs_owed != 0 ? mine_round.jobs_owed : 1;
                 status = resource_resume(resource, {&body, &have_body, &rhdrs},
-                                         {mine_round.answer_value, mine_round.job_what,
-                                          mine_round.user_value, mine_round.user_have, owed});
+                                         {mine_round.answer_value, mine_round.job_what, owed});
             }
             // The answers were rooted while they waited - nothing on the VM's
             // stack named them. The round is read, so they are let go.
@@ -1980,13 +1973,6 @@ Http1::Run Http1::run_parkable(Conn &conn, RunStart start, std::string *sink, Pl
                     mrb_gc_unregister(resource.mrb, a);
                     a = mrb_nil_value();
                 }
-            }
-            for (int i = 0; i < Conn::kJobSlots; i++) {
-                if (!mine_round.user_have.at(i))
-                    continue;
-                mrb_gc_unregister(resource.mrb, mine_round.user_value.at(i));
-                mine_round.user_value.at(i) = mrb_nil_value();
-                mine_round.user_have.at(i) = false;
             }
         }
 
