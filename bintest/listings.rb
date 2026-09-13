@@ -294,7 +294,7 @@ assert('listings: a target that ends in a slash says no-cache; a file does not')
       # the body. no-cache is not no-store.
       stamp = generated[/^Last-Modified: *(.+)\r$/i, 1]
       assert_true !stamp.nil?, generated
-      wm_request(s, '/open/', 'If-Modified-Since' => stamp)
+      wm_request(s, '/open/', { 'If-Modified-Since' => stamp })
       again, = wm_read(s)
       assert_true again.start_with?('HTTP/1.1 304'), again
     end

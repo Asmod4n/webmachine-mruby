@@ -410,37 +410,14 @@ assert('application: webmachine-ruby spells TLS three ways this tree does not') 
   end
 end
 
-assert('application: https, a certificate and a key are one decision') do
-  # A certificate without https: the listener would carry keys it never
-  # offers, which is a config that means two things at once.
-  out = ap_refused(ap_one_route(<<~BODY))
-    app.conf.port = 8080
-    app.conf.certificate = '/nonexistent/cert.pem'
-    app.conf.private_key = '/nonexistent/key.pem'
-    app.add_route [:*], R
-  BODY
-  assert_true out.include?('not https'), out
-
-  # https without either of them.
-  out = ap_refused(ap_one_route(<<~BODY))
-    app.configure { |conf| conf.url = 'https://example.com' }
-    app.add_route [:*], R
-  BODY
-  assert_true out.include?('conf.certificate'), out
-  assert_true out.include?('conf.private_key'), out
-
-  # https with only one of them, named by which one is missing.
-  out = ap_refused(ap_one_route(<<~BODY))
-    app.configure do |conf|
-      conf.url = 'https://example.com'
-      conf.certificate = '/nonexistent/cert.pem'
-    end
-    app.add_route [:*], R
-  BODY
-  assert_true out.include?('only the certificate'), out
-end
-
-assert('application: an https listener says which file it could not read') do
+assert('application: asking for TLS says this build has none') do
+  # The configuration still names TLS and still parses. What it may never
+  # do is be accepted and then answered in cleartext: an operator who
+  # asked for https and was given http cannot see it from inside the
+  # process, and neither can the peer. So every way of asking stops the
+  # server, and the refusal names what replaces it.
+  #
+  # conf.url = https, with the pair.
   out = ap_refused(ap_one_route(<<~BODY))
     app.configure do |conf|
       conf.url = 'https://example.com:0'
@@ -449,8 +426,25 @@ assert('application: an https listener says which file it could not read') do
     end
     app.add_route [:*], R
   BODY
-  assert_true out.include?('/nonexistent/cert.pem'), out
-  assert_true out.include?('No such file'), out
+  assert_true out.include?('asks for TLS'), out
+  assert_true out.include?('mruby-tls'), out
+
+  # conf.url = https on its own.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.configure { |conf| conf.url = 'https://example.com' }
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('asks for TLS'), out
+
+  # A certificate named on a listener that is not https. The pair alone
+  # is enough to ask, so it is enough to be refused.
+  out = ap_refused(ap_one_route(<<~BODY))
+    app.conf.port = 8080
+    app.conf.certificate = '/nonexistent/cert.pem'
+    app.conf.private_key = '/nonexistent/key.pem'
+    app.add_route [:*], R
+  BODY
+  assert_true out.include?('asks for TLS'), out
 end
 
 assert('application: route.assets is a signpost, route.sse is a real route kind') do

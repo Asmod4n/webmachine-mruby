@@ -113,12 +113,6 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   # bytes are in memory or in a file. This is the in-memory half.
   spec.add_dependency 'mruby-stringio', github: 'ksss/mruby-stringio'
 
-  # TLS: the handshake is this process's, the record layer is the
-  # kernel's. The gem brings ktls.h and links the
-  # machine's OpenSSL 3, which also gives SHA1() to the WebSocket
-  # handshake.
-  spec.add_dependency 'mruby-ktls', github: 'Asmod4n/mruby-ktls', branch: 'master'
-
   # #80: the compute pool, and what crosses into it.
   #
   # A compute task's block is dumped as an irep once per process, the
@@ -153,13 +147,18 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   end
   spec.linker.libraries << 'z'
 
-  unless spec.cc.search_header('openssl/ssl.h')
+  # RFC 6455 1.3: the WebSocket handshake answers with the SHA1 of the
+  # client's key and one fixed string. That is the only thing this tree
+  # asks a crypto library for - the TLS record layer left with
+  # mruby-ktls, and mruby-tls will bring its own. So libcrypto, not
+  # libssl, and one header rather than the whole of OpenSSL.
+  unless spec.cc.search_header('openssl/sha.h')
     abort <<~MSG
       webmachine-mruby: OpenSSL headers not found.
 
-      This tree links the machine's OpenSSL 3, for the TLS handshake and
-      the websocket handshake's SHA1. The library is on every server
-      distribution, and its headers are a package of their own:
+      This tree links libcrypto for the websocket handshake's SHA1. The
+      library is on every server distribution, and its headers are a
+      package of their own:
 
         Debian/Ubuntu   apt install libssl-dev
         RHEL/Fedora     dnf install openssl-devel
@@ -167,6 +166,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
         macOS           brew install openssl@3
     MSG
   end
+  spec.linker.libraries << 'crypto'
   mnz = "#{dir}/deps/miniz"
   abort 'webmachine-mruby: deps/miniz is empty - run: git submodule update --init' unless File.exist?("#{mnz}/miniz_zip.h")
   mnz_gen = "#{build_dir}/miniz"

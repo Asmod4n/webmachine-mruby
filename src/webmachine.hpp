@@ -8,7 +8,6 @@
 #include <mruby/presym.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <ktls.h>
 #include <liburing.h>
 #include <linux/sock_diag.h>
 #include <netinet/in.h>

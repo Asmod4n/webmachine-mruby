@@ -25,7 +25,6 @@ inc=(-I"$root/src"
      -I"$build/include"
      -I"$build/mrbgems/mruby-slipstreamio/build/include"
      -I"$build/mrbgems/webmachine-mruby/src"
-     -I"$root/mruby/build/repos/debug/mruby-ktls/include"
      -I"$root/mruby/build/repos/debug/mruby-phr/include"
      -I"$root/mruby/build/repos/debug/slipstreamIO/src")
 for d in "$root"/mruby/build/repos/debug/*/include "$root"/mruby/build/repos/debug/*/src \

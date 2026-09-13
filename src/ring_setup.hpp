@@ -62,28 +62,13 @@ static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
 // of whatever finally stands.
 uint64_t raise_nofile();
 
+// A listener the reactor answers on. It carries no certificate: this
+// build has no record layer, so every listener serves cleartext. The
+// configuration still names TLS and server.cpp refuses it by name - see
+// listener_tls_refuse - so nothing reaches here wanting it.
 struct ListenerSpec {
     const char *unix_path = nullptr;
     int port = 0;
-    // The PEM this listener answers with, already read - server.cpp owns
-    // the bytes and outlives the ring. Both or neither: a listener with a
-    // certificate is a TLS listener, and there is no other switch.
-    const char *cert_pem = nullptr;
-    size_t cert_len = 0;
-    const char *key_pem = nullptr;
-    size_t key_len = 0;
-    // RFC 6066 3: the pairs a ClientHello's server_name picks, beside the
-    // default pair above. Same ownership: server.cpp holds the bytes and
-    // the array, and both outlive the ring.
-    struct NamedCert {
-        const char *host = nullptr;
-        const char *cert_pem = nullptr;
-        size_t cert_len = 0;
-        const char *key_pem = nullptr;
-        size_t key_len = 0;
-    };
-    const NamedCert *named = nullptr;
-    size_t nnamed = 0;
 };
 
 // What the reactor needs and nothing else - already resolved, already

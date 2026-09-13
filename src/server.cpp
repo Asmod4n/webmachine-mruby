@@ -116,110 +116,33 @@ int spawn_logd(mrb_state *mrb, const LogdSpawn &logd_spawn)
     return socket_pair[1];
 }
 
-// The PEM bytes a TLS listener answers with. Read at boot and kept
-// here because ListenerSpec only points at them and the ring outlives
-// the call that filled it in. Two per listener, indexed by listener.
-std::vector<std::string> pem_;
-// RFC 6066 3: conf.certificates, read. One vector of PEM strings and one
-// of NamedCert per listener, both held here for the same reason pem_ is:
-// the ring points into them and this outlives the ring.
-std::vector<std::vector<std::string>> named_pem_;
-std::vector<std::vector<ListenerSpec::NamedCert>> named_certs_;
-
-// One PEM file: its path, and the conf key that named it, which is what
-// a refusal says back to the operator.
-struct PemFile {
-    const std::string &path;
-    const char *what;
-};
-
-void pem_file_read(mrb_state *mrb, PemFile pem, std::string &out_pem)
+// TLS is not in this build. mruby-ktls is gone and mruby-tls is not
+// ready, so nothing here can hold a record layer.
+//
+// The configuration still names TLS, and still parses: conf.url may say
+// https, and conf.certificate, conf.private_key and conf.certificates
+// are read into the AppSpec as they always were. A configuration written
+// for TLS therefore survives this branch untouched.
+//
+// What a build without TLS may never do is accept that configuration and
+// then speak cleartext. An operator who asked for https and was given
+// http has no way to see it from inside the process, and the peer has no
+// way to see it either. So the moment an application wants TLS, this
+// says so and stops.
+void listener_tls_refuse(mrb_state *mrb)
 {
-    const std::string &path = pem.path;
-    const char *const what = pem.what;
-    std::FILE *stream = std::fopen(path.c_str(), "rb");
-    if (stream == nullptr) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: %s", what, path.c_str(),
-                   std::strerror(errno));
-    }
-    out_pem.clear();
-    char chunk[4096];
-    size_t got;
-    while ((got = std::fread(chunk, 1, sizeof chunk, stream)) != 0)
-        out_pem.append(chunk, got);
-    const bool too_large = std::ferror(stream) != 0;
-    std::fclose(stream);
-    if (too_large) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s: read failed", what, path.c_str());
-    }
-    if (out_pem.empty()) {
-        mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s %s is empty", what, path.c_str());
-    }
-}
-
-// https, a certificate and a key are one decision spelled three ways, so
-// naming any of them means naming all of them.
-// RFC 6066 3: the pairs conf.certificates named, read and handed over.
-// The default pair above answers a client that names nothing; these
-// answer a ClientHello whose server_name matches.
-void listener_build_named_certs(mrb_state *mrb, size_t listener, const AppSpec &spec,
-                                RingConfig &ring_config)
-{
-    if (spec.named_pairs.empty())
-        return;
-    std::vector<std::string> &pems = named_pem_[listener];
-    std::vector<ListenerSpec::NamedCert> &certs = named_certs_[listener];
-    pems.assign(spec.named_pairs.size() * 2, std::string());
-    certs.assign(spec.named_pairs.size(), ListenerSpec::NamedCert());
-    for (size_t at = 0; at < spec.named_pairs.size(); at++) {
-        const AppSpec::NamedPair &pair = spec.named_pairs[at];
-        std::string &cert = pems[at * 2];
-        std::string &key = pems[at * 2 + 1];
-        pem_file_read(mrb, {pair.cert_path, "certificates certificate"}, cert);
-        pem_file_read(mrb, {pair.key_path, "certificates private_key"}, key);
-        certs[at].host = pair.host.c_str();
-        certs[at].cert_pem = cert.data();
-        certs[at].cert_len = cert.size();
-        certs[at].key_pem = key.data();
-        certs[at].key_len = key.size();
-    }
-    ring_config.listeners[listener].named = certs.data();
-    ring_config.listeners[listener].nnamed = certs.size();
-}
-
-void listener_build_tls(mrb_state *mrb, RingConfig &ring_config)
-{
-    pem_.assign(specs_.size() * 2, std::string());
-    named_pem_.assign(specs_.size(), std::vector<std::string>());
-    named_certs_.assign(specs_.size(), std::vector<ListenerSpec::NamedCert>());
     for (size_t i = 0; i < specs_.size(); i++) {
         const AppSpec &spec = *specs_[i];
         const bool named_files =
             !spec.cert_path.empty() || !spec.key_path.empty() || !spec.named_pairs.empty();
         if (!spec.tls && !named_files)
             continue;
-        if (!spec.tls) {
-            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                       "application %i names a certificate but its listener is not https - "
-                       "conf.url = \"https://...\" is what turns TLS on",
-                       static_cast<mrb_int>(i));
-        }
-        if (spec.cert_path.empty() || spec.key_path.empty()) {
-            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                       "application %i serves https and needs both conf.certificate and "
-                       "conf.private_key; it named %s",
-                       static_cast<mrb_int>(i),
-                       spec.cert_path.empty() ? "only the key" : "only the certificate");
-        }
-        std::string &cert = pem_[i * 2];
-        std::string &key_path = pem_[i * 2 + 1];
-        pem_file_read(mrb, {spec.cert_path, "certificate"}, cert);
-        pem_file_read(mrb, {spec.key_path, "private_key"}, key_path);
-        ring_config.listeners[i].cert_pem = cert.data();
-        ring_config.listeners[i].cert_len = cert.size();
-        ring_config.listeners[i].key_pem = key_path.data();
-        ring_config.listeners[i].key_len = key_path.size();
-        listener_build_named_certs(mrb, i, spec, ring_config);
+        mrb_raisef(mrb, E_NOTIMP_ERROR,
+                   "application %i asks for TLS, and this build has none. The record layer "
+                   "moves from mruby-ktls to mruby-tls, and until that lands a listener "
+                   "serves cleartext only: drop the https from conf.url and put a proxy in "
+                   "front, or build from a branch that has TLS",
+                   static_cast<mrb_int>(i));
     }
 }
 
@@ -328,7 +251,7 @@ void server_build_ring_config(mrb_state *mrb)
     ring_config.send_timeout = opts_.send_timeout;
     ring_config.idle_timeout = opts_.idle_timeout;
     listeners_build(mrb, ring_config);
-    listener_build_tls(mrb, ring_config);
+    listener_tls_refuse(mrb);
 
     // The docroot: a standalone server's --docroot or [server] docroot, or
     // the first application that names one in its conf. The canonical path
@@ -529,8 +452,7 @@ void server_build_ring_config(mrb_state *mrb)
             std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i,
                          ring_config.listeners[i].unix_path);
         } else {
-            std::fprintf(stderr, "webmachine:   [%u] tcp port %d%s\n", i, ring_->bound_port(i),
-                         ring_config.listeners[i].cert_pem != nullptr ? ", tls" : "");
+            std::fprintf(stderr, "webmachine:   [%u] tcp port %d\n", i, ring_->bound_port(i));
         }
     }
     // Where this server answers, on stdout and nowhere else. Every other
@@ -544,9 +466,7 @@ void server_build_ring_config(mrb_state *mrb)
             std::printf("http://localhost/ (unix socket %s)\n",
                         ring_config.listeners[i].unix_path);
         } else {
-            std::printf("%s://localhost:%d/\n",
-                        ring_config.listeners[i].cert_pem != nullptr ? "https" : "http",
-                        ring_->bound_port(i));
+            std::printf("http://localhost:%d/\n", ring_->bound_port(i));
         }
     }
     std::fflush(stdout);
