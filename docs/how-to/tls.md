@@ -65,8 +65,10 @@ that does not parse, and a key that does not belong to its certificate
 are each refused by name before the listener opens. The same name twice
 is refused too.
 
-Both cipher suites and the ALPN list reach every pair, so a request that
-arrives under any of these names can still be HTTP/2.
+Both cipher suites and the ALPN list reach every pair, so a request under
+any of these names is still HTTP/2. SNI sits below HTTP: the name picks
+the certificate, and ALPN then picks h2 or HTTP/1.1 on that same
+connection. There is no name that gets one protocol and not the other.
 
 You might expect IPv6 to have made this unnecessary - one address per
 name, and no need to share. It has not: plenty of hosting providers

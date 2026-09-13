@@ -66,18 +66,41 @@ def tls_sni_server(src, port)
   end
 end
 
-# What the server answered with, as the certificate's subject line.
-def tls_sni_subject(port, servername)
-  out = IO.popen(['openssl', 's_client', '-connect', "127.0.0.1:#{port}",
-                  '-servername', servername, '-verify_return_error',
-                  err: File::NULL], 'r+') do |io|
+# One request, and the three answers it carries: the subject of the
+# certificate the server chose, the HTTP version the connection settled
+# on, and the status. curl sends the name from the URL as the TLS
+# server_name and --resolve points that name at this listener, which is
+# exactly what a browser does.
+#
+# All three come from one connection on purpose. SNI sits below HTTP: the
+# name picks the certificate, and ALPN then picks h2 or http/1.1 on that
+# same connection. A named certificate whose TLS context never heard the
+# ALPN list would answer with the right certificate and no ALPN at all,
+# and the version here would be 1.1 instead of 2. Asking for all three is
+# what notices that.
+#
+# --noproxy matters: a machine with HTTPS_PROXY set would otherwise send
+# this request to the proxy instead of to the listener. -k because the
+# certificates are self-signed and worth nothing.
+def tls_sni_ask(port, servername)
+  out = IO.popen(['curl', '-sk', '--noproxy', '*', '--http2',
+                  '--resolve', "#{servername}:#{port}:127.0.0.1",
+                  '-o', File::NULL,
+                  '-w', "%{http_version} %{response_code}\n%{certs}",
+                  "https://#{servername}:#{port}/", err: File::NULL], 'r+') do |io|
     io.close_write
     io.read
   end
-  out[/^subject=(.*)$/, 1].to_s
+  version, code = out.lines.first.to_s.split
+  { subject: out[/^Subject:(.*)$/, 1].to_s.strip, version: version, code: code }
 end
 
 assert('tls: one listener answers several names, and an unknown name gets the default (6066 3)') do
+  # curl is what names the host in the handshake; nothing in this tree can
+  # do that yet, because KTLS::Keys.client has no servername setter.
+  skip 'no curl on PATH - nothing here can name a host in a handshake' unless
+    system('curl', '--version', out: File::NULL, err: File::NULL)
+
   default_cert, default_key = tls_sni_pair('default.example')
   other_cert, other_key = tls_sni_pair('other.example')
   wild_cert, wild_key = tls_sni_pair('wild.example')
@@ -103,10 +126,10 @@ assert('tls: one listener answers several names, and an unknown name gets the de
     end
   RUBY
 
-  subjects = {}
+  answers = {}
   started, reason = tls_sni_server(src, port) do
     %w[other.example v1.api.example nothing.example default.example].each do |name|
-      subjects[name] = tls_sni_subject(port, name)
+      answers[name] = tls_sni_ask(port, name)
     end
   end
   if !started && reason.include?('tls ULP')
@@ -115,14 +138,23 @@ assert('tls: one listener answers several names, and an unknown name gets the de
   assert_true started, "the server did not come up: #{reason}"
 
   # The name conf.certificates holds gets that pair.
-  assert_include subjects['other.example'], 'CN = other.example'
+  assert_include answers['other.example'][:subject], 'CN = other.example'
   # One leading "*." matches exactly one label.
-  assert_include subjects['v1.api.example'], 'CN = wild.example'
+  assert_include answers['v1.api.example'][:subject], 'CN = wild.example'
   # A name nobody named keeps the default pair, rather than a refused
   # handshake that would say which names exist here.
-  assert_include subjects['nothing.example'], 'CN = default.example'
+  assert_include answers['nothing.example'][:subject], 'CN = default.example'
   # And so does the name the default pair itself carries.
-  assert_include subjects['default.example'], 'CN = default.example'
+  assert_include answers['default.example'][:subject], 'CN = default.example'
+
+  # RFC 7301: and every one of those connections is HTTP/2 that answered.
+  # The certificate a name picks comes with its own TLS context, and a
+  # context that never heard the ALPN list would leave the connection at
+  # HTTP/1.1 under every name but the default.
+  answers.each do |name, answer|
+    assert_equal '2', answer[:version], "not h2 under #{name}"
+    assert_equal '200', answer[:code], "no answer under #{name}"
+  end
 ensure
   [default_cert, default_key, other_cert, other_key, wild_cert, wild_key].each do |file|
     file&.unlink
