@@ -97,6 +97,15 @@ So a failure is raised, and which kind depends on what is in hand:
   the class, the message and the backtrace, never one bit and never one
   string. `mrb_protect_error` plus `note_raise` is that path.
 
+The backtrace reaches the client in one build only. `conf.enable_debug`
+in a build config defines `MRB_DEBUG`, and `kDebugBuild` is the build's
+word for itself rather than a second switch to keep in step. A ship
+build puts the class, the message and the fingerprint on the 500 page,
+and the fingerprint is what finds the whole record in the error log. A
+debug build puts the trace on the page as well, because it is already
+telling you about itself. The error log carries the trace either way:
+hiding it from a client is not hiding it from the person fixing it.
+
 Two things follow, and both have been broken here before:
 
 - A guard that returns instead of raising hides our own bug. An index
