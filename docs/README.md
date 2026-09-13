@@ -28,6 +28,8 @@ One job per page, for a reader who already runs a server.
   `webmachine-logd`.
 - [Keep passwords](how-to/passwords.md): `webmachine-passwd` and a
   login that hashes on a worker.
+- [Write a safe cookie](how-to/cookies.md): the attributes, `SameSite`,
+  and the two name prefixes a browser enforces.
 - [Install on a machine](how-to/install.md): `rake install`, the
   layout, the config file.
 - [Run in a container](how-to/run-in-a-container.md), and
