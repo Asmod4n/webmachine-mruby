@@ -85,14 +85,24 @@ module Webmachine
     def self.human_size(n)
       return "#{n} B" if n < 1024
 
+      # The first division is the one that makes KiB, so it happens before
+      # the walk and `unit` stays at units[0]. Counting it as a step named
+      # every size one unit too large: 307200 octets read "300.0 MiB".
       units = %w[KiB MiB GiB TiB PiB]
-      value = n.to_f
+      value = n / 1024.0
       unit = 0
       while value >= 1024.0 && unit < units.length - 1
         value /= 1024.0
         unit += 1
       end
       tenths = (value * 10.0 + 0.5).to_i
+      # 1023.97 KiB rounds to 1024.0, which is a unit that reads wrong.
+      # Carrying it is one step, and there is never a second: the carry
+      # lands on 1.0 of the next unit.
+      if tenths >= 10240 && unit < units.length - 1
+        tenths = 10
+        unit += 1
+      end
       "#{tenths / 10}.#{tenths % 10} #{units[unit]}"
     end
 

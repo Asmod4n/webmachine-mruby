@@ -223,3 +223,29 @@ assert('listings: every link the page writes is one the file tier answers') do
     FileUtils.rm_rf(root)
   end
 end
+
+assert('listings: a size names the unit it is actually in') do
+  # The first division is what makes KiB. Counting it as a step named
+  # every size one unit too large - 307200 octets read "300.0 MiB" - so
+  # each row here is a byte count whose unit is not in doubt.
+  root = "/tmp/wm-listings-size-#{$$}"
+  FileUtils.mkdir_p(File.join(root, 'open'))
+  sizes = { 'one.bin' => 1, 'k1.bin' => 1024, 'k1half.bin' => 1536,
+            'k300.bin' => 307_200, 'carry.bin' => 1_048_575, 'm1.bin' => 1_048_576 }
+  sizes.each { |name, n| File.binwrite(File.join(root, 'open', name), 'x' * n) }
+  want = { 'one.bin' => '1 B', 'k1.bin' => '1.0 KiB', 'k1half.bin' => '1.5 KiB',
+           'k300.bin' => '300.0 KiB',
+           # 1023.999 KiB rounds to 1024.0, which is a unit that reads wrong.
+           'carry.bin' => '1.0 MiB', 'm1.bin' => '1.0 MiB' }
+  begin
+    wm_server("--docroot=#{root}", '--listings=on', app: false, tag: 'wm-list-size') do |sock|
+      _, page = l_ask(sock, "GET /open/ HTTP/1.1\r\nHost: x\r\n\r\n")
+      want.each do |name, size|
+        row = page[/<a href="#{Regexp.escape(name)}">[^<]*<\/a><\/td><td class=size>([^<]*)</, 1]
+        assert_equal size, row, "#{name} (#{sizes[name]} octets)"
+      end
+    end
+  ensure
+    FileUtils.rm_rf(root)
+  end
+end
