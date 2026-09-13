@@ -566,7 +566,7 @@ bool frame_begin(WsConn *conn, std::string &sink)
     if (!header.control && header.opcode != ws::kContinuation) {
         mrb_state *mrb = conn->res->mrb;
         const uint64_t max = conn->res->max_message;
-        const uint64_t capa = header.payload_length > max ? max : header.payload_length;
+        const uint64_t capa = std::min(header.payload_length, max);
         conn->message = mrb_str_new_capa(mrb, static_cast<mrb_int>(capa));
         mrb_gc_register(mrb, conn->message);
         conn->msg_live = true;

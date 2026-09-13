@@ -77,7 +77,7 @@ void log_access(Logger &logger, const AccessLine &line)
     round.flags = flags;
     round.status_code = status_code;
     round.content_length =
-        content_length > 0xffffffffull ? 0xffffffffu : static_cast<uint32_t>(content_length);
+        static_cast<uint32_t>(std::min<unsigned long long>(content_length, 0xffffffffull));
     round.unix_seconds = logger.unix_seconds;
     round.method_token_len = static_cast<uint8_t>(method_token_len);
     round.peer_len = static_cast<uint8_t>(peer_len);
@@ -151,14 +151,14 @@ void log_error(Logger &logger, const ErrFacts &field)
     // call site has to remember it.
     if (field.status_code >= 400 && field.status_code < 500)
         return;
-    const size_t peer_len = field.peer_len > 255 ? 255 : field.peer_len;
-    const size_t class_len = field.exception_class_len > 255 ? 255 : field.exception_class_len;
-    const size_t target_len = field.request_target_len > 65535 ? 65535 : field.request_target_len;
-    const size_t message_len = field.message_len > 65535 ? 65535 : field.message_len;
-    const size_t backtrace_len = field.backtrace_len > 65535 ? 65535 : field.backtrace_len;
-    const size_t method_len = field.method_len > 255 ? 255 : field.method_len;
-    const size_t steering_len = field.steering_len > 255 ? 255 : field.steering_len;
-    const size_t body_len = field.body_len > kBodyKept ? kBodyKept : field.body_len;
+    const size_t peer_len = std::min<size_t>(field.peer_len, 255);
+    const size_t class_len = std::min<size_t>(field.exception_class_len, 255);
+    const size_t target_len = std::min<size_t>(field.request_target_len, 65535);
+    const size_t message_len = std::min<size_t>(field.message_len, 65535);
+    const size_t backtrace_len = std::min<size_t>(field.backtrace_len, 65535);
+    const size_t method_len = std::min<size_t>(field.method_len, 255);
+    const size_t steering_len = std::min<size_t>(field.steering_len, 255);
+    const size_t body_len = std::min<size_t>(field.body_len, kBodyKept);
     ErrRec round;
     round.version = kErrRecVersion;
     round.flags = 0; // no RFC, and nothing sets it yet: reserved on the wire
@@ -394,12 +394,31 @@ ClStatus parse_content_length(std::string_view value, size_t *out_value)
     return ClStatus::kOk;
 }
 
-void rebase(ReqValues &value, ptrdiff_t delta)
+bool follow_copy(std::string_view was, std::string_view now, const char *&bytes)
 {
-    for (const char *ReqValues::*m : kReqValueSpans) {
-        if (value.*m != nullptr)
-            value.*m += delta;
+    if (was.data() == nullptr || bytes == nullptr)
+        return false;
+    const std::less<const char *> before;
+    // One past the end belongs to `was` as well: an empty piece at the end
+    // of a run is spelled that way.
+    if (before(bytes, std::to_address(was.begin())) ||
+        before(std::to_address(was.end()), bytes)) {
+        return false;
     }
+    const auto index = std::distance(std::to_address(was.begin()), bytes);
+    // A copy shorter than what it copied would put this past the end. It
+    // cannot happen here - hold() copies the whole run - and a pointer left
+    // where it is beats one pointing past a buffer.
+    if (std::cmp_greater(index, now.size()))
+        return false;
+    bytes = std::to_address(std::next(now.begin(), index));
+    return true;
+}
+
+void rebase(ReqValues &value, std::string_view was, std::string_view now)
+{
+    for (const char *ReqValues::*m : kReqValueSpans)
+        follow_copy(was, now, value.*m);
 }
 
 void spell_steering(const ReqValues *value, std::string &out_value)

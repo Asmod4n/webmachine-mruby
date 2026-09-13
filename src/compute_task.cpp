@@ -1121,7 +1121,7 @@ const char *ComputePool::start(unsigned workers, unsigned depth, struct io_uring
     }
 
     for (unsigned i = 0; i < workers; i++) {
-        const int status = io_uring_queue_init(depth < 8 ? 8 : depth, &impl->rings[i], 0);
+        const int status = io_uring_queue_init(std::max(depth, 8u), &impl->rings[i], 0);
         if (status < 0) {
             for (unsigned j = 0; j < i; j++)
                 io_uring_queue_exit(&impl->rings[j]);

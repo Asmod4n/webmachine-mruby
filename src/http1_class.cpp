@@ -361,7 +361,7 @@ Http1::H2SendStep Http1::h2_send_step(const H2Stream &sqe, stream room)
     if (sqe.response_content.src == H2Stream::Content::Src::kOwned && remaining > chunk) {
         remaining = chunk;
     }
-    const int64_t budget = conn_window < sqe.flow_window ? conn_window : sqe.flow_window;
+    const int64_t budget = std::min(conn_window, sqe.flow_window);
     if (budget <= 0)
         return o; // owed, but the window is shut: give stays 0
     o.give = remaining;

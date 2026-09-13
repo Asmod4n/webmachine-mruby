@@ -751,7 +751,7 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     round.off += round.head_len;
     if (round.content_length != 0) {
         const size_t avail = round.viewlen - round.off;
-        const size_t skip = round.content_length < avail ? round.content_length : avail;
+        const size_t skip = std::min(round.content_length, avail);
         round.off += skip;
         round.st.content_skip = round.content_length - skip;
     }
@@ -855,7 +855,7 @@ void Http1::file_named_tail(Round &round)
     size_t offset = round.off;
     if (round.content_length != 0) {
         const size_t avail = round.viewlen - offset;
-        const size_t skip = round.content_length < avail ? round.content_length : avail;
+        const size_t skip = std::min(round.content_length, avail);
         offset += skip;
         conn.content_skip = round.content_length - skip;
     }
@@ -1287,24 +1287,25 @@ void Http1::Held::hold(const char *head_at, size_t head_len, const ReqView &from
     // kernel has back, and free the fields array it is reading from.
     if (!head.empty() && head_at == head.data())
         return;
-    head.assign(head_at, head_len);
-    const ptrdiff_t delta = head.data() - head_at;
-    // The two runs of bytes a view can point into, and one mover for them.
-    // A pointer in neither is left where it is - hold owns what it copied
-    // and nothing else.
-    const Span head_span{head_at, head_len, delta};
-    Span target_span{};
+    const std::string_view was_head{head_at, head_len};
+    head.assign(was_head);
+    const std::string_view now_head{head};
+    // The two runs of bytes a view can point into, each as what it was and
+    // what it is now. A pointer in neither is left where it is: this copy
+    // owns what it copied and nothing else.
+    std::string_view was_target;
+    std::string_view now_target;
     if (target != nullptr && from.request_target != nullptr) {
-        target_span = {from.request_target, from.request_target_len,
-                       target->data() - from.request_target};
+        was_target = {from.request_target, from.request_target_len};
+        now_target = *target;
     }
     const auto move = [&](const char *&bytes) {
-        if (!head_span.move(bytes))
-            target_span.move(bytes);
+        if (!http::follow_copy(was_head, now_head, bytes))
+            http::follow_copy(was_target, now_target, bytes);
     };
 
     vals = *from.values;
-    http::rebase(vals, delta);
+    http::rebase(vals, was_head, now_head);
 
     nfields = from.field_count;
     if (nfields != 0) {
@@ -1312,10 +1313,18 @@ void Http1::Held::hold(const char *head_at, size_t head_len, const ReqView &from
         const auto *src = static_cast<const struct phr_header *>(from.fields);
         for (size_t i = 0; i < nfields; i++) {
             fields[i] = src[i];
-            if (fields[i].name != nullptr)
-                fields[i].name += delta;
-            if (fields[i].value != nullptr)
-                fields[i].value += delta;
+            // `move`, never an offset added by hand. A field pointer that
+            // lies in neither run is not this copy's to move, and adding the
+            // head's offset to it makes a wild pointer that request.headers
+            // then reads.
+            //
+            // #17 is the entry that proves it. An h2 request names its host
+            // in :authority, and the dispatch writes that authority into the
+            // field list as a host field whose name is the literal "host".
+            // The value points into the decode buffer like every other
+            // field; the name points into neither run and stays where it is.
+            move(fields[i].name);
+            move(fields[i].value);
         }
     }
     vals.named = from.values->named;
@@ -1644,7 +1653,7 @@ Http1::ComputeRound Http1::start_compute_round(Conn &conn, const BoundStart &tex
     // last one lands. BoundStart::off is already past what arrived.
     if (text.content_length != 0 && !conn.run_wants_body) {
         const size_t avail = text.viewlen - offset;
-        const size_t skip = text.content_length < avail ? text.content_length : avail;
+        const size_t skip = std::min(text.content_length, avail);
         offset += skip;
         conn.content_skip = text.content_length - skip;
     }
@@ -2275,7 +2284,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
     }
 
     if (conn.content_skip != 0) {
-        const size_t take = conn.content_skip < length ? conn.content_skip : length;
+        const size_t take = std::min(conn.content_skip, length);
         conn.content_skip -= take;
         data += take;
         length -= take;
@@ -2300,7 +2309,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         const size_t want = sniff::octets_needed();
         if (conn.sniff_head.size() < want) {
             const size_t room = want - conn.sniff_head.size();
-            conn.sniff_head.append(data, length < room ? length : room);
+            conn.sniff_head.append(data, std::min(length, room));
         }
         const sniff::Verdict value = sniff::check_declaration(conn.sniff_type, conn.sniff_head);
         if (mrb_unlikely(value == sniff::Verdict::kContradicts)) {
@@ -2948,7 +2957,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         // make the next request's head look like this request's body.
         if (window.content_length != 0 && conn.spill.fd < 0) {
             const size_t avail = viewlen - offset;
-            const size_t skip = window.content_length < avail ? window.content_length : avail;
+            const size_t skip = std::min(window.content_length, avail);
             offset += skip;
             conn.content_skip = window.content_length - skip;
         }

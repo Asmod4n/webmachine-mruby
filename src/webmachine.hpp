@@ -22,8 +22,10 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -32,6 +34,8 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <string>
@@ -1705,10 +1709,22 @@ static_assert(sizeof(ReqValues) == 224,
               "ReqValues changed shape: a new field belongs in kReqValueSpans, and a "
               "removed one has to leave it - see #80, the parked run's rebase");
 
-// Move every span in `v` by `delta`. A null span stays null: it names no
-// bytes, so there is nothing to move and an offset from nullptr is
-// undefined besides.
-void rebase(ReqValues &value, ptrdiff_t delta);
+// A pointer that has to follow a copy. `was` is the run of bytes that
+// moved, `now` is the same run in its new place.
+//
+// True when `was` held the pointer, and it then names the same octet of
+// `now`. False when `was` never held it - a literal, or the bytes of
+// another buffer - and then the pointer stays where it is.
+//
+// Nothing here is arithmetic of ours. std::less orders any two pointers,
+// which is the question this asks: `<` between pointers into two
+// different objects is undefined. std::distance says how far into `was`
+// the pointer sat, and std::next walks that far into `now`.
+bool follow_copy(std::string_view was, std::string_view now, const char *&bytes);
+
+// Every span in `value` that `was` held, moved into `now`. A null span
+// stays null: it names no bytes, so there is nothing to follow.
+void rebase(ReqValues &value, std::string_view was, std::string_view now);
 
 // #210: the fields this request steered by, one per line, for the error
 // record and the fingerprint over it. These are the ones the server reads

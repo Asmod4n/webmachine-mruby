@@ -1998,7 +1998,7 @@ class Http1
     template <class W>
     static BodyTake take_body(Conn &conn, W window, const char *&data, size_t &length)
     {
-        const size_t take = length < conn.content_need ? length : conn.content_need;
+        const size_t take = std::min(length, conn.content_need);
         if (mrb_unlikely(!window.put(data, take)))
             return BodyTake::kFileFailed;
         conn.content_need -= take;
@@ -2418,25 +2418,6 @@ class Http1
         Held &operator=(Held &&) noexcept;
         Held(const Held &) = delete;
         Held &operator=(const Held &) = delete;
-
-        // One run of bytes the copy replaces, and how far it moved. A view
-        // can point into two of them: the head, and - h2 only - the request
-        // target, which a parked stream keeps apart from its fields.
-        struct Span {
-            const char *at = nullptr;
-            size_t len = 0;
-            ptrdiff_t delta = 0;
-            // True when this span owned the pointer and moved it. One past the
-            // end belongs to the span as well: an empty piece at the end of it
-            // is spelled that way.
-            bool move(const char *&bytes) const
-            {
-                if (at == nullptr || bytes == nullptr || bytes < at || bytes > at + len)
-                    return false;
-                bytes += delta;
-                return true;
-            }
-        };
 
         // Copy the head and re-point `from` at the copy. After this the
         // provided buffer may go back to the kernel, which is the whole

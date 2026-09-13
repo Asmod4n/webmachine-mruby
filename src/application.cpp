@@ -108,19 +108,25 @@ Setting setting_named(std::string_view k)
     return Setting::kUnknown;
 }
 
-// A whole-string unsigned read: strtoll would accept "8k" and a leading
-// '+' or space, and this must not.
+// A whole-string unsigned read. std::from_chars is exactly this contract
+// and nothing else: it takes no leading space, it takes no '+', and an
+// unsigned target takes no '-' either. What it does allow is a tail, so
+// "8k" reads as 8 and leaves `ptr` on the 'k' - hence the test that it
+// stopped at the end.
+//
+// The 19-digit bound stays. It keeps the value inside a long long before
+// from_chars has to say so, and a longer run of digits is an operator
+// mistake rather than a number.
 bool text_to_whole_number(std::string_view text, long long *out)
 {
     if (text.empty() || text.size() > 19)
         return false;
-    long long number = 0;
-    for (const char c : text) {
-        if (c < '0' || c > '9')
-            return false;
-        number = number * 10 + (c - '0');
-    }
-    *out = number;
+    unsigned long long number = 0;
+    const std::from_chars_result read = std::from_chars(std::to_address(text.begin()),
+                                                       std::to_address(text.end()), number);
+    if (read.ec != std::errc{} || read.ptr != std::to_address(text.end()))
+        return false;
+    *out = static_cast<long long>(number);
     return true;
 }
 
@@ -334,9 +340,17 @@ void url_apply(mrb_state *mrb, AppSpec *spec, const std::string &url)
         int port = wants_tls ? 443 : 80;
         const std::string_view port_text = parsed->get_port();
         if (!port_text.empty()) {
+            // ada has already held this to digits and to a port's range, so
+            // a refusal here would say the URL parser disagreed with itself.
+            // It is still read rather than assumed: a failure nobody tests
+            // for is a failure nobody can fix.
             port = 0;
-            for (char c : port_text)
-                port = port * 10 + (c - '0');
+            const std::from_chars_result read = std::from_chars(
+                std::to_address(port_text.begin()), std::to_address(port_text.end()), port);
+            if (read.ec != std::errc{} || read.ptr != std::to_address(port_text.end())) {
+                mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.url = %s has no port ada can read",
+                           url.c_str());
+            }
         }
         spec->tls = wants_tls;
         spec->url_host.assign(host);

@@ -2020,7 +2020,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
     int64_t budget = 0;
     if (!no_data) {
         const int64_t swin = stream != nullptr ? stream->flow_window : h2_state.peer_initial_window;
-        budget = h2_state.flow_window < swin ? h2_state.flow_window : swin;
+        budget = std::min(h2_state.flow_window, swin);
     }
 
     bool merged = false;

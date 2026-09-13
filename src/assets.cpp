@@ -594,7 +594,7 @@ unsigned Assets::entry_wire_iov(const AssetEntry &entry, Window window, struct i
             continue;
         }
         const size_t avail = segs[i].part_length - offset;
-        const size_t take = avail < length ? avail : length;
+        const size_t take = std::min(avail, length);
         out_iov[used].iov_base = const_cast<char *>(segs[i].part + offset);
         out_iov[used].iov_len = take;
         used++;
@@ -630,7 +630,7 @@ void Assets::entry_copy_wire(const AssetEntry &entry, Window window, std::string
             continue;
         }
         const size_t avail = segs[i].part_length - offset;
-        const size_t take = avail < length ? avail : length;
+        const size_t take = std::min(avail, length);
         sink.append(segs[i].part + offset, take);
         offset = 0;
         length -= take;
