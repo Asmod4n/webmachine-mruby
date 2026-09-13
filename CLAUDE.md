@@ -153,6 +153,24 @@ answer for a binary it never made. `rake ship_smoke` is what does -
 it builds the host config and checks that the binary starts and
 answers 200. CI runs it on every push, beside the suite.
 
+## Whatever goes in /tmp must be deletable at any moment
+
+Nobody may notice the loss. So /tmp holds a scratch file a process reads
+back inside its own run, and nothing else: no state a later run needs, no
+executable anybody calls, no configuration.
+
+This session proved it the wrong way round. `rm -rf` on /tmp took
+`/tmp/code-sign` with it, which `/root/.gitconfig` names as
+`gpg.ssh.program` beside `commit.gpgsign true`. Committing then failed in
+every repository, with `cannot exec '/tmp/code-sign'`. The defect is the
+placement, not the deletion: a required program sat in a directory whose
+whole contract is that it can vanish.
+
+A test writes to /tmp under the same rule. bintest gives each server a
+log file there, and a case that reads one reads it inside the same run -
+so a file that is gone costs the test nothing but the text it would have
+quoted.
+
 ## Kill a process by its pid, never by a pattern
 
 `pkill -f X` and `pgrep -f X` match every command line that holds X,
