@@ -258,34 +258,45 @@ assert('listings: a target that ends in a slash says no-cache; a file does not')
   # as long as it lasts and no update ever lands. RFC 9111 5.2.2.4:
   # no-cache keeps the copy and revalidates it, so the 304 this server
   # already answers still saves the body.
+  #
+  # One connection for all of it. Six targets over six connections is the
+  # shape that trips #110 - a recycled connection slot that wedges - and
+  # what is under test here is a field line, not the reactor.
   l_server do |sock|
-    generated, = l_ask(sock, "GET /open/ HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert_true generated.match?(/^Cache-Control: no-cache\r$/i), generated
+    wm_conn(sock) do |s|
+      wm_request(s, '/open/')
+      generated, = wm_read(s)
+      assert_true generated.match?(/^Cache-Control: no-cache\r$/i), generated
 
-    # /closed/ holds an index.html, which the listing serves through
-    # response.file. The head is the file tier's; the rule still applies.
-    index_doc, = l_ask(sock, "GET /closed/ HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert_true index_doc.match?(/^Cache-Control: no-cache\r$/i), index_doc
+      # /closed/ holds an index.html, which the listing serves through
+      # response.file. The head is the file tier's; the rule still applies.
+      wm_request(s, '/closed/')
+      index_doc, = wm_read(s)
+      assert_true index_doc.match?(/^Cache-Control: no-cache\r$/i), index_doc
 
-    # A file is named by itself. Its name changes when its content does,
-    # or its Last-Modified is the truth about it. Nothing is said.
-    named, = l_ask(sock, "GET /plain.txt HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert_false named.match?(/^Cache-Control:/i), named
+      # A file is named by itself. Its name changes when its content does,
+      # or its Last-Modified is the truth about it. Nothing is said.
+      wm_request(s, '/plain.txt')
+      named, = wm_read(s)
+      assert_false named.match?(/^Cache-Control:/i), named
 
-    # The root of the docroot is a directory like any other.
-    root_list, = l_ask(sock, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert_true root_list.match?(/^Cache-Control: no-cache\r$/i), root_list
+      # The root of the docroot is a directory like any other.
+      wm_request(s, '/')
+      root_list, = wm_read(s)
+      assert_true root_list.match?(/^Cache-Control: no-cache\r$/i), root_list
 
-    # RFC 3986 3.4: the query is not part of the path.
-    with_query, = l_ask(sock, "GET /open/?sort=name HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert_true with_query.match?(/^Cache-Control: no-cache\r$/i), with_query
+      # RFC 3986 3.4: the query is not part of the path.
+      wm_request(s, '/open/?sort=name')
+      with_query, = wm_read(s)
+      assert_true with_query.match?(/^Cache-Control: no-cache\r$/i), with_query
 
-    # RFC 9111: the copy is kept, so the conditional request still saves
-    # the body. no-cache is not no-store.
-    stamp = generated[/^Last-Modified: *(.+)\r$/i, 1]
-    assert_true !stamp.nil?, generated
-    again, = l_ask(sock,
-                   "GET /open/ HTTP/1.1\r\nHost: x\r\nIf-Modified-Since: #{stamp}\r\n\r\n")
-    assert_true again.start_with?('HTTP/1.1 304'), again
+      # RFC 9111: the copy is kept, so the conditional request still saves
+      # the body. no-cache is not no-store.
+      stamp = generated[/^Last-Modified: *(.+)\r$/i, 1]
+      assert_true !stamp.nil?, generated
+      wm_request(s, '/open/', 'If-Modified-Since' => stamp)
+      again, = wm_read(s)
+      assert_true again.start_with?('HTTP/1.1 304'), again
+    end
   end
 end
