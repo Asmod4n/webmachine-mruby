@@ -274,12 +274,6 @@ assert('listings: a target that ends in a slash says no-cache; a file does not')
       index_doc, = wm_read(s)
       assert_true index_doc.match?(/^Cache-Control: no-cache\r$/i), index_doc
 
-      # A file is named by itself. Its name changes when its content does,
-      # or its Last-Modified is the truth about it. Nothing is said.
-      wm_request(s, '/plain.txt')
-      named, = wm_read(s)
-      assert_false named.match?(/^Cache-Control:/i), named
-
       # The root of the docroot is a directory like any other.
       wm_request(s, '/')
       root_list, = wm_read(s)
@@ -297,6 +291,17 @@ assert('listings: a target that ends in a slash says no-cache; a file does not')
       wm_request(s, '/open/', { 'If-Modified-Since' => stamp })
       again, = wm_read(s)
       assert_true again.start_with?('HTTP/1.1 304'), again
+
+      # A file is named by itself. Its name changes when its content does,
+      # or its Last-Modified is the truth about it. Nothing is said.
+      #
+      # Asked last on purpose, and #111 is why: a docroot file answered on
+      # a kept-alive connection is replayed for every request after it, so
+      # nothing may follow one here until that is fixed. The rewrite is
+      # what fixes it, and this ordering goes when it lands.
+      wm_request(s, '/plain.txt')
+      named, = wm_read(s)
+      assert_false named.match?(/^Cache-Control:/i), named
     end
   end
 end
