@@ -72,6 +72,18 @@ struct ListenerSpec {
     size_t cert_len = 0;
     const char *key_pem = nullptr;
     size_t key_len = 0;
+    // RFC 6066 3: the pairs a ClientHello's server_name picks, beside the
+    // default pair above. Same ownership: server.cpp holds the bytes and
+    // the array, and both outlive the ring.
+    struct NamedCert {
+        const char *host = nullptr;
+        const char *cert_pem = nullptr;
+        size_t cert_len = 0;
+        const char *key_pem = nullptr;
+        size_t key_len = 0;
+    };
+    const NamedCert *named = nullptr;
+    size_t nnamed = 0;
 };
 
 // What the reactor needs and nothing else - already resolved, already

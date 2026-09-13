@@ -58,7 +58,7 @@ module Webmachine
   # Ruby code; nothing a URL or a config file says can reach them.
   class Config < Struct.new(:port, :unix_path, :url, :docroot, :assets, :certificate,
                             :private_key, :file_map_threshold, :zero_copy_threshold,
-                            :disable_http_cats, :max_body, :spill_dir)
+                            :disable_http_cats, :max_body, :spill_dir, :certificates)
     # A refusal belongs where it was caused. bintest calls this "catchable
     # by class, not by luck": an app may write
     #
@@ -142,6 +142,32 @@ module Webmachine
     def private_key=(v)
       Config.check_text(v, 'private_key')
       self[:private_key] = v
+    end
+
+    # RFC 6066 3: one listener, several certificates. A Hash of host name
+    # to the pair that answers for it.
+    #
+    #   conf.certificates = { 'shop.example'  => ['shop.crt', 'shop.key'],
+    #                         '*.api.example' => ['api.crt', 'api.key'] }
+    #
+    # conf.certificate and conf.private_key stay the default pair. They
+    # answer a client that names no host, and a host this Hash does not
+    # hold, so both are still required for https.
+    #
+    #: (Hash) -> Hash
+    def certificates=(v)
+      raise ConfigError, 'conf.certificates wants a Hash of host to [certificate, private_key]' \
+        unless v.is_a?(Hash)
+
+      v.each do |host, pair|
+        Config.check_text(host, 'certificates host name')
+        unless pair.is_a?(Array) && pair.size == 2
+          raise ConfigError, "conf.certificates[#{host.inspect}] wants [certificate, private_key]"
+        end
+        Config.check_text(pair[0], "certificates[#{host.inspect}] certificate")
+        Config.check_text(pair[1], "certificates[#{host.inspect}] private_key")
+      end
+      self[:certificates] = v
     end
 
     # conf.url is not checked here: its grammar - the scheme, the IPv6

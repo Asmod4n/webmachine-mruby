@@ -3329,6 +3329,15 @@ struct AppSpec {
     // where that is checked - a listener either serves TLS or does not.
     std::string cert_path;
     std::string key_path;
+    // RFC 6066 3: conf.certificates - one pair per host name, beside the
+    // default pair above. The ClientHello's server_name picks between
+    // them, and the default answers a client that names nothing.
+    struct NamedPair {
+        std::string host;
+        std::string cert_path;
+        std::string key_path;
+    };
+    std::vector<NamedPair> named_pairs;
     bool tls = false;
 };
 

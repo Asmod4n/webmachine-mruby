@@ -120,6 +120,11 @@ int spawn_logd(mrb_state *mrb, const LogdSpawn &logd_spawn)
 // here because ListenerSpec only points at them and the ring outlives
 // the call that filled it in. Two per listener, indexed by listener.
 std::vector<std::string> pem_;
+// RFC 6066 3: conf.certificates, read. One vector of PEM strings and one
+// of NamedCert per listener, both held here for the same reason pem_ is:
+// the ring points into them and this outlives the ring.
+std::vector<std::vector<std::string>> named_pem_;
+std::vector<std::vector<ListenerSpec::NamedCert>> named_certs_;
 
 // One PEM file: its path, and the conf key that named it, which is what
 // a refusal says back to the operator.
@@ -154,12 +159,43 @@ void pem_file_read(mrb_state *mrb, PemFile pem, std::string &out_pem)
 
 // https, a certificate and a key are one decision spelled three ways, so
 // naming any of them means naming all of them.
+// RFC 6066 3: the pairs conf.certificates named, read and handed over.
+// The default pair above answers a client that names nothing; these
+// answer a ClientHello whose server_name matches.
+void listener_build_named_certs(mrb_state *mrb, size_t listener, const AppSpec &spec,
+                                RingConfig &ring_config)
+{
+    if (spec.named_pairs.empty())
+        return;
+    std::vector<std::string> &pems = named_pem_[listener];
+    std::vector<ListenerSpec::NamedCert> &certs = named_certs_[listener];
+    pems.assign(spec.named_pairs.size() * 2, std::string());
+    certs.assign(spec.named_pairs.size(), ListenerSpec::NamedCert());
+    for (size_t at = 0; at < spec.named_pairs.size(); at++) {
+        const AppSpec::NamedPair &pair = spec.named_pairs[at];
+        std::string &cert = pems[at * 2];
+        std::string &key = pems[at * 2 + 1];
+        pem_file_read(mrb, {pair.cert_path, "certificates certificate"}, cert);
+        pem_file_read(mrb, {pair.key_path, "certificates private_key"}, key);
+        certs[at].host = pair.host.c_str();
+        certs[at].cert_pem = cert.data();
+        certs[at].cert_len = cert.size();
+        certs[at].key_pem = key.data();
+        certs[at].key_len = key.size();
+    }
+    ring_config.listeners[listener].named = certs.data();
+    ring_config.listeners[listener].nnamed = certs.size();
+}
+
 void listener_build_tls(mrb_state *mrb, RingConfig &ring_config)
 {
     pem_.assign(specs_.size() * 2, std::string());
+    named_pem_.assign(specs_.size(), std::vector<std::string>());
+    named_certs_.assign(specs_.size(), std::vector<ListenerSpec::NamedCert>());
     for (size_t i = 0; i < specs_.size(); i++) {
         const AppSpec &spec = *specs_[i];
-        const bool named_files = !spec.cert_path.empty() || !spec.key_path.empty();
+        const bool named_files =
+            !spec.cert_path.empty() || !spec.key_path.empty() || !spec.named_pairs.empty();
         if (!spec.tls && !named_files)
             continue;
         if (!spec.tls) {
@@ -183,6 +219,7 @@ void listener_build_tls(mrb_state *mrb, RingConfig &ring_config)
         ring_config.listeners[i].cert_len = cert.size();
         ring_config.listeners[i].key_pem = key_path.data();
         ring_config.listeners[i].key_len = key_path.size();
+        listener_build_named_certs(mrb, i, spec, ring_config);
     }
 }
 
