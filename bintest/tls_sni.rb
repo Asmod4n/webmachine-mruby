@@ -15,11 +15,14 @@ def tls_sni_pair(common_name)
   key = Tempfile.new(['wm-sni-key', '.pem'])
   cert.close
   key.close
+  err = "/tmp/wm-sni-openssl-#{$$}-#{rand(1 << 30)}.log"
   ok = system('openssl', 'req', '-x509', '-newkey', 'ec',
               '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '36500',
               '-subj', "/CN=#{common_name}", '-keyout', key.path, '-out', cert.path,
-              out: File::NULL, err: File::NULL)
-  raise "openssl could not make a certificate for #{common_name}" unless ok
+              out: File::NULL, err: err)
+  said = (File.read(err) rescue '')
+  File.unlink(err) rescue nil
+  raise "openssl could not make a certificate for #{common_name}:\n#{said}" unless ok
 
   [cert, key]
 end
@@ -107,6 +110,10 @@ end
 assert('tls: one listener answers several names, and an unknown name gets the default (6066 3)') do
   # curl is what names the host in the handshake; nothing in this tree can
   # do that yet, because KTLS::Keys.client has no servername setter.
+  # Both streams go nowhere on purpose: this asks whether curl is on the
+  # PATH at all, and the exit status is the whole answer. Every other
+  # spawn in these tests keeps its stderr - a start that failed has a
+  # reason, and a run that threw it away is a red run with nothing to read.
   skip 'no curl on PATH - nothing here can name a host in a handshake' unless
     system('curl', '--version', out: File::NULL, err: File::NULL)
 

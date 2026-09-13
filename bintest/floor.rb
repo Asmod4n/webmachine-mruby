@@ -79,10 +79,14 @@ end
 assert('floor: TERM removes the unix socket path') do
   sock = "/tmp/wm-floor-#{$$}-term.sock"
   File.unlink(sock) if File.exist?(sock)
-  pid = spawn(WM_BIN, "--app=#{floor_app(sock)}", out: File::NULL, err: File::NULL)
-  100.times { break if File.socket?(sock); sleep 0.05 }
-  assert_true File.socket?(sock)
-  Process.kill('TERM', pid)
-  Process.wait(pid)
-  assert_false File.exist?(sock)
+  err = "/tmp/wm-floor-stderr-#{$$}-term.log"
+  pid = spawn(WM_BIN, "--app=#{floor_app(sock)}", out: File::NULL, err: err)
+  begin
+    wm_await_socket(sock, err)
+    Process.kill('TERM', pid)
+    Process.wait(pid)
+    assert_false File.exist?(sock)
+  ensure
+    File.unlink(err) rescue nil
+  end
 end

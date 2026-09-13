@@ -235,11 +235,11 @@ assert('response.file streams a file of any size, window by window') do
   app = wm_compile(rf_app, 'wm-rfapp')
   sock = "/tmp/wm-rf-big-#{$$}-#{rand(1 << 30)}.sock"
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     [262_143, 262_144, 262_145, 700_000, 20 << 20].each do |n|
       # A repeating pattern, not zeros: a window delivered twice or a window
       # skipped both survive a length check, neither survives this.
@@ -253,6 +253,7 @@ assert('response.file streams a file of any size, window by window') do
     end
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
     app&.unlink
     File.unlink(sock) rescue nil
@@ -273,11 +274,11 @@ assert('response.file that shrinks mid-flight ends the request, never hangs') do
   path = File.join(root, 'shrink.bin')
   File.binwrite(path, 'S' * (48 << 20))
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     cutter = Thread.new { sleep 0.05; File.truncate(path, 1 << 20) rescue nil }
     done = false
     reader = Thread.new do
@@ -299,6 +300,7 @@ assert('response.file that shrinks mid-flight ends the request, never hangs') do
     assert_equal RF_TEXT, body
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
     app&.unlink
     File.unlink(sock) rescue nil
@@ -349,11 +351,11 @@ assert('response.file serves a file larger than one send can move') do
   sock = "/tmp/wm-rf-huge-#{$$}-#{rand(1 << 30)}.sock"
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     head, len, got, last = rf_stream(sock, 'huge.bin')
     assert_include head, 'HTTP/1.1 200 OK'
     assert_equal size, len
@@ -361,6 +363,7 @@ assert('response.file serves a file larger than one send can move') do
     assert_equal 0xff, last
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
     app&.unlink
     File.unlink(sock) rescue nil
@@ -379,13 +382,13 @@ assert('response.file survives an mmap it cannot make, and still serves') do
   sock = "/tmp/wm-rf-nomap-#{$$}-#{rand(1 << 30)}.sock"
   size = rf_sparse(File.join(root, 'huge.bin'), 2_200_000_000)
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     # An address space too small for the mapping, large enough for the server.
     app = wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp')
     cmd = "ulimit -v 2000000; exec #{WM_BIN} --app=#{app.path}"
-    pid = spawn('sh', '-c', cmd, out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock), 'the server never came up under the limit'
+    pid = spawn('sh', '-c', cmd, out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     _, len, got, last = rf_stream(sock, 'huge.bin')
     assert_equal size, len
     assert_equal size, got
@@ -396,6 +399,7 @@ assert('response.file survives an mmap it cannot make, and still serves') do
     assert_equal RF_TEXT, body
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
     app&.unlink
     File.unlink(sock) rescue nil
@@ -415,17 +419,18 @@ assert('response.file writes one access line per request, not one per window') d
   n = 4_000_000
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
                 "--log=#{logf}", '--file-map-threshold=0',
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     head, body = rf_get(sock, 'big.bin')
     assert_include head, 'HTTP/1.1 200 OK'
     assert_equal n, body.bytesize
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
   end
   20.times { break if File.exist?(logf) && !File.readlines(logf).empty?; sleep 0.1 }
@@ -451,12 +456,12 @@ assert('response.file logs an abandoned transfer once, with what really left') d
   n = 4_000_000
   File.binwrite(File.join(root, 'big.bin'), 'B' * n)
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
                 "--log=#{logf}", '--file-map-threshold=0',
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     s = UNIXSocket.new(sock)
     s.write "GET /f?n=big.bin HTTP/1.1\r\nHost: rf\r\nConnection: close\r\n\r\n"
     head = +''.b
@@ -476,6 +481,7 @@ assert('response.file logs an abandoned transfer once, with what really left') d
   assert_true bytes < n, "logged #{bytes}, which is the whole file"
 ensure
   File.unlink(logf) rescue nil
+  File.unlink(err) rescue nil
   File.unlink(sock) rescue nil
   app&.unlink
   FileUtils.rm_rf(base) if base
@@ -524,19 +530,20 @@ assert('response.file serves a client slower than one send-timeout of body') do
   cfg.write("[tune]\nheader_timeout = 3\nsend_timeout = 3\n")
   cfg.close
   pid = nil
+  err = "/tmp/wm-rf-stderr-#{$$}-#{rand(1 << 30)}.log"
   begin
     pid = spawn(WM_BIN, "--config=#{cfg.path}",
                 "--app=#{wm_compile(wm_listen(rf_app(root), sock), 'wm-rfapp').path}",
                 '--file-map-threshold=65536',
-                out: File::NULL, err: File::NULL)
-    200.times { break if File.socket?(sock); sleep 0.05 }
-    assert_true File.socket?(sock)
+                out: File::NULL, err: err)
+    wm_await_socket(sock, err)
     head, len, got = rf_throttled(sock, 'slow.bin', 150_000)
     assert_include head, 'HTTP/1.1 200 OK'
     assert_equal n, len
     assert_equal n, got
   ensure
     Process.kill(:TERM, pid) rescue nil
+    File.unlink(err) rescue nil
     Process.waitpid(pid) rescue nil
     app&.unlink
     cfg&.unlink

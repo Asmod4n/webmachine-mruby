@@ -60,8 +60,11 @@ unless defined?(wm_passwd_add)
   def wm_passwd_add(file, db, user, password)
     feed = "sleep 0.3; printf '%s\\n'; sleep 0.3; printf '%s\\n'" % [password, password]
     cmd = "#{WM_PASSWD_BIN} add #{file} #{db} #{user}"
-    ok = system("(#{feed}) | script -qfec '#{cmd}' /dev/null", out: File::NULL, err: File::NULL)
-    raise "webmachine-passwd add failed for #{user} in #{db}" unless ok
+    err = "/tmp/wm-passwd-stderr-#{$$}-#{rand(1 << 30)}.log"
+    ok = system("(#{feed}) | script -qfec '#{cmd}' /dev/null", out: File::NULL, err: err)
+    said = (File.read(err) rescue '')
+    File.unlink(err) rescue nil
+    raise "webmachine-passwd add failed for #{user} in #{db}:\n#{said}" unless ok
   end
 end
 
