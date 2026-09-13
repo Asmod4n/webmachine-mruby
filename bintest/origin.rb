@@ -70,21 +70,26 @@ assert('origin: same_origin? answers nil, true or false (RFC 6454 6.1)') do
   end
 end
 
-# RFC 9113 8.3.1: an h2 request names its host in :authority, and that
-# pseudo-header does not reach the Host value request.host reads. So the
-# comparison has nothing of its own to compare against and answers nil
-# rather than a false that would read as "another origin". A client that
-# sends a host field beside the authority gets the full answer.
-assert('origin: an h2 request with no host field answers nil, one with a host field answers') do
+# #17, RFC 9113 8.3.1: an h2 request names its host in :authority, and a
+# server treats that pseudo-header as the host field of the equivalent
+# HTTP/1.1 request. So the comparison has the request's own origin to
+# compare against, and it answers for h2 the way it answers for h1.
+#
+# This test asserted the opposite until #17 was fixed: the authority was
+# counted once and then dropped, so the answer was nil for every browser
+# request, because a browser sends :authority and no host field.
+assert('origin: an h2 request compares the Origin against :authority (9113 8.3.1)') do
   h2_server(ORIGIN_APP) do |sock|
     UNIXSocket.open(sock) do |s|
       h2_handshake(s)
-      # :authority alone, and an Origin beside it.
+      # :authority alone, and an Origin beside it. The authority is the
+      # host, so the request's own origin is http://example.com.
       block = "\x82\x86\x84\x01\x0bexample.com".b + h2_lit('origin', 'http://example.com')
       s.write(h2_frame(1, 0x05, 1, block))
       _, _, _, answer = h2_until(s, 0, 1)
-      assert_equal 'none', answer
-      # And with a host field, which is what the comparison reads.
+      assert_equal 'true', answer
+      # A host field beside the authority answers the same way, because it
+      # names the same host.
       block = "\x82\x86\x84\x01\x0bexample.com".b + h2_lit('host', 'example.com') +
               h2_lit('origin', 'http://example.com')
       s.write(h2_frame(1, 0x05, 3, block))
@@ -94,6 +99,13 @@ assert('origin: an h2 request with no host field answers nil, one with a host fi
               h2_lit('origin', 'http://elsewhere.example')
       s.write(h2_frame(1, 0x05, 5, block))
       _, _, _, answer = h2_until(s, 0, 5)
+      assert_equal 'false', answer
+      # Another origin against the authority alone, which is the case that
+      # answered nil before.
+      block = "\x82\x86\x84\x01\x0bexample.com".b +
+              h2_lit('origin', 'http://elsewhere.example')
+      s.write(h2_frame(1, 0x05, 7, block))
+      _, _, _, answer = h2_until(s, 0, 7)
       assert_equal 'false', answer
     end
   end

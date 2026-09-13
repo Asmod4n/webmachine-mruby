@@ -37,13 +37,14 @@ field. Scheme and host compare without regard to letter case. The default
 port folds: under `http` a `Host` of `x:80` is the same origin as an
 `Origin` of `http://x`, and under `https` the same holds for `:443`.
 
-`nil` has two causes, and both mean the same thing for you - no comparison
-was made:
+`nil` has one cause: the request carries no `Origin`. A client that is not
+a browser sends none, so absent is not cross-site, and no comparison was
+made.
 
-- The request carries no `Origin`. A client that is not a browser sends
-  none, so absent is not cross-site.
-- The request named no host this server could compare against. An HTTP/2
-  request that sends `:authority` and no `host` field is this case.
+HTTP/2 answers the same way as HTTP/1.1. An h2 request names its host in
+the `:authority` pseudo-header, and RFC 9113 8.3.1 says a server treats
+that as the `host` field of the equivalent HTTP/1.1 request, so the
+comparison has the request's own origin either way.
 
 ## Using it
 
