@@ -198,3 +198,28 @@ assert('--standalone is gone, and a command line that carries it hears why') do
 ensure
   File.unlink(err) if File.exist?(err)
 end
+
+assert('listings: every link the page writes is one the file tier answers') do
+  # The list encodes its hrefs with URI.encode; the file tier decodes the
+  # target. This is the round trip - if either side stopped, a name that
+  # needs encoding would be listed and then 404.
+  root = "/tmp/wm-listings-enc-#{$$}"
+  FileUtils.mkdir_p(File.join(root, 'open'))
+  ['a b.txt', 'a#b.txt', 'a+b.txt', 'plain.txt'].each do |name|
+    File.binwrite(File.join(root, 'open', name), "#{name}\n")
+  end
+  begin
+    wm_server("--docroot=#{root}", '--listings=on', app: false, tag: 'wm-list-enc') do |sock|
+      _, page = l_ask(sock, "GET /open/ HTTP/1.1\r\nHost: x\r\n\r\n")
+      hrefs = page.scan(/href="([^"]+)"/).flatten - ['../']
+      assert_equal 4, hrefs.length, hrefs.inspect
+      hrefs.each do |href|
+        head, body = l_ask(sock, "GET /open/#{href} HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert_true head.start_with?('HTTP/1.1 200 OK'), "#{href}: #{head}"
+        assert_true body.end_with?("\n"), "#{href}: #{body.inspect}"
+      end
+    end
+  ensure
+    FileUtils.rm_rf(root)
+  end
+end

@@ -646,6 +646,59 @@ void Http1::spell_error(const ErrorAnswer &entry, std::string &sink)
 // own - conditional requests, ranges and refusals included - without the
 // flow or the VM. /error_assets/ is resolved against the error archive,
 // which is always mounted; everything else against --assets.
+// RFC 3986 2.1: a request target spells a byte a name cannot carry as a
+// percent triplet, so "/a b.txt" arrives as "/a%20b.txt". Both file tiers
+// used to compare the target to a name byte for byte, which means such a
+// file could not be fetched at all - and the generated directory list,
+// which encodes its links correctly, pointed at names the tier then could
+// not find.
+//
+// Strict, not lenient. The WHATWG rule ada implements leaves a malformed
+// escape as written, and that gives one file two spellings: a cache and a
+// filter see different strings for one answer. Here a target that does
+// not decode cleanly names nothing.
+//
+// Three refusals, each closing an alias rather than a traversal:
+//   - a '%' that is not followed by two hex digits
+//   - a decoded NUL, which no name carries and which truncates a C string
+//   - a decoded '/', because no filename holds one. A '%2f' is either a
+//     separator smuggled past something that looked at the raw target, or
+//     a name that cannot exist. Refusing costs nothing and keeps one
+//     spelling per file.
+// ".." needs no rule of its own: it decodes to ".." and the segment walk
+// below refuses it, as it always did, with openat2's RESOLVE_BENEATH
+// behind that.
+enum class TargetName { kAsIs, kDecoded, kRefused };
+
+TargetName target_decode(const char *path, size_t length, std::string &out_name)
+{
+    // The common target carries no escape at all, and then the caller
+    // reads the bytes it already has. Nothing is allocated for it.
+    if (std::memchr(path, '%', length) == nullptr)
+        return TargetName::kAsIs;
+
+    out_name.clear();
+    out_name.reserve(length);
+    for (size_t i = 0; i < length; i++) {
+        if (path[i] != '%') {
+            out_name.push_back(path[i]);
+            continue;
+        }
+        if (length - i < 3)
+            return TargetName::kRefused;
+        const int hi = http::hex_digit(path[i + 1]);
+        const int lo = http::hex_digit(path[i + 2]);
+        if (hi < 0 || lo < 0)
+            return TargetName::kRefused;
+        const char byte = static_cast<char>(hi * 16 + lo);
+        if (byte == '\0' || byte == '/')
+            return TargetName::kRefused;
+        out_name.push_back(byte);
+        i += 2;
+    }
+    return TargetName::kDecoded;
+}
+
 Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *plan)
 {
     Assets *tier = assets_;
@@ -665,6 +718,21 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     }
     if (tier == nullptr)
         return Took::kNo;
+    // The pack is keyed by the name a file was packed under, so the target
+    // is decoded before it is compared. A target that does not decode
+    // names nothing here; the tiers behind this one answer it, and a
+    // route still sees the target as it arrived.
+    std::string decoded_name;
+    switch (target_decode(apath, alen, decoded_name)) {
+        case TargetName::kAsIs:
+            break;
+        case TargetName::kDecoded:
+            apath = decoded_name.data();
+            alen = decoded_name.size();
+            break;
+        case TargetName::kRefused:
+            return Took::kNo;
+    }
     AssetEntry *asset_entry = tier->find(apath, alen);
     if (asset_entry == nullptr)
         return Took::kNo;
@@ -903,9 +971,26 @@ Http1::Took Http1::answer_from_docroot(Round &round)
             break;
         }
     }
+    // The name openat2 walks to, with the target's escapes resolved: a
+    // file called "a b.txt" is asked for as "/a%20b.txt" and is this
+    // tier's to find. A target that does not decode cleanly is refused
+    // below, with the same 404 every other miss gets.
     std::string name;
-    if (length > 1)
-        name.assign(round.path + 1, length - 1);
+    std::string decoded_name;
+    bool undecodable = false;
+    switch (target_decode(round.path, length, decoded_name)) {
+        case TargetName::kAsIs:
+            if (length > 1)
+                name.assign(round.path + 1, length - 1);
+            break;
+        case TargetName::kDecoded:
+            if (decoded_name.size() > 1)
+                name.assign(decoded_name, 1, std::string::npos);
+            break;
+        case TargetName::kRefused:
+            undecodable = true;
+            break;
+    }
     if (name.empty() || name.back() == '/') {
         // --listings: a target that ends in a slash names a directory, and
         // the listing application answers those - the index document it
@@ -921,7 +1006,7 @@ Http1::Took Http1::answer_from_docroot(Round &round)
     // A name this process can refuse without asking the kernel. openat2
     // with RESOLVE_BENEATH would refuse the same ones, and a ring trip
     // that can only end in 404 is a ring trip nobody owes.
-    bool bad = name.find('\0') != std::string::npos;
+    bool bad = undecodable || name.find('\0') != std::string::npos;
     for (size_t index = 0; !bad && index < name.size();) {
         const size_t text_end = name.find('/', index);
         const std::string_view seg(

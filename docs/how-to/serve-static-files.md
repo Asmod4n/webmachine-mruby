@@ -22,6 +22,38 @@ answer; every other method is 405. A path that names a directory takes
 that directory's `index.html`. A name the server does not hold is 404,
 and so is a name that climbs out of the directory with `..`.
 
+## A name that needs percent-encoding
+
+RFC 3986 2.1: a target spells a byte a name cannot carry as a percent
+triplet, so a file called `a b.txt` is asked for as `/a%20b.txt`. Both
+file tiers resolve those escapes before they look the name up, so such a
+file is served like any other, and the generated directory list links to
+it correctly.
+
+The decoding is strict. A target that does not decode cleanly names
+nothing and answers 404:
+
+| Target | Why |
+|---|---|
+| `/%zz.txt`, `/%2.txt`, `/name%` | a `%` not followed by two hex digits |
+| `/%00name` | a decoded NUL, which no name carries |
+| `/a%2fb` | a decoded `/`, which no filename carries |
+
+Leaving a malformed escape as written is what the URL Standard does for a
+query, and it is the wrong rule here: it gives one file two spellings, and
+a cache and a filter then disagree about which answer they are looking at.
+
+`+` is a plus. It is a space in form encoding only, so in a path it names
+the literal byte - `/a+b.txt` is the file `a+b.txt`, never `a b.txt`.
+
+An encoded `..` gains nothing: it decodes to `..` and is refused by the
+same segment rule a plain one meets, with `openat2`'s `RESOLVE_BENEATH`
+behind that.
+
+This applies to the two file tiers only. `request.path` and `request.uri`
+still hand an application the target exactly as it arrived; a route
+matches those raw bytes, as it always did.
+
 ## List a directory that has no index.html
 
 `--listings=on` answers such a directory with a list of what is in it,

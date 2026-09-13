@@ -20,6 +20,8 @@ S_BIG = ('x' * 1024) * 300 unless defined?(S_BIG)
 def s_server(extra = [])
   root = "/tmp/wm-standalone-#{$$}"
   FileUtils.mkdir_p(File.join(root, 'sub'))
+  File.binwrite(File.join(root, 'a b.txt'), "spaced\n")
+  File.binwrite(File.join(root, 'a#b.txt'), "hashed\n")
   File.binwrite(File.join(root, 'index.html'), "<h1>root</h1>\n")
   File.binwrite(File.join(root, 'sub', 'index.html'), "<h1>sub</h1>\n")
   File.binwrite(File.join(root, 'small.bin'), S_SMALL)
@@ -94,5 +96,68 @@ assert('standalone: If-Modified-Since answers 304 without a body') do
       out << wm_recv(s) until out.end_with?("\r\n\r\n")
     end
     assert_true out.start_with?('HTTP/1.1 304'), out
+  end
+end
+
+# RFC 3986 2.1: the target spells a byte a name cannot carry as a percent
+# triplet. These pin that the tier resolves one, and that resolving one
+# opens no way out of the docroot.
+assert('standalone: a name that needs percent-encoding is reachable') do
+  s_server do |sock|
+    head, body = s_ask(sock, "GET /a%20b.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true head.start_with?('HTTP/1.1 200 OK'), head
+    assert_equal "spaced\n", body
+    head, body = s_ask(sock, "GET /a%23b.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true head.start_with?('HTTP/1.1 200 OK'), head
+    assert_equal "hashed\n", body
+  end
+end
+
+assert('standalone: an encoded dot-dot climbs out no further than a plain one') do
+  outside = "/tmp/wm-standalone-outside-#{$$}"
+  File.binwrite(outside, "SECRET\n")
+  begin
+    s_server do |sock|
+      ["/%2e%2e#{outside}",
+       "/sub/%2e%2e/%2e%2e#{outside}",
+       "/..%2f..#{outside}",
+       "/sub%2f..%2f..#{outside}"].each do |target|
+        head, = s_ask(sock, "GET #{target} HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert_true head.start_with?('HTTP/1.1 404'), "#{target}: #{head}"
+      end
+    end
+  ensure
+    File.unlink(outside) if File.exist?(outside)
+  end
+end
+
+assert('standalone: a target that does not decode names nothing') do
+  s_server do |sock|
+    # A lone '%', a short escape, a non-hex escape, and a decoded NUL. Each
+    # is refused rather than read as written: one file with two spellings
+    # is what a cache and a filter disagree about.
+    ['/%zz.txt', '/%2.txt', '/plain%', '/%00plain.txt'].each do |target|
+      head, = s_ask(sock, "GET #{target} HTTP/1.1\r\nHost: x\r\n\r\n")
+      assert_true head.start_with?('HTTP/1.1 404'), "#{target}: #{head}"
+    end
+  end
+end
+
+assert('standalone: a plus in a target is a plus, not a space') do
+  # RFC 3986: '+' is a space in form encoding only. In a path it is the
+  # literal byte, so it names a file called "a+b.txt" and nothing else.
+  root = "/tmp/wm-plus-#{$$}"
+  FileUtils.mkdir_p(root)
+  File.binwrite(File.join(root, 'a+b.txt'), "plus\n")
+  File.binwrite(File.join(root, 'a b.txt'), "space\n")
+  begin
+    wm_server("--docroot=#{root}", app: false, tag: 'wm-plus') do |sock|
+      _, body = s_ask(sock, "GET /a+b.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+      assert_equal "plus\n", body
+      _, body = s_ask(sock, "GET /a%20b.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+      assert_equal "space\n", body
+    end
+  ensure
+    FileUtils.rm_rf(root)
   end
 end
