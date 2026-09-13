@@ -50,6 +50,7 @@ All methods below take no arguments, except `body.save`.
 | `if_unmodified_since` | String or nil | The `If-Unmodified-Since` field's value, or nil. |
 | `host` | String or nil | The `Host` field's value, or nil. |
 | `cookies` | Hash of String to String | The `Cookie` field's `k=v` pairs, split on `;`, with spaces trimmed. Empty Hash when there is no `Cookie` field. Several `Cookie` lines are joined with `"; "` first, so split cookie fields on HTTP/2 still arrive as one Hash. |
+| `same_origin?` | true, false or nil | RFC 6454 6.1: does the `Origin` field name the origin this request arrived on? `true` it does; `false` another origin, or the opaque `null`; `nil` this server cannot say - the request carries no `Origin`, or it named no host to compare against (an HTTP/2 request with `:authority` and no `host` field). Scheme and host compare without regard to letter case, and the default port folds (`:80` under http, `:443` under https). Reads the request's field lines when asked, so a request that never asks pays nothing. See [Refuse a cross-site request](../how-to/refuse-a-cross-site-request.md). |
 | `base_uri` | String | `"https://"` when the connection is TLS, else `"http://"`, then the `Host` field's value, then `/`. Without a `Host` field it is `"http:///"` or `"https:///"`. No port or query normalization. |
 | `get?` | true or false | True when `method` is `GET`. |
 | `head?` | true or false | True when `method` is `HEAD`. |

@@ -34,6 +34,8 @@ One job per page, for a reader who already runs a server.
   layout, the config file.
 - [Run in a container](how-to/run-in-a-container.md), and
   [the container in full](container.md).
+- [Refuse a cross-site request](how-to/refuse-a-cross-site-request.md):
+  `request.same_origin?`, `Sec-Fetch-Site`, and what a token still owes.
 
 ## Reference
 

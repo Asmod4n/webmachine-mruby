@@ -810,6 +810,104 @@ mrb_value request_get_base_uri(mrb_state *mrb, mrb_value)
     return text;
 }
 
+// RFC 9110 5.1: one field line of the request being answered, named. The
+// first line of that name wins, and nothing means the request carries no
+// such field. A field the framer needs on every request is in the parsed
+// table instead; this walk is for a field one resource asks about, and it
+// costs nothing for every request that never asks.
+const struct phr_header *request_field_line(const ReqView *view, std::string_view name)
+{
+    const struct phr_header *fields = static_cast<const struct phr_header *>(view->fields);
+    for (size_t i = 0; i < view->field_count; i++) {
+        if (http::tok_eq({fields[i].name, fields[i].name_len}, name))
+            return &fields[i];
+    }
+    return nullptr;
+}
+
+// RFC 9110 4.2.3: a scheme and a host compare without regard to letter
+// case. http::tok_eq lowercases one side only, and both sides here come
+// off the wire.
+bool ascii_same(std::string_view left, std::string_view right)
+{
+    if (left.size() != right.size())
+        return false;
+    for (size_t at = 0; at < left.size(); at++) {
+        char one = left[at];
+        char two = right[at];
+        if (one >= 'A' && one <= 'Z')
+            one = static_cast<char>(one + 32);
+        if (two >= 'A' && two <= 'Z')
+            two = static_cast<char>(two + 32);
+        if (one != two)
+            return false;
+    }
+    return true;
+}
+
+// RFC 6454 6.1: is this Origin the request's own origin? The request's own
+// origin is what base_uri names - https when the connection is TLS, http
+// when it is not, then the Host field.
+//
+// Origin: null carries no scheme, so it answers false here and needs no
+// case of its own.
+bool origin_is_own(std::string_view origin, bool tls, std::string_view host)
+{
+    const std::string_view scheme = tls ? "https://" : "http://";
+    if (origin.size() <= scheme.size())
+        return false;
+    if (!ascii_same(origin.substr(0, scheme.size()), scheme))
+        return false;
+    std::string_view origin_host = origin.substr(scheme.size());
+    // A browser leaves the default port out of an Origin. So a Host that
+    // names that port is the same origin as one that does not, and this
+    // drops it from both sides before the compare.
+    const std::string_view port = tls ? ":443" : ":80";
+    if (origin_host.size() > port.size() && origin_host.ends_with(port))
+        origin_host.remove_suffix(port.size());
+    if (host.size() > port.size() && host.ends_with(port))
+        host.remove_suffix(port.size());
+    return ascii_same(origin_host, host);
+}
+
+// #4: the origin check, which is the half of CSRF defence a server can
+// make with no state at all. The token is the application's, because a
+// token needs a session and this server keeps none.
+//
+// Three answers, and the third is why this is not a plain boolean:
+//
+//   nil    this server cannot say. Either the request carries no Origin -
+//          absent is not cross-site, a client that is not a browser sends
+//          none - or it named no host to compare against. An HTTP/2
+//          request that sends :authority and no host field is the second
+//          case: the authority does not reach the Host value this reads,
+//          which is the same gap request.host and base_uri have.
+//   true   the Origin is this request's own origin.
+//   false  it is another origin, or it is the opaque `null`.
+//
+// A resource asks this where it already decides, in forbidden? or in
+// is_authorized?, and it picks the status. A resource that never asks
+// reads no field and pays nothing.
+//
+// Sec-Fetch-Site answers a near question more directly, and every current
+// browser sends it. It is not folded in here: two signals in one boolean
+// hide which one spoke. request.headers['sec-fetch-site'] reads it.
+//: () -> (TrueClass | FalseClass | NilClass)
+mrb_value request_is_same_origin(mrb_state *mrb, mrb_value)
+{
+    const ReqView *view = request_being_answered(mrb);
+    const struct phr_header *origin = request_field_line(view, "origin");
+    if (origin == nullptr)
+        return mrb_nil_value();
+    const mrb_value host = request_get_named_field(mrb, http::NamedField::kHost);
+    // No host of its own, so there is nothing to compare against. A false
+    // here would read as "another origin", which this does not know.
+    if (mrb_nil_p(host))
+        return mrb_nil_value();
+    const std::string_view sent = {origin->value, origin->value_len};
+    return mrb_bool_value(origin_is_own(sent, view->tls, ruby_string_bytes(host)));
+}
+
 // RFC 9110 9.3.1: is this a GET?
 //: () -> (TrueClass | FalseClass)
 mrb_value request_is_get(mrb_state *mrb, mrb_value)
@@ -922,6 +1020,8 @@ void request_init(mrb_state *mrb, struct RClass *webmachine_module)
     mrb_define_method_id(mrb, req, MRB_SYM(host), request_get_host, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, req, MRB_SYM(cookies), request_get_cookies, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, req, MRB_SYM(base_uri), request_get_base_uri, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, req, MRB_SYM_Q(same_origin), request_is_same_origin,
+                         MRB_ARGS_NONE());
     mrb_define_method_id(mrb, req, MRB_SYM_Q(get), request_is_get, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, req, MRB_SYM_Q(head), request_is_head, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, req, MRB_SYM_Q(post), request_is_post, MRB_ARGS_NONE());
