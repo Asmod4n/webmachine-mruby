@@ -10,8 +10,8 @@ every rake task and what it does, and what each build config is for.
 usage: webmachine-server [OPTIONS]
 
   Every option is --key=value. There are two ways to serve:
-  an application (--app), or standalone (--standalone), which
-  serves files and enters no VM. One of the two, or no start.
+  an application (--app), or files. A run that names no
+  application serves files and enters no VM.
 
 FILES
   --mime-types=FILE        this media-type database, not the machine's
@@ -41,20 +41,71 @@ AN APPLICATION
                            conf.url, conf.assets, conf.docroot. One process
                            serves any number of applications.
 
-STANDALONE - files only, and the folded graph answers them
-  --standalone             no app, no route, no VM entry per request
+FILES ONLY - no --app, no route, no VM entry per request
   --unix=PATH              answer on a unix socket
-  --port=N                 answer on a TCP port
+  --port=N                 answer on a TCP port          (8080)
   --assets=FILE.zip        answered first, from its mapping
   --docroot=DIR            answered next, from disk; needs one of the two
                            GET and HEAD; a directory takes its index.html
+  --listings=on            a directory with no index.html lists what is in
+                           it; on | off, and off is the default
 ```
 
 With no arguments and nothing to serve, it prints:
 
 ```
-webmachine: nothing to serve - name an application with --app=FILE.mrb (or app = in the config), or serve files with --standalone and --assets/--docroot
+webmachine: nothing to serve - name an application with --app=FILE.mrb, or files with --assets=FILE.zip and --docroot=DIR (or app / assets / docroot in the config)
 ```
+
+`--standalone` is gone. A run that names no `--app` serves files, which
+is what the flag used to say, so the flag said nothing the rest of the
+command line did not. A command line that still carries it is refused by
+name:
+
+```
+webmachine: --standalone is gone - a run that names no --app serves files and enters no VM. Drop the flag
+```
+
+A files-only server that names neither `--port` nor `--unix` answers on
+TCP port 8080. An application names its own listener in its `conf`, so
+this default is not an application's.
+
+Every server writes the URL it answers on to **stdout**, one line per
+listener, and every other start line to stderr:
+
+```
+http://localhost:8080/
+```
+
+A unix listener has no authority to write in a URL, so its line names
+the socket instead: `http://localhost/ (unix socket /run/wm.sock)`.
+
+### `--listings`
+
+`--listings=on` loads a built-in application that lists what is in a
+directory. It is an ordinary Webmachine application - one route, one
+resource, in `mrblib/listing.rb` - so the decision graph answers every
+question about the page: an HTML list for a browser, a JSON list for a
+program, and 304 for a client that already holds the current one.
+
+The switch takes `on`, `true`, `yes`, `enabled` or `1`, and `off`,
+`false`, `no`, `disabled` or `0`, in any letter case. A word that is
+neither is refused by name.
+
+What changes with it on:
+
+| Target | Off | On |
+|---|---|---|
+| `/file.txt` | the file, no route, no VM | unchanged |
+| `/dir/` with an `index.html` | that document | that document, served by the resource |
+| `/dir/` with no `index.html` | 404 | the list |
+| `/dir` (no trailing slash) | 404 | 301 to `/dir/` |
+
+It needs `--docroot`, and says so when it is named without one. What
+never appears in a list: a name that begins with a dot, and a symbolic
+link - the docroot is walked with `RESOLVE_NO_SYMLINKS`, so a link could
+never be opened, and a line for it could only answer 404. A directory
+with more than 4096 names is listed to that many, and the page says so.
 
 `--app=FILE.mrb` is required to serve an application. The file must be
 mruby bytecode, not source. A `.rb` path is refused:
@@ -63,7 +114,7 @@ only. Compile it first: mrbc -g -o <base>.mrb <path>`. Compiling
 without `-g` still loads, but the server warns once at start that a
 raise in that file will name no file and no line.
 
-`--unix`, `--port`, `--assets` and `--docroot` are standalone-only
+`--unix`, `--port`, `--assets`, `--docroot` and `--listings` are files-only
 flags, and each is refused alongside `--app`: naming both means the
 listener, pack and docroot are named twice, once by the app's own conf
 and once here.

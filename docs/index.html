@@ -522,13 +522,13 @@
       </div>
       <div class="features">
         <div class="feat">
-          <span class="tag">--standalone --docroot=DIR</span>
+          <span class="tag">--docroot=DIR</span>
           <h3>A file server</h3>
           <p>
             What you would reach for <code>python3 -m http.server</code> or
             <code>npx serve</code> to do, with ETag, gzip, HTTP/2 and TLS on it.
           </p>
-          <div class="cmd"><span class="p">$</span> webmachine-server --standalone --docroot=./public --port=8080</div>
+          <div class="cmd"><span class="p">$</span> webmachine-server --docroot=./public</div>
         </div>
         <div class="feat">
           <span class="tag"><span class="k">def</span> <span class="k">self</span>.</span>
@@ -552,7 +552,7 @@
             compressed form ready.
           </p>
           <div class="cmd"><span class="p">$</span> rake pack[public,site.zip]
-<span class="p">$</span> webmachine-server --standalone --assets=site.zip</div>
+<span class="p">$</span> webmachine-server --assets=site.zip</div>
         </div>
       </div>
     </div>

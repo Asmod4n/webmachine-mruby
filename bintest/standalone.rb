@@ -25,7 +25,7 @@ def s_server(extra = [])
   File.binwrite(File.join(root, 'small.bin'), S_SMALL)
   File.binwrite(File.join(root, 'big.bin'), S_BIG)
   File.binwrite(File.join(root, 'a.css'), "body { margin: 0; }\n")
-  wm_server('--standalone', "--docroot=#{root}", *extra, app: false,
+  wm_server("--docroot=#{root}", *extra, app: false,
             tag: 'wm-standalone') do |sock|
     yield sock, root
   end

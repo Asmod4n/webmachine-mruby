@@ -1681,7 +1681,10 @@ class Http1
     // does not. The media-type database is the server's, lent here for the
     // one thing this tier decides that the file machine does not - what a
     // name's Content-Type is.
-    void serve_docroot(const MimeDb *mime);
+    // `listings` is --listings: a target that names a directory belongs
+    // to the listing application, so this tier answers no for one and the
+    // route table gets it. Off, every target is this tier's.
+    void serve_docroot(const MimeDb *mime, bool listings);
 
     void clock_tick();
 
@@ -1866,6 +1869,9 @@ class Http1
     // whole now, and then the run that stopped for it is ready.
     void spill_wrote(Conn &conn, ssize_t resource, const std::string &out_value);
     void file_reject(Conn &conn);
+    // RFC 9110 15.4.2: the target names a directory without its trailing
+    // slash, and the list lives at the name with it.
+    bool file_redirect_to_directory(Conn &conn);
     void file_error(Conn &conn, const char *why);
     bool file_stat(Conn &conn, const struct statx &stx, size_t *want);
     char *file_buffer(Conn &conn, size_t count);
@@ -2849,6 +2855,9 @@ class Http1
     Assets *assets_ = nullptr;
     // Set only in the standalone tier; null means no docroot answers here.
     const MimeDb *mime_ = nullptr;
+    // --listings: a target that names a directory is the listing
+    // application's, so this tier answers no and the route table gets it.
+    bool listings_ = false;
     size_t zc_min_ = kZeroCopyDefault;
     size_t map_min_ = kFileMapDefault;
     size_t send_chunk_ = file_send_chunk(60);

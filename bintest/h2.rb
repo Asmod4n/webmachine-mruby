@@ -503,7 +503,7 @@ def h2_asset_server(zip_bytes)
   zf.binmode
   zf.write(zip_bytes)
   zf.close
-  wm_server('--standalone', "--assets=#{zf.path}", app: false, tag: 'wm-h2a') do |sock|
+  wm_server("--assets=#{zf.path}", app: false, tag: 'wm-h2a') do |sock|
     yield sock
   end
 ensure

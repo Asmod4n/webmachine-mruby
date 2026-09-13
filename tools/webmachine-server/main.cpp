@@ -48,8 +48,8 @@ void usage(const char *me)
                  "usage: %s [OPTIONS]\n"
                  "\n"
                  "  Every option is --key=value. There are two ways to serve:\n"
-                 "  an application (--app), or standalone (--standalone), which\n"
-                 "  serves files and enters no VM. One of the two, or no start.\n"
+                 "  an application (--app), or files. A run that names no\n"
+                 "  application serves files and enters no VM.\n"
                  "\n"
                  "FILES\n"
                  "  --mime-types=FILE        this media-type database, not the machine's\n"
@@ -79,13 +79,14 @@ void usage(const char *me)
                  "                           conf.url, conf.assets, conf.docroot. One process\n"
                  "                           serves any number of applications.\n"
                  "\n"
-                 "STANDALONE - files only, and the folded graph answers them\n"
-                 "  --standalone             no app, no route, no VM entry per request\n"
+                 "FILES ONLY - no --app, no route, no VM entry per request\n"
                  "  --unix=PATH              answer on a unix socket\n"
-                 "  --port=N                 answer on a TCP port\n"
+                 "  --port=N                 answer on a TCP port          (8080)\n"
                  "  --assets=FILE.zip        answered first, from its mapping\n"
                  "  --docroot=DIR            answered next, from disk; needs one of the two\n"
-                 "                           GET and HEAD; a directory takes its index.html\n",
+                 "                           GET and HEAD; a directory takes its index.html\n"
+                 "  --listings=on            a directory with no index.html lists what is in\n"
+                 "                           it; on | off, and off is the default\n",
                  me);
 }
 
@@ -93,7 +94,7 @@ void usage(const char *me)
 // key, so the set a typo is measured against has to be stated: it is
 // this one, and it is also what the usage text above lists.
 const char *const kFlags[] = {
-    "unix",         "port",      "app",           "standalone",         "assets",
+    "unix",         "port",      "app",           "assets",             "listings",
     "error-assets", "docroot",   "mime-types",    "write-config",       "log",
     "log-privacy",  "error-log", "log-max-bytes", "file-map-threshold", "zero-copy-threshold",
     "pidfile",      "config",
@@ -112,7 +113,7 @@ const char *text_of(mrb_state *mrb, mrb_value h, const char *key)
     return mrb_string_cstr(mrb, v);
 }
 
-// A flag with no value: `--standalone`. TypedArgs answers true for one
+// A flag with no value: `--write-config`. TypedArgs answers true for one
 // that was given, and nothing for one that was not.
 bool flag_of(mrb_state *mrb, mrb_value h, const char *key)
 {
@@ -122,6 +123,54 @@ bool flag_of(mrb_state *mrb, mrb_value h, const char *key)
     if (!mrb_true_p(v))
         mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s takes no value", key);
     return true;
+}
+
+// A switch an operator writes in words: `--listings=on`. TypedArgs reads
+// `true` and `false` as the values they are and `1` and `0` as numbers,
+// and everything else arrives as text - so all three forms land here, and
+// this is the one place that says which words mean on and which mean off.
+// `missing` is the answer for a flag nobody gave.
+bool switch_of(mrb_state *mrb, mrb_value h, const char *key, bool missing)
+{
+    const mrb_value v = mrb_hash_get(mrb, h, mrb_str_new_cstr(mrb, key));
+    if (mrb_nil_p(v))
+        return missing;
+    if (mrb_true_p(v))
+        return true;
+    if (mrb_false_p(v))
+        return false;
+    if (mrb_integer_p(v)) {
+        if (mrb_integer(v) == 1)
+            return true;
+        if (mrb_integer(v) == 0)
+            return false;
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s is on or off, not %i", key, mrb_integer(v));
+    }
+    if (mrb_string_p(v)) {
+        static const char *const kOn[] = {"on", "true", "yes", "enabled", "enable", "1"};
+        static const char *const kOff[] = {"off", "false", "no", "disabled", "disable", "0"};
+        // A word the operator typed, weighed without regard to letter
+        // case: --listings=ON is the same switch as --listings=on.
+        std::string said(mrb_string_cstr(mrb, v));
+        for (char &byte : said) {
+            if (byte >= 'A' && byte <= 'Z')
+                byte = static_cast<char>(byte - 'A' + 'a');
+        }
+        for (const char *word : kOn) {
+            if (said == word)
+                return true;
+        }
+        for (const char *word : kOff) {
+            if (said == word)
+                return false;
+        }
+        mrb_raisef(mrb, E_ARGUMENT_ERROR,
+                   "--%s=%s? it is on | true | yes | enabled | 1, or off | false | no | "
+                   "disabled | 0",
+                   key, said.c_str());
+    }
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "--%s is on or off", key);
+    return false;
 }
 
 // A whole number, or `missing` when the flag was not given. TypedArgs
@@ -186,6 +235,14 @@ bool parse_argv(mrb_state *mrb, Invocation &in)
         },
         &unknown);
     if (unknown.name != nullptr) {
+        // --standalone was how an operator said "files, no app". The
+        // absence of --app says it now, so the flag is gone - and a script
+        // that still carries it hears why rather than a bare "--what?".
+        if (std::strcmp(unknown.name, "standalone") == 0) {
+            std::fprintf(stderr, "webmachine: --standalone is gone - a run that names no "
+                                 "--app serves files and enters no VM. Drop the flag\n");
+            return false;
+        }
         std::fprintf(stderr, "webmachine: --%s?\n", unknown.name);
         usage(argv[0]);
         return false;
@@ -195,7 +252,6 @@ bool parse_argv(mrb_state *mrb, Invocation &in)
     in.cli_unix = text_of(mrb, h, "unix");
     in.cli_port = static_cast<int>(number_of(mrb, h, "port", 0));
     opts.app_path = text_of(mrb, h, "app");
-    opts.standalone = flag_of(mrb, h, "standalone");
     in.write_config = text_of(mrb, h, "write-config");
     if (in.write_config == nullptr && flag_of(mrb, h, "write-config")) {
         in.write_config = "webmachine.toml";
@@ -203,6 +259,7 @@ bool parse_argv(mrb_state *mrb, Invocation &in)
     opts.standalone_assets_path = text_of(mrb, h, "assets");
     opts.error_assets_path = text_of(mrb, h, "error-assets");
     opts.standalone_docroot_path = text_of(mrb, h, "docroot");
+    opts.standalone_listings = switch_of(mrb, h, "listings", false);
     opts.mime_types_path = text_of(mrb, h, "mime-types");
     in.log_path = text_of(mrb, h, "log");
     in.log_privacy = text_of(mrb, h, "log-privacy");
@@ -389,6 +446,8 @@ int serve(mrb_state *mrb, Invocation &in)
             taken = "--assets";
         else if (opts.standalone_docroot_path != nullptr)
             taken = "--docroot";
+        else if (opts.standalone_listings)
+            taken = "--listings";
         if (taken != nullptr) {
             std::fprintf(stderr,
                          "webmachine: %s (and its line in the config's [server]) is a standalone "
@@ -399,36 +458,45 @@ int serve(mrb_state *mrb, Invocation &in)
             return 1;
         }
     }
-    webmachine::server_options(opts);
-
-    if (opts.standalone && opts.app_path != nullptr) {
-        std::fprintf(stderr, "webmachine: --standalone enters no VM, so it cannot run --app. "
-                             "Name one or the other\n");
+    // Nobody named an application, so this run serves files. That is the
+    // whole rule, and it is why there is no flag for it.
+    opts.standalone = opts.app_path == nullptr;
+    if (opts.standalone && opts.standalone_listings && opts.standalone_docroot_path == nullptr) {
+        std::fprintf(stderr, "webmachine: --listings lists what is in a directory, so it needs "
+                             "one: --docroot=DIR\n");
         return 1;
     }
+    // A standalone server that names no listener takes this port. An
+    // application names its own, in its conf, so this is not its default.
+    if (opts.standalone && cli_unix == nullptr && cli_port == 0) {
+        cli_port = webmachine::kStandalonePort;
+        opts.standalone_port = cli_port;
+    }
+    webmachine::server_options(opts);
+
     if (opts.app_path != nullptr) {
         webmachine::app_load(mrb, opts.app_path);
-    } else if (opts.standalone) {
-        // Standalone: a pack, a docroot, or both, and no app. There is no
-        // resource to enter, so the folded graph answers on its own - the
-        // pack from its mapping, the docroot from disk, everything else 404.
+    } else {
+        // Files only: a pack, a docroot, or both. The folded graph answers
+        // them - the pack from its mapping, the docroot from disk - and no
+        // request enters the VM.
         if (opts.standalone_assets_path == nullptr && opts.standalone_docroot_path == nullptr) {
-            std::fprintf(stderr, "webmachine: --standalone serves files, so it needs some: "
-                                 "--assets=FILE.zip, --docroot=DIR, or both\n");
+            std::fprintf(stderr,
+                         "webmachine: nothing to serve - name an application with "
+                         "--app=FILE.mrb, or files with --assets=FILE.zip and --docroot=DIR "
+                         "(or app / assets / docroot in the config)\n");
             return 1;
         }
-        webmachine::app_assets_only();
-    } else {
-        // A pack or a directory beside no app is not a server by itself any
-        // more: --standalone is how an operator says that is what they meant.
-        std::fprintf(
-            stderr,
-            "webmachine: nothing to serve - name an application with --app=FILE.mrb "
-            "(or app = in the config)%s\n",
-            (opts.standalone_assets_path != nullptr || opts.standalone_docroot_path != nullptr)
-                ? ", or add --standalone to serve the files you named without one"
-                : ", or serve files with --standalone and --assets/--docroot");
-        return 1;
+        if (opts.standalone_listings) {
+            // --listings: the one target the file tier hands over is a
+            // directory, and this application is what answers it. It is an
+            // ordinary application - one route, one resource - so a reader
+            // who wants to know how the server is used can read it:
+            // mrblib/listing.rb.
+            webmachine::app_listing(mrb);
+        } else {
+            webmachine::app_assets_only();
+        }
     }
 
     if (webmachine::server_entered())

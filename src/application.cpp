@@ -982,6 +982,22 @@ AppSpec *app_assets_only()
     return spec;
 }
 
+// --listings: the application mrblib/listing.rb holds. It registers the
+// same way any application does - Webmachine::Application.new with a
+// block - so nothing about it is a second kind of application. What is
+// different is only where its source is: compiled into this binary
+// rather than read from a file, because a server with no --app has no
+// file to read.
+void app_listing(mrb_state *mrb)
+{
+    const ArenaGuard arena(mrb);
+    struct RClass *const webmachine_module = mrb_module_get_id(mrb, MRB_SYM(Webmachine));
+    mrb_funcall_argv(mrb, mrb_obj_value(webmachine_module), MRB_SYM(listing_application), 0,
+                     nullptr);
+    if (mrb->exc != nullptr)
+        rethrow(mrb);
+}
+
 // What the listener really became; this is what conf.url reads back.
 void app_mark_bound(mrb_state *mrb, AppSpec &spec, const char *unix_path, int port)
 {

@@ -188,18 +188,18 @@ app's own `conf`.
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `unix` | none | A unix socket to answer on, for a standalone server. At most one of `unix` and `port`. |
-| `port` | none | A TCP port to answer on, for a standalone server. |
+| `unix` | none | A unix socket to answer on, for a files-only server. At most one of `unix` and `port`. |
+| `port` | 8080 for a files-only server, none for an application | A TCP port to answer on. A files-only server that names neither `unix` nor `port` takes 8080. |
 | `app` | none | The application to serve, as bytecode. |
-| `assets` | none | Standalone: a pack, answered from one mapping. |
-| `docroot` | none | Standalone: a directory of files. |
+| `assets` | none | Files only: a pack, answered from one mapping. |
+| `docroot` | none | Files only: a directory of files. |
 | `mime_types` | the machine's own | The media-type database. Without it: `/etc/mime.types`, then Apache's, then shared-mime-info, then the list compiled in. |
 | `pidfile` | none (nowhere) | Where the pid goes; removed on the way out. |
 | `error_assets` | the installed archive, or none | The error pages' pictures. Without it: the installed archive under `/usr/local/share/webmachine-mruby`, then under `/usr/share`; without either, the pages render without pictures. |
 
 An application names its own pack and docroot in its own `conf`
 (`conf.assets`, `conf.docroot`); `[server] app`, `assets` and `docroot`
-are for a standalone server only, and are refused alongside `--app`.
+are for a files-only server only, and are refused alongside `--app`.
 
 ### [log]
 

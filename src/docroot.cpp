@@ -1,12 +1,22 @@
 #include "webmachine.hpp"
 #include "ring_setup.hpp"
 
+#include <mruby/array.h>
+#include <mruby/hash.h>
+#include <mruby/presym.h>
+#include <mruby/string.h>
+
+#include <dirent.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 namespace webmachine
 {
@@ -112,5 +122,172 @@ uint32_t body_file_slots_taken()
 const struct open_how *docroot_how()
 {
     return &docroot_open_how_;
+}
+
+namespace
+{
+// The same three resolve flags every per-request open carries, with
+// O_DIRECTORY instead of the file flags: the listing application asks for
+// a directory, and a name that is not one is refused by the kernel rather
+// than by a check of ours.
+//
+// openat2 here, not io_uring_prep_openat2: the ring has no operation that
+// reads directory entries, so the read below is an ordinary call either
+// way, and one confined open beside it is one seam fewer. The confinement
+// is the same - it is the docroot fd and these flags that make it, not
+// which interface the open went through.
+struct open_how docroot_listing_how()
+{
+    struct open_how how {
+    };
+    how.flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+    how.mode = 0;
+    how.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+    return how;
+}
+
+// The path a client wrote, as a name openat2 takes: no leading slash, no
+// trailing slash, and the docroot itself is ".". False = this name is one
+// this process refuses without asking the kernel, and the answer is nil.
+bool docroot_listing_name(const char *path, size_t length, std::string &out_name)
+{
+    out_name.assign(path, length);
+    while (!out_name.empty() && out_name.front() == '/')
+        out_name.erase(0, 1);
+    while (!out_name.empty() && out_name.back() == '/')
+        out_name.pop_back();
+    if (out_name.empty()) {
+        out_name.assign(".");
+        return true;
+    }
+    if (out_name.find('\0') != std::string::npos)
+        return false;
+    for (size_t index = 0; index < out_name.size();) {
+        const size_t text_end = out_name.find('/', index);
+        const std::string_view segment(
+            out_name.data() + index,
+            (text_end == std::string::npos ? out_name.size() : text_end) - index);
+        if (segment.empty() || segment == "." || segment == "..")
+            return false;
+        if (text_end == std::string::npos)
+            break;
+        index = text_end + 1;
+    }
+    return true;
+}
+
+// One entry of the list, as the template reads it.
+mrb_value docroot_listing_entry(mrb_state *mrb, int dirfd, const std::string &name, bool directory,
+                                bool sized)
+{
+    const mrb_value row = mrb_hash_new_capa(mrb, 4);
+    mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "name"),
+                 mrb_str_new(mrb, name.data(), name.size()));
+    mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "directory"), mrb_bool_value(directory));
+    struct stat info {
+    };
+    const bool stated = sized && ::fstatat(dirfd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) == 0;
+    mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "size"),
+                 mrb_fixnum_value(stated ? static_cast<mrb_int>(info.st_size) : 0));
+    mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "mtime"),
+                 mrb_fixnum_value(stated ? static_cast<mrb_int>(info.st_mtime) : 0));
+    return row;
+}
+
+// Webmachine.docroot_listing(path): what is in one directory under the
+// docroot, or nil when the path names no directory there. The listing
+// application is the only caller, and this is the only thing it needs
+// from the server that it cannot write itself - because the boundary is
+// the kernel's, and this is where the docroot fd lives.
+//
+// The answer is a Hash: "mtime" of the directory itself, "truncated" when
+// the walk stopped at kListingMax, and "entries", each with "name",
+// "directory", "size" and "mtime".
+//
+// What never appears in it: a name that begins with a dot, and a symbolic
+// link. The first is the shape of .git, .env and .htpasswd, and a list is
+// not the place to learn that they are there. The second could never be
+// opened - the docroot is walked with RESOLVE_NO_SYMLINKS - so a line for
+// it could only ever answer 404.
+mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
+{
+    const char *path = nullptr;
+    mrb_int path_len = 0;
+    mrb_get_args(mrb, "s", &path, &path_len);
+    if (docroot_fd_ < 0)
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb), "no docroot is open - name one with --docroot");
+    std::string name;
+    if (!docroot_listing_name(path, static_cast<size_t>(path_len), name))
+        return mrb_nil_value();
+    const struct open_how how = docroot_listing_how();
+    const int opened = static_cast<int>(::syscall(SYS_openat2, docroot_fd_, name.c_str(), &how,
+                                                  sizeof(how)));
+    if (opened < 0)
+        return mrb_nil_value();
+    struct stat own {
+    };
+    const bool own_stated = ::fstat(opened, &own) == 0;
+    // fdopendir takes the descriptor it is given and closedir ends it.
+    DIR *const dir = ::fdopendir(opened);
+    if (dir == nullptr) {
+        ::close(opened);
+        return mrb_nil_value();
+    }
+    const mrb_value out = mrb_hash_new_capa(mrb, 3);
+    const mrb_value rows = mrb_ary_new(mrb);
+    // rows and out were made before this mark, so the restore below keeps
+    // them and drops only what one entry made.
+    const int arena = mrb_gc_arena_save(mrb);
+    bool truncated = false;
+    size_t taken = 0;
+    for (const struct dirent *entry = ::readdir(dir); entry != nullptr; entry = ::readdir(dir)) {
+        const std::string_view said(entry->d_name);
+        if (said.empty() || said.front() == '.')
+            continue;
+        if (entry->d_type == DT_LNK)
+            continue;
+        if (taken >= kListingMax) {
+            truncated = true;
+            break;
+        }
+        const std::string one(said);
+        bool directory = entry->d_type == DT_DIR;
+        if (entry->d_type != DT_DIR && entry->d_type != DT_REG) {
+            // DT_UNKNOWN: this filesystem did not say, so ask it. Anything
+            // that is neither a directory nor a regular file is not a
+            // representation, and the file machine would refuse it anyway.
+            struct stat info {
+            };
+            if (::fstatat(opened, one.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0)
+                continue;
+            if (S_ISDIR(info.st_mode))
+                directory = true;
+            else if (!S_ISREG(info.st_mode))
+                continue;
+        }
+        mrb_ary_push(mrb, rows, docroot_listing_entry(mrb, opened, one, directory, true));
+        // The arena holds every String and Hash this loop made. A large
+        // directory would grow it without bound, so it goes back per
+        // entry; the array is what keeps the rows alive.
+        mrb_gc_arena_restore(mrb, arena);
+        taken++;
+    }
+    ::closedir(dir);
+    mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "entries"), rows);
+    mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "truncated"), mrb_bool_value(truncated));
+    mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "mtime"),
+                 mrb_fixnum_value(own_stated ? static_cast<mrb_int>(own.st_mtime) : 0));
+    return out;
+}
+} // namespace
+
+void docroot_init(mrb_state *mrb, struct RClass *webmachine_module)
+{
+    mrb_define_module_function_id(mrb, webmachine_module, MRB_SYM(docroot_listing),
+                                  docroot_method_listing, MRB_ARGS_REQ(1));
+    // One source for the bound: the walk above stops there, and the page
+    // the listing application renders says the same number.
+    mrb_define_const_id(mrb, webmachine_module, MRB_SYM(LISTING_MAX),
+                        mrb_fixnum_value(static_cast<mrb_int>(kListingMax)));
 }
 } // namespace webmachine

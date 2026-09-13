@@ -3,9 +3,10 @@
 
 namespace webmachine
 {
-void Http1::serve_docroot(const MimeDb *mime)
+void Http1::serve_docroot(const MimeDb *mime, bool listings)
 {
     mime_ = mime;
+    listings_ = listings;
 }
 
 bool Http1::tunneled(const Conn &conn) const

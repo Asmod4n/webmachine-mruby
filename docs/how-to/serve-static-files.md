@@ -6,16 +6,47 @@ both, with the right cache headers on every file.
 
 ## Two sources, no app at all
 
-`--standalone` serves files and enters no VM: no `--app`, no route, no
+A run that names no `--app` serves files and enters no VM: no route, no
 Ruby runs per request. Point it at a pack, a directory, or both:
 
-    webmachine-server --standalone --port=8080 --assets=site.zip --docroot=/srv/site
+    webmachine-server --assets=site.zip --docroot=/srv/site
+
+It answers on TCP port 8080 when you name neither `--port` nor
+`--unix`, and writes the URL it answers on to stdout:
+
+    http://localhost:8080/
 
 `--assets=FILE.zip` is answered first, from the pack's own mapping.
 `--docroot=DIR` is answered next, from disk. Only `GET` and `HEAD`
 answer; every other method is 405. A path that names a directory takes
 that directory's `index.html`. A name the server does not hold is 404,
 and so is a name that climbs out of the directory with `..`.
+
+## List a directory that has no index.html
+
+`--listings=on` answers such a directory with a list of what is in it,
+rather than 404:
+
+    webmachine-server --docroot=/srv/site --listings=on
+
+The list is an ordinary Webmachine application - one route, one
+resource, in `mrblib/listing.rb` - so the decision graph answers for it
+as it does for yours: a browser gets an HTML page, a program that asks
+for `application/json` gets the same list as JSON, and a client that
+already holds the current list gets 304. A directory named without its
+trailing slash gets a 301 to the name with it.
+
+A plain file is untouched by the switch: it still comes off the file
+tier, with no route and no VM entry.
+
+Two names never appear in a list. One that begins with a dot, because
+that is the shape of `.git`, `.env` and `.htpasswd`, and a list is not
+the place to learn that they are there. And a symbolic link, because
+the docroot is walked with `RESOLVE_NO_SYMLINKS`, so a link could never
+be opened and a line for it could only answer 404.
+
+The switch takes `on`, `true`, `yes`, `enabled` or `1`, and `off`,
+`false`, `no`, `disabled` or `0`. Off is the default.
 
 An application does the same with `app.conf.assets` and
 `app.conf.docroot`, set in its own configure block, and the app still
@@ -35,9 +66,9 @@ Point a server at the result:
 
     app.conf.assets = 'site.zip'
 
-or, standalone:
+or, with no app:
 
-    webmachine-server --standalone --port=8080 --assets=site.zip
+    webmachine-server --port=8080 --assets=site.zip
 
 ## Two names for one file
 

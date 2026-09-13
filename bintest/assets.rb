@@ -43,7 +43,7 @@ def a_server(zip_bytes, extra = [])
   # machine's timezone. Pinned here so the assertion tests the header,
   # not the test host - the server's own zone dependency is its own
   # question, and a separate one.
-  wm_server('--standalone', "--assets=#{zf.path}", *extra, app: false,
+  wm_server("--assets=#{zf.path}", *extra, app: false,
             env: { 'TZ' => 'UTC' }, tag: 'wm-assets') do |sock|
     yield sock
   end
@@ -192,7 +192,7 @@ assert('assets: an archive this tier cannot serve refuses the start by name') do
   zf.close
   err = "/tmp/wm-assets-refuse-#{$$}.log"
   pid = spawn(WM_BIN, "--unix=/tmp/wm-assets-refuse-#{$$}.sock",
-              "--standalone", "--assets=#{zf.path}", out: File::NULL, err: err)
+              "--assets=#{zf.path}", out: File::NULL, err: err)
   Process.wait(pid)
   assert_false $?.exitstatus == 0
   msg = File.read(err)
@@ -341,7 +341,7 @@ def a_tcp_server(zip_bytes)
     # inside that window collides with an ephemeral port the machine
     # already handed out, which is how this suite once died on 44468.
     port = 20000 + rand(11000)
-    pid = spawn(WM_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
+    pid = spawn(WM_BIN, "--port=#{port.to_s}", "--assets=#{zf.path}",
                 out: File::NULL, err: err)
     up = false
     50.times do
@@ -496,7 +496,7 @@ def a_refusal(zip_bytes)
   sock = "/tmp/wm-assets-bad-#{$$}.sock"
   File.unlink(sock) if File.exist?(sock)
   err = "/tmp/wm-assets-bad-stderr-#{$$}.log"
-  pid = spawn(WM_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(WM_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
               out: File::NULL, err: err)
   Process.wait(pid)
   raise 'the server came up on an asset file it should have refused' if File.socket?(sock)
@@ -543,7 +543,7 @@ assert('access log: --log writes combined lines through the record daemon') do
   logf = "/tmp/wm-access-#{$$}.log"
   File.unlink(logf) if File.exist?(logf)
   sock = "/tmp/wm-log-#{$$}.sock"
-  wm_server('--standalone', "--assets=#{zf.path}", "--log=#{logf}", app: false,
+  wm_server("--assets=#{zf.path}", "--log=#{logf}", app: false,
             sock: sock, tag: 'wm-log') do
     UNIXSocket.open(sock) do |s|
       s.write("GET /img.bin HTTP/1.1\r\nHost: x\r\nUser-Agent: probe/1\r\n" \
@@ -615,7 +615,7 @@ assert('assets: a --mime-types file that cannot be read refuses the start, by na
   err = "/tmp/wm-mime-refuse-#{$$}.log"
   File.unlink(sock) if File.exist?(sock)
   begin
-    pid = spawn(WM_BIN, "--unix=#{sock}", "--standalone", "--assets=#{zf.path}",
+    pid = spawn(WM_BIN, "--unix=#{sock}", "--assets=#{zf.path}",
                 '--mime-types=/nonexistent/mime.types', out: File::NULL, err: err)
     Process.wait(pid)
     assert_false $?.success?, 'a missing media-type database started the server anyway'
@@ -669,7 +669,7 @@ assert('access log: a TCP peer logs its address, not "-" (%h through arm_peer)')
   # can only ever show 127.0.0.0 and could not tell an address that
   # arrived from one that did not. This test is about arrival, so it
   # asks for the full address; the masking has its own ground.
-  pid = spawn(WM_BIN, "--port=#{port.to_s}", "--standalone", "--assets=#{zf.path}",
+  pid = spawn(WM_BIN, "--port=#{port.to_s}", "--assets=#{zf.path}",
               "--log=#{logf}", '--log-privacy=none', out: File::NULL, err: errf)
   begin
     up = false

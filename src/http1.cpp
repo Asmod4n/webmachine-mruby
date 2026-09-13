@@ -4,9 +4,17 @@
 
 #include <picohttpparser.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <string>
+#include <vector>
 
 namespace webmachine
 {
@@ -898,8 +906,17 @@ Http1::Took Http1::answer_from_docroot(Round &round)
     std::string name;
     if (length > 1)
         name.assign(round.path + 1, length - 1);
-    if (name.empty() || name.back() == '/')
+    if (name.empty() || name.back() == '/') {
+        // --listings: a target that ends in a slash names a directory, and
+        // the listing application answers those - the index document it
+        // may hold included, because only the application knows whether
+        // one is there. So this tier answers no and the route table gets
+        // it. Every other target is a file and stays here, with no route
+        // and no VM.
+        if (listings_)
+            return Took::kNo;
         name.append("index.html");
+    }
 
     // A name this process can refuse without asking the kernel. openat2
     // with RESOLVE_BENEATH would refuse the same ones, and a ring trip
@@ -1078,6 +1095,39 @@ void Http1::file_reject(Conn &conn)
     file_prebuilt(conn, 404);
 }
 
+// RFC 9110 15.4.2: the target names a directory and the list lives one
+// slash further along. False = this target cannot be a Location value,
+// and the caller answers as it would have without --listings.
+bool Http1::file_redirect_to_directory(Conn &conn)
+{
+    const std::string &target = conn.file->request_target;
+    // RFC 9112 3.2: a request target holds no space and no control byte,
+    // and the parser already refused one that did. This says so again,
+    // because the value goes into a field line: a byte that is not
+    // checked here is a field line an attacker writes.
+    for (const char byte : target) {
+        const unsigned char value = static_cast<unsigned char>(byte);
+        if (value < 0x21 || value > 0x7e)
+            return false;
+    }
+    const size_t query = target.find('?');
+    const std::string_view path(target.data(), query == std::string::npos ? target.size() : query);
+    if (path.empty() || path.back() == '/')
+        return false;
+    conn.file->field_lines.append("Location: ").append(path).append("/");
+    if (query != std::string::npos)
+        conn.file->field_lines.append(target, query, std::string::npos);
+    conn.file->field_lines.append("\r\n");
+    // RFC 9112 6.3: Content-Length: 0, not a head with no framing at all.
+    // A redirect carries no body, but a client on a kept-alive connection
+    // has to be told that - the bodyless form of file_spell is 304's,
+    // which RFC 9110 15.4.5 allows to omit the field, and 301 is not 304.
+    // The media type goes with the body: there is none to describe.
+    conn.file->content_type.clear();
+    file_spell(conn, {301, 0, false});
+    return true;
+}
+
 // RFC 9110 6.4: what the ring answered for one spill write. The octets
 // are in the file now, or the write failed and the body can never be
 // read.
@@ -1150,6 +1200,12 @@ void Http1::file_error(Conn &conn, const char *why)
 bool Http1::file_stat(Conn &conn, const struct statx &file_stat, size_t *want)
 {
     if (!S_ISREG(file_stat.stx_mode)) {
+        // --listings: a directory named without its trailing slash. The
+        // list itself hangs relative links under that slash, so the name
+        // with it is the one that works, and 301 is how a client is told.
+        if (listings_ && S_ISDIR(file_stat.stx_mode) && file_redirect_to_directory(conn)) {
+            return false;
+        }
         // A directory, a fifo, a device: not a representation, and saying which
         // would be the distinguishable answer this whole path avoids.
         file_reject(conn);

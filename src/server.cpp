@@ -476,7 +476,7 @@ void server_build_ring_config(mrb_state *mrb)
     // Standalone: nobody wrote a resource, so the docroot answers through
     // the folded graph and the VM is never entered for a request.
     if (standalone && docroot_fd() >= 0) {
-        http_->serve_docroot(&mime_);
+        http_->serve_docroot(&mime_, opts_.standalone_listings);
         std::fprintf(stderr, "webmachine: standalone - the docroot answers, no app\n");
     }
     // #210: the error pages render in the app's VM. A template the pack
@@ -533,6 +533,23 @@ void server_build_ring_config(mrb_state *mrb)
                          ring_config.listeners[i].cert_pem != nullptr ? ", tls" : "");
         }
     }
+    // Where this server answers, on stdout and nowhere else. Every other
+    // start line goes to stderr, so this one line is what a script reads
+    // and what an operator copies into a browser. A port the kernel chose
+    // (port = 0) is only knowable here, and this is how it is said.
+    for (uint32_t i = 0; i < ring_config.nlisteners; i++) {
+        if (ring_config.listeners[i].unix_path != nullptr) {
+            // A unix socket has no authority to write in a URL. curl takes
+            // it as --unix-socket, and this line spells that.
+            std::printf("http://localhost/ (unix socket %s)\n",
+                        ring_config.listeners[i].unix_path);
+        } else {
+            std::printf("%s://localhost:%d/\n",
+                        ring_config.listeners[i].cert_pem != nullptr ? "https" : "http",
+                        ring_->bound_port(i));
+        }
+    }
+    std::fflush(stdout);
     built_ = true;
 }
 
@@ -636,6 +653,7 @@ void server_init(mrb_state *mrb, struct RClass *webmachine_module)
     mrb_define_method_id(mrb, app_class, MRB_SYM(stop), server_method_stop, MRB_ARGS_OPT(1));
     mrb_define_module_function_id(mrb, webmachine_module, MRB_SYM_Q(stopped),
                                   server_method_is_stopped, MRB_ARGS_NONE());
+    docroot_init(mrb, webmachine_module);
 }
 
 // The tool's entry: build if Ruby has not, then loop until the stop signal.

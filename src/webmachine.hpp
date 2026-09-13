@@ -3261,6 +3261,18 @@ inline constexpr size_t kFileMapDefault = kResponseFileWindow;
 // an mrb_int on a 32-bit-integer build or the range check refuses everything.
 inline constexpr size_t kFileMapMax = 1u << 30;
 
+// --listings: how many names one generated directory page carries. The
+// page is built on the reactor thread, one stat per name, so the count
+// is what bounds that work and the size of the page. A directory with
+// more names says so at the end of the list.
+inline constexpr size_t kListingMax = 4096;
+
+// The TCP port a files-only server takes when the operator named no
+// listener. 8080 is the unprivileged port every such server has used for
+// thirty years, so a browser needs no telling. An application names its
+// own listener in its conf, so this is never an application's default.
+inline constexpr int kStandalonePort = 8080;
+
 // RFC 9110 15.5.14: what an application accepts as a request body, in
 // octets. A larger declared Content-Length gets 413 before one byte of
 // the body is read.
@@ -3381,6 +3393,11 @@ void app_registered_all(mrb_state *mrb, Registered out_value);
 
 AppSpec *app_assets_only();
 
+// --listings: the application mrblib/listing.rb registers. One route,
+// one resource, and the directory the file tier handed over is what it
+// answers.
+void app_listing(mrb_state *mrb);
+
 void app_mark_bound(mrb_state *mrb, AppSpec &spec, const char *unix_path, int port);
 
 void app_ready_run(mrb_state *mrb, AppSpec &spec);
@@ -3393,6 +3410,11 @@ namespace webmachine
 // fd is what RESOLVE_BENEATH anchors against - the kernel does the
 // confinement, this code never does path math of its own.
 void docroot_open(mrb_state *mrb, const char *path);
+
+// Webmachine.docroot_listing(path), which the listing application calls
+// and nothing else does. Defined where the docroot fd lives, because that
+// descriptor is what confines the read.
+void docroot_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 // Did an operator configure one? response.file= refuses by name when not.
 bool docroot_is_open();
@@ -3456,14 +3478,18 @@ struct ServerOptions {
     // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
     long long file_map_threshold = -1;
 
-    // --standalone: files only. No app is loaded, no route table exists,
-    // and no request enters the VM. The four below are that application's
-    // listener, pack and docroot, and they are set in no other run.
+    // Standalone: files only. Nobody named an application, so no app is
+    // loaded, no route table exists, and no request enters the VM. The
+    // five below are that application's listener, pack and docroot, and
+    // they are set in no other run.
     bool standalone = false;
     const char *standalone_unix_path = nullptr;
     int standalone_port = 0;
     const char *standalone_assets_path = nullptr;
     const char *standalone_docroot_path = nullptr;
+    // --listings: a docroot directory with no index document answers a
+    // generated list of what is in it, rather than 404.
+    bool standalone_listings = false;
 };
 
 void server_options(const ServerOptions &opts);

@@ -62,7 +62,7 @@ unless defined?(wm_server)
   # the first extra flag instead:
   #
   #   wm_server(src, '--error-log=/tmp/x.log') { |sock| }
-  #   wm_server('--standalone', "--assets=#{zip}", app: false) { |sock| }
+  #   wm_server("--assets=#{zip}", app: false) { |sock| }
   #
   # Keywords: `bin` names another binary, `env` adds environment
   # variables, `sock` names the socket path, `tag` names the log files.
