@@ -632,8 +632,29 @@ template <class App> class Ring
             // never charges anything.
             uint64_t tx_records = 0;
             uint64_t tx_limit = 0;
-            bool handshaking = true;
-            bool offloaded = false;
+            // The handover's phase, and the only state it has. It replaced
+            // two booleans - handshaking and offloaded - which between them
+            // spelled eight nominal states of which four were legal, and
+            // nothing said which. A step that found itself in the wrong one
+            // used to return, so a connection with nobody left to carry it
+            // went quiet until the sweep called it an unfinished handshake.
+            // Now tls_go raises instead, and the record says which move was
+            // refused.
+            enum class Phase : uint8_t {
+                kHandshake,  // the exchange owns the record layer
+                kKeysRead,   // the exchange agreed, and info[] holds the keys
+                kKeysArmed,  // the two setsockopts are on the ring
+                kOffloaded,  // the kernel owns the record layer
+                kRekeyArmed, // a key update's setsockopt is on the ring
+            };
+            Phase phase = Phase::kHandshake;
+            // True once the kernel encrypts what this process sends. A key
+            // update does not give that back, so it holds for kRekeyArmed
+            // too - which is what the old `offloaded` meant.
+            bool kernel_owns() const
+            {
+                return phase == Phase::kOffloaded || phase == Phase::kRekeyArmed;
+            }
             ~Tls()
             {
                 ktls_exchange_free(x);
@@ -946,7 +967,7 @@ template <class App> class Ring
         Conn &c = conns_[index];
         struct io_uring_sqe *sqe = sqe_or_submit();
         if (mrb_unlikely(c.tls != nullptr)) {
-            if (!c.tls->offloaded) {
+            if (!c.tls->kernel_owns()) {
                 // One completion at a time while the exchange runs. The moment it
                 // is done this process must stop reading: bytes it takes off the
                 // socket after that are records the kernel's own record layer is
@@ -984,6 +1005,44 @@ template <class App> class Ring
     // over. mruby-ktls names no descriptor: bytes in through feed, bytes
     // out through take, and the socket stays the reactor's. What comes out
     // of here is an ordinary send on the same slot.
+    // What the sweep says about a connection the kernel never took. The
+    // phase is the diagnosis: kHandshake is a peer that stopped talking,
+    // and any later one is this server owing a step it never took.
+    static const char *tls_phase_stalled(const Conn &conn)
+    {
+        if (conn.tls == nullptr)
+            return "tls: a handshake that never finished";
+        switch (conn.tls->phase) {
+            case Conn::Tls::Phase::kHandshake:
+                return "tls: a handshake the peer never finished";
+            case Conn::Tls::Phase::kKeysRead:
+                return "tls: the keys were read and never armed";
+            case Conn::Tls::Phase::kKeysArmed:
+                return "tls: the keys were armed and the kernel never answered";
+            default:
+                break;
+        }
+        return "tls: a handshake that never finished";
+    }
+
+    // The one move between phases. `what` is what the error log says when
+    // the move is refused, so every call site names its own step rather
+    // than sharing one message.
+    //
+    // A refused move is this server's own bug - the thrower packed its word
+    // wrong - so it raises. conn_failed is [[noreturn]] and throws
+    // ConnFailed; the catch in handle() writes the record with the peer on
+    // it and closes. That is the whole point of having phases: a step that
+    // cannot go on says so, rather than returning and leaving a connection
+    // nobody will carry.
+    void tls_go(uint32_t index, Conn::Tls::Phase from, Conn::Tls::Phase to, const char *what)
+    {
+        Conn &c = conns_[index];
+        if (mrb_unlikely(c.tls == nullptr || c.tls->phase != from))
+            conn_failed(what, -EPROTO);
+        c.tls->phase = to;
+    }
+
     void tls_advance(uint32_t index)
     {
         Conn &c = conns_[index];
@@ -1018,7 +1077,8 @@ template <class App> class Ring
         // ktls.h asks for: the backlog first, because draining it can consume
         // a post-handshake record, and the crypto_info last, because that is
         // where the record sequence is finally settled.
-        c.tls->handshaking = false;
+        tls_go(index, Conn::Tls::Phase::kHandshake, Conn::Tls::Phase::kKeysRead,
+               "tls: the exchange agreed twice on one connection");
         for (;;) {
             char chunk[4096];
             const size_t count = ktls_exchange_backlog(c.tls->x, chunk, sizeof chunk);
@@ -1061,6 +1121,8 @@ template <class App> class Ring
     void tls_handover(uint32_t index)
     {
         Conn &c = conns_[index];
+        tls_go(index, Conn::Tls::Phase::kKeysRead, Conn::Tls::Phase::kKeysArmed,
+               "tls: the keys were armed from a phase that does not hold them");
         if (io_uring_sq_space_left(&ring_) < 2)
             io_uring_submit(&ring_);
         struct io_uring_sqe *sqe = sqe_or_submit();
@@ -1089,14 +1151,17 @@ template <class App> class Ring
     void tls_next_receive_key(uint32_t index)
     {
         Conn &c = conns_[index];
+        tls_go(index, Conn::Tls::Phase::kOffloaded, Conn::Tls::Phase::kRekeyArmed,
+               "tls: a receive key was turned while another turn was on the ring");
         if (mrb_unlikely(ktls_next_key(c.tls->x, KTLS_RX) != 0)) {
             conn_failed("tls: the key update could not be answered");
         }
         size_t len = 0;
         const void *info = ktls_crypto_info(c.tls->x, KTLS_RX, &len);
+        // A shape the kernel will not take is this server's own bug, not a
+        // connection's bad day. It used to close without a word.
         if (mrb_unlikely(info == nullptr || len > sizeof c.tls->info[KTLS_RX])) {
-            begin_close(index);
-            return;
+            conn_failed("tls: the turned receive key is not a shape the kernel takes", -EPROTO);
         }
         std::memcpy(c.tls->info[KTLS_RX], info, len);
         c.tls->info_len[KTLS_RX] = len;
@@ -1140,17 +1205,20 @@ template <class App> class Ring
         if (!c.live || c.gen != gen || c.tls == nullptr)
             return;
         if (mrb_unlikely(cqe->res < 0)) {
-            conn_failed(c.tls->offloaded ? "tls: setsockopt(TLS_RX) for a key update"
-                                         : "tls: setsockopt(TLS_RX)",
+            conn_failed(c.tls->kernel_owns() ? "tls: setsockopt(TLS_RX) for a key update"
+                                             : "tls: setsockopt(TLS_RX)",
                         cqe->res);
         }
         // A KeyUpdate lands here too - same option, same completion - and
         // there is no backlog and no deadline to reset for that one.
-        if (c.tls->offloaded) {
+        if (c.tls->phase == Conn::Tls::Phase::kRekeyArmed) {
+            tls_go(idx, Conn::Tls::Phase::kRekeyArmed, Conn::Tls::Phase::kOffloaded,
+                   "tls: a key update landed on a connection that was not turning one");
             arm_recv(idx);
             return;
         }
-        c.tls->offloaded = true;
+        tls_go(idx, Conn::Tls::Phase::kKeysArmed, Conn::Tls::Phase::kOffloaded,
+               "tls: the kernel took keys this connection never armed");
         c.tls->tx_limit = ktls_record_limit(c.tls->x);
         c.tls->tx_records = 0;
         c.deadline_s = now_s_ + header_timeout_;
@@ -1192,10 +1260,11 @@ template <class App> class Ring
     bool tls_turn_send_key(uint32_t index)
     {
         Conn &c = conns_[index];
-        if (c.tls == nullptr || !c.tls->offloaded)
+        if (c.tls == nullptr || c.tls->phase != Conn::Tls::Phase::kOffloaded)
             return false;
         if (c.tls->tx_limit == 0 || c.tls->tx_records < c.tls->tx_limit)
             return false;
+        c.tls->phase = Conn::Tls::Phase::kRekeyArmed;
         if (mrb_unlikely(ktls_next_key(c.tls->x, KTLS_TX) != 0)) {
             conn_failed("tls: the send key could not be turned before its record limit");
         }
@@ -1266,6 +1335,8 @@ template <class App> class Ring
         // nobody on the other side has.
         if (mrb_unlikely(cqe->res < 0))
             conn_failed("tls: setsockopt(TLS_TX) for a record limit", cqe->res);
+        tls_go(idx, Conn::Tls::Phase::kRekeyArmed, Conn::Tls::Phase::kOffloaded,
+               "tls: a send key landed on a connection that was not turning one");
         send_done(idx);
     }
 
@@ -1313,7 +1384,7 @@ template <class App> class Ring
         // the round, its lent body and its slot for as long as it liked.
         c.deadline_s = now_s_ + send_timeout_;
         struct io_uring_sqe *sqe = sqe_or_submit();
-        const bool resumes = c.tls != nullptr && c.tls->offloaded;
+        const bool resumes = c.tls != nullptr && c.tls->kernel_owns();
         const int flags =
             MSG_NOSIGNAL | (resumes ? 0 : MSG_WAITALL) | (app_.pending(c.app) ? MSG_MORE : 0);
         if (c.msg_iovlen == 0) {
@@ -1367,7 +1438,7 @@ template <class App> class Ring
     void arm_close_notify(uint32_t index)
     {
         Conn &c = conns_[index];
-        if (c.tls == nullptr || !c.tls->offloaded)
+        if (c.tls == nullptr || !c.tls->kernel_owns())
             return;
         const int cmsg_type = ktls_record_type_set_cmsg();
         if (mrb_unlikely(cmsg_type < 0))
@@ -1550,7 +1621,7 @@ template <class App> class Ring
             rearm_.push_back({idx, c.gen});
             return;
         }
-        if (completion->res < 0 && c.tls != nullptr && c.tls->offloaded) {
+        if (completion->res < 0 && c.tls != nullptr && c.tls->kernel_owns()) {
             conn_failed("tls: recvmsg on an offloaded socket", completion->res);
         }
         begin_close(idx);
@@ -1681,7 +1752,7 @@ template <class App> class Ring
     // The App will take nothing more on this connection.
     void round_closed(uint32_t index, Conn &conn)
     {
-        if (conn.tls != nullptr && conn.tls->offloaded) {
+        if (conn.tls != nullptr && conn.tls->kernel_owns()) {
             conn_failed("tls: the parser refused what the kernel decrypted", -EPROTO);
         }
         if (conn.sending)
@@ -1761,7 +1832,7 @@ template <class App> class Ring
         const size_t offset = static_cast<size_t>(bid0) * kBufSize;
         replenish_++;
 
-        if (c.tls->handshaking) {
+        if (c.tls->phase == Conn::Tls::Phase::kHandshake) {
             if (mrb_unlikely(total > kBufSize ||
                              ktls_exchange_feed(c.tls->x, pool_ + offset, total) != 0)) {
                 conn_failed("tls: the peer's handshake bytes were refused");
@@ -1848,7 +1919,7 @@ template <class App> class Ring
             // Nobody retried this one, so what is left is still owed and the
             // stream carries on where it stopped. That is the one thing a
             // half-written response can do; what it cannot do is start again.
-            if (mrb_unlikely(c.tls != nullptr) && c.tls->offloaded) {
+            if (mrb_unlikely(c.tls != nullptr) && c.tls->kernel_owns()) {
                 send_resume(index, c, took);
                 return;
             }
@@ -1856,7 +1927,7 @@ template <class App> class Ring
             return;
         }
         c.deadline_s = now_s_ + send_timeout_;
-        if (mrb_unlikely(c.tls != nullptr) && c.tls->offloaded)
+        if (mrb_unlikely(c.tls != nullptr) && c.tls->kernel_owns())
             tls_charge_records(c, took);
         c.out.clear();
         c.out_sent = 0;
@@ -1874,7 +1945,7 @@ template <class App> class Ring
     // A send the kernel refused outright.
     void send_refused(uint32_t index, Conn &conn, int out_error)
     {
-        if (conn.tls != nullptr && conn.tls->offloaded) {
+        if (conn.tls != nullptr && conn.tls->kernel_owns()) {
             conn_failed("tls: send on an offloaded socket", out_error);
         }
         begin_close(index);
@@ -1905,9 +1976,14 @@ template <class App> class Ring
         Conn &c = conns_[index];
         // The handshake's own bytes, now on the wire as themselves. Only once
         // nothing is left may the kernel be given the write key.
-        if (mrb_unlikely(c.tls != nullptr) && !c.tls->offloaded) {
+        if (mrb_unlikely(c.tls != nullptr) && !c.tls->kernel_owns()) {
             if (c.next.empty()) {
-                if (c.tls->handshaking)
+                // Mid-handshake the peer owes the next flight; with the keys
+                // already read, this send was the last of the handshake and
+                // the kernel may have them now. tls_handover raises if the
+                // phase is neither, rather than leaving the connection to
+                // the sweep.
+                if (c.tls->phase == Conn::Tls::Phase::kHandshake)
                     arm_recv(index);
                 else
                     tls_handover(index);
@@ -2828,11 +2904,11 @@ template <class App> class Ring
                             sqe->flags |= IOSQE_FIXED_FILE;
                             io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, conn.gen, i));
                         }
-                    } else if (mrb_unlikely(conn.tls != nullptr) && !conn.tls->offloaded) {
+                    } else if (mrb_unlikely(conn.tls != nullptr) && !conn.tls->kernel_owns()) {
                         // A TLS connection that ran out of time before the kernel
-                        // ever got its keys did not just go idle.
-                        connection_failed(
-                            i, ConnFailed{"tls: a handshake that never finished", -ETIMEDOUT});
+                        // ever got its keys did not just go idle. Which phase it
+                        // sat in is the whole diagnosis, so the record says it.
+                        connection_failed(i, ConnFailed{tls_phase_stalled(conn), -ETIMEDOUT});
                     } else if (app_.going_away(conn.app, conn.out)) {
                         // RFC 6455 7.1.1: a WebSocket hears a Close frame before the
                         // socket goes. The send carries it and closes behind it.
