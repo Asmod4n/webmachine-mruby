@@ -447,6 +447,14 @@ struct H2State {
     // and the connection ends.
     uint32_t lies = 0;
 
+    // RFC 9113 8.1: how many streams this connection has reset inside the
+    // window that began at resets_window_began, counting both directions.
+    // A reset frees the stream slot at once, so MAX_CONCURRENT_STREAMS
+    // bounds nothing here: a peer opens a stream, cancels it, opens the
+    // next, and the count of open streams never leaves one.
+    uint32_t resets = 0;
+    int64_t resets_window_began = 0;
+
     std::string frag;
     uint32_t frag_stream = 0;
     uint8_t frag_flags = 0;
@@ -2676,6 +2684,7 @@ class Http1
     bool h2_error(Conn &conn, uint32_t code, std::string &sink);
     void h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::string &sink);
     bool h2_count_lie(Conn &conn, uint32_t stream_id, std::string &sink);
+    void h2_count_reset(Conn &conn);
     // RFC 9110 15.6.1: response.file has no HTTP/2 path yet - a run that
     // named one is refused rather than served the empty body it never meant
     // to send. Its own function because those fifteen lines are not part of

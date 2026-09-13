@@ -1898,6 +1898,130 @@ assert('h2: a body that breaks its declared length ends the stream, and a run of
   end
 end
 
+# #9: RFC 9113 8.1 and CVE-2023-44487. A reset frees the stream slot at
+# once, so MAX_CONCURRENT_STREAMS bounds nothing: a peer opens a stream,
+# cancels it, opens the next, and the count of open streams stays at one.
+# The server counts the resets instead, in both directions, and ends a
+# connection that goes above the budget.
+
+# A request head that inserts nothing in the HPACK table. The authority
+# goes out as a literal without indexing, so a hundred of these heads
+# leave the dynamic table as they found it.
+def h2_plain_get_block
+  "\x82\x86\x84\x01\x0bexample.com".b
+end
+
+def h2_plain_post_block(len)
+  "\x02\x04POST\x86\x84\x01\x0bexample.com".b + h2_lit('content-length', len.to_s)
+end
+
+# Walks the frames a buffer already holds and returns the payload of the
+# first GOAWAY in it, or nil.
+def h2_goaway_in(buffer)
+  at = 0
+  while buffer.bytesize - at >= 9
+    len = (buffer.getbyte(at) << 16) | (buffer.getbyte(at + 1) << 8) | buffer.getbyte(at + 2)
+    break if buffer.bytesize - at - 9 < len
+    return buffer[at + 9, len] if buffer.getbyte(at + 3) == 7
+    at += 9 + len
+  end
+  nil
+end
+
+# Appends whatever the server has already sent. Returns false at the end
+# of the stream.
+def h2_read_available(s, buffer, seconds = 0)
+  while IO.select([s], nil, nil, seconds)
+    begin
+      buffer << s.read_nonblock(65_536)
+    rescue IO::WaitReadable
+      return true
+    rescue EOFError, Errno::ECONNRESET
+      return false
+    end
+    seconds = 0
+  end
+  true
+end
+
+# Sends `count` resets, one at a time, and reads between them. The server
+# ends the connection in the middle of the run, so a write that follows
+# the GOAWAY raises EPIPE - which is the server doing its job, not a
+# failure of the test. Returns the GOAWAY payload or nil.
+def h2_reset_burst(s, count)
+  buffer = +''.b
+  id = 1
+  count.times do
+    begin
+      yield(s, id)
+    rescue Errno::EPIPE, Errno::ECONNRESET
+      break
+    end
+    id += 2
+    h2_read_available(s, buffer)
+    break if h2_goaway_in(buffer)
+  end
+  deadline = Time.now + 5
+  while h2_goaway_in(buffer).nil? && Time.now < deadline
+    break unless h2_read_available(s, buffer, 0.2)
+  end
+  h2_goaway_in(buffer)
+end
+
+def h2_rst_frame(id, code)
+  h2_frame(3, 0, id, [code].pack('N'))
+end
+
+assert('h2: a run of stream resets ends the connection (9113 8.1)') do
+  h2_server do |sock|
+    # The client sends the resets. This is Rapid Reset itself.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      goaway = h2_reset_burst(s, 110) do |conn, id|
+        conn.write(h2_frame(1, 0x05, id, h2_plain_get_block))
+        conn.write(h2_rst_frame(id, 8))
+      end
+      assert_true goaway != nil, 'a hundred and ten client resets must end the connection'
+      assert_equal 11, goaway[4, 4].unpack1('N'), 'the code must be ENHANCE_YOUR_CALM'
+    end
+    # The client sends no reset at all. Every WINDOW_UPDATE here lifts one
+    # stream window above the ceiling, and RFC 9113 6.9.1 makes the server
+    # reset that stream itself. This is the shape MadeYouReset uses, and a
+    # count of only the peer's RST_STREAM frames sees nothing of it.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      goaway = h2_reset_burst(s, 110) do |conn, id|
+        conn.write(h2_frame(1, 0x04, id, h2_plain_post_block(40)))
+        conn.write(h2_frame(8, 0, id, [0x7fffffff].pack('N')))
+      end
+      assert_true goaway != nil, 'a hundred and ten server resets must end the connection'
+      assert_equal 11, goaway[4, 4].unpack1('N'), 'the code must be ENHANCE_YOUR_CALM'
+    end
+    # A cancelled fetch is one reset, and a handful of them is an honest
+    # client. The connection must live and must still answer.
+    UNIXSocket.open(sock) do |s|
+      h2_handshake(s)
+      id = 1
+      10.times do
+        s.write(h2_frame(1, 0x05, id, h2_plain_get_block))
+        s.write(h2_rst_frame(id, 8))
+        id += 2
+      end
+      s.write(h2_frame(1, 0x05, id, h2_plain_get_block))
+      # The ten cancelled streams are answered as well, so the HEADERS of
+      # the eleventh is not the next frame on the wire.
+      answer = nil
+      30.times do
+        frame = h2_next(s)
+        answer = frame if frame[0] == 1 && frame[2] == id
+        break if answer
+      end
+      assert_true answer != nil, "no answer arrived on stream #{id}"
+      assert_equal 0x88, answer[3].getbyte(0), 'the request after ten resets must answer 200'
+    end
+  end
+end
+
 # #54: a run that stops keeps its request. The dispatch's decode buffer
 # is reused by the next stream, so a parked run reads a copy it holds
 # itself - and before this it was given no view and no values at all.

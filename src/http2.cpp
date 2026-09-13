@@ -19,6 +19,19 @@ constexpr size_t kH2FragBudget = kMaxHead * 2;
 // Four leaves room for a client with a defect and ends a client that
 // makes the defect its method.
 constexpr uint32_t kH2LieBudget = 4;
+
+// RFC 9113 8.1: how many streams one connection may reset inside
+// kH2ResetWindow seconds before the connection itself ends. A cancelled
+// fetch is one reset and costs one stream; a hundred of them in ten
+// seconds is a peer spending this server's time on purpose.
+//
+// The numbers other servers chose: nginx 256 per event loop pass, Netty
+// 200 in 30 seconds, Helidon 100 in 10 seconds. This is Helidon's, the
+// strictest of the three, because one core here answers about a million
+// requests a second and a hundred resets in ten seconds is already far
+// above any honest client.
+constexpr uint32_t kH2ResetBudget = 100;
+constexpr int64_t kH2ResetWindow = 10;
 constexpr size_t kH2MergeBody = 1024;
 
 // RFC 9113 4.1: a 32-bit field, network order.
@@ -424,6 +437,32 @@ bool Http1::h2_count_lie(Conn &conn, uint32_t stream_id, std::string &sink)
     return h2_error(conn, kH2EnhanceYourCalm, sink);
 }
 
+// RFC 9113 8.1: one reset, counted inside a window of kH2ResetWindow
+// seconds. Both directions raise this, and that is the whole point.
+//
+// Rapid Reset (CVE-2023-44487, 2023) sends the RST_STREAM frames from the
+// client, so counting the peer's frames finds it. MadeYouReset (2025)
+// sends none: it sends legal-looking WINDOW_UPDATE, HEADERS or PRIORITY
+// frames that break a rule, and the server resets its own stream in
+// answer. A count of only the peer's resets sees nothing at all.
+//
+// Each opened stream costs an HPACK decode, a route match and a dispatch.
+// It costs the peer one 13-octet frame.
+//
+// sec_ is the coarse second clock_tick keeps, so the window costs no
+// syscall. The frame loop tests the budget once per frame, because that
+// loop is the one place that ends the connection.
+void Http1::h2_count_reset(Conn &conn)
+{
+    H2State &h2_state = *conn.h2;
+    if (sec_ - h2_state.resets_window_began >= kH2ResetWindow) {
+        h2_state.resets_window_began = sec_;
+        h2_state.resets = 0;
+    }
+    if (h2_state.resets != 0xffffffffu)
+        h2_state.resets++;
+}
+
 // RFC 9113 6.4: a stream error - the stream dies, the connection lives.
 void Http1::h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::string &sink)
 {
@@ -431,6 +470,7 @@ void Http1::h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::
     u32_put(payload, code);
     control_frame_emit(sink, {kH2RstStream, 0, stream_id, payload});
     conn.h2->close_stream(stream_id);
+    h2_count_reset(conn);
 }
 
 // RFC 9113 5.1.2: a client opens streams as fast as the settings allow,
@@ -2603,6 +2643,14 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
             return h2_error(conn, kH2ProtocolError, sink);
         }
 
+        // RFC 9113 8.1: the reset budget. The test sits here because this
+        // is the one place in the frame walk that ends the connection. A
+        // peer above the budget dies at the next frame it sends, and that
+        // frame is at most one frame after the reset that spent the last
+        // of the budget.
+        if (mrb_unlikely(h2_state.resets > kH2ResetBudget))
+            return h2_error(conn, kH2EnhanceYourCalm, sink);
+
         switch (type) {
             case kH2Data: {
                 if (frame_stream_id == 0)
@@ -2878,6 +2926,7 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     return h2_error(conn, kH2ProtocolError, sink);
                 }
                 h2_state.close_stream(frame_stream_id);
+                h2_count_reset(conn);
                 break;
 
             case kH2Settings: {
