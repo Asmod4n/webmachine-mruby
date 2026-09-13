@@ -205,18 +205,18 @@ void head_spell(std::string &sink, const SpelledHead &head)
 } // namespace
 
 // One of build_variants' three spellings, its date offset noted.
-void Http1::build_one_variant(Resp &round, Prebuilt bytes)
+void Http1::build_one_variant(Resp &response, Prebuilt bytes)
 {
-    round.bytes.clear();
+    response.bytes.clear();
     char line[16];
     line[0] = static_cast<char>('0' + bytes.status / 100);
     line[1] = static_cast<char>('0' + (bytes.status / 10) % 10);
     line[2] = static_cast<char>('0' + bytes.status % 10);
     line[3] = '\0';
-    round.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(bytes.status));
-    round.bytes.append("\r\nDate: ");
-    round.date_off = round.bytes.size();
-    round.bytes.append(bytes.date)
+    response.bytes.append("HTTP/1.1 ").append(line).append(" ").append(http::reason(bytes.status));
+    response.bytes.append("\r\nDate: ");
+    response.date_off = response.bytes.size();
+    response.bytes.append(bytes.date)
         .append("\r\n")
         .append(bytes.conn)
         .append(bytes.extra)
@@ -232,12 +232,12 @@ void Http1::copy_without_tail(const Resp &src, Resp &dst, size_t cut)
 
 // A 200 or 500 head that stops before Content-Length, for a body the run
 // has yet to produce. `enc` carries whatever Vary/Content-Encoding applies.
-void Http1::build_open_prefix(Resp &round, OpenPrefix bytes)
+void Http1::build_open_prefix(Resp &response, OpenPrefix bytes)
 {
-    round.bytes.clear();
-    round.bytes.append(bytes.status_line).append("\r\nDate: ");
-    round.date_off = round.bytes.size();
-    round.bytes.append(kDatePlaceholder)
+    response.bytes.clear();
+    response.bytes.append(bytes.status_line).append("\r\nDate: ");
+    response.date_off = response.bytes.size();
+    response.bytes.append(kDatePlaceholder)
         .append("\r\n")
         .append(bytes.conn)
         .append(bytes.extra)
@@ -273,11 +273,11 @@ void Http1::build_status(uint16_t status, StatusText status_text)
 {
     Variants value;
     build_variants(value, {status, status_text.extra, status_text.body, kDatePlaceholder});
-    Variants bytes;
-    build_variants(bytes, {status, status_text.extra, "", kDatePlaceholder});
+    Variants variants;
+    build_variants(variants, {status, status_text.extra, "", kDatePlaceholder});
     index_[status] = static_cast<uint16_t>(store_.size());
     store_.push_back(std::move(value));
-    store_prefix_.push_back(std::move(bytes));
+    store_prefix_.push_back(std::move(variants));
 }
 
 // RFC 9110 5.6.7: the 29 date bytes, once a second, in place.
@@ -610,7 +610,7 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     const uint16_t asset_status = tier->entry_verdict(*asset_entry, {round.facts, round.vals});
     const AssetStep step =
         asset_step(*asset_entry, {asset_status, round.head_only, round.facts.method, round.vals});
-    const Assets::ConnectionOption conn =
+    const Assets::ConnectionOption connection_option =
         round.minor >= 1 ? (round.persist ? Assets::kNoConnectionField : Assets::kConnClose)
                          : (round.persist ? Assets::kKeepAlive : Assets::kConnClose);
     // #210: a refusal this tier owns is a 4xx like any other, and a 4xx
@@ -634,7 +634,7 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     }
     Assets::HeadAsk head{*asset_entry};
     head.status_code = step.status_code;
-    head.conn = conn;
+    head.conn = connection_option;
     head.date = date_;
     head.unix_seconds = sec_;
     head.first_byte_pos = step.first_byte_pos;

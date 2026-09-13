@@ -1893,9 +1893,9 @@ class Http1
     // inlined twice it put 379 bytes of decoder into feed_parse, which
     // every request walks. nm -S on the host build decided it.
     // RFC 9110 5.6.2: the octets a token may carry.
-    static bool chunk_tchar(char conn);
+    static bool chunk_tchar(char letter);
 
-    static bool chunk_hex(char conn);
+    static bool chunk_hex(char letter);
 
     // RFC 9112 7.1.1: one chunk-size line, without its CRLF.
     //
@@ -2069,11 +2069,11 @@ class Http1
     };
     // What the connection allows this round: what is left of its own flow
     // window, and the largest copy this round is willing to make.
-    struct RoundRoom {
+    struct stream {
         int64_t conn_window;
         size_t chunk;
     };
-    static H2SendStep h2_send_step(const H2Stream &sqe, RoundRoom room);
+    static H2SendStep h2_send_step(const H2Stream &sqe, stream room);
 
     // What the asset tier does with one request: computed here, performed
     // by the caller. One value, so nothing is decided inside a branch that

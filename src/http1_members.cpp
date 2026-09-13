@@ -139,10 +139,10 @@ H2Stream &H2State::open(uint32_t stream_id)
     if (H2Stream *st = find(stream_id))
         return *st;
     streams.emplace_back();
-    H2Stream &conn = streams.back();
-    conn.id = stream_id;
-    conn.flow_window = peer_initial_window;
-    return conn;
+    H2Stream &stream = streams.back();
+    stream.id = stream_id;
+    stream.flow_window = peer_initial_window;
+    return stream;
 }
 
 void H2State::content_retire(H2Stream &sqe)

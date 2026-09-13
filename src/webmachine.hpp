@@ -1410,15 +1410,15 @@ namespace webmachine::http
 // RFC 9110 5.1: case-insensitive equality against a lowercase literal.
 constexpr bool tok_eq(std::string_view text, std::string_view lit)
 {
-    const char *const sqe = text.data();
+    const char *const text_bytes = text.data();
     const size_t count = text.size();
     if (count != lit.size())
         return false;
     for (size_t i = 0; i < count; i++) {
-        char conn = sqe[i];
-        if (conn >= 'A' && conn <= 'Z')
-            conn = static_cast<char>(conn + 32);
-        if (conn != lit[i])
+        char letter = text_bytes[i];
+        if (letter >= 'A' && letter <= 'Z')
+            letter = static_cast<char>(letter + 32);
+        if (letter != lit[i])
             return false;
     }
     return true;

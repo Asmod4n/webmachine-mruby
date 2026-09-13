@@ -144,20 +144,20 @@ BodySpill *Http1::spill_waiting(Conn &conn)
     return spill_waiting_h2(conn);
 }
 
-bool Http1::chunk_tchar(char conn)
+bool Http1::chunk_tchar(char letter)
 {
-    const unsigned char decoded = static_cast<unsigned char>(conn);
+    const unsigned char decoded = static_cast<unsigned char>(letter);
     return (decoded >= 'a' && decoded <= 'z') || (decoded >= 'A' && decoded <= 'Z') ||
-           (decoded >= '0' && decoded <= '9') || conn == '!' || conn == '#' || conn == '$' ||
-           conn == '%' || conn == '&' || conn == '\'' || conn == '*' || conn == '+' ||
-           conn == '-' || conn == '.' || conn == '^' || conn == '_' || conn == '`' || conn == '|' ||
-           conn == '~';
+           (decoded >= '0' && decoded <= '9') || letter == '!' || letter == '#' || letter == '$' ||
+           letter == '%' || letter == '&' || letter == '\'' || letter == '*' || letter == '+' ||
+           letter == '-' || letter == '.' || letter == '^' || letter == '_' || letter == '`' ||
+           letter == '|' || letter == '~';
 }
 
-bool Http1::chunk_hex(char conn)
+bool Http1::chunk_hex(char letter)
 {
-    return (conn >= '0' && conn <= '9') || (conn >= 'a' && conn <= 'f') ||
-           (conn >= 'A' && conn <= 'F');
+    return (letter >= '0' && letter <= '9') || (letter >= 'a' && letter <= 'f') ||
+           (letter >= 'A' && letter <= 'F');
 }
 
 __attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *bytes, size_t count)
@@ -347,7 +347,7 @@ Http1::AnswerStep Http1::answer_step(const AnswerFacts &field)
     return s;
 }
 
-Http1::H2SendStep Http1::h2_send_step(const H2Stream &sqe, RoundRoom room)
+Http1::H2SendStep Http1::h2_send_step(const H2Stream &sqe, stream room)
 {
     const int64_t conn_window = room.conn_window;
     const size_t chunk = room.chunk;

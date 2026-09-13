@@ -493,14 +493,14 @@ void Assets::head_patch_date(AssetEntry::Head &head, DateStamp when)
 void Assets::head_answer(const HeadAsk &head_ask, std::string &sink)
 {
     const uint16_t status_code = head_ask.status_code;
-    const ConnectionOption conn = head_ask.conn;
+    const ConnectionOption connection_option = head_ask.conn;
     // A refusal the caller has a page for cannot take the prebuilt head:
     // that one declares no body, and a page's length is not known until
     // there is a page. The fields are the same either way.
     if (head_ask.body_type != nullptr && (status_code == 405 || status_code == 406)) {
         sink.append(status_code == 405 ? kStatus405 : kStatus406).append("\r\nDate: ");
         sink.append(head_ask.date, http::kDateLen);
-        sink.append("\r\n").append(kConnectionLine[conn]);
+        sink.append("\r\n").append(kConnectionLine[connection_option]);
         sink.append(status_code == 405 ? kAllowField : kVaryField);
         sink.append("Content-Type: ").append(head_ask.body_type).append("\r\n");
         sink.append("Content-Length: ")
@@ -511,16 +511,16 @@ void Assets::head_answer(const HeadAsk &head_ask, std::string &sink)
     AssetEntry::Head *head;
     switch (status_code) {
         case 200:
-            head = &head_ask.entry.head_200[conn];
+            head = &head_ask.entry.head_200[connection_option];
             break;
         case 304:
-            head = &head_ask.entry.head_304[conn];
+            head = &head_ask.entry.head_304[connection_option];
             break;
         case 405:
-            head = &s405_[conn];
+            head = &s405_[connection_option];
             break;
         default:
-            head = &s406_[conn];
+            head = &s406_[connection_option];
             break;
     }
     head_patch_date(*head, {head_ask.date, head_ask.unix_seconds});

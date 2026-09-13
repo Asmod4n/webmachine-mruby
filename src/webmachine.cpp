@@ -375,18 +375,18 @@ int hex_digit(char character)
 
 ClStatus parse_content_length(std::string_view value, size_t *out_value)
 {
-    const char *const sqe = value.data();
+    const char *const value_bytes = value.data();
     const size_t count = value.size();
     if (count == 0)
         return ClStatus::kBad;
     size_t acc = 0;
     for (size_t j = 0; j < count; j++) {
-        const char character = sqe[j];
-        if (character < '0' || character > '9')
+        const char letter = value_bytes[j];
+        if (letter < '0' || letter > '9')
             return ClStatus::kBad;
         size_t text = 0;
         if (__builtin_mul_overflow(acc, static_cast<size_t>(10), &text) ||
-            __builtin_add_overflow(text, static_cast<size_t>(character - '0'), &acc)) {
+            __builtin_add_overflow(text, static_cast<size_t>(letter - '0'), &acc)) {
             return ClStatus::kOverflow;
         }
     }
