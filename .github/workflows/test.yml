@@ -3,8 +3,19 @@ name: test
 # A push that changes only documentation runs nothing: the suite
 # answers for the code, and the docs are not read by it. A tag push
 # ignores the path filter, so a release still runs everything.
+#
+# `push` names the two branches and the tags, and nothing else. Without
+# that list every push to a branch with a pull request open fired this
+# workflow twice - once as `push` and once as `pull_request` - for the
+# same commit. A topic branch now runs through `pull_request` alone, and
+# `next` and `master` through `push` alone.
 on:
   push:
+    branches:
+      - master
+      - next
+    tags:
+      - '*'
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -12,6 +23,14 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**.md'
+
+# One run per branch at a time. A second push while the first run is
+# still going cancels it, because the older commit is not what anybody
+# waits for. The sanitizer jobs take seven minutes each, so two live runs
+# of the same branch spend the runners twice over.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
