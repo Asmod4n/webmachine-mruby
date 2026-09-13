@@ -586,6 +586,7 @@ void Http1::clock_tick()
 void Http1::answer_assemble(std::string &sink, const Assembled &asset_ask)
 {
     sink.append(asset_ask.prefix.bytes);
+    sink.append(asset_ask.extra);
     char content_length[40];
     sink.append(content_length, http::spell_content_length(content_length, asset_ask.body.size()));
     if (!asset_ask.head_only)
@@ -600,15 +601,22 @@ void Http1::assemble_dynamic(const DynamicBody &dynamic_body, std::string &sink)
     if (dynamic_body.may_gzip) {
         char content_length[40];
         const size_t cl_len = http::spell_content_length(content_length, dynamic_body.body.size());
-        if (dynamic_body.prefix_id.bytes.size() + cl_len + dynamic_body.body.size() >=
+        // The floor weighs the whole message, so every byte that goes on
+        // the wire counts - the field lines this call adds beside the
+        // prebuilt prefix included.
+        if (dynamic_body.prefix_id.bytes.size() + dynamic_body.extra.size() + cl_len +
+                dynamic_body.body.size() >=
             kCompressFloor) {
             use_gzip = gzip::compress(dynamic_body.body, gz_body_);
         }
     }
     if (use_gzip)
-        answer_assemble(sink, {dynamic_body.prefix_gz, gz_body_, dynamic_body.head_only});
+        answer_assemble(sink,
+                        {dynamic_body.prefix_gz, gz_body_, dynamic_body.head_only,
+                         dynamic_body.extra});
     else
-        answer_assemble(sink, {dynamic_body.prefix_id, dynamic_body.body, dynamic_body.head_only});
+        answer_assemble(sink, {dynamic_body.prefix_id, dynamic_body.body, dynamic_body.head_only,
+                               dynamic_body.extra});
 }
 
 // RFC 9112: wire invalidity - framing trust is gone, the connection ends.
@@ -894,6 +902,12 @@ bool Http1::answer_from_file(Round &round, uint16_t status, const std::string &r
         conn.file = new Conn::FileXfer();
     conn.file->pathname.assign(wanted.name);
     conn.file->field_lines = rhdrs;
+    // RFC 9111: response.file under a target that ends in "/" - an index
+    // document named by its directory. See target_names_a_directory.
+    if (http::target_names_a_directory({round.path, round.path_len}) &&
+        !http::freshness_is_stated(conn.file->field_lines)) {
+        conn.file->field_lines.append(http::kNoCacheLine);
+    }
     conn.file->content_type = !round.b->res->run.content_type.empty()
                                   ? http::with_charset(round.b->res->run.content_type)
                                   : round.b->konst.content_type;
@@ -978,6 +992,10 @@ Http1::Took Http1::answer_from_docroot(Round &round)
     std::string name;
     std::string decoded_name;
     bool undecodable = false;
+    // RFC 9111: the index document of a directory wears the directory's
+    // name, and that name does not change when the document does. See
+    // target_names_a_directory.
+    bool names_a_directory = false;
     switch (target_decode(round.path, length, decoded_name)) {
         case TargetName::kAsIs:
             if (length > 1)
@@ -1001,6 +1019,7 @@ Http1::Took Http1::answer_from_docroot(Round &round)
         if (listings_)
             return Took::kNo;
         name.append("index.html");
+        names_a_directory = true;
     }
 
     // A name this process can refuse without asking the kernel. openat2
@@ -1022,6 +1041,8 @@ Http1::Took Http1::answer_from_docroot(Round &round)
         conn.file = new Conn::FileXfer();
     conn.file->pathname.assign(name);
     conn.file->field_lines.clear();
+    if (names_a_directory)
+        conn.file->field_lines.append(http::kNoCacheLine);
     conn.file->content_type = http::with_charset(mime_->type_of(name));
     conn.file->minor = round.minor;
     conn.file->persist = round.persist;
@@ -1712,6 +1733,15 @@ Http1::Took Http1::bound_finish(Round &round, const BoundAsk &request_ask, Bound
         // here, so the bake has to be named, or this answer goes out empty.
         const bool baked = !bodyless && !have_body && lent == nullptr && status == 200 &&
                            !block->dynamic_body && !block->konst.body.empty();
+        // RFC 9111: this run spells its own head, so the directory rule is
+        // written straight into the field lines it carries. The prefix
+        // shapes of the answer switch take it through `no_cache` below,
+        // because appending here would make every "/" look like a run with
+        // field lines and cost it the gzip path.
+        if (status < 400 && http::target_names_a_directory({round.path, round.path_len}) &&
+            !http::freshness_is_stated(request_ask.rhdrs)) {
+            request_ask.rhdrs.append(http::kNoCacheLine);
+        }
         std::string ctype;
         std::string epage;
         // RFC 9110 15: a 4xx or 5xx is owed the page its status carries,

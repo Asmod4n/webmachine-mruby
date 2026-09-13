@@ -530,6 +530,16 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling spelling)
     AnswerStep astep =
         answer_step({status, spelling.body.size(), lent_len, answered, have_body, lent != nullptr,
                      b != nullptr && b->gzip_ok, b != nullptr && b->bound});
+    // RFC 9111: a target that ends in "/" names a page whose bytes change
+    // under a name that does not, so a cache may not guess how long it
+    // stays fresh (see target_names_a_directory). A run that spelled field
+    // lines of its own wrote this into them already and never reaches the
+    // prefix shapes below; these three carry a prebuilt prefix that every
+    // target of the route shares, so the line goes in beside it.
+    const std::string_view no_cache =
+        (status < 400 && http::target_names_a_directory({path, path_len}))
+            ? std::string_view(http::kNoCacheLine)
+            : std::string_view();
     mrb_value exc_value = mrb_nil_value();
     // #210: what led here, gathered once - the record and the page carry
     // the same hash because they are taken over the same facts.
@@ -573,6 +583,7 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling spelling)
             const Resp &pfx = minor >= 1 ? (persist ? prefix_variants.plain : prefix_variants.close)
                                          : (persist ? prefix_variants.keep : prefix_variants.close);
             sink.append(pfx.bytes);
+            sink.append(no_cache);
             char content_length[40];
             sink.append(content_length, http::spell_content_length(content_length, lent_len));
             body_lend(st, sink, {{lent, lent_len}, *plan});
@@ -585,15 +596,15 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling spelling)
             const Resp &prefix_gz =
                 minor >= 1 ? (persist ? b->ok_prefix_gzip.plain : b->ok_prefix_gzip.close)
                            : (persist ? b->ok_prefix_gzip.keep : b->ok_prefix_gzip.close);
-            assemble_dynamic(
-                {prefix_id, prefix_gz, spelling.body, accept_gzip && st.packetized, head_only},
-                sink);
+            assemble_dynamic({prefix_id, prefix_gz, spelling.body, accept_gzip && st.packetized,
+                              head_only, no_cache},
+                             sink);
             break;
         }
         case AnswerStep::Shape::kPlain: {
             const Resp &prefix = minor >= 1 ? (persist ? b->ok_prefix.plain : b->ok_prefix.close)
                                             : (persist ? b->ok_prefix.keep : b->ok_prefix.close);
-            answer_assemble(sink, {prefix, spelling.body, head_only});
+            answer_assemble(sink, {prefix, spelling.body, head_only, no_cache});
             break;
         }
         case AnswerStep::Shape::kException: {

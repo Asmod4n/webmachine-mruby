@@ -530,6 +530,36 @@ bool if_range_matches(std::string_view value, std::string_view poll_tag)
     return e - i == taglen && std::memcmp(bytes + i, poll_tag.data(), taglen) == 0;
 }
 
+// RFC 3986 3.4: the query is not part of the path, so "/docs/?q=1" names
+// the same directory as "/docs/".
+bool target_names_a_directory(std::string_view target)
+{
+    const size_t query = target.find('?');
+    const std::string_view path =
+        query == std::string_view::npos ? target : target.substr(0, query);
+    return !path.empty() && path.back() == '/';
+}
+
+// RFC 9112 5: field lines, each "name: value\r\n". Only the name is read,
+// and only two names matter here.
+bool freshness_is_stated(std::string_view field_lines)
+{
+    size_t at = 0;
+    while (at < field_lines.size()) {
+        const size_t eol = field_lines.find("\r\n", at);
+        if (eol == std::string_view::npos)
+            break;
+        const size_t colon = field_lines.find(':', at);
+        if (colon != std::string_view::npos && colon < eol) {
+            const std::string_view name = field_lines.substr(at, colon - at);
+            if (tok_eq(name, "cache-control") || tok_eq(name, "expires"))
+                return true;
+        }
+        at = eol + 2;
+    }
+    return false;
+}
+
 bool gzip_acceptable(const char *value, size_t length)
 {
     bool gz_seen = false, gz_ok = false, star_seen = false, star_ok = false;

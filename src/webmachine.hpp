@@ -1768,6 +1768,29 @@ bool if_range_matches(std::string_view value, std::string_view poll_tag);
 // never reaches this parse.
 bool gzip_acceptable(const char *value, size_t count);
 
+// RFC 9111 4.2.2: a response with a validator and no freshness directive
+// lets a cache guess how long it stays fresh, and the guess is a fraction
+// of the age of the representation. An index page is the case that breaks
+// under it: the target "/" keeps its name while the page behind it
+// changes, so a browser that guessed once answers the old page for as
+// long as the guess lasts, and no update ever lands.
+//
+// A target whose path ends in "/" names such a page. A target that names
+// a file does not: "/app.7f3c.js" is a new name for new bytes, and the
+// asset tier gives it a year.
+bool target_names_a_directory(std::string_view target);
+
+// RFC 9111 5.2.2.4: "no-cache" lets a cache keep the answer and makes it
+// revalidate before every reuse. The Last-Modified and the ETag this
+// server already sends then answer the conditional request with a 304, so
+// the copy is kept and an update lands at the next request.
+inline constexpr char kNoCacheLine[] = "Cache-Control: no-cache\r\n";
+
+// Does this run's field lines already say how long the answer stays
+// fresh? Cache-Control wins over Expires where both are present, so a
+// default written over either one would cancel what the author asked for.
+bool freshness_is_stated(std::string_view field_lines);
+
 // RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
 // representation's own tag, and which comparison applies - strong for
 // If-Match, weak for If-None-Match.

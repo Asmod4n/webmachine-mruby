@@ -1457,6 +1457,16 @@ void Http1::h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes
         }
     }
     bytes.status = status;
+    // RFC 9111: the same rule h1 states in bound_finish - a target that
+    // ends in "/" names a page whose bytes change under a name that does
+    // not, so a cache may not guess how long it stays fresh. The run's own
+    // Cache-Control or Expires wins.
+    if (status < 400 && request.req != nullptr &&
+        http::target_names_a_directory(
+            {request.req->request_target, request.req->request_target_len}) &&
+        !http::freshness_is_stated(*bytes.rhdrs)) {
+        bytes.rhdrs->append(http::kNoCacheLine);
+    }
     bytes.dynamic =
         (!block->res->run.content_type.empty() || !bytes.rhdrs->empty()) && status != 500;
 }

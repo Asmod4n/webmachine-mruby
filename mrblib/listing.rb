@@ -187,7 +187,12 @@ module Webmachine
                                         .map { |e|
           { 'name' => e['name'],
             'directory' => e['directory'],
-            'size' => e['size'],
+            # A directory has a size of its own - the octets the filesystem
+            # spends on the list of names in it - and it says nothing about
+            # what is under that name. The HTML list leaves the cell empty
+            # for the same reason, so the JSON says null rather than a
+            # number a reader would take for the size of the contents.
+            'size' => e['directory'] ? nil : e['size'],
             'mtime' => e['mtime'],
             'url' => "#{here}#{URI.encode(e['name'])}#{e['directory'] ? '/' : ''}" }
         }

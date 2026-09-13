@@ -2319,6 +2319,12 @@ class Http1
         const Resp &prefix;
         std::string_view body;
         bool head_only;
+        // RFC 9111: field lines that go between the prebuilt prefix and the
+        // Content-Length this call spells. The directory rule's Cache-Control
+        // arrives here: a prebuilt prefix is shared by every target that
+        // reaches this route, and only the target says whether the rule
+        // applies.
+        std::string_view extra = {};
     };
     static void answer_assemble(std::string &sink, const Assembled &answer);
     bool feed_parse(Conn &conn, std::string_view data, Sink out_value);
@@ -2365,6 +2371,8 @@ class Http1
         const std::string &body;
         bool may_gzip;
         bool head_only;
+        // See Assembled::extra.
+        std::string_view extra = {};
     };
     void assemble_dynamic(const DynamicBody &dynamic_body, std::string &sink);
     // RFC 9112 9.3: one prebuilt status in its three connection spellings.

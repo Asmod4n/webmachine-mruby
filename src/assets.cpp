@@ -128,6 +128,29 @@ constexpr uint16_t kExtraPlainName = 0x574f;
 // RFC 9111 5.2.2.1: what a name that cannot change is worth saying.
 constexpr const char kImmutable[] = "public, max-age=31536000, immutable";
 
+// RFC 9111 4.2.2: the other end of the same question. An index document
+// is reached through its directory - "/" or "/docs/" - and that name
+// stays the same while the document changes. With no freshness stated a
+// cache is free to guess one from the age of the file, and an update then
+// never reaches the reader. So an index document the pack said nothing
+// about says "keep it, and ask me every time". A pack that states a
+// Cache-Control of its own keeps it: the person who packed the site
+// decided.
+void index_takes_no_cache(AssetEntry &entry)
+{
+    static constexpr std::string_view kIndex = "index.html";
+    const std::string_view name = entry.file_name;
+    if (name.size() < kIndex.size())
+        return;
+    if (name.substr(name.size() - kIndex.size()) != kIndex)
+        return;
+    // "index.html" itself, or a name that ends in "/index.html". A file
+    // called "my-index.html" is an ordinary file.
+    if (name.size() > kIndex.size() && name[name.size() - kIndex.size() - 1] != '/')
+        return;
+    entry.cache_control.assign("no-cache");
+}
+
 struct Borrowed {
     const char *text = nullptr;
     size_t length = 0;
@@ -332,10 +355,14 @@ void Assets::open(mrb_state *mrb, const char *zip_path, const MimeDb &mime)
             alias.file_name.assign(plain.text, plain.length);
             if (cc_ok)
                 alias.cache_control.assign(cache_control.text, cache_control.length);
+            else
+                index_takes_no_cache(alias);
             entry.cache_control.assign(kImmutable);
             entries_.push_back(std::move(alias));
         } else if (cc_ok) {
             entry.cache_control.assign(cache_control.text, cache_control.length);
+        } else {
+            index_takes_no_cache(entry);
         }
         entries_.push_back(std::move(entry));
     }
