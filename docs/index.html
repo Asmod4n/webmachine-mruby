@@ -147,6 +147,58 @@
   .ex h3 { font-size: 1.02rem; }
   .ex p { font-size: 0.92rem; color: var(--muted); }
   .ex pre { font-size: 0.78rem; }
+  /* A narrow screen has one column, and a code block that needs a
+     sideways scrollbar for one line reads as cut off. The size here is
+     what makes the widest line of these examples fit on a phone. */
+  @media (max-width: 640px) { .ex pre { font-size: 0.65rem; } }
+
+  /* The directory list, shown as the server renders it. The frame is the
+     site's; everything inside it is what --listings puts on the wire. */
+  .screen {
+    border: 1px solid var(--rule); border-radius: 8px; overflow: hidden;
+    background: var(--raised);
+  }
+  .screen .bar {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule);
+    background: var(--sunk); font-family: var(--mono); font-size: 0.72rem;
+    color: var(--faint);
+  }
+  .screen .bar .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--rule);
+    flex: none;
+  }
+  .screen .bar .url {
+    margin-left: 0.3rem; color: var(--muted); overflow-wrap: anywhere;
+  }
+  .screen .page { padding: 1.1rem 1.2rem 1.3rem; }
+  .screen .page h4 {
+    font-family: var(--mono); font-size: 0.92rem; font-weight: 600;
+    margin: 0 0 0.9rem; overflow-wrap: anywhere;
+  }
+  .screen table { border-collapse: collapse; width: 100%; }
+  .screen th {
+    text-align: left; font-size: 0.66rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--faint); font-weight: 600;
+    padding: 0 0.8rem 0.4rem 0; border-bottom: 1px solid var(--rule);
+  }
+  .screen td {
+    padding: 0.32rem 0.8rem 0.32rem 0; border-bottom: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 0.76rem; line-height: 1.5;
+  }
+  .screen td.size, .screen th.size {
+    text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .screen td.when, .screen th.when {
+    color: var(--faint); white-space: nowrap; padding-right: 0;
+  }
+  .screen a { color: inherit; text-decoration: none; }
+  .screen tr.dir a { font-weight: 600; }
+  .screen .count { margin: 0.9rem 0 0; color: var(--faint); font-size: 0.72rem; }
+  @media (max-width: 640px) {
+    .screen td, .screen th.size, .screen td.size { font-size: 0.68rem; }
+    .screen .when { display: none; }
+  }
 
   .qa { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1.6rem 2.4rem; margin: 0; }
   .qa dt { font-weight: 600; font-size: 0.98rem; }
@@ -448,29 +500,35 @@
           <p>
             The block leaves the request loop. Each worker has its own VM and its own
             ring. A dumped block carries no environment, so you pass what it needs as
-            an argument, or you build it once per worker in the registry.
+            an argument, or you build it once per worker in the registry. The password
+            database the server ships is opened exactly that way - once per worker, and
+            <code>valid?</code> does the Argon2 work off the loop.
           </p>
-          <pre><span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwords</span>] = <span class="k">proc</span> <span class="k">do</span>
-  { <span class="s">'ada'</span> =&gt; <span class="cn">Argon2</span>.hash(<span class="s">'secret'</span>)[<span class="sy">:encoded</span>] }
+          <pre><span class="c"># webmachine-passwd add site.lmdb users ada</span>
+<span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwd</span>] = <span class="k">proc</span> <span class="k">do</span>
+  <span class="cn">Webmachine</span>::<span class="cn">Passwd</span>.open(<span class="s">'site.lmdb'</span>, <span class="s">'users'</span>)
 <span class="k">end</span>
 
 <span class="k">class</span> <span class="cn">Login</span> &lt; <span class="cn">Webmachine</span>::<span class="cn">Resource</span>
   <span class="fn">compute</span> <span class="sy">:is_authorized?</span>
 
   <span class="k">def</span> <span class="fn">is_authorized?</span>(header)
-    <span class="cn">Webmachine</span>::<span class="cn">ComputeTask</span>.new(header,
-                                max_runtime: <span class="nu">200</span>.ms) <span class="k">do</span> |h|
+    <span class="cn">Webmachine</span>::<span class="cn">ComputeTask</span>.new(
+      header, max_runtime: <span class="nu">500</span>.ms
+    ) <span class="k">do</span> |h|
       user, pass = h.to_s.split(<span class="s">':'</span>, <span class="nu">2</span>)
-      db = <span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwords</span>]
-      stored = db[user]
-      stored ? <span class="cn">Argon2</span>.verify(stored, pass.to_s) : <span class="k">false</span>
+      db = <span class="cn">Webmachine</span>::<span class="cn">Workers</span>::<span class="cn">Registry</span>[<span class="sy">:passwd</span>]
+      db.valid?(user.to_s, pass.to_s)
     <span class="k">end</span>
   <span class="k">end</span>
 <span class="k">end</span></pre>
           <p>
-            A task over its deadline answers 500. A worker that raises answers 503 with
-            a Retry-After field. The crossing has a cost of its own, so a block that
-            runs for less time than it takes is faster on the loop. Measure both ways.
+            A task over its deadline answers 500: coming back does not make the work
+            shorter. A worker that raises answers 503 with a Retry-After of a minute,
+            which is the size of a database that is restarted. A pool with no room
+            answers 429 with a Retry-After of three to five seconds, which is the size
+            of a burst. The crossing has a cost of its own, so a block that runs for
+            less time than it takes is faster on the loop. Measure both ways.
           </p>
         </div>
         <div class="ex">
@@ -486,17 +544,18 @@
   <span class="fn">watch</span> <span class="sy">:generate_etag</span>
 
   <span class="k">def</span> <span class="fn">generate_etag</span>
-    conn = <span class="cn">DB_IDLE</span>.pop ||
-           <span class="cn">Pq</span>.new(<span class="cn">DB_URL</span>).tap { |c| c.nonblocking = <span class="k">true</span> }
+    conn = <span class="cn">DB_IDLE</span>.pop || <span class="cn">Pq</span>.new(<span class="cn">DB_URL</span>)
+    conn.nonblocking = <span class="k">true</span>
     conn.send_query(<span class="s">'select etag from articles'</span>)
-    <span class="cn">Webmachine</span>::<span class="cn">Watcher</span>.new(conn.socket, <span class="sy">:r</span>,
-                            timeout: <span class="nu">2</span>.s) <span class="k">do</span> |ready, w|
+    <span class="cn">Webmachine</span>::<span class="cn">Watcher</span>.new(
+      conn.socket, <span class="sy">:r</span>, timeout: <span class="nu">2</span>.s
+    ) <span class="k">do</span> |ready, w|
       <span class="k">next</span> w.abort <span class="k">if</span> ready == <span class="sy">:timeout</span>
       conn.consume_input
-      <span class="k">next</span> <span class="k">if</span> conn.busy?      <span class="c"># not whole yet</span>
+      <span class="k">next</span> <span class="k">if</span> conn.busy?     <span class="c"># not whole yet</span>
       w.abort
       etag = conn.get_result.to_ary[<span class="nu">0</span>][<span class="nu">0</span>]
-      conn.get_result         <span class="c"># the nil that ends the set</span>
+      conn.get_result        <span class="c"># nil ends the set</span>
       <span class="cn">DB_IDLE</span> &lt;&lt; conn
       etag
     <span class="k">end</span>
@@ -526,7 +585,8 @@
           <h3>A file server</h3>
           <p>
             What you would reach for <code>python3 -m http.server</code> or
-            <code>npx serve</code> to do, with ETag, gzip, HTTP/2 and TLS on it.
+            <code>npx serve</code> to do, with ETag, gzip, HTTP/2 and TLS on it, and
+            <code>--listings=on</code> for the directory pages.
           </p>
           <div class="cmd"><span class="p">$</span> webmachine-server --docroot=./public</div>
         </div>
@@ -553,6 +613,57 @@
           </p>
           <div class="cmd"><span class="p">$</span> rake pack[public,site.zip]
 <span class="p">$</span> webmachine-server --assets=site.zip</div>
+        </div>
+      </div>
+
+      <div class="two">
+        <div class="stack col">
+          <p class="eyebrow">--listings=on</p>
+          <h3>A directory with no index.html lists what is in it</h3>
+          <p>
+            Off by default, and one flag turns it on. What you get is the page on the
+            right: names, sizes in the unit they are actually in, and the time each
+            file last changed.
+          </p>
+          <p>
+            It is not a special case inside the server. It is an ordinary
+            <code>Webmachine::Resource</code> that ships with it, in Ruby, under 300
+            lines, and it goes through the same decision graph every application does.
+            So it negotiates its media type - ask for
+            <code>application/json</code> and the same list arrives as JSON - and it
+            answers 304 to a client that already holds it.
+          </p>
+          <p>
+            The names come from one call that opens the directory with
+            <code>openat2</code> against the docroot descriptor, under
+            <code>RESOLVE_BENEATH</code> and <code>RESOLVE_NO_SYMLINKS</code>. The
+            kernel refuses a way out of the docroot; the resource never computes a path
+            of its own. A dotfile and a symlink are left off the list.
+          </p>
+          <div class="cmd"><span class="p">$</span> webmachine-server --docroot=. --listings=on
+http://localhost:8080</div>
+        </div>
+
+        <div class="screen">
+          <div class="bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="url">localhost:8080/</span>
+          </div>
+          <div class="page">
+            <h4>/</h4>
+            <table>
+              <thead><tr><th>Name</th><th class="size">Size</th><th class="when">Last modified</th></tr></thead>
+              <tbody>
+                <tr class="dir"><td><a href="#instead">assets/</a></td><td class="size"></td><td class="when">2026-Sep-02 14:21</td></tr>
+                <tr class="dir"><td><a href="#instead">posts/</a></td><td class="size"></td><td class="when">2026-Sep-02 14:21</td></tr>
+                <tr><td><a href="#instead">README.md</a></td><td class="size">1.5 KiB</td><td class="when">2026-Sep-02 14:21</td></tr>
+                <tr><td><a href="#instead">hero.jpg</a></td><td class="size">178.1 KiB</td><td class="when">2026-Sep-02 14:21</td></tr>
+                <tr><td><a href="#instead">robots.txt</a></td><td class="size">27 B</td><td class="when">2026-Sep-02 14:21</td></tr>
+                <tr><td><a href="#instead">style.css</a></td><td class="size">4.0 KiB</td><td class="when">2026-Sep-02 14:21</td></tr>
+              </tbody>
+            </table>
+            <p class="count">6 names.</p>
+          </div>
         </div>
       </div>
     </div>
