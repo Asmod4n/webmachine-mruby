@@ -1327,3 +1327,116 @@ assert('h1: a body no run read ends with its request, not with the next one') do
     end
   end
 end
+
+# RFC 9110 10.1.1: Expect: 100-continue. curl sends it by default for a
+# body over 1 KB. A server that never answers it costs that client one
+# second on every upload.
+assert('h1: Expect: 100-continue gets the interim line, and an unknown expectation gets 417') do
+  src = <<~RUBY_APP
+    class Expecting < Webmachine::Resource
+      reads_body :process_post
+      def self.allowed_methods
+        'GET HEAD POST'
+      end
+
+      def self.to_html
+        'floor'
+      end
+
+      def process_post
+        response.body = "took \#{request.body.size}"
+        true
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.conf.max_body = 1024 * 1024
+        app.add_route [:*], Expecting
+      end
+    end
+  RUBY_APP
+  wm_server(src, tag: 'wm-expect') do |sock|
+    # The client holds the body back until the interim line arrives. This
+    # is what curl does, and the second it used to wait is the bug.
+    UNIXSocket.open(sock) do |s|
+      payload = 'u' * 2048
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n" \
+              "Content-Length: #{payload.bytesize}\r\n\r\n")
+      interim = +''
+      interim << wm_recv(s) until interim.end_with?("\r\n\r\n")
+      assert_equal "HTTP/1.1 100 Continue\r\n\r\n", interim
+      s.write(payload)
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal "took #{payload.bytesize}", body
+    end
+    # The name of the expectation is read case insensitively, because the
+    # field value is a token.
+    UNIXSocket.open(sock) do |s|
+      payload = 'v' * 16
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nexpect: 100-Continue\r\n" \
+              "Content-Length: #{payload.bytesize}\r\n\r\n")
+      interim = +''
+      interim << wm_recv(s) until interim.end_with?("\r\n\r\n")
+      assert_equal "HTTP/1.1 100 Continue\r\n\r\n", interim
+      s.write(payload)
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+    end
+    # An expectation this server cannot meet. It promises nothing, so it
+    # answers 417 and reads no octet of the body.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nExpect: the-moon\r\n" \
+              "Content-Length: 2048\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 417'), head.lines.first.to_s
+    end
+    # A chunked upload declares no length, and the expectation is answered
+    # the same way.
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n" \
+              "Transfer-Encoding: chunked\r\n\r\n")
+      interim = +''
+      interim << wm_recv(s) until interim.end_with?("\r\n\r\n")
+      assert_equal "HTTP/1.1 100 Continue\r\n\r\n", interim
+      s.write("4\r\nabcd\r\n0\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'took 4', body
+    end
+    # RFC 9110 10.1.1: an HTTP/1.0 request carries no expectation a server
+    # acts on. The final answer is the first thing on the wire.
+    UNIXSocket.open(sock) do |s|
+      payload = 'w' * 32
+      s.write("POST / HTTP/1.0\r\nHost: x\r\nExpect: 100-continue\r\n" \
+              "Content-Length: #{payload.bytesize}\r\n\r\n#{payload}")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+    end
+    # A request with no content gets no interim line: there is nothing to
+    # hold back and nothing to prompt for.
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n")
+      head, body = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200'), head.lines.first.to_s
+      assert_equal 'floor', body
+    end
+  end
+  # A body that no node reads gets the final status instead of the interim
+  # line, which is the other answer RFC 9110 10.1.1 allows.
+  wm_server(H1_APP, tag: 'wm-expect-floor') do |sock, _|
+    UNIXSocket.open(sock) do |s|
+      s.write("POST / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n" \
+              "Content-Length: 2048\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 405'), head.lines.first.to_s
+    end
+    # And the floor is unchanged for a request that names no expectation.
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head.lines.first.to_s
+    end
+  end
+end

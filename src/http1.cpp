@@ -54,6 +54,10 @@ struct WireFacts {
     bool conn_keep = false;
     bool up_ws = false;
     bool conn_upgrade = false;
+    // RFC 9110 10.1.1: the request carries Expect: 100-continue, and the
+    // request carries an expectation this server does not know.
+    bool expect_continue = false;
+    bool expect_other = false;
 };
 
 // RFC 9112 7: the transfer codings one Transfer-Encoding field line names,
@@ -91,8 +95,8 @@ static void transfer_encoding_fold(WireFacts &window, const char *value, size_t 
 
 // RFC 9112 / RFC 6455: host(4) referer/upgrade(7) connection/user-agent(10)
 // content-length(14) sec-websocket-key/transfer-encoding(17)
-// sec-websocket-version(21).
-constexpr size_t kWireLengths[] = {4, 7, 10, 14, 17, 21};
+// sec-websocket-version(21). expect(6) is RFC 9110 10.1.1.
+constexpr size_t kWireLengths[] = {4, 6, 7, 10, 14, 17, 21};
 constexpr uint32_t kWireLengthMask =
     http::lengths_mask(kWireLengths, sizeof(kWireLengths) / sizeof(kWireLengths[0]));
 
@@ -191,6 +195,17 @@ void wire_header_read(WireSink into, http::Field field)
                         break;
                     }
                 }
+            }
+            break;
+        case 6:
+            // RFC 9110 10.1.1: 100-continue is the one expectation this
+            // server knows. The field value is a token, so one compare
+            // answers, and anything else is an expectation it must refuse.
+            if (http::tok_eq({length, name_length}, "expect")) {
+                if (http::tok_eq({value, value_length}, "100-continue"))
+                    window.expect_continue = true;
+                else
+                    window.expect_other = true;
             }
             break;
         default:
@@ -461,6 +476,8 @@ void Http1::http1_build_all(const AppInput *apps, size_t napps)
     status_line_is_stocked(have, 413);
     status_line_is_stocked(have, 431);
     status_line_is_stocked(have, 404);
+    // RFC 9110 10.1.1: the answer to an expectation this server cannot meet.
+    status_line_is_stocked(have, 417);
     // response.file answers out of this store too, and index_ defaults to slot
     // 0 - an absent status would quietly spell whatever lives there.
     status_line_is_stocked(have, 500);
@@ -2539,6 +2556,24 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         // the connection: the reader holds the count against it, buffer by
         // buffer.
         conn.body_limit = limit;
+
+        // RFC 9110 10.1.1: a request that expects 100-continue gets the
+        // interim line before this server reads one octet of the body. The
+        // flow decided above whether any node reads that body: body_read is
+        // false when no node does, and then the final status is the answer
+        // the RFC asks for instead of the interim line.
+        //
+        // An expectation this server does not know is 417, because it cannot
+        // promise what the client asked for.
+        //
+        // RFC 9110 10.1.1 also says an HTTP/1.0 request carries no
+        // expectation a server acts on, so minor has to be 1 or more.
+        if (mrb_unlikely(window.expect_other))
+            return connection_fail(conn, 417, sink, lflags);
+        if (mrb_unlikely(window.expect_continue) && minor >= 1 && body_read &&
+            (window.have_te || window.content_length != 0)) {
+            sink.append("HTTP/1.1 100 Continue\r\n\r\n");
+        }
 
         if (mrb_unlikely((window.up_ws && window.conn_upgrade) ||
                          apps_[conn.listener].sse_table != nullptr)) {
