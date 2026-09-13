@@ -103,8 +103,15 @@ word for itself rather than a second switch to keep in step. A ship
 build puts the class, the message and the fingerprint on the 500 page,
 and the fingerprint is what finds the whole record in the error log. A
 debug build puts the trace on the page as well, because it is already
-telling you about itself. The error log carries the trace either way:
-hiding it from a client is not hiding it from the person fixing it.
+telling you about itself.
+
+Where the trace is kept does not depend on the build. An error log that
+is configured gets the record, and the record carries the backtrace when
+there is one to carry - an app compiled without `mrbc -g` has no line
+table, so a raise in it names no file and no line. With no error log
+there is no record at all, and stderr gets the text instead. So keeping
+the trace off a 500 page is not hiding it from the person fixing it,
+as long as the log is on.
 
 Two things follow, and both have been broken here before:
 
