@@ -168,10 +168,15 @@ for `__GNUC__ && !__STRICT_ANSI__`, and a strict `-std=` defines
 `WM_UNREACHABLE()`, which is `__builtin_unreachable()` on GCC and Clang
 and `__assume(0)` on MSVC.
 
-Only the debug config is built while developing:
+Only the debug config is built while developing, and one command does it:
 
-    MRUBY_CONFIG=build_config_debug.rb rake compile
-    MRUBY_CONFIG=build_config_debug.rb rake test
+    rake test
+
+It builds the debug config itself - the Rakefile's `test` task runs
+`rake all test` under `build_config_debug.rb` and reads no
+`MRUBY_CONFIG`, because every test in this tree is the debug build's.
+A `MRUBY_CONFIG=` in front of it changes nothing, and a `rake compile`
+before it builds the same thing twice.
 
 Nothing in that run may fail.
 
