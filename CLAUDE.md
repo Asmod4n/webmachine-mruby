@@ -3,21 +3,6 @@
 Everything in this repository is written in English: file contents,
 comments, documentation, and commit messages.
 
-## Two branches, no more
-
-There are exactly two branches:
-
-- `next` - all development happens here.
-- `master` - only finished features land here.
-
-No topic, bench, or experiment branch beside them. Whoever tries
-something out tries it out on `next`. When a feature is done, it moves
-to `master` - and not before.
-
-Check before pushing that it stays at those two:
-
-    git ls-remote --heads origin   # master and next only
-
 ## No session URLs
 
 A Claude session URL (`https://claude.ai/code/session_...`, whether as
