@@ -877,6 +877,18 @@ template <class App> class Ring
             mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d alpn: %s",
                        static_cast<int>(listener_index), ktls_last_error());
         }
+        // RFC 6066 3: the pairs a server_name picks. After the suites and
+        // after the ALPN list, so that the order is the one a reader
+        // expects - though ktls applies both to a pair added either side of
+        // those calls.
+        for (size_t at = 0; at < want.nnamed; at++) {
+            const ListenerSpec::NamedCert &named = want.named[at];
+            if (ktls_keys_add_certificate(keys.k, named.host, named.cert_pem, named.cert_len,
+                                          named.key_pem, named.key_len) != 0) {
+                mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener %d certificate for %s: %s",
+                           static_cast<int>(listener_index), named.host, ktls_last_error());
+            }
+        }
         if (!ktls_available()) {
             const int status = ktls_load_module();
             if (status != 0 || !ktls_available()) {

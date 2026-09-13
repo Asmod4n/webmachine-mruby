@@ -122,11 +122,11 @@ block names one (conf.port / conf.unix_path / conf.url)`.
 
 ## app.conf: every key
 
-`Webmachine::Config` is a Struct with twelve members, in this order:
+`Webmachine::Config` is a Struct with thirteen members, in this order:
 `port`, `unix_path`, `url`, `docroot`, `assets`, `certificate`,
 `private_key`, `file_map_threshold`, `zero_copy_threshold`,
-`disable_http_cats`, `max_body`, `spill_dir`. Every member starts as
-nil, meaning the app said nothing about it. A name that is not a member
+`disable_http_cats`, `max_body`, `spill_dir`, `certificates`. Every member
+starts as nil, meaning the app said nothing about it. A name that is not a member
 is a `NoMethodError` at that line.
 
 Refusal texts share a shape. For the four Integer keys: `conf.<name>
@@ -144,6 +144,7 @@ empty` for an empty String. The error class is `Webmachine::ConfigError`.
 | `assets` | String, not empty | none | - | The zip pack a standalone or app server answers from. Process-wide: the first app that names one decides. |
 | `certificate` | String, not empty | none | - | Path to the PEM certificate file. Only valid with a `https` listener. |
 | `private_key` | String, not empty | none | - | Path to the PEM private key file. Only valid with a `https` listener; both `certificate` and `private_key` are required together. |
+| `certificates` | Hash | none | - | RFC 6066 3: one more certificate per host name, picked by the name the client's handshake asks for. A Hash of host name to `[certificate, private_key]`, both PEM paths. `certificate` and `private_key` stay the default pair, for a client that names no host and for a name this Hash does not hold, so both are still required. The name is compared without regard to letter case, and one leading `*.` matches exactly one label (`*.api.example` answers for `v1.api.example`, not for `v1.beta.api.example` or `api.example`). Only valid with a `https` listener. Every pair is read at start: a missing file, a PEM that does not parse, a key that does not belong to its certificate, and the same name twice are each refused by name. Cannot be named in `conf.url`. See [Serve TLS](../how-to/tls.md). |
 | `file_map_threshold` | Integer | 262144 (256 KiB) | 1073741824 (1 GiB) | From this size up, a `response.file` file is mapped and handed to one send instead of read window by window. `0` means never map. A `--file-map-threshold` flag or `[tune] file_map_threshold` in the config file beats this. |
 | `zero_copy_threshold` | Integer | 131072 (128 KiB) | 1073741824 (1 GiB) | From this size up, a body is lent to the kernel instead of copied. `0` means never lend. A `--zero-copy-threshold` flag or `[tune] zero_copy_threshold` in the config file beats this. |
 | `disable_http_cats` | any, read for truthiness | false | - | When true, the error assets zip is never opened, and error pages have no picture. Process-wide: the first app with an opinion decides. |

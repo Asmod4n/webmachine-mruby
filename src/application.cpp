@@ -5,6 +5,7 @@
 #include <mruby/data.h>
 #include <mruby/dump.h>
 #include <mruby/error.h>
+#include <mruby/hash.h>
 #include <mruby/irep.h>
 #include <mruby/presym.h>
 #include <mruby/proc.h>
@@ -377,6 +378,7 @@ enum ConfIdx {
     kConfDisableHttpCats,
     kConfMaxBody,
     kConfSpillDir,
+    kConfCertificates,
     kConfMax,
 };
 
@@ -396,6 +398,50 @@ bool conf_read_string(mrb_state *mrb, mrb_value conf, ConfIdx member, const char
     }
     out_text->assign(ruby_string_bytes(raw));
     return true;
+}
+
+// RFC 6066 3: conf.certificates - a Hash of host name to the pair that
+// answers for it. mrblib's writer already refused a value of the wrong
+// shape; Struct#[]= reaches the member without passing that writer, so
+// the same shape is checked again here, the way every other slot is.
+//
+// The order the Hash was written in is the order the names are tried, and
+// mruby's Hash keeps it.
+void conf_read_certificates(mrb_state *mrb, mrb_value conf, AppSpec *spec)
+{
+    const mrb_value raw = mrb_ary_entry(conf, kConfCertificates);
+    if (mrb_nil_p(raw))
+        return;
+    if (!mrb_hash_p(raw)) {
+        mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
+                  "conf.certificates wants a Hash of host to [certificate, private_key]");
+    }
+    const mrb_value hosts = mrb_hash_keys(mrb, raw);
+    const size_t count = ruby_array_length(hosts);
+    for (size_t at = 0; at < count; at++) {
+        const mrb_value host = ruby_array_entry(hosts, at);
+        if (!mrb_string_p(host) || ruby_string_length(host) == 0) {
+            mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
+                      "conf.certificates wants a String host name, and not an empty one");
+        }
+        const mrb_value pair = mrb_hash_get(mrb, raw, host);
+        if (!mrb_array_p(pair) || ruby_array_length(pair) != 2) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                       "conf.certificates[%v] wants [certificate, private_key]", host);
+        }
+        const mrb_value cert = ruby_array_entry(pair, 0);
+        const mrb_value key = ruby_array_entry(pair, 1);
+        if (!mrb_string_p(cert) || ruby_string_length(cert) == 0 || !mrb_string_p(key) ||
+            ruby_string_length(key) == 0) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                       "conf.certificates[%v] wants two paths, and neither of them empty", host);
+        }
+        AppSpec::NamedPair named;
+        named.host.assign(ruby_string_bytes(host));
+        named.cert_path.assign(ruby_string_bytes(cert));
+        named.key_path.assign(ruby_string_bytes(key));
+        spec->named_pairs.push_back(std::move(named));
+    }
 }
 
 // A named whole-number slot, refused by the ceiling that owns it.
@@ -476,6 +522,7 @@ void conf_read_all(mrb_state *mrb, mrb_value conf, AppSpec *spec)
         }
         spec->key_path = text;
     }
+    conf_read_certificates(mrb, conf, spec);
     if (conf_int(mrb, conf, kConfFileMapThreshold, "file_map_threshold",
                  static_cast<mrb_int>(kFileMapMax), " bytes", &member_count)) {
         if (spec->file_map_threshold >= 0) {
