@@ -38,6 +38,7 @@ end
 def tls_sni_server(src, port)
   mrb = wm_compile(src, 'wm-sni-app')
   err = "/tmp/wm-sni-stderr-#{$$}.log"
+  $tls_sni_server_log = ''
   pid = spawn(WM_BIN, "--app=#{mrb.path}", out: File::NULL, err: err)
   begin
     up = false
@@ -61,6 +62,10 @@ def tls_sni_server(src, port)
   ensure
     Process.kill('TERM', pid) rescue nil
     Process.wait(pid) rescue nil
+    # Read before the unlink: a failing case reports what the server said,
+    # which is the only account of a connection that died after its
+    # handshake.
+    $tls_sni_server_log = (File.read(err) rescue '')
     File.unlink(err) rescue nil
     mrb.unlink
   end
@@ -83,16 +88,20 @@ end
 # this request to the proxy instead of to the listener. -k because the
 # certificates are self-signed and worth nothing.
 def tls_sni_ask(port, servername)
-  out = IO.popen(['curl', '-sk', '--noproxy', '*', '--http2',
+  trace = "/tmp/wm-sni-curl-#{$$}.log"
+  out = IO.popen(['curl', '-sk', '-v', '--noproxy', '*', '--http2',
                   '--resolve', "#{servername}:#{port}:127.0.0.1",
                   '-o', File::NULL,
                   '-w', "%{http_version} %{response_code}\n%{certs}",
-                  "https://#{servername}:#{port}/", err: File::NULL], 'r+') do |io|
+                  "https://#{servername}:#{port}/", err: trace], 'r+') do |io|
     io.close_write
     io.read
   end
+  said = (File.read(trace) rescue '')
+  File.unlink(trace) rescue nil
   version, code = out.lines.first.to_s.split
-  { subject: out[/^Subject:(.*)$/, 1].to_s.strip, version: version, code: code }
+  { subject: out[/^Subject:(.*)$/, 1].to_s.strip, version: version, code: code,
+    trace: said.lines.grep(/^\* (ALPN|TLS|SSL|error|Recv|Connection|h2|using)/i).join }
 end
 
 assert('tls: one listener answers several names, and an unknown name gets the default (6066 3)') do
@@ -152,8 +161,9 @@ assert('tls: one listener answers several names, and an unknown name gets the de
   # context that never heard the ALPN list would leave the connection at
   # HTTP/1.1 under every name but the default.
   answers.each do |name, answer|
-    assert_equal '2', answer[:version], "not h2 under #{name}"
-    assert_equal '200', answer[:code], "no answer under #{name}"
+    why = "under #{name}\ncurl said:\n#{answer[:trace]}server said:\n#{$tls_sni_server_log}"
+    assert_equal '2', answer[:version], "not h2 #{why}"
+    assert_equal '200', answer[:code], "no answer #{why}"
   end
 ensure
   [default_cert, default_key, other_cert, other_key, wild_cert, wild_key].each do |file|
