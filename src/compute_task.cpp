@@ -336,10 +336,13 @@ void Http1::compute_task_answered(Conn &conn, int park, int slot, const ComputeA
         round->jobs_answered++;
     round->answer_ready = round->jobs_answered >= round->jobs_owed;
     round->answer_value.at(slot) = mrb_nil_value();
-    round->compute_task_over_deadline = answered.over_deadline;
     // A raise and a deadline are told apart, because the answers are not
-    // the same one: 503 says come back, 500 says nothing will change.
-    round->compute_task_raised = answered.raised && !answered.over_deadline;
+    // the same one: 503 says come back, 500 says nothing will change. The
+    // deadline wins when both arrive, which the two flags this replaced
+    // spelled as `raised && !over_deadline` at the second of them.
+    round->compute_end = answered.over_deadline ? Conn::Round::ComputeEnd::kOverDeadline
+                         : answered.raised      ? Conn::Round::ComputeEnd::kRaised
+                                                : Conn::Round::ComputeEnd::kAnswered;
     const Resource *const resource = round->job_res;
     if (resource == nullptr || answered.raised)
         return;
@@ -417,7 +420,7 @@ bool Http1::compute_task_hand_over(Conn &conn, Conn::Round &round, int park,
         j.waiting = false;
     round.jobs_owed = 0;
     round.jobs_answered = 0;
-    round.compute_task_not_crossed = true;
+    round.compute_end = Conn::Round::ComputeEnd::kNotCrossed;
     round.answer_ready = true;
     if (mrb_exception_p(thrown))
         mrb->exc = mrb_obj_ptr(thrown);
@@ -481,9 +484,7 @@ bool Http1::compute_task_cross(Conn &conn, Conn::Round &round, int park, const R
     // its park slot, which is what the completion tag will carry back.
     conn.park_wants_arming(park);
     // A new round, so nothing of the last one speaks for it.
-    round.compute_task_full = false;
-    round.compute_task_over_deadline = false;
-    round.compute_task_raised = false;
+    round.compute_end = Conn::Round::ComputeEnd::kAnswered;
     return true;
 }
 

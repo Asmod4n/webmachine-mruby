@@ -47,32 +47,37 @@ void Http1::compute_task_refused(Conn &conn, int park)
     if (round == nullptr)
         return;
     round->answer_ready = true;
-    round->compute_task_full = true;
+    round->compute_end = Conn::Round::ComputeEnd::kPoolFull;
 }
 
 Http1::ComputeRefusal Http1::compute_task_refusal(Conn::Round &round)
 {
-    // A full pool is load, and load passes. The seconds move over 3..5
-    // so a burst that was refused together does not come back together.
-    if (round.compute_task_full) {
-        static const char *const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
-                                             "Retry-After: 5\r\n"};
-        static unsigned turn = 0;
-        return {429, kWait[turn++ % 3]};
+    switch (round.compute_end) {
+        case Conn::Round::ComputeEnd::kPoolFull: {
+            // A full pool is load, and load passes. The seconds move over
+            // 3..5 so a burst that was refused together does not come back
+            // together.
+            static const char *const kWait[3] = {"Retry-After: 3\r\n", "Retry-After: 4\r\n",
+                                                 "Retry-After: 5\r\n"};
+            static unsigned turn = 0;
+            return {429, kWait[turn++ % 3]};
+        }
+        case Conn::Round::ComputeEnd::kOverDeadline:
+            // The author's number was wrong. Coming back does not make the
+            // work shorter, so nothing tells the client to.
+            return {500, {}};
+        case Conn::Round::ComputeEnd::kNotCrossed:
+            // The block or the arguments could not cross. Nothing a client
+            // does changes that, so nothing tells it to come back.
+            return {500, {}};
+        case Conn::Round::ComputeEnd::kRaised:
+            // A handle the worker needs is gone. A database that is restarted
+            // comes back, and a minute is the size of that, not the seconds a
+            // burst of load lives on.
+            return {503, "Retry-After: 60\r\n"};
+        case Conn::Round::ComputeEnd::kAnswered:
+            break;
     }
-    // The author's number was wrong. Coming back does not make the work
-    // shorter, so nothing tells the client to.
-    if (round.compute_task_over_deadline)
-        return {500, {}};
-    // The block or the arguments could not cross. Nothing a client does
-    // changes that, so nothing tells it to come back.
-    if (round.compute_task_not_crossed)
-        return {500, {}};
-    // A handle the worker needs is gone. A database that is restarted
-    // comes back, and a minute is the size of that, not the seconds a
-    // burst of load lives on.
-    if (round.compute_task_raised)
-        return {503, "Retry-After: 60\r\n"};
     return {};
 }
 

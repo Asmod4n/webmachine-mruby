@@ -1275,19 +1275,27 @@ class Http1
             const Resource *job_res = nullptr;
             // #30: the watcher slot each job of this round waits on, or -1.
             std::array<int, kValueJobs> w_slot{{-1, -1, -1, -1}};
-            // The pool had no slot: load, and load passes. 429 with a
-            // Retry-After of a few seconds.
-            bool compute_task_full = false;
-            // The worker ended the task at its max_runtime. Not load: a second
-            // attempt costs the same, so 500 and no Retry-After.
-            bool compute_task_over_deadline = false;
-            // The crossing raised: mruby could not dump the block, or CBOR
-            // could not carry the arguments. The round answers 500 and the
-            // error log says which.
-            bool compute_task_not_crossed = false;
-            // The worker raised. The registry holds what dies - a database, a
-            // connection - so 503 with a Retry-After of a minute.
-            bool compute_task_raised = false;
+            // How this round's compute ended, and what the client is told.
+            // It was four booleans, one per outcome, and the read order in
+            // compute_task_refusal decided between two that were set at once.
+            // The pair that could be was already excluded by hand where it
+            // was written - `raised && !over_deadline` - which is the sign
+            // that one value belonged here rather than four flags.
+            enum class ComputeEnd : uint8_t {
+                kAnswered,     // the worker answered, and the walk goes on
+                kPoolFull,     // no slot: load, and load passes - 429 with a
+                               // Retry-After of a few seconds
+                kOverDeadline, // the worker ended it at its max_runtime. Not
+                               // load: a second attempt costs the same, so
+                               // 500 and no Retry-After
+                kNotCrossed,   // mruby could not dump the block, or CBOR could
+                               // not carry the arguments - 500, and the error
+                               // log says which
+                kRaised,       // the worker raised. The registry holds what
+                               // dies, a database or a connection, so 503 with
+                               // a Retry-After of a minute
+            };
+            ComputeEnd compute_end = ComputeEnd::kAnswered;
         };
         // #30: where each stopped run of this connection keeps what it
         // waits on. The Round itself lives in the coroutine frame of that
