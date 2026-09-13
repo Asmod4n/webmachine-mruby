@@ -428,7 +428,65 @@ template <class App> class Ring
     //
     // Ordered by alignment, not by topic - see Http1::Conn's own note. The
     // flags sat between the 8-byte members and cost 21 bytes of padding.
+    struct Conn;
+
+    // One operation the kernel can complete, and the whole of what a
+    // completion says about itself.
+    //
+    // Its address is the SQE's user_data. Which member of a connection it
+    // is names the operation - `kind` says which - and `conn` says whose.
+    // Nothing is packed into the pointer and nothing is numbered: the
+    // allocator gives each operation an address of its own, and an address
+    // belongs to one object for exactly as long as that object exists.
+    //
+    // `aux` carries what a kind needs beyond that: the listener index on an
+    // accept, which watcher on a poll, which job on a worker's answer. An
+    // accept has no connection yet, so its `conn` is null.
+    struct Op {
+        Conn *conn = nullptr;
+        uint32_t aux = 0;
+        uint8_t kind = 0;
+    };
+
     struct Conn {
+        // The direct descriptor the kernel chose for this peer. We never
+        // pick one: multishot_accept_direct allocates from the registered
+        // table and hands the entry back in cqe->res.
+        uint32_t fd = 0;
+        // What the kernel and the workers still hold of this connection.
+        // It rises when an operation is submitted and falls when the
+        // kernel says that operation is over - a CQE without
+        // IORING_CQE_F_MORE, or a worker's answer. The block is freed when
+        // it reaches zero and the connection is dead, and never before:
+        // a completion that named a freed address is the one fault this
+        // design may not have.
+        uint32_t armed = 0;
+        // The peer is gone and nothing more will be armed. The block still
+        // stands until `armed` reaches zero.
+        bool dead = false;
+        // #113: the live list, so the idle sweep and the drain can walk
+        // what exists. There is no table to walk any more.
+        Conn *live_prev = nullptr;
+        Conn *live_next = nullptr;
+        // One per operation that can fly at the same time as another. Each
+        // has its own address, which is what the SQE carries.
+        Op op_recv;
+        Op op_send;
+        Op op_setup;
+        Op op_meminfo;
+        Op op_peer;
+        Op op_shutdown;
+        Op op_close;
+        Op op_file_open;
+        Op op_file_stat;
+        Op op_file_read;
+        Op op_file_close;
+        Op op_spill_write;
+        // #30: a watcher and a compute job are not one per connection, so
+        // they are not members. They grow to what this connection actually
+        // uses and no further - there is no ceiling of 256 or of 16.
+        std::vector<Op> op_watch;
+        std::vector<Op> op_compute;
         int64_t deadline_s = 0;
         // #30: when the watcher this connection's stopped run waits on has
         // been quiet for as long as it allowed. 0 = nothing is armed. It is
@@ -643,6 +701,85 @@ template <class App> class Ring
     {
         mrb_raisef(mrb_, E_WM_ERROR(mrb_), fmt, args...);
         WM_UNREACHABLE();
+    }
+
+    // A peer arrived. The connection is one block, made here and freed in
+    // one place, and the ring owns it: no scope and no smart pointer can
+    // say when the kernel has let go, so neither holds it.
+    Conn *conn_new(uint32_t listener_index, uint32_t descriptor)
+    {
+        Conn *const conn = new Conn();
+        conn->fd = descriptor;
+        conn->listener = static_cast<uint8_t>(listener_index);
+        conn->deadline_s = now_s_ + header_timeout_;
+        conn->app.reset(static_cast<uint8_t>(listener_index),
+                        !unix_listener_[listener_index]);
+        // #113: the live list. Nothing enumerates connections any more, so
+        // the sweep and the drain walk this.
+        conn->live_next = live_head_;
+        if (live_head_ != nullptr)
+            live_head_->live_prev = conn;
+        live_head_ = conn;
+        live_++;
+        return conn;
+    }
+
+    // The kernel holds nothing of this connection any more, and the peer is
+    // gone. Called from release() and from nowhere else, because release()
+    // is the only thing that knows when both are true.
+    void conn_free(Conn *conn)
+    {
+        if (conn->live_prev != nullptr)
+            conn->live_prev->live_next = conn->live_next;
+        else
+            live_head_ = conn->live_next;
+        if (conn->live_next != nullptr)
+            conn->live_next->live_prev = conn->live_prev;
+        if (live_ != 0)
+            live_--;
+        delete conn;
+    }
+
+    // The one door an operation goes through, and the only place that
+    // names one. The SQE carries the address of the connection's own
+    // record for this operation, and the connection counts the reference
+    // the kernel now holds.
+    //
+    // Counting has to happen here and nowhere else. Two doors is how a
+    // tally goes wrong, and a wrong tally is a block freed while the
+    // kernel still names it.
+    uint64_t arm(Op &op, Conn *conn, uint8_t kind, uint32_t aux = 0)
+    {
+        op.conn = conn;
+        op.kind = kind;
+        op.aux = aux;
+        if (conn != nullptr)
+            conn->armed++;
+        return reinterpret_cast<uint64_t>(&op);
+    }
+
+    // The kernel has finished with this operation. A multishot one is not
+    // finished while IORING_CQE_F_MORE says more completions follow, so it
+    // keeps its reference across every one of them and gives it back once.
+    //
+    // One counted submission is released exactly once. That is the whole
+    // invariant this design stands on.
+    void release(Op &op, const struct io_uring_cqe *completion)
+    {
+        if ((completion->flags & IORING_CQE_F_MORE) != 0)
+            return;
+        Conn *const conn = op.conn;
+        if (conn == nullptr)
+            return;
+        if (mrb_unlikely(conn->armed == 0)) {
+            // Nothing armed, yet the kernel answered for this connection.
+            // The tally is wrong, which means a block may already have been
+            // freed under a completion. Say so rather than carry on.
+            fatal("ring: a completion arrived for a connection that armed nothing");
+        }
+        conn->armed--;
+        if (conn->dead && conn->armed == 0)
+            conn_free(conn);
     }
 
     // Never null on return, or a raise: see sqe_or_raise.
@@ -2151,6 +2288,9 @@ template <class App> class Ring
     int idle_timeout_ = 75;
     int64_t now_s_ = 0;
     int64_t last_reap_s_ = 0;
+    // #113: every connection that exists, newest first. There is no table
+    // to walk, so this is what the idle sweep and the drain read.
+    Conn *live_head_ = nullptr;
     uint32_t max_conns_ = 0;
     uint32_t listener_base_ = 0;
     bool unix_listener_[kMaxListeners] = {};
