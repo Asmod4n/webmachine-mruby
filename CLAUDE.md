@@ -77,6 +77,34 @@ repository. The rules it carried:
 - Decide, then do: compute the round as a value, perform it in one
   place.
 
+## Use what std:: already has
+
+A thing the standard library answers is not ours to write. We wrote
+`Held::Span` to ask whether a pointer lies in a run of bytes, and its
+test - `bytes < at || bytes > at + len` - is undefined between pointers
+into two different objects, which is the one question it existed to ask.
+`std::less` answers it, `std::distance` says how far in the pointer sat,
+and `std::next` walks that far into the copy.
+
+Never do pointer arithmetic by hand. Work in views and indices:
+`std::string_view` or `std::span` for the run, `std::distance` for the
+offset, `std::next` to walk it. An offset added to a pointer by hand is
+right only for the case its author had in mind, and the next case is a
+pointer into nothing.
+
+The same rule covers the small ones, and they are the ones that pile up:
+`std::min` and `std::max` rather than a ternary, `std::from_chars` rather
+than a digit loop, `std::clamp` rather than two ternaries.
+
+A C++ value into an `mrb_value` goes through mruby-c-ext-helpers, which
+is already in the build: `mrbcpp::value_converter` for the way out,
+`mrb_value_to_cpp.hpp` for the way back.
+
+What stays ours is what the standard has no answer for: `tok_eq`, because
+no standard function compares without regard to letter case;
+`length_is_one_of`, because it is a mask this tree measured; and every
+rule an RFC states rather than a library.
+
 ## No failure is hidden
 
 A hidden failure is one nobody can fix. `char* err` with `return false`
