@@ -1372,9 +1372,12 @@ class Http1
         bool packetized = false;
         bool zc_lent = false; // a lend is outstanding right now
         bool zc_split = false;
-        // response.file: the answer a run deferred to the reactor. `want` = the
-        // open is owed, `busy` = the ring is on it, `ready` = the head is
-        // spelled and `spell_next_round` may put it on the wire. Nothing else about the
+        // response.file: the answer a run deferred to the reactor. The stage
+        // says where it stands, and FileStage spells the five: kNone nothing
+        // owed, kNamed the open is owed, kRing the ring is on it, kDeliver the
+        // head is spelled and spell_next_round may put it on the wire, kDone
+        // the last lend has drained. Which stage follows which is file_step's
+        // switch and nothing else - see FileStep above. Nothing else about the
         // request survives the run, so the framing it needs is copied here.
         //
         // Lazy, like h2/ws/sse below: most connections never call

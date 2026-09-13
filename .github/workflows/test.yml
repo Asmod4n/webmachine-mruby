@@ -45,6 +45,13 @@ jobs:
   # gem's unit tests, and the bintests against the debug binary. A KO
   # or a crash anywhere fails the push.
   suite:
+    # A pull request already ran this workflow on its own head. The push
+    # that lands it would run the same commits a second time, so it runs
+    # nothing. A push somebody made directly still runs, which is what
+    # keeps `next` answerable for a commit no pull request carried.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'Merge pull request #')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +87,13 @@ jobs:
   # starts and answers 200. It runs beside the suite, not after it - a
   # release build that does not compile is its own failure.
   ship:
+    # A pull request already ran this workflow on its own head. The push
+    # that lands it would run the same commits a second time, so it runs
+    # nothing. A push somebody made directly still runs, which is what
+    # keeps `next` answerable for a commit no pull request carried.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'Merge pull request #')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,6 +123,13 @@ jobs:
   # fired. A run that stops on a runner and never on a workstation is
   # what both are here for.
   sanitizers:
+    # A pull request already ran this workflow on its own head. The push
+    # that lands it would run the same commits a second time, so it runs
+    # nothing. A push somebody made directly still runs, which is what
+    # keeps `next` answerable for a commit no pull request carried.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'Merge pull request #')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -171,6 +192,13 @@ jobs:
   # h2spec for RFC 9113 and RFC 7541, the Autobahn fuzzingclient for
   # RFC 6455. Both are containers; the runner has docker.
   conformance:
+    # A pull request already ran this workflow on its own head. The push
+    # that lands it would run the same commits a second time, so it runs
+    # nothing. A push somebody made directly still runs, which is what
+    # keeps `next` answerable for a commit no pull request carried.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'Merge pull request #')
     runs-on: ubuntu-latest
     needs: suite
     # h2spec on every push, Autobahn on a release tag alone - the step
