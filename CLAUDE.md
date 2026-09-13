@@ -77,6 +77,34 @@ repository. The rules it carried:
 - Decide, then do: compute the round as a value, perform it in one
   place.
 
+## No failure is hidden
+
+A hidden failure is one nobody can fix. `char* err` with `return false`
+is the pattern this replaced, and it is worse than it looks: it loses
+the exception's class and its backtrace, so every distinct failure
+flattens into one string. A lost database and a typo in a block then
+read as the same answer.
+
+So a failure is raised, and which kind depends on what is in hand:
+
+- **With a VM** - every fold and every callback - `mrb_raisef` with the
+  right error class. The app author gets a Ruby exception with a class,
+  a message and a backtrace pointing at their own code.
+- **Without one** - startup, before or outside the VM - a C++
+  exception.
+- **Where a raise cannot unwind** - across a worker thread, across the
+  reactor boundary - it comes back as a value, and the value carries
+  the class, the message and the backtrace, never one bit and never one
+  string. `mrb_protect_error` plus `note_raise` is that path.
+
+Two things follow, and both have been broken here before:
+
+- A guard that returns instead of raising hides our own bug. An index
+  that cannot be a connection means the thrower packed its word wrong.
+- A test that discards what a failure said is the same sin in Ruby.
+  `rescue nil` over a log file, or a subprocess's stderr sent to
+  `/dev/null`, leaves a red run with nothing to read.
+
 ## What is only true of the build
 
 One `.cpp` anywhere makes mruby compile the whole tree with the C++
