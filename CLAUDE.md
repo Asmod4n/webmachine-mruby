@@ -106,12 +106,18 @@ debug build puts the trace on the page as well, because it is already
 telling you about itself.
 
 Where the trace is kept does not depend on the build. An error log that
-is configured gets the record, and the record carries the backtrace when
-there is one to carry - an app compiled without `mrbc -g` has no line
-table, so a raise in it names no file and no line. With no error log
-there is no record at all, and stderr gets the text instead. So keeping
-the trace off a 500 page is not hiding it from the person fixing it,
-as long as the log is on.
+is configured gets the record, with the backtrace in it; with no error
+log there is no record at all, and stderr gets the text instead. So
+keeping the trace off a 500 page is not hiding it from the person fixing
+it, as long as the log is on.
+
+What the trace names is a third thing, and it is not the build either.
+`mrbc -g` writes the line table into the `.mrb`, and it does that
+whether mruby itself was built for release or for debug. So every place
+this tree compiles an app says `-g`: the Rakefile's smoke app, `rake
+install`, the conformance scripts, every bintest. Without `-g` a raise
+still has a backtrace, and that backtrace names no file and no line -
+application.cpp says so once at boot rather than refusing the app.
 
 Two things follow, and both have been broken here before:
 
