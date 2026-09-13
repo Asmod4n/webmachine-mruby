@@ -170,21 +170,24 @@ mrb_value watcher_init(mrb_state *mrb, mrb_value self)
     watcher->timeout = static_cast<double>(secs);
     mrb_data_init(self, watcher, &watcher_type);
 
-    // The only two the GC has to see.
-    mrb_iv_set(mrb, self, MRB_IVSYM(source), source);
-    mrb_iv_set(mrb, self, MRB_IVSYM(block), block);
+    // The only two the GC has to see. Both names carry no '@', so Ruby
+    // reaches them through #source and #block or not at all: a block
+    // swapped between the declaration and the round would run in place
+    // of the one the author wrote.
+    mrb_iv_set(mrb, self, MRB_SYM(source), source);
+    mrb_iv_set(mrb, self, MRB_SYM(block), block);
     return self;
 }
 
 mrb_value watcher_method_source(mrb_state *mrb, mrb_value self)
 {
-    return mrb_iv_get(mrb, self, MRB_IVSYM(source));
+    return mrb_iv_get(mrb, self, MRB_SYM(source));
 }
 
 //: () -> Proc
 mrb_value watcher_method_block(mrb_state *mrb, mrb_value self)
 {
-    return mrb_iv_get(mrb, self, MRB_IVSYM(block));
+    return mrb_iv_get(mrb, self, MRB_SYM(block));
 }
 
 //: () -> Symbol
@@ -234,7 +237,7 @@ mrb_value watcher_method_timeout(mrb_state *mrb, mrb_value self)
 mrb_value watcher_method_deadline_passed(mrb_state *mrb, mrb_value self)
 {
     watcher_data_or_raise(mrb, self);
-    const mrb_value block = mrb_iv_get(mrb, self, MRB_IVSYM(block));
+    const mrb_value block = mrb_iv_get(mrb, self, MRB_SYM(block));
     const mrb_value argv[2] = {mrb_symbol_value(MRB_SYM(timeout)), self};
     mrb_yield_argv(mrb, block, 2, argv);
     // The block can abort, and abort frees nothing - the CDATA is still
@@ -285,7 +288,7 @@ mrb_value block_call_in_protected_call(mrb_state *mrb, void *user_data)
 
 mrb_value block_run(mrb_state *mrb, mrb_value watcher, mrb_value event)
 {
-    BlockRun b{mrb_iv_get(mrb, watcher, MRB_IVSYM(block)), {event, watcher}};
+    BlockRun b{mrb_iv_get(mrb, watcher, MRB_SYM(block)), {event, watcher}};
     mrb_bool raised = FALSE;
     const mrb_value answer = mrb_protect_error(mrb, block_call_in_protected_call, &b, &raised);
     if (raised)
@@ -406,12 +409,12 @@ void watcher_disarm(mrb_value value)
 
 mrb_value watcher_source_of(mrb_state *mrb, mrb_value value)
 {
-    return mrb_iv_get(mrb, value, MRB_IVSYM(source));
+    return mrb_iv_get(mrb, value, MRB_SYM(source));
 }
 
 mrb_value watcher_block_of(mrb_state *mrb, mrb_value value)
 {
-    return mrb_iv_get(mrb, value, MRB_IVSYM(block));
+    return mrb_iv_get(mrb, value, MRB_SYM(block));
 }
 
 void watcher_init_class(mrb_state *mrb, struct RClass *webmachine_module)

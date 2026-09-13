@@ -795,7 +795,7 @@ mrb_value app_initialize(mrb_state *mrb, mrb_value self)
     spec->conf = conf;
     mrb_gc_register(mrb, conf);
     mrb_iv_set(mrb, self, MRB_IVSYM(conf), conf);
-    mrb_iv_set(mrb, self, MRB_IVSYM(routes),
+    mrb_iv_set(mrb, self, MRB_SYM(routes),
                mrb_obj_value(mrb_data_object_alloc(mrb, routes_class(mrb), spec, &app_type)));
     if (mrb_nil_p(block))
         return self;
@@ -825,7 +825,7 @@ mrb_value app_routes(mrb_state *mrb, mrb_value self)
     mrb_get_args(mrb, "&", &block);
     if (mrb_nil_p(block))
         mrb_raise(mrb, E_WM_ERROR(mrb), "app.routes wants a block");
-    mrb_yield(mrb, block, mrb_iv_get(mrb, self, MRB_IVSYM(routes)));
+    mrb_yield(mrb, block, mrb_iv_get(mrb, self, MRB_SYM(routes)));
     return self;
 }
 

@@ -185,9 +185,9 @@ mrb_value compute_task_initialize(mrb_state *mrb, mrb_value self)
     if (!(secs > 0.0)) {
         mrb_raisef(mrb, E_ARGUMENT_ERROR, "max_runtime: %v is not a time a job could take", run);
     }
-    mrb_iv_set(mrb, self, MRB_IVSYM(block), blk);
-    mrb_iv_set(mrb, self, MRB_IVSYM(args), mrb_ary_new_from_values(mrb, argc, argv));
-    mrb_iv_set(mrb, self, MRB_IVSYM(max_runtime), mrb_float_value(mrb, secs));
+    mrb_iv_set(mrb, self, MRB_SYM(block), blk);
+    mrb_iv_set(mrb, self, MRB_SYM(args), mrb_ary_new_from_values(mrb, argc, argv));
+    mrb_iv_set(mrb, self, MRB_SYM(max_runtime), mrb_float_value(mrb, secs));
     return self;
 }
 
@@ -224,7 +224,7 @@ mrb_value worker_table_of_this_vm(mrb_state *mrb)
 {
     struct RClass *const workers =
         mrb_module_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Workers));
-    return mrb_iv_get(mrb, mrb_obj_value(workers), MRB_IVSYM(built));
+    return mrb_iv_get(mrb, mrb_obj_value(workers), MRB_SYM(built));
 }
 
 // Registry[key] - inside a worker, this worker's own value.
@@ -317,9 +317,9 @@ bool compute_task_read_from_value(mrb_state *mrb, mrb_value value, ComputeTaskAs
         mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(ComputeTask));
     if (!mrb_obj_is_kind_of(mrb, value, klass))
         return false;
-    out_ask->block = mrb_iv_get(mrb, value, MRB_IVSYM(block));
-    out_ask->args = mrb_iv_get(mrb, value, MRB_IVSYM(args));
-    out_ask->max_runtime = mrb_as_float(mrb, mrb_iv_get(mrb, value, MRB_IVSYM(max_runtime)));
+    out_ask->block = mrb_iv_get(mrb, value, MRB_SYM(block));
+    out_ask->args = mrb_iv_get(mrb, value, MRB_SYM(args));
+    out_ask->max_runtime = mrb_as_float(mrb, mrb_iv_get(mrb, value, MRB_SYM(max_runtime)));
     return true;
 }
 
@@ -615,7 +615,7 @@ struct WorkerVm {
         const mrb_value table = mrb_hash_new(mrb);
         struct RClass *const workers_mod = mrb_module_get_under_id(
             mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Workers));
-        mrb_iv_set(mrb, mrb_obj_value(workers_mod), MRB_IVSYM(built), table);
+        mrb_iv_set(mrb, mrb_obj_value(workers_mod), MRB_SYM(built), table);
         for (const WorkerBuild &b : worker_builds()) {
             BuildOne one{&b, table};
             mrb_bool raised = FALSE;

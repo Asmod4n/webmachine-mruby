@@ -432,11 +432,16 @@ mrb_value response_is_redirect(mrb_state *mrb, mrb_value)
 }
 
 // App-level only: no C++ run slot backs an error message, so it lives as
-// a plain ivar on the handle. Keep one handle and get and set agree on
-// it, like any other Ruby attr_accessor.
+// an ivar on the handle. Keep one handle and get and set agree on it.
+//
+// The ivar name carries no '@', so Ruby cannot reach it: a name without
+// one is not an instance variable name (mrb_iv_name_sym_p), so
+// instance_variable_get refuses it, instance_variables leaves it out,
+// and no Ruby source can spell it. These two methods are the whole way
+// in and the whole way out.
 mrb_value response_get_error(mrb_state *mrb, mrb_value self)
 {
-    return mrb_iv_get(mrb, self, MRB_IVSYM(error));
+    return mrb_iv_get(mrb, self, MRB_SYM(error));
 }
 
 // App-level only: see resp_error above.
@@ -444,7 +449,7 @@ mrb_value response_set_error(mrb_state *mrb, mrb_value self)
 {
     mrb_value message;
     mrb_get_args(mrb, "o", &message);
-    mrb_iv_set(mrb, self, MRB_IVSYM(error), message);
+    mrb_iv_set(mrb, self, MRB_SYM(error), message);
     return message;
 }
 

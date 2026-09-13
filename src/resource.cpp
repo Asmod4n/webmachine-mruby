@@ -2298,7 +2298,7 @@ void fold_node_callbacks(const Folding &fold, Resource &out_value, bool (&ans)[k
     // request, on the class, and never folded: its answer is what a
     // worker or a watcher says, and that changes from request to request.
     uint64_t declared = 0;
-    for (const mrb_sym list_name : {MRB_IVSYM(computed), MRB_IVSYM(watched)}) {
+    for (const mrb_sym list_name : {MRB_SYM(computed), MRB_SYM(watched)}) {
         const mrb_value list = mrb_iv_get(mrb, klass, list_name);
         const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
         for (size_t i = 0; i < count; i++) {
@@ -2406,7 +2406,7 @@ void fold_compute_declarations(mrb_state *mrb, mrb_value klass, Resource &out_va
     // cross, as CBOR. That is the cheaper crossing, not the impossible
     // one.
     {
-        const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(computed));
+        const mrb_value list = mrb_iv_get(mrb, klass, MRB_SYM(computed));
         const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
         for (size_t i = 0; i < count; i++) {
             const mrb_sym want = mrb_symbol(ruby_array_entry(list, i));
@@ -2495,7 +2495,7 @@ void fold_watch_declarations(mrb_state *mrb, mrb_value klass, Resource &out_valu
     // instance and keep whatever it closed over. Two things are asked: the
     // name is a flow node, and something answers it.
     {
-        const mrb_value list = mrb_iv_get(mrb, klass, MRB_IVSYM(watched));
+        const mrb_value list = mrb_iv_get(mrb, klass, MRB_SYM(watched));
         const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
         for (size_t i = 0; i < count; i++) {
             const mrb_sym want = mrb_symbol(ruby_array_entry(list, i));
@@ -2636,8 +2636,8 @@ void fold_body_readers(const Folding &fold, Resource &out_value)
 {
     mrb_state *const mrb = fold.mrb;
     const mrb_value klass = fold.klass;
-    const mrb_value named = mrb_iv_get(mrb, klass, MRB_IVSYM(body_readers));
-    const mrb_value savers = mrb_iv_get(mrb, klass, MRB_IVSYM(body_savers));
+    const mrb_value named = mrb_iv_get(mrb, klass, MRB_SYM(body_readers));
+    const mrb_value savers = mrb_iv_get(mrb, klass, MRB_SYM(body_savers));
     const size_t count = mrb_array_p(named) ? ruby_array_length(named) : 0;
     const size_t saver_count = mrb_array_p(savers) ? ruby_array_length(savers) : 0;
 
@@ -3402,10 +3402,10 @@ mrb_value resource_compute(mrb_state *mrb, mrb_value self)
     if (count == 0) {
         mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "compute wants the name of a callback, and got none");
     }
-    mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(computed));
+    mrb_value list = mrb_iv_get(mrb, self, MRB_SYM(computed));
     if (!mrb_array_p(list)) {
         list = mrb_ary_new_capa(mrb, count);
-        mrb_iv_set(mrb, self, MRB_IVSYM(computed), list);
+        mrb_iv_set(mrb, self, MRB_SYM(computed), list);
     }
     for (mrb_int i = 0; i < count; i++) {
         if (mrb_unlikely(!mrb_symbol_p(names[i]))) {
@@ -3455,10 +3455,10 @@ mrb_value resource_reads_body(mrb_state *mrb, mrb_value self)
         mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
                   "reads_body wants the name of a callback, and got none");
     }
-    mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(body_readers));
+    mrb_value list = mrb_iv_get(mrb, self, MRB_SYM(body_readers));
     if (!mrb_array_p(list)) {
         list = mrb_ary_new_capa(mrb, count);
-        mrb_iv_set(mrb, self, MRB_IVSYM(body_readers), list);
+        mrb_iv_set(mrb, self, MRB_SYM(body_readers), list);
     }
     for (mrb_int i = 0; i < count; i++) {
         if (mrb_unlikely(!mrb_symbol_p(argv[i]))) {
@@ -3467,10 +3467,10 @@ mrb_value resource_reads_body(mrb_state *mrb, mrb_value self)
         }
         mrb_ary_push(mrb, list, argv[i]);
         if (saves) {
-            mrb_value slot = mrb_iv_get(mrb, self, MRB_IVSYM(body_savers));
+            mrb_value slot = mrb_iv_get(mrb, self, MRB_SYM(body_savers));
             if (!mrb_array_p(slot)) {
                 slot = mrb_ary_new_capa(mrb, count);
-                mrb_iv_set(mrb, self, MRB_IVSYM(body_savers), slot);
+                mrb_iv_set(mrb, self, MRB_SYM(body_savers), slot);
             }
             mrb_ary_push(mrb, slot, argv[i]);
         }
@@ -3490,10 +3490,10 @@ mrb_value resource_watch(mrb_state *mrb, mrb_value self)
     if (count == 0) {
         mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb), "watch wants the name of a callback, and got none");
     }
-    mrb_value list = mrb_iv_get(mrb, self, MRB_IVSYM(watched));
+    mrb_value list = mrb_iv_get(mrb, self, MRB_SYM(watched));
     if (!mrb_array_p(list)) {
         list = mrb_ary_new_capa(mrb, count);
-        mrb_iv_set(mrb, self, MRB_IVSYM(watched), list);
+        mrb_iv_set(mrb, self, MRB_SYM(watched), list);
     }
     for (mrb_int i = 0; i < count; i++) {
         if (mrb_unlikely(!mrb_symbol_p(names[i]))) {
