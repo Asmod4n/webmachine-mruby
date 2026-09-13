@@ -107,7 +107,7 @@ end
 | `is_redirect?` | true or false | Whether this run was marked a redirect. |
 | `error` | any | A plain instance variable. The server never reads it. |
 | `error = v` | - | Sets that instance variable. |
-| `set_cookie(name, value, attrs = nil)` | nil | Appends one `Set-Cookie` line; never replaces one. `name` may be a Symbol or String. `value` must be a String. `attrs` is a Hash with keys `:path`, `:domain`, `:max_age`, `:expires`, `:secure`, `:httponly`, spelled on the wire as `Path=`, `Domain=`, `Max-Age=`, `Expires=`, `; Secure`, `; HttpOnly`. Refuses a name with `=` or `;`, a value or attribute with `;`, or any of the three with CR, LF or NUL. |
+| `set_cookie(name, value, attrs = nil)` | nil | Appends one `Set-Cookie` line; never replaces one. `name` may be a Symbol or String. `value` must be a String. `attrs` is a Hash with keys `:path`, `:domain`, `:max_age`, `:expires`, `:secure`, `:httponly`, `:same_site`, spelled on the wire as `Path=`, `Domain=`, `Max-Age=`, `Expires=`, `; Secure`, `; HttpOnly`, `; SameSite=`. Refuses a name with `=` or `;`, a value or attribute with `;`, or any of the three with CR, LF or NUL. Refuses a `:same_site` that is not `Strict`, `Lax` or `None`, read without regard to letter case; `None` without `:secure`; a `__Secure-` name without `:secure`; and a `__Host-` name without `:secure`, or with a `:domain`, or with a `:path` that is not `/`. The two prefixes are read without regard to letter case. See [Write a safe cookie](../how-to/cookies.md). |
 | `userdata` | any | One slot per run. Set in one callback, read in a later callback of the same run. The server never reads it. An unset slot gives nil. |
 | `userdata = v` | - | Sets that slot. |
 

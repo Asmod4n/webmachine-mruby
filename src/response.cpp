@@ -479,6 +479,84 @@ void cookie_append_attribute(mrb_state *mrb, std::string &line, CookieAttribute 
     line.append(ruby_string_bytes(text));
 }
 
+// RFC 6265bis 4.1.2.7: the three spellings SameSite takes. The value is
+// compared without regard to letter case, and the line carries the
+// spelling the RFC writes. Nothing means the app named something else.
+const char *cookie_same_site_name(std::string_view given)
+{
+    if (http::tok_eq(given, "strict"))
+        return "Strict";
+    if (http::tok_eq(given, "lax"))
+        return "Lax";
+    if (http::tok_eq(given, "none"))
+        return "None";
+    return nullptr;
+}
+
+// RFC 6265bis 4.1.3: a browser reads a name prefix without regard to
+// letter case, so this server reads it the same way.
+bool cookie_name_has_prefix(std::string_view cookie_name, std::string_view prefix)
+{
+    if (cookie_name.size() < prefix.size())
+        return false;
+    return http::tok_eq({cookie_name.data(), prefix.size()}, prefix);
+}
+
+// RFC 6265bis 4.1.2.7 and 4.1.3: what one call's attributes say about the
+// two rules the browser enforces. Decide, then do: these values are read
+// first, the rules are answered on them, and the line is spelled after.
+struct CookieRules {
+    const char *same_site = nullptr;
+    bool secure = false;
+    bool has_domain = false;
+    bool path_is_root = false;
+};
+
+void cookie_rules_read(mrb_state *mrb, mrb_value attrs, CookieRules &rules)
+{
+    rules.secure = mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(secure))));
+    rules.has_domain = !mrb_nil_p(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(domain))));
+    const mrb_value path = mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(path)));
+    if (!mrb_nil_p(path)) {
+        const mrb_value text = mrb_obj_as_string(mrb, path);
+        rules.path_is_root = ruby_string_bytes(text) == "/";
+    }
+    const mrb_value same_site = mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(same_site)));
+    if (mrb_nil_p(same_site))
+        return;
+    const mrb_value text = mrb_obj_as_string(mrb, same_site);
+    rules.same_site = cookie_same_site_name(ruby_string_bytes(text));
+    if (rules.same_site == nullptr) {
+        mrb_raise(mrb, E_WM_ERROR(mrb),
+                  "response.set_cookie wants SameSite to be Strict, Lax or None");
+    }
+}
+
+// The two rules a browser enforces, answered here instead. A cookie that
+// breaks either one is dropped by the browser and nothing says why, so the
+// call raises rather than the wire staying silent.
+void cookie_rules_check(mrb_state *mrb, std::string_view cookie_name, const CookieRules &rules)
+{
+    // RFC 6265bis 4.1.2.7: SameSite=None needs Secure beside it.
+    if (rules.same_site != nullptr && std::string_view(rules.same_site) == "None" &&
+        !rules.secure) {
+        mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants Secure beside SameSite=None");
+    }
+    // RFC 6265bis 4.1.3: __Host- needs Secure, no Domain and Path=/.
+    if (cookie_name_has_prefix(cookie_name, "__host-")) {
+        if (!rules.secure || rules.has_domain || !rules.path_is_root) {
+            mrb_raise(
+                mrb, E_WM_ERROR(mrb),
+                "response.set_cookie wants Secure, no Domain and Path=/ for a __Host- name");
+        }
+        return;
+    }
+    // RFC 6265bis 4.1.3: __Secure- needs Secure.
+    if (cookie_name_has_prefix(cookie_name, "__secure-") && !rules.secure) {
+        mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants Secure for a __Secure- name");
+    }
+}
+
 //: (String, String, ?Hash) -> NilClass
 mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
 {
@@ -509,6 +587,14 @@ mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in the value");
     }
 
+    // RFC 6265bis 4.1.2.7 and 4.1.3: read the attributes the two rules
+    // need, answer the rules, and spell the line after. A call with no
+    // attribute hash still has a name, and a name carries a prefix rule.
+    CookieRules rules;
+    if (mrb_hash_p(attrs))
+        cookie_rules_read(mrb, attrs, rules);
+    cookie_rules_check(mrb, cookie_name, rules);
+
     std::string line;
     line.append(cookie_name);
     line.append("=", 1);
@@ -519,11 +605,15 @@ mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
         cookie_append_attribute(mrb, line, {attrs, MRB_SYM(domain), "Domain="});
         cookie_append_attribute(mrb, line, {attrs, MRB_SYM(max_age), "Max-Age="});
         cookie_append_attribute(mrb, line, {attrs, MRB_SYM(expires), "Expires="});
-        if (mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(secure))))) {
+        if (rules.secure) {
             line.append("; Secure", 8);
         }
         if (mrb_test(mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(httponly))))) {
             line.append("; HttpOnly", 10);
+        }
+        if (rules.same_site != nullptr) {
+            line.append("; SameSite=", 11);
+            line.append(rules.same_site);
         }
     }
     // Same gate: the cookie's name, value and every attribute came from the
