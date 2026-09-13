@@ -85,14 +85,6 @@ bool Http1::watch_take(Conn &conn, int *slot)
     return true;
 }
 
-std::string_view Http1::compute_task_user(const Conn &conn, int park, int job)
-{
-    const Conn::Round *const round = conn.park_at(park);
-    if (round == nullptr || job < 0 || job >= Conn::kJobSlots)
-        return {};
-    return round->job.at(job).user_bytes;
-}
-
 bool Http1::compute_task_take(Conn &conn, int park, int job, unsigned *code, std::string &bytes,
                               double *deadline)
 {

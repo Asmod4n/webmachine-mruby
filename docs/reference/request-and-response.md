@@ -128,43 +128,50 @@ class WritesResponse < Webmachine::Resource
 end
 ```
 
-### userdata across a compute worker
+### A compute worker sees its arguments, and nothing else
 
-The run's `response.userdata` slot survives a `compute` or `watch` stop.
+A compute block runs in a worker VM. That VM holds no request, no
+response and no state of the run. It holds what the task was given and
+what the worker was told to build once, at start
+(`Webmachine::Workers::Registry`).
 
-Inside a compute block, `response` is not the run's response. The
-block runs in a worker VM with no environment, and in that VM
-`response` is a method on `Object` that answers
-`Webmachine::Workers.response`: an object with one member, `userdata`,
-and nothing else. `response.body`, `response.code` and the headers do
-not exist there.
+So the block is a function:
 
-The slot crosses in both directions. Before the job is sent, the run's
-`response.userdata` is encoded as CBOR and carried with the job; a
-value CBOR cannot carry raises `Webmachine::Error`. The worker decodes
-it into its own `response.userdata` before the block runs. After the
-block, the worker sends the value back only when it changed, and the
-run's slot takes it. So the next callback of the run reads what the
-block left.
+- **In** — the arguments of `ComputeTask.new(*args, max_runtime:)`, which
+  cross as CBOR. A value CBOR cannot carry raises `Webmachine::Error` at
+  the call, in the run's own VM.
+- **Out** — the value of the block, which crosses back as CBOR and
+  becomes the answer of the callback the task stands for.
+
+Nothing else crosses in either direction. A block that names `request` or
+`response` finds no such method and raises `NoMethodError` in the worker.
+That raise crosses back whole - class, message and backtrace - and the
+run raises it as its own, so the answer is a 500 that says what happened.
 
 ```ruby
-class ComputeUser < Webmachine::Resource
+class Verify < Webmachine::Resource
   compute :is_authorized?
-  def service_available?
-    response.userdata = 'from the run'
-    true
-  end
+
   def is_authorized?(_h)
-    Webmachine::ComputeTask.new(max_runtime: 500.ms) do
-      response.userdata = "worker saw #{response.userdata}"
-      true
+    # The token is read here, where the request exists, and handed over.
+    Webmachine::ComputeTask.new(request.headers['authorization'].to_s,
+                                max_runtime: 500.ms) do |presented|
+      Webmachine::Workers::Registry[:db].verify(presented)
     end
   end
+
   def to_html
-    response.userdata
+    'welcome'
   end
 end
 ```
+
+Everything the worker needs is read in the callback, where the request
+exists, and passed as an argument.
+
+`response.userdata` is the run's own slot between its callbacks, in the
+run's VM. It survives a `compute` or `watch` stop, because the run
+survives it. A worker never sees it.
 
 ## Next
 

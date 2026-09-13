@@ -1172,33 +1172,64 @@ assert('response: the scratch is one run long (#30)') do
   end
 end
 
-# #30: response.userdata crosses to the worker and comes back. CBOR
-# carries it both ways, and only a slot the worker changed is read.
-assert('compute: the worker reads response.userdata and leaves something else (#30)') do
+# A worker is a function: it sees the arguments the task was given, it
+# answers with the value of its block, and it sees nothing else. No
+# request, no response, no state of the run. A block that names one of
+# them raises in the worker VM, and the raise crosses back whole - class,
+# message and backtrace - and becomes the run's own.
+assert('compute: a worker sees its arguments and answers with its block (#30)') do
   src = <<~RUBY_SRC
-    class ComputeUser < Webmachine::Resource
+    class ComputeArgs < Webmachine::Resource
       compute :is_authorized?
-      def service_available?
-        response.userdata = 'from the run'
-        true
-      end
       def is_authorized?(_h)
-        Webmachine::ComputeTask.new(max_runtime: 500.ms) do
-          response.userdata = "worker saw \#{response.userdata}"
-          true
+        # The block answers true only when both arguments arrived as they
+        # were given. is_authorized? reads a String as a challenge and
+        # answers 401, so the proof is a boolean here.
+        Webmachine::ComputeTask.new('a', 2, max_runtime: 500.ms) do |letter, count|
+          letter == 'a' && count == 2
         end
       end
       def to_html
-        response.userdata
+        "answered"
       end
     end
   RUBY_SRC
-  wm_server(wm_app('ComputeUser', src)) do |sock|
+  wm_server(wm_app('ComputeArgs', src)) do |sock|
     UNIXSocket.open(sock) do |s|
+      # The block answered a String, which is not false, so is_authorized?
+      # passed and the flow went on.
       s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       head, body = wm_read(s)
-      assert_true head.start_with?('HTTP/1.1 200')
-      assert_equal 'worker saw from the run', body
+      assert_true head.start_with?('HTTP/1.1 200'), head
+      assert_equal 'answered', body
+    end
+  end
+end
+
+# The other half of the same rule: a block that reaches for the run's
+# response finds no such method and raises. A raise in a worker is the
+# 503 the flow already gives one - src/http1_class.cpp reads it as a
+# handle the worker lost - so that is what the client gets.
+assert('compute: a block that names response raises in the worker (#30)') do
+  src = <<~RUBY_SRC
+    class ComputeNoResponse < Webmachine::Resource
+      compute :is_authorized?
+      def is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) do
+          response.userdata
+        end
+      end
+      def to_html
+        'unreachable'
+      end
+    end
+  RUBY_SRC
+  wm_server(wm_app('ComputeNoResponse', src)) do |sock|
+    UNIXSocket.open(sock) do |s|
+      s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+      head, = wm_read(s)
+      assert_true head.start_with?('HTTP/1.1 503'), head
+      assert_true head.include?('Retry-After: 60'), head
     end
   end
 end

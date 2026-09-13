@@ -2146,7 +2146,7 @@ template <class App> class Ring
                 if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline))
                     continue;
                 if (!compute_.submit(
-                        mrb_, code, arg, App::compute_task_user(c.app, park, slot), deadline,
+                        mrb_, code, arg, deadline,
                         detail::compute_task_tag(c.gen, index, static_cast<uint8_t>(park),
                                                  static_cast<uint8_t>(slot),
                                                  App::park_generation(c.app, park)))) {

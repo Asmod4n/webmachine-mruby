@@ -2614,9 +2614,6 @@ uint16_t resource_run(const Resource &resource, RunAsk request_ask, RunAnswer ou
 struct RunRound {
     const std::array<mrb_value, kValueJobs> &answers;
     const std::array<uint8_t, kValueJobs> &what;
-    // #30: response.userdata a worker changed, per job, or nothing.
-    const std::array<mrb_value, kValueJobs> &user;
-    const std::array<bool, kValueJobs> &user_have;
     // How many entries are the round's. An index past it is a throw.
     uint8_t n;
 };
@@ -2783,10 +2780,6 @@ bool compute_task_code_of(unsigned stream_id, std::string *irep, double *max_run
 // the error log belongs to the reactor's thread.
 struct ComputeAnswer {
     std::string bytes; // the answer as CBOR, empty when the job raised
-    // #30: response.userdata on the way back, when the worker changed it.
-    // Same bytes as on the way out otherwise, and then nobody looks.
-    std::string user_bytes;
-    bool user_changed = false;
     bool raised = false;
     // The task ran past its max_runtime and the worker ended it. Not a
     // raise: the author's number was wrong, and a retry costs the same
@@ -2823,8 +2816,8 @@ class ComputePool
     // this layer does not invent a refusal for it.
     // False means every slot is taken. The sqe itself is never the reason:
     // a full submission queue is a raise (sqe_or_raise).
-    bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, std::string_view user,
-                double deadline, uint64_t answer);
+    bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
+                uint64_t answer);
     // A worker began the job in `slot`, its `gen`th taking. The deadline
     // to arm for it, or 0 when it has none or the slot moved on.
     double started(unsigned slot, uint16_t generation);
