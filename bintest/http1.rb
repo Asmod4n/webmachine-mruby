@@ -455,6 +455,50 @@ assert('h1: refusals - 400 no Host, 400 malformed, 431 huge head, 413 huge body,
   end
 end
 
+assert('h1: Transfer-Encoding reads as one list, however many field lines carry it') do
+  # RFC 9110 5.3: several field lines with one name are the same message as
+  # one comma-joined line. Every pair below is the same message, so the two
+  # forms have to earn the same status. Before this test they did not: only
+  # the last field line counted, so `deflate` then `chunked` answered 204
+  # and let a coding through that this server cannot read.
+  #
+  # h1spec covers the same ground as llhttp/transfer-encoding#021.
+  wm_server(H1_APP, tag: 'wm-h1') do |sock, _|
+    checks = [
+      # RFC 9112 6.1: a coding this server cannot read is 501, on one line
+      ['Transfer-Encoding: deflate, chunked', '501'],
+      ["Transfer-Encoding: deflate\r\nTransfer-Encoding: chunked", '501'],
+      ["Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked", '501'],
+      ["Transfer-Encoding: deflate\r\nTransfer-Encoding: gzip\r\n" \
+       'Transfer-Encoding: chunked', '501'],
+      # RFC 9112 7: identity is not a transfer coding. RFC 2616 had it.
+      ["Transfer-Encoding: identity\r\nTransfer-Encoding: chunked", '501'],
+      # chunked is not the last coding, so the body has no end this server
+      # and the sender agree on
+      ['Transfer-Encoding: chunked, deflate', '501'],
+      ["Transfer-Encoding: chunked\r\nTransfer-Encoding: deflate", '501'],
+      # RFC 9112 6.1: chunked is applied once
+      ['Transfer-Encoding: chunked, chunked', '400'],
+      ["Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked", '400'],
+      # A legal list is accepted, and the flow answers it. Floor defines
+      # to_html and nothing else, so POST earns 405 at b10 - which is the
+      # proof the framing passed rather than refused.
+      ['Transfer-Encoding: chunked', '405'],
+      ['Transfer-Encoding:  chunked ', '405'],
+      ['Transfer-Encoding: CHUNKED', '405'],
+      ['Transfer-Encoding: chunked,', '405'],
+    ]
+    checks.each do |(fields, code)|
+      UNIXSocket.open(sock) do |s|
+        s.write("POST / HTTP/1.1\r\nHost: x\r\n#{fields}\r\n\r\n0\r\n\r\n")
+        head, = wm_read(s)
+        assert_true head.start_with?("HTTP/1.1 #{code}"),
+                    "expected #{code} for #{fields.inspect}, got: #{head.lines.first}"
+      end
+    end
+  end
+end
+
 assert('h1: random garbage kills connections, never the process') do
   wm_server(H1_APP, tag: 'wm-h1') do |sock, pid|
     30.times do

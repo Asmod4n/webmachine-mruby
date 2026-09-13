@@ -43,13 +43,51 @@ struct WireFacts {
     uint16_t out_error = 0;
     bool have_cl = false;
     bool have_te = false;
-    bool te_chunked = false;
+    // RFC 9112 7: how the transfer codings of every Transfer-Encoding field
+    // line read as one list. A count, not a flag: chunked applied twice is
+    // malformed, and the old flag could not tell one from two.
+    bool te_unknown_coding = false;
+    bool te_last_is_chunked = false;
+    uint8_t te_chunked_count = 0;
     bool have_host = false;
     bool conn_close = false;
     bool conn_keep = false;
     bool up_ws = false;
     bool conn_upgrade = false;
 };
+
+// RFC 9112 7: the transfer codings one Transfer-Encoding field line names,
+// added to what the framer already read. RFC 9110 5.3: several field lines
+// with one name are the same message as one comma-joined line, so a line
+// adds to the list and never replaces it. The old code assigned, so only
+// the last line counted and a coding named on an earlier line was lost.
+//
+// This server reads chunked and nothing else. identity is not a transfer
+// coding in RFC 9112 - RFC 2616 had it - so it counts as unknown here.
+static void transfer_encoding_fold(WireFacts &window, const char *value, size_t value_length)
+{
+    size_t at = 0;
+    while (at < value_length) {
+        while (at < value_length && (value[at] == ' ' || value[at] == '\t' || value[at] == ','))
+            at++;
+        const size_t from = at;
+        while (at < value_length && value[at] != ',')
+            at++;
+        size_t to = at;
+        while (to > from && (value[to - 1] == ' ' || value[to - 1] == '\t'))
+            to--;
+        if (to == from)
+            continue;
+        if (http::tok_eq({value + from, to - from}, "chunked")) {
+            if (window.te_chunked_count < 0xff)
+                window.te_chunked_count++;
+            window.te_last_is_chunked = true;
+        } else {
+            window.te_unknown_coding = true;
+            window.te_last_is_chunked = false;
+        }
+    }
+}
 
 // RFC 9112 / RFC 6455: host(4) referer/upgrade(7) connection/user-agent(10)
 // content-length(14) sec-websocket-key/transfer-encoding(17)
@@ -103,9 +141,7 @@ void wire_header_read(WireSink into, http::Field field)
         case 17:
             if (http::tok_eq({length, name_length}, "transfer-encoding")) {
                 window.have_te = true;
-                // RFC 9112 6.1: chunked is the only coding this server reads,
-                // and it has to be the last one. Anything else is 501.
-                window.te_chunked = http::tok_eq({value, value_length}, "chunked");
+                transfer_encoding_fold(window, value, value_length);
             } else if (http::tok_eq({length, name_length}, "sec-websocket-key")) {
                 window.ws_key = value;
                 window.ws_key_len = value_length;
@@ -2444,8 +2480,16 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         if (mrb_unlikely(window.have_te)) {
             if (mrb_unlikely(window.have_cl))
                 return connection_fail(conn, 400, sink, lflags);
-            if (mrb_unlikely(!window.te_chunked))
+            // RFC 9112 6.1: a coding this server cannot read is 501,
+            // whichever field line named it.
+            if (mrb_unlikely(window.te_unknown_coding))
                 return connection_fail(conn, 501, sink, lflags);
+            // RFC 9112 6.1: chunked is applied once, and it is the last
+            // coding of the list. Anything else says the sender and this
+            // server would disagree about where the body ends, which is
+            // what a smuggling attempt needs.
+            if (mrb_unlikely(window.te_chunked_count != 1 || !window.te_last_is_chunked))
+                return connection_fail(conn, 400, sink, lflags);
         }
         if (mrb_unlikely(minor >= 1 && !window.have_host))
             return connection_fail(conn, 400, sink, lflags);
