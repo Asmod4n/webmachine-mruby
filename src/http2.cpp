@@ -801,6 +801,11 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     http::ReqValues vals;
     const char *path_val = nullptr;
     size_t path_vlen = 0;
+    // #17: the authority, kept rather than only counted. It becomes the
+    // host field below, once the loop has shown whether the client sent
+    // one of its own.
+    const char *authority_val = nullptr;
+    size_t authority_vlen = 0;
     bool accepted = true, saw_regular = false;
     bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
     ClaimedLength claimed;
@@ -919,6 +924,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                     break;
                 }
                 have_authority = true;
+                authority_val = field_value;
+                authority_vlen = vlen;
             } else if (which == kProtocol) {
                 // RFC 8441 4: only an extended CONNECT carries it, and only once.
                 if (protocol_val != nullptr) {
@@ -955,6 +962,35 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         !h2_path_ok(path_val, path_vlen)) {
         h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
         return true;
+    }
+
+    // #17, RFC 9113 8.3.1: a server treats :authority as the host field of
+    // the equivalent HTTP/1.1 request. So the authority joins the field
+    // list as that field, and request.host, request.base_uri and
+    // request.same_origin? then answer for h2 the way they answer for h1.
+    // Before this they answered nil, "https:///" and nil, because the
+    // authority was counted once and then dropped.
+    //
+    // It is the last entry rather than the first: the loop above fills the
+    // list in arrival order, and a pseudo-field arrives before every
+    // regular one, so prepending would mean moving every entry.
+    //
+    // The name is a literal and the value points into the decode buffer,
+    // which is what every other entry of this list does. A stream that
+    // parks copies both into field_blob, so a parked run finds the field
+    // as well, and values_of_copied_fields notes it again from the copy.
+    //
+    // A client that sends a host field keeps it: that field is the one it
+    // spelled, and the list holds one host field, never two.
+    if (authority_val != nullptr && !vals.named.carries(http::NamedField::kHost) &&
+        name_length < kH2MaxFields) {
+        header_vector[name_length].name = "host";
+        header_vector[name_length].name_len = 4;
+        header_vector[name_length].value = authority_val;
+        header_vector[name_length].value_len = authority_vlen;
+        http::header_switch({{"host", 4}, {authority_val, authority_vlen}},
+                            {facts, vals, name_length});
+        name_length++;
     }
 
     if (stream_id > h2_state.last_stream)

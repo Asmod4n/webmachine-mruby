@@ -2403,3 +2403,71 @@ assert('h2: a resource that reads the body still gets every octet (#53)') do
     end
   end
 end
+
+# #17, RFC 9113 8.3.1: a server treats :authority as the host field of the
+# equivalent HTTP/1.1 request. Before the fix the authority was counted
+# once and then dropped, so request.host answered nil, base_uri answered
+# "http:///" and same_origin? answered nil - for every browser request,
+# because a browser sends :authority and no host field.
+H2_AUTHORITY_APP = <<~RUBY unless defined?(H2_AUTHORITY_APP)
+  class Authority < Webmachine::Resource
+    def to_html
+      [request.host.inspect,
+       request.base_uri,
+       request.same_origin?.inspect,
+       request.headers['host'].inspect].join('|')
+    end
+  end
+
+  def main
+    Webmachine::Application.new do |app|
+      app.routes { |route| route.add [:*], Authority }
+    end
+  end
+RUBY
+
+# One h2 request, and what the resource read back.
+def h2_authority_case(sock, block)
+  UNIXSocket.open(sock) do |s|
+    h2_handshake(s)
+    s.write(h2_frame(1, 0x05, 1, block))
+    h2_until(s, 1, 1)
+    _, _, _, data = h2_until(s, 0, 1)
+    data
+  end
+end
+
+assert('h2: :authority is the host field of the equivalent request (9113 8.3.1, #17)') do
+  h2_server(H2_AUTHORITY_APP) do |sock|
+    # The browser's shape: :authority and no host field of its own.
+    # request.host answers the authority, and base_uri is a whole URL
+    # rather than "http:///". The listener is a unix socket and carries no
+    # TLS, so the scheme is http.
+    answer = h2_authority_case(sock, h2_authority_block('a.example'))
+    assert_equal '"a.example"|http://a.example/|nil|"a.example"', answer
+
+    # request.headers carries it as well, because RFC 9113 8.3.1 says the
+    # equivalent HTTP/1.1 request has that field. So an application that
+    # reads the field by name reads the same thing on both protocols.
+    answer = h2_authority_case(sock, h2_authority_block('b.example:8080'))
+    assert_equal '"b.example:8080"|http://b.example:8080/|nil|"b.example:8080"', answer
+
+    # A client that sends a host field keeps it. The list holds one host
+    # field, never two, and the one the client spelled is the one it gets.
+    answer = h2_authority_case(sock,
+                               h2_authority_block('a.example') + h2_lit('host', 'c.example'))
+    assert_equal '"c.example"|http://c.example/|nil|"c.example"', answer
+
+    # #4: same_origin? needs the host, so it answered nil for every h2
+    # request before this. Now the Origin compares against the authority.
+    answer = h2_authority_case(sock,
+                               h2_authority_block('a.example') +
+                               h2_lit('origin', 'http://a.example'))
+    assert_equal '"a.example"|http://a.example/|true|"a.example"', answer
+
+    answer = h2_authority_case(sock,
+                               h2_authority_block('a.example') +
+                               h2_lit('origin', 'http://other.example'))
+    assert_equal '"a.example"|http://a.example/|false|"a.example"', answer
+  end
+end
