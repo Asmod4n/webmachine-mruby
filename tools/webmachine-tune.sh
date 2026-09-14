@@ -59,9 +59,13 @@ echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 # worker inherits the affinity of the thread that issued its work, so
 # pinning the reactor pins the pool as well.
 #
-# The mechanism therefore stands and only its number is stale. This
-# file states no number it cannot stand behind, so the line below
-# names the mechanism and not a rate, until the sweep is run here.
+# The plainer reason needs no ring at all: a pinned process cannot be
+# moved, so the scheduler can no longer put it on a core with less to
+# do. Measured on the author's machine, a pin showed no advantage.
+#
+# Two current reasons, then, and a stale number. This file states no
+# number it cannot stand behind, so the line below names the reasons
+# and not a rate, until the sweep is run here.
 echo ""
 echo "-- cpu placement"
 NPROC=$(nproc)
@@ -91,8 +95,11 @@ echo "recommend: do not pin - no taskset, no cpu mask, no isolated core."
 echo "  a pinned reactor pins its io-wq workers too - they inherit the"
 echo "  affinity of the thread that issued their work, and they carry the"
 echo "  open, statx and read behind every file this server answers."
+echo "  and a pinned process cannot be moved, so the scheduler can no longer"
+echo "  put it on a core with less to do. A pin showed no advantage where"
+echo "  it was tried."
 echo "  no rate is quoted: the old one measured splice, which this tree"
-echo "  does not have. The mechanism is current, the number is not."
+echo "  does not have. The reasons are current, the number is not."
 if [ "$NPROC" -lt 4 ]; then
   echo "note: $NPROC cores leaves little to split. See the shape section: the"
   echo "  count it recommends is the cpu budget less one, and on a small"

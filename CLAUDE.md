@@ -201,8 +201,13 @@ What that file settles, and what a session gets wrong without it:
   and not 100. An io-wq worker inherits the affinity of the thread that
   issued its work, so a pinned reactor pins the pool that exists to do
   that work elsewhere. The carrier changed, the mechanism did not.
-  So a pin is still refused, and no number is quoted for it until one
-  is measured here.
+  The plainer reason came from the author's own machine, where a pin
+  showed no advantage at all: a pinned process cannot be moved, so the
+  scheduler can no longer put it on a core with less to do. That holds
+  whatever the ring carries, and it is why the rule survived the tree
+  that made it.
+  So a pin is still refused, for two reasons that are current, and no
+  number is quoted for it until one is measured here.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.
