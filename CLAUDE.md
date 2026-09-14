@@ -171,6 +171,34 @@ answer for a binary it never made. `rake ship_smoke` is what does -
 it builds the host config and checks that the binary starts and
 answers 200. CI runs it on every push, beside the suite.
 
+## A number about speed comes from bench/
+
+`bench/` owns measuring. Read `bench/how-to-measure.md` before you make
+any claim about speed, and then follow it.
+
+What that file settles, and what a session gets wrong without it:
+
+- htgen is the client. `wrk`, `h2load` and `ab` are gone from this
+  tree, and the machine that measures does not install them. A script
+  that names a tool nobody can run lies about how its numbers were
+  made.
+- No `taskset`. This tree measured pinning twice and it lost twice. On
+  4 cpus a pinned server answered for an asset at 0.07 of the rate of
+  its unpinned twin.
+- The server and the client each hold more than 85 percent of a cpu, or
+  the run measured a wait and not the code. Every row of
+  `bench/results/*.log` names both numbers. Read them before the rate.
+- Five runs for each arm, A B A B A B, and compare the medians.
+- A change smaller than the host can resolve needs
+  `bench/instructions.sh`. It counts what the server executed, and the
+  count of one binary does not move between runs.
+
+This rule exists because it was broken. A session measured the reactor
+rewrite with `ab`, `h2load` and `taskset -c 0`, read a loss of 20
+percent, and spent an hour on a number that measured the benchmark. The
+instruction count then read 19 instructions per response less, which is
+a small gain.
+
 ## Kill a process by its pid, never by a pattern
 
 `pkill -f X` and `pgrep -f X` match every command line that holds X,
