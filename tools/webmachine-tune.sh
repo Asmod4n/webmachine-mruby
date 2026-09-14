@@ -100,6 +100,20 @@ echo "  put it on a core with less to do. A pin showed no advantage where"
 echo "  it was tried."
 echo "  no rate is quoted: the old one measured splice, which this tree"
 echo "  does not have. The reasons are current, the number is not."
+# And most operators cannot do it even where they want to. A process may
+# set its own mask, and a mask is inherited through exec, so `taskset -c
+# 0 webmachine-server ...` works for anybody. Pinning a server that is
+# already running is another matter: it needs CAP_SYS_NICE unless the
+# caller owns the process. Measured: as uid 65534 against a root-owned
+# pid, `taskset -pc 1` answers "failed to set affinity: Operation not
+# permitted". A server under systemd User=nobody, or a container's
+# non-root user, is therefore out of reach of `taskset -p` anyway.
+WHOAMI=$(id -u)
+if [ "$WHOAMI" -ne 0 ]; then
+  echo "  you are uid $WHOAMI: pinning a server already running as another user"
+  echo "  needs CAP_SYS_NICE and answers EPERM without it. A mask given at"
+  echo "  exec is inherited and needs nothing - which is the form to avoid."
+fi
 if [ "$NPROC" -lt 4 ]; then
   echo "note: $NPROC cores leaves little to split. See the shape section: the"
   echo "  count it recommends is the cpu budget less one, and on a small"
