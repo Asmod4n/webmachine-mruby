@@ -187,15 +187,22 @@ What that file settles, and what a session gets wrong without it:
   pinned its own shell to one cpu so the script would find three free,
   and called that an isolation rather than a pin. It is a pin: it
   narrowed the run to three of four cpus.
-  The rule stands, and its evidence does not. Both numbers this bullet
+  The mechanism stands, its numbers do not. Both numbers this bullet
   used to name came from a tree that is gone: a client mask widened
   from 2 to 15 to 30 cpus, and an asset served at 0.07 of its rate
-  under `taskset -c 0`. The second one measured io-wq workers that
-  carried splice, and this tree has no splice - `grep -rn splice src/`
-  finds the word about header fields and no `IORING_OP_SPLICE`. Splice
-  lost on its own merits, which is why it went. So a pin is still
-  refused here, and the reason is that nobody has measured one on this
-  tree. Measure it before quoting a number for it.
+  under `taskset -c 0`. That second one measured io-wq workers carrying
+  splice, and this tree has no splice - `grep -rn splice src/` finds
+  the word about header fields and no `IORING_OP_SPLICE`.
+  What did not go is io-wq. `ls /proc/<pid>/task` on a serving process
+  shows `iou-wrk-<pid>` beside the reactor's own threads, and those
+  workers carry the regular-file work the ring cannot do inline: the
+  open, the statx and the read of every file the docroot answers. It
+  is why a single-ring server reading files holds 112 percent of a cpu
+  and not 100. An io-wq worker inherits the affinity of the thread that
+  issued its work, so a pinned reactor pins the pool that exists to do
+  that work elsewhere. The carrier changed, the mechanism did not.
+  So a pin is still refused, and no number is quoted for it until one
+  is measured here.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.

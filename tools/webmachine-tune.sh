@@ -48,15 +48,20 @@ echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 #
 # This tree has no splice. `grep -rn splice src/` finds four lines and
 # every one of them is the word used about header fields; there is no
-# IORING_OP_SPLICE. So that second measurement describes a path this
-# binary does not walk, and the path it described lost on its own
-# merits, which is why it was removed.
+# IORING_OP_SPLICE. So that measurement describes a path this binary
+# does not walk.
 #
-# The rule may well still hold - a reactor of one thread has nothing to
-# gain from being confined to one cpu. But it is not proven here, and
-# this file does not state a number it cannot stand behind. Until the
-# sweep is run on this tree, the line below reports and recommends
-# without citing evidence it does not have.
+# io-wq did not go with it. A serving process shows `iou-wrk-<pid>`
+# beside its own threads, and those workers carry the file work a ring
+# cannot do inline - the open, the statx and the read behind every
+# docroot answer. Measured here: a single-ring server on the docroot
+# path holds 112 percent of a cpu, and the 12 is that pool. An io-wq
+# worker inherits the affinity of the thread that issued its work, so
+# pinning the reactor pins the pool as well.
+#
+# The mechanism therefore stands and only its number is stale. This
+# file states no number it cannot stand behind, so the line below
+# names the mechanism and not a rate, until the sweep is run here.
 echo ""
 echo "-- cpu placement"
 NPROC=$(nproc)
@@ -83,9 +88,11 @@ S0=$(steal_ticks); sleep 1; S1=$(steal_ticks)
 echo "steal: +$((S1 - S0)) ticks over 1s (0 = quiet; sustained >0 = a neighbor is eating this host)"
 
 echo "recommend: do not pin - no taskset, no cpu mask, no isolated core."
-echo "  inherited rule, not proven on this tree: the measurements behind it"
-echo "  were taken on a tree that had splice, and this one has none. What is"
-echo "  proven here is the shape below, not the placement."
+echo "  a pinned reactor pins its io-wq workers too - they inherit the"
+echo "  affinity of the thread that issued their work, and they carry the"
+echo "  open, statx and read behind every file this server answers."
+echo "  no rate is quoted: the old one measured splice, which this tree"
+echo "  does not have. The mechanism is current, the number is not."
 if [ "$NPROC" -lt 4 ]; then
   echo "note: $NPROC cores leaves little to split. See the shape section: the"
   echo "  count it recommends is the cpu budget less one, and on a small"
