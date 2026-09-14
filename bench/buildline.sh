@@ -41,6 +41,31 @@ wm_build_line() {
   else
     wm_bl_libc=static
   fi
+  # Where the run happened, and not only what it was built with. Same
+  # hardware, WSL2 against bare metal, read half the rate - so a row
+  # that does not say which of the two it is cannot be compared with
+  # one that is the other. host= is the machine's name and was never
+  # this; on= is.
+  #
+  # systemd-detect-virt answers both questions at once (--vm and
+  # --container), and where it is absent the hypervisor flag in
+  # /proc/cpuinfo answers the first. Unreadable is said, never guessed.
+  wm_bl_on=""
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    wm_bl_vm=$(systemd-detect-virt --vm 2>/dev/null)
+    wm_bl_ct=$(systemd-detect-virt --container 2>/dev/null)
+    [ "$wm_bl_vm" != none ] && [ -n "$wm_bl_vm" ] && wm_bl_on="$wm_bl_vm"
+    if [ "$wm_bl_ct" != none ] && [ -n "$wm_bl_ct" ]; then
+      wm_bl_on="${wm_bl_on:+$wm_bl_on/}$wm_bl_ct"
+    fi
+    [ -z "$wm_bl_on" ] && wm_bl_on=metal
+  elif grep -q '^flags.* hypervisor' /proc/cpuinfo 2>/dev/null; then
+    wm_bl_on="a hypervisor, kind unreadable"
+  elif [ -r /proc/cpuinfo ]; then
+    wm_bl_on=metal
+  else
+    wm_bl_on=unreadable
+  fi
   echo "build: $wm_bl_bin cc=${wm_bl_cc:-?} libstdc++=${wm_bl_cxx:-static}" \
-       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n)"
+       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n) on=$wm_bl_on"
 }

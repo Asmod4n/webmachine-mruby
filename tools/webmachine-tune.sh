@@ -67,6 +67,32 @@ echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 # number it cannot stand behind, so the line below names the reasons
 # and not a rate, until the sweep is run here.
 echo ""
+echo "-- where this is running"
+# It changes the rate more than anything this tool advises about: same
+# hardware, WSL2 against bare metal, read half. So the machine says
+# what it is before any number below is read.
+if command -v systemd-detect-virt >/dev/null 2>&1; then
+  TUNE_VM=$(systemd-detect-virt --vm 2>/dev/null)
+  TUNE_CT=$(systemd-detect-virt --container 2>/dev/null)
+  [ "$TUNE_VM" = none ] && TUNE_VM=""
+  [ "$TUNE_CT" = none ] && TUNE_CT=""
+  if [ -z "$TUNE_VM$TUNE_CT" ]; then
+    echo "bare metal"
+  else
+    echo "${TUNE_VM:-no hypervisor}${TUNE_CT:+, container: $TUNE_CT}"
+    echo "  a guest answers slower than the metal under it, and by a lot: the"
+    echo "  same hardware under WSL2 read half its bare-metal rate. Nothing"
+    echo "  below recovers that; it is the floor this machine has."
+  fi
+else
+  if grep -q '^flags.* hypervisor' /proc/cpuinfo 2>/dev/null; then
+    echo "a hypervisor is present, kind unreadable (no systemd-detect-virt here)"
+  else
+    echo "no hypervisor flag in /proc/cpuinfo - bare metal, as far as this can read"
+  fi
+fi
+
+echo ""
 echo "-- cpu placement"
 NPROC=$(nproc)
 ISOLATED=$(read_or /sys/devices/system/cpu/isolated "")

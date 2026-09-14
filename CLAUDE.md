@@ -257,6 +257,13 @@ it:
   that drains it on that same core. There the packet arrives, is
   softirq'd and is answered without leaving the core. Nothing here
   proves anything about that, in either direction.
+- A row says where it ran, and a row from one place is not compared
+  with a row from another. Same hardware, WSL2 against bare metal, read
+  half the rate. That is larger than every change this tree has
+  measured and argued about, so a number that does not name its place
+  says nothing. `bench/buildline.sh` writes `on=` for this - `metal`,
+  the hypervisor, the container runtime, or both - and it is not
+  `host=`, which is the machine's name and always was.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.
