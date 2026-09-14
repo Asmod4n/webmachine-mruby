@@ -21,7 +21,14 @@ BIN=mruby/build/host/bin/webmachine-server
 FD_RESERVE=$(sed -n 's/.*kFdReserve = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 BODY_FILES=$(sed -n 's/.*kBodyFilesMax = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 MAX_LISTENERS=$(sed -n 's/.*kMaxListeners = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
-BACKLOG=$(sed -n 's/.*io_uring_prep_listen(s, slot, \([0-9][0-9]*\));.*/\1/p' src/ring.hpp)
+# The backlog is not a literal in the source: the server takes [tune]
+# backlog, and SOMAXCONN where the operator named none. So the number
+# this tool checks against is the fallback, and the line below says that
+# a configured backlog replaces it. The old parse looked for a literal
+# that has not been there, and printed its refusal on every run.
+BACKLOG=$(sed -n 's/.*backlog_ = ring_config.backlog != 0 ? ring_config.backlog : \([A-Z_]*\);.*/\1/p' \
+          src/ring.hpp)
+[ "$BACKLOG" = SOMAXCONN ] && BACKLOG=$(getconf SOMAXCONN 2>/dev/null || echo 4096)
 
 read_or() {  # read_or <file> <fallback-text>
   if [ -r "$1" ]; then cat "$1"; else echo "$2"; fi
@@ -95,6 +102,80 @@ fi
 
 echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the server reads the feature bit at init"
 
+# ---- how many, and in what shape --------------------------------------
+# Three shapes answer on one address, and they are not equal. Measured
+# on the docroot path, this host, one session, both ends read:
+#
+#   A shared listener does not spread. Several processes that inherit
+#   one listening socket do not share the peers: the kernel wakes the
+#   same one every time. Four processes on one TCP listener, over five
+#   seconds: one spent 549 clock ticks and the other three spent 5, 5
+#   and 6. The rate is not merely flat, it falls - 0.37 of the single
+#   process rate on h1.
+#
+#   A SO_REUSEPORT group spreads. Each process binds its own socket and
+#   the kernel picks at the SYN. Two processes answered 1.86 times one
+#   process on h1 and 1.93 times on h2. TCP only: AF_UNIX has no
+#   SO_REUSEPORT.
+#
+#   An acceptor with answering threads spreads, and is the only shape
+#   that spreads on AF_UNIX. One thread accepts and hands each peer to
+#   the next ring by IORING_OP_MSG_RING. Three answering threads spent
+#   356, 345 and 350 ticks while the acceptor spent 3. On h1 over
+#   AF_UNIX: one thread 95.0k, two 243.6k, three 370.0k req/s.
+#
+# So the advice below is by transport, and it never names --workers for
+# throughput: that flag forks children onto one inherited listener,
+# which is the shape that loses.
+echo ""
+echo "-- how many, and in what shape"
+# What this process may actually use, not what the machine has. A quota
+# is the number the shape has to fit inside.
+BUDGET=$NPROC
+if [ -r /sys/fs/cgroup/cpu.max ]; then
+  set -- $(cat /sys/fs/cgroup/cpu.max)
+  if [ "${1:-max}" != max ] && [ "${2:-0}" -gt 0 ] 2>/dev/null; then
+    BUDGET=$(( $1 / $2 ))
+    [ "$BUDGET" -lt 1 ] && BUDGET=1
+  fi
+fi
+echo "cpu this process may use: $BUDGET (cores $NPROC)"
+# One core is left over on purpose: the kernel does the socket work of
+# every answer, and on a machine that also runs the client there is
+# nothing left to do it with. The count is answering threads, or
+# servers in a reuseport group - not counting the acceptor, which does
+# almost nothing (3 ticks against 350 in the run above).
+SHAPE_N=$(( BUDGET - 1 ))
+[ "$SHAPE_N" -lt 1 ] && SHAPE_N=1
+echo "recommend: $SHAPE_N answering ring(s)"
+if [ "$BUDGET" -le 2 ]; then
+  echo "  $BUDGET cpu is too few to split. One ring, and every core left for the"
+  echo "  kernel side of the answers."
+fi
+echo ""
+echo "  files only, any transport (--docroot / --assets, no --app):"
+echo "    $BIN --unix=/run/webmachine.sock --docroot=DIR --threads=$SHAPE_N"
+echo "    one acceptor, $SHAPE_N answering threads, one ring each. The only shape"
+echo "    that spreads on AF_UNIX."
+echo ""
+echo "  an application, TCP:"
+echo "    $SHAPE_N separate servers on one port. Each binds its own socket and"
+echo "    the kernel spreads at the SYN (SO_REUSEPORT, set by the server):"
+I=1
+while [ "$I" -le "$SHAPE_N" ]; do
+  echo "      $BIN --port=8080 --app=your_app.mrb &"
+  I=$((I + 1))
+done
+echo ""
+echo "  an application, AF_UNIX:"
+echo "    one server. A unix path has no SO_REUSEPORT, and --threads answers"
+echo "    files only - a thread that answers from an application needs a VM"
+echo "    of its own, and this build gives it none."
+echo "      $BIN --unix=/run/webmachine.sock --app=your_app.mrb"
+echo ""
+echo "  not for throughput: --workers=N. Its children inherit one listening"
+echo "  socket, and a shared listener gives every peer to the same child."
+
 # ---- resource limits -------------------------------------------------
 # Since #169 the server derives its capacity itself: at init it raises
 # soft to hard (ceiling fs.nr_open) and takes everything the final
@@ -156,5 +237,10 @@ fi
 # ---- summary ---------------------------------------------------------
 echo ""
 echo "-- run it like this"
-echo "  $BIN --port=8080 --app=your_app.mrb"
+if [ "$SHAPE_N" -gt 1 ]; then
+  echo "  $BIN --port=8080 --app=your_app.mrb      # this line $SHAPE_N times, one port, one group"
+else
+  echo "  $BIN --port=8080 --app=your_app.mrb"
+fi
 echo "  (no taskset on purpose - see the cpu placement section)"
+echo "  (the shape section above says how many, and why)"
