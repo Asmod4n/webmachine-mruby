@@ -143,6 +143,26 @@ fi
 }
 echo "perf: $PERF ($("$PERF" --version))"
 
+# Every run is written down. A profile that lives in a terminal window is
+# gone the moment the window is, and the share it showed cannot be read
+# beside the next one. This log is its own file and never the throughput
+# log: a share of samples is not a rate, and the two must not sit in one
+# place where a reader takes a row from either.
+#
+# Unlike floor.sh, nothing here refuses to record. floor.sh drops a
+# client-bound run because the number it wrote would describe the client;
+# a profile of the same run still says truly where that binary's time
+# went, and the build line and harness line below say under what.
+PROFILE_LOG="bench/results/$(hostname)-profile.log"
+mkdir -p "$(dirname "$PROFILE_LOG")"
+{
+  echo
+  echo "==== $(date -u +%FT%RZ) $(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null) ===="
+} >> "$PROFILE_LOG"
+exec > >(tee -a "$PROFILE_LOG")
+echo "profile log: $PROFILE_LOG"
+
+
 # BUILD_DIR (bintest's own convention, see bintest/responsefile.rb),
 # default build/debug: it carries -g3 unconditionally, which is what
 # perf needs to name a symbol. It is -Og, not the ship build's -O3 -
