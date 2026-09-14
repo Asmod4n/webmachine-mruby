@@ -82,7 +82,34 @@ wm_build_line() {
       END { if (f == "") { print "unreadable" }
             else { printf "%s:%s:%s@%dMHz", f, m, s, hz } }
     ' /proc/cpuinfo 2>/dev/null)
+  # The caches and the feature set, which a guest does show. They are
+  # what is left of the hardware's identity once the model name is
+  # masked, and the L3 size narrows a family:model:stepping to a few
+  # parts. The L1i is in there because this tree reasons about it: the
+  # cold-path rule in CLAUDE.md measures against 32 KiB, and that is
+  # read here rather than assumed.
+  wm_bl_cache=$(
+    for wm_bl_ix in /sys/devices/system/cpu/cpu0/cache/index*; do
+      [ -r "$wm_bl_ix/level" ] || continue
+      printf '%s%s ' "$(cat "$wm_bl_ix/type" | cut -c1)" "$(cat "$wm_bl_ix/size")"
+    done 2>/dev/null
+  )
+  wm_bl_cache=$(printf '%s' "$wm_bl_cache" | tr ' ' '/' | sed 's,/$,,')
+  [ -n "$wm_bl_cache" ] || wm_bl_cache=unreadable
+  # 93 flags do not belong on every row, and a difference in any one of
+  # them does. The count catches a gross difference at a glance and the
+  # digest catches every other, so two rows can be told apart without
+  # either carrying the list.
+  wm_bl_flags=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null |
+                cut -d: -f2- | tr ' ' '\n' | sed '/^$/d' | sort)
+  if [ -n "$wm_bl_flags" ]; then
+    wm_bl_flag_n=$(printf '%s\n' "$wm_bl_flags" | wc -l | tr -d ' ')
+    wm_bl_flag_d=$(printf '%s\n' "$wm_bl_flags" | cksum | cut -d' ' -f1)
+    wm_bl_flags="$wm_bl_flag_n:$wm_bl_flag_d"
+  else
+    wm_bl_flags=unreadable
+  fi
   echo "build: $wm_bl_bin cc=${wm_bl_cc:-?} libstdc++=${wm_bl_cxx:-static}" \
        "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n) on=$wm_bl_on" \
-       "cpu=${wm_bl_cpu:-unreadable}"
+       "cpu=${wm_bl_cpu:-unreadable} cache=$wm_bl_cache flags=$wm_bl_flags"
 }

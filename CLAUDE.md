@@ -55,7 +55,10 @@ repository. The rules it carried:
 - Cold paths: the happy path is the straight line, and `nm -S` on the
   host build decides whether a hint or a split helped. feed_parse,
   run_engine and h2_dispatch are 11 to 15 KB of machine code each, one
-  h1 request walks two of them, and the L1i is 32 KiB.
+  h1 request walks two of them, and the L1i is 32 KiB. That last number
+  is read and not assumed: `bench/buildline.sh` prints the cache
+  hierarchy on every row, so a machine whose L1i is another size shows
+  it rather than quietly breaking the reasoning.
 - mruby raises: mruby here is built with `MRB_USE_CXX_EXCEPTION`,
   always. A raise is a C++ throw, destructors run, and a failure is
   raised rather than reported through `char* err` and `return false`.
@@ -269,9 +272,12 @@ it:
   does not separate them either: every Firecracker guest reports `kvm`.
   The guest's own model name is masked as well - "Intel(R) Xeon(R)
   Processor @ 2.80GHz", no model number - and there is no DMI. So the
-  line carries `cpu=family:model:stepping@clock` too, and the only
-  other discriminator is what `-march=native` resolved to, which the
-  harness line already prints and which is why `WM_MARCH=` exists.
+  line carries `cpu=family:model:stepping@clock` too. A guest does show
+  its caches and its feature set, so `cache=` carries the hierarchy and
+  `flags=` a count and a checksum - ninety two names do not belong on
+  every row, and a difference in any one of them does. The last
+  discriminator is what `-march=native` resolved to, which the harness
+  line already prints and which is why `WM_MARCH=` exists.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.
