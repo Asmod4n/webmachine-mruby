@@ -37,23 +37,26 @@ read_or() {  # read_or <file> <fallback-text>
 echo "==== webmachine-tune $(date -u +%FT%RZ) $(hostname) $(uname -srm) ===="
 
 # ---- CPU placement ---------------------------------------------------
-# No pinning. This is a measured verdict, not a preference, and it has
-# been reached twice:
+# "Do not pin" is inherited here, and this tree has not proven it.
 #
-#   1. The previous tree removed every --cpu/--fast-core/taskset it had
-#      ("it was measured and it lost - handing the scheduler one core
-#      was slower than letting it choose"). Widening the client's mask
-#      from 2 to 15 to 30 cpus raised throughput monotonically,
-#      332k -> 341k -> 352k req/s, and moved the median, not the tail.
+# The two measurements that used to stand in this comment are both from
+# a tree that is gone. One was the previous tree's client mask sweep
+# (332k -> 341k -> 352k req/s from 2 to 15 to 30 cpus). The other read
+# a 32 KiB asset at 0.07 of its rate under `taskset -c 0`, and its
+# mechanism was io-wq workers inheriting the pinned thread's affinity -
+# workers that carried splice.
 #
-#   2. Splice makes it worse than merely useless. io-wq workers inherit
-#      the issuing thread's affinity, so pinning the server pins the
-#      pool that exists to move bytes on another core. Measured here on
-#      4 cpus: a 32 KiB asset served at 0.07x its unspliced twin under
-#      `taskset -c 0` (2,903 vs 42,688 req/s).
+# This tree has no splice. `grep -rn splice src/` finds four lines and
+# every one of them is the word used about header fields; there is no
+# IORING_OP_SPLICE. So that second measurement describes a path this
+# binary does not walk, and the path it described lost on its own
+# merits, which is why it was removed.
 #
-# So this section reports what the machine looks like and does not
-# hand out a taskset line.
+# The rule may well still hold - a reactor of one thread has nothing to
+# gain from being confined to one cpu. But it is not proven here, and
+# this file does not state a number it cannot stand behind. Until the
+# sweep is run on this tree, the line below reports and recommends
+# without citing evidence it does not have.
 echo ""
 echo "-- cpu placement"
 NPROC=$(nproc)
@@ -80,12 +83,13 @@ S0=$(steal_ticks); sleep 1; S1=$(steal_ticks)
 echo "steal: +$((S1 - S0)) ticks over 1s (0 = quiet; sustained >0 = a neighbor is eating this host)"
 
 echo "recommend: do not pin - no taskset, no cpu mask, no isolated core."
-echo "  the scheduler beat every placement this project measured, and the"
-echo "  io-wq pool that carries splice inherits whatever affinity it is given."
+echo "  inherited rule, not proven on this tree: the measurements behind it"
+echo "  were taken on a tree that had splice, and this one has none. What is"
+echo "  proven here is the shape below, not the placement."
 if [ "$NPROC" -lt 4 ]; then
-  echo "note: $NPROC cores is few for splice - its workers need cores of their"
-  echo "  own to be worth the hop; the delivery path falls back to plain copies"
-  echo "  wherever they are not there (that fallback is the design, not a bug)."
+  echo "note: $NPROC cores leaves little to split. See the shape section: the"
+  echo "  count it recommends is the cpu budget less one, and on a small"
+  echo "  machine that is one ring."
 fi
 
 # ---- io_uring ---------------------------------------------------------
