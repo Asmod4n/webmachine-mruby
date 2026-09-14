@@ -73,9 +73,27 @@ MRuby::Build.new do |conf|
     conf.linker.flags << lto << '-O3' << "-march=#{march}"
   end
 
-  [conf.cc, conf.cxx, conf.objc, conf.asm].each do |c|
-    c.flags.each { |f| f.delete('-g') if f.is_a?(Array) }
-    c.flags.delete('-g')
+  # WM_PROFILE=1: the ship build, with what perf needs to name a symbol
+  # in it. Without it a host build carries no line table at all - the
+  # other branch takes -g out - and a profile of it reads as addresses.
+  # bench/profile.sh names this flag as the answer for BUILD_DIR=build/
+  # host, so it has to exist here.
+  #
+  # -fno-omit-frame-pointer comes with it, because CALLGRAPH=fp needs a
+  # frame pointer and -O3 does not keep one. It costs a register; that
+  # is why it is behind the flag rather than always on.
+  #
+  # -O3 and -march stay as they are. A profile is of the binary that
+  # ships, or it describes another program.
+  if ENV['WM_PROFILE']
+    [conf.cc, conf.cxx].each do |c|
+      c.flags << '-g' << '-fno-omit-frame-pointer'
+    end
+  else
+    [conf.cc, conf.cxx, conf.objc, conf.asm].each do |c|
+      c.flags.each { |f| f.delete('-g') if f.is_a?(Array) }
+      c.flags.delete('-g')
+    end
   end
 
   # mruby-fast-json is a dependency of this gem, and it stops the build

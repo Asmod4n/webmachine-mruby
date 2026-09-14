@@ -40,6 +40,13 @@ MRuby::Build.new('debug') do |conf|
 
   conf.cc.flags << '-Og' << '-mavx2' << '-g3' << '-ggdb'
   conf.cxx.flags << '-Og' << '-mavx2' << '-g3' << '-ggdb' << '-std=c++20'
+  # WM_PROFILE=1: a frame pointer, which -Og does not keep and
+  # CALLGRAPH=fp in bench/profile.sh needs. The line table is already
+  # here, so this is all that flag adds to this config.
+  if ENV['WM_PROFILE']
+    conf.cc.flags << '-fno-omit-frame-pointer'
+    conf.cxx.flags << '-fno-omit-frame-pointer'
+  end
 
   conf.cc.defines  << 'MRB_UTF8_STRING'
   conf.cxx.defines << 'MRB_UTF8_STRING'
