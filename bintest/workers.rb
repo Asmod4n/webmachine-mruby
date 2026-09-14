@@ -83,11 +83,21 @@ end
 
 assert('threads: the work does not all land on one thread') do
   t_server(3) do |sock, pid|
-    300.times { w_ask(sock, '/') }
+    # The instrument is utime plus stime out of /proc, and it counts in
+    # clock ticks of 10ms. So the run has to be long enough that a thread
+    # which answered crosses a tick: 300 connections came to under one
+    # tick each on a fast host, every count read zero, and the assertion
+    # then said the threads had not spread when it had measured nothing.
+    3000.times { w_ask(sock, '/') }
     ticks = Dir.glob("/proc/#{pid}/task/*/stat").map do |path|
       fields = File.read(path).split(') ')[1].split
       fields[11].to_i + fields[12].to_i
     end
+    # First the instrument, then what it says. A run where every count is
+    # zero proves nothing about the spread, so it fails by its own name
+    # and the number above is the one to raise.
+    assert_true ticks.sum > 0,
+                "the run cost less than one clock tick, so nothing was measured: #{ticks.inspect}"
     # This is the property a shared listener does not have: there, one
     # process took every peer and the others stayed at nothing. A clock
     # tick is 10ms, so a short run cannot show every thread - two that
