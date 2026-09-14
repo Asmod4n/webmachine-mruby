@@ -160,7 +160,12 @@ echo "perf: $PERF ($("$PERF" --version))"
 # was also set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
 # is unconditional either way.
 BUILD_DIR="${BUILD_DIR:-build/debug}"
-BIN="mruby/$BUILD_DIR/bin/webmachine-server"
+# BIN=path names the binary directly, as floor.sh does, for a profile of
+# a build that is not in this tree: one kept from before a change, or one
+# a worktree made. It has to carry symbols, so build it the way this file
+# asks for - WM_PROFILE=1 for a host build, or take build/debug as it is.
+# The build line below records which binary ran.
+BIN="${BIN:-mruby/$BUILD_DIR/bin/webmachine-server}"
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile (or rake test, for build/debug)" >&2; exit 1; }
 if [ "$BUILD_DIR" = "build/host" ]; then
   file "$BIN" 2>/dev/null | grep -q "not stripped" || echo \
