@@ -182,9 +182,15 @@ What that file settles, and what a session gets wrong without it:
   tree, and the machine that measures does not install them. A script
   that names a tool nobody can run lies about how its numbers were
   made.
-- No `taskset`. This tree measured pinning twice and it lost twice. On
-  4 cpus a pinned server answered for an asset at 0.07 of the rate of
-  its unpinned twin.
+- No `taskset`, and that covers the indirect one. A session read
+  floor.sh's line about taking "the cpus its caller does not hold",
+  pinned its own shell to one cpu so the script would find three free,
+  and called that an isolation rather than a pin. It is a pin: it
+  narrowed the run to three of four cpus, and narrowing is what this
+  tree measured twice and lost twice. On 4 cpus a pinned server
+  answered for an asset at 0.07 of the rate of its unpinned twin, and
+  widening a client's mask from 2 to 15 to 30 cpus raised the rate
+  every time.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.
