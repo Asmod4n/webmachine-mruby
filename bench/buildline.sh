@@ -14,8 +14,15 @@
 # glibc's own libc.so.6 answers --version, which a symlink cannot.
 wm_build_line() {
   wm_bl_bin=$1
-  wm_bl_cc=$(readelf -p .comment "$wm_bl_bin" 2>/dev/null |
-             grep -oE '(GCC:|clang version).*' | head -1 | sed 's/^GCC: /gcc /' | tr -s ' ')
+  # .comment holds one string per object the link took. crt1.o, crti.o
+  # and libc_nonshared.a come from the distribution's GCC and stand
+  # first on the link line, so a clang binary carries a GCC string
+  # ahead of its own. A GCC binary carries no clang string at all, so
+  # a clang string anywhere in the section names the compiler.
+  wm_bl_comment=$(readelf -p .comment "$wm_bl_bin" 2>/dev/null)
+  wm_bl_cc=$(printf '%s\n' "$wm_bl_comment" | grep -oE 'clang version.*' | head -1 | tr -s ' ')
+  [ -n "$wm_bl_cc" ] ||
+    wm_bl_cc=$(printf '%s\n' "$wm_bl_comment" | grep -oE 'GCC:.*' | head -1 | sed 's/^GCC: /gcc /' | tr -s ' ')
   wm_bl_cxx=$(ldd "$wm_bl_bin" 2>/dev/null | grep -oE '/[^ ]*libstdc\+\+\.so[^ ]*' | head -1)
   [ -n "$wm_bl_cxx" ] && wm_bl_cxx=$(basename "$(readlink -f "$wm_bl_cxx")")
   # Which libc, and whether there is one at all. The path answers the
