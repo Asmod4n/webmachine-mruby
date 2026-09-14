@@ -8,6 +8,9 @@
  *
  * threaded of 1 makes each ring in a thread of its own and registers
  * the ring descriptor, which is what the server does with --threads.
+ * threaded of 2 does the same but lets every thread build its ring at
+ * the same time as the others, which is what the server does as well:
+ * it starts them all and then waits.
  * IORING_SETUP_SINGLE_ISSUER binds a ring to the task that made it, and
  * a registered ring descriptor is a per-task resource.
  *
@@ -144,7 +147,7 @@ int main(int argc, char **argv)
         want[r].slots = slots;
         want[r].bufs = bufs;
         want[r].index = r;
-        if (!threaded) {
+        if (threaded == 0) {
             make_ring(&want[r]);
             if (want[r].failed)
                 return 1;
@@ -154,10 +157,24 @@ int main(int argc, char **argv)
             printf("ring %d: pthread_create: %s\n", r, strerror(errno));
             return 1;
         }
-        /* One at a time, so the output stays in order and a refusal
-         * names the ring that met the limit. */
-        pthread_join(threads[r], NULL);
-        if (want[r].failed)
+        /* threaded=1 joins each thread before the next starts, so the
+         * output stays in order. threaded=2 starts them all first and
+         * joins afterwards, which is what the server does: every
+         * answering thread builds its ring at the same time as the
+         * others. */
+        if (threaded == 1) {
+            pthread_join(threads[r], NULL);
+            if (want[r].failed)
+                return 1;
+        }
+    }
+    if (threaded == 2) {
+        int bad = 0;
+        for (int r = 0; r < rings; r++) {
+            pthread_join(threads[r], NULL);
+            bad |= want[r].failed;
+        }
+        if (bad)
             return 1;
     }
     printf("all %d ring(s) up\n", rings);
