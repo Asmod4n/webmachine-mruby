@@ -150,21 +150,27 @@ int spawn_logd(mrb_state *mrb, const LogdSpawn &logd_spawn)
     const pid_t child = ::fork();
     if (child < 0) {
         const int saved_errno = errno;
-        ::close(socket_pair[0]);
-        ::close(socket_pair[1]);
+        close_or_raise(mrb, "the log socket", socket_pair[0]);
+        close_or_raise(mrb, "the log socket", socket_pair[1]);
         mrb_raisef(mrb, E_WM_ERROR(mrb), "%s log: fork: %s", mode, std::strerror(saved_errno));
     }
     if (child == 0) {
-        ::dup2(socket_pair[0], 0);
-        ::close(socket_pair[0]);
-        ::close(socket_pair[1]);
+        // The child raises into no VM: it is a forked copy that is about
+        // to become another program, and every one of these ends it.
+        if (::dup2(socket_pair[0], 0) < 0) {
+            std::fprintf(stderr, "webmachine: %s log: dup2: %s\n", mode, std::strerror(errno));
+            ::_exit(127);
+        }
+        close_or_die("the log socket", socket_pair[0]);
+        close_or_die("the log socket", socket_pair[1]);
         ::execl(logd.c_str(), "webmachine-logd", mode, path, max_bytes_text, privacy,
                 (char *)nullptr);
         std::fprintf(stderr, "webmachine: exec %s: %s\n", logd.c_str(), std::strerror(errno));
         ::_exit(127);
     }
-    ::close(socket_pair[0]);
-    ::signal(SIGCHLD, SIG_IGN);
+    close_or_raise(mrb, "the log socket", socket_pair[0]);
+    if (::signal(SIGCHLD, SIG_IGN) == SIG_ERR)
+        raise_errno(mrb, "signal(SIGCHLD)", errno);
     return socket_pair[1];
 }
 
@@ -245,7 +251,7 @@ void server_say_which_backend()
         const int switch_fd = ::open("/proc/sys/kernel/io_uring_disabled", O_RDONLY | O_CLOEXEC);
         if (switch_fd >= 0) {
             const ssize_t got = ::read(switch_fd, switch_text, sizeof(switch_text) - 1);
-            ::close(switch_fd);
+            close_or_die("/proc/sys/kernel/io_uring_disabled", switch_fd);
             if (got > 0) {
                 switch_text[got] = '\0';
                 if (switch_text[0] == '2') {
@@ -259,7 +265,7 @@ void server_say_which_backend()
                     if (group_fd >= 0) {
                         const ssize_t group_read =
                             ::read(group_fd, group_text, sizeof(group_text) - 1);
-                        ::close(group_fd);
+                        close_or_die("/proc/sys/kernel/io_uring_group", group_fd);
                         if (group_read > 0)
                             group_text[group_read] = '\0';
                     }
@@ -306,7 +312,7 @@ void listener_open(mrb_state *mrb, uint32_t listener_index, ListenerSpec &want, 
         sun.sun_family = AF_UNIX;
         const size_t payload_length = std::strlen(want.unix_path);
         if (payload_length >= sizeof(sun.sun_path)) {
-            ::close(fd);
+            close_or_raise(mrb, "the listening socket", fd);
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "listener %d: unix path too long (%i)",
                        static_cast<int>(listener_index), static_cast<mrb_int>(payload_length));
         }
@@ -315,12 +321,16 @@ void listener_open(mrb_state *mrb, uint32_t listener_index, ListenerSpec &want, 
         salen = sizeof(sun);
         if (::unlink(want.unix_path) != 0 && errno != ENOENT) {
             const int why = errno;
-            ::close(fd);
+            close_or_raise(mrb, "the listening socket", fd);
             mrb_raisef(mrb, E_WM_ERROR(mrb), "unlink %s: %s", want.unix_path, std::strerror(why));
         }
     } else {
         static const int kOne = 1;
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &kOne, sizeof(kOne));
+        if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &kOne, sizeof(kOne)) != 0) {
+            const int why = errno;
+            close_or_raise(mrb, "the listening socket", fd);
+            raise_errno(mrb, "setsockopt(SO_REUSEADDR)", why);
+        }
         sin.sin_family = AF_INET;
         sin.sin_addr.s_addr = htonl(INADDR_ANY);
         sin.sin_port = htons(static_cast<uint16_t>(want.port));
@@ -329,13 +339,13 @@ void listener_open(mrb_state *mrb, uint32_t listener_index, ListenerSpec &want, 
     }
     if (::bind(fd, sa, salen) != 0) {
         const int why = errno;
-        ::close(fd);
-        mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: bind: %s",
-                   static_cast<int>(listener_index), std::strerror(why));
+        close_or_raise(mrb, "the listening socket", fd);
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: bind: %s", static_cast<int>(listener_index),
+                   std::strerror(why));
     }
     if (::listen(fd, backlog != 0 ? backlog : SOMAXCONN) != 0) {
         const int why = errno;
-        ::close(fd);
+        close_or_raise(mrb, "the listening socket", fd);
         mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: listen: %s",
                    static_cast<int>(listener_index), std::strerror(why));
     }
@@ -347,7 +357,7 @@ void listener_open(mrb_state *mrb, uint32_t listener_index, ListenerSpec &want, 
         socklen_t slen = sizeof(ss);
         if (::getsockname(fd, reinterpret_cast<struct sockaddr *>(&ss), &slen) != 0) {
             const int why = errno;
-            ::close(fd);
+            close_or_raise(mrb, "the listening socket", fd);
             mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: getsockname: %s",
                        static_cast<int>(listener_index), std::strerror(why));
         }
@@ -383,14 +393,22 @@ bool workers_fork(mrb_state *mrb, RingConfig &ring_config)
         const pid_t child = ::fork();
         if (child < 0) {
             const int why = errno;
-            for (pid_t already : worker_pids_)
-                ::kill(already, SIGTERM);
+            for (pid_t already : worker_pids_) {
+                // ESRCH is a child that already ended, which is what this
+                // asks for. Anything else says this process may not signal
+                // its own children, and it must not raise over that first.
+                if (::kill(already, SIGTERM) != 0 && errno != ESRCH) {
+                    std::fprintf(stderr, "webmachine: kill worker %d: %s\n",
+                                 static_cast<int>(already), std::strerror(errno));
+                }
+            }
             mrb_raisef(mrb, E_WM_ERROR(mrb), "fork worker %d of %d: %s", w + 1, opts_.workers,
                        std::strerror(why));
         }
         if (child == 0) {
             // A worker whose supervisor dies has nobody left to stop it.
-            ::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+            if (::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) != 0)
+                die_errno("prctl(PR_SET_PDEATHSIG)", errno);
             worker_pids_.clear();
             // io_uring charges the memory of a ring to the user, not to
             // the process - io_uring_register(2) says so of RLIMIT_NOFILE
@@ -407,7 +425,7 @@ bool workers_fork(mrb_state *mrb, RingConfig &ring_config)
     // The supervisor accepts nothing. It holds the paths and the port, so
     // it keeps no listening descriptor open beyond this point.
     for (uint32_t li = 0; li < ring_config.nlisteners; li++) {
-        ::close(ring_config.listeners[li].fd);
+        close_or_raise(mrb, "a listening socket", ring_config.listeners[li].fd);
         ring_config.listeners[li].fd = -1;
         if (ring_config.listeners[li].unix_path != nullptr)
             supervisor_unix_paths_.emplace_back(ring_config.listeners[li].unix_path);
@@ -429,19 +447,29 @@ int workers_supervise()
         };
         waiting.fd = opts_.stop_fd;
         waiting.events = POLLIN;
-        while (::poll(&waiting, 1, -1) < 0 && errno == EINTR) {
+        while (::poll(&waiting, 1, -1) < 0) {
+            if (errno != EINTR)
+                die_errno("poll the stop signal", errno);
         }
         struct signalfd_siginfo seen {
         };
-        while (::read(opts_.stop_fd, &seen, sizeof(seen)) < 0 && errno == EINTR) {
+        while (::read(opts_.stop_fd, &seen, sizeof(seen)) < 0) {
+            if (errno != EINTR)
+                die_errno("read the stop signal", errno);
         }
-        for (pid_t child : worker_pids_)
-            ::kill(child, SIGTERM);
+        for (pid_t child : worker_pids_) {
+            if (::kill(child, SIGTERM) != 0 && errno != ESRCH) {
+                std::fprintf(stderr, "webmachine: kill worker %d: %s\n", static_cast<int>(child),
+                             std::strerror(errno));
+            }
+        }
     }
     int worst = 0;
     for (pid_t child : worker_pids_) {
         int how = 0;
-        while (::waitpid(child, &how, 0) < 0 && errno == EINTR) {
+        while (::waitpid(child, &how, 0) < 0) {
+            if (errno != EINTR)
+                die_errno("wait for a worker", errno);
         }
         if (WIFEXITED(how) && WEXITSTATUS(how) != 0)
             worst = WEXITSTATUS(how);
@@ -450,8 +478,12 @@ int workers_supervise()
     }
     worker_pids_.clear();
     // The supervisor bound the paths, so the supervisor takes them away.
-    for (const std::string &path : supervisor_unix_paths_)
-        ::unlink(path.c_str());
+    for (const std::string &path : supervisor_unix_paths_) {
+        // ENOENT is a path somebody already took away.
+        if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
+            std::fprintf(stderr, "webmachine: unlink %s: %s\n", path.c_str(), std::strerror(errno));
+        }
+    }
     supervisor_unix_paths_.clear();
     return worst;
 }
@@ -510,8 +542,8 @@ mrb_value answer_thread_serve(mrb_state *, void *user_data)
 // the acceptor's VM is no answer either, because that writes mrb->exc
 // from a second thread. So the thread carries a VM of its own and reads
 // the exception back as a value.
-void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inputs,
-                       size_t ninputs, bool listings)
+void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inputs, size_t ninputs,
+                       bool listings)
 {
     mrb_state *const mrb = mrb_open();
     if (mrb == nullptr) {
@@ -547,8 +579,8 @@ void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInpu
         auto one = std::unique_ptr<AnswerThread>(new AnswerThread());
         AnswerThread &self = *one;
         answer_threads_.push_back(std::move(one));
-        self.thread = std::thread(answer_thread_run, std::ref(self), base, inputs, ninputs,
-                                  listings);
+        self.thread =
+            std::thread(answer_thread_run, std::ref(self), base, inputs, ninputs, listings);
     }
     for (const auto &one : answer_threads_) {
         int fd = -1;
@@ -792,7 +824,6 @@ void server_build_ring_config(mrb_state *mrb)
         return;
     }
 
-
     // --threads=N: the threads that answer come up before the acceptor,
     // because the acceptor has to know their rings before it takes the
     // first peer.
@@ -826,8 +857,7 @@ void server_build_ring_config(mrb_state *mrb)
     }
 
     std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)%s\n", getpid(),
-                 ring_config.nlisteners,
-                 opts_.threads > 1 ? ", answered by threads" : "");
+                 ring_config.nlisteners, opts_.threads > 1 ? ", answered by threads" : "");
     if (opts_.threads > 1) {
         std::fprintf(stderr, "webmachine: %d threads answer, one ring each; this one accepts\n",
                      opts_.threads);

@@ -7,7 +7,7 @@ __attribute__((noinline)) void BodySpill::close_file()
 {
     if (fd < 0)
         return;
-    ::close(fd);
+    close_or_die("the request body spill file", fd);
     body_file_slot_give();
     fd = -1;
     written = 0;

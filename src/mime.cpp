@@ -36,25 +36,35 @@ struct ExtBeforeKey {
 };
 
 // POSIX read(2): a whole file into memory. Setup only.
-bool file_read_whole(const char *path, std::string &text)
+//
+// False means the file is not there, which is the answer this caller
+// wants: it tries a list of paths and takes the first that exists. Every
+// other refusal - no permission, a read that failed, a close that failed
+// - raises, because a media type table that is there and unreadable is
+// not the same as one that is absent.
+bool file_read_whole_or_absent(mrb_state *mrb, const char *path, std::string &text)
 {
     const int opened_fd = ::open(path, O_RDONLY | O_CLOEXEC);
-    if (opened_fd < 0)
-        return false;
+    if (opened_fd < 0) {
+        if (errno == ENOENT || errno == ENOTDIR)
+            return false;
+        raise_errno(mrb, "media types", path, errno);
+    }
     char chunk[64 * 1024];
     for (;;) {
         const ssize_t got = ::read(opened_fd, chunk, sizeof chunk);
         if (got < 0) {
             if (errno == EINTR)
                 continue;
-            ::close(opened_fd);
-            return false;
+            const int why = errno;
+            close_or_raise(mrb, path, opened_fd);
+            raise_errno(mrb, "read media types", path, why);
         }
         if (got == 0)
             break;
         text.append(chunk, static_cast<size_t>(got));
     }
-    ::close(opened_fd);
+    close_or_raise(mrb, path, opened_fd);
     return true;
 }
 
@@ -156,20 +166,20 @@ void MimeDb::load(mrb_state *mrb, const char *configured)
     std::string text;
     bool globs2 = false;
     if (configured != nullptr && configured[0] != '\0') {
-        if (!file_read_whole(configured, text)) {
+        if (!file_read_whole_or_absent(mrb, configured, text)) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "media types: %s: %s", configured,
-                       std::strerror(errno));
+                       std::strerror(ENOENT));
         }
         source_ = configured;
         globs2 = source_.size() >= 6 && source_.compare(source_.size() - 6, 6, "globs2") == 0;
     } else {
         for (const char *path : kTypesPaths) {
-            if (file_read_whole(path, text)) {
+            if (file_read_whole_or_absent(mrb, path, text)) {
                 source_ = path;
                 break;
             }
         }
-        if (source_.empty() && file_read_whole(kGlobs2, text)) {
+        if (source_.empty() && file_read_whole_or_absent(mrb, kGlobs2, text)) {
             source_ = kGlobs2;
             globs2 = true;
         }

@@ -351,11 +351,19 @@ bool body_compute_digest(const ReqView *view, char (&hex)[SHA256_DIGEST_LENGTH *
             }
             if (read_bytes == 0)
                 break;
-            EVP_DigestUpdate(ctx, chunk, static_cast<size_t>(read_bytes));
+            if (EVP_DigestUpdate(ctx, chunk, static_cast<size_t>(read_bytes)) != 1) {
+                EVP_MD_CTX_free(ctx);
+                out_error = "EVP_DigestUpdate failed";
+                return false;
+            }
             offset += read_bytes;
         }
-        EVP_DigestFinal_ex(ctx, sum, nullptr);
+        const int digested = EVP_DigestFinal_ex(ctx, sum, nullptr);
         EVP_MD_CTX_free(ctx);
+        if (digested != 1) {
+            out_error = "EVP_DigestFinal_ex failed";
+            return false;
+        }
     } else {
         SHA256(reinterpret_cast<const unsigned char *>(view->content), view->content_len, sum);
     }
@@ -426,7 +434,13 @@ bool body_copy_to_path(const ReqView *view, const std::string &path, std::string
         out_error = std::strerror(errno);
         ok = false;
     }
-    ::close(out_text);
+    // close(2) on a file this process wrote can still say EIO, and then
+    // the octets are not on the disk. Reading it is the difference
+    // between a save that failed and a save that lied.
+    if (::close(out_text) != 0 && errno != EINTR && ok) {
+        out_error = std::strerror(errno);
+        ok = false;
+    }
     if (ok) {
         // EEXIST is another request that finished the same octets first.
         // The digest says the two files hold the same content, so the name
@@ -436,7 +450,12 @@ bool body_copy_to_path(const ReqView *view, const std::string &path, std::string
             ok = false;
         }
     }
-    ::unlink(tmp.c_str());
+    // The temporary name has served, whether the link was made or not.
+    // ENOENT means the link above took the file under its final name.
+    if (::unlink(tmp.c_str()) != 0 && errno != ENOENT && ok) {
+        out_error = tmp + ": " + std::strerror(errno);
+        ok = false;
+    }
     return ok;
 }
 
@@ -602,7 +621,7 @@ mrb_value request_get_body(mrb_state *mrb, mrb_value)
             mrb_raise(mrb, E_RUNTIME_ERROR, "request.body cannot be opened for reading");
         }
         if (mrb_unlikely(::lseek(descriptor, 0, SEEK_SET) != 0)) {
-            ::close(descriptor);
+            close_or_raise(mrb, "the request body copy", descriptor);
             mrb_raise(mrb, E_RUNTIME_ERROR, "request.body cannot be rewound");
         }
         mrb_value argv[2] = {mrb_int_value(mrb, descriptor), mrb_str_new_lit(mrb, "r")};

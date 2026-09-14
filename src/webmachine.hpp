@@ -39,6 +39,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -825,6 +826,68 @@ namespace webmachine
     // two raises above end this function, and it warns that a [[noreturn]]
     // one returns. Ring::fatal says the same at its own raise.
     WM_UNREACHABLE();
+}
+
+// A system call said no. Two doors, and which one a caller takes depends
+// on what it holds, never on how bad the failure looks.
+//
+// With a VM: the app author gets a Ruby exception with a class, a message
+// and a backtrace into their own code.
+[[noreturn]] inline void raise_errno(mrb_state *mrb, const char *what, int code)
+{
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s: %s", what, std::strerror(code));
+    WM_UNREACHABLE();
+}
+
+// The same with the name of the thing in hand, which is what an operator
+// reads on a path, a host or a descriptor.
+[[noreturn]] inline void raise_errno(mrb_state *mrb, const char *what, const char *which, int code)
+{
+    mrb_raisef(mrb, E_WM_ERROR(mrb), "%s %s: %s", what, which, std::strerror(code));
+    WM_UNREACHABLE();
+}
+
+// Without one - startup, a destructor's helper, any frame before or
+// outside the VM. std::system_error carries the errno as a value, so a
+// catch reads the code rather than parsing the sentence.
+[[noreturn]] inline void throw_errno(const char *what, int code)
+{
+    throw std::system_error(code, std::system_category(), what);
+}
+
+// close(2) loses data when it says EIO on a file with dirty pages, and
+// says EBADF when this tree lost track of a descriptor. Neither is worth
+// hiding. EINTR on Linux means the descriptor is already gone, so the
+// call is never repeated.
+inline void close_or_raise(mrb_state *mrb, const char *what, int fd)
+{
+    if (::close(fd) != 0 && errno != EINTR)
+        raise_errno(mrb, "close", what, errno);
+}
+
+// The one place a failure may not travel: a destructor. A throw there
+// ends the process through std::terminate with nothing said, so this
+// says what failed first and then ends it. Every caller of this is a
+// call that only fails when this tree lost track of its own resource -
+// a descriptor it no longer owns, a mapping at an address it did not
+// make - and a process that dies is the one case where stderr is read.
+[[noreturn]] inline void die_errno(const char *what, int code)
+{
+    std::fprintf(stderr, "webmachine: %s: %s\n", what, std::strerror(code));
+    std::abort();
+}
+
+// close(2) where nothing can be raised or thrown.
+inline void close_or_die(const char *what, int fd)
+{
+    if (::close(fd) != 0 && errno != EINTR)
+        die_errno(what, errno);
+}
+
+inline void close_or_throw(const char *what, int fd)
+{
+    if (::close(fd) != 0 && errno != EINTR)
+        throw_errno(what, errno);
 }
 
 [[noreturn]] inline void rethrow(mrb_state *mrb)

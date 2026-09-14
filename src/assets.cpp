@@ -217,8 +217,8 @@ void head_build_all_three(AssetEntry::Head (&h)[3], HeadParts parts)
 // The mapping is what serves, and it serves until the process ends.
 Assets::~Assets()
 {
-    if (map_addr_ != nullptr)
-        ::munmap(const_cast<char *>(map_addr_), map_length_);
+    if (map_addr_ != nullptr && ::munmap(const_cast<char *>(map_addr_), map_length_) != 0)
+        die_errno("munmap the asset pack", errno);
 }
 
 // ZIP (APPNOTE): archive in, entry table + prebuilt responses out. miniz
@@ -230,15 +230,22 @@ void Assets::open(mrb_state *mrb, const char *zip_path, const MimeDb &mime)
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: %s", zip_path, std::strerror(errno));
     }
     struct stat info;
-    if (::fstat(opened_fd, &info) != 0 || info.st_size < 22) {
-        ::close(opened_fd);
+    if (::fstat(opened_fd, &info) != 0) {
+        const int why = errno;
+        close_or_raise(mrb, zip_path, opened_fd);
+        raise_errno(mrb, "fstat", zip_path, why);
+    }
+    if (info.st_size < 22) {
+        close_or_raise(mrb, zip_path, opened_fd);
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "%s: not a ZIP (too small for an end record)",
                    zip_path);
     }
     map_length_ = static_cast<size_t>(info.st_size);
     void *mapped = ::mmap(nullptr, map_length_, PROT_READ, MAP_PRIVATE, opened_fd, 0);
-    ::close(opened_fd);
+    const int why = mapped == MAP_FAILED ? errno : 0;
+    close_or_raise(mrb, zip_path, opened_fd);
     if (mapped == MAP_FAILED) {
+        errno = why;
         map_length_ = 0;
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "mmap %s: %s", zip_path, std::strerror(errno));
     }

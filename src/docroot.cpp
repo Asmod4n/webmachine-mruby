@@ -55,7 +55,7 @@ void docroot_open(mrb_state *mrb, const char *path)
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "docroot %s: %s", canonical, std::strerror(errno));
     }
     if (docroot_fd_ >= 0)
-        ::close(docroot_fd_);
+        close_or_raise(mrb, docroot_path_.c_str(), docroot_fd_);
     docroot_fd_ = opened_fd;
     docroot_path_ = canonical;
     // O_NONBLOCK so a FIFO planted in the docroot answers instead of parking an
@@ -186,7 +186,17 @@ mrb_value docroot_listing_entry(mrb_state *mrb, int dirfd, const std::string &na
     mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "directory"), mrb_bool_value(directory));
     struct stat info {
     };
-    const bool stated = sized && ::fstatat(dirfd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) == 0;
+    bool stated = false;
+    if (sized) {
+        if (::fstatat(dirfd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) == 0) {
+            stated = true;
+        } else if (errno != ENOENT) {
+            // The entry going away between the readdir and this call is a
+            // race with whoever owns the tree, and the row then says zero.
+            // Every other errno is a refusal.
+            raise_errno(mrb, "fstat the listed entry", name.c_str(), errno);
+        }
+    }
     mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "size"),
                  mrb_fixnum_value(stated ? static_cast<mrb_int>(info.st_size) : 0));
     mrb_hash_set(mrb, row, mrb_str_new_lit(mrb, "mtime"),
@@ -220,18 +230,29 @@ mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
     if (!docroot_listing_name(path, static_cast<size_t>(path_len), name))
         return mrb_nil_value();
     const struct open_how how = docroot_listing_how();
-    const int opened = static_cast<int>(::syscall(SYS_openat2, docroot_fd_, name.c_str(), &how,
-                                                  sizeof(how)));
-    if (opened < 0)
-        return mrb_nil_value();
+    const int opened =
+        static_cast<int>(::syscall(SYS_openat2, docroot_fd_, name.c_str(), &how, sizeof(how)));
+    if (opened < 0) {
+        // A name that is not there, or is not a directory, is an answer:
+        // the caller sends 404. Every other errno is a refusal and says so.
+        const int why = errno;
+        if (why == ENOENT || why == ENOTDIR)
+            return mrb_nil_value();
+        raise_errno(mrb, "listing", name.c_str(), why);
+    }
     struct stat own {
     };
-    const bool own_stated = ::fstat(opened, &own) == 0;
+    if (::fstat(opened, &own) != 0) {
+        const int why = errno;
+        close_or_raise(mrb, name.c_str(), opened);
+        raise_errno(mrb, "fstat the listed directory", name.c_str(), why);
+    }
     // fdopendir takes the descriptor it is given and closedir ends it.
     DIR *const dir = ::fdopendir(opened);
     if (dir == nullptr) {
-        ::close(opened);
-        return mrb_nil_value();
+        const int why = errno;
+        close_or_raise(mrb, name.c_str(), opened);
+        raise_errno(mrb, "fdopendir", name.c_str(), why);
     }
     const mrb_value out = mrb_hash_new_capa(mrb, 3);
     const mrb_value rows = mrb_ary_new(mrb);
@@ -240,7 +261,12 @@ mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
     const int arena = mrb_gc_arena_save(mrb);
     bool truncated = false;
     size_t taken = 0;
-    for (const struct dirent *entry = ::readdir(dir); entry != nullptr; entry = ::readdir(dir)) {
+    // readdir answers null for the end of the directory and for a failure
+    // alike, and tells the two apart through errno. So errno is cleared
+    // before every call and read after the loop.
+    errno = 0;
+    for (const struct dirent *entry = ::readdir(dir); entry != nullptr;
+         errno = 0, entry = ::readdir(dir)) {
         const std::string_view said(entry->d_name);
         if (said.empty() || said.front() == '.')
             continue;
@@ -258,8 +284,16 @@ mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
             // representation, and the file machine would refuse it anyway.
             struct stat info {
             };
-            if (::fstatat(opened, one.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0)
-                continue;
+            if (::fstatat(opened, one.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
+                // The entry went away between the readdir and this call.
+                // That is a race with whoever owns the tree, not a
+                // refusal; anything else is.
+                if (errno == ENOENT)
+                    continue;
+                const int why = errno;
+                ::closedir(dir);
+                raise_errno(mrb, "fstat the listed entry", one.c_str(), why);
+            }
             if (S_ISDIR(info.st_mode))
                 directory = true;
             else if (!S_ISREG(info.st_mode))
@@ -272,11 +306,18 @@ mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
         mrb_gc_arena_restore(mrb, arena);
         taken++;
     }
-    ::closedir(dir);
+    const int walk_errno = errno;
+    // closedir ends the descriptor fdopendir took, so its refusal is the
+    // close's and is read like any other.
+    const int closed = ::closedir(dir);
+    if (walk_errno != 0)
+        raise_errno(mrb, "readdir", name.c_str(), walk_errno);
+    if (closed != 0)
+        raise_errno(mrb, "closedir", name.c_str(), errno);
     mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "entries"), rows);
     mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "truncated"), mrb_bool_value(truncated));
     mrb_hash_set(mrb, out, mrb_str_new_lit(mrb, "mtime"),
-                 mrb_fixnum_value(own_stated ? static_cast<mrb_int>(own.st_mtime) : 0));
+                 mrb_fixnum_value(static_cast<mrb_int>(own.st_mtime)));
     return out;
 }
 } // namespace

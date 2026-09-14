@@ -105,7 +105,7 @@ template <class App> class Ring
             std::abort();
         }
         int rc = 0;
-        const uint64_t memlock = raise_memlock();
+        const uint64_t memlock = raise_memlock(mrb_);
         constexpr unsigned kSqFloor = 1024;
         constexpr unsigned kSetupFlags =
             IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
@@ -132,10 +132,16 @@ template <class App> class Ring
                            static_cast<int>(ring_config.rings_in_process));
             }
         }
-        io_uring_register_ring_fd(&ring_);
+        // The registered ring descriptor saves a lookup on every submit.
+        // A kernel that does not have it answers -EINVAL, and that is no
+        // reason not to start; every other refusal is.
+        rc = io_uring_register_ring_fd(&ring_);
+        if (rc < 0 && rc != -EINVAL) {
+            mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_ring_fd: %s", std::strerror(-rc));
+        }
         ring_up_ = true;
 
-        const uint64_t nofile = raise_nofile();
+        const uint64_t nofile = raise_nofile(mrb_);
         log_fd_ = ring_config.log_fd;
         err_fd_ = ring_config.err_fd;
         backlog_ = ring_config.backlog != 0 ? ring_config.backlog : SOMAXCONN;
@@ -267,7 +273,8 @@ template <class App> class Ring
             return step(nullptr, false);
         struct timespec now {
         };
-        ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+        if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+            die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
         int64_t deadline = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
         deadline += budget->tv_sec * 1000000000 + budget->tv_nsec;
         return step(&deadline, true);
@@ -295,7 +302,8 @@ template <class App> class Ring
         close_listeners();
         struct timespec now {
         };
-        ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+        if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+            die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
         drain_deadline_ = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec + grace_ns;
         if (live_ == 0 || grace_ns <= 0)
             stop_ = true;
@@ -2450,7 +2458,8 @@ template <class App> class Ring
         if (bounded) {
             struct timespec now {
             };
-            ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+            if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+                die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
             const int64_t left =
                 *deadline - (static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec);
             struct io_uring_cqe *first = nullptr;
@@ -2472,7 +2481,8 @@ template <class App> class Ring
         {
             struct timespec now {
             };
-            ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+            if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+                die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
             now_s_ = static_cast<int64_t>(now.tv_sec);
         }
         app_.clock_tick();
@@ -2498,7 +2508,8 @@ template <class App> class Ring
             if (bounded) {
                 struct timespec now {
                 };
-                ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+                if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+                    die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
                 if (static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec >= *deadline)
                     break;
             }
@@ -2595,7 +2606,8 @@ template <class App> class Ring
         if (draining_ && !stop_) {
             struct timespec now {
             };
-            ::clock_gettime(CLOCK_MONOTONIC_COARSE, &now);
+            if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0)
+                die_errno("clock_gettime(CLOCK_MONOTONIC_COARSE)", errno);
             const int64_t index = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
             if (live_ == 0 || index >= drain_deadline_)
                 stop_ = true;

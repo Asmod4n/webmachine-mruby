@@ -32,9 +32,10 @@ inline constexpr uint32_t kBodyFilesMax = 1024;
 // ring holds at once. A direct descriptor lives only in this table.
 inline constexpr uint32_t kFixedTableKernelMax = 512;
 
-// A ring's SQ/CQ pages are locked memory; failing to raise is not a
-// reason not to start.
-uint64_t raise_memlock();
+// The locked-memory limit this process runs under, with the soft limit
+// raised to the hard one first. A ring's SQ and CQ pages are charged to
+// it. Every refusal of the two limit calls raises.
+uint64_t raise_memlock(mrb_state *mrb);
 
 // Submission entries a ring asks for. The queue and its completion
 // queue are locked memory, shared by every ring of the process.
@@ -67,8 +68,8 @@ static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
               "pool size arithmetic must not overflow");
 
 // Soft to hard, ceiling fs.nr_open, once at init - the capacity falls out
-// of whatever finally stands.
-uint64_t raise_nofile();
+// of whatever finally stands. Every refusal of the two limit calls raises.
+uint64_t raise_nofile(mrb_state *mrb);
 
 // A listener the reactor answers on. It carries no certificate: this
 // build has no record layer, so every listener serves cleartext. The
