@@ -483,8 +483,45 @@ template <class App> class Ring
         // what exists. There is no table to walk any more.
         Conn *live_prev = nullptr;
         Conn *live_next = nullptr;
+        // #30: a watcher and a compute job are not one per connection, so
+        // they are not members. They grow to what this connection actually
+        // uses and no further - there is no ceiling of 256 or of 16.
+        //
+        // A deque and not a vector: the SQE carries the address of the
+        // record, so a record that moves while the kernel names it is a
+        // use after free. A deque never moves an element that is already
+        // in it when the deque grows at the back; a vector does.
+        //
+        // Behind a pointer, and made on the first watcher or the first
+        // job: a deque allocates when it is made, and nearly every
+        // connection this server sees has neither. Three of them inline
+        // was three allocations and 240 bytes per peer for nothing.
+        struct Slow {
+            std::deque<Op> watch;
+            std::deque<Op> compute;
+            std::deque<Op> compute_started;
+        };
+        std::unique_ptr<Slow> slow;
+        Slow &slow_records()
+        {
+            if (slow == nullptr)
+                slow.reset(new Slow());
+            return *slow;
+        }
+        int64_t deadline_s = 0;
+        // #30: when the watcher this connection's stopped run waits on has
+        // been quiet for as long as it allowed. 0 = nothing is armed. It is
+        // Not deadline_s: the peer on this socket is fine, some other
+        // descriptor is the quiet one, and nothing here closes anything.
+        // #30: the earliest deadline any watcher of this connection owes.
+        // Each watcher keeps its own - the App has them, one per Ruby
+        // object - and this is only what the sweep has to read.
+        int64_t w_deadline_s = 0;
+
         // One per operation that can fly at the same time as another. Each
-        // has its own address, which is what the SQE carries.
+        // has its own address, which is what the SQE carries. Below the
+        // fields a request reads, on purpose: arming and releasing touch
+        // one of these, and the round touches the rest of the block.
         Op op_recv;
         Op op_send;
         Op op_setup;
@@ -500,25 +537,6 @@ template <class App> class Ring
         Op op_file_read;
         Op op_file_close;
         Op op_spill_write;
-        // #30: a watcher and a compute job are not one per connection, so
-        // they are not members. They grow to what this connection actually
-        // uses and no further - there is no ceiling of 256 or of 16.
-        // A deque and not a vector: the SQE carries the address of the
-        // record, so a record that moves while the kernel names it is a
-        // use after free. A deque never moves an element that is already
-        // in it when the deque grows at the back; a vector does.
-        std::deque<Op> op_watch;
-        std::deque<Op> op_compute;
-        std::deque<Op> op_compute_started;
-        int64_t deadline_s = 0;
-        // #30: when the watcher this connection's stopped run waits on has
-        // been quiet for as long as it allowed. 0 = nothing is armed. It is
-        // Not deadline_s: the peer on this socket is fine, some other
-        // descriptor is the quiet one, and nothing here closes anything.
-        // #30: the earliest deadline any watcher of this connection owes.
-        // Each watcher keeps its own - the App has them, one per Ruby
-        // object - and this is only what the sweep has to read.
-        int64_t w_deadline_s = 0;
 
         static constexpr size_t kRoundFloor = 64u * 1024;
         size_t round_cap = kRoundFloor;
@@ -1535,11 +1553,12 @@ template <class App> class Ring
         // once, so a resize that raised between the two would leave an entry
         // in the ring carrying whatever user_data sat in that slot before -
         // an address of some long freed block.
-        if (conn.op_watch.size() <= static_cast<size_t>(slot))
-            conn.op_watch.resize(static_cast<size_t>(slot) + 1);
+        std::deque<Op> &watch = conn.slow_records().watch;
+        if (watch.size() <= static_cast<size_t>(slot))
+            watch.resize(static_cast<size_t>(slot) + 1);
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_poll_add(sqe, descriptor, mask);
-        const uint64_t text = arm(conn.op_watch[static_cast<size_t>(slot)], &conn, detail::kWatch,
+        const uint64_t text = arm(watch[static_cast<size_t>(slot)], &conn, detail::kWatch,
                                   static_cast<uint32_t>(slot));
         io_uring_sqe_set_data64(sqe, text);
         App::watcher_is_armed(conn.app, slot, &ring_, text);
@@ -1622,9 +1641,10 @@ template <class App> class Ring
                     continue;
                 const size_t job = static_cast<size_t>(park) * App::Conn::kJobSlots +
                                    static_cast<size_t>(slot);
-                if (c.op_compute.size() <= job) {
-                    c.op_compute.resize(job + 1);
-                    c.op_compute_started.resize(job + 1);
+                typename Conn::Slow &slow = c.slow_records();
+                if (slow.compute.size() <= job) {
+                    slow.compute.resize(job + 1);
+                    slow.compute_started.resize(job + 1);
                 }
                 // The park generation rides along, because a park slot of
                 // this connection may be taken again while an answer for the
@@ -1638,10 +1658,10 @@ template <class App> class Ring
                 // deadline to clock, so only there does a record name it.
                 const uint64_t began =
                     deadline > 0.0
-                        ? arm(c.op_compute_started[job], &c, detail::kComputeStarted, aux)
+                        ? arm(slow.compute_started[job], &c, detail::kComputeStarted, aux)
                         : 0;
                 const uint64_t answer =
-                    arm(c.op_compute[job], &c, detail::kComputeTask, aux);
+                    arm(slow.compute[job], &c, detail::kComputeTask, aux);
                 bool sent = false;
                 try {
                     sent = compute_.submit(mrb_, code, arg, deadline, answer, began);
@@ -1688,9 +1708,9 @@ template <class App> class Ring
         uint16_t generation = 0;
         // The answer tag names the job; the pool says which of its slots
         // holds it. Nothing here indexes a connection.
-        if (!compute_.slot_of_answer(reinterpret_cast<uint64_t>(&op.conn->op_compute[op.aux &
-                                                                                      0xffffu]),
-                                     &slot, &generation))
+        const uint64_t answer =
+            reinterpret_cast<uint64_t>(&op.conn->slow_records().compute[op.aux & 0xffffu]);
+        if (!compute_.slot_of_answer(answer, &slot, &generation))
             return;
         const double deadline = compute_.started(slot, generation);
         if (deadline > 0.0)
