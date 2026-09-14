@@ -115,12 +115,17 @@ before you read the rate.
    of them. The rate stops climbing at 768, so 768 is the count, and
    this host then resolves about 10 percent.
 
-   The h2 floor cannot meet the rule in that container at all, and
-   multiplexing harder does not help. At 62 connections, 32 streams
-   read 65 percent on the client, 128 read 66 and 512 read 58. This
-   server needs about 1.5 times the client's cpu for one h2 response,
-   so the client cannot reach 85 percent while the server holds 99.
-   That is arithmetic and not a knob that is missing.
+   The h2 floor did not meet the rule in that container, and
+   multiplexing harder did not help: at 62 connections the client read
+   65 percent with 32 streams, 66 with 128 and 58 with 512, while the
+   server held 99.
+
+   That is a fact about the container and not about the server. The
+   same floor reads 99 percent server and 90 percent client on another
+   machine. So a client under 85 is a question about the client and the
+   host - which htgen, how many cpus, what else runs there - and never
+   a property of the code to write down. Sweep, read the two numbers,
+   and say which machine gave them.
 
    The build decides the counts, so sweep again whenever it changes. A
    `WM_MARCH=x86-64-v3` binary is the valgrind build of the section

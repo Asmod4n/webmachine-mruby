@@ -4125,3 +4125,255 @@ build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++
 env: runnable=1/125 busy=1% (200ms sample)
 responses=17185005 bad=0 seconds=5.000 rps=3436768 bytes=1443543458 MB/s=275.32 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=223454984 tx_MB/s=42.62
 server: 99% of one core (86u/13s)   client: 64% of one core (50u/14s)   other: 17% of one core
+==== 2026-09-14T08:58Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=1% (200ms sample)
+responses=15905474 bad=0 seconds=5.000 rps=3181077 bytes=1336062854 MB/s=254.83 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=206878918 tx_MB/s=39.46
+server: 100% of one core (78u/21s)   client: 62% of one core (48u/14s)   other: 6% of one core
+==== 2026-09-14T08:58Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=0% (200ms sample)
+responses=18087622 bad=0 seconds=5.001 rps=3617136 bytes=1519363286 MB/s=289.76 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=235188199 tx_MB/s=44.85
+server: 99% of one core (88u/11s)   client: 68% of one core (56u/13s)   other: 9% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=0% (200ms sample)
+responses=2780074 bad=0 seconds=5.000 rps=556012 bytes=430911470 MB/s=82.19 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97328070 tx_MB/s=18.56
+server: 99% of one core (15u/84s)   client: 100% of one core (7u/93s)   other: 7% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=1% (200ms sample)
+responses=14107571 bad=0 seconds=5.000 rps=2821510 bytes=1185039002 MB/s=226.03 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=183506179 tx_MB/s=35.00
+server: 99% of one core (86u/13s)   client: 54% of one core (41u/13s)   other: 19% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=2% (200ms sample)
+responses=2781122 bad=0 seconds=5.000 rps=556217 bytes=431073910 MB/s=82.22 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97364750 tx_MB/s=18.57
+server: 99% of one core (13u/86s)   client: 99% of one core (8u/92s)   other: 9% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=17327849 bad=0 seconds=5.000 rps=3465532 bytes=1455542354 MB/s=277.62 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=225368129 tx_MB/s=42.99
+server: 99% of one core (85u/14s)   client: 66% of one core (53u/13s)   other: 9% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=0% (200ms sample)
+responses=2788513 bad=0 seconds=5.000 rps=557697 bytes=432219515 MB/s=82.44 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97623435 tx_MB/s=18.62
+server: 100% of one core (12u/87s)   client: 100% of one core (9u/91s)   other: 6% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=18018246 bad=0 seconds=5.001 rps=3603269 bytes=1513535702 MB/s=288.65 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=234297101 tx_MB/s=44.68
+server: 99% of one core (88u/11s)   client: 67% of one core (54u/13s)   other: 6% of one core
+==== 2026-09-14T08:59Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=0% (200ms sample)
+responses=2823238 bad=0 seconds=5.000 rps=564645 bytes=437601890 MB/s=83.47 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=98838810 tx_MB/s=18.85
+server: 99% of one core (14u/84s)   client: 100% of one core (7u/94s)   other: 5% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=17288902 bad=0 seconds=5.000 rps=3457737 bytes=1452270806 MB/s=277.00 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=224863482 tx_MB/s=42.89
+server: 99% of one core (86u/13s)   client: 66% of one core (53u/14s)   other: 11% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=2796113 bad=0 seconds=5.000 rps=559216 bytes=433397515 MB/s=82.66 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97889435 tx_MB/s=18.67
+server: 99% of one core (14u/85s)   client: 100% of one core (9u/91s)   other: 4% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=4/128 busy=0% (200ms sample)
+responses=17260746 bad=0 seconds=5.000 rps=3452092 bytes=1449905702 MB/s=276.54 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=224495790 tx_MB/s=42.82
+server: 100% of one core (87u/13s)   client: 65% of one core (51u/15s)   other: 6% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=2% (200ms sample)
+responses=2798382 bad=0 seconds=5.000 rps=559672 bytes=433749210 MB/s=82.73 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97968850 tx_MB/s=18.69
+server: 99% of one core (13u/86s)   client: 100% of one core (7u/93s)   other: 3% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=17731429 bad=0 seconds=5.001 rps=3545773 bytes=1489443074 MB/s=284.05 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=230561421 tx_MB/s=43.97
+server: 100% of one core (88u/11s)   client: 67% of one core (51u/16s)   other: 5% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/126 busy=0% (200ms sample)
+responses=2754404 bad=0 seconds=5.000 rps=550879 bytes=426932620 MB/s=81.43 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=96429620 tx_MB/s=18.39
+server: 99% of one core (13u/86s)   client: 100% of one core (8u/92s)   other: 3% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=0% (200ms sample)
+responses=17812996 bad=0 seconds=5.001 rps=3562214 bytes=1496294702 MB/s=285.36 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=231633440 tx_MB/s=44.18
+server: 100% of one core (88u/11s)   client: 67% of one core (55u/12s)   other: 5% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=1% (200ms sample)
+responses=2685795 bad=0 seconds=5.000 rps=537158 bytes=416298225 MB/s=79.40 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=94028305 tx_MB/s=17.93
+server: 99% of one core (14u/85s)   client: 99% of one core (8u/91s)   other: 8% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=17087783 bad=0 seconds=5.000 rps=3417529 bytes=1435376810 MB/s=273.77 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=222248935 tx_MB/s=42.39
+server: 99% of one core (89u/10s)   client: 66% of one core (52u/14s)   other: 6% of one core
+==== 2026-09-14T09:00Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=1% (200ms sample)
+responses=2821137 bad=0 seconds=5.000 rps=564223 bytes=437276235 MB/s=83.40 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=98765275 tx_MB/s=18.84
+server: 100% of one core (16u/84s)   client: 100% of one core (9u/91s)   other: 3% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=17619460 bad=0 seconds=5.000 rps=3523868 bytes=1480037678 MB/s=282.29 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=229160736 tx_MB/s=43.71
+server: 100% of one core (86u/13s)   client: 69% of one core (56u/13s)   other: 7% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/128 busy=1% (200ms sample)
+responses=2756989 bad=0 seconds=5.000 rps=551396 bytes=427333295 MB/s=81.51 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=96520095 tx_MB/s=18.41
+server: 99% of one core (11u/88s)   client: 100% of one core (10u/90s)   other: 4% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=17337577 bad=0 seconds=5.001 rps=3466865 bytes=1456359506 MB/s=277.73 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=225446740 tx_MB/s=42.99
+server: 99% of one core (88u/11s)   client: 69% of one core (55u/14s)   other: 8% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=2709405 bad=0 seconds=5.000 rps=541876 bytes=419957775 MB/s=80.10 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=94855950 tx_MB/s=18.09
+server: 99% of one core (15u/84s)   client: 100% of one core (8u/92s)   other: 6% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/126 busy=2% (200ms sample)
+responses=18093223 bad=0 seconds=5.000 rps=3618621 bytes=1519833770 MB/s=289.88 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=235319655 tx_MB/s=44.88
+server: 99% of one core (86u/12s)   client: 69% of one core (55u/14s)   other: 17% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=2801563 bad=0 seconds=5.000 rps=560306 bytes=434242265 MB/s=82.82 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=98080185 tx_MB/s=18.71
+server: 99% of one core (13u/86s)   client: 99% of one core (9u/91s)   other: 5% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=1% (200ms sample)
+responses=17733415 bad=0 seconds=5.000 rps=3546664 bytes=1489609898 MB/s=284.12 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=230642151 tx_MB/s=43.99
+server: 99% of one core (88u/11s)   client: 66% of one core (54u/13s)   other: 9% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/128 busy=0% (200ms sample)
+responses=2801315 bad=0 seconds=5.000 rps=560258 bytes=434203825 MB/s=82.82 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=98071505 tx_MB/s=18.71
+server: 99% of one core (14u/85s)   client: 100% of one core (10u/90s)   other: 8% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=0% (200ms sample)
+responses=17970343 bad=0 seconds=5.000 rps=3594030 bytes=1509511850 MB/s=287.91 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=233722215 tx_MB/s=44.58
+server: 100% of one core (88u/11s)   client: 67% of one core (53u/14s)   other: 6% of one core
+==== 2026-09-14T09:01Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/127 busy=0% (200ms sample)
+responses=2864257 bad=0 seconds=5.000 rps=572845 bytes=443959835 MB/s=84.68 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=100274475 tx_MB/s=19.13
+server: 100% of one core (15u/85s)   client: 100% of one core (7u/93s)   other: 6% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=0% (200ms sample)
+responses=17885285 bad=0 seconds=5.000 rps=3577033 bytes=1502366978 MB/s=286.55 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=232616461 tx_MB/s=44.37
+server: 100% of one core (86u/13s)   client: 68% of one core (53u/15s)   other: 6% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=0% (200ms sample)
+responses=2704552 bad=0 seconds=5.000 rps=540908 bytes=419205560 MB/s=79.96 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=94684800 tx_MB/s=18.06
+server: 99% of one core (15u/84s)   client: 99% of one core (9u/91s)   other: 4% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/126 busy=0% (200ms sample)
+responses=17644610 bad=0 seconds=5.001 rps=3528507 bytes=1482150278 MB/s=282.66 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=229437766 tx_MB/s=43.76
+server: 99% of one core (88u/11s)   client: 79% of one core (66u/13s)   other: 7% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=0% (200ms sample)
+responses=2738323 bad=0 seconds=5.000 rps=547664 bytes=424440065 MB/s=80.96 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=95866785 tx_MB/s=18.29
+server: 100% of one core (13u/86s)   client: 99% of one core (7u/92s)   other: 3% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/127 busy=0% (200ms sample)
+responses=17625123 bad=0 seconds=5.000 rps=3524775 bytes=1480513370 MB/s=282.37 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=229181107 tx_MB/s=43.71
+server: 99% of one core (88u/11s)   client: 67% of one core (53u/15s)   other: 7% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=1% (200ms sample)
+responses=2673906 bad=0 seconds=5.000 rps=534778 bytes=414455430 MB/s=79.05 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=93612190 tx_MB/s=17.86
+server: 100% of one core (14u/85s)   client: 99% of one core (10u/90s)   other: 2% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/127 busy=2% (200ms sample)
+responses=16557091 bad=0 seconds=5.000 rps=3311361 bytes=1390798682 MB/s=265.27 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=215348275 tx_MB/s=41.07
+server: 100% of one core (85u/14s)   client: 64% of one core (53u/11s)   other: 5% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/127 busy=0% (200ms sample)
+responses=2711826 bad=0 seconds=5.000 rps=542362 bytes=420333030 MB/s=80.17 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=94939390 tx_MB/s=18.11
+server: 99% of one core (15u/84s)   client: 100% of one core (10u/89s)   other: 8% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=1% (200ms sample)
+responses=17253636 bad=0 seconds=5.001 rps=3450270 bytes=1449308462 MB/s=276.40 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=224353440 tx_MB/s=42.79
+server: 99% of one core (89u/10s)   client: 68% of one core (54u/14s)   other: 9% of one core
+==== 2026-09-14T09:02Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/127 busy=0% (200ms sample)
+responses=2697758 bad=0 seconds=5.000 rps=539548 bytes=418152490 MB/s=79.76 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=94447010 tx_MB/s=18.01
+server: 99% of one core (13u/85s)   client: 100% of one core (9u/91s)   other: 3% of one core
+==== 2026-09-14T09:03Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-next cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/126 busy=3% (200ms sample)
+responses=17393889 bad=0 seconds=5.000 rps=3478754 bytes=1461089714 MB/s=278.68 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=226228313 tx_MB/s=43.15
+server: 100% of one core (86u/13s)   client: 68% of one core (54u/14s)   other: 6% of one core
+==== 2026-09-14T09:03Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=2/126 busy=0% (200ms sample)
+responses=2662805 bad=0 seconds=5.000 rps=532555 bytes=412734775 MB/s=78.72 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=93223655 tx_MB/s=17.78
+server: 98% of one core (15u/83s)   client: 99% of one core (9u/90s)   other: 5% of one core
+==== 2026-09-14T09:03Z repo=16fd6e9 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/125 busy=2% (200ms sample)
+responses=15516517 bad=0 seconds=5.001 rps=3102955 bytes=1303390466 MB/s=248.57 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=201777549 tx_MB/s=38.48
+server: 99% of one core (77u/21s)   client: 62% of one core (49u/13s)   other: 8% of one core
