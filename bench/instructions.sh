@@ -35,7 +35,7 @@ bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
 # count SECONDS -> "instructions responses"; 0 seconds sends nothing.
 count() {
   valgrind --tool=callgrind --callgrind-out-file="$WORK/cg.$1" "$BIN" "${APP_ARGS[@]}" \
-    2>"$WORK/srv.$1" & local srv=$!
+    >"$WORK/srv.$1" 2>&1 & local srv=$!
   for _ in $(seq 1 600); do [ -S "$SOCK" ] && break; sleep 0.1; done
   local responses=0
   if [ "$1" != 0 ]; then

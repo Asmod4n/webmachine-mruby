@@ -224,7 +224,7 @@ fi
 # An app names its own listener, and the server refuses a second one on
 # the command line. bench_app wrote the one above into the app source.
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
-"${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" 2>"$WORK/srv.log" & SRV=$!
+"${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >>"$WORK/srv.log" 2>&1 & SRV=$!
 # wait: back-to-back runs must not race the dying listener for the port.
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 

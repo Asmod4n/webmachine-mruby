@@ -4,8 +4,9 @@ A bench number holds three parts: the code, the host, and the load.
 Only the first one is interesting. This file says how to hold the other
 two still, so that a difference of a few percent belongs to the code.
 
-Read `bench/host-variance.md` first. It says how to measure what the
-host adds, and what the answer was here.
+What the host adds is measured here rather than in a file of its own:
+`sysbench cpu --threads=1` names which `vm` this is, and the two cpu
+numbers of every row say whether the run measured the code or a wait.
 
 ## The rule
 
@@ -99,6 +100,16 @@ before you read the rate.
    runs fall in two groups, near 1.5M and near 2.1M. A bimodal run
    measures where the scheduler put the two processes. Use h2 for a
    comparison here, and take the h1 floor on `forgecore`.
+
+   A slow `vm` can also be a container where the rule cannot be met at
+   all. Measured at `sysbench` 1120: the server holds 96 to 100 percent
+   at every count, and the client holds 64 to 66 at 32, 62, 128, 256
+   and 512 connections alike. Raising the count does not move it, so
+   the both-busy condition is unreachable and every row from such a
+   container is a wait. Read the two cpu numbers before the rate, find
+   them like this, and take the answer from `bench/instructions.sh`
+   instead: it is a count of what the server executed, and a wait does
+   not change it.
 
 2. Check that the client is not the limit. `bench/floor.sh` refuses a
    run when the client is pegged and the server is 15 or more points
