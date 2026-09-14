@@ -192,6 +192,11 @@ What that file settles, and what a session gets wrong without it:
 - A change smaller than the host can resolve needs
   `bench/instructions.sh`. It counts what the server executed, and the
   count of one binary does not move between runs.
+- A rate comes from the host build. `WM_MARCH=x86-64-v3` is the build
+  that valgrind can decode, for the count and for nothing else. It
+  reads 0.47M where the host build reads 0.56M, and it wants a
+  different connection count, so a rate taken from it describes a
+  server this tree does not ship.
 
 This rule exists because it was broken. A session measured the reactor
 rewrite with `ab`, `h2load` and `taskset -c 0`, read a loss of 20

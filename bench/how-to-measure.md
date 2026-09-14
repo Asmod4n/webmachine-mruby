@@ -103,30 +103,31 @@ before you read the rate.
 
    One container turned the two floors around, so sweep both and read
    the cpu numbers rather than trusting the row above. Measured at
-   `sysbench` 1120:
+   `sysbench` 1120, with the host build:
 
    | Floor | count | seconds | median | spread | server | client |
    | --- | --- | --- | --- | --- | --- | --- |
-   | h2, 128 streams | 32 | 10 | 2.54M | 24% | 96-99% | 48-66% |
-   | h1 | 512 | 10 | 0.47M | 48% | 99-100% | 97-99% |
-   | h1 | 512 | 5 | 0.47M | 14-17% | 98-100% | 97-100% |
+   | h1 | 768 | 5 | 0.55M | 8-12% | 97-100% | 97-100% |
+   | h2, 128 streams | 62 | 5 | 3.3M | 17-27% | 99-100% | 59-70% |
 
-   The h2 floor cannot meet the rule there at all. The client holds 64
-   to 66 percent at 32, 62, 128, 256 and 512 connections alike, and
-   raising the count does not move it. Every h2 row from that container
-   is a wait.
+   The h1 sweep reads 0.511M at 256, 0.545M at 512, 0.561M at 768 and
+   0.555M at 1024, and both sides hold 96 percent or more at every one
+   of them. The rate stops climbing at 768, so 768 is the count, and
+   this host then resolves about 10 percent.
 
-   The h1 floor meets it at every count from 256 up, on both sides. Its
-   sweep at five seconds reads 0.458M at 256, 0.468M at 512 and 0.472M
-   at 768, and the spread is 6 percent at 256 and at 512 and 27 at 768.
-   So the count is 512. Ten seconds reads worse than five there as
-   well, and for the same reason: the first two minutes drift, and ten
-   seconds gives the drift more of each run.
+   The h2 floor cannot meet the rule in that container at all, and
+   multiplexing harder does not help. At 62 connections, 32 streams
+   read 65 percent on the client, 128 read 66 and 512 read 58. This
+   server needs about 1.5 times the client's cpu for one h2 response,
+   so the client cannot reach 85 percent while the server holds 99.
+   That is arithmetic and not a knob that is missing.
 
-   So this host resolves about 6 percent through the h1 floor at 512
-   connections and 5 seconds, and nothing at all through h2. Take a
-   difference smaller than that from `bench/instructions.sh`: it counts
-   what the server executed, and a wait does not change it.
+   The build decides the counts, so sweep again whenever it changes. A
+   `WM_MARCH=x86-64-v3` binary is the valgrind build of the section
+   below and it is not this tree's server: it reads 0.47M where the
+   host build reads 0.56M, and its own h1 count is 512 where the host
+   build wants 768. Take a rate from the host build and from nothing
+   else.
 
 2. Check that the client is not the limit. `bench/floor.sh` refuses a
    run when the client is pegged and the server is 15 or more points
