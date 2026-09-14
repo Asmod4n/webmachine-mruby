@@ -279,12 +279,17 @@ fi
 [ -z "$DOCROOT" ] || APP_ARGS=(--docroot="$DOCROOT")
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
 [ -z "$DOCROOT" ] || BIND_ARGS=("${BIND_ARGS_KEEP[@]}")
+# One is the default and the flag then changes nothing, so it is not
+# passed. BIN= exists to run an older build beside this one, and an
+# older build refuses a flag it never had.
+SHAPE_ARGS=()
+[ "$FORK_WORKERS" = 1 ] || SHAPE_ARGS+=(--workers="$FORK_WORKERS")
+[ "$THREADS_ANSWER" = 1 ] || SHAPE_ARGS+=(--threads="$THREADS_ANSWER")
 SRVS=()
 w=0
 while [ "$w" -lt "$WORKERS" ]; do
     "${SRV_PIN[@]}" "$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
-    ${FORK_WORKERS:+--workers="$FORK_WORKERS"} \
-    ${THREADS_ANSWER:+--threads="$THREADS_ANSWER"} >>"$WORK/srv.log" 2>&1 &
+    "${SHAPE_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
   SRVS+=($!)
   w=$((w + 1))
 done
