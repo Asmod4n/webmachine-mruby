@@ -258,6 +258,7 @@ HTGEN=$(bench_htgen) || exit 1
 # Everything this run writes lives here. A fixed name under /tmp is a
 # name somebody else's run - or somebody else's user - already owns.
 WORK=$(mktemp -d)
+bench_config "$WORK"
 
 ASSET_ARGS=()
 # The same field, spelled for two tools: curl proves the target, htgen
@@ -356,7 +357,7 @@ leg() {
   local bindargs=(--unix="$WM_SOCK")
   [ ${#APP_ARGS[@]} -eq 0 ] || bindargs=()
   "$PERF" record "${EVENT_ARGS[@]}" -F "$FREQ" -g --call-graph "$CALLGRAPH" -m "$PERF_MMAP" -o "$data" -- \
-    "$BIN" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
+    "$BIN" "${CONF_ARGS[@]}" "${bindargs[@]}" "${APP_ARGS[@]}" "${ASSET_ARGS[@]}" \
     >"$WORK/srv.log" 2>&1 &
   local perfpid=$!
   PERFPID=$perfpid

@@ -135,6 +135,8 @@ for a in $ARMS; do
 done
 
 WORK=$(mktemp -d)
+. "$(dirname "$0")/_app.sh"
+bench_config "$WORK"
 SRV=
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 
@@ -261,7 +263,7 @@ start_srv() {  # start_srv <port> [zip]
   local port=$1 zip=${2:-$WORK/assets.zip}
   local args=(--port="$port" --assets="$zip")
   [ "$LOG" = 1 ] && args+=(--log="$WORK/access.log")
-  "$BIN" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
+  "$BIN" "${CONF_ARGS[@]}" "${args[@]}" >/dev/null 2>"$WORK/srv.log" &
   SRV=$!
   # Wait for it to answer, never a fixed sleep: on this container the
   # first curl raced the listener, the stored arm compared an empty
@@ -446,7 +448,7 @@ boot_ns() {
   local zip=$1 port=$2 lo= hi= t0 t1 d
   for _ in 1 2 3 4 5; do
     t0=$(date +%s%N)
-    "$BIN" --port="$port" --assets="$zip" >/dev/null 2>"$WORK/boot.log" &
+    "$BIN" "${CONF_ARGS[@]}" --port="$port" --assets="$zip" >/dev/null 2>"$WORK/boot.log" &
     SRV=$!
     # Busy poll, no sleep: the whole quantity being measured is smaller
     # than the shortest sleep this shell can take.

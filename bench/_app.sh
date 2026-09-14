@@ -36,3 +36,17 @@ bench_app() {
   "$mrbc" -o "$work/app.mrb" "$src" || exit 1
   APP_ARGS=(--app="$work/app.mrb")
 }
+
+# bench_config WORK
+#   The server reads webmachine.toml from the start directory and from
+#   the two places the Filesystem Hierarchy Standard gives a package.
+#   An installed config - rake install writes one - then names a port
+#   or an app, and the server refuses that beside the bench's own
+#   listener. The bench measures this tree, not the machine's
+#   configuration, so it names an empty file and reads nothing else.
+#   writes  CONF_ARGS
+bench_config() {
+  local work="$1"
+  : > "$work/none.toml" || exit 1
+  CONF_ARGS=(--config="$work/none.toml")
+}

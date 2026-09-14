@@ -1035,6 +1035,35 @@ task :install, %i[prefix] do |_t, args|
   end
 end
 
+# The other half of install. The config is the operator's own file -
+# the server wrote it once and never over it - so it stays, and the
+# directory stays with it. Everything install put there by copying
+# goes.
+desc 'remove what rake install put down: rake uninstall[PREFIX], PREFIX is /usr/local'
+task :uninstall, %i[prefix] do |_t, args|
+  prefix = args[:prefix] || '/usr/local'
+  bin = File.join(prefix, 'bin')
+  share = File.join(prefix, 'share', 'webmachine-mruby')
+  etc = File.join(prefix, 'etc', 'webmachine')
+  conf = File.join(etc, 'webmachine.toml')
+  programs = %w[webmachine-server webmachine-logd webmachine-passwd mrbc]
+
+  programs.each do |p|
+    path = File.join(bin, p)
+    next puts "#{path} is not there" unless File.exist?(path)
+
+    rm path
+  end
+  archive = File.join(share, 'error-assets.zip')
+  rm archive if File.exist?(archive)
+  rmdir share if File.directory?(share) && Dir.empty?(share)
+  if File.exist?(conf)
+    puts "#{conf} is yours and is kept - remove it by hand to start over"
+  elsif File.directory?(etc) && Dir.empty?(etc)
+    rmdir etc
+  end
+end
+
 # The reference config in this tree is generated, and by the server
 # itself: --write-config states every knob it reads, and a second copy
 # written by hand is a second answer that goes stale on the first change.

@@ -80,6 +80,7 @@ BIN=mruby/build/host/bin/webmachine-server
 bench_priority
 . "$(dirname "$0")/htgen.sh"
 . "$(dirname "$0")/_app.sh"
+bench_config "$WORK"
 HTGEN=$(bench_htgen) || exit 1
 [ -x "$BIN" ] || { echo "$BIN missing - run: rake compile" >&2; exit 1; }
 
@@ -116,7 +117,7 @@ fi
 # An app names its own listener, and the server refuses a second one on
 # the command line. bench_app wrote the one above into the app source.
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
-"$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>"$WORK/srv.log" &
+"$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >/dev/null 2>"$WORK/srv.log" &
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"; rm -f "$SOCK"' EXIT
 sleep 0.5

@@ -30,11 +30,12 @@ command -v valgrind >/dev/null || { echo "valgrind is not installed" >&2; exit 2
 command -v htgen >/dev/null || { echo "htgen is not on PATH" >&2; exit 2; }
 WORK=$(mktemp -d /tmp/wm-ir.XXXXXX)
 SOCK="$WORK/bench.sock"
+bench_config "$WORK"
 bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
 
 # count SECONDS -> "instructions responses"; 0 seconds sends nothing.
 count() {
-  valgrind --tool=callgrind --callgrind-out-file="$WORK/cg.$1" "$BIN" "${APP_ARGS[@]}" \
+  valgrind --tool=callgrind --callgrind-out-file="$WORK/cg.$1" "$BIN" "${CONF_ARGS[@]}" "${APP_ARGS[@]}" \
     >"$WORK/srv.$1" 2>&1 & local srv=$!
   for _ in $(seq 1 600); do [ -S "$SOCK" ] && break; sleep 0.1; done
   local responses=0

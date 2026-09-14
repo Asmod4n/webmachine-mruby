@@ -181,6 +181,7 @@ machine_busy() {
   awk 'NR==1 { print $2+$3+$4+$7+$8+$9 }' /proc/stat
 }
 WORK=$(mktemp -d)
+bench_config "$WORK"
 # Split like sysc_wait: the wait must run in the shell that backgrounded
 # the client (a $() subshell is not its parent), only the read below may fork.
 snap_times() { times > "$WORK/.times"; }
@@ -281,7 +282,7 @@ fi
 SRVS=()
 w=0
 while [ "$w" -lt "$WORKERS" ]; do
-    "${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
+    "${SRV_PIN[@]}" "$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
     ${FORK_WORKERS:+--workers="$FORK_WORKERS"} \
     ${THREADS_ANSWER:+--threads="$THREADS_ANSWER"} >>"$WORK/srv.log" 2>&1 &
   SRVS+=($!)

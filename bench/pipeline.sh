@@ -59,6 +59,7 @@ HTGEN=$(bench_htgen) || exit 1
 # and the server's stderr. A fixed name under /tmp is a name somebody
 # else's run - or somebody else's user - already owns.
 WORK=$(mktemp -d)
+bench_config "$WORK"
 
 SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
@@ -72,7 +73,7 @@ fi
 # An app names its own listener, and the server refuses a second one on
 # the command line. bench_app wrote the one above into the app source.
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
-"$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" >>"$WORK/srv.log" 2>&1 & SRV=$!
+"$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" >>"$WORK/srv.log" 2>&1 & SRV=$!
 trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 0.5
 kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }

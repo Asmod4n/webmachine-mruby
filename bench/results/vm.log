@@ -5621,3 +5621,9 @@ harness: assets htgen h1 -c32 -d5s reps=3 log=0 6.18.44-fc-v24 x86_64
     262144   stored          12102      3027.92       262144       92            -
    1048576   stored           1989      1989.54      1048576       92            -
 steal +5 ticks over the whole sweep
+==== 2026-09-14T16:39Z repo=1f82337 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c4 -d2s h2 -m16 (one ring, one thread) impl=uring workers=1 fork_workers=1 threads=1 clients=1 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/122 busy=0% (200ms sample)
+responses=1725680 bad=0 seconds=2.000 rps=862832 bytes=144957316 MB/s=69.12 conns=4 streams=16 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=22434344 tx_MB/s=10.70
+server: 90% of one core (37u/53s)   client: 60% of one core (20u/40s)   other: 3% of one core
