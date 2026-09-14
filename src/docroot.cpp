@@ -291,7 +291,8 @@ mrb_value docroot_method_listing(mrb_state *mrb, mrb_value)
                 if (errno == ENOENT)
                     continue;
                 const int why = errno;
-                ::closedir(dir);
+                if (::closedir(dir) != 0)
+                    die_errno("closedir the listed directory", errno);
                 raise_errno(mrb, "fstat the listed entry", one.c_str(), why);
             }
             if (S_ISDIR(info.st_mode))

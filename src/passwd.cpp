@@ -104,8 +104,10 @@ PasswdData *passwd_data_or_raise(mrb_state *mrb, mrb_value self)
 }
 
 // One argon2id hash, run over whatever the caller gives it. Used both
-// for a real check and for the dummy one a missing user still pays.
-bool argon2id(const std::string &password, const uint8_t *salt, uint32_t salt_len,
+// for a real check and for the dummy one a missing user still pays. The
+// answer is argon2's own code, so a caller says what went wrong rather
+// than reading every refusal as a wrong password.
+int argon2id(const std::string &password, const uint8_t *salt, uint32_t salt_len,
               const std::string &associated_data, uint32_t m_kib, uint32_t passes, uint32_t lanes,
               uint8_t *out_hash, uint32_t out_len)
 {
@@ -124,19 +126,26 @@ bool argon2id(const std::string &password, const uint8_t *salt, uint32_t salt_le
     ctx.threads = lanes;
     ctx.version = ARGON2_VERSION_NUMBER;
     ctx.flags = ARGON2_DEFAULT_FLAGS;
-    return argon2_ctx(&ctx, Argon2_id) == ARGON2_OK;
+    return argon2_ctx(&ctx, Argon2_id);
 }
 
 // The check a missing user still pays, so the time an answer takes
 // never names who is in the database. Same cost the tool defaults to,
 // a fixed salt (never written anywhere, and never compared against
 // anything), and an answer nobody looks at.
-void password_hash_a_dummy_record(const std::string &password, const std::string &associated_data)
+void password_hash_a_dummy_record(mrb_state *mrb, const std::string &password,
+                                  const std::string &associated_data)
 {
     uint8_t salt[kDummySaltLen] = {};
     uint8_t dummy_hash[kDummyHashLen];
-    (void)argon2id(password, salt, kDummySaltLen, associated_data, kDummyMKib, kDummyT, kDummyLanes,
-                   dummy_hash, kDummyHashLen);
+    const int rc = argon2id(password, salt, kDummySaltLen, associated_data, kDummyMKib, kDummyT,
+                            kDummyLanes, dummy_hash, kDummyHashLen);
+    // This hash exists to cost the same as a real one. A machine that
+    // cannot run it has no memory for the real one either, and answering
+    // false here would say "wrong password" for a fault of the machine.
+    if (rc != ARGON2_OK) {
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "argon2id: %s", argon2_error_message(rc));
+    }
 }
 
 //: (String, String) -> Webmachine::Passwd
@@ -283,14 +292,18 @@ mrb_value passwd_valid(mrb_state *mrb, mrb_value self)
     if (!usable) {
         // No user, or a record this side cannot read: the same cost is
         // paid either way, so the two cannot be told apart by the clock.
-        password_hash_a_dummy_record(pw, passwd->dbname);
+        password_hash_a_dummy_record(mrb, pw, passwd->dbname);
         return mrb_false_value();
     }
 
     uint8_t recomputed_hash[kMaxHashLen];
-    if (!argon2id(pw, salt, header.salt_len, passwd->dbname, header.m_kib, header.t, header.lanes,
-                  recomputed_hash, header.hash_len)) {
-        return mrb_false_value();
+    const int rc = argon2id(pw, salt, header.salt_len, passwd->dbname, header.m_kib, header.t,
+                            header.lanes, recomputed_hash, header.hash_len);
+    // A hash that could not be computed is not a wrong password. Saying
+    // false here turned an out-of-memory box into a server that refuses
+    // every login and says nothing about why.
+    if (rc != ARGON2_OK) {
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "argon2id: %s", argon2_error_message(rc));
     }
     const bool same = CRYPTO_memcmp(recomputed_hash, hash, header.hash_len) == 0;
     return mrb_bool_value(same);

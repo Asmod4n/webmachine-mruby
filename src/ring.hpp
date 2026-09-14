@@ -51,7 +51,18 @@ template <class App> class Ring
                 // it - a missing entry needs nothing done at all.
                 struct stat st {
                 };
-                if (::stat(path.c_str(), &st) != 0 || !S_ISSOCK(st.st_mode))
+                if (::stat(path.c_str(), &st) != 0) {
+                    // ENOENT is a name somebody already took away, which
+                    // is what this loop wants. Any other errno means this
+                    // process cannot tell whose socket that name is, so it
+                    // leaves the name alone and says why.
+                    if (errno != ENOENT) {
+                        std::fprintf(stderr, "webmachine: stat %s: %s\n", path.c_str(),
+                                     std::strerror(errno));
+                    }
+                    continue;
+                }
+                if (!S_ISSOCK(st.st_mode))
                     continue;
                 struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
                 if (sqe == nullptr) {
@@ -77,8 +88,10 @@ template <class App> class Ring
         }
         if (buf_ring_ != nullptr)
             io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
-        if (pool_ != nullptr)
-            ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
+        if (pool_ != nullptr &&
+            ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize) != 0) {
+            die_errno("munmap the buffer pool", errno);
+        }
         if (ring_up_) {
             io_uring_queue_exit(&ring_);
             ring_up_ = false;

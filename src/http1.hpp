@@ -1470,7 +1470,8 @@ class Http1
         {
             if (file == nullptr || file->map_addr == nullptr)
                 return;
-            ::munmap(const_cast<char *>(file->map_addr), file->map_length);
+            if (::munmap(const_cast<char *>(file->map_addr), file->map_length) != 0)
+                die_errno("munmap a lent file", errno);
             file->map_addr = nullptr;
             file->map_length = 0;
         }

@@ -142,11 +142,24 @@ mrb_value handler_call_in_protected_call(mrb_state *mrb, void *user_data)
 // write every error page.
 namespace
 {
+// True when the name is there and is a regular file. A name that is not
+// there answers false, which is what the caller's list of candidates
+// wants. Any other refusal means this process cannot tell what that name
+// is, so it says why and moves to the next candidate.
 bool path_is_regular_file(const std::string &path)
 {
+    if (path.empty())
+        return false;
     struct stat st {
     };
-    return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    if (::stat(path.c_str(), &st) != 0) {
+        if (errno != ENOENT && errno != ENOTDIR) {
+            std::fprintf(stderr, "webmachine: error assets: stat %s: %s\n", path.c_str(),
+                         std::strerror(errno));
+        }
+        return false;
+    }
+    return S_ISREG(st.st_mode);
 }
 } // namespace
 
