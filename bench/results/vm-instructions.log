@@ -1,0 +1,45 @@
+
+==== 2026-09-14T21:28Z repo=474e933 ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+
+==== 2026-09-14T21:28Z repo=474e933 ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-7ec24c5-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-7ec24c5-v3/mruby/build/host/bin/webmachine-server responses=372720 instructions_per_response=2506
+build: /tmp/claude-0/wm-60c09e3-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-60c09e3-v3/mruby/build/host/bin/webmachine-server responses=433872 instructions_per_response=2228
+
+==== 2026-09-14T21:37Z repo=155460f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-reactor-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-reactor-v3/mruby/build/host/bin/webmachine-server responses=317904 instructions_per_response=2992
+
+==== 2026-09-14T21:37Z repo=155460f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-fieldok-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-fieldok-v3/mruby/build/host/bin/webmachine-server responses=316272 instructions_per_response=3201
+
+==== 2026-09-14T21:43Z repo=273009f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-fieldok-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-fieldok-v3/mruby/build/host/bin/webmachine-server responses=358592 instructions_per_response=2980
+
+==== 2026-09-14T21:48Z repo=1e60d3f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-060f426-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-060f426-v3/mruby/build/host/bin/webmachine-server responses=517456 instructions_per_response=1930
+
+==== 2026-09-14T21:48Z repo=1e60d3f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-060f426-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-060f426-v3/mruby/build/host/bin/webmachine-server responses=497184 instructions_per_response=1931
+
+==== 2026-09-14T21:53Z repo=1e60d3f ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-fields-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-fields-v3/mruby/build/host/bin/webmachine-server responses=382192 instructions_per_response=2548
+
+==== 2026-09-14T22:00Z repo=e6146eb ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/wm-tail-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+bin=/tmp/claude-0/wm-tail-v3/mruby/build/host/bin/webmachine-server responses=399424 instructions_per_response=2369
