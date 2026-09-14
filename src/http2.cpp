@@ -22,11 +22,6 @@ constexpr size_t kH2HdrBufSize = kH2FragBudget + kH2FieldWindow;
 
 // One field as the decoder left it in hdrbuf, and which static entry the
 // name came from (LSHPACK_HDR_UNKNOWN for a literal).
-struct H2DecodedField {
-    std::string_view name;
-    std::string_view value;
-    uint8_t known;
-};
 // RFC 9113 8.1.1: how many streams one connection may lose to a request
 // that breaks its own Content-Length before the connection itself ends.
 // Four leaves room for a client with a defect and ends a client that
@@ -727,15 +722,15 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     if (h2_state.hdrbuf.size() != kH2HdrBufSize)
         h2_state.hdrbuf.resize(kH2HdrBufSize);
     const std::string_view whole(h2_state.hdrbuf);
-    std::array<H2DecodedField, kH2MaxFields> fields;
-    size_t nfields = 0;
+    std::vector<H2DecodedField> &fields = h2_state.decoded_fields;
+    fields.clear();
     size_t used = 0;
     // The block as the decoder reads it. substr throws if the decoder
     // ever claims to have read past its end.
     std::string_view left(reinterpret_cast<const char *>(headers.block.data()),
                           headers.block.size());
     while (!left.empty()) {
-        if (nfields == fields.size())
+        if (fields.size() == kH2MaxFields)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
         if (used > kH2FragBudget)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
@@ -764,8 +759,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         const std::string_view value = lent.substr(hpack_field.val_offset, hpack_field.val_len);
         if (name.size() != hpack_field.name_len || value.size() != hpack_field.val_len)
             throw std::length_error("h2: ls-hpack placed a field past the window it was lent");
-        fields.at(nfields) = {name, value, hpack_field.hpack_index};
-        nfields++;
+        fields.push_back({name, value, hpack_field.hpack_index});
         // lshpack.h: one decode writes name_len + val_len +
         // lshpack_dec_extra_bytes(dec) bytes from the start of the lent
         // window - the extra ones are the HTTP/1.x CRLF it appends. The
@@ -797,7 +791,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // trailer could spell anything at all.
         // RFC 9113 8.1.1: a malformed request is a stream error. The stream
         // ends with PROTOCOL_ERROR. The connection stays open.
-        for (size_t i = 0; i < nfields; i++) {
+        for (size_t i = 0; i < fields.size(); i++) {
             const H2DecodedField &field = fields.at(i);
             if (!h2_field_ok(field.name, field.value, field.known != LSHPACK_HDR_UNKNOWN) ||
                 field.name.starts_with(':') ||
@@ -846,7 +840,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     size_t protocol_vlen = 0;
     const char *method_val = nullptr;
     size_t method_vlen = 0;
-    for (size_t i = 0; accepted && i < nfields; i++) {
+    for (size_t i = 0; accepted && i < fields.size(); i++) {
         const H2DecodedField &field = fields.at(i);
         const char *const name = field.name.data();
         const size_t nlen = field.name.size();

@@ -433,6 +433,12 @@ struct H2Stream {
     bool streaming = false;
 };
 
+struct H2DecodedField {
+    std::string_view name;
+    std::string_view value;
+    uint8_t known;
+};
+
 struct H2State {
     struct lshpack_enc enc;
     struct lshpack_dec dec;
@@ -467,6 +473,10 @@ struct H2State {
     bool frag_active = false;
 
     std::string hdrbuf;
+    // The fields of the block being dispatched, as views into hdrbuf.
+    // Kept on the connection so no request constructs kH2MaxFields
+    // empty views before it decodes its first one. Cleared per block.
+    std::vector<H2DecodedField> decoded_fields;
 
     std::vector<H2Stream> streams;
 
