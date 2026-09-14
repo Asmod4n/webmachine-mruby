@@ -262,8 +262,16 @@ it:
   half the rate. That is larger than every change this tree has
   measured and argued about, so a number that does not name its place
   says nothing. `bench/buildline.sh` writes `on=` for this - `metal`,
-  the hypervisor, the container runtime, or both - and it is not
-  `host=`, which is the machine's name and always was.
+  the hypervisor, the container runtime, or both.
+  `host=` answers none of it and never did. It is `uname -n`, and on a
+  Firecracker fleet every guest is named `vm` whatever hardware it sits
+  on, so the field is a constant that looks like a identifier. `on=`
+  does not separate them either: every Firecracker guest reports `kvm`.
+  The guest's own model name is masked as well - "Intel(R) Xeon(R)
+  Processor @ 2.80GHz", no model number - and there is no DMI. So the
+  line carries `cpu=family:model:stepping@clock` too, and the only
+  other discriminator is what `-march=native` resolved to, which the
+  harness line already prints and which is why `WM_MARCH=` exists.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.

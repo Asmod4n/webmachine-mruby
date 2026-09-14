@@ -66,6 +66,23 @@ wm_build_line() {
   else
     wm_bl_on=unreadable
   fi
+  # What the hardware is, because nothing else in this line says it.
+  # host= is the machine's name and on a Firecracker fleet every guest
+  # is called vm whatever it runs on, so that field identifies nothing
+  # and looks as though it does. The guest's model name is masked too -
+  # "Intel(R) Xeon(R) Processor @ 2.80GHz", no model number, and no DMI
+  # at all. What is left and does discriminate: the family, model and
+  # stepping numbers, the base clock, and what -march=native resolves
+  # to, which the harness line already carries.
+  wm_bl_cpu=$(awk -F': ' '
+      /^cpu family/ { f = $2 }
+      /^model\t/    { m = $2 }
+      /^stepping/   { s = $2 }
+      /^cpu MHz/    { hz = $2 }
+      END { if (f == "") { print "unreadable" }
+            else { printf "%s:%s:%s@%dMHz", f, m, s, hz } }
+    ' /proc/cpuinfo 2>/dev/null)
   echo "build: $wm_bl_bin cc=${wm_bl_cc:-?} libstdc++=${wm_bl_cxx:-static}" \
-       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n) on=$wm_bl_on"
+       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n) on=$wm_bl_on" \
+       "cpu=${wm_bl_cpu:-unreadable}"
 }
