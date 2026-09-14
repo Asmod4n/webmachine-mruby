@@ -547,18 +547,30 @@ void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInpu
         while ((fd = one->ring_fd.load(std::memory_order_acquire)) == -1)
             std::this_thread::yield();
         if (fd < 0) {
-            // A thread that did come up is inside io_uring_wait_cqe, and it
+            // A thread that did come up is inside io_uring_wait_cqe and
             // leaves only when the acceptor sends the stop word. There is
             // no acceptor yet, so joining it here waits for something that
-            // cannot happen: the raise below never reached the operator and
-            // the server hung instead. They are detached - this raise ends
-            // the server, and a thread of a process that ends needs nothing.
-            for (const auto &other : answer_threads_) {
+            // cannot happen - that hung the server instead of raising.
+            //
+            // Detaching alone is not enough either: the raise below unwinds
+            // into server_release, which clears this vector, and every
+            // AnswerThread it destroys takes a running thread's ring, its
+            // app and its VM with it. That is a use after free in a thread
+            // that is still serving, and it dumped core in mrb_ci_nregs
+            // while this one was in obj_free.
+            //
+            // So the blocks are released rather than destroyed. Each
+            // detached thread keeps what it holds for as long as it runs,
+            // and the raise below ends the server.
+            const std::string why = one->why;
+            for (auto &other : answer_threads_) {
                 if (other->thread.joinable())
                     other->thread.detach();
+                (void)other.release();
             }
-            mrb_raisef(mrb, E_WM_ERROR(mrb), "an answering thread did not start: %s",
-                       one->why.c_str());
+            answer_threads_.clear();
+            answer_ring_fds_.clear();
+            mrb_raisef(mrb, E_WM_ERROR(mrb), "an answering thread did not start: %s", why.c_str());
         }
         answer_ring_fds_.push_back(fd);
     }
