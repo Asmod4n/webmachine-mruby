@@ -100,6 +100,11 @@ echo "  put it on a core with less to do. A pin showed no advantage where"
 echo "  it was tried."
 echo "  no rate is quoted: the old one measured splice, which this tree"
 echo "  does not have. The reasons are current, the number is not."
+echo "  scope: every measurement behind this advice is loopback. On a card"
+echo "  with several receive queues, a thread pinned to the core that takes"
+echo "  its queue's interrupt is the shape that wins - and this server does"
+echo "  not build it yet: the acceptor spreads round robin and knows nothing"
+echo "  of the queue a peer arrived on."
 # And most operators cannot do it even where they want to. A process may
 # set its own mask, and a mask is inherited through exec, so `taskset -c
 # 0 webmachine-server ...` works for anybody. Pinning a server that is
@@ -108,6 +113,19 @@ echo "  does not have. The reasons are current, the number is not."
 # pid, `taskset -pc 1` answers "failed to set affinity: Operation not
 # permitted". A server under systemd User=nobody, or a container's
 # non-root user, is therefore out of reach of `taskset -p` anyway.
+# The rule is scoped, and the scope is loopback: bench/floor.sh drives
+# AF_UNIX or 127.0.0.1, so no measurement behind this file has ever had
+# an interface in the path. A pin earns its keep in exactly the case
+# this bench cannot reach - a card with several receive queues, each
+# queue's interrupt steered to one core, and the thread that drains
+# that queue on the same core. The packet then arrives, is softirq'd
+# and is answered without leaving the core.
+#
+# This server does not align with that yet. The acceptor picks the next
+# answering ring round robin and knows nothing of the queue a peer
+# arrived on, so it can hand a connection whose packets land on one
+# core to a thread on another. Aligning it needs SO_INCOMING_CPU or a
+# reuseport BPF program, and neither is in this tree.
 WHOAMI=$(id -u)
 if [ "$WHOAMI" -ne 0 ]; then
   echo "  you are uid $WHOAMI: pinning a server already running as another user"

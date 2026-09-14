@@ -208,6 +208,14 @@ What that file settles, and what a session gets wrong without it:
   that made it.
   So a pin is still refused, for two reasons that are current, and no
   number is quoted for it until one is measured here.
+  The rule is scoped, and the scope is the whole of what this tree
+  measures: loopback. floor.sh drives AF_UNIX or 127.0.0.1, so there is
+  no interface, no receive queue and no interrupt to steer. A pin earns
+  its keep in the case this bench cannot reach - a card with several
+  receive queues, each queue's interrupt on one core, and the thread
+  that drains it on that same core. There the packet arrives, is
+  softirq'd and is answered without leaving the core. Nothing here
+  proves anything about that, in either direction.
 - The server and the client each hold more than 85 percent of a cpu, or
   the run measured a wait and not the code. Every row of
   `bench/results/*.log` names both numbers. Read them before the rate.
