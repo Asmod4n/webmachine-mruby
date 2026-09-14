@@ -27,6 +27,14 @@ STREAMS="${STREAMS:-16}"
 export APP="${APP:-bench/apps/hello.rb}"
 export MRBC="${MRBC:-mruby/build/host/mrbc/bin/mrbc}"
 command -v valgrind >/dev/null || { echo "valgrind is not installed" >&2; exit 2; }
+# valgrind decodes a subset of the instruction set. -march=native builds
+# past it, and the server then dies on its first unknown instruction
+# with no socket ever opened. The build this wants:
+#
+#   WM_MARCH=x86-64-v3 CFLAGS=-g1 CXXFLAGS=-g1 rake compile
+#
+# It is slower than the shipped build, so its count is compared with
+# another count of the same kind, never with a rate.
 command -v htgen >/dev/null || { echo "htgen is not on PATH" >&2; exit 2; }
 WORK=$(mktemp -d /tmp/wm-ir.XXXXXX)
 SOCK="$WORK/bench.sock"
@@ -35,9 +43,30 @@ bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
 
 # count SECONDS -> "instructions responses"; 0 seconds sends nothing.
 count() {
+  echo "counting: the server starts under callgrind, and $1 seconds of requests follow" >&2
   valgrind --tool=callgrind --callgrind-out-file="$WORK/cg.$1" "$BIN" "${CONF_ARGS[@]}" "${APP_ARGS[@]}" \
     >"$WORK/srv.$1" 2>&1 & local srv=$!
-  for _ in $(seq 1 600); do [ -S "$SOCK" ] && break; sleep 0.1; done
+  # callgrind makes the start slow, so the wait is long. A server that
+  # died waits for nothing, and a wait that ends with no socket says
+  # what the server said - neither is left silent.
+  local waited=0
+  while [ ! -S "$SOCK" ]; do
+    if ! kill -0 "$srv" 2>/dev/null; then
+      echo "the server under callgrind ended before it listened:" >&2
+      cat "$WORK/srv.$1" >&2
+      exit 1
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+    [ $((waited % 20)) -eq 0 ] && echo "  waiting for $SOCK ($((waited / 2))s)" >&2
+    if [ "$waited" -ge 600 ]; then
+      echo "no socket at $SOCK after 300s. The server said:" >&2
+      cat "$WORK/srv.$1" >&2
+      kill -TERM "$srv" 2>/dev/null
+      exit 1
+    fi
+  done
+  echo "  listening after $((waited / 2))s" >&2
   local responses=0
   if [ "$1" != 0 ]; then
     local out
