@@ -183,7 +183,16 @@ template <class App> class Ring
         bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
         rewrite_entries_ = kernel_shortens_bundle_entries();
 
-        if (ring_config.nlisteners == 0 || ring_config.nlisteners > kMaxListeners) {
+        worker_ring_fds_ = ring_config.worker_ring_fds;
+        nworkers_ = ring_config.nworkers;
+        if (ring_config.takes_no_listener) {
+            if (ring_config.nlisteners != 0) {
+                mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_),
+                           "a ring that answers what an acceptor sends it takes no listener, "
+                           "and %d were named",
+                           static_cast<int>(ring_config.nlisteners));
+            }
+        } else if (ring_config.nlisteners == 0 || ring_config.nlisteners > kMaxListeners) {
             mrb_raisef(mrb_, E_WM_CONFIG_ERROR(mrb_), "listener count %d out of range (1..%d)",
                        static_cast<int>(ring_config.nlisteners), static_cast<int>(kMaxListeners));
         }
@@ -214,6 +223,20 @@ template <class App> class Ring
     }
 
     // Loop until the stop signal's completion lands.
+    // The acceptor says the stop to every ring it feeds. A ring that
+    // answers what it is sent has no stop signal of its own: the signalfd
+    // is the acceptor's, and this is how the word reaches the others.
+    void stop_the_workers()
+    {
+        for (uint32_t w = 0; w < nworkers_; w++) {
+            struct io_uring_sqe *sqe = sqe_or_submit();
+            io_uring_prep_msg_ring(sqe, worker_ring_fds_[w], 0, detail::kAdoptStop, 0);
+            io_uring_sqe_set_data64(sqe, 0);
+        }
+        if (nworkers_ != 0)
+            io_uring_submit(&ring_);
+    }
+
     void run()
     {
         while (!stop_)
@@ -1195,6 +1218,58 @@ template <class App> class Ring
     }
 
     // A new peer: its slot, its clocks, and the setsockopts TCP wants.
+    // The peer this ring accepted goes to the next worker's ring, and the
+    // slot it held here goes back. IORING_OP_MSG_RING carries a registered
+    // descriptor to another ring of this process and nothing else does:
+    // the descriptor is direct, so it has no number a process could pass
+    // by any other means.
+    void hand_to_worker(uint32_t listener_index, uint32_t descriptor)
+    {
+        const int target = worker_ring_fds_[next_worker_];
+        next_worker_++;
+        if (next_worker_ == nworkers_)
+            next_worker_ = 0;
+        const uint64_t tag = unix_listener_[listener_index] ? detail::kAdoptUnix : detail::kAdoptTcp;
+        struct io_uring_sqe *sqe = sqe_or_submit();
+        io_uring_prep_msg_ring_fd_alloc(sqe, target, static_cast<int>(descriptor), tag, 0);
+        sqe->flags |= IOSQE_IO_LINK;
+        io_uring_sqe_set_data64(sqe, 0);
+        // The worker holds the file now, so this ring's slot is spent. The
+        // link keeps the order: the send first, the close after it.
+        sqe = sqe_or_submit();
+        io_uring_prep_close_direct(sqe, descriptor);
+        io_uring_sqe_set_data64(sqe, 0);
+    }
+
+    // A connection an acceptor sent here. cqe->res is the descriptor this
+    // ring's own table allocated for it, and the tag says what it was
+    // accepted on, which is all this ring needs to know about a listener
+    // it does not have.
+    void on_adopt(struct io_uring_cqe *completion, bool is_unix)
+    {
+        if (completion->res < 0) {
+            say_server_error(app_.error_log(), std::string("a peer an acceptor sent here was "
+                                                           "refused: ") +
+                                                   std::strerror(-completion->res));
+            return;
+        }
+        unix_listener_[0] = is_unix;
+        Conn &c = *conn_new(0, static_cast<uint32_t>(completion->res));
+        if (!is_unix) {
+            static const int kOne = 1;
+            struct io_uring_sqe *sqe = sqe_or_submit();
+            io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(c.fd),
+                                   IPPROTO_TCP, TCP_NODELAY, const_cast<int *>(&kOne),
+                                   sizeof(kOne));
+            sqe->flags |= IOSQE_FIXED_FILE;
+            io_uring_sqe_set_data64(sqe, arm(c.op_setup, &c, detail::kSetup));
+        }
+        arm_meminfo(c);
+        if (log_fd_ >= 0 && !is_unix)
+            arm_peer(c);
+        arm_recv(c);
+    }
+
     void on_accept(Op &op, struct io_uring_cqe *completion)
     {
         const uint32_t listener_index = op.aux;
@@ -1221,6 +1296,10 @@ template <class App> class Ring
                                          "); peers wait until it drains");
                 }
             }
+            return;
+        }
+        if (nworkers_ != 0) {
+            hand_to_worker(listener_index, static_cast<uint32_t>(completion->res));
             return;
         }
         Conn &c = *conn_new(listener_index, static_cast<uint32_t>(completion->res));
@@ -2239,6 +2318,14 @@ template <class App> class Ring
         // send is one of those.
         if (user_data == 0)
             return;
+        if (user_data == detail::kAdoptUnix || user_data == detail::kAdoptTcp) {
+            on_adopt(completion, user_data == detail::kAdoptUnix);
+            return;
+        }
+        if (user_data == detail::kAdoptStop) {
+            stop_ = true;
+            return;
+        }
         Op &op = *reinterpret_cast<Op *>(user_data);
         Conn *const conn = op.conn;
         // The reference goes back however this ends - the fall through, a
@@ -2566,6 +2653,12 @@ template <class App> class Ring
     std::vector<std::string> unix_paths_;
     uint32_t nlisteners_ = 0;
     bool listeners_closed_ = false;
+    // The rings this one hands its accepted peers to, and whose turn it
+    // is. Round robin: the kernel's own choice is what a shared listener
+    // already got wrong, so this ring makes the choice itself.
+    const int *worker_ring_fds_ = nullptr;
+    uint32_t nworkers_ = 0;
+    uint32_t next_worker_ = 0;
     bool draining_ = false;
     int64_t drain_deadline_ = 0;
     uint32_t live_ = 0;

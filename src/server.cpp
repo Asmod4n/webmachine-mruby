@@ -20,8 +20,10 @@
 #include <mruby/presym.h>
 #include <mruby/string.h>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -70,6 +72,17 @@ bool built_ = false;
 bool entered_ = false;
 // --workers=N: the pids this process forked, and whether it is the one
 // that forked them. A supervisor holds no ring and answers no request.
+// --threads=N: one ring and one Http1 per thread, fed by the acceptor.
+struct AnswerThread {
+    std::unique_ptr<Http1> app;
+    std::unique_ptr<Ring<Http1>> ring;
+    std::atomic<int> ring_fd{-1};
+    std::atomic<bool> failed{false};
+    std::string why;
+    std::thread thread;
+};
+std::vector<std::unique_ptr<AnswerThread>> answer_threads_;
+std::vector<int> answer_ring_fds_;
 std::vector<pid_t> worker_pids_;
 std::vector<std::string> supervisor_unix_paths_;
 bool supervisor_ = false;
@@ -408,6 +421,67 @@ int workers_supervise()
     return worst;
 }
 
+// One answering thread: its own Http1, its own ring, and nothing it
+// shares with another thread but the docroot descriptor and the media
+// type table, which are read only once the server is up.
+void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inputs,
+                       size_t ninputs, bool listings)
+{
+    try {
+        self.app.reset(new Http1(inputs, ninputs, nullptr));
+        if (docroot_fd() >= 0)
+            self.app->serve_docroot(&mime_, listings);
+        auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*self.app));
+        base.nlisteners = 0;
+        base.takes_no_listener = true;
+        // The stop signal is the acceptor's. This ring hears the word
+        // through its own queue, from the acceptor.
+        base.stop_fd = -1;
+        base.worker_ring_fds = nullptr;
+        base.nworkers = 0;
+        ring->init(base);
+        self.ring = std::move(ring);
+        self.ring_fd.store(self.ring->fd(), std::memory_order_release);
+        self.ring->run();
+    } catch (const std::exception &trouble) {
+        self.why = trouble.what();
+        self.failed.store(true, std::memory_order_release);
+        self.ring_fd.store(-2, std::memory_order_release);
+    } catch (...) {
+        self.why = "the thread failed to start, and said nothing";
+        self.failed.store(true, std::memory_order_release);
+        self.ring_fd.store(-2, std::memory_order_release);
+    }
+}
+
+// Start them, and wait until every one has a ring or has failed. The
+// acceptor cannot arm an accept before it knows where to send a peer.
+void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInput *inputs,
+                          size_t ninputs, bool listings)
+{
+    for (int t = 0; t < opts_.threads; t++) {
+        auto one = std::unique_ptr<AnswerThread>(new AnswerThread());
+        AnswerThread &self = *one;
+        answer_threads_.push_back(std::move(one));
+        self.thread = std::thread(answer_thread_run, std::ref(self), base, inputs, ninputs,
+                                  listings);
+    }
+    for (const auto &one : answer_threads_) {
+        int fd = -1;
+        while ((fd = one->ring_fd.load(std::memory_order_acquire)) == -1)
+            std::this_thread::yield();
+        if (fd < 0) {
+            for (const auto &other : answer_threads_) {
+                if (other->thread.joinable())
+                    other->thread.join();
+            }
+            mrb_raisef(mrb, E_WM_ERROR(mrb), "an answering thread did not start: %s",
+                       one->why.c_str());
+        }
+        answer_ring_fds_.push_back(fd);
+    }
+}
+
 // Everything before the first accept, once.
 void server_build_ring_config(mrb_state *mrb)
 {
@@ -617,6 +691,22 @@ void server_build_ring_config(mrb_state *mrb)
     }
 
 
+    // --threads=N: the threads that answer come up before the acceptor,
+    // because the acceptor has to know their rings before it takes the
+    // first peer.
+    if (opts_.threads > 1) {
+        if (!standalone) {
+            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                       "--threads=%d answers files only. A thread that answers from an "
+                       "application needs a VM of its own, and this build gives it none",
+                       static_cast<int>(opts_.threads));
+        }
+        answer_threads_start(mrb, ring_config, inputs.data(), inputs.size(),
+                             opts_.standalone_listings);
+        ring_config.worker_ring_fds = answer_ring_fds_.data();
+        ring_config.nworkers = static_cast<uint32_t>(answer_ring_fds_.size());
+    }
+
     // Built into a local first: a refusal from init unwinds through this
     // one's destructor, and ring_ is only ever a ring that came up.
     auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*http_));
@@ -629,8 +719,13 @@ void server_build_ring_config(mrb_state *mrb)
         app_ready_run(mrb, *specs_[i]);
     }
 
-    std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)\n", getpid(),
-                 ring_config.nlisteners);
+    std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)%s\n", getpid(),
+                 ring_config.nlisteners,
+                 opts_.threads > 1 ? ", answered by threads" : "");
+    if (opts_.threads > 1) {
+        std::fprintf(stderr, "webmachine: %d threads answer, one ring each; this one accepts\n",
+                     opts_.threads);
+    }
     for (uint32_t i = 0; i < ring_config.nlisteners; i++) {
         if (ring_config.listeners[i].unix_path != nullptr) {
             std::fprintf(stderr, "webmachine:   [%u] unix %s\n", i,
@@ -790,6 +885,16 @@ int server_run(mrb_state *mrb)
 // this before mrb_close, on every way out.
 void server_release()
 {
+    // The threads first: each one holds a ring that names connections,
+    // and the acceptor's own teardown must not run beside them.
+    if (ring_ != nullptr)
+        ring_->stop_the_workers();
+    for (const auto &one : answer_threads_) {
+        if (one->thread.joinable())
+            one->thread.join();
+    }
+    answer_threads_.clear();
+    answer_ring_fds_.clear();
     ring_.reset();
     http_.reset();
 }

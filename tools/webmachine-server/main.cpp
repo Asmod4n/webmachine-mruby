@@ -68,6 +68,9 @@ void usage(const char *me)
                  "  --workers=N              answer from N processes, one ring each     (1)\n"
                  "                           One binds and listens, then forks; every child\n"
                  "                           answers on the same listener\n"
+                 "  --threads=N              answer from N threads, one ring each; one accepts\n"
+                 "                           and hands every peer to the next of them. Files\n"
+                 "                           only - no --app                            (1)\n"
                  "  --config=FILE.toml       these choices from a file; flags beat it.\n"
                  "                           Without it: ./webmachine.toml, then\n"
                  "                           /usr/local/etc/webmachine/, then /etc/webmachine/\n"
@@ -100,7 +103,7 @@ const char *const kFlags[] = {
     "unix",         "port",      "app",           "assets",             "listings",
     "error-assets", "docroot",   "mime-types",    "write-config",       "log",
     "log-privacy",  "error-log", "log-max-bytes", "file-map-threshold", "zero-copy-threshold",
-    "pidfile",      "config",    "workers",
+    "pidfile",      "config",    "workers",            "threads",
 };
 
 // A path, or nullptr when the flag was not given. The string is the
@@ -296,6 +299,18 @@ bool parse_argv(mrb_state *mrb, Invocation &in)
         return false;
     }
     opts.workers = static_cast<int>(workers);
+
+    const long long threads = number_of(mrb, h, "threads", 1);
+    if (threads < 1 || threads > 1024) {
+        std::fprintf(stderr, "webmachine: --threads is a thread count, 1 to 1024\n");
+        return false;
+    }
+    opts.threads = static_cast<int>(threads);
+    if (opts.threads > 1 && opts.workers > 1) {
+        std::fprintf(stderr, "webmachine: --threads and --workers are two answers to one "
+                             "question. Name one\n");
+        return false;
+    }
 
     if (in.cli_unix != nullptr && in.cli_port != 0) {
         std::fprintf(stderr, "at most one of --unix or --port\n");

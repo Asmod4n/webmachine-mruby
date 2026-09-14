@@ -3509,6 +3509,15 @@ struct ServerOptions {
     // the tool's knob: a gem an application embeds never forks, because
     // the process is not ours to split.
     int workers = 1;
+    // --threads=N: N threads in this process, each with its own ring,
+    // and one acceptor that hands every peer it takes to the next of
+    // them by IORING_OP_MSG_RING. That operation carries a registered
+    // descriptor between two rings of one process and nothing else does,
+    // which is why this shape is threads and not processes.
+    //
+    // Files only, for now: a thread that answers from an application
+    // needs a VM of its own, and this build gives it none.
+    int threads = 1;
     int backlog = 0;
     int header_timeout = 0;
     int send_timeout = 0;

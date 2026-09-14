@@ -61,6 +61,16 @@ CLIENTS="${CLIENTS:-1}"
 # and the two are not the same measurement. Works on AF_UNIX, where
 # SO_REUSEPORT has no meaning and WORKERS= therefore cannot go.
 FORK_WORKERS="${FORK_WORKERS:-1}"
+# THREADS_ANSWER=N: one server with --threads=N. One thread accepts and
+# hands every peer to the next of N answering threads through
+# IORING_OP_MSG_RING, which carries a registered descriptor between two
+# rings of one process. The third shape beside WORKERS= and FORK_WORKERS=.
+# Files only - a thread that answers from an application has no VM.
+THREADS_ANSWER="${THREADS_ANSWER:-1}"
+# DOCROOT=DIR: serve files from this directory and load no application.
+# The file path is the only one --threads answers on, so a comparison
+# that includes the thread shape is a comparison on this path.
+DOCROOT="${DOCROOT:-}"
 # BIN=path names the binary directly, for an A/B between two builds of the
 # same impl: keep both, alternate them, and the harness line records which
 # one ran. Without it the only way to compare two builds was to copy one
@@ -257,18 +267,23 @@ if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
   bench_app "$WORK" "{ unix_path: \"$SOCK\" }"
   BIND_ARGS=(--unix="$SOCK")
+  BIND_ARGS_KEEP=(--unix="$SOCK")
 else
   bench_app "$WORK" "{ port: $PORT }"
   BIND_ARGS=(--port="$PORT")
+  BIND_ARGS_KEEP=(--port="$PORT")
 fi
 # An app names its own listener, and the server refuses a second one on
 # the command line. bench_app wrote the one above into the app source.
+[ -z "$DOCROOT" ] || APP_ARGS=(--docroot="$DOCROOT")
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
+[ -z "$DOCROOT" ] || BIND_ARGS=("${BIND_ARGS_KEEP[@]}")
 SRVS=()
 w=0
 while [ "$w" -lt "$WORKERS" ]; do
     "${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
-    ${FORK_WORKERS:+--workers="$FORK_WORKERS"} >>"$WORK/srv.log" 2>&1 &
+    ${FORK_WORKERS:+--workers="$FORK_WORKERS"} \
+    ${THREADS_ANSWER:+--threads="$THREADS_ANSWER"} >>"$WORK/srv.log" 2>&1 &
   SRVS+=($!)
   w=$((w + 1))
 done
@@ -394,7 +409,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS threads=$THREADS_ANSWER clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.

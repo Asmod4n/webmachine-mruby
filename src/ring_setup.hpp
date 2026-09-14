@@ -91,6 +91,14 @@ struct RingConfig {
     int send_timeout = 0;
     int idle_timeout = 0;
     int stop_fd = -1;
+    // The rings of the threads that answer, when this ring only accepts.
+    // Empty means this ring answers what it accepts, which is the shape
+    // every build had before threads.
+    const int *worker_ring_fds = nullptr;
+    uint32_t nworkers = 0;
+    // True on a ring that accepts nothing: it has no listener, and every
+    // connection it answers arrived from an acceptor by IORING_OP_MSG_RING.
+    bool takes_no_listener = false;
     // The VM to raise into when the reactor cannot go on. Required - init()
     // refuses without it, because the alternative is a library that ends
     // somebody else's process. See Ring::fatal.
@@ -166,6 +174,19 @@ enum : uint32_t {
     kStUnlink = 6,
     // SO_REUSEPORT, so several server processes may hold one port.
     kStReuseport = 7
+};
+
+// user_data on a ring that receives connections from an acceptor. The
+// value is not a pointer into anything: IORING_OP_MSG_RING carries one
+// word of ours to the other ring, and these two say "a connection
+// arrived, and cqe->res is the descriptor the table allocated for it".
+// They are small enough that no Op can ever live at those addresses.
+enum : uint64_t {
+    kAdoptUnix = 1,
+    kAdoptTcp = 2,
+    // And the word that ends such a ring: the acceptor read the stop
+    // signal, and says so to every ring it feeds.
+    kAdoptStop = 3
 };
 
 // Which stage of the setup chain a failing CQE belongs to.

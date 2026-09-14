@@ -135,7 +135,7 @@ The build makes four programs:
 
 | | |
 |---|---|
-| `webmachine-server` | runs your app, one thread per process; `--workers=N` for N of them |
+| `webmachine-server` | runs your app, one thread per process; `--workers=N` for N of them, `--threads=N` for N answering threads on a file server |
 | `mrbc` | compiles your Ruby to bytecode, the form the server runs |
 | `webmachine-logd` | writes the access log and the error log, as its own process |
 | `webmachine-passwd` | keeps the password database |
