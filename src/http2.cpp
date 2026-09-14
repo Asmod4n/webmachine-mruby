@@ -493,10 +493,7 @@ void Http1::h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::
 // the slot over it. Both refusals are REFUSED_STREAM, the code that
 // tells the client to send the request again later. A file the
 // platform could not make is the server's own error.
-//
-// Out of line on purpose: this runs once per large body, and inline it
-// cost h2_dispatch 90 bytes. nm -S on the host build decided it.
-__attribute__((noinline)) bool Http1::h2_body_file_open(Conn &conn, H2Stream &file_stat,
+bool Http1::h2_body_file_open(Conn &conn, H2Stream &file_stat,
                                                         uint32_t stream_id, std::string &sink)
 {
     size_t open_files = 0;

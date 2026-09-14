@@ -2,7 +2,7 @@
 
 namespace webmachine
 {
-__attribute__((noinline)) void BodySpill::close_file()
+void BodySpill::close_file()
 {
     if (fd < 0)
         return;
@@ -18,7 +18,7 @@ __attribute__((noinline)) void BodySpill::close_file()
     ended = false;
 }
 
-__attribute__((noinline)) SpillOpen BodySpill::open_file()
+SpillOpen BodySpill::open_file()
 {
     close_file();
     if (mrb_unlikely(!body_file_slot_take()))

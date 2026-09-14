@@ -96,16 +96,14 @@ struct BodySpill {
 
     // The file goes back, and so does its slot in the process-wide count.
     // The descriptor holds the last reference to it, so the close frees
-    // the blocks - there is no name to unlink. Cold, once per large body,
-    // so it stays out of the functions that call it.
-    __attribute__((noinline)) void close_file();
+    // the blocks - there is no name to unlink.
+    void close_file();
     // RFC 9110 6.4: takes a slot in the process-wide count, then makes
     // the file. kNoSlot is load: h1 answers 503, h2 refuses the stream.
     // kNoFile is a 500: the request cannot be answered without its body.
     // Both leave fd at -1 and hold no slot. A file this object still
-    // holds goes back first, so the count stays exact. Cold, once per
-    // large body, so it stays out of the functions that call it.
-    __attribute__((noinline)) SpillOpen open_file();
+    // holds goes back first, so the count stays exact.
+    SpillOpen open_file();
     // Queue body octets. h1 calls it from the feed, h2 from the DATA
     // frame, and neither one writes: the reactor arms the write through
     // the ring, and the octets wait here until it does.
@@ -1924,10 +1922,6 @@ class Http1
     // kFailed is the client's fault and the caller answers 400. A writer
     // that refuses its octets is kFileFailed, the server's own 500. Both
     // end the connection.
-    //
-    // Out of line on purpose: a chunked request is the rare one, and
-    // inlined twice it put 379 bytes of decoder into feed_parse, which
-    // every request walks. nm -S on the host build decided it.
     // RFC 9110 5.6.2: the octets a token may carry.
     static bool chunk_tchar(char letter);
 
@@ -1945,10 +1939,7 @@ class Http1
     // needs its semicolon, a semicolon needs its name, and an equals needs
     // its value. A quoted value may hold anything, the semicolon included,
     // and a backslash inside it quotes the octet behind it.
-    //
-    // Cold: once per chunk header of a chunked body, which is the rare
-    // request, and out of line because take_chunked is out of line already.
-    __attribute__((noinline)) static bool chunk_size_line_ok(const char *bytes, size_t count);
+    static bool chunk_size_line_ok(const char *bytes, size_t count);
 
     // RFC 9112 7.1.1: the same octets the decoder is about to read, held to
     // the grammar first. picohttpparser accepts `2 erfrferferf`, `2;`, `a `
@@ -1958,11 +1949,11 @@ class Http1
     // The walk keeps its own place, because the decoder's is not reachable
     // and one buffer may carry several chunks. It never copies the body -
     // only a size line that a buffer cut in half.
-    __attribute__((noinline)) static bool chunk_lines_ok(Conn &conn, const char *data,
+    static bool chunk_lines_ok(Conn &conn, const char *data,
                                                          size_t length);
 
     template <class W>
-    __attribute__((noinline)) static BodyTake take_chunked(Conn &conn, W window, const char *&data,
+    static BodyTake take_chunked(Conn &conn, W window, const char *&data,
                                                            size_t &len)
     {
         if (len == 0)
@@ -2042,10 +2033,7 @@ class Http1
     // The destination is forgotten, the memory is freed, and the file
     // is closed here and not at the next accept into this slot. A body
     // that already spilled would keep its descriptor open until then.
-    //
-    // Out of line on purpose: four refusal arms in feed_parse spell these
-    // five stores, and feed_parse is the function every request walks.
-    __attribute__((noinline)) static void drop_body(Conn &conn);
+    static void drop_body(Conn &conn);
 
     static bool file_answerable(const Conn &conn);
     // #36: a run of this connection stopped for the request body, and the
@@ -2623,7 +2611,7 @@ class Http1
     // hottest function in the server. Inlined
     // here it was paid for by every request that never
     // ran a compute task.
-    __attribute__((noinline)) ComputeRound start_compute_round(Conn &conn, const BoundStart &sqe,
+    ComputeRound start_compute_round(Conn &conn, const BoundStart &sqe,
                                                                std::string *sink, Plan *plan,
                                                                size_t &off);
 
@@ -2718,11 +2706,10 @@ class Http1
     bool h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink);
     // RFC 9113 5.1.2, 8.7: the file for a body that starts in one, behind
     // the two ceilings that refuse it. Answers false when the stream was
-    // refused. Out of line: once per large body, never per request.
+    // refused.
     bool h2_body_file_open(Conn &conn, H2Stream &stx, uint32_t stream_id, std::string &sink);
-    // The cold branches of h2_dispatch, out of line: the second HEADERS
-    // of a stream and the DATA that ends one both serve the parked
-    // stream; :protocol opens a WebSocket.
+    // The second HEADERS of a stream and the DATA that ends one both
+    // serve the parked stream; :protocol opens a WebSocket.
     struct H2Connect {
         uint32_t stream_id;
         std::string_view method;

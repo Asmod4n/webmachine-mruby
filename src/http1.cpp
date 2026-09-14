@@ -2373,9 +2373,7 @@ bool Http1::h1_upgrade_or_stream(Conn &conn, const H1Head &headers, std::string 
 // smuggling (RFC 9112 11.2). llhttp's strict mode and Node refuse it for
 // the same reason. Every line of a head that parsed ends with LF, so an
 // LF with no CR in front of it is a line this server will not read.
-//
-// Cold: once per head, and only after the head is whole.
-__attribute__((noinline)) static uint16_t
+static uint16_t
 head_framing_status(const char *head, size_t length, const struct phr_header *fields, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
@@ -2393,7 +2391,7 @@ head_framing_status(const char *head, size_t length, const struct phr_header *fi
 
 // RFC 9110 15: the status a refused body take earns. Cold - once per
 // refused body, never per buffer - so it stays out of feed_parse.
-__attribute__((noinline)) static uint16_t body_take_status(BodyTake took)
+static uint16_t body_take_status(BodyTake took)
 {
     switch (took) {
         case BodyTake::kTooLarge:

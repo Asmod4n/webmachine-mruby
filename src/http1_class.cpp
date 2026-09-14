@@ -157,7 +157,7 @@ bool Http1::chunk_hex(char letter)
            (letter >= 'A' && letter <= 'F');
 }
 
-__attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *bytes, size_t count)
+bool Http1::chunk_size_line_ok(const char *bytes, size_t count)
 {
     size_t i = 0;
     while (i < count && chunk_hex(bytes[i]))
@@ -213,7 +213,7 @@ __attribute__((noinline)) bool Http1::chunk_size_line_ok(const char *bytes, size
     return true;
 }
 
-__attribute__((noinline)) bool Http1::chunk_lines_ok(Conn &conn, const char *data, size_t length)
+bool Http1::chunk_lines_ok(Conn &conn, const char *data, size_t length)
 {
     size_t i = 0;
     while (i < length) {
@@ -293,7 +293,7 @@ __attribute__((noinline)) bool Http1::chunk_lines_ok(Conn &conn, const char *dat
     return true;
 }
 
-__attribute__((noinline)) void Http1::drop_body(Conn &conn)
+void Http1::drop_body(Conn &conn)
 {
     conn.body_to = Conn::Body::kNone;
     conn.content_need = 0;
