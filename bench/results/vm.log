@@ -5633,3 +5633,27 @@ build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.
 env: runnable=1/128 busy=1% (200ms sample)
 responses=1868848 bad=0 seconds=2.000 rps=934418 bytes=156983428 MB/s=74.86 conns=4 streams=16 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=24295528 tx_MB/s=11.58
 server: 85% of one core (39u/45s)   client: 61% of one core (18u/43s)   other: 0% of one core
+==== 2026-09-14T20:19Z repo=ac42caa mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d10s h2 -m128 (one ring, one thread) impl=bin:webmachine-server workers=1 fork_workers=1 threads=1 clients=1 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/wm-next/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/110 busy=1% (200ms sample)
+responses=19887827 bad=0 seconds=10.000 rps=1988781 bytes=1670578252 MB/s=159.32 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=258567895 tx_MB/s=24.66
+server: 95% of one core (59u/36s)   client: 50% of one core (34u/16s)   other: 6% of one core
+==== 2026-09-14T20:20Z repo=ac42caa mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d10s h2 -m128 (one ring, one thread) impl=bin:webmachine-server workers=1 fork_workers=1 threads=1 clients=1 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/111 busy=1% (200ms sample)
+responses=22100451 bad=0 seconds=10.000 rps=2210027 bytes=1856438668 MB/s=177.04 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=287332007 tx_MB/s=27.40
+server: 92% of one core (69u/22s)   client: 56% of one core (38u/17s)   other: 5% of one core
+==== 2026-09-14T20:20Z repo=ac42caa mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d10s h2 -m128 (one ring, one thread) impl=bin:webmachine-server workers=1 fork_workers=1 threads=1 clients=1 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v24 x86_64
+build: /tmp/claude-0/wm-next/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/111 busy=0% (200ms sample)
+responses=21991314 bad=0 seconds=10.000 rps=2199120 bytes=1847271160 MB/s=176.17 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=285903242 tx_MB/s=27.27
+server: 93% of one core (68u/24s)   client: 54% of one core (38u/15s)   other: 5% of one core
+==== 2026-09-14T20:20Z repo=ac42caa mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d10s h2 -m128 (one ring, one thread) impl=bin:webmachine-server workers=1 fork_workers=1 threads=1 clients=1 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v24 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=2/111 busy=0% (200ms sample)
+responses=21322797 bad=0 seconds=10.000 rps=2132179 bytes=1791115732 MB/s=170.81 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=277199209 tx_MB/s=26.43
+server: 92% of one core (68u/23s)   client: 54% of one core (38u/16s)   other: 8% of one core
