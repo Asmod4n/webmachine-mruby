@@ -1,6 +1,4 @@
 #include "http1.hpp"
-#include "ruby_value.hpp"
-
 #include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/data.h>
@@ -230,7 +228,12 @@ mrb_value request_get_headers(mrb_state *mrb, mrb_value)
     mrb_value headers = mrb_hash_new_capa(mrb, static_cast<mrb_int>(view->field_count));
     for (size_t i = 0; i < view->field_count; i++) {
         mrb_value name = mrb_str_new(mrb, fields[i].name, fields[i].name_len);
-        ruby_string_lowercase_in_place(name);
+        // RFC 9110 5.1: a field name compares case-insensitively, so the
+        // key is folded before it is frozen.
+        for (char &octet : std::span(RSTRING_PTR(name), static_cast<size_t>(RSTRING_LEN(name)))) {
+            if (octet >= 'A' && octet <= 'Z')
+                octet = static_cast<char>(octet + ('a' - 'A'));
+        }
         // hash.c h_key_for dups every String key that is not already
         // frozen; freezing after the downcase hands it the final bytes and
         // skips one allocation and one copy per header (ea96df2).
@@ -585,7 +588,7 @@ mrb_value request_body_save(mrb_state *mrb, mrb_value)
     // its value to itself, and then the resource spells the answer.
     if (mrb_test(said)) {
         const mrb_value text = mrb_obj_as_string(mrb, said);
-        response_take_body(mrb, ruby_string_bytes(text));
+        response_take_body(mrb, std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
     }
     return said;
 }
@@ -822,7 +825,7 @@ mrb_value request_get_base_uri(mrb_state *mrb, mrb_value)
     const ReqView *view = request_being_answered(mrb);
     mrb_value text = view->tls ? mrb_str_new_lit(mrb, "https://") : mrb_str_new_lit(mrb, "http://");
     if (!mrb_nil_p(host)) {
-        const std::string_view host_bytes = ruby_string_bytes(host);
+        const std::string_view host_bytes = std::string_view(RSTRING_PTR(host), static_cast<size_t>(RSTRING_LEN(host)));
         mrb_str_cat(mrb, text, host_bytes.data(), host_bytes.size());
     }
     mrb_str_cat_lit(mrb, text, "/");
@@ -924,7 +927,7 @@ mrb_value request_is_same_origin(mrb_state *mrb, mrb_value)
     if (mrb_nil_p(host))
         return mrb_nil_value();
     const std::string_view sent = {origin->value, origin->value_len};
-    return mrb_bool_value(origin_is_own(sent, view->tls, ruby_string_bytes(host)));
+    return mrb_bool_value(origin_is_own(sent, view->tls, std::string_view(RSTRING_PTR(host), static_cast<size_t>(RSTRING_LEN(host)))));
 }
 
 // RFC 9110 9.3.1: is this a GET?

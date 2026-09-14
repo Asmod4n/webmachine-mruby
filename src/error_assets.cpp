@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -244,10 +243,10 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
                        "[[type, handler]] pairs, not %v",
                        value);
         }
-        const size_t count = ruby_array_length(value);
+        const size_t count = static_cast<size_t>(RARRAY_LEN(value));
         for (size_t i = 0; i < count; i++) {
             const mrb_value pair = mrb_ary_ref(mrb, value, static_cast<mrb_int>(i));
-            if (!mrb_array_p(pair) || ruby_array_length(pair) < 2)
+            if (!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 2)
                 continue;
             const mrb_value type = mrb_ary_ref(mrb, pair, 0);
             const mrb_value handler_name = mrb_ary_ref(mrb, pair, 1);
@@ -260,7 +259,7 @@ void ErrorPages::open(mrb_state *mrb, Assets *assets, Logger *elog)
             }
             Handler handler;
             handler.sym = mrb_symbol(handler_name);
-            handler.type.assign(ruby_string_bytes(type));
+            handler.type.assign(std::string_view(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type))));
             // An image form is the error assets's picture, whole. Nothing renders it,
             // so it names no method that has to exist - and it is worth
             // offering only while there is an asset file to take it from.
@@ -501,19 +500,19 @@ bool ErrorPages::exception_text(mrb_value exception, std::string &out_text)
     // of its answer: a String, or an Array joined with CRLF. What goes in
     // it - a backtrace included - is the app's call, not this layer's.
     if (mrb_string_p(answer)) {
-        out_text.assign(ruby_string_bytes(answer));
+        out_text.assign(std::string_view(RSTRING_PTR(answer), static_cast<size_t>(RSTRING_LEN(answer))));
     } else if (mrb_array_p(answer)) {
-        const size_t count = ruby_array_length(answer);
+        const size_t count = static_cast<size_t>(RARRAY_LEN(answer));
         for (size_t i = 0; i < count; i++) {
             const mrb_value entry = mrb_ary_ref(mrb_, answer, static_cast<mrb_int>(i));
             if (!out_text.empty())
                 out_text.append("\r\n");
             if (mrb_string_p(entry)) {
-                out_text.append(ruby_string_bytes(entry));
+                out_text.append(std::string_view(RSTRING_PTR(entry), static_cast<size_t>(RSTRING_LEN(entry))));
             } else {
                 const mrb_value as_string = mrb_obj_as_string(mrb_, entry);
                 if (mrb_string_p(as_string))
-                    out_text.append(ruby_string_bytes(as_string));
+                    out_text.append(std::string_view(RSTRING_PTR(as_string), static_cast<size_t>(RSTRING_LEN(as_string))));
             }
         }
     } else {
@@ -612,7 +611,7 @@ bool ErrorPages::render(const Page &page, std::string &out_page)
         mrb_gc_arena_restore(mrb, arena);
         return false;
     }
-    out_page.assign(ruby_string_bytes(body));
+    out_page.assign(std::string_view(RSTRING_PTR(body), static_cast<size_t>(RSTRING_LEN(body))));
     mrb_gc_arena_restore(mrb, arena);
     return true;
 }

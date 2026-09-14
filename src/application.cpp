@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/data.h>
@@ -407,10 +406,10 @@ bool conf_read_string(mrb_state *mrb, mrb_value conf, ConfIdx member, const char
     if (!mrb_string_p(raw)) {
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s wants a String", name);
     }
-    if (ruby_string_length(raw) == 0) {
+    if (static_cast<size_t>(RSTRING_LEN(raw)) == 0) {
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "conf.%s is empty", name);
     }
-    out_text->assign(ruby_string_bytes(raw));
+    out_text->assign(std::string_view(RSTRING_PTR(raw), static_cast<size_t>(RSTRING_LEN(raw))));
     return true;
 }
 
@@ -431,29 +430,29 @@ void conf_read_certificates(mrb_state *mrb, mrb_value conf, AppSpec *spec)
                   "conf.certificates wants a Hash of host to [certificate, private_key]");
     }
     const mrb_value hosts = mrb_hash_keys(mrb, raw);
-    const size_t count = ruby_array_length(hosts);
+    const size_t count = static_cast<size_t>(RARRAY_LEN(hosts));
     for (size_t at = 0; at < count; at++) {
-        const mrb_value host = ruby_array_entry(hosts, at);
-        if (!mrb_string_p(host) || ruby_string_length(host) == 0) {
+        const mrb_value host = mrb_ary_entry(hosts, static_cast<mrb_int>(at));
+        if (!mrb_string_p(host) || static_cast<size_t>(RSTRING_LEN(host)) == 0) {
             mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
                       "conf.certificates wants a String host name, and not an empty one");
         }
         const mrb_value pair = mrb_hash_get(mrb, raw, host);
-        if (!mrb_array_p(pair) || ruby_array_length(pair) != 2) {
+        if (!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) != 2) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                        "conf.certificates[%v] wants [certificate, private_key]", host);
         }
-        const mrb_value cert = ruby_array_entry(pair, 0);
-        const mrb_value key = ruby_array_entry(pair, 1);
-        if (!mrb_string_p(cert) || ruby_string_length(cert) == 0 || !mrb_string_p(key) ||
-            ruby_string_length(key) == 0) {
+        const mrb_value cert = mrb_ary_entry(pair, static_cast<mrb_int>(0));
+        const mrb_value key = mrb_ary_entry(pair, static_cast<mrb_int>(1));
+        if (!mrb_string_p(cert) || static_cast<size_t>(RSTRING_LEN(cert)) == 0 || !mrb_string_p(key) ||
+            static_cast<size_t>(RSTRING_LEN(key)) == 0) {
             mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                        "conf.certificates[%v] wants two paths, and neither of them empty", host);
         }
         AppSpec::NamedPair named;
-        named.host.assign(ruby_string_bytes(host));
-        named.cert_path.assign(ruby_string_bytes(cert));
-        named.key_path.assign(ruby_string_bytes(key));
+        named.host.assign(std::string_view(RSTRING_PTR(host), static_cast<size_t>(RSTRING_LEN(host))));
+        named.cert_path.assign(std::string_view(RSTRING_PTR(cert), static_cast<size_t>(RSTRING_LEN(cert))));
+        named.key_path.assign(std::string_view(RSTRING_PTR(key), static_cast<size_t>(RSTRING_LEN(key))));
         spec->named_pairs.push_back(std::move(named));
     }
 }
@@ -483,7 +482,7 @@ void conf_read_all(mrb_state *mrb, mrb_value conf, AppSpec *spec)
     // and mrb_ary_entry reads it, but it carries its own type tag, so
     // mrb_array_p says no. Checked before the first mrb_ary_entry, because
     // that one trusts the tag it was handed.
-    if (mrb_type(conf) != MRB_TT_STRUCT || ruby_array_length(conf) != kConfMax) {
+    if (mrb_type(conf) != MRB_TT_STRUCT || static_cast<size_t>(RARRAY_LEN(conf)) != kConfMax) {
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                    "conf is not the %i values Webmachine::Config names - application.cpp's "
                    "ConfIdx and mrblib's Struct member list have drifted apart",
@@ -594,7 +593,7 @@ void route_table_walk_tokens(mrb_state *mrb, RouteTable &table, Tokens tokens)
 {
     const mrb_value toks = tokens.list;
     const char *const caller_name = tokens.caller_name;
-    const size_t count = ruby_array_length(toks);
+    const size_t count = static_cast<size_t>(RARRAY_LEN(toks));
     for (size_t i = 0; i < count; i++) {
         const mrb_value token = mrb_ary_entry(toks, i);
         if (table.pending_splat()) {
@@ -609,7 +608,7 @@ void route_table_walk_tokens(mrb_state *mrb, RouteTable &table, Tokens tokens)
             // the routes looking right. ['/'] is the near-universal way to
             // write it wrong: the root is the empty list, because the root has
             // no segments.
-            const std::string_view literal = ruby_string_bytes(token);
+            const std::string_view literal = std::string_view(RSTRING_PTR(token), static_cast<size_t>(RSTRING_LEN(token)));
             const char *literal_bytes = literal.data();
             const size_t litlen = literal.size();
             if (std::memchr(literal_bytes, '/', litlen) != nullptr) {

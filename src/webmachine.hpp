@@ -3,9 +3,11 @@
 
 #include <array>
 #include <mruby.h>
+#include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/hash.h>
 #include <mruby/presym.h>
+#include <mruby/string.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <liburing.h>
@@ -889,6 +891,20 @@ inline void close_or_throw(const char *what, int fd)
 {
     if (::close(fd) != 0 && errno != EINTR)
         throw_errno(what, errno);
+}
+
+// A block called with the entries of an Array as its arguments. The
+// entries are read through mrb_ary_entry, never through a pointer into
+// the Array's own storage, so the block may grow that Array while it
+// runs. Off the request path: a compute task, and a round nobody can
+// park.
+inline mrb_value yield_array_entries(mrb_state *mrb, mrb_value block, mrb_value array)
+{
+    const mrb_int count = mrb_array_p(array) ? RARRAY_LEN(array) : 0;
+    std::vector<mrb_value> entries(static_cast<size_t>(count));
+    for (mrb_int i = 0; i < count; i++)
+        entries.at(static_cast<size_t>(i)) = mrb_ary_entry(array, i);
+    return mrb_yield_argv(mrb, block, count, entries.data());
 }
 
 [[noreturn]] inline void rethrow(mrb_state *mrb)

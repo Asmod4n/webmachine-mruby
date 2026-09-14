@@ -9,7 +9,6 @@
 // Watcher is this file's sibling: it answers the same question again,
 // and it watches a descriptor.
 #include "http1.hpp"
-#include "ruby_value.hpp"
 #include "ring_setup.hpp"
 
 #include <liburing.h>
@@ -256,7 +255,7 @@ mrb_value registry_set(mrb_state *mrb, mrb_value self)
                   "value - an object cannot cross into a worker, and how to build one can");
     }
     const mrb_value name = mrb_obj_as_string(mrb, key_name);
-    if (!worker_build_register(mrb, std::string(ruby_string_bytes(name)), block)) {
+    if (!worker_build_register(mrb, std::string(std::string_view(RSTRING_PTR(name), static_cast<size_t>(RSTRING_LEN(name)))), block)) {
         if (mrb->exc != nullptr)
             rethrow(mrb);
         mrb_raisef(mrb, E_WM_ERROR(mrb),
@@ -280,7 +279,7 @@ bool worker_build_register(mrb_state *mrb, std::string key_name, mrb_value block
         return false;
     WorkerBuild build;
     build.key = std::move(key_name);
-    build.irep.assign(ruby_string_bytes(bytes));
+    build.irep.assign(std::string_view(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes))));
     worker_builds_list().push_back(std::move(build));
     return true;
 }
@@ -472,7 +471,7 @@ bool Http1::compute_task_cross(Conn &conn, Conn::Round &round, int park, const R
             WM_UNREACHABLE();
         }
         Conn::Round::Job &j = round.job.at(i);
-        j.bytes.assign(ruby_string_bytes(encoded));
+        j.bytes.assign(std::string_view(RSTRING_PTR(encoded), static_cast<size_t>(RSTRING_LEN(encoded))));
         mrb_gc_arena_restore(mrb, arena);
         j.code = task_id;
         j.deadline = task.deadline;
@@ -504,7 +503,7 @@ unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime
     const mrb_value bytes = mrb_proc_to_irep(mrb, proc);
     if (mrb->exc != nullptr || !mrb_string_p(bytes))
         return kComputeTaskNoCode;
-    code.irep.assign(ruby_string_bytes(bytes));
+    code.irep.assign(std::string_view(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes))));
     code.max_runtime = max_runtime;
     reg.codes.push_back(std::move(code));
     const unsigned task_id = static_cast<unsigned>(reg.codes.size() - 1);
@@ -722,12 +721,12 @@ void slot_note_raise(mrb_state *mrb, Slot &slot, const char *step)
     const int arena = mrb_gc_arena_save(mrb);
     const mrb_value bytes = mrb_cbor_encode_fast(mrb, exc);
     if (mrb->exc == nullptr && mrb_string_p(bytes)) {
-        slot.exception.assign(ruby_string_bytes(bytes));
+        slot.exception.assign(std::string_view(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes))));
     } else {
         // The exception itself could not cross. Its text still can.
         mrb->exc = nullptr;
         const mrb_value text = mrb_inspect(mrb, exc);
-        slot.step.append(": ").append(ruby_string_bytes(text));
+        slot.step.append(": ").append(std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
     }
     mrb_gc_arena_restore(mrb, arena);
 }
@@ -760,15 +759,14 @@ mrb_value job_run_in_protected_call(mrb_state *mrb, void *user_data)
     }
     build.step = "running a compute task";
     const mrb_value args = mrb_array_p(arg) ? arg : mrb_ary_new(mrb);
-    const mrb_value answer = mrb_yield_argv(
-        mrb, block, static_cast<mrb_int>(ruby_array_length(args)), ruby_array_items(args));
+    const mrb_value answer = yield_array_entries(mrb, block, args);
 
     build.step = "encoding the answer of a compute task";
     const mrb_value bytes = mrb_cbor_encode_fast(mrb, answer);
     if (!mrb_string_p(bytes)) {
         mrb_raisef(mrb, E_WM_ERROR(mrb), "CBOR cannot carry %v", answer);
     }
-    slot.out_ask.assign(ruby_string_bytes(bytes));
+    slot.out_ask.assign(std::string_view(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes))));
     return mrb_nil_value();
 }
 

@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include <mruby/proc_irep_ext.h>
 
 #include <mruby/array.h>
@@ -339,7 +338,7 @@ void value_bake_at_start(const Folding &folding, const BakedValue &bake)
     if (bake.spell) {
         if (!mrb_string_p(value))
             value = mrb_obj_as_string(mrb, value);
-        const std::string_view etag = ruby_string_bytes(value);
+        const std::string_view etag = std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
         http::etag_spell(etag.data(), etag.size(), out_value.text);
         out_value.present = true;
         return;
@@ -364,7 +363,7 @@ void value_bake_at_start(const Folding &folding, const BakedValue &bake)
 // method and this server compiles six of them.
 void mark_named_methods(const Folding &folding, Asked answer, mrb_value value, MethodFlags &named)
 {
-    std::string_view rest = ruby_string_bytes(value);
+    std::string_view rest = std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
     for (;;) {
         const size_t from = rest.find_first_not_of(" ,");
         if (from == std::string_view::npos)
@@ -406,8 +405,8 @@ void ask_methods(const Folding &folding, Asked answer, MethodFlags &named)
                    "%s must return an Array of Strings or a String like 'GET HEAD', not %v",
                    answer.name, value);
     }
-    for (size_t j = 0; j < ruby_array_length(value); j++) {
-        const mrb_value entry = ruby_array_entry(value, j);
+    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+        const mrb_value entry = mrb_ary_entry(value, static_cast<mrb_int>(j));
         if (mrb_unlikely(!mrb_string_p(entry))) {
             mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                        "%s must return method Strings, and %v is not one", answer.name, entry);
@@ -965,9 +964,7 @@ bool node_answer(Run &run, Node node, Args args, uint16_t status, mrb_value *out
         // is the same block with the same arguments, and the only thing
         // lost is that the reactor waits for it.
         if (mrb_unlikely(!resource.run.can_park)) {
-            *out_value = mrb_yield_argv(run.mrb, call_ask.block,
-                                        static_cast<mrb_int>(ruby_array_length(call_ask.args)),
-                                        ruby_array_items(call_ask.args));
+            *out_value = yield_array_entries(run.mrb, call_ask.block, call_ask.args);
             return true;
         }
         resource.run.stop_node = node;
@@ -1046,11 +1043,11 @@ mrb_value node_argument(Run &run, Node node)
             const mrb_value out_value = mrb_hash_new(run.mrb);
             if (mrb_hash_p(handler_name)) {
                 const mrb_value keys = mrb_hash_keys(run.mrb, handler_name);
-                for (size_t j = 0; j < ruby_array_length(keys); j++) {
-                    const mrb_value key_name = ruby_array_entry(keys, j);
-                    if (!mrb_string_p(key_name) || ruby_string_length(key_name) < 8)
+                for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(keys)); j++) {
+                    const mrb_value key_name = mrb_ary_entry(keys, static_cast<mrb_int>(j));
+                    if (!mrb_string_p(key_name) || static_cast<size_t>(RSTRING_LEN(key_name)) < 8)
                         continue;
-                    if (!http::tok_eq(ruby_string_bytes(key_name).substr(0, 8), "content-"))
+                    if (!http::tok_eq(std::string_view(RSTRING_PTR(key_name), static_cast<size_t>(RSTRING_LEN(key_name))).substr(0, 8), "content-"))
                         continue;
                     mrb_hash_set(run.mrb, out_value, key_name,
                                  mrb_hash_get(run.mrb, handler_name, key_name));
@@ -1080,13 +1077,13 @@ void methods_marshal_from_callback(Run &run, const Resource::ValueCb &callback)
     run.resource.run.methods.clear();
     const mrb_value value = value_callback_call(run, callback);
     if (mrb_array_p(value)) {
-        for (size_t j = 0; j < ruby_array_length(value); j++) {
-            const mrb_value text = ruby_array_entry(value, j);
+        for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+            const mrb_value text = mrb_ary_entry(value, static_cast<mrb_int>(j));
             if (mrb_unlikely(!mrb_string_p(text))) {
                 mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer method Strings",
                            mrb_sym_name(mrb, callback.sym));
             }
-            run.resource.run.methods.emplace_back(ruby_string_bytes(text));
+            run.resource.run.methods.emplace_back(std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
         }
         return;
     }
@@ -1094,7 +1091,7 @@ void methods_marshal_from_callback(Run &run, const Resource::ValueCb &callback)
         mrb_raisef(mrb, E_TYPE_ERROR, "%s must answer an Array of Strings or a String",
                    mrb_sym_name(mrb, callback.sym));
     }
-    const std::string_view text = ruby_string_bytes(value);
+    const std::string_view text = std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
     const char *cursor = text.data();
     const char *text_end = cursor + text.size();
     while (cursor < text_end) {
@@ -1149,11 +1146,11 @@ void content_types_marshal(Run &run)
         return;
     run.resource.run.content_types_marshalled = true;
     const mrb_value value = value_callback_call(run, run.resource.cb_content_types_provided);
-    if (mrb_unlikely(!mrb_array_p(value) || ruby_array_length(value) == 0)) {
+    if (mrb_unlikely(!mrb_array_p(value) || static_cast<size_t>(RARRAY_LEN(value)) == 0)) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "content_types_provided must answer [[type, handler]] pairs");
     }
-    const size_t count = ruby_array_length(value);
+    const size_t count = static_cast<size_t>(RARRAY_LEN(value));
     // The app answered what it answered last time: the vector already holds
     // it, resolutions included, and nothing has to be rebuilt or searched
     // for. A pair that is not [String, Symbol] simply fails to match and
@@ -1161,29 +1158,30 @@ void content_types_marshal(Run &run)
     std::vector<Resource::TypedHandler> &current = run.resource.run.content_types_provided;
     bool same = current.size() == static_cast<size_t>(count);
     for (size_t j = 0; same && j < count; j++) {
-        const mrb_value pair = ruby_array_entry(value, j);
-        same = mrb_array_p(pair) && ruby_array_length(pair) >= 2 &&
-               mrb_string_p(ruby_array_entry(pair, 0)) && mrb_symbol_p(ruby_array_entry(pair, 1)) &&
-               mrb_symbol(ruby_array_entry(pair, 1)) == current[static_cast<size_t>(j)].handler &&
-               current[static_cast<size_t>(j)].type.size() ==
-                   ruby_string_length(ruby_array_entry(pair, 0)) &&
-               std::memcmp(current[static_cast<size_t>(j)].type.data(),
-                           ruby_string_bytes(ruby_array_entry(pair, 0)).data(),
-                           current[static_cast<size_t>(j)].type.size()) == 0;
+        const mrb_value pair = mrb_ary_entry(value, static_cast<mrb_int>(j));
+        same = mrb_array_p(pair) && static_cast<size_t>(RARRAY_LEN(pair)) >= 2 &&
+               mrb_string_p(mrb_ary_entry(pair, static_cast<mrb_int>(0))) && mrb_symbol_p(mrb_ary_entry(pair, static_cast<mrb_int>(1))) &&
+               mrb_symbol(mrb_ary_entry(pair, static_cast<mrb_int>(1))) == current[static_cast<size_t>(j)].handler &&
+               current[static_cast<size_t>(j)].type ==
+                   std::string_view(RSTRING_PTR(mrb_ary_entry(pair, static_cast<mrb_int>(0))),
+                                    static_cast<size_t>(RSTRING_LEN(
+                                        mrb_ary_entry(pair, static_cast<mrb_int>(0)))));
     }
     if (same)
         return;
     current.clear();
     for (size_t j = 0; j < count; j++) {
-        const mrb_value pair = ruby_array_entry(value, j);
-        if (mrb_unlikely(!mrb_array_p(pair) || ruby_array_length(pair) < 2 ||
-                         !mrb_string_p(ruby_array_entry(pair, 0)) ||
-                         !mrb_symbol_p(ruby_array_entry(pair, 1)))) {
+        const mrb_value pair = mrb_ary_entry(value, static_cast<mrb_int>(j));
+        if (mrb_unlikely(!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 2 ||
+                         !mrb_string_p(mrb_ary_entry(pair, static_cast<mrb_int>(0))) ||
+                         !mrb_symbol_p(mrb_ary_entry(pair, static_cast<mrb_int>(1))))) {
             mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_provided pairs are [String, Symbol]");
         }
         Resource::TypedHandler typed_handler;
-        typed_handler.type.assign(ruby_string_bytes(ruby_array_entry(pair, 0)));
-        typed_handler.handler = mrb_symbol(ruby_array_entry(pair, 1));
+        const mrb_value type_name = mrb_ary_entry(pair, static_cast<mrb_int>(0));
+        typed_handler.type.assign(RSTRING_PTR(type_name),
+                                  static_cast<size_t>(RSTRING_LEN(type_name)));
+        typed_handler.handler = mrb_symbol(mrb_ary_entry(pair, static_cast<mrb_int>(1)));
         // Resolved here, once, not searched for at every render.
         const Resolved handler = method_resolve(mrb, run.resource.klass, typed_handler.handler);
         typed_handler.m = handler.method;
@@ -1219,7 +1217,7 @@ int etag_make_sure_it_is_there(Run &run)
         return -1;
     if (!mrb_string_p(value))
         value = mrb_obj_as_string(run.mrb, value);
-    const std::string_view etag = ruby_string_bytes(value);
+    const std::string_view etag = std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
     http::etag_spell(etag.data(), etag.size(), run.resource.run.etag_value);
     run.resource.run.etag_present = true;
     return -1;
@@ -1304,7 +1302,7 @@ void value_round_answer_take(const Resource &resource, uint8_t what, mrb_value v
             return;
         if (!mrb_string_p(value))
             value = mrb_obj_as_string(mrb, value);
-        const std::string_view etag = ruby_string_bytes(value);
+        const std::string_view etag = std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)));
         http::etag_spell(etag.data(), etag.size(), resource.run.etag_value);
         resource.run.etag_present = true;
         return;
@@ -1374,9 +1372,7 @@ bool value_round_begin(Run &run, Node length, uint16_t status)
         // Nobody can park this run, so the block runs here - the same block
         // with the same arguments, and only the waiting is lost.
         if (mrb_unlikely(!resource.run.can_park)) {
-            const mrb_value said = mrb_yield_argv(
-                run.mrb, call_ask.block, static_cast<mrb_int>(ruby_array_length(call_ask.args)),
-                ruby_array_items(call_ask.args));
+            const mrb_value said = yield_array_entries(run.mrb, call_ask.block, call_ask.args);
             value_round_answer_take(resource, w.what, said);
             continue;
         }
@@ -1486,9 +1482,9 @@ bool sniff_agrees_with_declaration(Run &run, std::string_view declared)
 // key it knows.
 bool row_asks_for_sniff(mrb_state *mrb, mrb_value pair)
 {
-    if (ruby_array_length(pair) < 3)
+    if (static_cast<size_t>(RARRAY_LEN(pair)) < 3)
         return false;
-    const mrb_value options = ruby_array_entry(pair, 2);
+    const mrb_value options = mrb_ary_entry(pair, static_cast<mrb_int>(2));
     if (!mrb_hash_p(options))
         return false;
     const mrb_value want = mrb_hash_get(mrb, options, mrb_symbol_value(MRB_SYM(sniff)));
@@ -1510,14 +1506,16 @@ int accept_negotiate(Run &run)
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "content_types_accepted must answer [[type, Symbol]] pairs");
     }
-    for (size_t j = 0; j < ruby_array_length(value); j++) {
-        const mrb_value pair = ruby_array_entry(value, j);
-        if (mrb_unlikely(!mrb_array_p(pair) || ruby_array_length(pair) < 2 ||
-                         !mrb_string_p(ruby_array_entry(pair, 0)) ||
-                         !mrb_symbol_p(ruby_array_entry(pair, 1)))) {
+    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+        const mrb_value pair = mrb_ary_entry(value, static_cast<mrb_int>(j));
+        if (mrb_unlikely(!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 2 ||
+                         !mrb_string_p(mrb_ary_entry(pair, static_cast<mrb_int>(0))) ||
+                         !mrb_symbol_p(mrb_ary_entry(pair, static_cast<mrb_int>(1))))) {
             mrb_raise(mrb, E_WM_ERROR(mrb), "content_types_accepted pairs are [String, Symbol]");
         }
-        const std::string_view offered = ruby_string_bytes(ruby_array_entry(pair, 0));
+        const mrb_value offered_name = mrb_ary_entry(pair, static_cast<mrb_int>(0));
+        const std::string_view offered(RSTRING_PTR(offered_name),
+                                       static_cast<size_t>(RSTRING_LEN(offered_name)));
         if (!media_type_pattern_matches(media_type_base(offered), arrived_base))
             continue;
         if (!media_params_agree(offered, arrived))
@@ -1529,7 +1527,7 @@ int accept_negotiate(Run &run)
         if (mrb_unlikely(row_asks_for_sniff(mrb, pair)) &&
             !sniff_agrees_with_declaration(run, arrived))
             return 415;
-        const mrb_sym handler_name = mrb_symbol(ruby_array_entry(pair, 1));
+        const mrb_sym handler_name = mrb_symbol(mrb_ary_entry(pair, static_cast<mrb_int>(1)));
         // #54: this callback is about to get the request body, so it has to
         // have said so. The fold checks every handler a class-level
         // content_types_accepted names; an instance-level one is only
@@ -1577,7 +1575,7 @@ int run_node_n11(Run &run)
         {
             std::string bound;
             if (mrb_string_p(base)) {
-                bound.assign(ruby_string_bytes(base));
+                bound.assign(std::string_view(RSTRING_PTR(base), static_cast<size_t>(RSTRING_LEN(base))));
             } else {
                 bound.assign(run.resource.run.req != nullptr && run.resource.run.req->tls
                                  ? "https://"
@@ -1590,7 +1588,7 @@ int run_node_n11(Run &run)
                 bound.push_back('/');
             }
             std::string joined_uri;
-            http::uri_join({bound, ruby_string_bytes(candidate_path)}, joined_uri);
+            http::uri_join({bound, std::string_view(RSTRING_PTR(candidate_path), static_cast<size_t>(RSTRING_LEN(candidate_path)))}, joined_uri);
             size_t index = 0;
             if (joined_uri.size() >= 8 && joined_uri.compare(0, 4, "http") == 0) {
                 const size_t as_string = joined_uri.find("://");
@@ -1848,7 +1846,7 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                     continue;
                 }
                 if (mrb_string_p(value)) {
-                    run_append_field(r, {"WWW-Authenticate", ruby_string_bytes(value)});
+                    run_append_field(r, {"WWW-Authenticate", std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))});
                 }
                 status = 401;
                 halted = true;
@@ -1865,13 +1863,13 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                         mrb_raise(mrb, E_TYPE_ERROR, "options must answer a Hash of header fields");
                     }
                     const mrb_value keys = mrb_hash_keys(mrb, value);
-                    for (size_t j = 0; j < ruby_array_length(keys); j++) {
-                        const mrb_value key_name = ruby_array_entry(keys, j);
+                    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(keys)); j++) {
+                        const mrb_value key_name = mrb_ary_entry(keys, static_cast<mrb_int>(j));
                         const mrb_value field_value = mrb_hash_get(mrb, value, key_name);
                         if (!mrb_string_p(key_name) || !mrb_string_p(field_value))
                             continue;
                         run_append_field(
-                            r, {ruby_string_bytes(key_name), ruby_string_bytes(field_value)});
+                            r, {std::string_view(RSTRING_PTR(key_name), static_cast<size_t>(RSTRING_LEN(key_name))), std::string_view(RSTRING_PTR(field_value), static_cast<size_t>(RSTRING_LEN(field_value)))});
                     }
                 } else {
                     run_append_allow(r);
@@ -1928,10 +1926,10 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                         mrb_raise(mrb, E_TYPE_ERROR, "variances must answer an Array of Strings");
                     }
                     resource.run.variances.clear();
-                    for (size_t j = 0; j < ruby_array_length(value); j++) {
-                        const mrb_value text = ruby_array_entry(value, j);
+                    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+                        const mrb_value text = mrb_ary_entry(value, static_cast<mrb_int>(j));
                         if (mrb_string_p(text)) {
-                            resource.run.variances.emplace_back(ruby_string_bytes(text));
+                            resource.run.variances.emplace_back(std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
                         }
                     }
                 }
@@ -2042,7 +2040,7 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                     break;
                 const mrb_value value = value_callback_call(r, callback);
                 if (mrb_string_p(value)) {
-                    run_append_field(r, {"Location", ruby_string_bytes(value)});
+                    run_append_field(r, {"Location", std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))});
                     status = count == Node::kL5 ? 307 : 301;
                     halted = true;
                     continue;
@@ -2154,7 +2152,7 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                         // run_asset first and never looks at run_body/run_have_body for
                         // this run.
                         if (!resource.run.have_file && resource.run.asset == nullptr) {
-                            const size_t blen = ruby_string_length(value);
+                            const size_t blen = static_cast<size_t>(RSTRING_LEN(value));
                             // Already frozen means the app kept this String, so a second
                             // connection may be holding it too - and the release would
                             // lift a freeze that was not ours. Our own freeze is
@@ -2172,7 +2170,7 @@ mrb_value run_engine(mrb_state *mrb, const Resource &resource, bool resuming)
                                 resource.run.zc_have = true;
                                 resource.run.body->clear();
                             } else {
-                                resource.run.body->assign(ruby_string_bytes(value));
+                                resource.run.body->assign(std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value))));
                             }
                             resource.run.have_body = true;
                         }
@@ -2300,9 +2298,9 @@ void fold_node_callbacks(const Folding &fold, Resource &out_value, bool (&ans)[k
     uint64_t declared = 0;
     for (const mrb_sym list_name : {MRB_SYM(computed), MRB_SYM(watched)}) {
         const mrb_value list = mrb_iv_get(mrb, klass, list_name);
-        const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
+        const size_t count = mrb_array_p(list) ? static_cast<size_t>(RARRAY_LEN(list)) : 0;
         for (size_t i = 0; i < count; i++) {
-            const size_t index = node_index_of_callback(mrb_symbol(ruby_array_entry(list, i)));
+            const size_t index = node_index_of_callback(mrb_symbol(mrb_ary_entry(list, static_cast<mrb_int>(i))));
             if (index < flow::kNodeCount)
                 declared |= uint64_t{1} << index;
         }
@@ -2407,9 +2405,9 @@ void fold_compute_declarations(mrb_state *mrb, mrb_value klass, Resource &out_va
     // one.
     {
         const mrb_value list = mrb_iv_get(mrb, klass, MRB_SYM(computed));
-        const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
+        const size_t count = mrb_array_p(list) ? static_cast<size_t>(RARRAY_LEN(list)) : 0;
         for (size_t i = 0; i < count; i++) {
-            const mrb_sym want = mrb_symbol(ruby_array_entry(list, i));
+            const mrb_sym want = mrb_symbol(mrb_ary_entry(list, static_cast<mrb_int>(i)));
             const size_t index = node_index_of_callback(want);
             // #30: a value callback. generate_etag, last_modified and expires
             // choose no edge - the flow only reads what they answer - so a
@@ -2496,9 +2494,9 @@ void fold_watch_declarations(mrb_state *mrb, mrb_value klass, Resource &out_valu
     // name is a flow node, and something answers it.
     {
         const mrb_value list = mrb_iv_get(mrb, klass, MRB_SYM(watched));
-        const size_t count = mrb_array_p(list) ? ruby_array_length(list) : 0;
+        const size_t count = mrb_array_p(list) ? static_cast<size_t>(RARRAY_LEN(list)) : 0;
         for (size_t i = 0; i < count; i++) {
-            const mrb_sym want = mrb_symbol(ruby_array_entry(list, i));
+            const mrb_sym want = mrb_symbol(mrb_ary_entry(list, static_cast<mrb_int>(i)));
             const size_t index = node_index_of_callback(want);
             // #30: a value a watcher answers. The same three the flow only
             // reads - they choose no edge - so they wait together.
@@ -2602,16 +2600,16 @@ void fold_sniff_types(const Folding &fold, Resource &out_value)
         mrb_funcall_argv(mrb, klass, MRB_SYM(content_types_accepted), 0, nullptr);
     if (!mrb_array_p(value))
         return;
-    for (size_t j = 0; j < ruby_array_length(value); j++) {
-        const mrb_value pair = ruby_array_entry(value, j);
-        if (!mrb_array_p(pair) || ruby_array_length(pair) < 3)
+    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+        const mrb_value pair = mrb_ary_entry(value, static_cast<mrb_int>(j));
+        if (!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 3)
             continue;
-        if (!mrb_string_p(ruby_array_entry(pair, 0)))
+        if (!mrb_string_p(mrb_ary_entry(pair, static_cast<mrb_int>(0))))
             continue;
         if (!row_asks_for_sniff(mrb, pair))
             continue;
-        const mrb_value type = ruby_array_entry(pair, 0);
-        out_value.sniff_types.emplace_back(ruby_string_bytes(type));
+        const mrb_value type = mrb_ary_entry(pair, static_cast<mrb_int>(0));
+        out_value.sniff_types.emplace_back(std::string_view(RSTRING_PTR(type), static_cast<size_t>(RSTRING_LEN(type))));
     }
 }
 
@@ -2638,11 +2636,11 @@ void fold_body_readers(const Folding &fold, Resource &out_value)
     const mrb_value klass = fold.klass;
     const mrb_value named = mrb_iv_get(mrb, klass, MRB_SYM(body_readers));
     const mrb_value savers = mrb_iv_get(mrb, klass, MRB_SYM(body_savers));
-    const size_t count = mrb_array_p(named) ? ruby_array_length(named) : 0;
-    const size_t saver_count = mrb_array_p(savers) ? ruby_array_length(savers) : 0;
+    const size_t count = mrb_array_p(named) ? static_cast<size_t>(RARRAY_LEN(named)) : 0;
+    const size_t saver_count = mrb_array_p(savers) ? static_cast<size_t>(RARRAY_LEN(savers)) : 0;
 
     for (size_t i = 0; i < count; i++) {
-        const mrb_sym want = mrb_symbol(ruby_array_entry(named, i));
+        const mrb_sym want = mrb_symbol(mrb_ary_entry(named, static_cast<mrb_int>(i)));
         if (want == MRB_SYM(content_types_accepted)) {
             mrb_raise(mrb, E_WM_ROUTE_ERROR(mrb),
                       "content_types_accepted answers the mapping and never gets a body - name the "
@@ -2655,7 +2653,7 @@ void fold_body_readers(const Folding &fold, Resource &out_value)
         out_value.body_readers.push_back(want);
     }
     for (size_t i = 0; i < saver_count; i++) {
-        out_value.body_savers.push_back(mrb_symbol(ruby_array_entry(savers, i)));
+        out_value.body_savers.push_back(mrb_symbol(mrb_ary_entry(savers, static_cast<mrb_int>(i))));
     }
     out_value.saves_body = !out_value.body_savers.empty();
 
@@ -2690,12 +2688,12 @@ void fold_body_readers(const Folding &fold, Resource &out_value)
         mrb_funcall_argv(mrb, klass, MRB_SYM(content_types_accepted), 0, nullptr);
     if (!mrb_array_p(rows))
         return;
-    for (size_t j = 0; j < ruby_array_length(rows); j++) {
-        const mrb_value pair = ruby_array_entry(rows, j);
-        if (!mrb_array_p(pair) || ruby_array_length(pair) < 2 ||
-            !mrb_symbol_p(ruby_array_entry(pair, 1)))
+    for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(rows)); j++) {
+        const mrb_value pair = mrb_ary_entry(rows, static_cast<mrb_int>(j));
+        if (!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 2 ||
+            !mrb_symbol_p(mrb_ary_entry(pair, static_cast<mrb_int>(1))))
             continue;
-        const mrb_sym headers = mrb_symbol(ruby_array_entry(pair, 1));
+        const mrb_sym headers = mrb_symbol(mrb_ary_entry(pair, static_cast<mrb_int>(1)));
         if (std::find(out_value.body_readers.begin(), out_value.body_readers.end(), headers) !=
             out_value.body_readers.end()) {
             continue;
@@ -2833,7 +2831,7 @@ void fold_content_types(mrb_state *mrb, mrb_value klass, Resource &out_value)
                 mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "content_type must return a String, not %v",
                            value);
             }
-            content_type.assign(ruby_string_bytes(value));
+            content_type.assign(std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value))));
             // RFC 9110 8.3 / 12.5.1: a resource that names no media type cannot
             // be negotiated with, and c4 would have nothing to weigh an Accept
             // against. Said here, once, instead of guarded on every request.
@@ -2854,24 +2852,26 @@ void fold_content_types(mrb_state *mrb, mrb_value klass, Resource &out_value)
                 resolved_call(mrb, content_types_provided_callback, {klass, mrb_class(mrb, klass)});
             if (mrb_unlikely(mrb->exc != nullptr))
                 rethrow(mrb);
-            if (mrb_unlikely(!mrb_array_p(value) || ruby_array_length(value) == 0)) {
+            if (mrb_unlikely(!mrb_array_p(value) || static_cast<size_t>(RARRAY_LEN(value)) == 0)) {
                 mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb),
                            "content_types_provided must return [[type, handler]] pairs, not %v",
                            value);
             }
-            for (size_t j = 0; j < ruby_array_length(value); j++) {
-                const mrb_value pair = ruby_array_entry(value, j);
-                if (mrb_unlikely(!mrb_array_p(pair) || ruby_array_length(pair) < 2 ||
-                                 !mrb_string_p(ruby_array_entry(pair, 0)) ||
-                                 !mrb_symbol_p(ruby_array_entry(pair, 1)))) {
+            for (size_t j = 0; j < static_cast<size_t>(RARRAY_LEN(value)); j++) {
+                const mrb_value pair = mrb_ary_entry(value, static_cast<mrb_int>(j));
+                if (mrb_unlikely(!mrb_array_p(pair) || static_cast<size_t>(RARRAY_LEN(pair)) < 2 ||
+                                 !mrb_string_p(mrb_ary_entry(pair, static_cast<mrb_int>(0))) ||
+                                 !mrb_symbol_p(mrb_ary_entry(pair, static_cast<mrb_int>(1))))) {
                     mrb_raisef(
                         mrb, E_WM_ROUTE_ERROR(mrb),
                         "content_types_provided pairs are [String, Symbol], and %v is not one",
                         pair);
                 }
                 Resource::TypedHandler typed_handler;
-                typed_handler.type.assign(ruby_string_bytes(ruby_array_entry(pair, 0)));
-                typed_handler.handler = mrb_symbol(ruby_array_entry(pair, 1));
+                const mrb_value type_name = mrb_ary_entry(pair, static_cast<mrb_int>(0));
+                typed_handler.type.assign(RSTRING_PTR(type_name),
+                                          static_cast<size_t>(RSTRING_LEN(type_name)));
+                typed_handler.handler = mrb_symbol(mrb_ary_entry(pair, static_cast<mrb_int>(1)));
                 const Resolved handler =
                     method_resolve(mrb, mrb_class_ptr(klass), typed_handler.handler);
                 if (handler.defined) {
@@ -2893,7 +2893,7 @@ void fold_content_types(mrb_state *mrb, mrb_value klass, Resource &out_value)
                         mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v",
                                    typed_handler.handler, rendered);
                     }
-                    typed_handler.baked.assign(ruby_string_bytes(rendered));
+                    typed_handler.baked.assign(std::string_view(RSTRING_PTR(rendered), static_cast<size_t>(RSTRING_LEN(rendered))));
                     typed_handler.has_baked = true;
                 }
                 out_value.content_types_provided.push_back(std::move(typed_handler));
@@ -2941,7 +2941,7 @@ void fold_content_types(mrb_state *mrb, mrb_value klass, Resource &out_value)
                 mrb_raisef(mrb, E_WM_ROUTE_ERROR(mrb), "%n must return a String, not %v",
                            first.handler, rendered);
             }
-            out_value.konst.body.assign(ruby_string_bytes(rendered));
+            out_value.konst.body.assign(std::string_view(RSTRING_PTR(rendered), static_cast<size_t>(RSTRING_LEN(rendered))));
         } else if (!MRB_METHOD_UNDEF_P(first.m)) {
             out_value.dynamic_body = true;
         }
@@ -3289,7 +3289,7 @@ bool resource_body_lent(const Resource &resource, LentBody &out_value)
         return false;
     resource.run.zc_have = false;
     out_value.value = resource.run.zc;
-    out_value.bytes = ruby_string_bytes(resource.run.zc);
+    out_value.bytes = std::string_view(RSTRING_PTR(resource.run.zc), static_cast<size_t>(RSTRING_LEN(resource.run.zc)));
     return true;
 }
 
@@ -3341,7 +3341,7 @@ void exception_facts(mrb_state *mrb, Raised out_value)
     struct RException *entry = reinterpret_cast<struct RException *>(mrb->exc);
     if (entry->mesg != nullptr && entry->mesg->tt == MRB_TT_STRING) {
         const mrb_value mesg = mrb_obj_value(entry->mesg);
-        const std::string_view message = ruby_string_bytes(mesg);
+        const std::string_view message = std::string_view(RSTRING_PTR(mesg), static_cast<size_t>(RSTRING_LEN(mesg)));
         facts.message = message.data();
         facts.message_len = message.size();
     }
@@ -3359,14 +3359,14 @@ void exception_facts(mrb_state *mrb, Raised out_value)
     const bool answered = mrb->exc == nullptr;
     mrb->exc = pending;
     if (answered && mrb_array_p(backtrace_lines)) {
-        const size_t count = ruby_array_length(backtrace_lines);
+        const size_t count = static_cast<size_t>(RARRAY_LEN(backtrace_lines));
         for (size_t i = 0; i < count; i++) {
-            const mrb_value frame = ruby_array_entry(backtrace_lines, i);
+            const mrb_value frame = mrb_ary_entry(backtrace_lines, static_cast<mrb_int>(i));
             if (!mrb_string_p(frame))
                 continue;
             if (!backtrace.empty())
                 backtrace.push_back('\n');
-            backtrace.append(ruby_string_bytes(frame));
+            backtrace.append(std::string_view(RSTRING_PTR(frame), static_cast<size_t>(RSTRING_LEN(frame))));
         }
     }
     mrb_gc_arena_restore(mrb, arena);

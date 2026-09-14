@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include <mruby/class.h>
 #include <mruby/data.h>
 #include <mruby/hash.h>
@@ -166,7 +165,7 @@ mrb_value header_set_value(mrb_state *mrb, mrb_value)
                   "response.headers[]= wants a field name that is a token "
                   "(RFC 9110 5.6.2) - no spaces, no colon, no CR or LF");
     }
-    if (!ruby_string_is_field_value(value)) {
+    if (!http::field_value_ok(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.headers[]= wants a field value without CR, LF or NUL (RFC 9110 5.5)");
     }
@@ -181,7 +180,7 @@ mrb_value header_set_value(mrb_state *mrb, mrb_value)
         header_buffer.erase(header_line.start_offset,
                             header_line.end_offset - header_line.start_offset);
     header_append_key_value(header_buffer,
-                            {{name, static_cast<size_t>(klen)}, ruby_string_bytes(value)});
+                            {{name, static_cast<size_t>(klen)}, std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))});
     return value;
 }
 
@@ -286,7 +285,7 @@ mrb_value response_set_body(mrb_state *mrb, mrb_value)
     if (resource->run.body == nullptr) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "response.body=: no body buffer is bound for this run");
     }
-    resource->run.body->assign(ruby_string_bytes(body));
+    resource->run.body->assign(std::string_view(RSTRING_PTR(body), static_cast<size_t>(RSTRING_LEN(body))));
     resource->run.have_body = true;
     return body;
 }
@@ -337,7 +336,7 @@ mrb_value response_set_file(mrb_state *mrb, mrb_value)
     // own limits: an embedded NUL would truncate the name openat2 actually
     // sees, and an empty name asks for nothing. Both answer the same 404 a
     // rejected resolve does, so neither is a signal to probe with.
-    resource->run.file.assign(ruby_string_bytes(name));
+    resource->run.file.assign(std::string_view(RSTRING_PTR(name), static_cast<size_t>(RSTRING_LEN(name))));
     resource->run.file_bad =
         resource->run.file.empty() || resource->run.file.find('\0') != std::string::npos;
     resource->run.have_file = true;
@@ -372,7 +371,7 @@ mrb_value response_use_error_asset(mrb_state *mrb, mrb_value)
                   "file: --error-assets=FILE.zip, or install one where the system keeps shipped "
                   "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
     }
-    const std::string_view asked = ruby_string_bytes(asked_name);
+    const std::string_view asked = std::string_view(RSTRING_PTR(asked_name), static_cast<size_t>(RSTRING_LEN(asked_name)));
     char name[kMaxHead];
     if (asked.empty() || asked.size() + 2 >= sizeof(name)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.error_asset: no such entry");
@@ -406,7 +405,7 @@ mrb_value response_redirect_to(mrb_state *mrb, mrb_value)
         }
         const mrb_value location = mrb_obj_as_string(mrb, given_location);
         // RFC 9110 5.5: a value with CR, LF or NUL would splice a field in.
-        if (!ruby_string_is_field_value(location)) {
+        if (!http::field_value_ok(RSTRING_PTR(location), static_cast<size_t>(RSTRING_LEN(location)))) {
             mrb_raise(
                 mrb, E_ARGUMENT_ERROR,
                 "response.redirect_to: the location must carry no CR, LF or NUL (RFC 9110 5.5)");
@@ -416,7 +415,7 @@ mrb_value response_redirect_to(mrb_state *mrb, mrb_value)
         if (header_find_key(header_buffer, "Location", header_line))
             header_buffer.erase(header_line.start_offset,
                                 header_line.end_offset - header_line.start_offset);
-        header_append_key_value(header_buffer, {"Location", ruby_string_bytes(location)});
+        header_append_key_value(header_buffer, {"Location", std::string_view(RSTRING_PTR(location), static_cast<size_t>(RSTRING_LEN(location)))});
     }
     resource->run.redirect = true;
     return mrb_true_value();
@@ -476,12 +475,12 @@ void cookie_append_attribute(mrb_state *mrb, std::string &line, CookieAttribute 
     const mrb_value text = mrb_obj_as_string(mrb, given_value);
     // A semicolon in one attribute spells a second attribute, so the app
     // would write an attribute this call never named.
-    if (ruby_string_holds_octet(text, ';')) {
+    if ((std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))).find(';') != std::string_view::npos)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in an attribute");
     }
     line.append("; ", 2);
     line.append(label);
-    line.append(ruby_string_bytes(text));
+    line.append(std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
 }
 
 // RFC 6265bis 4.1.2.7: the three spellings SameSite takes. The value is
@@ -524,13 +523,13 @@ void cookie_rules_read(mrb_state *mrb, mrb_value attrs, CookieRules &rules)
     const mrb_value path = mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(path)));
     if (!mrb_nil_p(path)) {
         const mrb_value text = mrb_obj_as_string(mrb, path);
-        rules.path_is_root = ruby_string_bytes(text) == "/";
+        rules.path_is_root = std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))) == "/";
     }
     const mrb_value same_site = mrb_hash_get(mrb, attrs, mrb_symbol_value(MRB_SYM(same_site)));
     if (mrb_nil_p(same_site))
         return;
     const mrb_value text = mrb_obj_as_string(mrb, same_site);
-    rules.same_site = cookie_same_site_name(ruby_string_bytes(text));
+    rules.same_site = cookie_same_site_name(std::string_view(RSTRING_PTR(text), static_cast<size_t>(RSTRING_LEN(text))));
     if (rules.same_site == nullptr) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.set_cookie wants SameSite to be Strict, Lax or None");
@@ -581,14 +580,14 @@ mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
 
     // RFC 6265 4.1.1: the name is one token, and the first `=` ends it. A
     // name that carries `=` or `;` names another cookie or an attribute.
-    const std::string_view cookie_name = ruby_string_bytes(nstr);
+    const std::string_view cookie_name = std::string_view(RSTRING_PTR(nstr), static_cast<size_t>(RSTRING_LEN(nstr)));
     if (cookie_name.empty() || cookie_name.find('=') != std::string_view::npos ||
         cookie_name.find(';') != std::string_view::npos) {
         mrb_raise(mrb, E_WM_ERROR(mrb),
                   "response.set_cookie wants a name with no `=` and no semicolon in it");
     }
     // A semicolon in the value ends the value and starts an attribute.
-    if (ruby_string_holds_octet(value, ';')) {
+    if ((std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value))).find(';') != std::string_view::npos)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.set_cookie wants no semicolon in the value");
     }
 
@@ -603,7 +602,7 @@ mrb_value response_set_cookie(mrb_state *mrb, mrb_value)
     std::string line;
     line.append(cookie_name);
     line.append("=", 1);
-    line.append(ruby_string_bytes(value));
+    line.append(std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value))));
 
     if (mrb_hash_p(attrs)) {
         cookie_append_attribute(mrb, line, {attrs, MRB_SYM(path), "Path="});

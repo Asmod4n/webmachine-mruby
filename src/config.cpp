@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include <mruby/array.h>
 #include <mruby/chrono.hpp>
 #include <mruby/error.h>
@@ -105,12 +104,12 @@ void setting_take_string(Setting setting, std::string &out_text, const ConfigFil
         mrb_hash_get(file.mrb, setting.table, mrb_str_new_cstr(file.mrb, setting.key_name));
     if (mrb_nil_p(raw))
         return;
-    if (!mrb_string_p(raw) || ruby_string_length(raw) == 0) {
+    if (!mrb_string_p(raw) || static_cast<size_t>(RSTRING_LEN(raw)) == 0) {
         mrb_raisef(file.mrb, E_WM_CONFIG_ERROR(file.mrb),
                    "%s: %s.%s takes a non-empty string, not %v", file.path, setting.where,
                    setting.key_name, raw);
     }
-    out_text.assign(ruby_string_bytes(raw));
+    out_text.assign(std::string_view(RSTRING_PTR(raw), static_cast<size_t>(RSTRING_LEN(raw))));
 }
 
 // Counts are not durations.

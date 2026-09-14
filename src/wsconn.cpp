@@ -1,6 +1,4 @@
 #include "http1.hpp"
-#include "ruby_value.hpp"
-
 #include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/proc.h>
@@ -296,7 +294,7 @@ bool method_is_defined(mrb_state *mrb, Method want)
 bool message_append_inflated(void *user_data, const char *inflated, size_t inflated_length)
 {
     WsConn *conn = static_cast<WsConn *>(user_data);
-    if (ruby_string_length(conn->message) + inflated_length > conn->res->max_message)
+    if (static_cast<size_t>(RSTRING_LEN(conn->message)) + inflated_length > conn->res->max_message)
         return false;
     mrb_str_cat(conn->res->mrb, conn->message, inflated, inflated_length);
     return true;
@@ -374,7 +372,7 @@ bool message_utf8_is_valid(WsConn *conn, bool final)
 {
     if (!conn->res->validate_text)
         return true;
-    const std::string_view message = ruby_string_bytes(conn->message);
+    const std::string_view message = std::string_view(RSTRING_PTR(conn->message), static_cast<size_t>(RSTRING_LEN(conn->message)));
     const char *bytes = message.data();
     const size_t length = message.size();
     if (length <= conn->validated)
@@ -458,7 +456,7 @@ bool message_deliver(WsConn *conn, std::string &sink)
         return connection_fail(conn, sink, ws::kCloseInternalError);
     }
     if (mrb_string_p(answer)) {
-        data_frame_emit(conn, sink, {binary ? ws::kBinary : ws::kText, ruby_string_bytes(answer)});
+        data_frame_emit(conn, sink, {binary ? ws::kBinary : ws::kText, std::string_view(RSTRING_PTR(answer), static_cast<size_t>(RSTRING_LEN(answer)))});
     } else if (mrb_symbol_p(answer)) {
         uint16_t code = 0;
         if (close_code_of_symbol(mrb_symbol(answer), code)) {
@@ -545,7 +543,7 @@ bool frame_begin(WsConn *conn, std::string &sink)
     const ws::Head header = ws::read_head(conn->hbuf, conn->codec != nullptr);
     if (header.err != ws::Head::Err::kNone)
         return connection_fail(conn, sink, ws::kCloseProtocolError);
-    const uint64_t msg_len = conn->msg_op != 0 ? ruby_string_length(conn->message) : 0;
+    const uint64_t msg_len = conn->msg_op != 0 ? static_cast<size_t>(RSTRING_LEN(conn->message)) : 0;
     const ws::Head::Err a =
         ws::admit(header, {conn->msg_op, conn->msg_deflated, msg_len, conn->res->max_message});
     if (a != ws::Head::Err::kNone) {
@@ -798,13 +796,13 @@ WsConn *ws_admit(const WsResource *resource, Logger *elog, WsAdmit answered)
         // RFC 6455 4.2.2: the answer names one subprotocol, and a subprotocol
         // is one token. Anything else this String holds would write a field
         // value of the server's own making - or a second field.
-        if (!ruby_string_is_field_name(answer)) {
+        if (!http::field_name_ok(RSTRING_PTR(answer), static_cast<size_t>(RSTRING_LEN(answer)))) {
             mrb_gc_unregister(mrb, obj);
             mrb_gc_arena_restore(mrb, arena);
             status = 500;
             return nullptr;
         }
-        proto.assign(ruby_string_bytes(answer));
+        proto.assign(std::string_view(RSTRING_PTR(answer), static_cast<size_t>(RSTRING_LEN(answer))));
     } else if (mrb_symbol_p(answer)) {
         const mrb_sym symbol = mrb_symbol(answer);
         if (symbol == MRB_SYM(forbidden))

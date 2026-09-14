@@ -1,5 +1,4 @@
-#include "ruby_value.hpp"
-
+#include "webmachine.hpp"
 #include "ring.hpp"
 
 #include <cstring>
@@ -704,7 +703,7 @@ void server_build_ring_config(mrb_state *mrb)
         } else {
             const mrb_value said = mrb_obj_as_string(mrb, answer);
             error_assets_note_ = "error assets at " + error_assets_file + " unusable (" +
-                                 std::string(ruby_string_bytes(said)) +
+                                 std::string(std::string_view(RSTRING_PTR(said), static_cast<size_t>(RSTRING_LEN(said)))) +
                                  ") - pages without pictures";
         }
     } else if (no_cats == 1) {

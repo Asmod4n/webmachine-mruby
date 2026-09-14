@@ -1,6 +1,4 @@
 #include "http1.hpp"
-#include "ruby_value.hpp"
-
 #include <mruby/array.h>
 #include <mruby/chrono.hpp>
 #include <mruby/class.h>
@@ -61,13 +59,13 @@ void field(std::string &out_text, const char *name, const mrb_value &value)
 {
     if (!mrb_string_p(value))
         return;
-    field(out_text, {name, ruby_string_bytes(value)});
+    field(out_text, {name, std::string_view(RSTRING_PTR(value), static_cast<size_t>(RSTRING_LEN(value)))});
 }
 
 bool event_spell(mrb_state *mrb, const mrb_value &event, std::string &out_text)
 {
     if (mrb_string_p(event)) {
-        field(out_text, {"data", ruby_string_bytes(event)});
+        field(out_text, {"data", std::string_view(RSTRING_PTR(event), static_cast<size_t>(RSTRING_LEN(event)))});
         out_text.append("\n", 1);
         return true;
     }
@@ -87,7 +85,7 @@ bool event_spell(mrb_state *mrb, const mrb_value &event, std::string &out_text)
             field(out_text, {"retry", {digits, static_cast<size_t>(spelled)}});
     }
     if (mrb_array_p(data_field)) {
-        const size_t count = ruby_array_length(data_field);
+        const size_t count = static_cast<size_t>(RARRAY_LEN(data_field));
         for (size_t i = 0; i < count; i++)
             field(out_text, "data", mrb_ary_entry(data_field, i));
     } else {
@@ -263,7 +261,7 @@ bool sse_tick(SseStream *stream, int64_t now_s, std::string &body)
         }
         go_on = false;
     } else if (mrb_array_p(answer)) {
-        const size_t count = ruby_array_length(answer);
+        const size_t count = static_cast<size_t>(RARRAY_LEN(answer));
         for (size_t i = 0; i < count && go_on; i++) {
             if (!event_spell(mrb, mrb_ary_entry(answer, i), body)) {
                 std::fprintf(stderr, "webmachine: SSE on_tick answered an Array holding something "
