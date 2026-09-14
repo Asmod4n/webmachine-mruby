@@ -153,8 +153,33 @@ echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the
 #   An acceptor with answering threads spreads, and is the only shape
 #   that spreads on AF_UNIX. One thread accepts and hands each peer to
 #   the next ring by IORING_OP_MSG_RING. Three answering threads spent
-#   356, 345 and 350 ticks while the acceptor spent 3. On h1 over
-#   AF_UNIX: one thread 95.0k, two 243.6k, three 370.0k req/s.
+#   356, 345 and 350 ticks while the acceptor spent 3.
+#
+# The whole matrix, on 4 cpus, req/s, median of three runs. Read the
+# count across, the shape down:
+#
+#   h1 AF_UNIX   threads    102.8k  231.2k  318.5k  296.3k
+#                shared              75.6k   67.5k   67.9k
+#   h1 TCP       threads     58.6k  138.3k  220.8k  207.1k
+#                reuseport          129.1k  236.9k  191.8k
+#                shared              43.9k   46.5k   43.8k
+#   h2 AF_UNIX   threads    871.6k   4.88M   6.23M   6.78M
+#                shared             759.2k  788.5k  760.5k
+#   h2 TCP       threads      1.01M   4.92M   6.14M   6.15M
+#                reuseport           1.84M   1.72M   1.79M
+#                shared             817.5k  781.9k  769.8k
+#
+# What the rows say, and what they do not:
+#
+#   The shared listener is flat at every count and on every transport,
+#   and below one ring on h2. More children change nothing there.
+#   h1 peaks at three of four cpus and falls at four. h2 is flat from
+#   three to four - the 6.23M and 6.78M of the AF_UNIX row differ by 9
+#   percent, which these cells cannot resolve.
+#   The h2 reuseport row is not read as a server property. Its client
+#   held 161 to 188 percent of a cpu against the thread row's 114 to
+#   154, so part of that gap is a client that could not keep up, on a
+#   machine that also ran the server.
 #
 # So the advice below is by transport, and it never names --workers for
 # throughput: that flag forks children onto one inherited listener,
@@ -180,6 +205,8 @@ echo "cpu this process may use: $BUDGET (cores $NPROC)"
 SHAPE_N=$(( BUDGET - 1 ))
 [ "$SHAPE_N" -lt 1 ] && SHAPE_N=1
 echo "recommend: $SHAPE_N answering ring(s)"
+echo "  h1 peaked here at the cpu budget less one and fell above it. h2 was"
+echo "  flat from there to the whole budget, so $SHAPE_N is the count for both."
 if [ "$BUDGET" -le 2 ]; then
   echo "  $BUDGET cpu is too few to split. One ring, and every core left for the"
   echo "  kernel side of the answers."
