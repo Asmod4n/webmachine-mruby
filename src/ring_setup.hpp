@@ -145,25 +145,9 @@ enum : uint8_t {
     kSpillWrite = 25
 };
 
-// user_data: kind(8) | gen(16) | idx(32); gen guards a reused slot.
-uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx);
-// #30: which watcher, on top of which connection - 8 bits of the tag,
-// so kMaxWatchers of them (declared further up, where Conn needs it).
-uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot);
-uint8_t watch_slot(uint64_t user_data);
-// #30: the same 8 bits for a compute job. A value round hands over
-// several at one stop, so an answer has to say which one it is.
-// Four bits name the stopped run and four name its job, so one byte
-// carries both: a connection holds up to 16 stopped runs - one per h2
-// stream - and a run hands over up to four jobs at a stop.
-// Both name one job: the pool's slot and which taking of it.
-uint64_t compute_deadline_tag(unsigned slot, uint16_t gen);
-uint64_t compute_started_tag(unsigned slot, uint16_t gen);
-// The connection index takes 24 bits, which is more than the fixed
-// file table allows, and the top byte of that word names which taking
-// of the park slot this job belongs to.
-static_assert(kFixedTableKernelMax <= (1u << 24), "a connection index must fit 24 bits");
-uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job, uint8_t park_gen);
+// #113: user_data is the address of the record that armed the
+// operation. The record says its kind and names its connection, so
+// nothing here is packed into bits and nothing is indexed by a slot.
 
 enum : uint32_t {
     kStSocket = 1,

@@ -79,38 +79,6 @@ uint64_t raise_nofile()
 
 namespace detail
 {
-uint64_t tag(uint8_t kind, uint16_t gen, uint32_t idx)
-{
-    return (static_cast<uint64_t>(kind) << 56) | (static_cast<uint64_t>(gen) << 32) | idx;
-}
-
-uint64_t watch_tag(uint16_t gen, uint32_t idx, uint8_t slot)
-{
-    return tag(kWatch, gen, idx) | (static_cast<uint64_t>(slot) << 48);
-}
-
-uint8_t watch_slot(uint64_t user_data)
-{
-    return static_cast<uint8_t>(user_data >> 48);
-}
-
-uint64_t compute_deadline_tag(unsigned slot, uint16_t gen)
-{
-    return tag(kComputeDeadline, gen, static_cast<uint32_t>(slot));
-}
-
-uint64_t compute_started_tag(unsigned slot, uint16_t gen)
-{
-    return tag(kComputeStarted, gen, static_cast<uint32_t>(slot));
-}
-
-uint64_t compute_task_tag(uint16_t gen, uint32_t idx, uint8_t park, uint8_t job, uint8_t park_gen)
-{
-    const uint8_t both = static_cast<uint8_t>((park << 4) | (job & 0x0f));
-    const uint32_t word = (idx & 0xffffffu) | (static_cast<uint32_t>(park_gen) << 24);
-    return tag(kComputeTask, gen, word) | (static_cast<uint64_t>(both) << 48);
-}
-
 const char *stage_name(uint32_t conn)
 {
     switch (conn) {

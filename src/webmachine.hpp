@@ -2839,7 +2839,7 @@ class ComputePool
     // False means every slot is taken. The sqe itself is never the reason:
     // a full submission queue is a raise (sqe_or_raise).
     bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
-                uint64_t answer);
+                uint64_t answer, uint64_t started);
     // A worker began the job in `slot`, its `gen`th taking. The deadline
     // to arm for it, or 0 when it has none or the slot moved on.
     double started(unsigned slot, uint16_t generation);
@@ -2849,6 +2849,10 @@ class ComputePool
     // taking of it, and only when that job is the one its worker runs now
     // is the worker interrupted.
     void interrupt(unsigned slot, uint16_t generation);
+    // #113: which pool slot a job lives in, named by the answer tag the
+    // reactor gave it. The started message carries no slot number any
+    // more, only the address of the record that named the job.
+    bool slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *generation) const;
     // What the worker answered. Reading it frees the slot: the answer is
     // handed over once.
     bool take(uint64_t answer, ComputeAnswer *out_value);

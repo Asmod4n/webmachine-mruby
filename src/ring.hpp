@@ -13,6 +13,7 @@
 #include <sys/utsname.h>
 
 #include <cstdio>
+#include <deque>
 
 namespace webmachine
 {
@@ -41,7 +42,7 @@ template <class App> class Ring
             // the unlink ran. The ring exit then cancelled the queued unlink,
             // and the path stayed - which is what the floor bintest saw under
             // the sanitizer.
-            const uint64_t unlink_tag = detail::tag(detail::kSetup, 0, detail::kStUnlink);
+            const uint64_t unlink_tag = arm(op_unlink_, nullptr, detail::kSetup, detail::kStUnlink);
             unsigned count = 0;
             for (const std::string &path : unix_paths_) {
                 // The name, not the socket: this server bound it, and between
@@ -80,6 +81,10 @@ template <class App> class Ring
             ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
         if (ring_up_)
             io_uring_queue_exit(&ring_);
+        // #113: the ring is gone, so the kernel names nothing of these any
+        // more. Whatever it still held is freed here and nowhere else.
+        while (live_head_ != nullptr)
+            conn_free(live_head_);
     }
 
     // Everything through the ring: unlink, socket_direct, setsockopt, bind,
@@ -130,22 +135,25 @@ template <class App> class Ring
         send_timeout_ = ring_config.send_timeout != 0 ? ring_config.send_timeout : 60;
         idle_timeout_ = ring_config.idle_timeout != 0 ? ring_config.idle_timeout : 75;
         app_.set_send_timeout(send_timeout_);
-        max_conns_ = derive_max_conns({nofile});
-        if (max_conns_ == 0) {
+        // #113: the size of the registered descriptor table, not a count of
+        // slots of ours. The kernel picks the entry for every accept and we
+        // never index anything by it.
+        table_size_ = derive_max_conns({nofile});
+        if (table_size_ == 0) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
                        "RLIMIT_NOFILE %i leaves no room for connections "
                        "(reserve %d + body files %d + listeners %d)",
                        static_cast<mrb_int>(nofile), static_cast<int>(kFdReserve),
                        static_cast<int>(kBodyFilesMax), static_cast<int>(kMaxListeners));
         }
-        listener_base_ = max_conns_;
+        listener_base_ = table_size_;
 
-        rc = io_uring_register_files_sparse(&ring_, max_conns_ + kMaxListeners);
+        rc = io_uring_register_files_sparse(&ring_, table_size_ + kMaxListeners);
         if (rc != 0) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_files_sparse(%d): %s",
-                       static_cast<int>(max_conns_ + kMaxListeners), std::strerror(-rc));
+                       static_cast<int>(table_size_ + kMaxListeners), std::strerror(-rc));
         }
-        rc = io_uring_register_file_alloc_range(&ring_, 0, max_conns_);
+        rc = io_uring_register_file_alloc_range(&ring_, 0, table_size_);
         if (rc != 0) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_file_alloc_range: %s", std::strerror(-rc));
         }
@@ -182,14 +190,12 @@ template <class App> class Ring
         }
         nlisteners_ = ring_config.nlisteners;
 
-        conns_ = std::make_unique<Conn[]>(max_conns_);
-        live_bits_.assign((static_cast<size_t>(max_conns_) + 63) / 64, 0);
         rearm_.reserve(64);
 
         if (ring_config.stop_fd >= 0) {
             struct io_uring_sqe *sqe = setup_sqe();
             io_uring_prep_poll_add(sqe, ring_config.stop_fd, POLLIN);
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kStop, 0, 0));
+            io_uring_sqe_set_data64(sqe, arm(op_stop_, nullptr, detail::kStop));
         }
 
         for (uint32_t li = 0; li < nlisteners_; li++)
@@ -260,10 +266,10 @@ template <class App> class Ring
         return live_;
     }
 
-    // The derived capacity - what this machine actually allows.
+    // The registered descriptor table's size - what this machine allows.
     uint32_t max_conns() const
     {
-        return max_conns_;
+        return table_size_;
     }
 
     // A TCP listener's real port, including the kernel's pick for port 0.
@@ -298,7 +304,9 @@ template <class App> class Ring
 
             struct io_uring_sqe *sqe = setup_sqe();
             io_uring_prep_unlink(sqe, want.unix_path, 0);
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, 0));
+            io_uring_sqe_set_data64(
+                sqe, arm(op_setup_[listener_index][detail::kStUnlink], nullptr, detail::kSetup,
+                         detail::kStUnlink));
             io_uring_submit_and_wait(&ring_, 1);
             struct io_uring_cqe *completion = nullptr;
             if (io_uring_peek_cqe(&ring_, &completion) == 0) {
@@ -326,7 +334,8 @@ template <class App> class Ring
             struct io_uring_sqe *sqe = setup_sqe();
             io_uring_prep_socket_direct(sqe, is_unix ? AF_UNIX : AF_INET, SOCK_STREAM, 0, slot, 0);
             sqe->flags |= IOSQE_IO_LINK;
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, detail::kStSocket));
+            io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStSocket], nullptr,
+                                             detail::kSetup, detail::kStSocket));
             chain++;
 
             if (!is_unix) {
@@ -334,20 +343,23 @@ template <class App> class Ring
                 io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_SETSOCKOPT, slot, SOL_SOCKET,
                                        SO_REUSEADDR, const_cast<int *>(&kOne), sizeof(kOne));
                 sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
-                io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, detail::kStSockopt));
+                io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStSockopt], nullptr,
+                                                 detail::kSetup, detail::kStSockopt));
                 chain++;
             }
 
             sqe = setup_sqe();
             io_uring_prep_bind(sqe, slot, sa, salen);
             sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, detail::kStBind));
+            io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStBind], nullptr,
+                                             detail::kSetup, detail::kStBind));
             chain++;
 
             sqe = setup_sqe();
             io_uring_prep_listen(sqe, slot, backlog_);
             sqe->flags |= IOSQE_FIXED_FILE;
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, detail::kStListen));
+            io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStListen], nullptr,
+                                             detail::kSetup, detail::kStListen));
             chain++;
         }
         io_uring_submit_and_wait(&ring_, chain);
@@ -385,7 +397,8 @@ template <class App> class Ring
                 io_uring_prep_cmd_getsockname(sqe, static_cast<int>(slot),
                                               reinterpret_cast<struct sockaddr *>(&ss), &slen, 0);
                 sqe->flags |= IOSQE_FIXED_FILE;
-                io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, 0, detail::kStName));
+                io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStName], nullptr,
+                                                 detail::kSetup, detail::kStName));
                 io_uring_submit_and_wait(&ring_, 1);
                 struct io_uring_cqe *completion = nullptr;
                 int resource = -EIO;
@@ -477,6 +490,9 @@ template <class App> class Ring
         Op op_peer;
         Op op_shutdown;
         Op op_close;
+        // #30: the removal of a watcher's poll at its deadline. Its own
+        // record, because the close of this connection may be in flight.
+        Op op_poll_remove;
         Op op_file_open;
         Op op_file_stat;
         Op op_file_read;
@@ -485,8 +501,13 @@ template <class App> class Ring
         // #30: a watcher and a compute job are not one per connection, so
         // they are not members. They grow to what this connection actually
         // uses and no further - there is no ceiling of 256 or of 16.
-        std::vector<Op> op_watch;
-        std::vector<Op> op_compute;
+        // A deque and not a vector: the SQE carries the address of the
+        // record, so a record that moves while the kernel names it is a
+        // use after free. A deque never moves an element that is already
+        // in it when the deque grows at the back; a vector does.
+        std::deque<Op> op_watch;
+        std::deque<Op> op_compute;
+        std::deque<Op> op_compute_started;
         int64_t deadline_s = 0;
         // #30: when the watcher this connection's stopped run waits on has
         // been quiet for as long as it allowed. 0 = nothing is armed. It is
@@ -818,7 +839,7 @@ template <class App> class Ring
     {
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_send(sqe, log_fd_, allow->flight.data(), allow->flight.size(), MSG_NOSIGNAL);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 0, kStreamAccess));
+        io_uring_sqe_set_data64(sqe, arm(op_log_[kLogAccess], nullptr, detail::kLog, kStreamAccess));
     }
 
     // One record per flush, as two linked sends.
@@ -847,11 +868,11 @@ template <class App> class Ring
         io_uring_prep_send(sqe, err_fd_, element->flight.data(), sizeof(ErrRec),
                            MSG_NOSIGNAL | MSG_WAITALL);
         sqe->flags |= IOSQE_IO_LINK;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 1, kStreamError));
+        io_uring_sqe_set_data64(sqe, arm(op_log_[kLogErrorHead], nullptr, detail::kLog, (1u << 16) | kStreamError));
         sqe = sqe_or_submit();
         io_uring_prep_send(sqe, err_fd_, element->flight.data() + sizeof(ErrRec),
                            element->flight.size() - sizeof(ErrRec), MSG_NOSIGNAL | MSG_WAITALL);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kLog, 0, kStreamError));
+        io_uring_sqe_set_data64(sqe, arm(op_log_[kLogErrorBody], nullptr, detail::kLog, kStreamError));
     }
 
     // The rule: every line formatted lands. A refused write is a named refusal.
@@ -897,11 +918,13 @@ template <class App> class Ring
             // connections, and only the ring exit ended it. The accept is
             // cancelled by its own tag first; nothing reads that completion.
             struct io_uring_sqe *sqe = sqe_or_submit();
-            io_uring_prep_cancel64(sqe, detail::tag(detail::kAccept, 0, i), 0);
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kPollRemove, 0, 0));
+            io_uring_prep_cancel64(sqe, reinterpret_cast<uint64_t>(&op_accept_[i]), 0);
+            io_uring_sqe_set_data64(sqe,
+                                    arm(op_poll_remove_, nullptr, detail::kPollRemove));
             sqe = sqe_or_submit();
             io_uring_prep_close_direct(sqe, listener_base_ + i);
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kClose, 0, listener_base_ + i));
+            io_uring_sqe_set_data64(
+                sqe, arm(op_listener_close_[i], nullptr, detail::kClose, listener_base_ + i));
         }
         io_uring_submit(&ring_);
     }
@@ -915,22 +938,22 @@ template <class App> class Ring
         io_uring_prep_multishot_accept_direct(sqe, listener_base_ + listener_index, nullptr,
                                               nullptr, 0);
         sqe->flags |= IOSQE_FIXED_FILE;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kAccept, 0, listener_index));
+        io_uring_sqe_set_data64(
+            sqe, arm(op_accept_[listener_index], nullptr, detail::kAccept, listener_index));
     }
 
     // Multishot recv out of the buffer ring, bundles where the kernel
     // offers them. One shape, because this build has no record layer: a
     // connection is cleartext or it never started.
-    void arm_recv(uint32_t index)
+    void arm_recv(Conn &c)
     {
-        Conn &c = conns_[index];
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_recv_multishot(sqe, static_cast<int>(index), nullptr, 0, 0);
+        io_uring_prep_recv_multishot(sqe, static_cast<int>(c.fd), nullptr, 0, 0);
         sqe->flags |= IOSQE_BUFFER_SELECT | IOSQE_FIXED_FILE;
         sqe->buf_group = kBufGroup;
         if (bundles_)
             sqe->ioprio |= IORING_RECVSEND_BUNDLE;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kRecv, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_recv, &c, detail::kRecv));
     }
 
     // What the kernel took, dropped off the front of a plan: whole segments
@@ -963,9 +986,8 @@ template <class App> class Ring
     // The lend survives it: resource.cpp freezes and roots the String and
     // zc_release hands it back when the round drains, never when one send
     // returns.
-    void arm_send(uint32_t index)
+    void arm_send(Conn &c)
     {
-        Conn &c = conns_[index];
         // One round, one deadline. A plaintext send is MSG_WAITALL and comes
         // back once, so this is the same rule both paths follow; an
         // offloaded one comes back per partial, and refreshing the deadline
@@ -975,7 +997,7 @@ template <class App> class Ring
         struct io_uring_sqe *sqe = sqe_or_submit();
         const int flags = MSG_NOSIGNAL | MSG_WAITALL | (app_.pending(c.app) ? MSG_MORE : 0);
         if (c.msg_iovlen == 0) {
-            io_uring_prep_send(sqe, static_cast<int>(index), c.out.data() + c.out_sent,
+            io_uring_prep_send(sqe, static_cast<int>(c.fd), c.out.data() + c.out_sent,
                                c.out.size() - c.out_sent, flags);
         } else if (c.msg_iovlen == 1) {
             // One segment is one buffer, and a buffer does not need an iovec.
@@ -985,38 +1007,24 @@ template <class App> class Ring
             // run put at over 8% of everything. send carries a pointer and a
             // length and skips all of it.
             const struct iovec *const entry = c.iov();
-            io_uring_prep_send(sqe, static_cast<int>(index), entry[0].iov_base, entry[0].iov_len,
+            io_uring_prep_send(sqe, static_cast<int>(c.fd), entry[0].iov_base, entry[0].iov_len,
                                flags);
         } else {
             c.msg = msghdr{};
             c.msg.msg_iov = c.iov();
             c.msg.msg_iovlen = c.msg_iovlen;
-            io_uring_prep_sendmsg(sqe, static_cast<int>(index), &c.msg, flags);
+            io_uring_prep_sendmsg(sqe, static_cast<int>(c.fd), &c.msg, flags);
         }
         sqe->flags |= IOSQE_FIXED_FILE;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kSend, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_send, &c, detail::kSend));
         c.sending = true;
-    }
-
-    // One bit per slot, so the once-a-second reap can find the live ones
-    // without reading a Conn to ask. The table is sized by RLIMIT_NOFILE
-    // (derive_max_conns), not by the peers actually here, so walking it
-    // touched a cache line per slot however few were connected.
-    void live_set(uint32_t index)
-    {
-        live_bits_[index >> 6] |= 1ULL << (index & 63);
-    }
-    void live_clear(uint32_t index)
-    {
-        live_bits_[index >> 6] &= ~(1ULL << (index & 63));
     }
 
     // shutdown before close_direct, linked: close_direct alone leaves the
     // socket open and the peer never sees FIN.
-    void begin_close(uint32_t index)
+    void begin_close(Conn &c)
     {
-        Conn &c = conns_[index];
-        if (!c.live)
+        if (c.dead)
             return;
         if (c.sending) {
             c.close_after_send = true;
@@ -1026,84 +1034,66 @@ template <class App> class Ring
         // wants in the log, so the line is owed here too - with the bytes that
         // really went out.
         app_.file_abandon(c.app);
-        c.live = false;
-        live_clear(index);
-        if (live_ != 0)
-            live_--;
-        // A read of this connection's own buffer is with the kernel. Freeing
-        // the slot now lets the next accept have it, and that accept's reset
-        // deletes the buffer the read is still writing into. So the close
-        // waits for the read; on_file_read finishes it. A read of a regular
-        // file ends, and the slot is held only that long.
+        c.dead = true;
+        // A read of this connection's own buffer is with the kernel. The
+        // close waits for it; on_file_read finishes it. A read of a regular
+        // file ends, and the block is held only that long.
         if (c.file_io != nullptr && c.file_io->reading) {
             c.close_owed = true;
             return;
         }
-        finish_close(index);
+        finish_close(c);
     }
 
     // The two ops that end a slot: the shutdown, and the close that frees
     // the fixed-table entry. begin_close submits them unless a file read
     // holds this connection's buffer, and on_file_read submits them when
     // that read lands.
-    void finish_close(uint32_t index)
+    void finish_close(Conn &c)
     {
-        Conn &c = conns_[index];
         c.close_owed = false;
         if (io_uring_sq_space_left(&ring_) < 2)
             io_uring_submit(&ring_);
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_shutdown(sqe, static_cast<int>(index), SHUT_RDWR);
+        io_uring_prep_shutdown(sqe, static_cast<int>(c.fd), SHUT_RDWR);
         sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kShutdown, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_shutdown, &c, detail::kShutdown));
         sqe = sqe_or_submit();
-        io_uring_prep_close_direct(sqe, index);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kClose, c.gen, index));
+        io_uring_prep_close_direct(sqe, c.fd);
+        io_uring_sqe_set_data64(sqe, arm(c.op_close, &c, detail::kClose));
     }
 
     // A new peer: its slot, its clocks, and the setsockopts TCP wants.
-    void on_accept(uint32_t listener_index, struct io_uring_cqe *completion)
+    void on_accept(Op &op, struct io_uring_cqe *completion)
     {
+        const uint32_t listener_index = op.aux;
         if (!(completion->flags & IORING_CQE_F_MORE))
             arm_accept(listener_index);
-        if (completion->res < 0)
+        // The registered table is full, or the kernel refused the peer.
+        // A peer that sits unanswered is a hidden failure, so say it.
+        if (completion->res < 0) {
+            if (completion->res == -ENFILE || completion->res == -EMFILE)
+                fatalf("ring: the descriptor table is full: %i", completion->res);
             return;
-        const uint32_t index = static_cast<uint32_t>(completion->res);
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        c.gen++;
-        c.live = true;
-        live_set(index);
-        live_++;
-        c.sending = false;
-        c.close_after_send = false;
-        c.close_owed = false;
-        c.idle = false;
-        c.deadline_s = now_s_ + header_timeout_;
-        c.listener = static_cast<uint8_t>(listener_index);
-        c.out.clear();
-        c.out_sent = 0;
-        c.next.clear();
-        c.app.reset(static_cast<uint8_t>(listener_index), !unix_listener_[listener_index]);
+        }
+        Conn &c = *conn_new(listener_index, static_cast<uint32_t>(completion->res));
         if (!unix_listener_[listener_index]) {
             static const int kOne = 1;
             struct io_uring_sqe *sqe = sqe_or_submit();
-            io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(index),
+            io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_SETSOCKOPT, static_cast<int>(c.fd),
                                    IPPROTO_TCP, TCP_NODELAY, const_cast<int *>(&kOne),
                                    sizeof(kOne));
             sqe->flags |= IOSQE_FIXED_FILE;
-            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, c.gen, index));
+            io_uring_sqe_set_data64(sqe, arm(c.op_setup, &c, detail::kSetup));
         }
-        arm_meminfo(index);
+        arm_meminfo(c);
         if (log_fd_ >= 0 && !unix_listener_[listener_index])
-            arm_peer(index);
-        arm_recv(index);
+            arm_peer(c);
+        arm_recv(c);
     }
 
     // One completion's connection: the slot it names, and the slot itself.
     struct Slot {
-        uint32_t idx;
         Conn &conn;
     };
 
@@ -1111,8 +1101,7 @@ template <class App> class Ring
     // names, the generation that slot was in when the op was armed, and the
     // completion itself.
     struct Completed {
-        uint32_t idx;
-        uint16_t gen;
+        Conn &conn;
         struct io_uring_cqe *cqe;
     };
 
@@ -1123,7 +1112,6 @@ template <class App> class Ring
     // of it is the path a request takes, so none of it is in one.
     void on_recv_nothing_to_parse(Slot sqe, struct io_uring_cqe *completion)
     {
-        const uint32_t idx = sqe.idx;
         Conn &c = sqe.conn;
         // A completion that carries a buffer carries it even with no bytes.
         // Some kernels report one on a clean EOF, and a buffer nobody hands
@@ -1131,17 +1119,17 @@ template <class App> class Ring
         // recv answers ENOBUFS.
         give_back_buffers(completion);
         if (completion->res == -ENOBUFS) {
-            rearm_.push_back({idx, c.gen});
+            rearm_.push_back({&c});
             return;
         }
-        begin_close(idx);
+        begin_close(c);
     }
 
     // Bytes for a connection that has already been told to go: the buffers
     // still have to be handed back, and nothing else does.
-    void on_recv_after_close(uint32_t index, size_t total)
+    void on_recv_after_close(Conn &c, size_t total)
     {
-        (void)index;
+        (void)c;
         replenish_ += static_cast<unsigned>((total + kBufSize - 1) / kBufSize);
     }
 
@@ -1157,35 +1145,32 @@ template <class App> class Ring
         replenish_ += static_cast<uint32_t>(count);
     }
 
-    void on_recv(uint32_t index, uint16_t generation, struct io_uring_cqe *completion)
+    void on_recv(Conn &c, struct io_uring_cqe *completion)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        // A slot that closed, or one already reused: the bytes are nobody's,
-        // and the buffers still go back, or the pool runs dry one closed
-        // connection at a time.
-        if (mrb_unlikely(!c.live || c.gen != generation)) {
+        // A connection already told to go: the bytes are nobody's, and the
+        // buffers still go back, or the pool runs dry one closed connection
+        // at a time.
+        if (mrb_unlikely(c.dead)) {
             give_back_buffers(completion);
             return;
         }
 
         if (mrb_unlikely(completion->res <= 0)) {
-            on_recv_nothing_to_parse({index, c}, completion);
+            on_recv_nothing_to_parse({c}, completion);
             return;
         }
         if (mrb_unlikely(!(completion->flags & IORING_CQE_F_BUFFER))) {
-            begin_close(index);
+            begin_close(c);
             return;
         }
         const uint32_t bid0 = completion->flags >> IORING_CQE_BUFFER_SHIFT;
         const size_t total = static_cast<size_t>(completion->res);
         if (mrb_unlikely(bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize)) {
-            begin_close(index);
+            begin_close(c);
             return;
         }
         if (mrb_unlikely(c.close_after_send)) {
-            on_recv_after_close(index, total);
+            on_recv_after_close(c, total);
             return;
         }
         // A tunnel owes no next request head, so header_timeout_ is not its
@@ -1208,7 +1193,7 @@ template <class App> class Ring
             size_t offset = 0;
             if (mrb_unlikely(__builtin_mul_overflow(static_cast<size_t>(bid),
                                                     static_cast<size_t>(kBufSize), &offset))) {
-                begin_close(index);
+                begin_close(c);
                 return;
             }
             const bool last = left <= kBufSize;
@@ -1229,75 +1214,73 @@ template <class App> class Ring
         if (!c.sending) {
             if (req.iovlen != 0) {
                 take_plan(c, req);
-                arm_send(index);
+                arm_send(c);
             } else if (!c.out.empty()) {
-                arm_send(index);
+                arm_send(c);
             }
         }
         // A run that named a file answered nothing yet: the open is the
         // reactor's, and its result reaches the wire through continue_conn.
-        arm_file_open(index);
-        arm_spill_write(index);
-        arm_compute_task(index);
-        arm_watchers(index);
+        arm_file_open(c);
+        arm_spill_write(c);
+        arm_compute_task(c);
+        arm_watchers(c);
         // Unless the name never reached the kernel at all - a refusal this
         // process spelled itself owes no completion, so nothing else would
         // ever come back to collect it.
         if (mrb_unlikely(App::file_answerable(c.app) || App::run_resumable(c.app)) && !c.sending) {
-            continue_conn(index);
+            continue_conn(c);
         }
         if (mrb_unlikely(closing)) {
-            round_closed(index, c);
-            if (!c.live)
+            round_closed(c);
+            if (c.dead)
                 return;
         }
         if (mrb_unlikely(!(completion->flags & IORING_CQE_F_MORE)))
-            rearm_.push_back({index, c.gen});
+            rearm_.push_back({&c});
     }
 
     // The App will take nothing more on this connection.
-    void round_closed(uint32_t index, Conn &conn)
+    void round_closed(Conn &conn)
     {
         if (conn.sending)
             conn.close_after_send = true;
         else
-            begin_close(index);
+            begin_close(conn);
     }
 
     // What a round owes once the App has seen its bytes: the answer on the
     // wire, an open the run deferred, and the close it may have asked for.
     // Shared, because bytes reach the App from three places - the buffer
     // ring, an offloaded socket's recvmsg, and the backlog a handshake left.
-    void finish_round(uint32_t index, typename App::Plan &request, bool closing)
+    void finish_round(Conn &c, typename App::Plan &request, bool closing)
     {
-        Conn &c = conns_[index];
         if (!c.sending) {
             if (request.iovlen != 0) {
                 take_plan(c, request);
-                arm_send(index);
+                arm_send(c);
             } else if (!c.out.empty()) {
-                arm_send(index);
+                arm_send(c);
             }
         }
         // A run that named a file answered nothing yet: the open is the
         // reactor's, and its result reaches the wire through continue_conn.
-        arm_file_open(index);
-        arm_compute_task(index);
+        arm_file_open(c);
+        arm_compute_task(c);
         // Unless the name never reached the kernel at all - a refusal this
         // process spelled itself owes no completion, so nothing else would ever
         // come back to collect it.
         if (mrb_unlikely(App::file_answerable(c.app)) && !c.sending)
-            continue_conn(index);
+            continue_conn(c);
         if (mrb_unlikely(closing))
-            round_closed(index, c);
+            round_closed(c);
     }
 
     // One contiguous stretch of plaintext to the App, and the round it
     // finishes. `last` is what lets a Plan form, so a caller that has the
     // whole of what arrived says so.
-    void deliver(uint32_t index, const char *data, size_t length, bool last)
+    void deliver(Conn &c, const char *data, size_t length, bool last)
     {
-        Conn &c = conns_[index];
         // The same clock the cleartext path keeps: plaintext arrived, so the
         // peer is there, and a tunnel waits on the idle time rather than on a
         // head that never comes.
@@ -1311,27 +1294,23 @@ template <class App> class Ring
         typename App::Plan *plan = (last && !c.sending) ? &req : nullptr;
         std::string &sink = c.sending ? c.next : c.out;
         const bool closing = !app_.connection_feed(c.app, {data, length}, {sink, plan});
-        finish_round(index, req, closing);
+        finish_round(c, req, closing);
     }
 
 
     // What the kernel took, and what is still owed.
-    void on_send(uint32_t index, uint16_t generation, struct io_uring_cqe *completion)
+    void on_send(Conn &c, struct io_uring_cqe *completion)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        if (c.gen != generation)
-            return;
         c.sending = false;
         // The connection ended while this send was with the kernel. That it
         // is over is all this completion still means: the close is already
-        // on its way, and nothing may spell a round on a slot going back.
-        if (mrb_unlikely(!c.live))
+        // on its way, and nothing may spell a round on a connection going
+        // back.
+        if (mrb_unlikely(c.dead))
             return;
 
         if (mrb_unlikely(completion->res < 0)) {
-            send_refused(index, c, completion->res);
+            send_refused(c, completion->res);
             return;
         }
         // MSG_WAITALL means the kernel already retried; fewer bytes than offered
@@ -1344,7 +1323,7 @@ template <class App> class Ring
             // Nobody retried this one, so what is left is still owed and the
             // stream carries on where it stopped. That is the one thing a
             // half-written response can do; what it cannot do is start again.
-            begin_close(index);
+            begin_close(c);
             return;
         }
         c.deadline_s = now_s_ + send_timeout_;
@@ -1352,39 +1331,37 @@ template <class App> class Ring
         c.out_sent = 0;
         c.msg_iovlen = 0;
         c.plan_byte_total = 0;
-        send_done(index);
+        send_done(c);
     }
 
     // A send the kernel refused outright.
-    void send_refused(uint32_t index, Conn &conn, int out_error)
+    void send_refused(Conn &conn, int out_error)
     {
         (void)out_error;
-        begin_close(index);
+        begin_close(conn);
     }
 
     // What a finished send leaves owed: the rest of the round, the next
     // one, or the connection going idle.
-    void send_done(uint32_t index)
+    void send_done(Conn &c)
     {
-        Conn &c = conns_[index];
         if (!c.next.empty()) {
             c.out.swap(c.next);
-            arm_send(index);
+            arm_send(c);
             return;
         }
         if (app_.pending(c.app)) {
-            arm_meminfo(index);
+            arm_meminfo(c);
             return;
         }
-        continue_conn(index);
+        continue_conn(c);
     }
 
     // response.file, stage 1: openat2 against the docroot fd. RESOLVE_BENEATH
     // anchors the walk to that fd, so the confinement is the kernel's and not
     // this code's - no path math here, on purpose.
-    void arm_file_open(uint32_t index)
+    void arm_file_open(Conn &c)
     {
-        Conn &c = conns_[index];
         // The same shape as arm_compute_task: the answer is no on every
         // round that does not name a file, and file_take is a call into
         // another translation unit to hear it.
@@ -1400,7 +1377,7 @@ template <class App> class Ring
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_openat2(sqe, docroot_fd(), path,
                               const_cast<struct open_how *>(docroot_how()));
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kFileOpen, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_file_open, &c, detail::kFileOpen));
     }
 
     // #80: the work a stopped run left, handed to a worker. Started here
@@ -1416,15 +1393,14 @@ template <class App> class Ring
     // readable while it reads, and hiredis says so through addWrite and
     // delWrite - and a one-shot poll is re-armed with the new mask
     // anyway. A multishot would have to be cancelled for every change.
-    void arm_watchers(uint32_t index)
+    void arm_watchers(Conn &c)
     {
-        Conn &c = conns_[index];
         int slot = -1;
         while (App::watch_take(c.app, &slot))
-            arm_watch(index, c, slot);
+            arm_watch(c, slot);
     }
 
-    void arm_watch(uint32_t index, Conn &conn, int slot)
+    void arm_watch(Conn &conn, int slot)
     {
         const int descriptor = App::watcher_descriptor(conn.app, slot);
         const unsigned mask = App::watcher_mask(conn.app, slot);
@@ -1432,7 +1408,10 @@ template <class App> class Ring
             return;
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_poll_add(sqe, descriptor, mask);
-        const uint64_t text = detail::watch_tag(conn.gen, index, static_cast<uint8_t>(slot));
+        if (conn.op_watch.size() <= static_cast<size_t>(slot))
+            conn.op_watch.resize(static_cast<size_t>(slot) + 1);
+        const uint64_t text = arm(conn.op_watch[static_cast<size_t>(slot)], &conn, detail::kWatch,
+                                  static_cast<uint32_t>(slot));
         io_uring_sqe_set_data64(sqe, text);
         App::watcher_is_armed(conn.app, slot, &ring_, text);
         // How long this one may stay quiet. The sweep reads whole seconds,
@@ -1448,13 +1427,9 @@ template <class App> class Ring
     }
 
     // One readiness for one watcher. The block decides what happens next.
-    void on_watch(uint32_t index, uint16_t generation, uint8_t slot,
-                  struct io_uring_cqe *completion)
+    void on_watch(Conn &c, uint8_t slot, struct io_uring_cqe *completion)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        if (!c.live || c.gen != generation)
+        if (c.dead)
             return;
         // A poll this side removed, at a deadline: not a readiness, and the
         // slot may hold a new watcher by now.
@@ -1465,30 +1440,29 @@ template <class App> class Ring
         // nothing more; the run reads nil and answers for it.
         const unsigned revents = completion->res > 0 ? static_cast<unsigned>(completion->res)
                                                      : static_cast<unsigned>(POLLERR);
-        step_watch(index, c, static_cast<int>(slot), App::watcher_event(c.app, slot, revents));
+        step_watch(c, static_cast<int>(slot), App::watcher_event(c.app, slot, revents));
     }
 
-    void step_watch(uint32_t index, Conn &conn, int slot, typename App::WatchStep step)
+    void step_watch(Conn &conn, int slot, typename App::WatchStep step)
     {
         switch (step) {
             case App::WatchStep::kWait:
             case App::WatchStep::kRearm:
                 // Both arm again - the mask is read fresh either way, so the two
                 // differ only in what the reader learns from the name.
-                arm_watch(index, conn, slot);
+                arm_watch(conn, slot);
                 return;
             case App::WatchStep::kDone:
                 App::watchers_drop_slot(conn.app, slot);
                 conn.w_deadline_s = App::watchers_soonest_deadline(conn.app);
                 if (!conn.sending)
-                    continue_conn(index);
+                    continue_conn(conn);
                 return;
         }
     }
 
-    void arm_compute_task(uint32_t index)
+    void arm_compute_task(Conn &c)
     {
-        Conn &c = conns_[index];
         // Almost every round asks and almost none has a job. Ask first, and
         // build nothing until the answer is yes.
         if (mrb_likely(!App::compute_task_waiting(c.app)))
@@ -1519,17 +1493,35 @@ template <class App> class Ring
                 double deadline = 0.0;
                 if (!App::compute_task_take(c.app, park, slot, &code, arg, &deadline))
                     continue;
-                if (!compute_.submit(
-                        mrb_, code, arg, deadline,
-                        detail::compute_task_tag(c.gen, index, static_cast<uint8_t>(park),
-                                                 static_cast<uint8_t>(slot),
-                                                 App::park_generation(c.app, park)))) {
+                const size_t job = static_cast<size_t>(park) * App::Conn::kJobSlots +
+                                   static_cast<size_t>(slot);
+                if (c.op_compute.size() <= job) {
+                    c.op_compute.resize(job + 1);
+                    c.op_compute_started.resize(job + 1);
+                }
+                // The park generation rides along, because a park slot of
+                // this connection may be taken again while an answer for the
+                // last tenant is still with a worker. The address alone
+                // cannot tell those apart - it is the same slot of the same
+                // connection - so the run that owns it is named as well.
+                const uint32_t aux = (static_cast<uint32_t>(App::park_generation(c.app, park))
+                                      << 16) |
+                                     static_cast<uint32_t>(job);
+                // The started message is sent only where there is a
+                // deadline to clock, so only there does a record name it.
+                const uint64_t began =
+                    deadline > 0.0
+                        ? arm(c.op_compute_started[job], &c, detail::kComputeStarted, aux)
+                        : 0;
+                if (!compute_.submit(mrb_, code, arg, deadline,
+                                     arm(c.op_compute[job], &c, detail::kComputeTask, aux),
+                                     began)) {
                     // Every slot taken. Not a refusal this layer invents - the run
                     // is told, and it answers 503 the way it would answer anything
                     // else.
                     App::compute_task_refused(c.app, park);
                     if (!c.sending)
-                        continue_conn(index);
+                        continue_conn(c);
                     return;
                 }
             }
@@ -1548,8 +1540,16 @@ template <class App> class Ring
     // completion.
     // A worker began a job. Its deadline is execution time, so the timer
     // is armed here and not when the job was queued.
-    void on_compute_started(uint32_t slot, uint16_t generation)
+    void on_compute_started(Op &op)
     {
+        unsigned slot = 0;
+        uint16_t generation = 0;
+        // The answer tag names the job; the pool says which of its slots
+        // holds it. Nothing here indexes a connection.
+        if (!compute_.slot_of_answer(reinterpret_cast<uint64_t>(&op.conn->op_compute[op.aux &
+                                                                                      0xffffu]),
+                                     &slot, &generation))
+            return;
         const double deadline = compute_.started(slot, generation);
         if (deadline > 0.0)
             arm_compute_deadline(slot, generation, deadline);
@@ -1570,25 +1570,29 @@ template <class App> class Ring
         ts.tv_nsec = static_cast<long long>((deadline - static_cast<double>(whole)) * 1e9);
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_timeout(sqe, &ts, 0, 0);
-        io_uring_sqe_set_data64(sqe, detail::compute_deadline_tag(slot, generation));
+        if (op_compute_deadline_.size() <= slot)
+            op_compute_deadline_.resize(slot + 1);
+        io_uring_sqe_set_data64(sqe, arm(op_compute_deadline_[slot], nullptr,
+                                         detail::kComputeDeadline,
+                                         (static_cast<uint32_t>(slot) << 16) | generation));
     }
 
     // The fd leaves through the ring like every other descriptor here.
-    void arm_file_close(uint32_t index, int descriptor, uint16_t generation)
+    void arm_file_close(Conn &c, int descriptor)
     {
         if (descriptor < 0)
             return;
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_close(sqe, descriptor);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kFileClose, generation, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_file_close, &c, detail::kFileClose));
     }
 
     // The head is spelled; `spell_next_round` is what puts it on the wire, so a connection
     // mid-send is left to on_send's own continuation.
-    void file_wake(uint32_t index)
+    void file_wake(Conn &c)
     {
-        if (!conns_[index].sending)
-            continue_conn(index);
+        if (!c.sending)
+            continue_conn(c);
     }
 
     // RFC 9110 6.4: one write of a request body into its spill file. The
@@ -1599,9 +1603,8 @@ template <class App> class Ring
     // flies per connection: the file has one offset, and the answer
     // carries a connection and a generation with no field for a second
     // body.
-    void arm_spill_write(uint32_t index)
+    void arm_spill_write(Conn &c)
     {
-        Conn &c = conns_[index];
         if (c.spill_writing)
             return;
         BodySpill *const spelling = App::spill_waiting(c.app);
@@ -1612,36 +1615,26 @@ template <class App> class Ring
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_write(sqe, spelling->fd, c.spill_out.data(),
                             static_cast<unsigned>(c.spill_out.size()), spelling->offset);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kSpillWrite, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_spill_write, &c, detail::kSpillWrite));
     }
 
     // The write landed, or it failed. The application counts the octets,
     // and a run that stopped for this body learns whether it may go on.
     void on_spill_write(Completed done)
     {
-        const uint32_t idx = done.idx;
-        if (mrb_unlikely(idx >= max_conns_))
-            return;
-        Conn &c = conns_[idx];
+        Conn &c = done.conn;
         // A connection that died under the write: the octets were written
         // from this reactor's buffer, so there is nothing to hand back.
         c.spill_writing = false;
-        if (!c.live || c.gen != done.gen) {
-            // The write belonged to a tenant that is gone. The slot may hold a
-            // new one whose own octets queued while spill_writing still stood
-            // for the old, and nothing else would arm that write until the
-            // next recv - a body complete on the wire waiting on the clock.
+        if (c.dead) {
             c.spill_out.clear();
-            arm_spill_write(idx);
-            if (c.live && !c.sending)
-                continue_conn(idx);
             return;
         }
         app_.spill_wrote(c.app, done.cqe->res, c.spill_out);
         c.spill_out.clear();
-        arm_spill_write(idx);
+        arm_spill_write(c);
         if (!c.sending)
-            continue_conn(idx);
+            continue_conn(c);
     }
 
     // #80: a worker answered. The tag is the connection's, so the same
@@ -1653,18 +1646,18 @@ template <class App> class Ring
     // its answer into, and this is not a point where either exists; `spell_next_round`
     // is. So this only says the answer arrived, and takes the same door
     // response.file takes.
-    void on_compute_task(uint32_t word, uint16_t generation, uint8_t both,
-                         struct io_uring_cqe *completion)
+    void on_compute_task(Op &op, struct io_uring_cqe *completion)
     {
         (void)completion;
-        const uint8_t park_gen = static_cast<uint8_t>(word >> 24);
-        const uint32_t idx = word & 0xffffffu;
-        if (mrb_unlikely(idx >= max_conns_))
-            return;
-        Conn &c = conns_[idx];
-        const uint8_t park = static_cast<uint8_t>(both >> 4);
-        const uint8_t slot = static_cast<uint8_t>(both & 0x0f);
-        const uint64_t poll_tag = detail::compute_task_tag(generation, idx, park, slot, park_gen);
+        Conn &c = *op.conn;
+        const uint32_t aux = op.aux;
+        const uint8_t park_gen = static_cast<uint8_t>(aux >> 16);
+        const size_t job = static_cast<size_t>(aux & 0xffffu);
+        const uint8_t park = static_cast<uint8_t>(job / App::Conn::kJobSlots);
+        const uint8_t slot = static_cast<uint8_t>(job % App::Conn::kJobSlots);
+        // The pool keeps a job under the address of the record that named
+        // it, which is the same value the worker echoed back.
+        const uint64_t poll_tag = reinterpret_cast<uint64_t>(&op);
         ComputeAnswer answered;
         const bool have = compute_.take(poll_tag, &answered);
         if (!have)
@@ -1678,7 +1671,7 @@ template <class App> class Ring
         if (answered.raised && have) {
             fault_report(app_.error_log(), mrb_,
                          {answered.exception, answered.step, answered.worker_name,
-                          c.live && c.gen == generation && c.peer != nullptr
+                          !c.dead && c.peer != nullptr
                               ? std::string_view{reinterpret_cast<const char *>(&c.peer->addr),
                                                  static_cast<size_t>(c.peer->addrlen)}
                               : std::string_view{},
@@ -1687,15 +1680,15 @@ template <class App> class Ring
         // A generation that moved means the connection is gone and its run
         // died with it. The answer is still taken, because the slot is the
         // pool's and would otherwise stay busy for the life of the process.
-        if (!c.live || c.gen != generation)
+        if (c.dead)
             return;
-        // The slot was taken again since this job was sent: the answer is a
+        // The park was taken again since this job was sent: the answer is a
         // round's that ended, and the round parked there now is not its.
         if (App::park_generation(c.app, park) != park_gen)
             return;
         App::compute_task_answered(c.app, static_cast<int>(park), static_cast<int>(slot), answered);
         if (!c.sending)
-            continue_conn(idx);
+            continue_conn(c);
     }
 
     // ENOENT, EXDEV (RESOLVE_BENEATH), ELOOP (RESOLVE_NO_SYMLINKS), EACCES -
@@ -1703,19 +1696,15 @@ template <class App> class Ring
     // cannot be told apart from asking for a name that was never there.
     void on_file_open(Completed done)
     {
-        const uint32_t idx = done.idx;
-        const uint16_t gen = done.gen;
         struct io_uring_cqe *const cqe = done.cqe;
-        if (mrb_unlikely(idx >= max_conns_))
-            return;
-        Conn &c = conns_[idx];
-        if (!c.live || c.gen != gen) {
-            arm_file_close(idx, cqe->res >= 0 ? cqe->res : -1, gen);
+        Conn &c = done.conn;
+        if (c.dead) {
+            arm_file_close(c, cqe->res >= 0 ? cqe->res : -1);
             return;
         }
         if (cqe->res < 0) {
             app_.file_reject(c.app);
-            file_wake(idx);
+            file_wake(c);
             return;
         }
         c.file_io->fd = cqe->res;
@@ -1723,38 +1712,34 @@ template <class App> class Ring
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_statx(sqe, c.file_io->fd, "", AT_EMPTY_PATH,
                             STATX_TYPE | STATX_SIZE | STATX_MTIME, &c.file_io->stx);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kFileStat, c.gen, idx));
+        io_uring_sqe_set_data64(sqe, arm(c.op_file_stat, &c, detail::kFileStat));
     }
 
     // statx on the opened fd, never by path: size and mtime have to describe
     // the bytes openat2 confined, and a second resolve would not be confined.
     void on_file_stat(Completed done)
     {
-        const uint32_t idx = done.idx;
-        const uint16_t gen = done.gen;
         struct io_uring_cqe *const cqe = done.cqe;
-        if (mrb_unlikely(idx >= max_conns_))
-            return;
-        Conn &c = conns_[idx];
+        Conn &c = done.conn;
         const int fd = c.file_io->fd;
         c.file_io->fd = -1;
-        if (!c.live || c.gen != gen) {
-            arm_file_close(idx, fd, gen);
+        if (c.dead) {
+            arm_file_close(c, fd);
             return;
         }
         if (cqe->res < 0) {
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
             app_.file_reject(c.app);
-            file_wake(idx);
+            file_wake(c);
             return;
         }
         size_t want = 0;
         const bool read_owed = app_.file_stat(c.app, c.file_io->stx, &want);
         if (!read_owed || want == 0) {
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
             if (read_owed)
                 app_.file_ready_now(c.app, 0);
-            file_wake(idx);
+            file_wake(c);
             return;
         }
         // A large file is mapped, not read: the sends walk the mapping and the
@@ -1765,9 +1750,9 @@ template <class App> class Ring
         if (maplen != 0) {
             void *method = ::mmap(nullptr, maplen, PROT_READ, MAP_PRIVATE, fd, 0);
             if (method != MAP_FAILED) {
-                arm_file_close(idx, fd, gen);
+                arm_file_close(c, fd);
                 app_.file_mapped(c.app, static_cast<const char *>(method), maplen);
-                file_wake(idx);
+                file_wake(c);
                 return;
             }
         }
@@ -1776,19 +1761,18 @@ template <class App> class Ring
         c.file_io->filled = 0;
         c.file_io->offset = 0;
         c.file_io->stx_size = static_cast<size_t>(c.file_io->stx.stx_size);
-        arm_file_read(idx);
+        arm_file_read(c);
     }
 
-    void arm_file_read(uint32_t index)
+    void arm_file_read(Conn &c)
     {
-        Conn &c = conns_[index];
         char *chunk = app_.file_buffer(c.app, c.file_io->nbytes);
         c.file_io->reading = true;
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_read(sqe, c.file_io->fd, chunk + c.file_io->filled,
                            static_cast<unsigned>(c.file_io->nbytes - c.file_io->filled),
                            c.file_io->offset + c.file_io->filled);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kFileRead, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_file_read, &c, detail::kFileRead));
     }
 
     // A short read is ordinary and resumes; res == 0 before the end is the
@@ -1796,36 +1780,29 @@ template <class App> class Ring
     // framing lie - refused, not sent.
     void on_file_read(Completed done)
     {
-        const uint32_t idx = done.idx;
-        const uint16_t gen = done.gen;
         struct io_uring_cqe *const cqe = done.cqe;
-        if (mrb_unlikely(idx >= max_conns_))
-            return;
-        Conn &c = conns_[idx];
+        Conn &c = done.conn;
         c.file_io->reading = false;
         const int fd = c.file_io->fd;
-        if (!c.live || c.gen != gen) {
+        if (c.dead) {
             c.file_io->fd = -1;
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
             // The connection ended under this read and its close waited for
-            // it. Nothing writes that buffer now, so the slot may go back.
-            if (c.close_owed && c.gen == gen) {
-                finish_close(idx);
-                return;
-            }
-            arm_file_open(idx);
+            // it. Nothing writes that buffer now, so the close may go on.
+            if (c.close_owed)
+                finish_close(c);
             return;
         }
         if (cqe->res < 0) {
             c.file_io->fd = -1;
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
             app_.file_error(c.app, std::strerror(-cqe->res));
-            file_wake(idx);
+            file_wake(c);
             return;
         }
         c.file_io->filled += static_cast<size_t>(cqe->res);
         if (cqe->res != 0 && c.file_io->filled < c.file_io->nbytes) {
-            arm_file_read(idx);
+            arm_file_read(c);
             return;
         }
         if (c.file_io->filled < c.file_io->nbytes) {
@@ -1833,9 +1810,9 @@ template <class App> class Ring
             // the Content-Length statx already promised. The framing would lie, so
             // the answer is refused rather than sent.
             c.file_io->fd = -1;
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
             app_.file_error(c.app, "the file shrank while it was read");
-            file_wake(idx);
+            file_wake(c);
             return;
         }
         c.file_io->offset += c.file_io->filled;
@@ -1843,48 +1820,41 @@ template <class App> class Ring
         // arms the next read once the round this one feeds has drained.
         if (c.file_io->offset >= c.file_io->stx_size) {
             c.file_io->fd = -1;
-            arm_file_close(idx, fd, gen);
+            arm_file_close(c, fd);
         }
         app_.file_ready_now(c.app, c.file_io->filled);
-        file_wake(idx);
+        file_wake(c);
     }
 
     // SO_MEMINFO through the ring.
-    void arm_meminfo(uint32_t index)
+    void arm_meminfo(Conn &c)
     {
-        Conn &c = conns_[index];
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(index), SOL_SOCKET,
+        io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(c.fd), SOL_SOCKET,
                                SO_MEMINFO, c.meminfo, sizeof(c.meminfo));
         sqe->flags |= IOSQE_FIXED_FILE;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kMeminfo, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_meminfo, &c, detail::kMeminfo));
     }
 
     // The peer's address, through liburing's own prep - the last argument
     // is what picks the peer over this socket's own name. Only when
     // someone is logging.
-    void arm_peer(uint32_t index)
+    void arm_peer(Conn &c)
     {
-        Conn &c = conns_[index];
         if (c.peer == nullptr)
             c.peer.reset(new typename Conn::PeerAddr());
         c.peer->addrlen = sizeof(c.peer->addr);
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_cmd_getsockname(sqe, static_cast<int>(index),
+        io_uring_prep_cmd_getsockname(sqe, static_cast<int>(c.fd),
                                       reinterpret_cast<struct sockaddr *>(&c.peer->addr),
                                       &c.peer->addrlen, 1);
         sqe->flags |= IOSQE_FIXED_FILE;
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kPeer, c.gen, index));
+        io_uring_sqe_set_data64(sqe, arm(c.op_peer, &c, detail::kPeer));
     }
     // The peer's raw sockaddr for the log; "-" and one line if the kernel
     // has no such cmd.
-    void on_peer(uint32_t index, uint16_t generation, struct io_uring_cqe *completion)
+    void on_peer(Conn &c, struct io_uring_cqe *completion)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        if (c.gen != generation)
-            return;
         if (mrb_unlikely(completion->res < 0)) {
             static bool warned = false;
             if (!warned) {
@@ -1903,18 +1873,12 @@ template <class App> class Ring
     }
 
     // The round's byte bound, from the socket's own books.
-    void on_meminfo(uint32_t index, uint16_t generation, struct io_uring_cqe *completion)
+    void on_meminfo(Conn &c, struct io_uring_cqe *completion)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        Conn &c = conns_[index];
-        if (c.gen != generation)
-            return;
-        // The generation alone is not enough here. A send completes, this is
-        // armed, and a recv error in the same batch closes the connection -
-        // same slot, same generation, and the round below would be spelled
+        // A send completes, this is armed, and a recv error in the same
+        // batch closes the connection: the round below would be spelled
         // onto a socket whose close is already submitted.
-        if (mrb_unlikely(!c.live))
+        if (mrb_unlikely(c.dead))
             return;
         size_t cap = Conn::kRoundFloor;
         if (mrb_likely(completion->res >= 0)) {
@@ -1930,7 +1894,7 @@ template <class App> class Ring
         c.round_cap = cap;
         if (c.sending)
             return;
-        continue_conn(index);
+        continue_conn(c);
     }
 
     // Resolve a plan into iovecs: a sink segment carried an offset, and this
@@ -1973,28 +1937,27 @@ template <class App> class Ring
 
     // The delivery continuation: a fully drained sink is the one signal every
     // protocol produces. Backlog first, then the App.
-    void continue_conn(uint32_t index)
+    void continue_conn(Conn &c)
     {
-        Conn &c = conns_[index];
         if (!c.out.empty()) {
-            arm_send(index);
+            arm_send(c);
             return;
         }
         typename App::Plan req;
         req.byte_cap = c.round_cap;
         if (!app_.spell_next_round(c.app, c.out, req))
             c.close_after_send = true;
-        arm_file_open(index);
-        arm_spill_write(index);
-        arm_compute_task(index);
-        arm_watchers(index);
+        arm_file_open(c);
+        arm_spill_write(c);
+        arm_compute_task(c);
+        arm_watchers(c);
         if (req.iovlen != 0) {
             take_plan(c, req);
-            arm_send(index);
+            arm_send(c);
             return;
         }
         if (!c.out.empty()) {
-            arm_send(index);
+            arm_send(c);
             return;
         }
         // Nothing went out this round, so the window lent to the last one is
@@ -2006,12 +1969,12 @@ template <class App> class Ring
             const size_t left = c.file_io->stx_size - c.file_io->offset;
             c.file_io->nbytes = left < kResponseFileWindow ? left : kResponseFileWindow;
             c.file_io->filled = 0;
-            arm_file_read(index);
+            arm_file_read(c);
             return;
         }
         if (c.close_after_send) {
             c.close_after_send = false;
-            begin_close(index);
+            begin_close(c);
             return;
         }
         c.idle = true;
@@ -2022,80 +1985,86 @@ template <class App> class Ring
             App::file_release(c.app);
         }
     }
-    // One completion, by tag.
+    // One completion. The SQE carried the address of the record that armed
+    // it, and that record names the connection - there is no table, no slot
+    // and no generation to decode.
     void handle(struct io_uring_cqe *completion)
     {
         const uint64_t user_data = io_uring_cqe_get_data64(completion);
-        const uint8_t kind = static_cast<uint8_t>(user_data >> 56);
-        const uint16_t generation = static_cast<uint16_t>(user_data >> 32);
-        const uint32_t index = static_cast<uint32_t>(user_data);
+        // A submission nobody reads carries nothing. The worker's own
+        // send is one of those.
+        if (user_data == 0)
+            return;
+        Op &op = *reinterpret_cast<Op *>(user_data);
+        Conn *const conn = op.conn;
         // The try is here and not around a dispatch() of its own. This is
         // the hottest path in the reactor, and a separate function takes
         // on_send back out of line: measured, that cost 5%.
         try {
-            switch (kind) {
+            switch (op.kind) {
                 case detail::kAccept:
-                    on_accept(index, completion);
+                    on_accept(op, completion);
                     break;
                 case detail::kRecv:
-                    on_recv(index, generation, completion);
+                    on_recv(*conn, completion);
                     break;
                 case detail::kSend:
-                    on_send(index, generation, completion);
+                    on_send(*conn, completion);
                     break;
                 case detail::kMeminfo:
-                    on_meminfo(index, generation, completion);
+                    on_meminfo(*conn, completion);
                     break;
                 case detail::kFileOpen:
-                    on_file_open({index, generation, completion});
+                    on_file_open({*conn, completion});
                     break;
                 case detail::kFileStat:
-                    on_file_stat({index, generation, completion});
+                    on_file_stat({*conn, completion});
                     break;
                 case detail::kFileRead:
-                    on_file_read({index, generation, completion});
+                    on_file_read({*conn, completion});
                     break;
                 case detail::kFileClose:
                     break;
                 case detail::kSpillWrite:
-                    on_spill_write({index, generation, completion});
+                    on_spill_write({*conn, completion});
                     break;
                 case detail::kLog:
-                    on_log(generation, index, completion);
+                    on_log(static_cast<uint16_t>(op.aux >> 16),
+                           static_cast<uint32_t>(op.aux & 0xffffu), completion);
                     break;
                 case detail::kPeer:
-                    on_peer(index, generation, completion);
+                    on_peer(*conn, completion);
                     break;
                 case detail::kClose:
-                    if (mrb_unlikely(completion->res == -ECANCELED)) {
+                    if (mrb_unlikely(completion->res == -ECANCELED && conn != nullptr)) {
                         struct io_uring_sqe *sqe = sqe_or_submit();
-                        io_uring_prep_close_direct(sqe, index);
+                        io_uring_prep_close_direct(sqe, conn->fd);
                         io_uring_sqe_set_data64(sqe,
-                                                detail::tag(detail::kClose, generation, index));
+                                                arm(conn->op_close, conn, detail::kClose));
                     }
                     break;
+                case detail::kSetup:
                 case detail::kShutdown:
-                    break;
                 case detail::kPollRemove:
                     break;
                 case detail::kComputeTask:
-                    on_compute_task(index, generation, detail::watch_slot(completion->user_data),
-                                    completion);
+                    on_compute_task(op, completion);
                     break;
                 // #80: a job that ran past its max_runtime. The timeout also
                 // completes when it is cancelled or when the job answered
                 // first; the pool reads the job number and leaves such a worker
                 // alone.
                 case detail::kComputeDeadline:
-                    if (completion->res == -ETIME)
-                        compute_.interrupt(index, generation);
+                    if (completion->res == -ETIME) {
+                        compute_.interrupt(op.aux >> 16,
+                                           static_cast<uint16_t>(op.aux & 0xffffu));
+                    }
                     break;
                 case detail::kComputeStarted:
-                    on_compute_started(index, generation);
+                    on_compute_started(op);
                     break;
                 case detail::kWatch:
-                    on_watch(index, generation, detail::watch_slot(completion->user_data),
-                             completion);
+                    on_watch(*conn, static_cast<uint8_t>(op.aux), completion);
                     break;
                 case detail::kStop:
                     stop_ = true;
@@ -2104,22 +2073,17 @@ template <class App> class Ring
                     break;
             }
         } catch (const ConnFailed &field) {
-            // kComputeTask puts the park generation in the top byte of the
-            // connection word, so its low word is not an index on its own -
-            // begin_close saw a number above max_conns_ and returned, leaving
-            // the connection open with nothing said. Every other kind's word
-            // is the index itself.
-            connection_failed(kind == detail::kComputeTask ? (index & 0xffffffu) : index, field);
+            if (conn != nullptr)
+                connection_failed(*conn, field);
         }
+        release(op, completion);
     }
 
     // The one place a ConnFailed lands, whoever threw it.
-    void connection_failed(uint32_t index, const ConnFailed &field)
+    void connection_failed(Conn &c, const ConnFailed &field)
     {
-        if (mrb_unlikely(index >= max_conns_))
-            return;
-        say_connection_failed(field, conns_[index]);
-        begin_close(index);
+        say_connection_failed(field, c);
+        begin_close(c);
     }
 
     // One wait and one batch; bounded to a second even without a budget, so
@@ -2188,29 +2152,26 @@ template <class App> class Ring
         }
         if (!rearm_.empty()) {
             for (const Rearm &r : rearm_) {
-                Conn &conn = conns_[r.idx];
-                if (conn.live && conn.gen == r.gen && !conn.close_after_send)
-                    arm_recv(r.idx);
+                Conn &conn = *r.conn;
+                if (!conn.dead && !conn.close_after_send)
+                    arm_recv(conn);
             }
             rearm_.clear();
         }
         if (now_s_ != last_reap_s_) {
             last_reap_s_ = now_s_;
-            const size_t nwords = live_bits_.size();
-            for (size_t window = 0; window < nwords; window++) {
-                // begin_close only clears bits and no accept runs inside this
-                // sweep, so a snapshot can go stale in one direction only - the
-                // c.live guard below still catches that.
-                uint64_t bits = live_bits_[window];
-                while (bits != 0) {
-                    const uint32_t i = static_cast<uint32_t>(window * 64) + __builtin_ctzll(bits);
-                    bits &= bits - 1;
-                    Conn &conn = conns_[i];
-                    if (!conn.live)
+            // #113: the live list. begin_close only marks, and no accept
+            // runs inside this sweep, so the next link is read before the
+            // body in case the body ends this connection.
+            for (Conn *walk = live_head_; walk != nullptr;) {
+                Conn &conn = *walk;
+                walk = walk->live_next;
+                {
+                    if (conn.dead)
                         continue;
                     if (!conn.sending && app_.timed(conn.app)) {
                         conn.deadline_s = now_s_ + idle_timeout_;
-                        continue_conn(i);
+                        continue_conn(conn);
                         continue;
                     }
                     // #30: a watcher that said nothing for as long as it allowed.
@@ -2232,10 +2193,10 @@ template <class App> class Ring
                                 struct io_uring_sqe *sqe = sqe_or_submit();
                                 io_uring_prep_poll_remove(sqe, armed);
                                 io_uring_sqe_set_data64(
-                                    sqe, detail::tag(detail::kPollRemove, conn.gen, i));
+                                    sqe, arm(conn.op_poll_remove, &conn, detail::kPollRemove));
                                 App::watcher_is_unarmed(conn.app, over[k]);
                             }
-                            step_watch(i, conn, over[k], App::watcher_deadline(conn.app, over[k]));
+                            step_watch(conn, over[k], App::watcher_deadline(conn.app, over[k]));
                         }
                         conn.w_deadline_s = App::watchers_soonest_deadline(conn.app);
                         continue;
@@ -2246,17 +2207,18 @@ template <class App> class Ring
                         if (!conn.close_after_send) {
                             conn.close_after_send = true;
                             struct io_uring_sqe *sqe = sqe_or_submit();
-                            io_uring_prep_shutdown(sqe, static_cast<int>(i), SHUT_RDWR);
+                            io_uring_prep_shutdown(sqe, static_cast<int>(conn.fd), SHUT_RDWR);
                             sqe->flags |= IOSQE_FIXED_FILE;
-                            io_uring_sqe_set_data64(sqe, detail::tag(detail::kSetup, conn.gen, i));
+                            io_uring_sqe_set_data64(
+                                sqe, arm(conn.op_shutdown, &conn, detail::kShutdown));
                         }
                     } else if (app_.going_away(conn.app, conn.out)) {
                         // RFC 6455 7.1.1: a WebSocket hears a Close frame before the
                         // socket goes. The send carries it and closes behind it.
                         conn.close_after_send = true;
-                        arm_send(i);
+                        arm_send(conn);
                     } else {
-                        begin_close(i);
+                        begin_close(conn);
                     }
                 }
             }
@@ -2291,7 +2253,26 @@ template <class App> class Ring
     // #113: every connection that exists, newest first. There is no table
     // to walk, so this is what the idle sweep and the drain read.
     Conn *live_head_ = nullptr;
-    uint32_t max_conns_ = 0;
+    // The operations that belong to the process rather than to a peer: the
+    // listeners, the two log streams, the stop signal, the setup chain.
+    // Their `conn` is null, so release() counts nothing for them - they
+    // live as long as the ring does. The listener and stage arrays are
+    // configuration, sized by kMaxListeners, and not a table of peers.
+    Op op_stop_;
+    Op op_poll_remove_;
+    Op op_unlink_;
+    // One record per log send that can fly beside another: the access
+    // line, the error record's fixed head, and the error record's text.
+    enum : unsigned { kLogAccess = 0, kLogErrorHead = 1, kLogErrorBody = 2, kLogRecords = 3 };
+    Op op_log_[kLogRecords];
+    Op op_accept_[kMaxListeners];
+    Op op_listener_close_[kMaxListeners];
+    // One per (listener, stage): the chain submits its stages together, so
+    // each needs an address of its own to say which one refused.
+    Op op_setup_[kMaxListeners][detail::kStUnlink + 1];
+    // One per worker slot. A deadline names the worker's job, not a peer.
+    std::deque<Op> op_compute_deadline_;
+    uint32_t table_size_ = 0;
     uint32_t listener_base_ = 0;
     bool unix_listener_[kMaxListeners] = {};
     static constexpr unsigned kSaidMax = 24;
@@ -2304,7 +2285,6 @@ template <class App> class Ring
     bool draining_ = false;
     int64_t drain_deadline_ = 0;
     uint32_t live_ = 0;
-    std::vector<uint64_t> live_bits_;
     // One timespec per job in flight, for the deadline SQEs above.
     std::vector<__kernel_timespec> compute_ts_;
     size_t compute_ts_at_ = 0;
@@ -2356,19 +2336,16 @@ template <class App> class Ring
         buf_tail_ += replenish_;
         replenish_ = 0;
     }
-    // Built in place and never moved: a slot holds a coroutine handle and
-    // four raw pointers it owns, so growing an array of them is not a
-    // thing this should be able to do by accident. max_conns_ is decided
-    // once, from the FD budget, before the first accept.
-    std::unique_ptr<Conn[]> conns_;
     // Which connection owes a fresh recv, and which tenant of the slot
     // owed it. The generation is half the entry: sqe() submits mid-batch
     // when the queue fills, so a close and a new accept for one slot can
     // both be handled inside a single batch, and a second multishot recv
     // on one socket delivers its bytes outside the parser's order.
+    // Which connection owes a fresh recv. The connection itself, because
+    // there is no slot to name and no tenant of one to tell apart: the
+    // address is the connection for as long as it exists.
     struct Rearm {
-        uint32_t idx;
-        uint16_t gen;
+        Conn *conn;
     };
     std::vector<Rearm> rearm_;
 };

@@ -110,6 +110,9 @@ struct Slot {
     // carry, so the reactor knows whose answer arrived. The pool never
     // looks inside it.
     uint64_t answer = 0;
+    // The reactor's tag for "this job began". The worker sends it when it
+    // picks the job up, so the deadline clock starts at execution.
+    uint64_t started = 0;
     bool busy = false;
 };
 
@@ -918,7 +921,7 @@ void ComputePool::worker(Impl *impl, unsigned worker_number)
                     io_uring_submit(ring);
                 io_uring_prep_msg_ring(
                     began, impl->home->ring_fd, 0,
-                    detail::compute_started_tag(static_cast<unsigned>(job), slot.gen), 0);
+                    slot.started, 0);
                 io_uring_sqe_set_data64(began, kSent);
                 io_uring_submit(ring);
             }
@@ -1032,7 +1035,7 @@ void ComputePool::stop()
             continue;
         }
         io_uring_prep_msg_ring(sqe, impl->rings[i].ring_fd, 0, kStopJob, 0);
-        io_uring_sqe_set_data64(sqe, detail::tag(detail::kComputeTask, 0, 0));
+        io_uring_sqe_set_data64(sqe, 0);
         const int status = io_uring_submit(impl->home);
         if (status < 0) {
             std::fprintf(stderr, "webmachine: compute worker %zu cannot be told to stop: %s\n", i,
@@ -1069,6 +1072,21 @@ double ComputePool::started(unsigned slot, uint16_t gen)
     return s.deadline;
 }
 
+bool ComputePool::slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *generation) const
+{
+    if (impl_ == nullptr)
+        return false;
+    for (size_t i = 0; i < impl_->slots.size(); i++) {
+        const Slot &s = impl_->slots[i];
+        if (s.busy && s.answer == answer) {
+            *slot = static_cast<unsigned>(i);
+            *generation = s.gen;
+            return true;
+        }
+    }
+    return false;
+}
+
 void ComputePool::interrupt(unsigned slot, uint16_t gen)
 {
     if (impl_ == nullptr || slot >= impl_->slots.size())
@@ -1092,7 +1110,7 @@ void ComputePool::interrupt(unsigned slot, uint16_t gen)
 }
 
 bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
-                         uint64_t answer)
+                         uint64_t answer, uint64_t started)
 {
     if (impl_ == nullptr)
         return false;
@@ -1118,6 +1136,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     slot.out_ask.clear();
     slot.raised = false;
     slot.answer = answer;
+    slot.started = started;
     slot.gen++;
     slot.busy = true;
 
@@ -1135,7 +1154,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
                            static_cast<uint64_t>(slot_index), 0);
     // The submission itself owes no completion to anyone: the answer comes
     // from the worker, not from the act of sending.
-    io_uring_sqe_set_data64(sqe, detail::tag(detail::kComputeTask, 0, 0));
+    io_uring_sqe_set_data64(sqe, 0);
     return true;
 }
 
