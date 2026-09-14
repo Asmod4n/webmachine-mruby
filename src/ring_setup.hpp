@@ -28,14 +28,17 @@ inline constexpr uint32_t kFdReserve = 128;
 // connections. A limit under 1169 - this, kFdReserve, kMaxListeners and
 // one connection - refuses to start, and the message names the numbers.
 inline constexpr uint32_t kBodyFilesMax = 1024;
-inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
+// Slots in a ring's registered file table, and with it the peers one
+// ring holds at once. A direct descriptor lives only in this table.
+inline constexpr uint32_t kFixedTableKernelMax = 512;
 
 // A ring's SQ/CQ pages are locked memory; failing to raise is not a
 // reason not to start.
 uint64_t raise_memlock();
 
-// The kernel's own ceiling on submission entries, written in its C code.
-inline constexpr unsigned kSqEntriesMax = 32768;
+// Submission entries a ring asks for. The queue and its completion
+// queue are locked memory, shared by every ring of the process.
+inline constexpr unsigned kSqEntriesMax = 512;
 
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings);
 

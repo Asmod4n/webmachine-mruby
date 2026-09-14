@@ -23,31 +23,14 @@ uint64_t raise_memlock()
     return static_cast<uint64_t>(rl.rlim_cur);
 }
 
-// How many submission entries each ring of this process gets. The rings
-// are locked memory charged to the process, and three quarters of
-// RLIMIT_MEMLOCK are theirs to share.
+// Submission entries for one ring of this process. Three quarters of
+// RLIMIT_MEMLOCK go to the rings and they share it; one entry costs its
+// submission slot and its two completion slots. The answer is a power of
+// two, and kSqEntriesMax bounds it.
 //
-// Measured, not reasoned: on a box with 8 MiB of locked memory, two rings
-// of 32768 entries come up and the third answers ENOMEM. One such ring is
-// its submission queue (32768 * 64) plus its completion queue (65536 *
-// 16), which is 3 MiB, so two fit in 8 MiB and three do not. The server
-// opens one ring per answering thread plus one that accepts, so at
-// --threads=3 it wants four and gets two.
-//
-// One entry therefore costs its own submission slot plus its two
-// completion slots - the completion queue holds twice the submission
-// count unless asked otherwise - and both sizes come from io_uring's own
-// structures rather than from a number of ours.
-//
-// kSqEntriesMax is the kernel's own ceiling, written in its C code. It has
-// nothing to do with the limit above and bounds the answer however large
-// an operator makes that limit.
-//
-// --workers=N shares the same way. A child is its own process, but the
-// kernel charges a ring's memory to the user - io_uring_register(2) says
-// as much of RLIMIT_NOFILE, and io_account_mem charges RLIMIT_MEMLOCK
-// against the same user struct. Measured: three children of 32768
-// entries want 9 MiB where the user has 8, and none of them comes up.
+// rings counts every ring this server opens: threads + 1 for --threads,
+// and the child count for --workers, because the kernel charges a ring's
+// memory to the user rather than to the process.
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 {
     constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);
