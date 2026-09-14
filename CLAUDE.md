@@ -173,10 +173,35 @@ answers 200. CI runs it on every push, beside the suite.
 
 ## A number about speed comes from bench/
 
-`bench/` owns measuring. Read `bench/how-to-measure.md` before you make
-any claim about speed, and then follow it.
+`bench/` owns measuring. Read the whole directory before you make any
+claim about speed: `bench/how-to-measure.md` and every `.sh` in there,
+headers included. Then follow what they say.
 
-What that file settles, and what a session gets wrong without it:
+The whole directory, and not the one document, because the knowledge is
+spread and the document does not carry all of it. The header of
+`assets.sh` holds what was tried and lost - splice against a sink that
+copied twice, `MSG_SPLICE_PAGES` with no effect over 2 GiB, `SEND_ZC`
+refused on shape - and the reason a pin is structural rather than
+statistical: a server that touches a file gets an io-wq pool, and those
+workers inherit the issuing thread's affinity. None of that is in
+`how-to-measure.md`. `floor.sh` states which harness knobs are refused
+and why each one went. `priority.sh` says what the bench takes from the
+machine, and why it does nothing on a machine that is already idle.
+`instructions.sh` is the only tool for a change the clock cannot
+resolve - a shared host swings 15 percent between two runs of one
+binary and an instruction count does not move - and it says which
+binary it needs, because valgrind cannot decode AVX-512. `nginx-assets.sh`, `lighttpd-assets.sh` and
+`h2o-assets.sh` are the arms that measure another server, so a number
+of ours has something beside it.
+
+This rule exists because it was broken from the other side. A session
+extended `tools/webmachine-tune.sh` and left its pin advice resting on
+the splice measurement, which `assets.sh` had already marked as
+historical in its own header. The file that measures was right and the
+files that talk about it had drifted. Read the measuring files first.
+
+What `how-to-measure.md` settles, and what a session gets wrong without
+it:
 
 - htgen is the client. `wrk`, `h2load` and `ab` are gone from this
   tree, and the machine that measures does not install them. A script
