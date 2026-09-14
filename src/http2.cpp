@@ -794,8 +794,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // trailer could spell anything at all.
         // RFC 9113 8.1.1: a malformed request is a stream error. The stream
         // ends with PROTOCOL_ERROR. The connection stays open.
-        for (size_t i = 0; i < fields.size(); i++) {
-            const H2DecodedField &field = fields.at(i);
+        for (const H2DecodedField &field : fields) {
             if (!h2_field_ok(field.name, field.value, field.known != LSHPACK_HDR_UNKNOWN) ||
                 field.name.starts_with(':') ||
                 !h2_trailer_name_ok(field.name.data(), field.name.size())) {
@@ -843,8 +842,9 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     size_t protocol_vlen = 0;
     const char *method_val = nullptr;
     size_t method_vlen = 0;
-    for (size_t i = 0; accepted && i < fields.size(); i++) {
-        const H2DecodedField &field = fields.at(i);
+    for (const H2DecodedField &field : fields) {
+        if (!accepted)
+            break;
         const char *const name = field.name.data();
         const size_t nlen = field.name.size();
         const char *const field_value = field.value.data();
