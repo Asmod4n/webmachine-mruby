@@ -79,8 +79,10 @@ template <class App> class Ring
             io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
         if (pool_ != nullptr)
             ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
-        if (ring_up_)
+        if (ring_up_) {
             io_uring_queue_exit(&ring_);
+            ring_up_ = false;
+        }
         // #113: the ring is gone, so the kernel names nothing of these any
         // more. Whatever it still held is freed here and nowhere else.
         while (live_head_ != nullptr)
@@ -748,7 +750,7 @@ template <class App> class Ring
     // The kernel holds nothing of this connection any more, and the peer is
     // gone. Called from release() and from nowhere else, because release()
     // is the only thing that knows when both are true.
-    void conn_free(Conn *conn)
+    void conn_free(Conn *conn) noexcept
     {
         if (conn->live_prev != nullptr)
             conn->live_prev->live_next = conn->live_next;
@@ -760,11 +762,10 @@ template <class App> class Ring
             live_--;
         delete conn;
         // An entry of the registered table is free again, so a listener
-        // that stopped on a full table may take peers once more.
-        for (uint32_t li = 0; li < nlisteners_; li++) {
-            if (accept_stalled_[li])
-                arm_accept(li);
-        }
+        // that stopped on a full table may take peers once more. Only the
+        // note is made here: this runs from destructors of its own, and a
+        // function a destructor calls may not raise.
+        accept_retry_owed_ = true;
     }
 
     // The one door an operation goes through, and the only place that
@@ -804,6 +805,18 @@ template <class App> class Ring
         rearm_.push_back({&conn});
     }
 
+    // The reference an operation's completion carries, given back however
+    // the scope ends. release() is noexcept, so this destructor is too.
+    struct Released {
+        Ring *ring;
+        Op *op;
+        const struct io_uring_cqe *completion;
+        ~Released()
+        {
+            ring->release(*op, completion);
+        }
+    };
+
     // A reference given back however the scope ends, a raise included.
     // Every other way of saying it has been tried here and every one of
     // them has a path that unwinds past the line that counts down.
@@ -823,6 +836,16 @@ template <class App> class Ring
         Conn *conn;
     };
 
+    // A completion taken out of the queue however the scope ends.
+    struct Seen {
+        struct io_uring *ring;
+        struct io_uring_cqe *completion;
+        ~Seen()
+        {
+            io_uring_cqe_seen(ring, completion);
+        }
+    };
+
     // The rest of a list of references, when the walk over it ended early.
     struct HeldList {
         Ring *ring;
@@ -836,10 +859,18 @@ template <class App> class Ring
     };
 
     // The one place a reference goes back, whoever held it.
-    void drop_hold(Conn &conn)
+    void drop_hold(Conn &conn) noexcept
     {
-        if (mrb_unlikely(conn.armed == 0))
-            fatal("ring: a reference was given back that nobody held");
+        if (mrb_unlikely(conn.armed == 0)) {
+            // The tally is wrong, so a block may already have been freed
+            // while the kernel still names it. This cannot be raised: the
+            // callers are destructors, and it is not the application's
+            // fault to catch. The process says why it goes and goes.
+            std::fputs("webmachine: a reference was given back that nobody held - "
+                       "the reactor's tally is wrong and a block may already be gone\n",
+                       stderr);
+            std::abort();
+        }
         conn.armed--;
         if (conn.dead && conn.armed == 0)
             conn_free(&conn);
@@ -851,7 +882,7 @@ template <class App> class Ring
     //
     // One counted submission is released exactly once. That is the whole
     // invariant this design stands on.
-    void release(Op &op, const struct io_uring_cqe *completion)
+    void release(Op &op, const struct io_uring_cqe *completion) noexcept
     {
         if ((completion->flags & IORING_CQE_F_MORE) != 0)
             return;
@@ -1126,18 +1157,20 @@ template <class App> class Ring
     void on_accept(Op &op, struct io_uring_cqe *completion)
     {
         const uint32_t listener_index = op.aux;
-        if (!(completion->flags & IORING_CQE_F_MORE))
+        const bool table_full =
+            completion->res == -ENFILE || completion->res == -EMFILE;
+        // The decision comes before the re-arm. A multishot accept that
+        // failed is over, and arming it again on a full table makes it
+        // fail again at once - the reactor then spins until a descriptor
+        // comes free. So a refused accept waits for one instead.
+        if (!(completion->flags & IORING_CQE_F_MORE) && !table_full)
             arm_accept(listener_index);
         // The kernel refused the peer. A full descriptor table is overload
         // and not a fault: the multishot accept stays armed above, the idle
         // clocks give entries back, and the next peer is taken. It is still
         // not hidden - the operator hears it once, with the number.
         if (completion->res < 0) {
-            if (completion->res == -ENFILE || completion->res == -EMFILE) {
-                // A re-armed accept on a full table completes at once with
-                // the same refusal, and the reactor spins at full speed
-                // until a clock frees an entry. So this listener waits
-                // instead, and conn_free starts it again.
+            if (table_full) {
                 accept_stalled_[listener_index] = true;
                 if (!table_full_said_) {
                     table_full_said_ = true;
@@ -1713,6 +1746,10 @@ template <class App> class Ring
             fatal("ring: a compute deadline named a record this process never took");
         Deadline &owed = deadlines_[at];
         owed.busy = false;
+        // The record is free, so its address is no longer this job's
+        // timeout. Left standing, the next job to take this record would
+        // have its own timeout removed by the first job's answer.
+        compute_.name_deadline(owed.slot, owed.generation, 0);
         if (completion->res == -ETIME)
             compute_.interrupt(owed.slot, owed.generation);
     }
@@ -2161,6 +2198,10 @@ template <class App> class Ring
             return;
         Op &op = *reinterpret_cast<Op *>(user_data);
         Conn *const conn = op.conn;
+        // The reference goes back however this ends - the fall through, a
+        // ConnFailed, or a raise out of the ConnFailed handler itself,
+        // which no later clause of the same try would catch.
+        const Released give_back{this, &op, completion};
         // The try is here and not around a dispatch() of its own. This is
         // the hottest path in the reactor, and a separate function takes
         // on_send back out of line: measured, that cost 5%.
@@ -2236,15 +2277,7 @@ template <class App> class Ring
         } catch (const ConnFailed &field) {
             if (conn != nullptr)
                 connection_failed(*conn, field);
-        } catch (...) {
-            // A raise out of a handler - an SQ this reactor could not grow,
-            // an allocation that failed - unwinds past the line below. The
-            // reference the kernel held would then never come back and the
-            // block would stand for the life of the process.
-            release(op, completion);
-            throw;
         }
-        release(op, completion);
     }
 
     // The one place a ConnFailed lands, whoever threw it.
@@ -2307,8 +2340,14 @@ template <class App> class Ring
         bool worked = false;
         struct io_uring_cqe *cqe = nullptr;
         while (io_uring_peek_cqe(&ring_, &cqe) == 0) {
-            handle(cqe);
-            io_uring_cqe_seen(&ring_, cqe);
+            {
+                // A raise out of handle used to leave this completion in
+                // the queue. A caller that rescues and ticks again then
+                // dispatched the same record a second time, and the second
+                // release names a block the first one freed.
+                const Seen done{&ring_, cqe};
+                handle(cqe);
+            }
             worked = true;
             if (bounded) {
                 struct timespec now {
@@ -2333,6 +2372,13 @@ template <class App> class Ring
                 const Held one{this, &conn};
                 if (!conn.dead && !conn.close_after_send)
                     arm_recv(conn);
+            }
+        }
+        if (accept_retry_owed_ || now_s_ != last_reap_s_) {
+            accept_retry_owed_ = false;
+            for (uint32_t li = 0; li < nlisteners_; li++) {
+                if (accept_stalled_[li])
+                    arm_accept(li);
             }
         }
         if (now_s_ != last_reap_s_) {
@@ -2467,6 +2513,9 @@ template <class App> class Ring
     // again by the next conn_free, and not before.
     bool accept_stalled_[kMaxListeners] = {};
     bool table_full_said_ = false;
+    // A descriptor came free, so a stalled listener may be armed again.
+    // The note is made where a raise cannot go and read where one can.
+    bool accept_retry_owed_ = false;
     static constexpr unsigned kSaidMax = 24;
     const char *said_[kSaidMax] = {};
     unsigned said_count_ = 0;
