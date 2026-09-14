@@ -22,19 +22,11 @@ uint32_t derive_max_conns(FdBudget block)
 {
     const uint64_t nofile_limit = block.nofile_limit;
     const uint32_t extra_slots = block.extra_slots;
-    const uint32_t rings = block.rings != 0 ? block.rings : 1;
-    // Three quarters of the limit go to the rings, and they share it.
-    // The last quarter stays for every descriptor this process opens
-    // outside a ring table: its own few, a request body in a file, a log,
-    // whatever an application opens. A ring that took the whole limit
-    // left nothing for them.
-    const uint64_t for_rings = (nofile_limit / 4) * 3;
-    const uint64_t taken = static_cast<uint64_t>(kMaxListeners) + extra_slots;
-    if (for_rings <= taken * rings)
+    const uint64_t taken =
+        static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners + extra_slots;
+    if (nofile_limit <= taken)
         return 0;
-    uint64_t n = for_rings / rings - taken;
-    if (n == 0)
-        return 0;
+    uint64_t n = nofile_limit - taken;
     if (n + kMaxListeners + extra_slots > kFixedTableKernelMax) {
         n = kFixedTableKernelMax - kMaxListeners - extra_slots;
     }
