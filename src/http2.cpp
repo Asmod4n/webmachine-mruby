@@ -12,8 +12,21 @@ namespace webmachine
 {
 namespace
 {
-constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 constexpr size_t kH2FragBudget = kMaxHead * 2;
+// RFC 7541 5.2: the bytes one decoded field may take, name and value
+// together, with the decoder's own CRLF. hdrbuf holds a whole block plus
+// one such window, sized once, so nothing that points into it moves
+// while a block is read.
+constexpr size_t kH2FieldWindow = 4096;
+constexpr size_t kH2HdrBufSize = kH2FragBudget + kH2FieldWindow;
+
+// One field as the decoder left it in hdrbuf, and which static entry the
+// name came from (LSHPACK_HDR_UNKNOWN for a literal).
+struct H2DecodedField {
+    std::string_view name;
+    std::string_view value;
+    uint8_t known;
+};
 // RFC 9113 8.1.1: how many streams one connection may lose to a request
 // that breaks its own Content-Length before the connection itself ends.
 // Four leaves room for a client with a defect and ends a client that
@@ -539,16 +552,16 @@ bool Http1::h2_error_page(const H2ErrorAsk &asset_ask, H2ErrorPage &bytes, H2Ans
 // either answer or park the facts on the stream.
 // RFC 9113 8.1: the fields a parked stream copied when its HEADERS came,
 // rebuilt over the blob that outlived hdrbuf. Returns how many.
-size_t Http1::h2_fields_of_parked(const H2Stream &stream, struct phr_header *header_vector)
+size_t Http1::h2_fields_of_parked(const H2Stream &stream,
+                                  std::array<struct phr_header, kH2MaxFields> &header_vector)
 {
-    size_t name_length = stream.field_spans.size() / 4;
-    if (name_length > kH2MaxFields)
-        name_length = kH2MaxFields;
+    const std::string_view blob(stream.field_blob);
+    const size_t name_length = std::min(stream.field_spans.size(), kH2MaxFields);
     for (size_t i = 0; i < name_length; i++) {
-        header_vector[i].name = stream.field_blob.data() + stream.field_spans[i * 4];
-        header_vector[i].name_len = stream.field_spans[i * 4 + 1];
-        header_vector[i].value = stream.field_blob.data() + stream.field_spans[i * 4 + 2];
-        header_vector[i].value_len = stream.field_spans[i * 4 + 3];
+        const H2FieldSpan &span = stream.field_spans.at(i);
+        const std::string_view name = blob.substr(span.name_at, span.name_len);
+        const std::string_view value = blob.substr(span.value_at, span.value_len);
+        header_vector.at(i) = {name.data(), name.size(), value.data(), value.size()};
     }
     return name_length;
 }
@@ -630,10 +643,10 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
     // still coming says no, and the walk stops at the first node that
     // reads content.
     const bool body_whole = complete;
-    struct phr_header header_vector[kH2MaxFields];
+    std::array<struct phr_header, kH2MaxFields> header_vector;
     const size_t name_length = h2_fields_of_parked(stream, header_vector);
     http::ReqValues pvals;
-    values_of_copied_fields({header_vector, name_length}, pvals);
+    values_of_copied_fields({header_vector.data(), name_length}, pvals);
     ReqView result;
     result.tls = apps_[conn.listener].tls;
     RouteSpans pspans;
@@ -655,7 +668,7 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
         result.content = body.empty() ? nullptr : body.data();
         result.content_len = body.size();
     }
-    result.fields = header_vector;
+    result.fields = header_vector.data();
     result.field_count = name_length;
     result.values = &pvals;
     const ReqView *rvp = h2_parked_view(conn, {target, result, pspans});
@@ -708,47 +721,59 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
 {
     const uint32_t stream_id = headers.stream_id;
     const bool end_stream = headers.end_stream;
-    const unsigned char *const blk = headers.block.data();
-    const size_t blk_len = headers.block.size();
     H2State &h2_state = *conn.h2;
 
-    uint32_t quads[4 * kH2MaxFields];
-    // RFC 7541 B: which static entry each name came from, or 0. One byte
-    // per field, beside the four offsets.
-    uint8_t hidx[kH2MaxFields];
-    size_t next_request = 0;
+    if (h2_state.hdrbuf.size() != kH2HdrBufSize)
+        h2_state.hdrbuf.resize(kH2HdrBufSize);
+    const std::string_view whole(h2_state.hdrbuf);
+    std::array<H2DecodedField, kH2MaxFields> fields;
+    size_t nfields = 0;
     size_t used = 0;
-    const unsigned char *bytes = blk;
-    const unsigned char *text_end = bytes + blk_len;
-    while (bytes < text_end) {
-        if (next_request + 4 > 4 * kH2MaxFields)
+    // The block as the decoder reads it. substr throws if the decoder
+    // ever claims to have read past its end.
+    std::string_view left(reinterpret_cast<const char *>(headers.block.data()),
+                          headers.block.size());
+    while (!left.empty()) {
+        if (nfields == fields.size())
             return h2_error(conn, kH2EnhanceYourCalm, sink);
         if (used > kH2FragBudget)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
-        if (h2_state.hdrbuf.size() < used + 4096)
-            h2_state.hdrbuf.resize(used + 4096);
+        // The window this decode may write. substr throws if the cursor is
+        // past hdrbuf; the budget check above keeps the window whole.
+        const std::string_view lent = whole.substr(used, kH2FieldWindow);
+        if (lent.size() != kH2FieldWindow)
+            throw std::length_error("h2: the decode window ran past hdrbuf");
         lsxpack_header_t hpack_field;
-        lsxpack_header_prepare_decode(&hpack_field, &h2_state.hdrbuf[used], 0, 4096);
-        if (lshpack_dec_decode(&h2_state.dec, &bytes, text_end, &hpack_field) != 0) {
+        lsxpack_header_prepare_decode(&hpack_field,
+                                      std::next(h2_state.hdrbuf.data(),
+                                                static_cast<std::ptrdiff_t>(used)),
+                                      0, kH2FieldWindow);
+        const unsigned char *cursor = reinterpret_cast<const unsigned char *>(left.data());
+        const unsigned char *const block_end =
+            std::next(cursor, static_cast<std::ptrdiff_t>(left.size()));
+        if (lshpack_dec_decode(&h2_state.dec, &cursor, block_end, &hpack_field) != 0) {
             return h2_error(conn, kH2CompressionError, sink);
         }
-        // RFC 7541 B: the decoder resolved this name out of the static
-        // table and says which entry it was. That integer is the name, so
-        // the scan below does not spell it out of the buffer again. A
-        // literal name says LSHPACK_HDR_UNKNOWN and is compared as before.
-        hidx[next_request / 4] = hpack_field.hpack_index;
-        quads[next_request++] = static_cast<uint32_t>(used + hpack_field.name_offset);
-        quads[next_request++] = hpack_field.name_len;
-        quads[next_request++] = static_cast<uint32_t>(used + hpack_field.val_offset);
-        quads[next_request++] = hpack_field.val_len;
-        // lshpack.h states what one decode writes into the buffer we lent:
-        // name_len + val_len + lshpack_dec_extra_bytes(dec). Advancing by
-        // val_offset + val_len is short by exactly those extra bytes (the
-        // HTTP/1.x CRLF the decoder appends), so the next field's window
-        // began inside bytes this one had just written. Their number, not
-        // ours.
-        used += static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
-                lshpack_dec_extra_bytes(&h2.dec);
+        left = left.substr(static_cast<size_t>(
+            std::distance(reinterpret_cast<const unsigned char *>(left.data()), cursor)));
+        // Where the decoder says the name and the value lie, held to the
+        // window it was lent: substr throws for an offset past it, and a
+        // length past it comes back short, which the test below refuses.
+        const std::string_view name = lent.substr(hpack_field.name_offset, hpack_field.name_len);
+        const std::string_view value = lent.substr(hpack_field.val_offset, hpack_field.val_len);
+        if (name.size() != hpack_field.name_len || value.size() != hpack_field.val_len)
+            throw std::length_error("h2: ls-hpack placed a field past the window it was lent");
+        fields.at(nfields) = {name, value, hpack_field.hpack_index};
+        nfields++;
+        // lshpack.h: one decode writes name_len + val_len +
+        // lshpack_dec_extra_bytes(dec) bytes from the start of the lent
+        // window - the extra ones are the HTTP/1.x CRLF it appends. The
+        // cursor walks them in three steps, each of which throws past the
+        // window's end.
+        const std::string_view after = lent.substr(hpack_field.name_len)
+                                           .substr(hpack_field.val_len)
+                                           .substr(lshpack_dec_extra_bytes(&h2_state.dec));
+        used = static_cast<size_t>(std::distance(whole.data(), after.data()));
     }
     h2_state.frag.clear();
 
@@ -771,14 +796,11 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // trailer could spell anything at all.
         // RFC 9113 8.1.1: a malformed request is a stream error. The stream
         // ends with PROTOCOL_ERROR. The connection stays open.
-        for (size_t i = 0; i < next_request; i += 4) {
-            const char *const tname = h2_state.hdrbuf.data() + quads[i];
-            const size_t tlen = quads[i + 1];
-            const char *const tval = h2_state.hdrbuf.data() + quads[i + 2];
-            const size_t tvlen = quads[i + 3];
-            const bool tknown = hidx[i / 4] != LSHPACK_HDR_UNKNOWN;
-            if (!h2_field_ok({{tname, tlen}, {tval, tvlen}}, tknown) || tname[0] == ':' ||
-                !h2_trailer_name_ok(tname, tlen)) {
+        for (size_t i = 0; i < nfields; i++) {
+            const H2DecodedField &field = fields.at(i);
+            if (!h2_field_ok({field.name, field.value}, field.known != LSHPACK_HDR_UNKNOWN) ||
+                field.name.starts_with(':') ||
+                !h2_trailer_name_ok(field.name.data(), field.name.size())) {
                 h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
                 return true;
             }
@@ -814,7 +836,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // both protocols. Filled in the loop that already holds the pointers -
     // the pseudo-fields are not among them, because the branch below takes
     // them first, which is also what h1 means by a header.
-    struct phr_header header_vector[kH2MaxFields];
+    std::array<struct phr_header, kH2MaxFields> header_vector;
     size_t name_length = 0;
     // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
     // and the method as the client spelled it - CONNECT is not one of the
@@ -823,45 +845,32 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     size_t protocol_vlen = 0;
     const char *method_val = nullptr;
     size_t method_vlen = 0;
-    for (size_t i = 0; accepted && i < next_request; i += 4) {
-        const char *name = h2_state.hdrbuf.data() + quads[i];
-        const size_t nlen = quads[i + 1];
-        const char *field_value = h2_state.hdrbuf.data() + quads[i + 2];
-        const size_t vlen = quads[i + 3];
-        const uint8_t known = hidx[i / 4];
+    for (size_t i = 0; accepted && i < nfields; i++) {
+        const H2DecodedField &field = fields.at(i);
+        const char *const name = field.name.data();
+        const size_t nlen = field.name.size();
+        const char *const field_value = field.value.data();
+        const size_t vlen = field.value.size();
+        const uint8_t known = field.known;
         // RFC 9113 8.2.1: the name is a lowercase token. The value carries
         // no NUL, CR or LF and no blank at either end. A field that breaks
         // one of these rules makes the request malformed. One call per
-        // field; the scan is the helper's, not this function's. A name the
-        // decoder took from the static table is a token already and skips
-        // the scan.
-        if (!h2_field_ok({{name, nlen}, {field_value, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
+        // field, pseudo-header or not; a name the decoder took from the
+        // static table is a token already and skips the scan.
+        if (!h2_field_ok({field.name, field.value}, known != LSHPACK_HDR_UNKNOWN)) {
             accepted = false;
             break;
         }
         // RFC 8441 4 / RFC 9113 8.3: the colon says a field is a
         // pseudo-header, and nothing else may. The static index says which
-        // one it is, and that is all it is used for below - a name the
-        // decoder resolved is not spelled out of the buffer again. It may
-        // not stand in for the colon: :status is a static entry too, and a
-        // request that carries one is refused by the arm at the end.
-        if (name[0] == ':') {
+        // one it is. It may not stand in for the colon: :status is a
+        // static entry too, and a request that carries one is refused by
+        // the arm at the end.
+        if (field.name.starts_with(':')) {
             if (saw_regular) {
                 accepted = false;
                 break;
             }
-            // RFC 9113 8.2.1: the value rule holds for a pseudo-header as it
-            // holds for every other field. The name carries a colon, so
-            // h2_field_ok runs no token scan on it, and the switch below is
-            // what refuses a name that is not one of the five.
-            if (!h2_field_ok({{name, nlen}, {field_value, vlen}}, known != LSHPACK_HDR_UNKNOWN)) {
-                accepted = false;
-                break;
-            }
-            // One switch on the index, and the memcmp chain only for a name
-            // the decoder did not resolve. The chain that tested the index
-            // and the name together cost more than the memcmp it replaced:
-            // a field low in the chain paid every compare above it.
             enum : uint8_t { kNone, kMethod, kPath, kScheme, kAuthority, kProtocol };
             uint8_t which = kNone;
             switch (known) {
@@ -881,15 +890,15 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                     which = kAuthority;
                     break;
                 case LSHPACK_HDR_UNKNOWN:
-                    if (nlen == 7 && std::memcmp(name, ":method", 7) == 0)
+                    if (field.name == ":method")
                         which = kMethod;
-                    else if (nlen == 5 && std::memcmp(name, ":path", 5) == 0)
+                    else if (field.name == ":path")
                         which = kPath;
-                    else if (nlen == 7 && std::memcmp(name, ":scheme", 7) == 0)
+                    else if (field.name == ":scheme")
                         which = kScheme;
-                    else if (nlen == 10 && std::memcmp(name, ":authority", 10) == 0)
+                    else if (field.name == ":authority")
                         which = kAuthority;
-                    else if (nlen == 9 && std::memcmp(name, ":protocol", 9) == 0)
+                    else if (field.name == ":protocol")
                         which = kProtocol;
                     break;
                 default:
@@ -944,10 +953,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // kH2MaxFields keeps no slot, and SIZE_MAX says so.
         size_t index = SIZE_MAX;
         if (name_length < kH2MaxFields) {
-            header_vector[name_length].name = name;
-            header_vector[name_length].name_len = nlen;
-            header_vector[name_length].value = field_value;
-            header_vector[name_length].value_len = vlen;
+            header_vector.at(name_length) = {name, nlen, field_value, vlen};
             index = name_length;
             name_length++;
         }
@@ -984,12 +990,10 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // spelled, and the list holds one host field, never two.
     if (authority_val != nullptr && !vals.named.carries(http::NamedField::kHost) &&
         name_length < kH2MaxFields) {
-        header_vector[name_length].name = "host";
-        header_vector[name_length].name_len = 4;
-        header_vector[name_length].value = authority_val;
-        header_vector[name_length].value_len = authority_vlen;
-        http::header_switch({{"host", 4}, {authority_val, authority_vlen}},
-                            {facts, vals, name_length});
+        constexpr std::string_view kHost = "host";
+        header_vector.at(name_length) = {kHost.data(), kHost.size(), authority_val,
+                                         authority_vlen};
+        http::header_switch({kHost, {authority_val, authority_vlen}}, {facts, vals, name_length});
         name_length++;
     }
 
@@ -1040,7 +1044,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                                        {method_val, method_vlen},
                                        {protocol_val, protocol_vlen},
                                        {path_val, path_vlen},
-                                       header_vector,
+                                       header_vector.data(),
                                        name_length,
                                        &vals};
         return h2_extended_connect(conn, request_ask, sink);
@@ -1057,7 +1061,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                                           static_cast<uint16_t>(sse_route),
                                           {path_val, path_vlen},
                                           &sspans,
-                                          header_vector,
+                                          header_vector.data(),
                                           name_length,
                                           &vals};
             return h2_sse_begin(conn, request_ask, sink);
@@ -1096,7 +1100,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             result.declared_len = claimed.have ? claimed.value : 0;
             // hdrbuf is still the block this dispatch decoded, so the fields can
             // be lent for the length of the answer.
-            result.fields = header_vector;
+            result.fields = header_vector.data();
             result.field_count = name_length;
             result.values = &vals;
         }
@@ -1108,7 +1112,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                     route,
                     head_only,
                     h2_state.hdrbuf.data(),
-                    h2_state.hdrbuf.size()};
+                    used};
         q.bundle = block;
         // The straight line: a run that cannot stop needs no frame and no
         // held head, so it skips h2_serve and what h2_serve computes for one.
@@ -1186,14 +1190,17 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     file_stat.request_target.assign(path_val, path_vlen);
     file_stat.field_blob.clear();
     file_stat.field_spans.clear();
-    file_stat.field_spans.reserve(name_length * 4);
+    file_stat.field_spans.reserve(name_length);
     for (size_t i = 0; i < name_length; i++) {
-        file_stat.field_spans.push_back(static_cast<uint32_t>(file_stat.field_blob.size()));
-        file_stat.field_spans.push_back(static_cast<uint32_t>(header_vector[i].name_len));
-        file_stat.field_blob.append(header_vector[i].name, header_vector[i].name_len);
-        file_stat.field_spans.push_back(static_cast<uint32_t>(file_stat.field_blob.size()));
-        file_stat.field_spans.push_back(static_cast<uint32_t>(header_vector[i].value_len));
-        file_stat.field_blob.append(header_vector[i].value, header_vector[i].value_len);
+        const struct phr_header &field = header_vector.at(i);
+        H2FieldSpan span{};
+        span.name_at = static_cast<uint32_t>(file_stat.field_blob.size());
+        span.name_len = static_cast<uint32_t>(field.name_len);
+        file_stat.field_blob.append(field.name, field.name_len);
+        span.value_at = static_cast<uint32_t>(file_stat.field_blob.size());
+        span.value_len = static_cast<uint32_t>(field.value_len);
+        file_stat.field_blob.append(field.value, field.value_len);
+        file_stat.field_spans.push_back(span);
     }
     file_stat.content_length = claimed.value;
     file_stat.content_length_given = claimed.have;

@@ -256,6 +256,16 @@ static_assert(conn_move_ok(ConnMode::kAsset, ConnMode::kHead) &&
 // could not make or write, 500.
 enum class BodyTake : uint8_t { kNone, kMore, kWhole, kFailed, kTooLarge, kNoSlot, kFileFailed };
 
+// RFC 9113 8.3: where one copied field lies in a parked stream's
+// field_blob. Offsets, not views: the blob grows while the fields are
+// copied into it, and the stream moves with its container.
+struct H2FieldSpan {
+    uint32_t name_at;
+    uint32_t name_len;
+    uint32_t value_at;
+    uint32_t value_len;
+};
+
 struct H2Stream {
     // RFC 9113 5.1.1: the Stream Identifier every frame carries.
     uint32_t id = 0;
@@ -299,10 +309,10 @@ struct H2Stream {
     // reused by the next dispatch, so its fields cannot be lent.
     //
     // They are copied here instead: names and values end to end in
-    // `field_blob`, four offsets each in `field_spans`. Only a request
-    // that carries a body pays it.
+    // `field_blob`, and where each lies in it in `field_spans`. Only a
+    // request that carries a body pays it.
     std::string field_blob;
-    std::vector<uint32_t> field_spans;
+    std::vector<H2FieldSpan> field_spans;
     flow::ReqFacts facts;
     // RFC 9113 6.9.1: an answer flow control could not frame yet. The asset
     // and its verdict wait here; the byte range is [first, end).
@@ -772,6 +782,9 @@ inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
 inline constexpr size_t kMaxHeaders = 64;
 static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
+// RFC 9113 8.1: how many fields one request may carry, head and trailer
+// section together: what h1 allows, and the pseudo-headers beside it.
+inline constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 inline constexpr size_t kCompressFloor = 1280;
 inline constexpr size_t kDeliverChunk = 64u * 1024;
 
@@ -2709,7 +2722,8 @@ class Http1
         size_t nfields;
         const http::ReqValues *vals;
     };
-    static size_t h2_fields_of_parked(const H2Stream &stream, struct phr_header *header_vector);
+    static size_t h2_fields_of_parked(const H2Stream &stream,
+                               std::array<struct phr_header, kH2MaxFields> &header_vector);
     bool h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, bool complete);
     // #53: the body a parked run stopped for is whole. True = a run was
     // waiting on it and its round is ready now, so the stream must not be
