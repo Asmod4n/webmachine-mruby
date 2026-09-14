@@ -84,5 +84,24 @@ count() {
 read -r base _ < <(count 0)
 read -r total responses < <(count "$SECS")
 [ "${responses:-0}" -gt 0 ] || { echo "no responses - read $WORK/srv.$SECS" >&2; exit 1; }
-echo "bin=$BIN responses=$responses instructions_per_response=$(( (total - base) / responses ))"
+ROW="bin=$BIN responses=$responses instructions_per_response=$(( (total - base) / responses ))"
+echo "$ROW"
 echo "profile=$WORK/cg.$SECS"
+
+# This count is the only number of this tree that may be read beside a
+# run from another session: a rate belongs to one machine and one build,
+# an instruction count does not move between runs of one binary, and
+# WM_MARCH pins the ISA so two sessions compile the same one. Written
+# down for exactly that reason - a comparison across sessions needs the
+# older row to still exist.
+RESULTS="bench/results/$(hostname)-instructions.log"
+mkdir -p "$(dirname "$RESULTS")"
+{
+  echo
+  echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD 2>/dev/null) ===="
+  echo "harness: htgen --conns $CONNS --streams $STREAMS --seconds $SECS h2 (callgrind) WM_MARCH=${WM_MARCH:-unset}"
+  . bench/buildline.sh
+  wm_build_line "$BIN"
+  echo "$ROW"
+} >> "$RESULTS"
+echo "recorded in $RESULTS"
