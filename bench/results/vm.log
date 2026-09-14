@@ -3405,3 +3405,63 @@ build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=
 env: runnable=1/124 busy=1% (200ms sample)
 responses=12626048 bad=0 seconds=5.000 rps=2525004 bytes=1060613120 MB/s=202.28 conns=512 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=164963584 tx_MB/s=31.46
 server: 100% of one core (84u/15s)   client: 66% of one core (48u/17s)   other: 1% of one core
+==== 2026-09-14T06:43Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-next nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/124 busy=1% (200ms sample)
+responses=19866733 bad=0 seconds=10.000 rps=1986645 bytes=1668807140 MB/s=159.15 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=258321481 tx_MB/s=24.64
+server: 98% of one core (64u/34s)   client: 48% of one core (35u/13s)   other: 9% of one core
+==== 2026-09-14T06:43Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-reactor nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=1% (200ms sample)
+responses=24343917 bad=0 seconds=10.001 rps=2434088 bytes=2044890596 MB/s=194.99 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=316506569 tx_MB/s=30.18
+server: 97% of one core (75u/22s)   client: 57% of one core (41u/15s)   other: 5% of one core
+==== 2026-09-14T06:43Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-next nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=23650968 bad=0 seconds=10.000 rps=2365087 bytes=1986682880 MB/s=189.46 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=307518200 tx_MB/s=29.33
+server: 96% of one core (75u/21s)   client: 57% of one core (41u/16s)   other: 5% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-reactor nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=24725229 bad=0 seconds=10.000 rps=2472513 bytes=2076920804 MB/s=198.07 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=321483593 tx_MB/s=30.66
+server: 98% of one core (76u/21s)   client: 57% of one core (43u/13s)   other: 2% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-next nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=25480045 bad=0 seconds=10.000 rps=2547999 bytes=2140325348 MB/s=204.12 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=331296201 tx_MB/s=31.59
+server: 98% of one core (80u/18s)   client: 59% of one core (44u/15s)   other: 6% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-reactor nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=23452847 bad=0 seconds=10.000 rps=2345273 bytes=1970040716 MB/s=187.88 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=304942224 tx_MB/s=29.08
+server: 98% of one core (73u/24s)   client: 57% of one core (40u/17s)   other: 2% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-next nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=25479549 bad=0 seconds=10.000 rps=2547879 bytes=2140283728 MB/s=204.11 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=331256876 tx_MB/s=31.59
+server: 97% of one core (80u/16s)   client: 58% of one core (43u/14s)   other: 3% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-reactor nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/125 busy=1% (200ms sample)
+responses=24470195 bad=0 seconds=10.000 rps=2447014 bytes=2055497948 MB/s=196.03 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=318166487 tx_MB/s=30.34
+server: 97% of one core (76u/20s)   client: 58% of one core (42u/16s)   other: 4% of one core
+==== 2026-09-14T06:44Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-next nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-next cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=25435404 bad=0 seconds=10.000 rps=2543533 bytes=2136575504 MB/s=203.76 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=330715868 tx_MB/s=31.54
+server: 96% of one core (80u/15s)   client: 58% of one core (44u/14s)   other: 6% of one core
+==== 2026-09-14T06:45Z repo=62edd3c mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=bin:ir-reactor nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native 6.18.44-fc-v24 x86_64
+build: /tmp/ir-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=1/126 busy=0% (200ms sample)
+responses=27454658 bad=0 seconds=10.000 rps=2745455 bytes=2306192840 MB/s=219.93 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=356966170 tx_MB/s=34.04
+server: 99% of one core (83u/16s)   client: 63% of one core (46u/17s)   other: 6% of one core
