@@ -65,10 +65,18 @@ MRuby::Build.new do |conf|
   # The optimization and -march flags are repeated on the link line
   # because that is where the code is generated under LTO; the compile
   # step only records IR.
+  #
+  # The scope is this gem, not the tree. WPA reads every object that
+  # carries IR, and the amalgamated dependencies - ada, simdjson, toml11
+  # - are what filled 13.8 GB. The calls this exists to inline are the
+  # ones between this gem's own translation units: ruby_value.cpp,
+  # webmachine.cpp, h2_wire.cpp, http1_wire.cpp against http1.cpp,
+  # http2.cpp and ring.hpp. So mrbgem.rake puts -flto on those objects
+  # and nothing else carries IR; the link step still runs the optimizer
+  # over them, and everything else links as the native code it already
+  # is.
   if ENV['WM_LTO']
     lto = "-flto=#{ENV['WM_LTO'] == '1' ? 'auto' : ENV['WM_LTO']}"
-    conf.cc.flags << lto
-    conf.cxx.flags << lto
     conf.archiver.command = 'gcc-ar'
     conf.linker.flags << lto << '-O3' << "-march=#{march}"
   end

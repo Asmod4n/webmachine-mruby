@@ -15,6 +15,12 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.bins = fuzzing ? ['webmachine-fuzz']
                      : ['webmachine-server', 'webmachine-logd', 'webmachine-passwd']
 
+  # WM_LTO: only this gem's objects carry LTO IR - see build_config_host.rb
+  # for why the scope is the gem and not the tree. -flto alone at compile
+  # time; the job count belongs to the link step, which the host config
+  # sets.
+  spec.cxx.flags << '-flto' if ENV['WM_LTO']
+
   # -fsanitize=fuzzer belongs to this gem and not to the build: a flag in
   # a build's linker reaches every binary the build produces, and mrbc -
   # mruby-bin-mrbc's tool, built in the same tree - has a main of its own
