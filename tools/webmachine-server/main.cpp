@@ -65,6 +65,9 @@ void usage(const char *me)
                  "  --file-map-threshold=N   map a file this big instead of reading  (256 KiB)\n"
                  "\n"
                  "OTHER\n"
+                 "  --workers=N              answer from N processes, one ring each     (1)\n"
+                 "                           One binds and listens, then forks; every child\n"
+                 "                           answers on the same listener\n"
                  "  --config=FILE.toml       these choices from a file; flags beat it.\n"
                  "                           Without it: ./webmachine.toml, then\n"
                  "                           /usr/local/etc/webmachine/, then /etc/webmachine/\n"
@@ -97,7 +100,7 @@ const char *const kFlags[] = {
     "unix",         "port",      "app",           "assets",             "listings",
     "error-assets", "docroot",   "mime-types",    "write-config",       "log",
     "log-privacy",  "error-log", "log-max-bytes", "file-map-threshold", "zero-copy-threshold",
-    "pidfile",      "config",
+    "pidfile",      "config",    "workers",
 };
 
 // A path, or nullptr when the flag was not given. The string is the
@@ -286,6 +289,13 @@ bool parse_argv(mrb_state *mrb, Invocation &in)
                              "every body\n");
         return false;
     }
+
+    const long long workers = number_of(mrb, h, "workers", 1);
+    if (workers < 1 || workers > 1024) {
+        std::fprintf(stderr, "webmachine: --workers is a process count, 1 to 1024\n");
+        return false;
+    }
+    opts.workers = static_cast<int>(workers);
 
     if (in.cli_unix != nullptr && in.cli_port != 0) {
         std::fprintf(stderr, "at most one of --unix or --port\n");

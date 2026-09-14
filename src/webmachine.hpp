@@ -3502,6 +3502,13 @@ struct ServerOptions {
     int stop_fd = -1;
     const char *app_path = nullptr;
     unsigned sq_entries = 0;
+    // How many processes answer. Above one, the tool binds and listens
+    // once, forks that many children, and every child registers the
+    // listening descriptors it inherited. Each child holds its own ring
+    // and its own VM, so IORING_SETUP_SINGLE_ISSUER still holds. This is
+    // the tool's knob: a gem an application embeds never forks, because
+    // the process is not ours to split.
+    int workers = 1;
     int backlog = 0;
     int header_timeout = 0;
     int send_timeout = 0;

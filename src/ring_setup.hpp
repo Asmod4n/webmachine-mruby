@@ -69,6 +69,12 @@ uint64_t raise_nofile();
 struct ListenerSpec {
     const char *unix_path = nullptr;
     int port = 0;
+    // A listening socket the caller already bound and listened on. The
+    // reactor then registers this descriptor instead of making one, which
+    // is how several worker processes answer one listener: the parent
+    // listens, forks, and every child registers the descriptor it
+    // inherited. Below zero means the reactor makes the socket itself.
+    int fd = -1;
 };
 
 // What the reactor needs and nothing else - already resolved, already

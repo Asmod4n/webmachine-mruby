@@ -54,6 +54,13 @@ WORKERS="${WORKERS:-1}"
 # one server worker. The counts and the cpu of all N are added up, and
 # the responses= line reports the sum.
 CLIENTS="${CLIENTS:-1}"
+# FORK_WORKERS=N: one server with --workers=N. It binds and listens once,
+# forks N children, and every child registers the listening descriptor it
+# inherited. One listener, shared. WORKERS=N above is the other shape -
+# N separate servers, one listener each, sharing a port by SO_REUSEPORT -
+# and the two are not the same measurement. Works on AF_UNIX, where
+# SO_REUSEPORT has no meaning and WORKERS= therefore cannot go.
+FORK_WORKERS="${FORK_WORKERS:-1}"
 # BIN=path names the binary directly, for an A/B between two builds of the
 # same impl: keep both, alternate them, and the harness line records which
 # one ran. Without it the only way to compare two builds was to copy one
@@ -140,11 +147,18 @@ cpu_ticks() {
 # Every worker's ticks added up, so WORKERS=2 reports the cpu two
 # processes spent and not the cpu one of them did.
 srv_ticks() {
-  local u=0 s=0 pu ps p
+  local u=0 s=0 pu ps p kid
   for p in "${SRVS[@]}"; do
     read -r pu ps <<<"$(cpu_ticks "$p")"
     u=$((u + pu))
     s=$((s + ps))
+    # --workers=N: the server this shell started is the supervisor, and
+    # the cpu that answers requests is its children's.
+    for kid in $(pgrep -P "$p" 2>/dev/null); do
+      read -r pu ps <<<"$(cpu_ticks "$kid")"
+      u=$((u + pu))
+      s=$((s + ps))
+    done
   done
   echo "$u $s"
 }
@@ -253,7 +267,8 @@ fi
 SRVS=()
 w=0
 while [ "$w" -lt "$WORKERS" ]; do
-  "${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
+    "${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
+    ${FORK_WORKERS:+--workers="$FORK_WORKERS"} >>"$WORK/srv.log" 2>&1 &
   SRVS+=($!)
   w=$((w + 1))
 done
@@ -379,7 +394,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
