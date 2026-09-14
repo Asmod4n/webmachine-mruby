@@ -1989,30 +1989,6 @@ constexpr bool word_has_octet_under(uint64_t word, unsigned char bound)
     return ((word - octet_repeated(bound)) & ~word & kOctet80Repeated) != 0;
 }
 
-// A run under eight octets as one word, the rest of the word filled
-// with pad. The rules that read the word ask whether any octet breaks
-// them, so the order of the octets in the word does not matter: the
-// four, the two and the one each take their own lanes. Every copy has
-// a fixed size, so none is a call.
-inline uint64_t word_of_tail(std::string_view tail, unsigned char pad)
-{
-    uint32_t four = static_cast<uint32_t>(octet_repeated(pad));
-    uint16_t two = static_cast<uint16_t>(octet_repeated(pad));
-    uint8_t one = pad;
-    if ((tail.size() & 4) != 0) {
-        std::memcpy(&four, tail.data(), sizeof four);
-        tail.remove_prefix(sizeof four);
-    }
-    if ((tail.size() & 2) != 0) {
-        std::memcpy(&two, tail.data(), sizeof two);
-        tail.remove_prefix(sizeof two);
-    }
-    if ((tail.size() & 1) != 0)
-        one = static_cast<uint8_t>(tail.front());
-    return static_cast<uint64_t>(four) | (static_cast<uint64_t>(two) << 32) |
-           (static_cast<uint64_t>(one) << 48) | (static_cast<uint64_t>(pad) << 56);
-}
-
 constexpr bool word_is_field_value(uint64_t word)
 {
     return !word_has_zero_octet(word) && !word_has_zero_octet(word ^ octet_repeated('\r')) &&
@@ -2032,8 +2008,11 @@ inline bool field_value_ok(const char *bytes, size_t count)
             return false;
         left.remove_prefix(sizeof word);
     }
-    // The tail is padded with SP, an octet the rule accepts.
-    return left.empty() || word_is_field_value(word_of_tail(left, ' '));
+    for (const char octet : left) {
+        if (octet == '\r' || octet == '\n' || octet == '\0')
+            return false;
+    }
+    return true;
 }
 
 // RFC 9110 5.1: a field name is known by its length first. The switches

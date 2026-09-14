@@ -406,8 +406,12 @@ inline bool h2_path_ok(std::string_view path)
             return false;
         left.remove_prefix(sizeof word);
     }
-    // The tail is padded with '/', an octet the rule accepts.
-    return left.empty() || h2_word_is_path(http::word_of_tail(left, '/'));
+    for (const char octet : left) {
+        const unsigned char control = static_cast<unsigned char>(octet);
+        if (control <= 0x20 || control == 0x7f)
+            return false;
+    }
+    return true;
 }
 
 static bool h2_is_idle(const H2State &h2_state, uint32_t stream_id)
@@ -762,12 +766,11 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         fields.push_back({name, value, hpack_field.hpack_index});
         // lshpack.h: one decode writes name_len + val_len +
         // lshpack_dec_extra_bytes(dec) bytes from the start of the lent
-        // window - the extra ones are the HTTP/1.x CRLF it appends. The
-        // cursor walks them in three steps, each of which throws past the
-        // window's end.
-        const std::string_view after = lent.substr(hpack_field.name_len)
-                                           .substr(hpack_field.val_len)
-                                           .substr(lshpack_dec_extra_bytes(&h2_state.dec));
+        // window - the extra ones are the HTTP/1.x CRLF it appends. substr
+        // throws when that sum is past the window's end.
+        const std::string_view after =
+            lent.substr(static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
+                        lshpack_dec_extra_bytes(&h2_state.dec));
         used = static_cast<size_t>(std::distance(whole.data(), after.data()));
     }
     h2_state.frag.clear();
@@ -852,7 +855,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // one of these rules makes the request malformed. One call per
         // field, pseudo-header or not; a name the decoder took from the
         // static table is a token already and skips the scan.
-        if (!h2_field_ok(field.name, field.value, known != LSHPACK_HDR_UNKNOWN)) {
+        const bool pseudo = field.name.starts_with(':');
+        if (!pseudo && !h2_field_ok(field.name, field.value, known != LSHPACK_HDR_UNKNOWN)) {
             accepted = false;
             break;
         }
@@ -861,7 +865,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // one it is. It may not stand in for the colon: :status is a
         // static entry too, and a request that carries one is refused by
         // the arm at the end.
-        if (field.name.starts_with(':')) {
+        if (pseudo) {
             if (saw_regular) {
                 accepted = false;
                 break;
@@ -898,6 +902,13 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                     break;
                 default:
                     break;
+            }
+            // RFC 9113 8.3.1: :path answers to h2_path_ok below, which
+            // refuses every octet the value rule refuses and more. Every
+            // other pseudo-header value takes the value rule here.
+            if (which != kPath && !h2_field_ok(field.name, field.value, true)) {
+                accepted = false;
+                break;
             }
             if (which == kMethod) {
                 if (have_method) {
