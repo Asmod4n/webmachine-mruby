@@ -43,8 +43,11 @@ uint64_t raise_memlock()
 // nothing to do with the limit above and bounds the answer however large
 // an operator makes that limit.
 //
-// --workers=N is untouched: each child is its own process with its own
-// locked-memory budget, and opens one ring.
+// --workers=N shares the same way. A child is its own process, but the
+// kernel charges a ring's memory to the user - io_uring_register(2) says
+// as much of RLIMIT_NOFILE, and io_account_mem charges RLIMIT_MEMLOCK
+// against the same user struct. Measured: three children of 32768
+// entries want 9 MiB where the user has 8, and none of them comes up.
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 {
     constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);

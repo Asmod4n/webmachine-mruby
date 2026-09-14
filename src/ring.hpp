@@ -124,8 +124,12 @@ template <class App> class Ring
                 break;
             }
             if (sq_entries_ <= sq_floor) {
-                mrb_raisef(mrb_, E_WM_ERROR(mrb_), "io_uring_queue_init(%d): %s",
-                           static_cast<int>(sq_entries_), std::strerror(-rc));
+                mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                           "io_uring_queue_init(%d): %s. RLIMIT_MEMLOCK is %i and %d ring(s) "
+                           "share three quarters of it",
+                           static_cast<int>(sq_entries_), std::strerror(-rc),
+                           static_cast<mrb_int>(memlock),
+                           static_cast<int>(ring_config.rings_in_process));
             }
         }
         io_uring_register_ring_fd(&ring_);
@@ -154,8 +158,11 @@ template <class App> class Ring
 
         rc = io_uring_register_files_sparse(&ring_, table_size_ + kMaxListeners);
         if (rc != 0) {
-            mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_files_sparse(%d): %s",
-                       static_cast<int>(table_size_ + kMaxListeners), std::strerror(-rc));
+            mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                       "register_files_sparse(%d): %s. RLIMIT_NOFILE is %i, and that limit is "
+                       "the user's rather than this process's",
+                       static_cast<int>(table_size_ + kMaxListeners), std::strerror(-rc),
+                       static_cast<mrb_int>(nofile));
         }
         rc = io_uring_register_file_alloc_range(&ring_, 0, table_size_);
         if (rc != 0) {
@@ -173,7 +180,14 @@ template <class App> class Ring
         int bre = 0;
         buf_ring_ = io_uring_setup_buf_ring(&ring_, kBufCount, kBufGroup, 0, &bre);
         if (buf_ring_ == nullptr) {
-            mrb_raisef(mrb_, E_WM_ERROR(mrb_), "setup_buf_ring: %s", std::strerror(-bre));
+            mrb_raisef(mrb_, E_WM_ERROR(mrb_),
+                       "setup_buf_ring(%d): %s. This ring asked for %d submission entries and a "
+                       "table of %d slots; RLIMIT_MEMLOCK is %i and %d ring(s) share three "
+                       "quarters of it",
+                       static_cast<int>(kBufCount), std::strerror(-bre),
+                       static_cast<int>(sq_entries_), static_cast<int>(table_size_ + kMaxListeners),
+                       static_cast<mrb_int>(memlock),
+                       static_cast<int>(ring_config.rings_in_process));
         }
         const int mask = io_uring_buf_ring_mask(kBufCount);
         for (uint32_t i = 0; i < kBufCount; i++) {

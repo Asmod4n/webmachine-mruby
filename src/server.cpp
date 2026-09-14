@@ -392,6 +392,14 @@ bool workers_fork(mrb_state *mrb, RingConfig &ring_config)
             // A worker whose supervisor dies has nobody left to stop it.
             ::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
             worker_pids_.clear();
+            // io_uring charges the memory of a ring to the user, not to
+            // the process - io_uring_register(2) says so of RLIMIT_NOFILE
+            // in as many words, and io_account_mem charges RLIMIT_MEMLOCK
+            // against the same user. So these children do not each get the
+            // whole limit: the N of them share it, exactly as N threads of
+            // one process do. Measured: three children of 32768 entries
+            // want 9 MiB where the user has 8, and none of them comes up.
+            ring_config.rings_in_process = static_cast<uint32_t>(opts_.workers);
             return false;
         }
         worker_pids_.push_back(child);

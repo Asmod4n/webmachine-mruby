@@ -104,8 +104,10 @@ struct RingConfig {
     // True on a ring that accepts nothing: it has no listener, and every
     // connection it answers arrived from an acceptor by IORING_OP_MSG_RING.
     bool takes_no_listener = false;
-    // How many rings this process opens, this one included. The rings are
-    // locked memory charged to the process, so they share the budget.
+    // How many rings share the locked-memory budget with this one. The
+    // kernel charges a ring's memory to the user rather than to the
+    // process, so this counts the rings of every process this server
+    // starts: N + 1 for --threads=N, N for --workers=N.
     uint32_t rings_in_process = 1;
     // The VM to raise into when the reactor cannot go on. Required - init()
     // refuses without it, because the alternative is a library that ends
