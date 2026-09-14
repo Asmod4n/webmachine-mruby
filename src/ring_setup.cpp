@@ -4,18 +4,63 @@
 
 namespace webmachine
 {
-void raise_memlock()
+uint64_t raise_memlock()
 {
     struct rlimit rl {
     };
     if (::getrlimit(RLIMIT_MEMLOCK, &rl) != 0)
-        return;
-    if (rl.rlim_cur == rl.rlim_max)
-        return;
-    struct rlimit want {
-        rl.rlim_max, rl.rlim_max
-    };
-    (void)::setrlimit(RLIMIT_MEMLOCK, &want);
+        return 0;
+    if (rl.rlim_cur != rl.rlim_max) {
+        struct rlimit want {
+            rl.rlim_max, rl.rlim_max
+        };
+        (void)::setrlimit(RLIMIT_MEMLOCK, &want);
+        if (::getrlimit(RLIMIT_MEMLOCK, &rl) != 0)
+            return 0;
+    }
+    if (rl.rlim_cur == RLIM_INFINITY)
+        return UINT64_MAX;
+    return static_cast<uint64_t>(rl.rlim_cur);
+}
+
+// How many submission entries each ring of this process gets. The rings
+// are locked memory charged to the process, and three quarters of
+// RLIMIT_MEMLOCK are theirs to share.
+//
+// Measured, not reasoned: on a box with 8 MiB of locked memory, two rings
+// of 32768 entries come up and the third answers ENOMEM. One such ring is
+// its submission queue (32768 * 64) plus its completion queue (65536 *
+// 16), which is 3 MiB, so two fit in 8 MiB and three do not. The server
+// opens one ring per answering thread plus one that accepts, so at
+// --threads=3 it wants four and gets two.
+//
+// One entry therefore costs its own submission slot plus its two
+// completion slots - the completion queue holds twice the submission
+// count unless asked otherwise - and both sizes come from io_uring's own
+// structures rather than from a number of ours.
+//
+// kSqEntriesMax is the kernel's own ceiling, written in its C code. It has
+// nothing to do with the limit above and bounds the answer however large
+// an operator makes that limit.
+//
+// --workers=N is untouched: each child is its own process with its own
+// locked-memory budget, and opens one ring.
+unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
+{
+    constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);
+    if (rings == 0)
+        rings = 1;
+    if (memlock_limit == UINT64_MAX)
+        return kSqEntriesMax;
+    const uint64_t fit = (memlock_limit / 4) * 3 / rings / per_entry;
+    if (fit >= kSqEntriesMax)
+        return kSqEntriesMax;
+    // A submission queue is a power of two, so the answer is the largest
+    // one that fits.
+    unsigned answer = 1;
+    while (answer * 2u <= fit)
+        answer *= 2;
+    return answer;
 }
 
 uint32_t derive_max_conns(FdBudget block)

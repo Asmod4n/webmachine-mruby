@@ -28,3 +28,33 @@ assert('fd: the body file count refuses the slot at its ceiling and takes a give
   1024.times { WM_FD.body_file_give }
   assert_equal 0, WM_FD.body_files_open
 end
+
+# io_uring_queue_init_params takes the submission entry count first, and
+# the queues it makes are locked memory charged to this process. Measured
+# on a box with 8 MiB of it: two rings of 32768 entries come up and the
+# third answers ENOMEM, because one such ring is 32768 * 64 for its
+# submission queue plus 65536 * 16 for its completion queue, which is
+# 3 MiB. Three quarters of the limit are the rings' to share; the kernel's
+# own ceiling of 32768, written in its C code and unrelated to that limit,
+# bounds the answer.
+assert('fd: submission entries are three quarters of RLIMIT_MEMLOCK shared by the rings') do
+  megs8 = 8 * 1024 * 1024
+  # One ring: the share holds 65536 entries, over the ceiling.
+  assert_equal 32_768, WM_FD.sq_entries(megs8, 1)
+  # Two rings: 32768 each, which is what the box above brings up.
+  assert_equal 32_768, WM_FD.sq_entries(megs8, 2)
+  # Four rings - what --threads=3 opens - get 16384 each, and the four of
+  # them come to the 6 MiB that three quarters of 8 MiB allows.
+  assert_equal 16_384, WM_FD.sq_entries(megs8, 4)
+  assert_equal 6 * 1024 * 1024, 4 * (16_384 * 64 + 32_768 * 16)
+  # An operator who lifts the limit to 500 GiB still gets the ceiling.
+  assert_equal 32_768, WM_FD.sq_entries(500 * 1024 * 1024 * 1024, 1)
+  # A queue is a power of two, so the answer is the largest one that fits.
+  assert_equal 512, WM_FD.sq_entries(64 * 1024, 1)
+  assert_equal 512, WM_FD.sq_entries(100 * 1024, 1)
+  # A limit too small for one entry answers one, and the setup then says
+  # what the kernel said.
+  assert_equal 1, WM_FD.sq_entries(64, 1)
+  # The count defaults to one ring.
+  assert_equal WM_FD.sq_entries(megs8, 1), WM_FD.sq_entries(megs8)
+end

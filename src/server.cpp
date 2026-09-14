@@ -783,6 +783,10 @@ void server_build_ring_config(mrb_state *mrb)
                        "application needs a VM of its own, and this build gives it none",
                        static_cast<int>(opts_.threads));
         }
+        // The rings are locked memory and the limit is this process's. It
+        // opens one per answering thread and one that accepts, and they
+        // share three quarters of that limit.
+        ring_config.rings_in_process = static_cast<uint32_t>(opts_.threads) + 1;
         answer_threads_start(mrb, ring_config, inputs.data(), inputs.size(),
                              opts_.standalone_listings);
         ring_config.worker_ring_fds = answer_ring_fds_.data();

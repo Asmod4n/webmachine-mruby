@@ -105,11 +105,13 @@ template <class App> class Ring
             std::abort();
         }
         int rc = 0;
-        raise_memlock();
+        const uint64_t memlock = raise_memlock();
         constexpr unsigned kSqFloor = 1024;
         constexpr unsigned kSetupFlags =
             IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
-        const unsigned sq_wanted = ring_config.sq_entries != 0 ? ring_config.sq_entries : kSqWanted;
+        const unsigned sq_wanted = ring_config.sq_entries != 0
+                                       ? ring_config.sq_entries
+                                       : derive_sq_entries(memlock, ring_config.rings_in_process);
         const unsigned sq_floor = sq_wanted < kSqFloor ? sq_wanted : kSqFloor;
         struct io_uring_params p {
         };

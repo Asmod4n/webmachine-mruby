@@ -32,7 +32,12 @@ inline constexpr uint32_t kFixedTableKernelMax = 1u << 20;
 
 // A ring's SQ/CQ pages are locked memory; failing to raise is not a
 // reason not to start.
-void raise_memlock();
+uint64_t raise_memlock();
+
+// The kernel's own ceiling on submission entries, written in its C code.
+inline constexpr unsigned kSqEntriesMax = 32768;
+
+unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings);
 
 // The one arithmetic with two consumers: the server sizes itself with it,
 // webmachine-tune.sh only prints it.
@@ -99,6 +104,9 @@ struct RingConfig {
     // True on a ring that accepts nothing: it has no listener, and every
     // connection it answers arrived from an acceptor by IORING_OP_MSG_RING.
     bool takes_no_listener = false;
+    // How many rings this process opens, this one included. The rings are
+    // locked memory charged to the process, so they share the budget.
+    uint32_t rings_in_process = 1;
     // The VM to raise into when the reactor cannot go on. Required - init()
     // refuses without it, because the alternative is a library that ends
     // somebody else's process. See Ring::fatal.
