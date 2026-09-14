@@ -100,11 +100,34 @@ echo "  put it on a core with less to do. A pin showed no advantage where"
 echo "  it was tried."
 echo "  no rate is quoted: the old one measured splice, which this tree"
 echo "  does not have. The reasons are current, the number is not."
-echo "  scope: every measurement behind this advice is loopback. On a card"
-echo "  with several receive queues, a thread pinned to the core that takes"
-echo "  its queue's interrupt is the shape that wins - and this server does"
-echo "  not build it yet: the acceptor spreads round robin and knows nothing"
-echo "  of the queue a peer arrived on."
+# Which case this machine is in, read rather than assumed. A card with
+# one receive queue has nothing to align: every packet is taken on
+# whatever core the interrupt lands on, and no thread placement changes
+# that. Several queues is the case where a pin pays - and most onboard
+# cards have one, and below 40 Gbit one is enough.
+QUEUED=""
+for IFACE in /sys/class/net/*; do
+  NAME=$(basename "$IFACE")
+  [ "$NAME" = lo ] && continue
+  [ "$(read_or "$IFACE/operstate" down)" = up ] || continue
+  RXQ=$(ls -d "$IFACE"/queues/rx-* 2>/dev/null | wc -l)
+  SPEED=$(read_or "$IFACE/speed" "")
+  case "$SPEED" in ''|-1) SPEED="unreadable" ;; *) SPEED="$SPEED Mb/s" ;; esac
+  echo "  $NAME: $RXQ receive queue(s), $SPEED"
+  [ "$RXQ" -gt 1 ] 2>/dev/null && QUEUED="$QUEUED $NAME"
+done
+if [ -n "$QUEUED" ]; then
+  echo "  $(echo $QUEUED | tr ' ' ',') has more than one receive queue. That is the one"
+  echo "  case where a pin pays: each queue's interrupt on one core, and the"
+  echo "  thread that drains it on the same core. This server does not build"
+  echo "  that shape - its acceptor spreads round robin and knows nothing of"
+  echo "  the queue a peer arrived on - so the advice above still stands here."
+else
+  echo "  one receive queue everywhere, so there is nothing to align: no"
+  echo "  placement of threads changes which core takes the interrupt. The"
+  echo "  advice above is the whole answer on this machine."
+fi
+echo "  every measurement behind this advice is loopback either way."
 # And most operators cannot do it even where they want to. A process may
 # set its own mask, and a mask is inherited through exec, so `taskset -c
 # 0 webmachine-server ...` works for anybody. Pinning a server that is
@@ -167,6 +190,11 @@ echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the
 #   the kernel picks at the SYN. Two processes answered 1.86 times one
 #   process on h1 and 1.93 times on h2. TCP only: AF_UNIX has no
 #   SO_REUSEPORT.
+#
+#   (A card with several receive queues is the one shape this advice
+#   does not cover, and the section above reads the queue count rather
+#   than assuming it. Most onboard cards have one queue, and below 40
+#   Gbit one is enough, so the common machine is fully covered here.)
 #
 #   An acceptor with answering threads spreads, and is the only shape
 #   that spreads on AF_UNIX. One thread accepts and hands each peer to
