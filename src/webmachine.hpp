@@ -2813,6 +2813,10 @@ struct ComputeAnswer {
     std::string step;
     // The thread that ran it, as the name a backtrace shows.
     std::string worker_name;
+    // #113: the reactor's own name for the timeout that bounded this job,
+    // or 0 where there was none. The answer came first, so the timeout is
+    // taken out of the ring and its record is free again.
+    uint64_t deadline_tag = 0;
 };
 
 class ComputePool
@@ -2853,6 +2857,9 @@ class ComputePool
     // reactor gave it. The started message carries no slot number any
     // more, only the address of the record that named the job.
     bool slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *generation) const;
+    // The reactor armed a timeout for this job and says what it named it,
+    // so take() can hand the name back when the answer comes first.
+    void name_deadline(unsigned slot, uint16_t generation, uint64_t timeout_tag);
     // What the worker answered. Reading it frees the slot: the answer is
     // handed over once.
     bool take(uint64_t answer, ComputeAnswer *out_value);

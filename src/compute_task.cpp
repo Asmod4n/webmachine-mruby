@@ -113,6 +113,8 @@ struct Slot {
     // The reactor's tag for "this job began". The worker sends it when it
     // picks the job up, so the deadline clock starts at execution.
     uint64_t started = 0;
+    // What the reactor called the timeout it armed for this job, or 0.
+    uint64_t deadline_tag = 0;
     bool busy = false;
 };
 
@@ -1087,6 +1089,16 @@ bool ComputePool::slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *gene
     return false;
 }
 
+void ComputePool::name_deadline(unsigned slot, uint16_t gen, uint64_t timeout_tag)
+{
+    if (impl_ == nullptr || slot >= impl_->slots.size())
+        return;
+    Slot &s = impl_->slots[slot];
+    if (!s.busy || s.gen != gen)
+        return;
+    s.deadline_tag = timeout_tag;
+}
+
 void ComputePool::interrupt(unsigned slot, uint16_t gen)
 {
     if (impl_ == nullptr || slot >= impl_->slots.size())
@@ -1137,6 +1149,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     slot.raised = false;
     slot.answer = answer;
     slot.started = started;
+    slot.deadline_tag = 0;
     slot.gen++;
     slot.busy = true;
 
@@ -1174,6 +1187,7 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer *out_ask)
             out_ask->exception.swap(s.exception);
             out_ask->step.swap(s.step);
             out_ask->worker_name = s.worker_name;
+            out_ask->deadline_tag = s.deadline_tag;
             s.busy = false;
             s.arg.clear();
             s.out_ask.clear();

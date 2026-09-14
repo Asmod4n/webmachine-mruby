@@ -759,6 +759,12 @@ template <class App> class Ring
         if (live_ != 0)
             live_--;
         delete conn;
+        // An entry of the registered table is free again, so a listener
+        // that stopped on a full table may take peers once more.
+        for (uint32_t li = 0; li < nlisteners_; li++) {
+            if (accept_stalled_[li])
+                arm_accept(li);
+        }
     }
 
     // The one door an operation goes through, and the only place that
@@ -797,6 +803,37 @@ template <class App> class Ring
         hold(conn);
         rearm_.push_back({&conn});
     }
+
+    // A reference given back however the scope ends, a raise included.
+    // Every other way of saying it has been tried here and every one of
+    // them has a path that unwinds past the line that counts down.
+    struct Held {
+        Ring *ring;
+        Conn *conn;
+        ~Held()
+        {
+            if (conn != nullptr)
+                ring->drop_hold(*conn);
+        }
+    };
+
+    // Which connection owes a fresh recv. The entry is a counted
+    // reference, so the block stands until the loop has read it.
+    struct Rearm {
+        Conn *conn;
+    };
+
+    // The rest of a list of references, when the walk over it ended early.
+    struct HeldList {
+        Ring *ring;
+        std::vector<Rearm> *owed;
+        ~HeldList()
+        {
+            for (const Rearm &r : *owed)
+                ring->drop_hold(*r.conn);
+            owed->clear();
+        }
+    };
 
     // The one place a reference goes back, whoever held it.
     void drop_hold(Conn &conn)
@@ -955,6 +992,7 @@ template <class App> class Ring
     {
         if (draining_)
             return;
+        accept_stalled_[listener_index] = false;
         struct io_uring_sqe *sqe = sqe_or_submit();
         io_uring_prep_multishot_accept_direct(sqe, listener_base_ + listener_index, nullptr,
                                               nullptr, 0);
@@ -1096,13 +1134,17 @@ template <class App> class Ring
         // not hidden - the operator hears it once, with the number.
         if (completion->res < 0) {
             if (completion->res == -ENFILE || completion->res == -EMFILE) {
-                static bool said = false;
-                if (!said) {
-                    said = true;
+                // A re-armed accept on a full table completes at once with
+                // the same refusal, and the reactor spins at full speed
+                // until a clock frees an entry. So this listener waits
+                // instead, and conn_free starts it again.
+                accept_stalled_[listener_index] = true;
+                if (!table_full_said_) {
+                    table_full_said_ = true;
                     say_server_error(app_.error_log(),
                                      std::string("the registered descriptor table is full (") +
                                          std::strerror(-completion->res) +
-                                         "); peers are refused until it drains");
+                                         "); peers wait until it drains");
                 }
             }
             return;
@@ -1177,7 +1219,11 @@ template <class App> class Ring
         if (!(completion->flags & IORING_CQE_F_BUFFER))
             return;
         const size_t total = completion->res > 0 ? static_cast<size_t>(completion->res) : 0;
-        const size_t count = total == 0 ? 1 : (total + kBufSize - 1) / kBufSize;
+        size_t count = total == 0 ? 1 : (total + kBufSize - 1) / kBufSize;
+        // A length the kernel cannot have meant still names at most the
+        // whole pool. Advancing the ring by more entries than were taken
+        // hands the same buffer out twice, which is worse than losing it.
+        count = std::min(count, static_cast<size_t>(kBufCount));
         replenish_ += static_cast<uint32_t>(count);
     }
 
@@ -1222,6 +1268,11 @@ template <class App> class Ring
             c.deadline_s = now_s_ + (tunneled ? idle_timeout_ : header_timeout_);
         }
 
+        // Every buffer of this completion, counted before the App sees a
+        // byte. connection_feed runs the application's own code and may
+        // raise; counting per iteration lost the rest of them when it did,
+        // and a buffer nobody hands back is one this process has lost.
+        replenish_ += static_cast<uint32_t>((total + kBufSize - 1) / kBufSize);
         std::string &sink = c.sending ? c.next : c.out;
         bool closing = false;
         size_t left = total;
@@ -1250,7 +1301,6 @@ template <class App> class Ring
                 closing = true;
             left -= count;
             bid = (bid + 1) & (kBufCount - 1);
-            replenish_++;
         }
 
         if (!c.sending) {
@@ -1622,44 +1672,65 @@ template <class App> class Ring
     //
     // #113: sharing one record per pool slot was wrong. A re-arm rewrote
     // the generation in place, and the timeout of a job that had already
-    // answered then read the number of the job the slot holds now and
+    // answered read the number of the job the slot holds now and
     // interrupted that one.
     void arm_compute_deadline(unsigned slot, uint16_t generation, double deadline)
     {
         if (deadline <= 0.0)
             return;
         size_t at = 0;
-        while (at < deadline_busy_.size() && deadline_busy_[at])
+        while (at < deadlines_.size() && deadlines_[at].busy)
             at++;
-        if (at == deadline_busy_.size()) {
-            deadline_busy_.push_back(false);
-            op_compute_deadline_.emplace_back();
-            compute_ts_.emplace_back();
+        if (at == deadlines_.size()) {
+            // The record grows first and the whole of it at once. A raise
+            // here leaves nothing half made, because nothing is marked
+            // busy until the SQE is in the ring.
+            deadlines_.emplace_back();
         }
-        deadline_busy_[at] = true;
-        __kernel_timespec &ts = compute_ts_[at];
+        Deadline &owed = deadlines_[at];
+        owed.slot = slot;
+        owed.generation = generation;
         const int64_t whole = static_cast<int64_t>(deadline);
-        ts.tv_sec = whole;
-        ts.tv_nsec = static_cast<long long>((deadline - static_cast<double>(whole)) * 1e9);
+        owed.when.tv_sec = whole;
+        owed.when.tv_nsec = static_cast<long long>((deadline - static_cast<double>(whole)) * 1e9);
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_timeout(sqe, &ts, 0, 0);
-        io_uring_sqe_set_data64(sqe, arm(op_compute_deadline_[at], nullptr,
-                                         detail::kComputeDeadline,
-                                         (static_cast<uint32_t>(at) << 16) | generation));
-        deadline_slot_.resize(op_compute_deadline_.size());
-        deadline_slot_[at] = slot;
+        io_uring_prep_timeout(sqe, &owed.when, 0, 0);
+        // The whole index, not a field of one: a truncated index makes two
+        // live timeouts name one record and one timespec.
+        io_uring_sqe_set_data64(sqe, arm(owed.op, nullptr, detail::kComputeDeadline,
+                                         static_cast<uint32_t>(at)));
+        owed.busy = true;
+        compute_.name_deadline(slot, generation, reinterpret_cast<uint64_t>(&owed.op));
+
     }
 
-    // The timeout fired, or it was cancelled, or the job answered first.
-    // Either way the record and its timespec are free again.
+    // The timeout fired, or the answer came first and the job's own record
+    // took it out of the ring. Either way this record is free again.
     void on_compute_deadline(Op &op, const struct io_uring_cqe *completion)
     {
-        const size_t at = op.aux >> 16;
-        if (mrb_unlikely(at >= deadline_busy_.size()))
+        const size_t at = op.aux;
+        if (mrb_unlikely(at >= deadlines_.size()))
             fatal("ring: a compute deadline named a record this process never took");
-        deadline_busy_[at] = false;
+        Deadline &owed = deadlines_[at];
+        owed.busy = false;
         if (completion->res == -ETIME)
-            compute_.interrupt(deadline_slot_[at], static_cast<uint16_t>(op.aux & 0xffffu));
+            compute_.interrupt(owed.slot, owed.generation);
+    }
+
+    // #80: the answer came before the deadline. The timeout leaves the
+    // ring, so the record is free again rather than held for the whole of
+    // a max_runtime the job never used. Without this the pool grows with
+    // the job rate times that runtime, and the records are never reused.
+    void drop_compute_deadline(uint64_t timeout_tag)
+    {
+        if (timeout_tag == 0)
+            return;
+        struct io_uring_sqe *sqe = sqe_or_submit();
+        io_uring_prep_timeout_remove(sqe, timeout_tag, 0);
+        // Nobody reads the removal itself. Whether it found the timeout or
+        // the timeout had already fired, the deadline's own completion is
+        // what frees the record.
+        io_uring_sqe_set_data64(sqe, 0);
     }
 
     // The fd leaves through the ring like every other descriptor here.
@@ -1745,6 +1816,8 @@ template <class App> class Ring
         const uint64_t poll_tag = reinterpret_cast<uint64_t>(&op);
         ComputeAnswer answered;
         const bool have = compute_.take(poll_tag, &answered);
+        // #80: the job is over, so its deadline has nothing left to bound.
+        drop_compute_deadline(answered.deadline_tag);
         if (!have) {
             // No busy slot answers to this record. That is our own
             // bookkeeping gone wrong, not the application's, and the run
@@ -2251,11 +2324,15 @@ template <class App> class Ring
             // connection cannot walk the vector it is appending to.
             std::vector<Rearm> owed;
             owed.swap(rearm_);
-            for (const Rearm &r : owed) {
-                Conn &conn = *r.conn;
+            // Every reference in the list goes back, including those behind
+            // an arm_recv that raised on an SQ it could not grow.
+            const HeldList give_back{this, &owed};
+            while (!owed.empty()) {
+                Conn &conn = *owed.back().conn;
+                owed.pop_back();
+                const Held one{this, &conn};
                 if (!conn.dead && !conn.close_after_send)
                     arm_recv(conn);
-                drop_hold(conn);
             }
         }
         if (now_s_ != last_reap_s_) {
@@ -2370,14 +2447,26 @@ template <class App> class Ring
     // One per (listener, stage): the chain submits its stages together, so
     // each needs an address of its own to say which one refused.
     Op op_setup_[kMaxListeners][detail::kStUnlink + 1];
-    // One per timeout in the ring, not one per worker slot: a record and
-    // its timespec are held until that timeout completes.
-    std::deque<Op> op_compute_deadline_;
-    std::vector<bool> deadline_busy_;
-    std::vector<unsigned> deadline_slot_;
+    std::vector<Rearm> rearm_;
+    // One per timeout in the ring, not one per worker slot: the record,
+    // the timespec the kernel reads at submit, and which job it bounds.
+    // A deque, because the kernel holds the address of both the record and
+    // the timespec and a vector moves its elements when it grows.
+    struct Deadline {
+        Op op;
+        __kernel_timespec when {};
+        unsigned slot = 0;
+        uint16_t generation = 0;
+        bool busy = false;
+    };
+    std::deque<Deadline> deadlines_;
     uint32_t table_size_ = 0;
     uint32_t listener_base_ = 0;
     bool unix_listener_[kMaxListeners] = {};
+    // A listener whose last accept met a full descriptor table. It is armed
+    // again by the next conn_free, and not before.
+    bool accept_stalled_[kMaxListeners] = {};
+    bool table_full_said_ = false;
     static constexpr unsigned kSaidMax = 24;
     const char *said_[kSaidMax] = {};
     unsigned said_count_ = 0;
@@ -2388,8 +2477,6 @@ template <class App> class Ring
     bool draining_ = false;
     int64_t drain_deadline_ = 0;
     uint32_t live_ = 0;
-    // One timespec per timeout in the ring, beside its record above.
-    std::deque<__kernel_timespec> compute_ts_;
     char *pool_ = nullptr;
     // #80: the threads a compute task is answered by. Empty until the first run
     // stops; ComputePool::stop() runs from its own destructor.
@@ -2446,10 +2533,6 @@ template <class App> class Ring
     // Which connection owes a fresh recv. The connection itself, because
     // there is no slot to name and no tenant of one to tell apart: the
     // address is the connection for as long as it exists.
-    struct Rearm {
-        Conn *conn;
-    };
-    std::vector<Rearm> rearm_;
 };
 
 } // namespace webmachine
