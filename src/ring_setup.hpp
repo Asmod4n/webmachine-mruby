@@ -1,7 +1,3 @@
-//
-// What the reactor is set up with: the descriptor budget, the listener
-// spelling, RingConfig, and the tags a completion carries. Read by
-// ring.hpp, docroot.cpp, server.cpp and compute_task.cpp.
 #ifndef WEBMACHINE_RING_SETUP_HPP
 #define WEBMACHINE_RING_SETUP_HPP
 

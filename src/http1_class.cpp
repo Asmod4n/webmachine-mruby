@@ -1,4 +1,3 @@
-// The bodies of the Http1 members http1.hpp declares.
 #include "http1.hpp"
 
 namespace webmachine
@@ -244,7 +243,6 @@ __attribute__((noinline)) bool Http1::chunk_lines_ok(Conn &conn, const char *dat
             continue;
         }
 
-        // kSize: gather to the CRLF, then hold the line to the grammar.
         const char *const name_length =
             static_cast<const char *>(std::memchr(data + i, '\n', length - i));
         if (name_length == nullptr) {

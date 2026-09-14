@@ -1,5 +1,3 @@
-// The bodies of what ring_setup.hpp declares: the two limit raises, the
-// descriptor budget, the completion tags and the setup stage names.
 #include "ring_setup.hpp"
 
 namespace webmachine
@@ -24,14 +22,9 @@ uint64_t raise_memlock(mrb_state *mrb)
     return static_cast<uint64_t>(rl.rlim_cur);
 }
 
-// Submission entries for one ring of this process. Three quarters of
-// RLIMIT_MEMLOCK go to the rings and they share it; one entry costs its
-// submission slot and its two completion slots. The answer is a power of
-// two, and kSqEntriesMax bounds it.
-//
-// rings counts every ring this server opens: threads + 1 for --threads,
-// and the child count for --workers, because the kernel charges a ring's
-// memory to the user rather than to the process.
+// The kernel charges a ring's memory to the user rather than to the
+// process, so every ring this server opens shares one RLIMIT_MEMLOCK:
+// threads + 1 for --threads, the child count for --workers.
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 {
     constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);
@@ -42,8 +35,7 @@ unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
     const uint64_t fit = (memlock_limit / 4) * 3 / rings / per_entry;
     if (fit >= kSqEntriesMax)
         return kSqEntriesMax;
-    // A submission queue is a power of two, so the answer is the largest
-    // one that fits.
+    // A submission queue is a power of two.
     unsigned answer = 1;
     while (answer * 2u <= fit)
         answer *= 2;

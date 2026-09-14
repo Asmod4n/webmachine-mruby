@@ -15,15 +15,13 @@ namespace webmachine
 {
 namespace
 {
-// The file being read: the VM that parsed it, and its path - which every
-// refusal names, because an operator with three configs needs to know
-// which one the sentence is about.
+// Every refusal names the path, because an operator with three configs
+// needs to know which one the sentence is about.
 struct ConfigFile {
     mrb_state *mrb;
     const char *path;
 };
 
-// TOML::load, and what it was asked to read.
 struct TomlAsk {
     mrb_value path;
 };
@@ -35,8 +33,7 @@ mrb_value toml_load_in_protected_call(mrb_state *mrb, void *user_data)
     return mrb_funcall_argv(mrb, mrb_obj_value(toml), MRB_SYM(load), 1, &ask->path);
 }
 
-// TOML: the parser's own words, under this file's name. Caught on purpose
-// - the parser says what is wrong with the syntax and nothing about which
+// The parser says what is wrong with the syntax and nothing about which
 // file, and the operator needs both in one sentence.
 mrb_value toml_document_load(const ConfigFile &file)
 {
@@ -49,9 +46,8 @@ mrb_value toml_document_load(const ConfigFile &file)
     return document;
 }
 
-// TOML: one section, read out of the document. A missing key is how an
-// absent section answers here, so that one exception is expected and the
-// rest are the file's fault.
+// A missing key is how an absent section answers, so that one exception
+// is expected and the rest are the file's fault.
 struct SectionAsk {
     mrb_value document;
     mrb_value key;
@@ -63,30 +59,26 @@ mrb_value section_read_in_protected_call(mrb_state *mrb, void *user_data)
     return mrb_funcall_argv(mrb, ask->document, MRB_OPSYM(aref), 1, &ask->key);
 }
 
-// One setting: the table it sits in and the two names a message spells it
-// with - "server" and "port" make server.port. A top-level section sits in
-// the document itself and has no section above it, so `where` is empty
-// there and `key` is the section's own name.
+// "server" and "port" make server.port. A top-level section sits in the
+// document itself, so `where` is empty there and `key_name` is the
+// section's own name.
 struct Setting {
     mrb_value table;
     const char *where;
     const char *key_name;
 };
 
-// TOML: the closed range a count must fall in.
 struct Bounds {
     mrb_int low;
     mrb_int high;
 };
 
-// TOML: one top-level table, and whether the file named it at all - an
-// absent one means the CLI or conf speaks.
+// An absent section means the CLI or conf speaks.
 struct FoundTable {
     mrb_value table{};
     bool present = false;
 };
 
-// TOML: one top-level section; an absent one means the CLI or conf speaks.
 void section_take(Setting setting, FoundTable &out_table, const ConfigFile &file)
 {
     mrb_state *const mrb = file.mrb;
@@ -106,7 +98,7 @@ void section_take(Setting setting, FoundTable &out_table, const ConfigFile &file
     out_table.present = true;
 }
 
-// TOML: a present key must have the right type; absent is always fine.
+// A present key must have the right type; absent is always fine.
 void setting_take_string(Setting setting, std::string &out_text, const ConfigFile &file)
 {
     const mrb_value raw =
@@ -121,7 +113,7 @@ void setting_take_string(Setting setting, std::string &out_text, const ConfigFil
     out_text.assign(ruby_string_bytes(raw));
 }
 
-// TOML: a count, in range. Counts are not durations.
+// Counts are not durations.
 void setting_take_int(Setting setting, Bounds bounds, mrb_int *out_count, const ConfigFile &file)
 {
     const mrb_value raw =
@@ -136,7 +128,7 @@ void setting_take_int(Setting setting, Bounds bounds, mrb_int *out_count, const 
     *out_count = mrb_integer(raw);
 }
 
-// TOML: a duration, through mruby-chrono and nothing else; rounded up.
+// Through mruby-chrono and nothing else; rounded up.
 void setting_take_seconds(Setting setting, int *out_seconds, const ConfigFile &file)
 {
     const mrb_value raw =
@@ -158,10 +150,9 @@ void setting_take_seconds(Setting setting, int *out_seconds, const ConfigFile &f
 }
 } // namespace
 
-// The file --write-config leaves behind. What is in it is what this
-// server would have done anyway, so an operator can read the defaults
-// instead of being told them, and change one line instead of learning a
-// flag. Nothing writes this without being asked.
+// What is in it is what this server would have done anyway, so an
+// operator reads the defaults instead of being told them, and changes
+// one line instead of learning a flag. Nothing writes it unasked.
 bool config_write_default(const char *path, const char *error_assets)
 {
     FILE *file = std::fopen(path, "wxe"); // x: never over a file somebody has
@@ -260,7 +251,6 @@ bool config_write_default(const char *path, const char *error_assets)
     return true;
 }
 
-// TOML: parse and validate webmachine.toml through the VM the process carries.
 void config_load(mrb_state *mrb, const char *path, Config &out_config)
 {
     const ArenaGuard arena(mrb);

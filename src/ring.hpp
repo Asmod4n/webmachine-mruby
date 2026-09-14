@@ -1,5 +1,3 @@
-// The reactor: one io_uring, one thread, every connection.
-//
 // It lives here and not in webmachine.hpp because it is a template on
 // the application type, so it has to be a header - and only four
 // translation units instantiate one. The other nineteen read

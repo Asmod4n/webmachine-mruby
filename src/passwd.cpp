@@ -1,9 +1,5 @@
-//
-// Webmachine::Passwd - the database webmachine-passwd writes, read for
-// one question a resource asks: is this password right for this user.
-//
-// The layout is read here, in C++, beside PasswdRec (src/webmachine.hpp)
-// - never in Ruby by byte arithmetic. Ruby only calls valid?; the record
+// The record layout is read here, beside PasswdRec (src/webmachine.hpp),
+// never in Ruby by byte arithmetic. Ruby only calls valid?; the record
 // itself never crosses into a VM.
 //
 // One object is meant to live for the life of a worker, built once

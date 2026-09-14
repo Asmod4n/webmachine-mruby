@@ -1,9 +1,5 @@
-//
-// The connection layer: the h2 stream and connection state, the
-// WebSocket and event-stream carriers, and class Http1, the application
-// the reactor drives. The translation units that frame requests read
-// this; the others read webmachine.hpp alone, the contract between the
-// tiers.
+// The translation units that frame requests read this; the others read
+// webmachine.hpp alone, the contract between the tiers.
 #ifndef WEBMACHINE_HTTP1_HPP
 #define WEBMACHINE_HTTP1_HPP
 

@@ -14,8 +14,7 @@ namespace
 {
 using ExtType = std::pair<std::string, std::string>;
 
-// The extension order type_of then searches in. Types, not function
-// pointers: the sort inlines the comparison the way it did the lambdas.
+// Types, not function pointers: the sort inlines the comparison.
 struct ExtBefore {
     bool operator()(const ExtType &cross_ask, const ExtType &block) const
     {
@@ -35,13 +34,9 @@ struct ExtBeforeKey {
     }
 };
 
-// POSIX read(2): a whole file into memory. Setup only.
-//
-// False means the file is not there, which is the answer this caller
-// wants: it tries a list of paths and takes the first that exists. Every
-// other refusal - no permission, a read that failed, a close that failed
-// - raises, because a media type table that is there and unreadable is
-// not the same as one that is absent.
+// False means ENOENT, which is the answer a caller walking a list of
+// candidates wants. Every other refusal raises: a media type table that
+// is there and unreadable is not the same as one that is absent.
 bool file_read_whole_or_absent(mrb_state *mrb, const char *path, std::string &text)
 {
     const int opened_fd = ::open(path, O_RDONLY | O_CLOEXEC);

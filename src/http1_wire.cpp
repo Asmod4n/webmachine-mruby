@@ -1,4 +1,3 @@
-// The bodies of the free functions http1.hpp declares.
 #include "http1.hpp"
 
 namespace webmachine

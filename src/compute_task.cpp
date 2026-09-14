@@ -1,8 +1,4 @@
-//
-// #80: the compute pool that answers a ComputeTask.
-//
-// A compute task is asked once and answered once, and a thread answers
-// it. The work is arithmetic, not waiting: argon2 takes about 40 ms,
+// #80: the work is arithmetic, not waiting - argon2 takes about 40 ms,
 // and the reactor's core would stop for that long.
 //
 // The queue is io_uring's own. A worker blocks on a ring of its own,

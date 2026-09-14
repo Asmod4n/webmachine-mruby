@@ -1,4 +1,3 @@
-// The one place this tree spells mruby's value macros.
 #include "ruby_value.hpp"
 
 #include <mruby/array.h>

@@ -1,4 +1,3 @@
-// The bodies of the members http1.hpp declares.
 #include "http1.hpp"
 
 namespace webmachine
@@ -107,14 +106,10 @@ H2State::H2State()
     hpack_ready = lshpack_enc_init(&enc) == 0;
     lshpack_dec_init(&dec);
     lshpack_dec_set_max_capacity(&dec, kH2DecTableSize);
-    // The dynamic table needs nothing done to it here any more. This
-    // used to hand the decoder an array, because ls-hpack left it NULL
-    // and the first growth did memcpy(new, NULL + 0, 0) - undefined
-    // twice over, and two UBSan reports on the first h2 request this
-    // server ever answered. deps/ls-hpack is pinned at the fork's
-    // fix-undefined-behaviour branch, where lshpack_arr_push guards the
-    // copy on nelem. The pin moves to a release when upstream takes the
-    // three fixes (tools/webmachine-fuzz/ls-hpack).
+    // deps/ls-hpack is pinned at the fork's fix-undefined-behaviour
+    // branch, where lshpack_arr_push guards its copy on nelem. Upstream
+    // grows the table with memcpy(new, NULL + 0, 0) on its first push,
+    // which is undefined twice over.
 }
 
 H2State::~H2State()

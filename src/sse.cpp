@@ -33,8 +33,6 @@ struct SseStream {
 
 namespace
 {
-// WHATWG HTML: one "field: value" line; a value with newlines is
-// several lines of the same field.
 void field(std::string &out_text, http::Field field_to_write)
 {
     const char *const name = field_to_write.name.data();
@@ -42,10 +40,9 @@ void field(std::string &out_text, http::Field field_to_write)
     const char *const value = field_to_write.value.data();
     const size_t vlen = field_to_write.value.size();
     // WHATWG HTML: a line of an event stream ends at CR, at LF, or at CR
-    // LF, and all three are this field's end. The split looked for LF
-    // alone, so a bare CR stayed inside the value and the client read it
-    // as a line of its own - an `id:` or an `event:` spelled by whatever
-    // string the application relayed.
+    // LF, and all three are this field's end. A bare CR left inside a
+    // value is a line of its own to the client - an `id:` or an `event:`
+    // spelled by whatever string the application relayed.
     size_t i = 0;
     for (;;) {
         size_t line_end = i;
@@ -60,7 +57,6 @@ void field(std::string &out_text, http::Field field_to_write)
     }
 }
 
-// WHATWG HTML: the same line, from a Ruby value.
 void field(std::string &out_text, const char *name, const mrb_value &value)
 {
     if (!mrb_string_p(value))
@@ -68,7 +64,6 @@ void field(std::string &out_text, const char *name, const mrb_value &value)
     field(out_text, {name, ruby_string_bytes(value)});
 }
 
-// WHATWG HTML: one event out of what on_tick returned.
 bool event_spell(mrb_state *mrb, const mrb_value &event, std::string &out_text)
 {
     if (mrb_string_p(event)) {
@@ -102,7 +97,6 @@ bool event_spell(mrb_state *mrb, const mrb_value &event, std::string &out_text)
     return true;
 }
 
-// RFC 9112 7.1: one chunk - size in hex, CRLF around the data.
 void chunk_wrap(std::string &sink, const std::string &body)
 {
     if (body.empty())
@@ -114,7 +108,6 @@ void chunk_wrap(std::string &sink, const std::string &body)
     sink.append("\r\n", 2);
 }
 
-// WHATWG HTML: on_close, once, however the stream ended.
 void stream_report_close(SseStream *stream)
 {
     if (!stream->resource->have_close)
@@ -129,25 +122,21 @@ void stream_report_close(SseStream *stream)
 }
 } // namespace
 
-// WHATWG HTML: Webmachine::SseResource, the class a route may name.
 void sse_init(mrb_state *mrb, struct RClass *webmachine_module)
 {
     mrb_define_class_under_id(mrb, webmachine_module, MRB_SYM(SseResource), mrb->object_class);
 }
 
-// WHATWG HTML: one route's folded resource.
 SseResource *sse_resource_new()
 {
     return new SseResource();
 }
 
-// WHATWG HTML: unique_ptr's deleter across the TU boundary.
 void sse_resource_free(SseResource *resource)
 {
     delete resource;
 }
 
-// WHATWG HTML: fold a resource class for an SSE route, once, at route.sse.
 void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out_resource)
 {
     if (!mrb_class_p(klass)) {
@@ -208,7 +197,6 @@ void sse_fold(mrb_state *mrb, mrb_value klass, SseResource &out_resource)
     mrb_obj_freeze(mrb, klass);
 }
 
-// WHATWG HTML: build this stream's resource; its initialize is the open hook.
 SseStream *sse_open(const SseResource *resource, Logger *logger, uint16_t &code)
 {
     uint16_t &status = code;
@@ -246,9 +234,6 @@ SseStream *sse_open(const SseResource *resource, Logger *logger, uint16_t &code)
     return stream;
 }
 
-// WHATWG HTML: one second has passed - ask the resource, and hand back
-// what it said as the event-stream bytes themselves.
-//
 // The framing is not here, because the two protocols frame it
 // differently: h1 wraps each tick in a chunk (RFC 9112 7.1) and h2 puts
 // the same bytes in DATA frames against the stream window (RFC 9113
@@ -308,8 +293,6 @@ bool sse_tick(SseStream *stream, int64_t now_s, std::string &body)
     return go_on;
 }
 
-// RFC 9112 7.1: h1's framing of one tick - a chunk, and a last chunk when
-// the stream ends.
 bool sse_second(SseStream *stream, int64_t now_s, std::string &sink)
 {
     std::string body;
@@ -320,7 +303,6 @@ bool sse_second(SseStream *stream, int64_t now_s, std::string &sink)
     return go_on;
 }
 
-// WHATWG HTML: the stream ends; the resource hears about it once.
 void sse_free(SseStream *stream)
 {
     if (stream == nullptr)

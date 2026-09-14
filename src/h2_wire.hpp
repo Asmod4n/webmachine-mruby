@@ -1,16 +1,10 @@
 #ifndef WEBMACHINE_H2_WIRE_HPP
 #define WEBMACHINE_H2_WIRE_HPP
 
-// RFC 9113 4/6 and RFC 7541: the h2 wire layer, and nothing above it.
-//
-// What a frame is - its type, flag, error and settings numbers, the
-// preface, the nine header bytes, the big-endian reads, one HPACK field
-// encode - is the same for a server answering and a client asking.
-//
-// It lives apart so a misread length is a bug in one place.
-//
-// Free of everything else in this tree: no mruby, no io_uring, no Conn,
-// no state. Only <cstddef>/<cstdint>, <string_view> and ls-hpack.
+// RFC 9113 4/6 and RFC 7541. A frame is the same for a server answering
+// and a client asking, and it lives apart so a misread length is a bug
+// in one place. Nothing else in this tree may enter here: no mruby, no
+// io_uring, no Conn, no state.
 
 #include <cstddef>
 #include <cstdint>
@@ -89,7 +83,6 @@ inline constexpr uint32_t kH2EncTableMax = 65536;
 inline constexpr uint32_t kH2DecTableSize = 4096;
 inline constexpr int64_t kH2WindowCeiling = 0x7fffffff;
 
-// RFC 9113 4.1: the four fields of a frame header.
 struct H2FrameHead {
     uint32_t len;
     uint8_t type;
@@ -97,34 +90,28 @@ struct H2FrameHead {
     uint32_t stream;
 };
 
-// The 9 bytes they make; stream id at offset 5.
 void h2_put_frame_header(unsigned char *bytes, H2FrameHead facts);
 
-// RFC 9113 4.1: the 4 stream-id bytes of an already-emitted frame header.
 void h2_patch_stream_id(unsigned char *bytes, uint32_t stream);
 
-// RFC 9113 4.1: a frame's length field.
+// RFC 9113 4.1: every field of a frame header is network order, and a
+// stream id carries a reserved bit that h2_u31 masks off.
 uint32_t h2_u24(const unsigned char *bytes);
-// RFC 9113 4.1: a 32-bit field, network order.
 uint32_t h2_u32(const unsigned char *bytes);
-// RFC 9113 4.1: a stream id, reserved bit masked off.
 uint32_t h2_u31(const unsigned char *bytes);
-// RFC 9113 6.5.1: a settings identifier.
 uint16_t h2_u16(const unsigned char *bytes);
 
-// One HPACK block under construction: the encoder whose dynamic table it
-// moves, the cursor the next field lands at, and the end it may not pass.
-// The cursor is a reference - encoding a field advances it, and what the
-// caller wrote is `at` minus where it started.
+// `at` is a reference: encoding a field advances it, and what the caller
+// wrote is `at` minus where it started.
 struct H2BlockOut {
     struct lshpack_enc *enc;
     unsigned char *&at;
     unsigned char *end;
 };
 
-// RFC 7541 6.2: one field line to encode. `index` says whether ls-hpack
-// may put it in the dynamic table (6.2.1) or must spell it without one
-// (6.2.2). It matters for any block that is cached and replayed: HPACK is
+// RFC 7541 6.2: `index` says whether ls-hpack may put the line in the
+// dynamic table (6.2.1) or must spell it without one (6.2.2). It
+// matters for any block that is cached and replayed: HPACK is
 // stateful, so replaying an insert makes the peer insert - and evict -
 // once per replay, which on a busy connection is one allocation per answer
 // in every client that talks to us. A block we send more than once must

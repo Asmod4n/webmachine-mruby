@@ -1,4 +1,3 @@
-// The bodies of what webmachine.hpp declares.
 #include "webmachine.hpp"
 
 namespace webmachine
