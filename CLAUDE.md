@@ -200,6 +200,22 @@ the splice measurement, which `assets.sh` had already marked as
 historical in its own header. The file that measures was right and the
 files that talk about it had drifted. Read the measuring files first.
 
+`docs/` is read the same way and for the same reason: every `.md`
+under it, not the page that looks relevant. Twenty five files, and
+they do not repeat each other - `reference/` states what a flag and a
+callback do, `explanation/` states why the shape is what it is,
+`how-to/` states the steps for one task, and `tutorial.md` is the one
+path a newcomer walks. A change to what an operator or an app author
+can see is a change to some of them, and the page that contradicts the
+new behaviour is rarely the page being edited. `explanation/one-thread.md`
+opens "one process and one thread"; a flag that makes it several
+leaves that sentence false, and nothing in the flag's own patch points
+at it.
+
+Read, and do not rewrite on the strength of one session's reading. A
+documentation change follows a verified fact, not a fresh measurement
+that nobody has reproduced.
+
 What `how-to-measure.md` settles, and what a session gets wrong without
 it:
 
