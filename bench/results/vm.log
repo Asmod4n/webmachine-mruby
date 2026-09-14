@@ -4377,3 +4377,9 @@ build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++
 env: runnable=3/125 busy=2% (200ms sample)
 responses=15516517 bad=0 seconds=5.001 rps=3102955 bytes=1303390466 MB/s=248.57 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=201777549 tx_MB/s=38.48
 server: 99% of one core (77u/21s)   client: 62% of one core (49u/13s)   other: 8% of one core
+==== 2026-09-14T09:05Z repo=80f74af mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c768 -d5s h1 (one ring, one thread) impl=bin:nat-reactor cpus=1,2,3 nice=-15 transport=unix app=bench/apps/hello.rb path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:sapphirerapids 6.18.44-fc-v24 x86_64
+build: /tmp/nat-reactor cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v24 host=vm
+env: runnable=3/122 busy=0% (200ms sample)
+responses=2662388 bad=0 seconds=5.000 rps=532476 bytes=412670140 MB/s=78.71 conns=768 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=93209060 tx_MB/s=17.78
+server: 99% of one core (15u/83s)   client: 99% of one core (8u/91s)   other: 2% of one core

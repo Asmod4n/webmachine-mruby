@@ -129,10 +129,22 @@ before you read the rate.
 
    The build decides the counts, so sweep again whenever it changes. A
    `WM_MARCH=x86-64-v3` binary is the valgrind build of the section
-   below and it is not this tree's server: it reads 0.47M where the
-   host build reads 0.56M, and its own h1 count is 512 where the host
-   build wants 768. Take a rate from the host build and from nothing
-   else.
+   below and it is slower than what this tree ships: it reads 0.47M
+   where the host build reads 0.56M, and its own h1 count is 512 where
+   the host build wants 768.
+
+   `-march=native` is not one ISA either. The containers this tree is
+   built in land on hosts that differ: native gave `sapphirerapids`
+   with avx512 in one session and something else in the next, and the
+   host that carries avx512 is faster for other reasons as well. So two
+   rates from two sessions are two binaries on two machines. A
+   comparison holds inside one session, where both arms were built the
+   same hour; across sessions, pin the ISA with `WM_MARCH=` or read
+   `bench/instructions.sh` instead, which pins it already.
+
+   The harness line records what native resolved to, not the word
+   itself: `cflags=-O3 -march=native:sapphirerapids`. A row whose
+   `-march=` reads differently from yours is not your measurement.
 
 2. Check that the client is not the limit. `bench/floor.sh` refuses a
    run when the client is pegged and the server is 15 or more points

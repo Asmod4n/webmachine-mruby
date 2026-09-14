@@ -317,8 +317,20 @@ OUT=$(mktemp)
   # can pin it (WM_MARCH); the LOG has to say which ISA, not which shell
   # expression, or every line after this reads the same for two builds
   # that are not the same.
-  CFLAGS_LINE=${CFLAGS_LINE//\$\{march\}/${WM_MARCH:-native}}
-  CFLAGS_LINE=${CFLAGS_LINE//#\{march\}/${WM_MARCH:-native}}
+  # native is not an ISA. This tree is built in containers that are
+  # scheduled onto hosts that differ, so native resolved to
+  # sapphirerapids with avx512 in one session and to something else in
+  # the next - and both rows said "native", which is the failure the
+  # paragraph above exists to stop. Ask the compiler what it picked.
+  if [ "${WM_MARCH:-native}" = native ]; then
+    MARCH_REAL=$("${CC:-cc}" -march=native -Q --help=target 2>/dev/null |
+                 awk '$1 == "-march=" { print $2; exit }')
+    MARCH_LINE="native:${MARCH_REAL:-unreadable}"
+  else
+    MARCH_LINE="$WM_MARCH"
+  fi
+  CFLAGS_LINE=${CFLAGS_LINE//\$\{march\}/$MARCH_LINE}
+  CFLAGS_LINE=${CFLAGS_LINE//#\{march\}/$MARCH_LINE}
   # Which htgen - not just "htgen". A stale binary earlier in PATH than
   # the one just built is invisible otherwise, and the number it produces
   # looks exactly like the number the new one would have produced.

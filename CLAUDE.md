@@ -192,11 +192,20 @@ What that file settles, and what a session gets wrong without it:
 - A change smaller than the host can resolve needs
   `bench/instructions.sh`. It counts what the server executed, and the
   count of one binary does not move between runs.
-- A rate comes from the host build. `WM_MARCH=x86-64-v3` is the build
-  that valgrind can decode, for the count and for nothing else. It
-  reads 0.47M where the host build reads 0.56M, and it wants a
-  different connection count, so a rate taken from it describes a
-  server this tree does not ship.
+- Both arms of a comparison are built the same way, and the comparison
+  lives inside one session. `-march=native` is not one ISA here: this
+  tree is built in containers that land on hosts that differ, so native
+  gave sapphirerapids with avx512 in one session and something else in
+  the next. A host with avx512 is faster for other reasons as well. So
+  a rate from one session and a rate from another measure two binaries
+  on two machines, whatever the log says.
+- To compare across sessions, pin the ISA with `WM_MARCH=`, as
+  `bench/instructions.sh` already does. That is why its counts can be
+  read beside the counts of a tree from months ago, and a rate cannot.
+- `WM_MARCH=x86-64-v3` is the build valgrind can decode, and it is
+  slower than what this tree ships: it reads 0.47M where the host build
+  reads 0.56M, and it wants a different connection count. Sweep again
+  after the build changes.
 
 This rule exists because it was broken. A session measured the reactor
 rewrite with `ab`, `h2load` and `taskset -c 0`, read a loss of 20
