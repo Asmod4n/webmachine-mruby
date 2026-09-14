@@ -348,6 +348,14 @@ template <class App> class Ring
                 io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStSockopt], nullptr,
                                                  detail::kSetup, detail::kStSockopt));
                 chain++;
+
+                sqe = setup_sqe();
+                io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_SETSOCKOPT, slot, SOL_SOCKET,
+                                       SO_REUSEPORT, const_cast<int *>(&kOne), sizeof(kOne));
+                sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+                io_uring_sqe_set_data64(sqe, arm(op_setup_[listener_index][detail::kStReuseport], nullptr,
+                                                 detail::kSetup, detail::kStReuseport));
+                chain++;
             }
 
             sqe = setup_sqe();
@@ -2512,7 +2520,7 @@ template <class App> class Ring
     Op op_listener_close_[kMaxListeners];
     // One per (listener, stage): the chain submits its stages together, so
     // each needs an address of its own to say which one refused.
-    Op op_setup_[kMaxListeners][detail::kStUnlink + 1];
+    Op op_setup_[kMaxListeners][detail::kStReuseport + 1];
     std::vector<Rearm> rearm_;
     // One per timeout in the ring, not one per worker slot: the record,
     // the timespec the kernel reads at submit, and which job it bounds.

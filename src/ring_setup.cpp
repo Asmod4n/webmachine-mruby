@@ -94,6 +94,8 @@ const char *stage_name(uint32_t conn)
             return "getsockname";
         case kStUnlink:
             return "unlink";
+        case kStReuseport:
+            return "setsockopt SO_REUSEPORT";
     }
     return "?";
 }

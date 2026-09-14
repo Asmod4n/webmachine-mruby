@@ -43,6 +43,17 @@ DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
 IMPL="${IMPL:-uring}"
+# WORKERS=N: start N server processes on one TCP port, each with its own
+# ring and its own thread, sharing the port through SO_REUSEPORT. The
+# kernel hands each accept to one of them. The server cpu column then
+# sums every worker, so a rate can be read against the cpu it cost.
+# TCP only: SO_REUSEPORT has no AF_UNIX meaning.
+WORKERS="${WORKERS:-1}"
+# CLIENTS=N: N htgen processes, each with CONNS connections of its own.
+# htgen is one ring and one thread, so one of them cannot fill more than
+# one server worker. The counts and the cpu of all N are added up, and
+# the responses= line reports the sum.
+CLIENTS="${CLIENTS:-1}"
 # BIN=path names the binary directly, for an A/B between two builds of the
 # same impl: keep both, alternate them, and the harness line records which
 # one ran. Without it the only way to compare two builds was to copy one
@@ -125,6 +136,17 @@ fi
 cpu_ticks() {
   awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12], f[13] }' \
     "/proc/$1/stat" 2>/dev/null || echo "0 0"
+}
+# Every worker's ticks added up, so WORKERS=2 reports the cpu two
+# processes spent and not the cpu one of them did.
+srv_ticks() {
+  local u=0 s=0 pu ps p
+  for p in "${SRVS[@]}"; do
+    read -r pu ps <<<"$(cpu_ticks "$p")"
+    u=$((u + pu))
+    s=$((s + ps))
+  done
+  echo "$u $s"
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # The whole machine's busy ticks, all cores, from /proc/stat's first line.
@@ -212,6 +234,10 @@ if [ "$BROWSER" = 1 ]; then
             --header 'Accept-Language: en-US,en;q=0.9')
 fi
 
+if [ "$WORKERS" != 1 ] && [ "$TRANSPORT" != tcp ]; then
+  echo "WORKERS=$WORKERS needs TRANSPORT=tcp: one port shared by SO_REUSEPORT" >&2
+  exit 2
+fi
 SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
@@ -224,9 +250,17 @@ fi
 # An app names its own listener, and the server refuses a second one on
 # the command line. bench_app wrote the one above into the app source.
 [ ${#APP_ARGS[@]} -eq 0 ] || BIND_ARGS=()
-"${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >>"$WORK/srv.log" 2>&1 & SRV=$!
+SRVS=()
+w=0
+while [ "$w" -lt "$WORKERS" ]; do
+  "${SRV_PIN[@]}" "$BIN" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
+  SRVS+=($!)
+  w=$((w + 1))
+done
+# SRV names the first worker: the syscall counter reads one process.
+SRV=${SRVS[0]}
 # wait: back-to-back runs must not race the dying listener for the port.
-trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill ${SRVS[@]} 2>/dev/null; wait ${SRVS[@]} 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- requests per syscall -------------------------------------------
 # The point of a ring server is syscall amortization - one enter
@@ -289,7 +323,9 @@ sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
 sleep 0.5
-kill -0 $SRV 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
+for p in "${SRVS[@]}"; do
+  kill -0 "$p" 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
+done
 grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
@@ -343,7 +379,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
@@ -379,7 +415,7 @@ OUT=$(mktemp)
   [ "$TOTAL" -gt 0 ] && BUSYPCT=$((100*BUSY/TOTAL)) || BUSYPCT=0
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   sysc_begin "$SRV" "$DURATION"
-  read -r SU0 SS0 <<<"$(cpu_ticks "$SRV")"
+  read -r SU0 SS0 <<<"$(srv_ticks)"
   M0=$(machine_busy)
   snap_times
   read -r CU0 CS0 <<<"$(parse_child_cpu)"
@@ -405,20 +441,49 @@ OUT=$(mktemp)
     fi
     HTGEN_SHAPE+=(--latency)
   fi
-  if [ "$TRANSPORT" = unix ]; then
-    "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-      --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.out" 2>&1 &
+  CLIS=()
+  n=0
+  while [ "$n" -lt "$CLIENTS" ]; do
+    if [ "$TRANSPORT" = unix ]; then
+      "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
+        --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.$n" 2>&1 &
+    else
+      "${CLI_PIN[@]}" "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
+        --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
+        >"$WORK/cli.$n" 2>&1 &
+    fi
+    CLIS+=($!)
+    n=$((n + 1))
+  done
+  CLI=${CLIS[0]}
+  for p in "${CLIS[@]}"; do wait "$p" 2>/dev/null; done
+  # One responses= line out of N, with the counts and the rates added.
+  # bad= is summed as well: a client that failed must not hide behind
+  # one that did not.
+  cat "$WORK"/cli.* > "$WORK/cli.all"
+  if [ "$CLIENTS" != 1 ]; then
+    awk '/^responses=/ {
+           for (i = 1; i <= NF; i++) {
+             split($i, kv, "=")
+             k = kv[1]; v = kv[2]
+             if (k == "responses" || k == "bad" || k == "rps" || k == "bytes" ||
+                 k == "MB/s" || k == "conns" || k == "tx_bytes" || k == "tx_MB/s") sum[k] += v
+             else keep[k] = v
+             if (!(k in seen)) { seen[k] = 1; ord[++m] = k }
+           }
+         }
+         END { line = ""
+               for (i = 1; i <= m; i++) { k = ord[i]
+                 v = (k in sum) ? sum[k] : keep[k]
+                 line = line (i > 1 ? " " : "") k "=" v }
+               print line }' "$WORK/cli.all" > "$WORK/cli.out"
   else
-    "${CLI_PIN[@]}" "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-      --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
-      >"$WORK/cli.out" 2>&1 &
+    cp "$WORK/cli.all" "$WORK/cli.out"
   fi
-  CLI=$!
-  wait "$CLI" 2>/dev/null
   snap_times
   M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
-  read -r SU1 SS1 <<<"$(cpu_ticks "$SRV")"
+  read -r SU1 SS1 <<<"$(srv_ticks)"
   CLIOUT=$(cat "$WORK/cli.out")
   echo "$CLIOUT" | grep -E "^responses="
   echo "$CLIOUT" | grep -E "^latency_us" || true

@@ -157,7 +157,9 @@ enum : uint32_t {
     kStName = 5,
     // The unlink of a unix path at the ring exit, so the exit can tell
     // its completion from a listener close ahead of it.
-    kStUnlink = 6
+    kStUnlink = 6,
+    // SO_REUSEPORT, so several server processes may hold one port.
+    kStReuseport = 7
 };
 
 // Which stage of the setup chain a failing CQE belongs to.
