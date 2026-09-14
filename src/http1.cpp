@@ -1064,6 +1064,15 @@ Http1::Took Http1::answer_from_docroot(Round &round)
         file_prebuilt(conn, round.facts.method == flow::Method::kOther ? 501 : 405);
     else if (bad)
         file_reject(conn);
+    // #111: the head this round answered is consumed here, as the asset
+    // tier consumes its own. Without it file_named_tail wrote the request
+    // head back into the carry, and the round that spelled this file's
+    // answer fed it to the parser again - the same file for every request
+    // that followed on the connection, forever.
+    //
+    // The other caller of file_named_tail, answer_from_file, is handed a
+    // Round whose off already stands past the head.
+    round.off += round.head_len;
     file_named_tail(round);
     return Took::kOwed;
 }
