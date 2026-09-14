@@ -2,12 +2,18 @@
 # body files (src/docroot.cpp), driven through Webmachine::SpecFd.
 WM_FD = Webmachine::SpecFd unless defined?(WM_FD)
 
-assert('fd: max_conns is the limit minus the reserve, the body files and the listeners') do
-  # 20000 - 128 - 1024 - 16
-  assert_equal 18_832, WM_FD.max_conns(20_000)
-  # 1168 is taken whole; 1169 leaves one connection.
-  assert_equal 0, WM_FD.max_conns(1168)
-  assert_equal 1, WM_FD.max_conns(1169)
+assert('fd: three quarters of the limit go to the rings, less the listener slots') do
+  # RLIMIT_NOFILE belongs to the process, and a ring that took all of it
+  # left nothing for the descriptors the process opens outside a ring
+  # table - a request body in a file, a log, whatever an application
+  # opens. Three quarters go to the rings; the last quarter stays.
+  # (20000 / 4) * 3 - 16
+  assert_equal 14_984, WM_FD.max_conns(20_000)
+  # 16 listener slots come off the share, so the share has to pass them.
+  # (21 / 4) * 3 = 15, which 16 takes whole; (23 / 4) * 3 = 15 as well,
+  # and 24 is the first limit whose share is 18.
+  assert_equal 0, WM_FD.max_conns(21)
+  assert_equal 2, WM_FD.max_conns(24)
   # The fixed table stops at 2^20 entries, listeners included.
   assert_equal 1_048_560, WM_FD.max_conns(1 << 21)
 end
