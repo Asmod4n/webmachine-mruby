@@ -76,9 +76,9 @@ template <class App> class Ring
             }
         }
         if (buf_ring_ != nullptr)
-            io_uring_free_buf_ring(&ring_, buf_ring_, kBufCount, kBufGroup);
+            io_uring_free_buf_ring(&ring_, buf_ring_, bufs_, kBufGroup);
         if (pool_ != nullptr)
-            ::munmap(pool_, static_cast<size_t>(kBufCount) * kBufSize);
+            ::munmap(pool_, static_cast<size_t>(bufs_) * kBufSize);
         if (ring_up_) {
             io_uring_queue_exit(&ring_);
             ring_up_ = false;
@@ -113,10 +113,20 @@ template <class App> class Ring
         const unsigned sq_floor = sq_wanted < kSqFloor ? sq_wanted : kSqFloor;
         struct io_uring_params p {
         };
+        // The three setup flags are what this reactor asks for, and not
+        // every kernel gives them. The refusal names no flag, so the
+        // answer is to ask again without them and take a plain ring -
+        // mruby-io_uring does the same, by zeroing the params before its
+        // second call. Only then is the size to blame, and only then does
+        // the loop halve it.
         for (sq_entries_ = sq_wanted;; sq_entries_ /= 2) {
-            p = io_uring_params{};
-            p.flags = kSetupFlags;
-            rc = io_uring_queue_init_params(sq_entries_, &ring_, &p);
+            for (const unsigned wanted : {kSetupFlags, 0u}) {
+                p = io_uring_params{};
+                p.flags = wanted;
+                rc = io_uring_queue_init_params(sq_entries_, &ring_, &p);
+                if (rc == 0)
+                    break;
+            }
             if (rc == 0) {
                 sq_entries_ = p.sq_entries;
                 break;
@@ -160,7 +170,17 @@ template <class App> class Ring
             mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_file_alloc_range: %s", std::strerror(-rc));
         }
 
-        const size_t pool_bytes = static_cast<size_t>(kBufCount) * kBufSize;
+        // The provided buffer ring is pinned by the kernel and charged to
+        // this process, and the charge is the process's, not the ring's.
+        // One ring taking the whole count leaves the next ring of the same
+        // process with none: setup_buf_ring then answers ENOMEM. So the
+        // rings of one process share the count. A buffer id is masked with
+        // it, so it stays a power of two.
+        bufs_ = kBufCount;
+        const uint32_t rings = ring_config.rings_in_process != 0 ? ring_config.rings_in_process : 1;
+        while (bufs_ > kBufFloor && bufs_ > kBufCount / rings)
+            bufs_ /= 2;
+        const size_t pool_bytes = static_cast<size_t>(bufs_) * kBufSize;
         void *mem =
             ::mmap(nullptr, pool_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (mem == MAP_FAILED) {
@@ -169,17 +189,17 @@ template <class App> class Ring
         pool_ = static_cast<char *>(mem);
 
         int bre = 0;
-        buf_ring_ = io_uring_setup_buf_ring(&ring_, kBufCount, kBufGroup, 0, &bre);
+        buf_ring_ = io_uring_setup_buf_ring(&ring_, bufs_, kBufGroup, 0, &bre);
         if (buf_ring_ == nullptr) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_), "setup_buf_ring: %s", std::strerror(-bre));
         }
-        const int mask = io_uring_buf_ring_mask(kBufCount);
-        for (uint32_t i = 0; i < kBufCount; i++) {
+        const int mask = io_uring_buf_ring_mask(bufs_);
+        for (uint32_t i = 0; i < bufs_; i++) {
             io_uring_buf_ring_add(buf_ring_, pool_ + static_cast<size_t>(i) * kBufSize, kBufSize,
                                   static_cast<uint16_t>(i), mask, static_cast<int>(i));
         }
-        io_uring_buf_ring_advance(buf_ring_, kBufCount);
-        buf_tail_ = kBufCount;
+        io_uring_buf_ring_advance(buf_ring_, bufs_);
+        buf_tail_ = bufs_;
         bundles_ = (ring_.features & IORING_FEAT_RECVSEND_BUNDLE) != 0;
         rewrite_entries_ = kernel_shortens_bundle_entries();
 
@@ -1376,7 +1396,7 @@ template <class App> class Ring
         // A length the kernel cannot have meant still names at most the
         // whole pool. Advancing the ring by more entries than were taken
         // hands the same buffer out twice, which is worse than losing it.
-        count = std::min(count, static_cast<size_t>(kBufCount));
+        count = std::min(count, static_cast<size_t>(bufs_));
         replenish_ += static_cast<uint32_t>(count);
     }
 
@@ -1400,7 +1420,7 @@ template <class App> class Ring
         }
         const uint32_t bid0 = completion->flags >> IORING_CQE_BUFFER_SHIFT;
         const size_t total = static_cast<size_t>(completion->res);
-        if (mrb_unlikely(bid0 >= kBufCount || total > static_cast<size_t>(kBufCount) * kBufSize)) {
+        if (mrb_unlikely(bid0 >= bufs_ || total > static_cast<size_t>(bufs_) * kBufSize)) {
             // The buffers go back whatever the numbers said. A buffer
             // nobody hands back is one this process has lost, and 2048 of
             // them make every recv answer ENOBUFS for good.
@@ -1435,7 +1455,7 @@ template <class App> class Ring
         while (left > 0) {
             const size_t count = left < kBufSize ? left : kBufSize;
             size_t offset = 0;
-            // bid is masked to kBufCount above and kBufCount * kBufSize is
+            // bid is masked to bufs_ above and bufs_ * kBufSize is
             // static_asserted to fit, so this cannot overflow. It is our own
             // bug if it does, and our own bugs are said rather than hidden.
             if (mrb_unlikely(__builtin_mul_overflow(static_cast<size_t>(bid),
@@ -1453,7 +1473,7 @@ template <class App> class Ring
             if (mrb_unlikely(!closing && sink.size() > kTunnelOutCap))
                 closing = true;
             left -= count;
-            bid = (bid + 1) & (kBufCount - 1);
+            bid = (bid + 1) & (bufs_ - 1);
         }
 
         if (!c.sending) {
@@ -2672,6 +2692,10 @@ template <class App> class Ring
     // i, always, so a bundle's buffers are the consecutive ids after the
     // first one the completion names.
     uint32_t buf_tail_ = 0;
+    // How many buffers this ring's provided-buffer ring holds. kBufCount
+    // when the process opens one ring, a power-of-two share of it when it
+    // opens several.
+    uint32_t bufs_ = kBufCount;
     bool bundles_ = false;
     bool rewrite_entries_ = false;
 
@@ -2699,7 +2723,7 @@ template <class App> class Ring
     // at its position.
     void give_back_to_ring()
     {
-        const int mask = io_uring_buf_ring_mask(kBufCount);
+        const int mask = io_uring_buf_ring_mask(bufs_);
         for (unsigned k = 0; k < replenish_; k++) {
             const uint32_t offset = (buf_tail_ + k) & static_cast<uint32_t>(mask);
             io_uring_buf_ring_add(buf_ring_, pool_ + static_cast<size_t>(offset) * kBufSize,

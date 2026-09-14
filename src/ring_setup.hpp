@@ -43,6 +43,12 @@ void raise_memlock();
 struct FdBudget {
     uint64_t nofile_limit;
     uint32_t extra_slots = 0;
+    // How many rings this process opens. RLIMIT_NOFILE is the process's,
+    // and every ring registers a table of its own against it, so N rings
+    // in one process get a share each. --threads=N makes N + 1 rings
+    // here; --workers=N makes one ring in each of N processes, and each
+    // of those keeps the whole limit.
+    uint32_t rings = 1;
 };
 
 uint32_t derive_max_conns(FdBudget block);
@@ -53,6 +59,10 @@ uint32_t derive_max_conns(FdBudget block);
 inline constexpr unsigned kComputeDepth = 16;
 inline constexpr uint32_t kBufCount = 2048;
 inline constexpr uint32_t kBufSize = 4096;
+// The fewest buffers a ring keeps however many rings share the count: a
+// multishot receive that cannot hold a whole request head gains nothing
+// from being split further.
+inline constexpr uint32_t kBufFloor = 256;
 inline constexpr uint16_t kBufGroup = 0;
 static_assert((kBufCount & (kBufCount - 1)) == 0, "buffer walk wraps by mask");
 static_assert(static_cast<size_t>(kBufCount) <= SIZE_MAX / kBufSize,
@@ -99,6 +109,9 @@ struct RingConfig {
     // True on a ring that accepts nothing: it has no listener, and every
     // connection it answers arrived from an acceptor by IORING_OP_MSG_RING.
     bool takes_no_listener = false;
+    // How many rings this process opens, including this one. The
+    // descriptor budget is the process's, so each ring takes a share.
+    uint32_t rings_in_process = 1;
     // The VM to raise into when the reactor cannot go on. Required - init()
     // refuses without it, because the alternative is a library that ends
     // somebody else's process. See Ring::fatal.

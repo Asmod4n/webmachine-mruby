@@ -76,11 +76,38 @@ bool entered_ = false;
 struct AnswerThread {
     std::unique_ptr<Http1> app;
     std::unique_ptr<Ring<Http1>> ring;
+    // This thread's own VM. It runs no Ruby. It exists so that a raise
+    // from the ring unwinds inside a VM this thread owns, and so the
+    // sentence reaches the acceptor.
+    mrb_state *mrb = nullptr;
     std::atomic<int> ring_fd{-1};
     std::atomic<bool> failed{false};
     std::string why;
     std::thread thread;
+
+    ~AnswerThread()
+    {
+        if (mrb != nullptr)
+            mrb_close(mrb);
+    }
 };
+
+// The raise that mrb_protect_error caught, as one sentence.
+// mrb_protect_error answers the exception as its value and leaves
+// mrb->exc clear, so the value is what carries it.
+std::string answer_thread_why(mrb_state *mrb, mrb_value thrown)
+{
+    if (!mrb_exception_p(thrown))
+        return "the ring did not come up, and what was thrown is no exception";
+    const int arena = mrb_gc_arena_save(mrb);
+    const mrb_value text = mrb_inspect(mrb, thrown);
+    std::string answer = mrb->exc == nullptr && mrb_string_p(text)
+                             ? std::string(RSTRING_PTR(text), RSTRING_LEN(text))
+                             : std::string("the exception could not be read");
+    mrb->exc = nullptr;
+    mrb_gc_arena_restore(mrb, arena);
+    return answer;
+}
 std::vector<std::unique_ptr<AnswerThread>> answer_threads_;
 std::vector<int> answer_ring_fds_;
 std::vector<pid_t> worker_pids_;
@@ -424,33 +451,82 @@ int workers_supervise()
 // One answering thread: its own Http1, its own ring, and nothing it
 // shares with another thread but the docroot descriptor and the media
 // type table, which are read only once the server is up.
+// What the two protected bodies need, in one block: mrb_protect_error
+// carries exactly one pointer.
+struct AnswerThreadBoot {
+    AnswerThread *self;
+    RingConfig *base;
+    Http1::AppInput *inputs;
+    size_t ninputs;
+    bool listings;
+};
+
+// The ring comes up here, under the thread's own VM.
+mrb_value answer_thread_boot(mrb_state *mrb, void *user_data)
+{
+    AnswerThreadBoot &ask = *static_cast<AnswerThreadBoot *>(user_data);
+    AnswerThread &self = *ask.self;
+    self.app.reset(new Http1(ask.inputs, ask.ninputs, nullptr));
+    if (docroot_fd() >= 0)
+        self.app->serve_docroot(&mime_, ask.listings);
+    auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*self.app));
+    RingConfig base = *ask.base;
+    base.mrb = mrb;
+    base.nlisteners = 0;
+    base.takes_no_listener = true;
+    // The stop signal is the acceptor's. This ring hears the word
+    // through its own queue, from the acceptor.
+    base.stop_fd = -1;
+    base.worker_ring_fds = nullptr;
+    base.nworkers = 0;
+    ring->init(base);
+    self.ring = std::move(ring);
+    return mrb_nil_value();
+}
+
+// The serving loop, under the same VM.
+mrb_value answer_thread_serve(mrb_state *, void *user_data)
+{
+    AnswerThreadBoot &ask = *static_cast<AnswerThreadBoot *>(user_data);
+    ask.self->ring->run();
+    return mrb_nil_value();
+}
+
+// One answering thread: its own VM, its own Http1, its own ring.
+//
+// The VM is why this is not a try block. Ring::init reports a refusal
+// with mrb_raise, and mruby here is built with MRB_USE_CXX_EXCEPTION, so
+// that raise is `throw (mrb_jmpbuf *)` - not a std::exception. A catch
+// here would swallow the class, the message and the errno together, and
+// said so: "the thread failed to start, and said nothing". Raising into
+// the acceptor's VM is no answer either, because that writes mrb->exc
+// from a second thread. So the thread carries a VM of its own and reads
+// the exception back as a value.
 void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inputs,
                        size_t ninputs, bool listings)
 {
-    try {
-        self.app.reset(new Http1(inputs, ninputs, nullptr));
-        if (docroot_fd() >= 0)
-            self.app->serve_docroot(&mime_, listings);
-        auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*self.app));
-        base.nlisteners = 0;
-        base.takes_no_listener = true;
-        // The stop signal is the acceptor's. This ring hears the word
-        // through its own queue, from the acceptor.
-        base.stop_fd = -1;
-        base.worker_ring_fds = nullptr;
-        base.nworkers = 0;
-        ring->init(base);
-        self.ring = std::move(ring);
-        self.ring_fd.store(self.ring->fd(), std::memory_order_release);
-        self.ring->run();
-    } catch (const std::exception &trouble) {
-        self.why = trouble.what();
+    mrb_state *const mrb = mrb_open();
+    if (mrb == nullptr) {
+        self.why = "no VM for the answering thread: out of memory";
         self.failed.store(true, std::memory_order_release);
         self.ring_fd.store(-2, std::memory_order_release);
-    } catch (...) {
-        self.why = "the thread failed to start, and said nothing";
+        return;
+    }
+    self.mrb = mrb;
+    AnswerThreadBoot ask{&self, &base, inputs, ninputs, listings};
+    mrb_bool raised = FALSE;
+    const mrb_value thrown = mrb_protect_error(mrb, answer_thread_boot, &ask, &raised);
+    if (raised) {
+        self.why = answer_thread_why(mrb, thrown);
         self.failed.store(true, std::memory_order_release);
         self.ring_fd.store(-2, std::memory_order_release);
+        return;
+    }
+    self.ring_fd.store(self.ring->fd(), std::memory_order_release);
+    const mrb_value stopped = mrb_protect_error(mrb, answer_thread_serve, &ask, &raised);
+    if (raised) {
+        std::fprintf(stderr, "webmachine: an answering thread stopped: %s\n",
+                     answer_thread_why(mrb, stopped).c_str());
     }
 }
 
@@ -471,9 +547,15 @@ void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInpu
         while ((fd = one->ring_fd.load(std::memory_order_acquire)) == -1)
             std::this_thread::yield();
         if (fd < 0) {
+            // A thread that did come up is inside io_uring_wait_cqe, and it
+            // leaves only when the acceptor sends the stop word. There is
+            // no acceptor yet, so joining it here waits for something that
+            // cannot happen: the raise below never reached the operator and
+            // the server hung instead. They are detached - this raise ends
+            // the server, and a thread of a process that ends needs nothing.
             for (const auto &other : answer_threads_) {
                 if (other->thread.joinable())
-                    other->thread.join();
+                    other->thread.detach();
             }
             mrb_raisef(mrb, E_WM_ERROR(mrb), "an answering thread did not start: %s",
                        one->why.c_str());
