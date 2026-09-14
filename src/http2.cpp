@@ -362,10 +362,6 @@ constexpr bool h2_character_is_blank(char control)
 // starts nor ends with SP or HTAB. False = the request is malformed,
 // and RFC 9113 8.1.1 makes that a stream error of type PROTOCOL_ERROR.
 //
-// This runs once per field on the hot path, so it is one call from
-// h2_dispatch and it stays out of line. nm -S on the host build reads
-// its size on its own.
-//
 // RFC 7541 B: name_known says the decoder copied the name out of the
 // static table. Every static name is a lowercase token, so such a name
 // skips the scan.
@@ -374,24 +370,19 @@ constexpr bool h2_character_is_blank(char control)
 // h2_dispatch compares such a name whole against the five it serves.
 // It refuses every other one, so the token rule does not run on a
 // pseudo-header here. Its value takes the value rule like any other.
-__attribute__((noinline)) bool h2_field_ok(http::Field field, bool name_known)
+inline bool h2_field_ok(std::string_view name, std::string_view value, bool name_known)
 {
-    const char *const length = field.name.data();
-    const size_t name_length = field.name.size();
-    if (name_length == 0)
+    if (name.empty())
         return false;
-    if (!name_known && length[0] != ':') {
-        for (size_t i = 0; i < name_length; i++) {
-            if (!kH2NameOctet[static_cast<unsigned char>(length[i])])
+    if (!name_known && !name.starts_with(':')) {
+        for (const char octet : name) {
+            if (!kH2NameOctet.at(static_cast<unsigned char>(octet)))
                 return false;
         }
     }
-    const char *const value = field.value.data();
-    const size_t value_length = field.value.size();
-    if (value_length != 0 &&
-        (h2_character_is_blank(value[0]) || h2_character_is_blank(value[value_length - 1])))
+    if (!value.empty() && (h2_character_is_blank(value.front()) || h2_character_is_blank(value.back())))
         return false;
-    return http::field_value_ok(value, value_length);
+    return http::field_value_ok(value.data(), value.size());
 }
 
 // RFC 9113 8.3.1: :path is not empty, and it is "*" or it starts with
@@ -400,18 +391,28 @@ __attribute__((noinline)) bool h2_field_ok(http::Field field, bool name_known)
 // h1 and h2 refuse the same octets. An octet of 0x80 or more passes on
 // both. A "*" with any method reaches the router and misses, as it
 // does on h1. False = malformed (RFC 9113 8.1.1).
-__attribute__((noinline)) bool h2_path_ok(const char *bytes, size_t length)
+constexpr bool h2_word_is_path(uint64_t word)
 {
-    if (length == 0)
+    return !http::word_has_octet_under(word, 0x21) &&
+           !http::word_has_zero_octet(word ^ http::octet_repeated(0x7f));
+}
+
+inline bool h2_path_ok(std::string_view path)
+{
+    if (path.empty())
         return false;
-    if (bytes[0] != '/' && !(length == 1 && bytes[0] == '*'))
+    if (!path.starts_with('/') && path != "*")
         return false;
-    for (size_t i = 0; i < length; i++) {
-        const unsigned char control = static_cast<unsigned char>(bytes[i]);
-        if (control <= 0x20 || control == 0x7f)
+    std::string_view left = path;
+    while (left.size() >= sizeof(uint64_t)) {
+        uint64_t word;
+        std::memcpy(&word, left.data(), sizeof word);
+        if (!h2_word_is_path(word))
             return false;
+        left.remove_prefix(sizeof word);
     }
-    return true;
+    // The tail is padded with '/', an octet the rule accepts.
+    return left.empty() || h2_word_is_path(http::word_of_tail(left, '/'));
 }
 
 static bool h2_is_idle(const H2State &h2_state, uint32_t stream_id)
@@ -798,7 +799,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // ends with PROTOCOL_ERROR. The connection stays open.
         for (size_t i = 0; i < nfields; i++) {
             const H2DecodedField &field = fields.at(i);
-            if (!h2_field_ok({field.name, field.value}, field.known != LSHPACK_HDR_UNKNOWN) ||
+            if (!h2_field_ok(field.name, field.value, field.known != LSHPACK_HDR_UNKNOWN) ||
                 field.name.starts_with(':') ||
                 !h2_trailer_name_ok(field.name.data(), field.name.size())) {
                 h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
@@ -857,7 +858,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // one of these rules makes the request malformed. One call per
         // field, pseudo-header or not; a name the decoder took from the
         // static table is a token already and skips the scan.
-        if (!h2_field_ok({field.name, field.value}, known != LSHPACK_HDR_UNKNOWN)) {
+        if (!h2_field_ok(field.name, field.value, known != LSHPACK_HDR_UNKNOWN)) {
             accepted = false;
             break;
         }
@@ -965,7 +966,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // RFC 9113 8.3.1: the :path came, and it has the shape of a target.
     // have_path is tested first, so path_val is never null here.
     if (!accepted || !have_method || !have_path || !have_scheme ||
-        !h2_path_ok(path_val, path_vlen)) {
+        !h2_path_ok(std::string_view(path_val, path_vlen))) {
         h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
         return true;
     }

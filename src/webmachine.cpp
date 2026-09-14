@@ -947,27 +947,29 @@ bool field_name_is_the_servers(const char *bytes, size_t count)
     return false;
 }
 
+// RFC 9110 5.6.2: the octets of a token. One table, one load per
+// octet.
+constexpr std::array<bool, 256> token_octets()
+{
+    std::array<bool, 256> table{};
+    for (unsigned octet = 0; octet < 256; octet++) {
+        table.at(octet) = (octet >= 'a' && octet <= 'z') || (octet >= 'A' && octet <= 'Z') ||
+                          (octet >= '0' && octet <= '9') || octet == '!' || octet == '#' ||
+                          octet == '$' || octet == '%' || octet == '&' || octet == '\'' ||
+                          octet == '*' || octet == '+' || octet == '-' || octet == '.' ||
+                          octet == '^' || octet == '_' || octet == '`' || octet == '|' ||
+                          octet == '~';
+    }
+    return table;
+}
+constexpr std::array<bool, 256> kTokenOctet = token_octets();
+
 bool field_name_ok(const char *bytes, size_t count)
 {
     if (count == 0)
         return false;
-    for (size_t i = 0; i < count; i++) {
-        const unsigned char conn = static_cast<unsigned char>(bytes[i]);
-        const bool tchar = (conn >= 'a' && conn <= 'z') || (conn >= 'A' && conn <= 'Z') ||
-                           (conn >= '0' && conn <= '9') || conn == '!' || conn == '#' ||
-                           conn == '$' || conn == '%' || conn == '&' || conn == '\'' ||
-                           conn == '*' || conn == '+' || conn == '-' || conn == '.' ||
-                           conn == '^' || conn == '_' || conn == '`' || conn == '|' || conn == '~';
-        if (!tchar)
-            return false;
-    }
-    return true;
-}
-
-bool field_value_ok(const char *bytes, size_t count)
-{
-    for (size_t i = 0; i < count; i++) {
-        if (bytes[i] == '\r' || bytes[i] == '\n' || bytes[i] == '\0')
+    for (const char octet : std::string_view(bytes, count)) {
+        if (!kTokenOctet.at(static_cast<unsigned char>(octet)))
             return false;
     }
     return true;

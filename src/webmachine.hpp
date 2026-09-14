@@ -1965,10 +1965,76 @@ bool field_name_is_the_servers(const char *bytes, size_t count);
 
 bool field_name_ok(const char *bytes, size_t count);
 
+// Eight octets at a time, for the rules that read every octet of a
+// value. A word minus 0x01 in every octet, and-not the word, and 0x80
+// in every octet, is non-zero exactly when an octet was zero. The XOR
+// with an octet repeated eight times turns "is CR" and "is LF" into the
+// same zero test. Under n of 0x80, the same form with n in place of
+// 0x01 is non-zero exactly when an octet is under n.
+inline constexpr uint64_t kOctet01Repeated = 0x0101010101010101ULL;
+inline constexpr uint64_t kOctet80Repeated = 0x8080808080808080ULL;
+
+constexpr uint64_t octet_repeated(unsigned char octet)
+{
+    return kOctet01Repeated * octet;
+}
+
+constexpr bool word_has_zero_octet(uint64_t word)
+{
+    return ((word - kOctet01Repeated) & ~word & kOctet80Repeated) != 0;
+}
+
+constexpr bool word_has_octet_under(uint64_t word, unsigned char bound)
+{
+    return ((word - octet_repeated(bound)) & ~word & kOctet80Repeated) != 0;
+}
+
+// A run under eight octets as one word, the rest of the word filled
+// with pad. The rules that read the word ask whether any octet breaks
+// them, so the order of the octets in the word does not matter: the
+// four, the two and the one each take their own lanes. Every copy has
+// a fixed size, so none is a call.
+inline uint64_t word_of_tail(std::string_view tail, unsigned char pad)
+{
+    uint32_t four = static_cast<uint32_t>(octet_repeated(pad));
+    uint16_t two = static_cast<uint16_t>(octet_repeated(pad));
+    uint8_t one = pad;
+    if ((tail.size() & 4) != 0) {
+        std::memcpy(&four, tail.data(), sizeof four);
+        tail.remove_prefix(sizeof four);
+    }
+    if ((tail.size() & 2) != 0) {
+        std::memcpy(&two, tail.data(), sizeof two);
+        tail.remove_prefix(sizeof two);
+    }
+    if ((tail.size() & 1) != 0)
+        one = static_cast<uint8_t>(tail.front());
+    return static_cast<uint64_t>(four) | (static_cast<uint64_t>(two) << 32) |
+           (static_cast<uint64_t>(one) << 48) | (static_cast<uint64_t>(pad) << 56);
+}
+
+constexpr bool word_is_field_value(uint64_t word)
+{
+    return !word_has_zero_octet(word) && !word_has_zero_octet(word ^ octet_repeated('\r')) &&
+           !word_has_zero_octet(word ^ octet_repeated('\n'));
+}
+
 // RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
 // is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
 // byte a malformed h2 field, so one rule serves both writers.
-bool field_value_ok(const char *bytes, size_t count);
+inline bool field_value_ok(const char *bytes, size_t count)
+{
+    std::string_view left(bytes, count);
+    while (left.size() >= sizeof(uint64_t)) {
+        uint64_t word;
+        std::memcpy(&word, left.data(), sizeof word);
+        if (!word_is_field_value(word))
+            return false;
+        left.remove_prefix(sizeof word);
+    }
+    // The tail is padded with SP, an octet the rule accepts.
+    return left.empty() || word_is_field_value(word_of_tail(left, ' '));
+}
 
 // RFC 9110 5.1: a field name is known by its length first. The switches
 // below have a case for these and no other, so a name of any other length is
