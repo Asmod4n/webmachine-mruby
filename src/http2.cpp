@@ -20,8 +20,6 @@ constexpr size_t kH2FragBudget = kMaxHead * 2;
 constexpr size_t kH2FieldWindow = 4096;
 constexpr size_t kH2HdrBufSize = kH2FragBudget + kH2FieldWindow;
 
-// One field as the decoder left it in hdrbuf, and which static entry the
-// name came from (LSHPACK_HDR_UNKNOWN for a literal).
 // RFC 9113 8.1.1: how many streams one connection may lose to a request
 // that breaks its own Content-Length before the connection itself ends.
 // Four leaves room for a client with a defect and ends a client that
@@ -30,19 +28,15 @@ constexpr uint32_t kH2LieBudget = 4;
 
 // RFC 9113 8.1: how many streams one connection may reset inside
 // kH2ResetWindow seconds before the connection itself ends. A cancelled
-// fetch is one reset and costs one stream; a hundred of them in ten
-// seconds is a peer spending this server's time on purpose.
-//
-// The numbers other servers chose: nginx 256 per event loop pass, Netty
-// 200 in 30 seconds, Helidon 100 in 10 seconds. This is Helidon's, the
-// strictest of the three, because one core here answers about a million
-// requests a second and a hundred resets in ten seconds is already far
-// above any honest client.
+// fetch is one reset. A hundred in ten seconds is a peer spending this
+// server's time on purpose.
+// This is Helidon's number, the strictest of nginx, Netty and Helidon.
+// One core here answers about a million requests a second, so an honest
+// client stays far below it.
 constexpr uint32_t kH2ResetBudget = 100;
 constexpr int64_t kH2ResetWindow = 10;
 constexpr size_t kH2MergeBody = 1024;
 
-// RFC 9113 4.1: a 32-bit field, network order.
 void u32_put(unsigned char *bytes, uint32_t value)
 {
     bytes[0] = static_cast<unsigned char>(value >> 24);
@@ -51,8 +45,6 @@ void u32_put(unsigned char *bytes, uint32_t value)
     bytes[3] = static_cast<unsigned char>(value);
 }
 
-// RFC 9113 6: one control frame - its type, its flags, the stream it names
-// (0 = the connection itself), and its fixed payload.
 struct H2Control {
     uint8_t type;
     uint8_t flags;
@@ -60,7 +52,6 @@ struct H2Control {
     std::span<const unsigned char> payload;
 };
 
-// Header + payload, into the sink.
 void control_frame_emit(std::string &sink, const H2Control &control)
 {
     const uint32_t length = static_cast<uint32_t>(control.payload.size());
@@ -82,7 +73,7 @@ void h2_credit_connection(std::string &sink, uint32_t flen)
     control_frame_emit(sink, {kH2WindowUpdate, 0, 0, increment});
 }
 
-// RFC 7541 5.2: a string length, 7-bit prefix, H bit 0 - no Huffman out.
+// RFC 7541 5.2: a string length, 7-bit prefix, H bit 0.
 void hpack_length_spell(std::string &out_answer, size_t length)
 {
     if (length < 127) {
@@ -115,14 +106,13 @@ void hpack_name_index_spell(std::string &out_answer, uint32_t index)
 }
 } // namespace
 
-// RFC 9113: the connection's state dies with the connection.
 void h2_free(H2State *h2_state)
 {
     delete h2_state;
 }
 
-// RFC 9110 4.2.1: a parked request's view - its bytes are the stream's own
-// copy, so the spans have to be captured again.
+// A parked request's bytes are the stream's own copy, so the spans
+// have to be captured again.
 const ReqView *Http1::h2_parked_view(Conn &conn, Parked bytes)
 {
     const std::string_view target = bytes.target;
@@ -142,7 +132,6 @@ const ReqView *Http1::h2_parked_view(Conn &conn, Parked bytes)
     return &out_answer;
 }
 
-// RFC 7541 6.1/6.2.2: lane 1 - a precomputed block of what never changes.
 void Http1::h2_build_block(H2Block &block, const H2BlockFields &field)
 {
     const uint16_t status = field.status;
@@ -196,7 +185,6 @@ void Http1::h2_build_block(H2Block &block, const H2BlockFields &field)
     }
 }
 
-// RFC 9113 3.4: this side's half of the preface, a SETTINGS frame.
 bool Http1::h2_begin(Conn &conn, std::string &sink)
 {
     conn.h2 = new H2State();
@@ -217,7 +205,6 @@ bool Http1::h2_begin(Conn &conn, std::string &sink)
     return true;
 }
 
-// RFC 9113 6.8: GOAWAY, and the connection is done.
 bool Http1::h2_error(Conn &conn, uint32_t code, std::string &sink)
 {
     H2State &h2_state = *conn.h2;
@@ -232,17 +219,13 @@ bool Http1::h2_error(Conn &conn, uint32_t code, std::string &sink)
     return false;
 }
 
-// RFC 9113 5.1: an id above everything ever accepted is idle.
-// RFC 9113 8.2.2: the connection-specific fields h2 forbids outright, and
-// 8.1.1's content-length, which may be named once. False = malformed, and
-// the stream is reset.
-// RFC 9113 8.1.2: what a content-length field claimed, if one did - a
-// second one is the protocol error this returns false for.
 struct ClaimedLength {
     bool have = false;
     size_t value = 0;
 };
 
+// RFC 9113 8.2.2: h2 forbids the connection-specific fields. RFC 9113
+// 8.1.1: content-length may be named once.
 bool h2_wire_header_ok(http::Field field, ClaimedLength &claimed)
 {
     const char *const length = field.name.data();
@@ -294,9 +277,8 @@ bool h2_wire_header_ok(http::Field field, ClaimedLength &claimed)
     return true;
 }
 
-// RFC 9113 8.1: a trailer field name the head owns alone. A trailer says
-// nothing about framing, about the connection, or about the length of the
-// body it closes.
+// RFC 9113 8.1: a trailer carries no field about framing, the
+// connection, or the length of the body it closes.
 bool h2_trailer_name_ok(const char *length, size_t name_length)
 {
     // te(2) host(4) upgrade(7) connection/keep-alive(10) content-length(14)
@@ -326,11 +308,9 @@ bool h2_trailer_name_ok(const char *length, size_t name_length)
     return true;
 }
 
-// RFC 9110 5.6.2 / RFC 9113 8.2.1: which octets may stand in a field
-// name. A name is a token, and RFC 9113 8.2.1 takes the uppercase
-// letters out of it. One table of 256 flags, so the scan is one load
-// and one test per octet. The tchar set is the one field_name_ok in
-// webmachine.hpp spells, without 'A' to 'Z'.
+// RFC 9110 5.6.2 / RFC 9113 8.2.1: a field name is a token without
+// 'A' to 'Z'. One table of 256 flags, so the scan is one load and one
+// test per octet.
 constexpr std::array<bool, 256> h2_name_octets()
 {
     std::array<bool, 256> status_text{};
@@ -352,19 +332,13 @@ constexpr bool h2_character_is_blank(char control)
     return control == ' ' || control == '\t';
 }
 
-// RFC 9113 8.2.1: one field of a request, head or trailer. The name is
-// a lowercase token. The value carries no NUL, CR or LF, and it neither
-// starts nor ends with SP or HTAB. False = the request is malformed,
-// and RFC 9113 8.1.1 makes that a stream error of type PROTOCOL_ERROR.
-//
-// RFC 7541 B: name_known says the decoder copied the name out of the
-// static table. Every static name is a lowercase token, so such a name
-// skips the scan.
-//
-// RFC 9113 8.3: a pseudo-header carries a colon, which no token has.
-// h2_dispatch compares such a name whole against the five it serves.
-// It refuses every other one, so the token rule does not run on a
-// pseudo-header here. Its value takes the value rule like any other.
+// RFC 9113 8.2.1: a name is a lowercase token. A value carries no NUL,
+// CR or LF, and no SP or HTAB at either end. RFC 9113 8.1.1: a broken
+// field is a stream error of type PROTOCOL_ERROR.
+// RFC 7541 B: every static-table name is a lowercase token, so a known
+// name skips the scan.
+// RFC 9113 8.3: a pseudo-header carries a colon. h2_dispatch compares it
+// whole, so the token rule does not run on it here.
 inline bool h2_field_ok(std::string_view name, std::string_view value, bool name_known)
 {
     if (name.empty())
@@ -380,12 +354,9 @@ inline bool h2_field_ok(std::string_view name, std::string_view value, bool name
     return http::field_value_ok(value.data(), value.size());
 }
 
-// RFC 9113 8.3.1: :path is not empty, and it is "*" or it starts with
-// "/". RFC 3986 3.3: a target carries no control octet, no SP and no
-// DEL. picohttpparser refuses the same octets in an h1 request-line, so
-// h1 and h2 refuse the same octets. An octet of 0x80 or more passes on
-// both. A "*" with any method reaches the router and misses, as it
-// does on h1. False = malformed (RFC 9113 8.1.1).
+// RFC 9113 8.3.1: :path is "*" or starts with "/". RFC 3986 3.3: a
+// target carries no control octet, no SP and no DEL. picohttpparser
+// refuses the same octets on h1, so h1 and h2 agree.
 constexpr bool h2_word_is_path(uint64_t word)
 {
     return !http::word_has_octet_under(word, 0x21) &&
@@ -419,8 +390,6 @@ static bool h2_is_idle(const H2State &h2_state, uint32_t stream_id)
     return stream_id > h2_state.highest_opened;
 }
 
-// RFC 9113 6.2: one whole HEADERS frame - the route's prebuilt block, the
-// per-answer fields, and the date - laid down for the cache to replay.
 void Http1::cache_headers(std::string &out_answer, const CachedHead &head)
 {
     const size_t clen = head.fields.size();
@@ -435,12 +404,9 @@ void Http1::cache_headers(std::string &out_answer, const CachedHead &head)
     out_answer.append(reinterpret_cast<const char *>(head.date.data()), dlen);
 }
 
-// RFC 9113 8.1.2.6: one request said one length and sent another. The
-// stream dies for it. A connection that does it kH2LieBudget times is
-// not a client with a defect, and it ends: every such stream costs a
-// route match, a buffer or a file, and the octets already read.
-//
-// False = the connection is going away, and the caller stops feeding it.
+// RFC 9113 8.1.2.6: a request that sent another length than it said
+// is a stream error. A connection that does it kH2LieBudget times ends,
+// because each such stream costs a route match, a buffer or a file.
 bool Http1::h2_count_lie(Conn &conn, uint32_t stream_id, std::string &sink)
 {
     h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
@@ -450,21 +416,12 @@ bool Http1::h2_count_lie(Conn &conn, uint32_t stream_id, std::string &sink)
     return h2_error(conn, kH2EnhanceYourCalm, sink);
 }
 
-// RFC 9113 8.1: one reset, counted inside a window of kH2ResetWindow
-// seconds. Both directions raise this, and that is the whole point.
-//
-// Rapid Reset (CVE-2023-44487, 2023) sends the RST_STREAM frames from the
-// client, so counting the peer's frames finds it. MadeYouReset (2025)
-// sends none: it sends legal-looking WINDOW_UPDATE, HEADERS or PRIORITY
-// frames that break a rule, and the server resets its own stream in
-// answer. A count of only the peer's resets sees nothing at all.
-//
-// Each opened stream costs an HPACK decode, a route match and a dispatch.
-// It costs the peer one 13-octet frame.
-//
+// Both directions count. Rapid Reset (CVE-2023-44487) sends RST_STREAM
+// from the client. MadeYouReset (2025) sends frames that break a rule,
+// and the server resets the stream itself. A count of only the peer's
+// resets sees nothing.
 // sec_ is the coarse second clock_tick keeps, so the window costs no
-// syscall. The frame loop tests the budget once per frame, because that
-// loop is the one place that ends the connection.
+// syscall.
 void Http1::h2_count_reset(Conn &conn)
 {
     H2State &h2_state = *conn.h2;
@@ -476,7 +433,6 @@ void Http1::h2_count_reset(Conn &conn)
         h2_state.resets++;
 }
 
-// RFC 9113 6.4: a stream error - the stream dies, the connection lives.
 void Http1::h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::string &sink)
 {
     unsigned char payload[4];
@@ -486,13 +442,11 @@ void Http1::h2_reset_stream(Conn &conn, uint32_t stream_id, uint32_t code, std::
     h2_count_reset(conn);
 }
 
-// RFC 9113 5.1.2: a client opens streams as fast as the settings allow,
-// and each large body takes a descriptor. kH2SpillFilesMax counts the
-// files this connection holds open. RFC 9110 6.4: kBodyFilesMax counts
-// the files the process holds open, and BodySpill::open_file refuses
-// the slot over it. Both refusals are REFUSED_STREAM, the code that
-// tells the client to send the request again later. A file the
-// platform could not make is the server's own error.
+// kH2SpillFilesMax bounds the files this connection holds open.
+// kBodyFilesMax bounds the process, and BodySpill::open_file refuses
+// over it. Both refusals are REFUSED_STREAM, so the client sends the
+// request again later. A file the platform could not make is the
+// server's own error.
 bool Http1::h2_body_file_open(Conn &conn, H2Stream &file_stat,
                                                         uint32_t stream_id, std::string &sink)
 {
@@ -514,8 +468,6 @@ bool Http1::h2_body_file_open(Conn &conn, H2Stream &file_stat,
     return true;
 }
 
-// #210 / #146: the page h1 spells for this status, framed for h2. False =
-// there is nothing to say and the prebuilt bodyless block stands.
 bool Http1::h2_error_page(const H2ErrorAsk &asset_ask, H2ErrorPage &bytes, H2Answer &out_answer)
 {
     const http::ReqValues *vals = asset_ask.vals;
@@ -536,19 +488,13 @@ bool Http1::h2_error_page(const H2ErrorAsk &asset_ask, H2ErrorPage &bytes, H2Ans
             ? &block->konst.allow
             : nullptr;
     h2_build_block(bytes.block, {asset_ask.status, &ctype, allow});
-    // Lent where it lies, whether that is the picture in the mapping or the
-    // page prepared at boot; a render lands in p.rendered, which
-    // outlives the framing at the call site either way.
+    // A render lands in the caller's H2ErrorPage, which outlives the framing.
     out_answer.body = pbody;
     out_answer.blen = plen;
     out_answer.blk = &bytes.block;
     return true;
 }
 
-// RFC 9113 8.1/8.2/8.3: decode the block, check the pseudo-fields, and
-// either answer or park the facts on the stream.
-// RFC 9113 8.1: the fields a parked stream copied when its HEADERS came,
-// rebuilt over the blob that outlived hdrbuf. Returns how many.
 size_t Http1::h2_fields_of_parked(const H2Stream &stream,
                                   std::array<struct phr_header, kH2MaxFields> &header_vector)
 {
@@ -563,16 +509,8 @@ size_t Http1::h2_fields_of_parked(const H2Stream &stream,
     return name_length;
 }
 
-// A stream that parked at its HEADERS is served now: its request ended
-// with the last DATA frame, or with trailers. Both ends come here. The
-// values negotiation reads point into the decode buffer this stream no
-// longer owns, so they are derived again from the copied fields, which
-// are the only place they still exist.
-// RFC 9110 6.4: which stream of this connection still owes octets to
-// its file. One write flies per connection, because the ring answers
-// with a connection and a generation and has no field for a stream.
-// An upload is a run of large frames, so the streams take turns at the
-// rate the disk allows rather than each waiting for its own turn.
+// One write flies per connection, because the ring answers with a
+// connection and a generation and has no field for a stream.
 BodySpill *Http1::spill_waiting_h2(Conn &conn)
 {
     for (H2Stream &s : conn.h2->streams) {
@@ -582,14 +520,8 @@ BodySpill *Http1::spill_waiting_h2(Conn &conn)
     return nullptr;
 }
 
-// #53: the octets a run stopped for have all arrived. The run is in
-// h2_parked with its round marked wants_body, and making that round ready
-// is the whole resume - the loop that drives parked runs walks it on from
-// the node it stopped at, and the resume binds the body.
-//
-// False = no run of this stream is waiting on a body, so the caller
-// serves the stream itself. That is every stream whose flow has not run
-// yet: an asset, a konst route, or a connection already at kParkSlots.
+// Marking the round ready is the whole resume: the loop that drives
+// parked runs walks it on from the node it stopped at.
 bool Http1::h2_body_ready(Conn &conn, uint32_t stream_id)
 {
     for (Conn::H2Parked &p : conn.h2_parked) {
@@ -631,14 +563,10 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
     }
     std::string body;
     body.swap(stream.request_content);
-    // RFC 9110 6.4: a spilled body reaches request.body as a descriptor.
     // The file stays this stream's until close_stream drops the entry, so
-    // a parked run still finds it when it asks.
+    // a parked run still finds it.
     const int body_fd = stream.spill.fd;
     const size_t body_fd_len = stream.spill.written;
-    // #36: is the whole body here? A stream served while its DATA is
-    // still coming says no, and the walk stops at the first node that
-    // reads content.
     const bool body_whole = complete;
     std::array<struct phr_header, kH2MaxFields> header_vector;
     const size_t name_length = h2_fields_of_parked(stream, header_vector);
@@ -649,14 +577,10 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
     RouteSpans pspans;
     result.method = facts.method;
     result.content_ready = body_whole;
-    // What the client declared. A stream with content declares it or it
-    // is refused at the head, so this is the number B4 asks about even
-    // while the octets are still coming.
     result.declared_len = stream.content_length_given ? stream.content_length : body.size();
     if (!body_whole) {
-        // Nothing is bound while octets are still coming. The walk stops at
-        // the first node that reads content, and the resume binds the whole
-        // body - a part of one never reaches a callback.
+        // Nothing is bound while octets are still coming. The resume binds
+        // the whole body.
     } else if (body_fd >= 0) {
         result.content_fd = body_fd;
         result.content_len = body_fd_len;
@@ -683,7 +607,6 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
     const H2Served served = h2_serve(conn, q, sink);
     if (served == H2Served::kClosed)
         return false;
-    // A parked run logs from its own tail, with its own status.
     if (served == H2Served::kAnswered)
         h2_log(conn, {facts, target});
     return true;
@@ -720,9 +643,6 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     const bool end_stream = headers.end_stream;
     H2State &h2_state = *conn.h2;
 
-    // One check for the buffer, one per field for the window it lends,
-    // one per field for what the decoder wrote into it. Nothing inside
-    // a field is checked again.
     if (h2_state.hdrbuf.size() != kH2HdrBufSize)
         h2_state.hdrbuf.resize(kH2HdrBufSize);
     std::array<H2DecodedField, kH2MaxFields> &fields = h2_state.decoded_fields;
@@ -745,9 +665,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             return h2_error(conn, kH2CompressionError, sink);
         }
         // lshpack.h: one decode writes name_len + val_len +
-        // lshpack_dec_extra_bytes(dec) octets from the start of the window,
-        // and it answers non-zero above when they do not fit. The check at
-        // the top of the loop covers the next window.
+        // lshpack_dec_extra_bytes(dec) octets from the start of the window.
         const size_t footprint = static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
                                  lshpack_dec_extra_bytes(&h2_state.dec);
         *std::next(fields.begin(), static_cast<std::ptrdiff_t>(count)) = {
@@ -763,23 +681,16 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
 
     H2Stream *existing = h2_state.find(stream_id);
     if (existing != nullptr && existing->end_headers) {
-        // RFC 9113 8.1: a second field block on an open stream is the
-        // trailer section, and END_STREAM is the only way it comes.
-        //
-        // A stream that is not a request has none. A websocket or an event
-        // stream carries a tunnel, not a flow, and serving one here would
-        // run the route its entry never named - route 0, with facts nobody
-        // sent - and free the tunnel under the handler that is using it.
+        // RFC 9113 8.1: a second field block on an open stream is the trailer
+        // section, and it carries END_STREAM. A websocket or an event stream
+        // carries a tunnel, not a flow, so a trailer on one is an error.
         if (!end_stream || existing->half_closed_remote || existing->ws != nullptr ||
             existing->sse != nullptr || existing->streaming) {
             return h2_error(conn, kH2ProtocolError, sink);
         }
-        // RFC 9113 8.1: a trailer section carries no pseudo-header, and the
-        // rules on a field name and a field value (8.2.1) hold there as they
-        // do in the head. The block was decoded and then thrown away, so a
-        // trailer could spell anything at all.
-        // RFC 9113 8.1.1: a malformed request is a stream error. The stream
-        // ends with PROTOCOL_ERROR. The connection stays open.
+        // RFC 9113 8.1: a trailer section carries no pseudo-header, and 8.2.1
+        // holds there too. RFC 9113 8.1.1: a malformed request is a stream
+        // error, and the connection stays open.
         for (const H2DecodedField &field : decoded) {
             if (!h2_field_ok(field.name, field.value, field.known != LSHPACK_HDR_UNKNOWN) ||
                 field.name.starts_with(':') ||
@@ -788,10 +699,9 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                 return true;
             }
         }
-        // The two gates the last DATA frame of a body passes. A trailer
-        // section ends the body, so it answers to both: the octets have to
-        // be the number the head declared, and a body in a file is whole
-        // only once its last write has landed.
+        // A trailer section ends the body, so the octets have to match the
+        // declared length, and a body in a file is whole only once its last
+        // write has landed.
         if (existing->content_length_given &&
             existing->content_received != existing->content_length) {
             return h2_count_lie(conn, stream_id, sink);
@@ -806,24 +716,17 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     http::ReqValues vals;
     const char *path_val = nullptr;
     size_t path_vlen = 0;
-    // #17: the authority, kept rather than only counted. It becomes the
-    // host field below, once the loop has shown whether the client sent
-    // one of its own.
     const char *authority_val = nullptr;
     size_t authority_vlen = 0;
     bool accepted = true, saw_regular = false;
     bool have_method = false, have_path = false, have_scheme = false, have_authority = false;
     ClaimedLength claimed;
-    // RFC 9113 8.3: the request's own fields, in the shape h1 hands down,
-    // so request.headers and every by-name accessor answer the same way on
-    // both protocols. Filled in the loop that already holds the pointers -
-    // the pseudo-fields are not among them, because the branch below takes
-    // them first, which is also what h1 means by a header.
+    // RFC 9113 8.3: the fields in the shape h1 hands down, so every
+    // by-name accessor answers the same way on both protocols.
     std::array<struct phr_header, kH2MaxFields> header_vector;
     size_t name_length = 0;
-    // RFC 8441 4: the :protocol pseudo-field, when the client sent one,
-    // and the method as the client spelled it - CONNECT is not one of the
-    // methods the flow knows, so parse_method answers kOther for it.
+    // RFC 8441 4: CONNECT is not a method the flow knows, so parse_method
+    // answers kOther and the wire bytes are kept.
     const char *protocol_val = nullptr;
     size_t protocol_vlen = 0;
     const char *method_val = nullptr;
@@ -836,21 +739,14 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         const char *const field_value = field.value.data();
         const size_t vlen = field.value.size();
         const uint8_t known = field.known;
-        // RFC 9113 8.2.1: the name is a lowercase token. The value carries
-        // no NUL, CR or LF and no blank at either end. A field that breaks
-        // one of these rules makes the request malformed. One call per
-        // field, pseudo-header or not; a name the decoder took from the
-        // static table is a token already and skips the scan.
         const bool pseudo = field.name.starts_with(':');
         if (!pseudo && !h2_field_ok(field.name, field.value, known != LSHPACK_HDR_UNKNOWN)) {
             accepted = false;
             break;
         }
-        // RFC 8441 4 / RFC 9113 8.3: the colon says a field is a
-        // pseudo-header, and nothing else may. The static index says which
-        // one it is. It may not stand in for the colon: :status is a
-        // static entry too, and a request that carries one is refused by
-        // the arm at the end.
+        // RFC 9113 8.3: the colon marks a pseudo-header. The static index alone
+        // does not: :status is a static entry too, and the arm at the end
+        // refuses it.
         if (pseudo) {
             if (saw_regular) {
                 accepted = false;
@@ -889,9 +785,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                 default:
                     break;
             }
-            // RFC 9113 8.3.1: :path answers to h2_path_ok below, which
-            // refuses every octet the value rule refuses and more. Every
-            // other pseudo-header value takes the value rule here.
+            // RFC 9113 8.3.1: :path takes h2_path_ok below, which refuses more.
             if (which != kPath && !h2_field_ok(field.name, field.value, true)) {
                 accepted = false;
                 break;
@@ -941,8 +835,6 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             continue;
         }
         saw_regular = true;
-        // Where this field lands, for vals.named to point at. A block past
-        // kH2MaxFields keeps no slot, and SIZE_MAX says so.
         size_t index = SIZE_MAX;
         if (name_length < kH2MaxFields) {
             *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
@@ -955,39 +847,21 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             accepted = false;
         }
     }
-    // RFC 9113 8.3.1: the :path came, and it has the shape of a target.
-    // have_path is tested first, so path_val is never null here.
     if (!accepted || !have_method || !have_path || !have_scheme ||
         !h2_path_ok(std::string_view(path_val, path_vlen))) {
         h2_reset_stream(conn, stream_id, kH2ProtocolError, sink);
         return true;
     }
 
-    // #17, RFC 9113 8.3.1: a server treats :authority as the host field of
-    // the equivalent HTTP/1.1 request. So the authority joins the field
-    // list as that field, and request.host, request.base_uri and
-    // request.same_origin? then answer for h2 the way they answer for h1.
-    // Before this they answered nil, "https:///" and nil, because the
-    // authority was counted once and then dropped.
-    //
-    // It is the last entry rather than the first: the loop above fills the
-    // list in arrival order, and a pseudo-field arrives before every
-    // regular one, so prepending would mean moving every entry.
-    //
-    // The name is a literal and the value points into the decode buffer,
-    // which is what every other entry of this list does. A stream that
-    // parks copies both into field_blob, so a parked run finds the field
-    // as well, and values_of_copied_fields notes it again from the copy.
-    //
-    // A client that sends a host field keeps it: that field is the one it
-    // spelled, and the list holds one host field, never two.
+    // RFC 9113 8.3.1: a server treats :authority as the host field of the
+    // equivalent HTTP/1.1 request. It is the last entry: the list is in
+    // arrival order, and prepending would move every entry. A client that
+    // sends a host field keeps it, so the list holds one host field.
     if (authority_val != nullptr && !vals.named.carries(http::NamedField::kHost) &&
         name_length < kH2MaxFields) {
         constexpr std::string_view kHost = "host";
         *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
             kHost.data(), kHost.size(), authority_val, authority_vlen};
-        // What header_switch does for a host field, with no name compare:
-        // the name is this literal.
         vals.host = authority_val;
         vals.host_len = authority_vlen;
         vals.named.note(http::NamedField::kHost, name_length);
@@ -1049,7 +923,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
 
     RouteSpans spans;
     // WHATWG HTML: an event stream route answers before the ordinary
-    // table, the same order h1 asks in (feed_parse).
+    // table, as h1 does in feed_parse.
     if (mrb_unlikely(apps_[conn.listener].sse_table != nullptr)) {
         RouteSpans sspans;
         const int sse_route = apps_[conn.listener].sse_table->match(path_val, path_vlen, sspans);
@@ -1081,8 +955,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
             h2_log(conn, {facts, {path_val, path_vlen}});
             return true;
         }
-        // Only a bound resource reads a request view: a konst route answers
-        // from the flow table and the head alone, so nothing is filled for it.
+        // A konst route answers from the flow table and the head alone, so
+        // nothing is filled for it.
         const bool bound = block != nullptr && block->bound;
         std::optional<ReqView> view;
         if (bound) {
@@ -1112,8 +986,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                     h2_state.hdrbuf.data(),
                     used};
         q.bundle = block;
-        // The straight line: a run that cannot stop needs no frame and no
-        // held head, so it skips h2_serve and what h2_serve computes for one.
+        // A run that cannot stop needs no frame, so it skips h2_serve.
         bool answered;
         if (!h2_can_stop(block)) {
             if (!h2_answer(conn, q, sink))
@@ -1130,12 +1003,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         return true;
     }
     H2Stream &file_stat = h2_state.open(stream_id);
-    // Decide, then do: what every DATA frame of this stream earns, worked
-    // out once here instead of per frame in the feed.
-    //
-    // RFC 9110 15.5.14: the nearest limit answers. The application's
-    // number holds until this route's resource names its own with
-    // `def self.max_body`.
+    // RFC 9110 15.5.14: the nearest limit answers. The resource's own
+    // `def self.max_body` wins over the application's number.
     file_stat.max_body = apps_[conn.listener].max_body;
     if (route != kNoRoute) {
         const Bundle &listener_bundle = bundles_[apps_[conn.listener].base + route];
@@ -1147,33 +1016,23 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     } else {
         const Bundle &db = bundles_[apps_[conn.listener].base + route];
         const bool reads = db.bound && db.res->takes_body;
-        // RFC 9110 6.4: the declared length picks where the octets land,
-        // here, before the first one arrives. A body of kBodySpill or more
-        // opens its file now, so no octet is ever moved from memory into it
-        // part way through; a smaller one takes its buffer once.
+        // RFC 9110 6.4: a body of kBodySpill or more opens its file now, so no
+        // octet is ever moved from memory into it part way through.
         if (!reads || (claimed.have && claimed.value > file_stat.max_body)) {
-            // A declared length above the limit opens no file and reserves no
-            // buffer. The first DATA frame crosses the limit and the stream
-            // is refused there, before an octet is stored.
+            // A declared length above the limit opens no file. The first DATA
+            // frame crosses the limit, and the stream is refused there.
             file_stat.data = H2Stream::Data::kDrop;
         } else if (!claimed.have && !db.res->saves_body) {
-            // RFC 9110 8.6: nothing was declared, so nothing is known. The
-            // body starts in memory and the count moves it to a file when it
-            // grows. No reserve: the size is what arrives.
+            // RFC 9110 8.6: nothing was declared. The body starts in memory and
+            // moves to a file when it grows.
             file_stat.data = H2Stream::Data::kMem;
         } else if (claimed.value >= kBodySpill || db.res->saves_body) {
-            // One descriptor per large body, and two ceilings on how many are
-            // open: this connection's and the process's. Over either the
-            // stream is refused, and the client sends it again later.
             if (mrb_unlikely(!h2_body_file_open(conn, file_stat, stream_id, sink)))
                 return true;
             file_stat.data = H2Stream::Data::kFile;
         } else {
-            // No reserve for a number the client only declared. 256 streams
-            // that each name 255 KiB and send nothing took 64 MiB of this
-            // process, per connection. The string grows with what arrives,
-            // which is geometric and bounded by kBodySpill - over that the
-            // body moves to a file.
+            // No reserve for a declared number. 256 streams that each name 255 KiB
+            // and send nothing took 64 MiB of this process, per connection.
             file_stat.data = H2Stream::Data::kMem;
         }
     }
@@ -1203,30 +1062,18 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     file_stat.content_length = claimed.value;
     file_stat.content_length_given = claimed.have;
 
-    // #53: the flow walks on the head, and the body waits behind it.
-    //
-    // A request this server was always going to refuse - 401 from
-    // is_authorized?, 403, 404 from resource_exists?, 405, 406, 412 - is
-    // refused now, before its octets arrive. h1 has answered that way
-    // since #36. h2 waited for the whole body first, so an upload to a
-    // route that answers 404 was taken in full, and the body file opened
-    // at this head held a slot of the process-wide count (kBodyFilesMax)
-    // for as long as the upload lasted. An unauthenticated peer could
-    // hold those slots against every other upload of the process.
-    //
-    // Only a run that can stop may walk here. A route that cannot stop,
-    // or a connection with no park slot left, would take h2_serve's
-    // straight path and answer from a body that has not arrived - a wrong
-    // answer rather than a late one. Those wait, as they did before.
+    // The flow walks on the head, and the body waits behind it. A request
+    // this server refuses - 401, 403, 404, 405, 406, 412 - is refused before
+    // its octets arrive. Otherwise an upload to a route that answers 404
+    // held a kBodyFilesMax slot for as long as the upload lasted.
+    // Only a run that can stop may walk here. The straight path would
+    // answer from a body that has not arrived.
     if (asset == nullptr && route != kNoRoute && file_stat.data != H2Stream::Data::kDrop) {
         const Bundle &error_bundle = bundles_[apps_[conn.listener].base + route];
-        // Any bound resource may be asked to wait for a body, so what
-        // matters here is a park slot to wait in, not what the resource
-        // declares. Without one the stream waits for its body as before.
         if (error_bundle.bound && error_bundle.res != nullptr &&
             conn.h2_parked.size() < static_cast<size_t>(Conn::kParkSlots)) {
-            // The stream table may move under the serve, so nothing of stx is
-            // read after this call.
+            // The stream table may move under the serve, so nothing of file_stat
+            // is read after this call.
             if (!h2_serve_parked(conn, file_stat, sink, false))
                 return false;
 
@@ -1238,10 +1085,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
                 }
             }
             if (!parked_now) {
-                // RFC 9113 8.1: the answer is whole and the request is not. The
-                // peer is told to stop rather than left sending a body into a
-                // stream that is finished with it. NO_ERROR, because nothing
-                // went wrong - the answer simply needed none of it.
+                // RFC 9113 8.1: the answer is whole and the request is not. NO_ERROR
+                // tells the peer to stop sending, because nothing went wrong.
                 h2_reset_stream(conn, stream_id, kH2NoError, sink);
             }
         }
@@ -1249,7 +1094,6 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     return true;
 }
 
-// RFC 7541 Appendix A: never-indexed blocks per asset entry, at setup.
 void Http1::h2_build_asset_blocks(AssetEntry &entry)
 {
     std::string &block = entry.h2_head_200;
@@ -1291,7 +1135,6 @@ void Http1::h2_build_asset_blocks(AssetEntry &entry)
     }
 }
 
-// RFC 7541: the asset tier's shared 405 and 406 blocks.
 void Http1::h2_build_asset_shared()
 {
     static const std::string kAllow = "GET, HEAD";
@@ -1302,8 +1145,6 @@ void Http1::h2_build_asset_shared()
     h2_asset406_.bytes.append("Accept-Encoding", 15);
 }
 
-// RFC 9113 6.1/6.9: the asset answer - body as segments over the mapping,
-// window-refused remainder parked.
 bool Http1::h2_asset_answer(Conn &conn, const H2Asset &asset_ask, std::string &sink)
 {
     const uint32_t stream_id = asset_ask.stream_id;
@@ -1380,8 +1221,8 @@ bool Http1::h2_asset_answer(Conn &conn, const H2Asset &asset_ask, std::string &s
     alog_status_ = status;
     alog_bytes_ = no_data ? 0 : blen;
 
-    // Without an insert: an insert here would move every index a cached
-    // konst head holds, and nothing counts it there.
+    // No insert here: an insert would move every index a cached konst
+    // head holds, and nothing counts it there.
     unsigned char dbuf[64];
     unsigned char *data_plan = dbuf;
     if (!h2_enc_field({&h2_state.enc, data_plan, dbuf + sizeof(dbuf)},
@@ -1410,11 +1251,8 @@ bool Http1::h2_asset_answer(Conn &conn, const H2Asset &asset_ask, std::string &s
     return true;
 }
 
-// RFC 9113 6.2/6.9.1: HEADERS and DATA for one stream; DATA beyond
-// min(connection, stream) is parked, never written.
-// RFC 9110 15.6.1: see the declaration. A run that named a file never
-// lends its body either (see the O18 body handler in resource.cpp), so
-// lent_have is already false here and there is nothing to unwind.
+// A run that named a file never lends its body (the O18 body handler
+// in resource.cpp), so lent_have is already false here.
 uint16_t Http1::h2_refuse_file(Conn &conn, const ReqView *request_view)
 {
     static const char kWhy[] =
@@ -1432,10 +1270,8 @@ uint16_t Http1::h2_refuse_file(Conn &conn, const ReqView *request_view)
     return 500;
 }
 
-// #30: what the run left, read after it answered. A run that parked
-// answers long after h2_produce returned, so this is its own step - the
-// straight path calls it at once, and the coroutine calls it when the
-// round is done.
+// A run that parked answers long after h2_produce returned, so this
+// is its own step.
 void Http1::h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes, uint16_t status)
 {
     const Bundle *const block = bytes.b;
@@ -1448,12 +1284,10 @@ void Http1::h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes
     bytes.lent_len = lent_body.bytes.size();
     if (bytes.lent_have)
         bytes.lent_mrb = block->res->mrb;
-    // response.file is h1-only for now: the deferred open lives on the
-    // connection, and h2 multiplexes streams that would each need one.
-    //
-    // The slot is taken either way, because left set it would answer the
-    // next request through this Resource. A run that named a file is
-    // refused here rather than served an empty body it never meant.
+    // response.file is h1-only: the deferred open lives on the connection,
+    // and h2 multiplexes streams that would each need one. The slot is
+    // taken either way, because left set it would answer the next request
+    // through this Resource.
     {
         WantedFile wanted;
         if (resource_file_wanted(*block->res, wanted)) {
@@ -1462,10 +1296,9 @@ void Http1::h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes
         }
     }
     bytes.status = status;
-    // RFC 9111: the same rule h1 states in bound_finish - a target that
-    // ends in "/" names a page whose bytes change under a name that does
-    // not, so a cache may not guess how long it stays fresh. The run's own
-    // Cache-Control or Expires wins.
+    // RFC 9111: a target that ends in "/" names a page whose bytes change
+    // under a name that does not, so a cache may not guess its freshness.
+    // The run's own Cache-Control or Expires wins.
     if (status < 400 && request.req != nullptr &&
         http::target_names_a_directory(
             {request.req->request_target, request.req->request_target_len}) &&
@@ -1476,9 +1309,8 @@ void Http1::h2_after_run(Conn &conn, const H2Request &request, H2Produced &bytes
         (!block->res->run.content_type.empty() || !bytes.rhdrs->empty()) && status != 500;
 }
 
-// #30: the walk. `can_park` says whether the caller holds a frame that
-// can keep a stopped run - the h2 dispatcher does not, the coroutine
-// does. It is the same question run_parkable answers for h1.
+// `can_park` says whether the caller holds a frame that can keep a
+// stopped run. The h2 dispatcher does not, the coroutine does.
 void Http1::h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Produced &bytes)
 {
     const flow::ReqFacts &facts = request.facts;
@@ -1492,8 +1324,8 @@ void Http1::h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Pr
     uint16_t status;
     bool have_body = false;
     bool dynamic = false;
-    // What this run lent instead of copying, if anything: not yet owned by a
-    // stream, so every path out of here below still has to place or free it.
+    // What this run lent is not yet owned by a stream, so every path out
+    // of here has to place or free it.
     if (route == kNoRoute) {
         status = 404;
     } else {
@@ -1501,33 +1333,24 @@ void Http1::h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Pr
                                           : &bundles_[apps_[conn.listener].base + route];
         bytes.idx = &block->index;
         if (block->bound) {
-            // The Values die with the frame that carried them, so a run reached
-            // from here - parked or not - gets none.
-            // The same [tune] zero_copy_threshold h1 reads: a HEAD sends no bytes
-            // to lend, and h2 has no gzip path for a dynamic body to collide with.
+            // The Values die with the frame that carried them, so a parked run
+            // gets none. A HEAD sends no bytes to lend.
             const RunAsk asked = {facts, vals, request_view, head_only ? 0 : zc_min_, can_park};
             const RunAnswer answer = {bytes.body, &have_body, bytes.rhdrs};
             status = resource_run(*block->res, asked, answer);
             bytes.b = block;
             bytes.status = status;
             bytes.have_body = have_body;
-            // #30: the walk stopped. What it left cannot be read yet - it has
-            // not answered - so the caller parks and calls h2_after_run when
-            // the answer is back. Only a caller that can park ever sees this.
+            // The walk stopped and has not answered, so the caller parks and
+            // calls h2_after_run when the answer is back.
             if (mrb_unlikely(run_stopped(*block->res)))
                 return;
             h2_after_run(conn, request, bytes, status);
             return;
         } else {
-            // RFC 9110 12.5.1: the same c4 h1 asks. The facts arrive const here -
-            // they belong to the stream - so the one negotiated bit is answered on
-            // a copy, and only when the client sent an Accept at all.
-            // A stream reached from a parked frame carries facts but no Values -
-            // the bytes died with the frame. No Accept bytes, nothing to weigh,
-            // and c3 already sent this request the way it went before.
-            // The copy is made only for a request that sent an Accept: every
-            // other one answers on the facts as they stand. One call to
-            // flow::answer, because it is inlined at each call it has.
+            // RFC 9110 12.5.1: the facts belong to the stream and arrive const, so
+            // the negotiated bit is answered on a copy, and only when the client
+            // sent an Accept.
             const flow::ReqFacts *use = &facts;
             std::optional<flow::ReqFacts> cf;
             if (facts.has_accept && vals != nullptr && vals->accept != nullptr) {
@@ -1553,22 +1376,10 @@ void Http1::h2_produce(Conn &conn, const H2Request &request, bool can_park, H2Pr
     bytes.dynamic = dynamic;
 }
 
-// #30: a stream whose resource can stop takes the coroutine; every
-// other one takes the straight answer. The frame costs an allocation,
-// so only a resource that declared `compute` or `watch` pays for it -
-// the same rule h1 follows in feed_parse.
-// RFC 8441: a WebSocket on one h2 stream.
-//
-// The client sends an extended CONNECT - :method CONNECT with
-// :protocol websocket, and, unlike a plain CONNECT, with :scheme and
-// :path - so the route is looked up the way every other request's is.
-// The answer is 200 and not 101: there is nothing to switch, the stream
-// itself is the transport, and its DATA frames carry RFC 6455 frames.
-//
-// RFC 7692 travels unchanged: the offer arrives as an ordinary
-// `sec-websocket-extensions` field of the CONNECT, and the answer goes
-// back as one of the response. The compression is the WebSocket's, not
-// the transport's, so nothing about it is h2's business.
+// RFC 8441: an extended CONNECT carries :scheme and :path, so the route
+// is looked up like any other request's. The answer is 200, not 101:
+// the stream itself is the transport, and its DATA frames carry RFC
+// 6455 frames. RFC 7692 travels unchanged in the field lines.
 bool Http1::h2_ws_begin(Conn &conn, const H2WsAsk &request_ask, std::string &sink)
 {
     H2State &h2_state = *conn.h2;
@@ -1654,24 +1465,17 @@ bool Http1::h2_ws_begin(Conn &conn, const H2WsAsk &request_ask, std::string &sin
     stream.ws = control;
     stream.streaming = true;
     stream.end_headers = true;
-    // Not half-closed: the peer keeps sending, and its DATA frames are the
-    // WebSocket's own.
+    // The peer keeps sending: its DATA frames are the WebSocket's own.
     stream.half_closed_remote = false;
     alog_status_ = 200;
     alog_bytes_ = 0;
     return true;
 }
 
-// WHATWG HTML over RFC 9113: an event stream on one h2 stream.
-//
-// The head goes out as HEADERS without END_STREAM, and every later tick
-// is DATA against that stream's window - the same bytes h1 wraps in a
-// chunk (RFC 9112 7.1). No Transfer-Encoding: h2 has none, and the
-// stream itself is the framing.
-//
-// It is per stream, not per connection. An h2 connection multiplexes,
-// so one client can hold several event streams at once, and each one
-// keeps its own resource object.
+// WHATWG HTML over RFC 9113: the head is HEADERS without END_STREAM,
+// and every tick is DATA against the stream's window. h2 has no
+// Transfer-Encoding; the stream is the framing. One connection can
+// hold several event streams, each with its own resource object.
 bool Http1::h2_sse_begin(Conn &conn, const H2SseAsk &request_ask, std::string &sink)
 {
     H2State &h2_state = *conn.h2;
@@ -1742,8 +1546,6 @@ bool Http1::h2_sse_begin(Conn &conn, const H2SseAsk &request_ask, std::string &s
     return true;
 }
 
-// WHATWG HTML: one second has passed. Every event stream this connection
-// carries is asked, and what it says goes on its own stream.
 void Http1::h2_sse_second(Conn &conn, std::string &sink)
 {
     H2State &h2_state = *conn.h2;
@@ -1756,8 +1558,8 @@ void Http1::h2_sse_second(Conn &conn, std::string &sink)
         if (!body.empty())
             stream.response_content.append_owned(body.data(), body.size());
         // A client that reads its socket but never credits the stream. The
-        // tick speaks every second whatever the window says, so what the
-        // resource hands over piles up with nothing to bound it.
+        // tick speaks every second whatever the window says, so nothing else
+        // bounds what piles up.
         if (mrb_unlikely(stream.response_content.owed_bytes() > kTunnelOutCap)) {
             const uint32_t stream_id = stream.id;
             stream.streaming = false;
@@ -1769,10 +1571,8 @@ void Http1::h2_sse_second(Conn &conn, std::string &sink)
         }
         if (go_on)
             continue;
-        // The resource said :close. The stream ends when what it already
-        // handed over has left, so END_STREAM rides the last DATA frame.
-        // A stream that owes nothing gets an empty one, or the peer waits
-        // for an end that never comes.
+        // END_STREAM rides the last DATA frame. A stream that owes nothing
+        // gets an empty one, or the peer waits for an end that never comes.
         sse_free(stream.sse);
         stream.sse = nullptr;
         stream.streaming = false;
@@ -1789,29 +1589,22 @@ void Http1::h2_sse_second(Conn &conn, std::string &sink)
 Http1::H2Served Http1::h2_serve(Conn &conn, const H2Request &request, std::string &sink)
 {
     const Bundle *block = request.bundle;
-    // #53: h2_can_stop asks whether the resource has a compute task or a
-    // watcher - whether it can stop for a worker. A body is the other
-    // reason to stop, and it belongs to no resource: any route may be
-    // asked to wait for one. So a request whose body has not arrived takes
-    // the parkable path whatever the resource declares. The straight path
-    // runs the walk with can_park false, and the body stop is gated on
-    // that, so it would answer from a body that is not there.
+    // A body is a reason to stop that belongs to no resource, so a request
+    // whose body has not arrived takes the parkable path whatever the
+    // resource declares. The straight path runs with can_park false and
+    // would answer from a body that is not there.
     if (request.complete && !h2_can_stop(block)) {
         return h2_answer(conn, request, sink) ? H2Served::kAnswered : H2Served::kClosed;
     }
     // A connection holds as many stopped runs as a tag can name. Past
-    // that the request is answered the straight way: it cannot stop, so a
-    // compute task runs here and a watcher is refused by name. A caller
-    // serving an incomplete body checks for a slot before it asks, and
-    // nothing between that check and this one takes one.
+    // that the request takes the straight way: a compute task runs here
+    // and a watcher is refused by name.
     if (conn.h2_parked.size() >= static_cast<size_t>(Conn::kParkSlots)) {
         return h2_answer(conn, request, sink) ? H2Served::kAnswered : H2Served::kClosed;
     }
-    // #54: the range this request's fields sit in, and not one octet
-    // more. The decode buffer holds every field of every stream this
-    // dispatch read, and a run that stops copies what it is given - so
-    // it is given this request's own span. A HEADERS block decodes in
-    // one run, so the span is contiguous.
+    // A run that stops copies what it is given, so it is given this
+    // request's own span. A HEADERS block decodes in one run, so the span
+    // is contiguous.
     const char *head_at = request.head_at;
     size_t head_len = request.head_len;
     if (request.req != nullptr && request.req->field_count != 0 && request.head_at != nullptr) {
@@ -1848,35 +1641,27 @@ Http1::H2Served Http1::h2_serve(Conn &conn, const H2Request &request, std::strin
     start.h2.head_only = request.head_only;
     start.h2.facts = request.facts;
     start.h2.target.assign(request.target);
-    // #54: the request, and the bytes it points into. The run holds both
-    // before it can stop.
     start.h2.view = request.req;
     start.h2.head_at = head_at;
     start.h2.head_len = head_len;
     Run round = run_parkable(conn, std::move(start), &sink, nullptr);
     if (round.done()) {
-        // It never stopped. The answer is already in the sink.
         return round.status() != 0 ? H2Served::kAnswered : H2Served::kClosed;
     }
     // The stream keeps an entry while the run is parked, so a RST_STREAM
     // closes it and a WINDOW_UPDATE credits it. The sweep leaves a parked
-    // entry alone, and the run's tail clears the mark before it answers.
+    // entry alone.
     H2Stream &keep = conn.h2->open(request.stream_id);
     keep.parked = true;
     keep.end_headers = true;
-    // RFC 9113 5.1: only the end of the request closes this half. A run
-    // that stopped for its body is waiting on DATA that has not arrived,
-    // so the stream is still open to the peer.
+    // RFC 9113 5.1: a run that stopped for its body waits on DATA, so the
+    // stream is still open to the peer.
     if (request.complete)
         keep.half_closed_remote = true;
     conn.h2_parked.push_back({request.stream_id, std::move(round)});
     return H2Served::kParked;
 }
 
-// RFC 9110 15.5.12: the stream sent content and declared no length. The
-// answer is the head's, not a run's: the request view carries the head
-// and no content, because none of it may be read.
-//
 bool Http1::h2_answer(Conn &conn, const H2Request &request, std::string &sink)
 {
     H2Produced bytes;
@@ -1897,38 +1682,31 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
     (void)facts;
     H2State &h2_state = *conn.h2;
     H2Answer wire;
-    // Built only by the arm that needs it: a std::string per answer that
-    // the straight line never reads is a construction and a destruction
-    // for nothing.
+    // Built only by the arm that needs it: a std::string the straight
+    // line never reads costs a construction and a destruction.
     std::optional<H2Block> dynblk;
-    // #210 / #146: an error carries the same page here that h1 spells. It
-    // outlives the framing below, because a body the window cannot finish
-    // is copied onto the stream from this buffer.
+    // The error page outlives the framing below, because a body the
+    // window cannot finish is copied onto the stream from this buffer.
     std::optional<H2ErrorPage> err_page;
-    // #210 response.error_asset: the run named an entry of the error
-    // assets, and this stream carries it the way the asset tier's own
-    // streams carry one - Content::Src::kAsset, parked and framed by
-    // h2_flush_pending against the window. Nothing is rooted: the entry
-    // lives in a mapping that outlives every stream that parks on it.
+    // response.error_asset: the stream carries the entry the way the
+    // asset tier's streams do. Nothing is rooted: the entry lives in a
+    // mapping that outlives every stream.
     const AssetEntry *run_asset =
         (bytes.b != nullptr && bytes.b->res != nullptr) ? bytes.b->res->run.asset : nullptr;
-    // Its wire length is the answer's length: what h2_build_block declares,
-    // what the access log counts, and what END_STREAM is measured against.
     const size_t asset_len = run_asset != nullptr ? Assets::wire_len(*run_asset) : 0;
     if (bytes.dynamic) {
         const bool bodyless = bytes.status == 204 || bytes.status == 304;
         if (bodyless || !bytes.have_body)
             (*bytes.body).clear();
-        // The same bake h1 names: a `def self.to_html` renders at setup, and the
-        // block being built here is not the prebuilt one that carries it.
+        // A `def self.to_html` renders at setup, and the block built here is
+        // not the prebuilt one that carries it.
         const bool baked = !bodyless && !bytes.have_body && !bytes.lent_have &&
                            bytes.status == 200 && !bytes.b->dynamic_body &&
                            !bytes.b->konst.body.empty();
         std::string ctype;
         std::string epage;
-        // The same debt h1 pays here: a 4xx or 5xx whose run wrote a field of
-        // its own never reaches h2_error_page, and would go out as a bare
-        // p.status with the page missing.
+        // A 4xx or 5xx whose run wrote a field of its own never reaches
+        // h2_error_page, so the page is spelled here.
         if (bytes.status >= 400 && !bodyless && !bytes.have_body && !bytes.lent_have &&
             run_asset == nullptr) {
             const int error_message = err_pages_.media_pick_for_status(
@@ -1951,12 +1729,10 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                 ctype = bytes.b->konst.content_type;
         }
         h2_build_block(dynblk.emplace(), {bytes.status, ctype.empty() ? nullptr : &ctype});
-        // A p.status that sends no body cleared (*p.body) above, and a lend it does
-        // not carry is handed back below - the same order h1 spells it in.
         const bool use_lent = bytes.lent_have && !bodyless && bytes.have_body;
         const bool use_asset = run_asset != nullptr && !bodyless && bytes.have_body;
-        // An asset's octets are never framed from `body` - h2_flush_pending
-        // reads them out of the mapping - so only its length is set here.
+        // h2_flush_pending frames an asset out of the mapping, never from
+        // `body`, so only its length is set here.
         wire.body = use_asset
                         ? nullptr
                         : (use_lent ? bytes.lent
@@ -1974,8 +1750,8 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                         : (bytes.lent_have ? bytes.lent_len : (*bytes.body).size());
         wire.blk = &h2_store_[(*bytes.idx)[200]];
     } else if (bytes.status == 500 && bytes.b != nullptr && bytes.b->bound) {
-        // #210: what led here, gathered once - the record and the page carry
-        // the same hash because they are taken over the same facts.
+        // The record and the page carry the same hash because they are taken
+        // over the same facts.
         ErrFacts error_facts;
         std::string ef_backtrace;
         std::string ef_steering;
@@ -1999,8 +1775,8 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
         spell_fingerprint(ef_hash, fingerprint_of(error_facts));
         if (elog_.enabled)
             log_error(elog_, error_facts);
-        // #210: handle_exception lives on the error resource and nowhere
-        // else, so the exception object itself is what crosses over.
+        // handle_exception lives on the error resource, so the exception
+        // object itself is what crosses over.
         std::string message;
         mrb_value exc = mrb_nil_value();
         if (resource_exception_take(*bytes.b->res, &exc))
@@ -2009,9 +1785,8 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
         field.message = message.data();
         field.message_len = message.size();
         field.fingerprint = ef_hash;
-        // A ship build says what was thrown and where the log has the rest; a
-        // debug build is already telling you about itself, so the trace goes
-        // on the page too.
+        // A ship build says what was thrown and where the log has the rest. A
+        // debug build puts the trace on the page too.
         if (kDebugBuild) {
             field.backtrace = error_facts.backtrace;
             field.backtrace_len = error_facts.backtrace_len;
@@ -2038,27 +1813,23 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
 
     const bool no_data = head_only || wire.blen == 0;
 
-    // A lend the chain above did not adopt (a bodyless p.status, a 500 that
-    // spelled its own body) never reached a plan, so this is its release.
+    // A lend the chain above did not adopt never reached a plan, so this
+    // is its release.
     if (bytes.lent_have && (no_data || wire.body != bytes.lent)) {
         resource_body_unlend(bytes.lent_mrb, bytes.lent_v);
         bytes.lent_have = false;
     }
-    // And one that was adopted becomes the stream's before anything below can
-    // fail: from here on close_stream and ~H2State own it, so no error path
-    // can strand a rooted body nobody comes back for.
+    // An adopted lend becomes the stream's before anything below can
+    // fail: from here on close_stream and ~H2State own it.
     if (bytes.lent_have) {
         H2Stream &keep = h2_state.open(stream_id);
         keep.response_content.take_lent(bytes.lent_mrb, bytes.lent_v, bytes.lent, bytes.lent_len);
         keep.end_headers = true;
         keep.half_closed_remote = true;
     }
-    // #210: an asset parks the way the asset tier parks one, with the same
-    // Src. h2_flush_pending frames it out of the mapping, and the sweep
-    // there closes the stream once the window has let all of it through.
-    //
-    // A head-only answer, or a status that sends nothing, takes no stream:
-    // no_data covers both.
+    // An asset parks the way the asset tier parks one. h2_flush_pending
+    // frames it out of the mapping, and the sweep closes the stream once
+    // the window let all of it through.
     const bool asset_data = run_asset != nullptr && !no_data;
     if (asset_data) {
         H2Stream &keep = h2_state.open(stream_id);
@@ -2079,15 +1850,12 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
 
     bool merged = false;
     if (bytes.dynamic) {
-        // RFC 7541: lane 1 spells :p.status and Content-Type, lane 2 the Date and
-        // every field line this run produced. A per-request head is never cached.
         unsigned char ebuf[2048];
         unsigned char *error_page = ebuf;
         unsigned char *const eend = ebuf + sizeof(ebuf);
-        // Indexed, unlike the cached path's: this head is spelled once and
-        // thrown away, so an insert here costs nothing to replay - but it
-        // does move every index a cached head may be holding, which is what
-        // enc_ins counts.
+        // Indexed, unlike the cached path: this head is spelled once and
+        // thrown away, so an insert costs nothing to replay. It does move every
+        // index a cached head holds, which is what enc_ins counts.
         if (!h2_enc_field({&h2_state.enc, error_page, eend}, {"date", {date_, sizeof(date_)}})) {
             return h2_error(conn, kH2InternalError, sink);
         }
@@ -2129,14 +1897,10 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
     } else {
         if (h2_state.head_cache.status != bytes.status || h2_state.head_cache.route != route ||
             h2_state.head_cache.sec != sec_ || h2_state.head_cache.enc_ins != h2_state.enc_ins) {
-            // RFC 7541 6.2.1 / 6.1: content-type is the same string for every
-            // answer this route ever gives, so it goes into the peer's p.dynamic
-            // table once and is a one-byte reference after that. Encoded
-            // twice: ls-hpack answers the first call with the insert and the
-            // second with the index it just made, which is exactly the two
-            // forms this cache needs. Only the 200 has one - the shared p.status
-            // blocks carry no content-type, and a bound route never reaches
-            // this branch.
+            // RFC 7541 6.2.1 / 6.1: content-type goes into the peer's dynamic
+            // table once and is a one-byte reference after that. Encoded twice:
+            // ls-hpack answers the first call with the insert and the second with
+            // the index, which are the two forms this cache needs.
             const std::string *ct =
                 (bytes.status == 200 && bytes.b != nullptr && !bytes.b->konst.content_type.empty())
                     ? &bytes.b->konst.content_type
@@ -2157,17 +1921,14 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                 plen = static_cast<size_t>(pseudo_cursor - pbuf);
                 rlen = static_cast<size_t>(regular_cursor - rbuf);
                 h2_state.enc_ins++;
-                // The block that carried the literal is the wrong one now: the
-                // shared 200 spells :p.status and nothing else.
+                // The shared 200 block spells :status and nothing else, so it
+                // replaces the block that carried the literal.
                 wire.blk = &h2_store_[index_[200]];
             }
             unsigned char dbuf[64];
             unsigned char *data_plan = dbuf;
-            // Not indexed: these bytes are kept and sent again for every
-            // answer of this second, and an insert replayed is an insert the
-            // peer performs again each time. content-type above may be
-            // indexed for the opposite reason - it is inserted once and the
-            // cache then replays the reference, never the insert.
+            // Not indexed: these bytes are replayed for every answer of this
+            // second, and a replayed insert is an insert the peer performs again.
             if (!h2_enc_field({&h2_state.enc, data_plan, dbuf + sizeof(dbuf)},
                               {"date", {date_, sizeof(date_)}, false})) {
                 return h2_error(conn, kH2InternalError, sink);
@@ -2191,9 +1952,9 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
             // and the table it points into are recorded together.
             h2_state.head_cache.enc_ins = h2_state.enc_ins;
         }
-        // One answer per connection carries the insert; it is never merged
-        // with a DATA frame, because it is one response in a second and the
-        // merge exists for the other thousands.
+        // The answer that carries the insert is never merged with a DATA
+        // frame: it is one response in a second, and the merge exists for the
+        // other thousands.
         const bool prime = !h2_state.head_cache.primed;
         merged = !prime && !no_data && h2_state.head_cache.has_data &&
                  budget >= static_cast<int64_t>(wire.blen) && wire.blen <= h2_state.peer_max_frame;
@@ -2213,10 +1974,9 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
             h2_patch_stream_id(hpack + h2_state.head_cache.head_len, stream_id);
     }
 
-    // RFC 9113 6.9.1: not one byte of a lent body is framed here. All of it
-    // is parked on the stream and h2_flush_pending - the only place holding a
-    // plan - gives it the window, the frames and the external segment, the
-    // same way the asset tier's `src` is delivered.
+    // RFC 9113 6.9.1: a lent body is not framed here. It is parked on the
+    // stream, and h2_flush_pending, the only place holding a plan, gives it
+    // the window and the external segment.
     size_t give = 0;
     if (!bytes.lent_have && !asset_data && !no_data) {
         if (merged) {
@@ -2256,7 +2016,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                 keep.flow_window -= static_cast<int64_t>(give);
         }
     }
-    // A p.lent stream is never closed here: its bytes have not been framed yet,
+    // A lent stream is never closed here: its bytes are not framed yet,
     // and the sweep at the end of h2_flush_pending closes it once they are.
     if (!bytes.lent_have && !asset_data && (no_data || give == wire.blen))
         h2_state.close_stream(stream_id);
@@ -2270,8 +2030,8 @@ struct RoundOut {
     Http1::Plan *plan;
     size_t emitted = 0;
 
-    // RFC 9113: claim the sink bytes this round started with - a plan naming
-    // any sink range describes the sink completely.
+    // A plan naming any sink range describes the sink completely, so the
+    // bytes this round started with are claimed first.
     void prime()
     {
         if (plan == nullptr || plan->iovlen != 0 || sink.empty())
@@ -2280,8 +2040,8 @@ struct RoundOut {
         plan->byte_total += sink.size();
     }
 
-    // RFC 9113 6.1: room for one more DATA frame - its header plus up to three
-    // payload spans. Every gate sits before the frame, never inside one.
+    // Room for one more DATA frame: its header plus up to three payload
+    // spans. Every gate sits before the frame, never inside one.
     bool room_for_frame() const
     {
         if (plan == nullptr)
@@ -2291,7 +2051,6 @@ struct RoundOut {
         return plan->byte_cap == 0 || plan->byte_total < plan->byte_cap;
     }
 
-    // RFC 9113: framing bytes, coalesced into the open sink run.
     void bytes(const char *bytes, size_t length)
     {
         if (plan == nullptr) {
@@ -2316,8 +2075,7 @@ struct RoundOut {
 
     static constexpr size_t kCopyFloor = 4096;
 
-    // RFC 1952: asset payload as pointers into the mapping; small pieces are
-    // copied instead (one page is the measured line).
+    // Pieces under one page are copied; one page is the measured line.
     void span(const AssetEntry &entry, size_t offset, size_t length)
     {
         if (plan == nullptr) {
@@ -2339,9 +2097,8 @@ struct RoundOut {
         }
     }
 
-    // RFC 9110 8.6: the body a run lent, as a pointer into its own frozen
-    // String. Without a plan there is no segment to hang it on, so the round
-    // copies - correct either way, since the lend outlives this round.
+    // Without a plan there is no segment to hang the lend on, so the
+    // round copies. The lend outlives this round either way.
     void lent(const char *bytes, size_t length)
     {
         if (plan == nullptr) {
@@ -2357,7 +2114,6 @@ struct RoundOut {
 } // namespace
 
 #define WM_H2_LOG_DEFINED
-// RFC 9113 8.3: the method column, from the enum - the wire bytes are gone.
 static const char *access_log_method_name(flow::Method method, size_t *length)
 {
     switch (method) {
@@ -2385,7 +2141,6 @@ static const char *access_log_method_name(flow::Method method, size_t *length)
     }
 }
 
-// RFC 9113: one answer, one access line, written where :path still lives.
 void Http1::h2_log(Conn &conn, const H2Logged &logged)
 {
     if (!alog_.enabled)
@@ -2405,19 +2160,14 @@ void Http1::h2_log(Conn &conn, const H2Logged &logged)
                        static_cast<uint8_t>(kLogH2 | (facts.no_track ? kLogNoTrack : 0))});
 }
 
-// RFC 9113 6.9: one round of parked streams, as segments; the cursor keeps
-// the cut fair between them.
-// RFC 9113 6.1: carve the round into DATA frames. END_STREAM rides the
-// frame that lands on the last byte - which is why the step carries the
-// body's total and not just what this round gives. Returns what actually
-// went out: the round can run out of plan room mid-body, and then nothing
-// ends.
-// One stream, and what it may put on the wire this round.
 struct H2Sending {
     const H2Stream &stream;
     const Http1::H2SendStep &step;
     size_t max_frame;
 };
+// END_STREAM rides the frame that lands on the last byte, so the step
+// carries the body's total and not only what this round gives. The
+// round can run out of plan room mid-body, and then nothing ends.
 
 static size_t h2_emit(RoundOut &out_answer, const H2Sending &sending)
 {
@@ -2456,9 +2206,8 @@ static size_t h2_emit(RoundOut &out_answer, const H2Sending &sending)
     return offset;
 }
 
-// Both windows and the body's one cursor, from what really went out. An
-// offset says this for free; erasing from the front of a buffer would
-// cost a memmove per round.
+// An offset says this for free; erasing from the front of a buffer
+// would cost a memmove per round.
 static void h2_advance(H2State &h2_state, H2Stream &text, size_t sent)
 {
     if (sent == 0)
@@ -2500,7 +2249,7 @@ void Http1::h2_flush_pending(Conn &conn, std::string &sink, Plan *plan)
     }
 }
 
-// Does this connection still owe bytes? Asked before a send, for MSG_MORE.
+// Asked before a send, for MSG_MORE.
 bool Http1::pending(const Conn &conn) const
 {
     if (conn.h2 != nullptr) {
@@ -2510,38 +2259,33 @@ bool Http1::pending(const Conn &conn) const
         }
         return false;
     }
-    // A file the reactor is still opening owes bytes too - and saying so is
-    // what keeps spell_next_round from re-feeding the carry ahead of that answer.
-    // kDone is deliberately not owed bytes: its last lend has drained and it
-    // only has bookkeeping left. Counting it here cost 60 us per request -
-    // MSG_MORE corked the final send, and on_send took the arm_meminfo
-    // detour (an io-wq round trip) in front of a round that sends nothing.
+    // A file the reactor is still opening owes bytes too. That keeps
+    // spell_next_round from re-feeding the carry ahead of that answer.
+    // kDone owes nothing: counting it cost 60 us per request, because
+    // MSG_MORE corked the final send and on_send took the arm_meminfo
+    // detour (an io-wq round trip) before a round that sends nothing.
     return conn.asset != nullptr || (conn.file != nullptr && conn.file->stage != FileStage::kNone &&
                                      conn.file->stage != FileStage::kDone);
 }
 
-// The continuation both protocols share: the sink has fully drained.
 bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
 {
-    // The release point: the Ring reaches here only once a whole round has
-    // drained, so a body lent to that round is off the wire. Before the next
-    // one is built, so a connection never holds two.
+    // The Ring reaches here only once a whole round has drained, so a body
+    // lent to that round is off the wire. The release comes before the next
+    // round is built, so a connection never holds two.
     conn.zc_release();
-    // #80: a run stopped on this connection. This is where it may go on and
-    // nowhere else - the sink and the plan it writes into exist here, and
-    // did not exist at the completion that said its answer had arrived.
+    // A stopped run may go on here and nowhere else: the sink and the plan
+    // exist here, and did not exist at the completion that said its answer
+    // had arrived.
     if (mrb_unlikely(conn.run_parked())) {
-        // Still owed. Nothing else may speak for this connection while a run
-        // is stopped, least of all a pipelined request behind it: RFC 9112
-        // 9.3.2 puts the responses out in the order the requests came.
-        // #30: the round of the run that stopped here. The frame holds it;
-        // the connection knows which park slot it took.
+        // Nothing else may speak for this connection while a run is stopped.
+        // RFC 9112 9.3.2: responses go out in the order the requests came.
         Conn::Round *const parked_round = conn.park_at(conn.parked.co.promise().park);
         if (parked_round == nullptr || !parked_round->answer_ready)
             return true;
         parked_round->answer_ready = false;
         // What the round holds is not cleared here. The run reads it after
-        // this resume, and the next stop starts it at zero anyway.
+        // this resume.
         auto &bytes = conn.parked.co.promise();
         bytes.sink = &sink;
         bytes.plan = &plan;
@@ -2552,14 +2296,12 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
         conn.parked.destroy();
         return persist;
     }
-    // response.file, spelled: the head, then the window buffer or a chunk of
-    // the mapping lent as an external segment - the same door the asset tier
-    // and a lent body use, so the bytes reach the kernel without a copy.
+    // response.file: the head, then the window buffer or a chunk of the
+    // mapping as an external segment, so the bytes reach the kernel
+    // without a copy.
     if (conn.file != nullptr &&
         (conn.file->stage == FileStage::kDeliver || conn.file->stage == FileStage::kDone)) {
-        // The round is computed first and performed second. Which window,
-        // whether the mapping may go back, whether the access line is owed:
-        // one value, and file_apply is the only thing that writes.
+        // The round is one value, and file_apply is the only thing that writes.
         const FileStep step = file_step(*conn.file, send_chunk_);
         if (step.head)
             sink.append(conn.file->head);
@@ -2569,32 +2311,26 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
             body_lend(conn, sink, {{base + step.start, step.give}, plan});
         }
         file_apply(conn, step);
-        // Still owed: this round is spent.
         if (!step.clear)
             return true;
-        // Over, and the connection ends with it.
         if (!step.persist)
             return false;
-        // Over, and the connection lives: the kDone round put nothing on the
-        // wire, so it does not get to consume the round - a pipelined request
-        // waiting in the carry speaks below, in this same one. (Consuming it
-        // wedged `response.file answers pipelined requests in order`: the
-        // carry had no later round to be fed from.)
+        // The kDone round put nothing on the wire, so it does not consume the
+        // round: a pipelined request waiting in the carry speaks below.
+        // Consuming it wedged `response.file answers pipelined requests in
+        // order`.
     }
-    // The ring still owes the answer: nothing else may speak for this
-    // connection until it lands, least of all the carry behind it.
+    // The ring still owes the answer, so nothing else may speak for this
+    // connection until it lands.
     if (conn.file != nullptr && conn.file->stage != FileStage::kNone)
         return true;
     if (conn.sse != nullptr)
         return sse_second(conn.sse, sec_, sink);
     if (conn.h2 != nullptr) {
-        // WHATWG HTML: every event stream this connection carries, asked
-        // once per second, before the frames go out.
         h2_sse_second(conn, sink);
-        // RFC 9110 6.4: a stream whose body is whole on the wire and whole
-        // in its file as well. The DATA frame that ended it could not
-        // answer, because the last octets were still on their way to the
-        // disk. `ended` is cleared here, so a stream is served once.
+        // RFC 9110 6.4: the DATA frame that ended this stream could not
+        // answer, because the last octets were still on their way to the disk.
+        // `ended` is cleared here, so a stream is served once.
         for (size_t i = 0; i < conn.h2->streams.size(); i++) {
             H2Stream &text = conn.h2->streams[i];
             if (!text.spill.ended || text.spill.fd < 0 || !text.spill.drained())
@@ -2606,8 +2342,7 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
                     return false;
             }
         }
-        // #30: every run this connection stopped whose round is done. Each
-        // one frames its own stream, so several may go out in one round.
+        // Each parked run frames its own stream, so several may go out in one round.
         for (size_t i = 0; i < conn.h2_parked.size();) {
             Conn::H2Parked &bytes = conn.h2_parked[i];
             Conn::Round *const round = conn.park_at(bytes.run.co.promise().park);
@@ -2661,8 +2396,7 @@ bool Http1::spell_next_round(Conn &conn, std::string &sink, Plan &plan)
     return connection_feed(conn, held, {sink, &plan});
 }
 
-// RFC 9113 4/6: the frame loop. A header block owns the connection until
-// END_HEADERS (6.10).
+// RFC 9113 6.10: a header block owns the connection until END_HEADERS.
 bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
 {
     const char *const data = incoming.data();
@@ -2697,11 +2431,8 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
             return h2_error(conn, kH2ProtocolError, sink);
         }
 
-        // RFC 9113 8.1: the reset budget. The test sits here because this
-        // is the one place in the frame walk that ends the connection. A
-        // peer above the budget dies at the next frame it sends, and that
-        // frame is at most one frame after the reset that spent the last
-        // of the budget.
+        // RFC 9113 8.1: the reset budget is tested here because this is the
+        // one place in the frame walk that ends the connection.
         if (mrb_unlikely(h2_state.resets > kH2ResetBudget))
             return h2_error(conn, kH2EnhanceYourCalm, sink);
 
@@ -2734,14 +2465,11 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                         return h2_error(conn, kH2ProtocolError, sink);
                     dlen -= pad;
                 }
-                // RFC 8441: on a WebSocket stream the DATA frames are the
-                // WebSocket. What the handler answers goes back on the same
-                // stream, against its window, like an event stream's ticks.
+                // RFC 8441: on a WebSocket stream the DATA frames are the WebSocket.
                 if (mrb_unlikely(stream->ws != nullptr)) {
-                    // RFC 9113 6.9: the credit goes back first. These bytes are
-                    // consumed the moment ws_feed reads them, and a websocket that
-                    // never returns its window stalls the moment the peer has sent
-                    // 65535 of them - which is one Autobahn case, not an edge.
+                    // RFC 9113 6.9: the credit goes back first. ws_feed consumes these
+                    // bytes at once, and a websocket that never returns its window stalls
+                    // after 65535 of them, which is one Autobahn case.
                     if (flen != 0) {
                         unsigned char increment[4];
                         u32_put(increment, flen);
@@ -2755,14 +2483,9 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     if (!websocket_out.empty())
                         stream->response_content.append_owned(websocket_out.data(),
                                                               websocket_out.size());
-                    // RFC 9113 5.1: END_STREAM closes the peer's half, so no more
-                    // of the tunnel can arrive and this websocket is over - the
-                    // same end a handler reaches when it says so. Without this the
-                    // stream and its WsConn stood until the connection went, and
-                    // DATA after END_STREAM was still read.
-                    // The peer's own window is shut and it keeps sending. The
-                    // credit above let it, so what this handler answers has
-                    // nowhere to go and nothing bounded it.
+                    // RFC 9113 5.1: END_STREAM closes the peer's half, so this websocket
+                    // is over. The credit above let the peer keep sending, so what the
+                    // handler answers is bounded here.
                     if (mrb_unlikely(stream->response_content.owed_bytes() > kTunnelOutCap)) {
                         stream->streaming = false;
                         stream->response_content.clear();
@@ -2771,9 +2494,8 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                         break;
                     }
                     if (!go_on || (flags & kH2FlagEndStream) != 0) {
-                        // RFC 6455 7: the handler said the connection is over. What
-                        // it still owes leaves first, and END_STREAM rides the last
-                        // frame of it.
+                        // RFC 6455 7: the handler said the connection is over. What it still
+                        // owes leaves first, and END_STREAM rides the last frame of it.
                         ws_free(stream->ws);
                         stream->ws = nullptr;
                         stream->streaming = false;
@@ -2793,10 +2515,9 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     h2_reset_stream(conn, frame_stream_id, kH2RefusedStream, sink);
                     break;
                 }
-                // RFC 9113 8.1.2.6: the octets that arrive are counted against
-                // the length the request declared, and the frame that passes it
-                // is the frame that ends the stream. Waiting for END_STREAM
-                // would store a body the request already disowned.
+                // RFC 9113 8.1.2.6: the frame that passes the declared length ends
+                // the stream. Waiting for END_STREAM would store a body the request
+                // already disowned.
                 if (stream->content_length_given &&
                     stream->content_received + dlen > stream->content_length) {
                     h2_credit_connection(sink, flen);
@@ -2805,17 +2526,10 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     break;
                 }
                 stream->content_received += dlen;
-                // RFC 9110 6.4: stored only where a node of this resource can
-                // read them, and in the place the head chose. Only
-                // content_types_accepted, create_path and process_post read a
-                // body, and the fold wrote that answer on the resource; the
-                // head wrote it and the destination on the stream. A konst
-                // route's octets, a miss's, and a resource that reads no body
-                // at all are counted and dropped, so an idle stream cannot hold
-                // megabytes nobody will ever ask for.
-                //
-                // Neither writer below tests where the octets belong. That is
-                // the same switch the frame already needed.
+                // RFC 9110 6.4: only content_types_accepted, create_path and
+                // process_post read a body, and the head chose the destination. Any
+                // other stream's octets are counted and dropped, so an idle stream
+                // cannot hold megabytes nobody asks for.
                 {
                     const char *const bp = reinterpret_cast<const char *>(data_plan);
                     bool wrote = true;
@@ -2829,15 +2543,12 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                         case H2Stream::Data::kDrop:
                             break;
                     }
-                    // The one move: a body that named no length has outgrown
-                    // memory. What memory holds goes to the file now, and every
-                    // frame after this one is a file write. The count decides, so
-                    // the test is a comparison the frame already loaded.
+                    // A body that named no length has outgrown memory, so what memory
+                    // holds goes to the file now.
                     if (mrb_unlikely(wrote && stream->data == H2Stream::Data::kMem &&
                                      stream->request_content.size() >= kBodySpill)) {
-                        // RFC 9113 8.7: no slot for the file is load, and REFUSED_STREAM
-                        // says the client may send the request again. No node that
-                        // reads content has run: each one waits for END_STREAM.
+                        // RFC 9113 8.7: no slot for the file is load, and REFUSED_STREAM says
+                        // the client may send the request again.
                         const SpillOpen opened = stream->spill.open_file();
                         if (mrb_unlikely(opened == SpillOpen::kNoSlot)) {
                             h2_credit_connection(sink, flen);
@@ -2867,23 +2578,21 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     control_frame_emit(sink, {kH2WindowUpdate, 0, frame_stream_id, increment});
                 }
                 if (flags & kH2FlagEndStream) {
-                    // The other half of the same rule: a body that ends short of
-                    // what it declared.
+                    // RFC 9113 8.1.2.6: a body that ends short of what it declared.
                     if (stream->content_length_given &&
                         stream->content_received != stream->content_length) {
                         if (!h2_count_lie(conn, frame_stream_id, sink))
                             return false;
                         break;
                     }
-                    // RFC 9110 6.4: the body is whole on the wire, and it may not
-                    // be whole in its file. The descriptor a run reads from must
-                    // hold every octet, so the answer waits for the last write.
-                    // The reactor serves this stream when the file is drained.
+                    // RFC 9110 6.4: the descriptor a run reads from must hold every octet,
+                    // so the answer waits for the last write. The reactor serves this
+                    // stream when the file is drained.
                     stream->spill.ended = true;
                     if (mrb_unlikely(stream->spill.fd >= 0 && !stream->spill.drained()))
                         break;
-                    // #53: a run that walked on the head and stopped for this body
-                    // is resumed. Only a stream with no such run is served here.
+                    // A run that stopped for this body is resumed. Only a stream with no
+                    // such run is served here.
                     stream->half_closed_remote = true;
                     if (!h2_body_ready(conn, frame_stream_id)) {
                         if (!h2_serve_parked(conn, *stream, sink, true))
@@ -2921,9 +2630,8 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     hlen -= 5;
                 }
                 if (flags & kH2FlagEndHeaders) {
-                    // The whole block is already contiguous in the recv buffer, so
-                    // it is decoded where it lies; frag exists for the split that
-                    // CONTINUATION makes, and this is not one.
+                    // The whole block is contiguous in the recv buffer, so it is decoded
+                    // where it lies. frag exists for the split CONTINUATION makes.
                     h2_state.frag_active = false;
                     const H2Headers head = {
                         frame_stream_id, (flags & kH2FlagEndStream) != 0, {hpack, hlen}};
@@ -2998,10 +2706,9 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                     const uint32_t value = h2_u32(bytes + entry + 2);
                     switch (setting_id) {
                         case kH2SettingsHeaderTableSize:
-                            // Clamped, never forwarded raw: this is a peer-chosen
-                            // 32-bit number and neither RFC 9113 6.5.2 nor RFC 7541
-                            // 4.2 bounds it. Encoding with a smaller table than the
-                            // peer permits is always legal, so the ceiling is ours.
+                            // Neither RFC 9113 6.5.2 nor RFC 7541 4.2 bounds this peer-chosen
+                            // number. Encoding with a smaller table than the peer permits is
+                            // legal, so the ceiling is ours.
                             lshpack_enc_set_max_capacity(
                                 &h2_state.enc, value > kH2EncTableMax ? kH2EncTableMax : value);
                             break;
@@ -3014,10 +2721,8 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                                 return h2_error(conn, kH2FlowControlError, sink);
                             const int64_t delta =
                                 static_cast<int64_t>(value) - h2_state.peer_initial_window;
-                            // RFC 9113 6.9.2: the change applies to every open stream,
-                            // and a stream that would go over the ceiling is a
-                            // FLOW_CONTROL_ERROR rather than a window this server
-                            // quietly carries.
+                            // RFC 9113 6.9.2: the change applies to every open stream, and a
+                            // stream that would go over the ceiling is a FLOW_CONTROL_ERROR.
                             for (const H2Stream &stp : h2_state.streams) {
                                 if (stp.flow_window + delta > kH2WindowCeiling) {
                                     return h2_error(conn, kH2FlowControlError, sink);
@@ -3046,9 +2751,8 @@ bool Http1::h2_feed(Conn &conn, std::string_view incoming, Sink out_answer)
                 return h2_error(conn, kH2ProtocolError, sink);
 
             case kH2Ping:
-                // RFC 9113 6.7: a PING on a stream is a PROTOCOL_ERROR, and only
-                // a length other than 8 is a FRAME_SIZE_ERROR. One code for both
-                // told the peer the wrong thing about its own mistake.
+                // RFC 9113 6.7: a PING on a stream is a PROTOCOL_ERROR, and only a
+                // length other than 8 is a FRAME_SIZE_ERROR.
                 if (frame_stream_id != 0)
                     return h2_error(conn, kH2ProtocolError, sink);
                 if (flen != 8)
