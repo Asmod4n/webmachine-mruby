@@ -1552,7 +1552,7 @@ template <class App> class Ring
             const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
             const unsigned by_core = cores > 1 ? static_cast<unsigned>(cores - 1) : 1;
             const unsigned want = by_core;
-            if (const char *why = compute_.start(want, kComputeDepth, &ring_)) {
+            if (const char *why = compute_.start(want, kComputeDepth)) {
                 conn_failed(why, -EAGAIN);
             }
         }
@@ -1586,7 +1586,7 @@ template <class App> class Ring
                     arm(slow.compute[job], &c, detail::kComputeTask, aux);
                 bool sent = false;
                 try {
-                    sent = compute_.submit(mrb_, code, arg, deadline, answer, began);
+                    sent = compute_.submit(mrb_, &ring_, code, arg, deadline, answer, began);
                 } catch (...) {
                     // Nothing answers for these two records, so their
                     // references go back here.

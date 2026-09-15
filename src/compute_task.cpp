@@ -74,6 +74,9 @@ namespace
 struct Slot {
     // Which declared callback, by its place in the registry.
     unsigned code_id = 0;
+    // The ring that submitted this job, and that its answer goes to. The
+    // pool is one per process; the rings that ask are many.
+    int home_fd = -1;
     // The argument as CBOR on the way in, the answer as CBOR on the way
     // out. Bytes both ways, because an mrb_value belongs to one VM.
     std::string arg;
@@ -557,9 +560,22 @@ struct ComputePool::Impl {
     std::mutex boot_lock;
     std::condition_variable boot_ready;
     unsigned booted = 0;
-    struct io_uring *home = nullptr;
+    // The pool's own ring, for the stop words only. A reactor's ring is a
+    // single-issuer ring and may be submitted by its own thread alone,
+    // and a thread's ring is torn down on the main thread.
+    struct io_uring control {
+    };
     bool up = false;
+    // The slots are claimed and read back by every ring that asks, from
+    // its own thread. The workers touch a slot only between the two
+    // handovers, which the rings order.
+    std::mutex slots_lock;
 };
+
+// One pool per process. The first ring to ask starts it, every ring
+// shares it, and the first ring to go stops it.
+std::mutex pool_lock_;
+ComputePool::Impl *pool_ = nullptr;
 
 // One worker's VM, and the declared callbacks loaded into it. Each
 // worker builds this once at start, so a request never pays for a
@@ -915,9 +931,7 @@ void ComputePool::worker(Impl *impl, unsigned worker_number)
                 struct io_uring_sqe *began = nullptr;
                 while ((began = io_uring_get_sqe(ring)) == nullptr)
                     io_uring_submit(ring);
-                io_uring_prep_msg_ring(
-                    began, impl->home->ring_fd, 0,
-                    slot.started, 0);
+                io_uring_prep_msg_ring(began, slot.home_fd, 0, slot.started, 0);
                 io_uring_sqe_set_data64(began, kSent);
                 io_uring_submit(ring);
             }
@@ -944,8 +958,9 @@ void ComputePool::worker(Impl *impl, unsigned worker_number)
             // The name of the answer is read before the handover, because the
             // handover is the last thing this thread does with the slot.
             const uint64_t answer_name = slot.answer;
+            const int answer_fd = slot.home_fd;
             WM_HANDOVER_SEND(&slot);
-            io_uring_prep_msg_ring(sqe, impl->home->ring_fd, 0, answer_name, 0);
+            io_uring_prep_msg_ring(sqe, answer_fd, 0, answer_name, 0);
             io_uring_sqe_set_data64(sqe, kSent);
             answers++;
         }
@@ -963,15 +978,26 @@ void ComputePool::worker(Impl *impl, unsigned worker_number)
 // Ready, or a reason. A pool that cannot be built is a startup refusal,
 // not a degraded mode: the alternative is hashing a password on the
 // reactor's core, which is worse than not starting.
-const char *ComputePool::start(unsigned workers, unsigned depth, struct io_uring *home)
+const char *ComputePool::start(unsigned workers, unsigned depth)
 {
+    const std::lock_guard<std::mutex> hold(pool_lock_);
     if (impl_ != nullptr)
-        return "the pool is already up";
-    if (workers == 0 || home == nullptr)
-        return "a pool needs a worker and a ring to answer to";
+        return nullptr;
+    if (pool_ != nullptr) {
+        impl_ = pool_;
+        return nullptr;
+    }
+    if (workers == 0)
+        return "a pool needs a worker";
 
     auto *impl = new Impl();
-    impl->home = home;
+    {
+        const int status = io_uring_queue_init(8, &impl->control, 0);
+        if (status < 0) {
+            delete impl;
+            return std::strerror(-status);
+        }
+    }
     impl->rings.resize(workers);
     impl->slots.resize(static_cast<size_t>(workers) * depth);
     // An atomic is not copyable, so these two are sized once and never
@@ -993,6 +1019,7 @@ const char *ComputePool::start(unsigned workers, unsigned depth, struct io_uring
         if (status < 0) {
             for (unsigned j = 0; j < i; j++)
                 io_uring_queue_exit(&impl->rings[j]);
+            io_uring_queue_exit(&impl->control);
             delete impl;
             return std::strerror(-status);
         }
@@ -1006,6 +1033,7 @@ const char *ComputePool::start(unsigned workers, unsigned depth, struct io_uring
     }
     impl->up = true;
     impl_ = impl;
+    pool_ = impl;
     return nullptr;
 }
 
@@ -1018,11 +1046,18 @@ void ComputePool::stop()
     if (impl_ == nullptr)
         return;
     Impl *impl = impl_;
+    impl_ = nullptr;
+    {
+        const std::lock_guard<std::mutex> hold(pool_lock_);
+        if (pool_ != impl)
+            return;
+        pool_ = nullptr;
+    }
     std::vector<bool> told(impl->rings.size(), false);
     for (size_t i = 0; i < impl->rings.size(); i++) {
         struct io_uring_sqe *sqe = nullptr;
-        while ((sqe = io_uring_get_sqe(impl->home)) == nullptr) {
-            if (io_uring_submit(impl->home) < 0)
+        while ((sqe = io_uring_get_sqe(&impl->control)) == nullptr) {
+            if (io_uring_submit(&impl->control) < 0)
                 break;
         }
         if (sqe == nullptr) {
@@ -1032,7 +1067,7 @@ void ComputePool::stop()
         }
         io_uring_prep_msg_ring(sqe, impl->rings[i].ring_fd, 0, kStopJob, 0);
         io_uring_sqe_set_data64(sqe, 0);
-        const int status = io_uring_submit(impl->home);
+        const int status = io_uring_submit(&impl->control);
         if (status < 0) {
             std::fprintf(stderr, "webmachine: compute worker %zu cannot be told to stop: %s\n", i,
                          std::strerror(-status));
@@ -1054,14 +1089,15 @@ void ComputePool::stop()
         if (told[i])
             io_uring_queue_exit(&impl->rings[i]);
     }
+    io_uring_queue_exit(&impl->control);
     delete impl;
-    impl_ = nullptr;
 }
 
 double ComputePool::started(unsigned slot, uint16_t gen)
 {
     if (impl_ == nullptr || slot >= impl_->slots.size())
         return 0.0;
+    const std::lock_guard<std::mutex> hold(impl_->slots_lock);
     const Slot &s = impl_->slots[slot];
     if (!s.busy || s.gen != gen)
         return 0.0;
@@ -1072,6 +1108,7 @@ bool ComputePool::slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *gene
 {
     if (impl_ == nullptr)
         return false;
+    const std::lock_guard<std::mutex> hold(impl_->slots_lock);
     for (size_t i = 0; i < impl_->slots.size(); i++) {
         const Slot &s = impl_->slots[i];
         if (s.busy && s.answer == answer) {
@@ -1087,6 +1124,7 @@ void ComputePool::name_deadline(unsigned slot, uint16_t gen, uint64_t timeout_ta
 {
     if (impl_ == nullptr || slot >= impl_->slots.size())
         return;
+    const std::lock_guard<std::mutex> hold(impl_->slots_lock);
     Slot &s = impl_->slots[slot];
     if (!s.busy || s.gen != gen)
         return;
@@ -1097,6 +1135,7 @@ void ComputePool::interrupt(unsigned slot, uint16_t gen)
 {
     if (impl_ == nullptr || slot >= impl_->slots.size())
         return;
+    const std::lock_guard<std::mutex> hold(impl_->slots_lock);
     Slot &s = impl_->slots[slot];
     // The job answered, or the slot holds a later job: this timer is not
     // its. And a job still queued behind another is not interrupted
@@ -1115,12 +1154,13 @@ void ComputePool::interrupt(unsigned slot, uint16_t gen)
     mrb_vm_interrupt(mrb);
 }
 
-bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
-                         uint64_t answer, uint64_t started)
+bool ComputePool::submit(mrb_state *mrb, struct io_uring *asker, unsigned code_id,
+                         std::string_view arg, double deadline, uint64_t answer, uint64_t started)
 {
     if (impl_ == nullptr)
         return false;
     Impl *impl = impl_;
+    const std::lock_guard<std::mutex> hold(impl->slots_lock);
     // A free slot, or no. Full means every worker is busy with a full
     // queue behind it, and the caller decides what that means - this
     // layer does not invent a refusal for it.
@@ -1136,6 +1176,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
 
     Slot &slot = impl->slots[slot_index];
     impl->asked_stop[slot_index].store(false, std::memory_order_relaxed);
+    slot.home_fd = asker->ring_fd;
     slot.code_id = code_id;
     slot.deadline = deadline;
     slot.arg.assign(arg.data(), arg.size());
@@ -1150,7 +1191,7 @@ bool ComputePool::submit(mrb_state *mrb, unsigned code_id, std::string_view arg,
     const unsigned target_ring = impl->next++ % static_cast<unsigned>(impl->rings.size());
     struct io_uring_sqe *sqe = nullptr;
     try {
-        sqe = sqe_or_raise(mrb, impl->home);
+        sqe = sqe_or_raise(mrb, asker);
     } catch (...) {
         slot.busy = false;
         throw;
@@ -1172,6 +1213,7 @@ bool ComputePool::take(uint64_t answer, ComputeAnswer *out_ask)
 {
     if (impl_ == nullptr)
         return false;
+    const std::lock_guard<std::mutex> hold(impl_->slots_lock);
     for (Slot &s : impl_->slots) {
         if (s.busy && s.answer == answer) {
             WM_HANDOVER_TAKE(&s);

@@ -881,24 +881,6 @@ void server_build_ring_config(mrb_state *mrb)
     // because the acceptor has to know their rings before it takes the
     // first peer.
     if (opts_.threads > 1) {
-        // Every answering thread loads the application into its own VM, so
-        // a route with a callback runs there. What no thread can answer yet
-        // is a compute task or a watcher: the pool answers to one ring.
-        for (const Http1::AppInput &input : inputs) {
-            bool needs_pool = false;
-            for (size_t r = 0; r < input.nroutes && !needs_pool; r++) {
-                const Resource *resource = *std::next(input.resources, static_cast<std::ptrdiff_t>(r));
-                needs_pool = resource != nullptr &&
-                             ((resource->compute | resource->watch) != 0 ||
-                              (resource->value_jobs | resource->value_watch) != 0);
-            }
-            if (needs_pool) {
-                mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                           "--threads=%d cannot answer a compute task or a watcher: the pool "
-                           "answers to one ring",
-                           static_cast<int>(opts_.threads));
-            }
-        }
         // The rings are locked memory and the limit is this process's. It
         // opens one per answering thread and one that accepts, and they
         // share three quarters of that limit.

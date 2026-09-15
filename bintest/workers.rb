@@ -147,38 +147,33 @@ assert('threads: a route with a callback is answered in the thread\'s own VM') d
   end
 end
 
-assert('threads: a compute task refuses the thread shape by name') do
-  mrb = wm_compile(<<~'RUBY', 'wm-threads-refuse')
+assert('threads: a compute task is answered to the thread that asked') do
+  src = <<~'RUBY'
     class MyResource < Webmachine::Resource
       compute :is_authorized?
       def is_authorized?(_h)
         Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
       end
       def to_html
-        'x'
+        'answered by a worker'
       end
     end
 
     def main
       Webmachine::Application.new do |app|
-        app.configure do |conf|
-          conf.port = 8080
-        end
         app.routes do |route|
           route.add ['x'], MyResource
         end
       end
     end
   RUBY
-  out = "/tmp/wm-threads-refuse-#{$$}.log"
-  pid = spawn(WM_BIN, "--app=#{mrb.path}", '--threads=2', out: File::NULL, err: out)
-  Process.wait(pid)
-  said = File.read(out)
-  assert_false $?.success?, said
-  assert_true said.include?('compute task or a watcher'), said
-ensure
-  File.unlink(out) rescue nil
-  mrb&.unlink
+  wm_server(src, '--threads=3', tag: 'wm-threads-compute') do |sock|
+    6.times do
+      head, body = w_ask(sock, '/x')
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal 'answered by a worker', body
+    end
+  end
 end
 
 # A TCP peer is handed to the thread its address names, so the acceptor

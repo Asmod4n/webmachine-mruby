@@ -2309,12 +2309,15 @@ class ComputePool
     ComputePool &operator=(const ComputePool &) = delete;
 
     // A pool that cannot be built refuses startup rather than falling back to the reactor's core.
-    const char *start(unsigned workers, unsigned depth, struct io_uring *home);
+    // One pool per process: the first ring to ask starts it, every later
+    // ring shares it, and the first ring to go stops it.
+    const char *start(unsigned workers, unsigned depth);
     void stop();
 
-    // False means every slot is taken. A full submission queue is a raise (sqe_or_raise).
-    bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
-                uint64_t answer, uint64_t started);
+    // False means every slot is taken. A full submission queue is a raise
+    // (sqe_or_raise). The answer goes to asker.
+    bool submit(mrb_state *mrb, struct io_uring *asker, unsigned code_id, std::string_view arg,
+                double deadline, uint64_t answer, uint64_t started);
     double started(unsigned slot, uint16_t generation);
     // mrb_vm_interrupt writes one word and reads none, so it is safe from
     // this thread.
