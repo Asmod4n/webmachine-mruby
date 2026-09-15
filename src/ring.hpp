@@ -1320,7 +1320,18 @@ template <class App> class Ring
 
     void ask_peer_name(uint32_t listener_index, uint32_t descriptor)
     {
-        auto ask = std::make_unique<PeerName>();
+        // Taken from the free list, or made once. The record goes back to
+        // the list in on_peer_name and is never freed while the ring runs:
+        // the release guard of handle() reads the op after on_peer_name
+        // returned.
+        std::unique_ptr<PeerName> ask;
+        if (peer_asks_free_.empty()) {
+            ask = std::make_unique<PeerName>();
+        } else {
+            ask = std::move(peer_asks_free_.back());
+            peer_asks_free_.pop_back();
+            *ask = PeerName{};
+        }
         ask->descriptor = descriptor;
         ask->listener_index = listener_index;
         ask->unix_peer = unix_listener_[listener_index];
@@ -1338,9 +1349,20 @@ template <class App> class Ring
         ask.release();
     }
 
+    // Puts the record back on the free list however on_peer_name ends.
+    struct PeerNameReturned {
+        Ring *ring;
+        std::unique_ptr<PeerName> *ask;
+        ~PeerNameReturned()
+        {
+            ring->peer_asks_free_.push_back(std::move(*ask));
+        }
+    };
+
     void on_peer_name(Op &op, struct io_uring_cqe *completion)
     {
         std::unique_ptr<PeerName> ask(reinterpret_cast<PeerName *>(&op));
+        const PeerNameReturned returned{this, &ask};
         uint32_t worker = nworkers_;
         if (completion->res < 0) {
             if (!peer_name_said_) {
@@ -2787,6 +2809,7 @@ template <class App> class Ring
     bool accept_stalled_[kMaxListeners] = {};
     bool table_full_said_ = false;
     bool peer_name_said_ = false;
+    std::vector<std::unique_ptr<PeerName>> peer_asks_free_;
     // A descriptor came free, so a stalled listener may be armed again.
     // The note is made where a raise cannot go and read where one can.
     bool accept_retry_owed_ = false;
