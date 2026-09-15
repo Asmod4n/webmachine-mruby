@@ -215,3 +215,43 @@ ensure
   FileUtils.rm_rf(root)
   File.unlink(err) rescue nil
 end
+
+# A watcher polls on the ring of the thread that answers, so a run that
+# waits on a descriptor waits there and resumes there.
+assert('threads: a watcher waits and resumes on the thread that answers') do
+  src = <<~'RUBY'
+    class Quiet < Webmachine::Resource
+      def self.to_html
+        r, w = IO.pipe
+        lines = []
+        begin
+          waits = 0
+          patient = Webmachine::Watcher.new(r, :r, timeout: 50.ms) do |_revents, watcher|
+            waits += 1
+            watcher.abort if waits == 2
+          end
+          lines << "again:#{patient.deadline_passed}"
+          lines << "over:#{patient.deadline_passed}"
+          lines << "aborted:#{patient.aborted?}"
+        ensure
+          r.close
+          w.close
+        end
+        lines.join("\n")
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes { |route| route.add [], Quiet }
+      end
+    end
+  RUBY
+  wm_server(src, '--threads=3', tag: 'wm-threads-watch') do |sock|
+    6.times do
+      head, body = w_ask(sock, '/')
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal "again:true\nover:false\naborted:true", body
+    end
+  end
+end
