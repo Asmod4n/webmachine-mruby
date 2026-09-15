@@ -827,11 +827,24 @@ void server_build_ring_config(mrb_state *mrb)
     // because the acceptor has to know their rings before it takes the
     // first peer.
     if (opts_.threads > 1) {
-        if (!standalone) {
-            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                       "--threads=%d answers files only. A thread that answers from an "
-                       "application needs a VM of its own, and this build gives it none",
-                       static_cast<int>(opts_.threads));
+        // A konst route is answered from the flow table and the head, and
+        // no VM runs for it. Only a route with a callback, a WebSocket or an
+        // event stream needs the application's VM, which the threads do
+        // not have.
+        for (const Http1::AppInput &input : inputs) {
+            bool needs_vm = input.ws_nroutes != 0 || input.sse_nroutes != 0;
+            for (size_t r = 0; r < input.nroutes && !needs_vm; r++) {
+                const Resource *resource = *std::next(input.resources, static_cast<std::ptrdiff_t>(r));
+                needs_vm = resource != nullptr &&
+                           (resource->dynamic != 0 || resource->dynamic_body);
+            }
+            if (needs_vm) {
+                mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
+                           "--threads=%d answers files and konst routes only. A route with a "
+                           "callback, a WebSocket or an event stream needs the application's "
+                           "VM, and a thread has none",
+                           static_cast<int>(opts_.threads));
+            }
         }
         // The rings are locked memory and the limit is this process's. It
         // opens one per answering thread and one that accepts, and they

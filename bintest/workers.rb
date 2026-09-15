@@ -95,10 +95,35 @@ end
 # test. The case below still proves that every answering thread answers
 # what the acceptor sends it.
 
-assert('threads: an application refuses the thread shape by name') do
-  mrb = wm_compile(<<~'RUBY', 'wm-threads-refuse')
+assert('threads: a konst application is answered by the threads') do
+  src = <<~'RUBY'
     class MyResource < Webmachine::Resource
       def self.to_html
+        'konst page'
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['x'], MyResource
+        end
+      end
+    end
+  RUBY
+  wm_server(src, '--threads=2', tag: 'wm-threads-konst') do |sock|
+    6.times do
+      head, body = w_ask(sock, '/x')
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal 'konst page', body
+    end
+  end
+end
+
+assert('threads: a route with a callback refuses the thread shape by name') do
+  mrb = wm_compile(<<~'RUBY', 'wm-threads-refuse')
+    class MyResource < Webmachine::Resource
+      def to_html
         'x'
       end
     end
@@ -119,7 +144,7 @@ assert('threads: an application refuses the thread shape by name') do
   Process.wait(pid)
   said = File.read(out)
   assert_false $?.success?, said
-  assert_true said.include?('answers files only'), said
+  assert_true said.include?('konst routes only'), said
 ensure
   File.unlink(out) rescue nil
   mrb&.unlink
