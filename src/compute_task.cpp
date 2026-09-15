@@ -134,9 +134,12 @@ constexpr uint64_t kSent = ~static_cast<uint64_t>(1);
 struct Registry {
     std::mutex mtx;
     std::vector<ComputeTaskCode> codes;
-    // Which irep is already interned. The same code at the same place
-    // carries the same irep, so this is what makes "dump once" true.
+    // Which irep is already interned, by its address: the same code in the
+    // same VM carries the same irep, so a VM dumps a block once. And by
+    // its bytes: every VM that loads the application carries the same
+    // blocks at other addresses, and the same bytes are the same job.
     std::unordered_map<const void *, unsigned> by_irep;
+    std::unordered_map<std::string, unsigned> by_bytes;
 };
 
 Registry &registry_of_this_vm()
@@ -276,6 +279,12 @@ bool worker_build_register(mrb_state *mrb, std::string key_name, mrb_value block
     std::lock_guard<std::mutex> hold(worker_builds_mutex());
     if (builds_closed_)
         return false;
+    // Every VM that loads the application sets the same keys. One build
+    // per key, the first one: a worker builds each value once.
+    for (const WorkerBuild &have : worker_builds_list()) {
+        if (have.key == key_name)
+            return true;
+    }
     // A failed dump leaves its exception in place, and registry_set raises it.
     const mrb_value bytes = mrb_proc_to_irep(mrb, mrb_proc_ptr(block));
     if (mrb->exc != nullptr || !mrb_string_p(bytes))
@@ -508,8 +517,15 @@ unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime
         return kComputeTaskNoCode;
     code.irep.assign(std::string_view(RSTRING_PTR(bytes), static_cast<size_t>(RSTRING_LEN(bytes))));
     code.max_runtime = max_runtime;
+    const auto same_bytes = reg.by_bytes.find(code.irep);
+    if (same_bytes != reg.by_bytes.end()) {
+        mrb_irep_incref(mrb, const_cast<struct mrb_irep *>(proc->body.irep));
+        reg.by_irep.emplace(key_name, same_bytes->second);
+        return same_bytes->second;
+    }
+    const unsigned task_id = static_cast<unsigned>(reg.codes.size());
+    reg.by_bytes.emplace(code.irep, task_id);
     reg.codes.push_back(std::move(code));
-    const unsigned task_id = static_cast<unsigned>(reg.codes.size() - 1);
     // The key is the address of the irep, and the registry holds it for the
     // life of the process. So the irep has to live that long as well: a
     // freed one would let the next irep land on the same address and answer
