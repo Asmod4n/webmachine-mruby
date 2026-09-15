@@ -192,6 +192,9 @@ int spawn_logd(mrb_state *mrb, const LogdSpawn &logd_spawn)
     }
     char max_bytes_text[24];
     std::snprintf(max_bytes_text, sizeof max_bytes_text, "%llu", max_bytes);
+    // The only fork in this tree. A ring cannot be forked and a thread
+    // with its own ring and its own VM answers everything an application
+    // can declare, so nothing else splits this process.
     const pid_t child = ::fork();
     if (child < 0) {
         const int saved_errno = errno;
