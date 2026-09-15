@@ -166,7 +166,10 @@ enum : uint8_t {
     // RFC 9110 6.4: one write of a request body into its spill file. The
     // tag is the connection's, and one write of this kind flies per
     // connection, so no second field is needed to say which body it is.
-    kSpillWrite = 25
+    kSpillWrite = 25,
+    // The peer's address, asked of a socket the acceptor took, so the
+    // peer lands on the answering thread its address names.
+    kPeerName = 26
 };
 
 // #113: user_data is the address of the record that armed the

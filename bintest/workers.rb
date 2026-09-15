@@ -149,3 +149,42 @@ ensure
   File.unlink(out) rescue nil
   mrb&.unlink
 end
+
+# A TCP peer is handed to the thread its address names, so the acceptor
+# asks the kernel for the peer's address first. This case proves that the
+# ask completes and every answer over TCP is a whole one.
+assert('threads: a TCP peer is answered after its address was read') do
+  root = "/tmp/wm-threads-tcp-#{$$}"
+  FileUtils.mkdir_p(root)
+  File.binwrite(File.join(root, 'index.html'), "tcp thread page\n")
+  port = 20_000 + ($$ % 20_000)
+  err = "/tmp/wm-threads-tcp-stderr-#{$$}.log"
+  pid = spawn(WM_BIN, "--docroot=#{root}", "--port=#{port}", '--threads=3',
+              out: File::NULL, err: err)
+  up = false
+  100.times do
+    begin
+      TCPSocket.new('127.0.0.1', port).close
+      up = true
+      break
+    rescue SystemCallError
+      sleep 0.05
+    end
+  end
+  assert_true up, File.read(err)
+  12.times do
+    s = TCPSocket.new('127.0.0.1', port)
+    s.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    head, body = wm_read(s)
+    s.close
+    assert_true head.start_with?('HTTP/1.1 200 OK'), head
+    assert_equal "tcp thread page\n", body
+  end
+  said = File.read(err)
+  assert_false said.include?('peer address cannot be read'), said
+ensure
+  Process.kill('TERM', pid) rescue nil
+  Process.wait(pid) rescue nil
+  FileUtils.rm_rf(root)
+  File.unlink(err) rescue nil
+end
