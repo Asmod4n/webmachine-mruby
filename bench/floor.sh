@@ -493,6 +493,20 @@ OUT=$(mktemp)
   done
   CLI=${CLIS[0]}
   for p in "${CLIS[@]}"; do wait "$p" 2>/dev/null; done
+  # A client that ended without its responses= line measured nothing, and
+  # a sum over the others would say the machine did what those few did.
+  # Every such client is shown and the run ends.
+  n=0
+  failed=0
+  while [ "$n" -lt "$CLIENTS" ]; do
+    if ! grep -q '^responses=' "$WORK/cli.$n"; then
+      echo "client $n ended without a result:" >&2
+      cat "$WORK/cli.$n" >&2
+      failed=1
+    fi
+    n=$((n + 1))
+  done
+  [ "$failed" = 0 ] || exit 1
   # One responses= line out of N, with the counts and the rates added.
   # bad= is summed as well: a client that failed must not hide behind
   # one that did not.
