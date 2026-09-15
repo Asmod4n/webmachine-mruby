@@ -73,3 +73,33 @@ bin=/tmp/claude-0/wm-rev1-v3/mruby/build/host/bin/webmachine-server responses=85
 harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
 build: /tmp/claude-0/wm-rev2-v3/mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
 bin=/tmp/claude-0/wm-rev2-v3/mruby/build/host/bin/webmachine-server responses=788368 instructions_per_response=2058
+
+==== 2026-09-15T17:10Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/A cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/A responses=668224 instructions_per_response=2043
+
+==== 2026-09-15T17:10Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/B cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/B responses=662336 instructions_per_response=2043
+
+==== 2026-09-15T17:10Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/C cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/C responses=672368 instructions_per_response=2043
+
+==== 2026-09-15T17:11Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/A cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/A responses=163648 instructions_per_response=7332
+
+==== 2026-09-15T17:11Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/B cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/B responses=91600 instructions_per_response=11596
+
+==== 2026-09-15T17:11Z repo=49d42cd ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
+build: /tmp/claude-0/arms/C cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/C responses=106720 instructions_per_response=10132
