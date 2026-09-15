@@ -720,55 +720,47 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     const bool end_stream = headers.end_stream;
     H2State &h2_state = *conn.h2;
 
+    // One check for the buffer, one per field for the window it lends,
+    // one per field for what the decoder wrote into it. Nothing inside
+    // a field is checked again.
     if (h2_state.hdrbuf.size() != kH2HdrBufSize)
         h2_state.hdrbuf.resize(kH2HdrBufSize);
-    const std::string_view whole(h2_state.hdrbuf);
     std::vector<H2DecodedField> &fields = h2_state.decoded_fields;
     fields.clear();
     size_t used = 0;
-    // The block as the decoder reads it. substr throws if the decoder
-    // ever claims to have read past its end.
-    std::string_view left(reinterpret_cast<const char *>(headers.block.data()),
-                          headers.block.size());
-    while (!left.empty()) {
+    const unsigned char *cursor = headers.block.data();
+    const unsigned char *const block_end =
+        std::next(cursor, static_cast<std::ptrdiff_t>(headers.block.size()));
+    while (cursor != block_end) {
         if (fields.size() == kH2MaxFields)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
+        // kH2HdrBufSize is kH2FragBudget + kH2FieldWindow, so a window at
+        // any used up to the budget lies inside hdrbuf whole.
         if (used > kH2FragBudget)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
-        // The window this decode may write. substr throws if the cursor is
-        // past hdrbuf; the budget check above keeps the window whole.
-        const std::string_view lent = whole.substr(used, kH2FieldWindow);
-        if (lent.size() != kH2FieldWindow)
-            throw std::length_error("h2: the decode window ran past hdrbuf");
+        char *const window = std::next(h2_state.hdrbuf.data(), static_cast<std::ptrdiff_t>(used));
         lsxpack_header_t hpack_field;
-        lsxpack_header_prepare_decode(&hpack_field,
-                                      std::next(h2_state.hdrbuf.data(),
-                                                static_cast<std::ptrdiff_t>(used)),
-                                      0, kH2FieldWindow);
-        const unsigned char *cursor = reinterpret_cast<const unsigned char *>(left.data());
-        const unsigned char *const block_end =
-            std::next(cursor, static_cast<std::ptrdiff_t>(left.size()));
+        lsxpack_header_prepare_decode(&hpack_field, window, 0, kH2FieldWindow);
         if (lshpack_dec_decode(&h2_state.dec, &cursor, block_end, &hpack_field) != 0) {
             return h2_error(conn, kH2CompressionError, sink);
         }
-        left = left.substr(static_cast<size_t>(
-            std::distance(reinterpret_cast<const unsigned char *>(left.data()), cursor)));
-        // Where the decoder says the name and the value lie, held to the
-        // window it was lent: substr throws for an offset past it, and a
-        // length past it comes back short, which the test below refuses.
-        const std::string_view name = lent.substr(hpack_field.name_offset, hpack_field.name_len);
-        const std::string_view value = lent.substr(hpack_field.val_offset, hpack_field.val_len);
-        if (name.size() != hpack_field.name_len || value.size() != hpack_field.val_len)
-            throw std::length_error("h2: ls-hpack placed a field past the window it was lent");
-        fields.push_back({name, value, hpack_field.hpack_index});
         // lshpack.h: one decode writes name_len + val_len +
-        // lshpack_dec_extra_bytes(dec) bytes from the start of the lent
-        // window - the extra ones are the HTTP/1.x CRLF it appends. substr
-        // throws when that sum is past the window's end.
-        const std::string_view after =
-            lent.substr(static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
-                        lshpack_dec_extra_bytes(&h2_state.dec));
-        used = static_cast<size_t>(std::distance(whole.data(), after.data()));
+        // lshpack_dec_extra_bytes(dec) octets from the start of the window,
+        // and it places the name and the value inside that run. The one
+        // check per field is that it did.
+        const size_t footprint = static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
+                                 lshpack_dec_extra_bytes(&h2_state.dec);
+        if (footprint > kH2FieldWindow ||
+            static_cast<size_t>(hpack_field.name_offset) + hpack_field.name_len > footprint ||
+            static_cast<size_t>(hpack_field.val_offset) + hpack_field.val_len > footprint)
+            throw std::length_error("h2: ls-hpack placed a field past the window it was lent");
+        fields.push_back(
+            {std::string_view(std::next(window, hpack_field.name_offset), hpack_field.name_len),
+             std::string_view(std::next(window, hpack_field.val_offset), hpack_field.val_len),
+             hpack_field.hpack_index});
+        used = static_cast<size_t>(
+            std::distance(h2_state.hdrbuf.data(),
+                          std::next(window, static_cast<std::ptrdiff_t>(footprint))));
     }
     h2_state.frag.clear();
 
