@@ -986,7 +986,11 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         constexpr std::string_view kHost = "host";
         *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
             kHost.data(), kHost.size(), authority_val, authority_vlen};
-        http::header_switch({kHost, {authority_val, authority_vlen}}, {facts, vals, name_length});
+        // What header_switch does for a host field, with no name compare:
+        // the name is this literal.
+        vals.host = authority_val;
+        vals.host_len = authority_vlen;
+        vals.named.note(http::NamedField::kHost, name_length);
         name_length++;
     }
 
@@ -1080,8 +1084,9 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // Only a bound resource reads a request view: a konst route answers
         // from the flow table and the head alone, so nothing is filled for it.
         const bool bound = block != nullptr && block->bound;
-        ReqView result;
+        std::optional<ReqView> view;
         if (bound) {
+            ReqView &result = view.emplace();
             result.tls = apps_[conn.listener].tls;
             result.request_target = path_val;
             result.request_target_len = path_vlen;
@@ -1100,7 +1105,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         H2Request q{stream_id,
                     facts,
                     &vals,
-                    bound ? &result : nullptr,
+                    bound ? &*view : nullptr,
                     {path_val, path_vlen},
                     route,
                     head_only,
