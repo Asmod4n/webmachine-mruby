@@ -1519,7 +1519,34 @@ constexpr bool star_value(const char *value, size_t count)
 size_t path_only(const char *bytes, size_t count);
 
 // RFC 9110 9.1: methods are case-sensitive tokens.
-flow::Method parse_method(const char *method, size_t count);
+inline flow::Method parse_method(const char *method, size_t count)
+{
+    switch (count) {
+        case 3:
+            if (std::memcmp(method, "GET", 3) == 0)
+                return flow::Method::kGet;
+            if (std::memcmp(method, "PUT", 3) == 0)
+                return flow::Method::kPut;
+            break;
+        case 4:
+            if (std::memcmp(method, "HEAD", 4) == 0)
+                return flow::Method::kHead;
+            if (std::memcmp(method, "POST", 4) == 0)
+                return flow::Method::kPost;
+            break;
+        case 6:
+            if (std::memcmp(method, "DELETE", 6) == 0)
+                return flow::Method::kDelete;
+            break;
+        case 7:
+            if (std::memcmp(method, "OPTIONS", 7) == 0)
+                return flow::Method::kOptions;
+            break;
+        default:
+            break;
+    }
+    return flow::Method::kOther;
+}
 
 // RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
 // and every writer goes through here.

@@ -725,14 +725,14 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // a field is checked again.
     if (h2_state.hdrbuf.size() != kH2HdrBufSize)
         h2_state.hdrbuf.resize(kH2HdrBufSize);
-    std::vector<H2DecodedField> &fields = h2_state.decoded_fields;
-    fields.clear();
+    std::array<H2DecodedField, kH2MaxFields> &fields = h2_state.decoded_fields;
+    size_t count = 0;
     size_t used = 0;
     const unsigned char *cursor = headers.block.data();
     const unsigned char *const block_end =
         std::next(cursor, static_cast<std::ptrdiff_t>(headers.block.size()));
     while (cursor != block_end) {
-        if (fields.size() == kH2MaxFields)
+        if (count == kH2MaxFields)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
         // kH2HdrBufSize is kH2FragBudget + kH2FieldWindow, so a window at
         // any used up to the budget lies inside hdrbuf whole.
@@ -746,22 +746,19 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         }
         // lshpack.h: one decode writes name_len + val_len +
         // lshpack_dec_extra_bytes(dec) octets from the start of the window,
-        // and it places the name and the value inside that run. The one
-        // check per field is that it did.
+        // and it answers non-zero above when they do not fit. The check at
+        // the top of the loop covers the next window.
         const size_t footprint = static_cast<size_t>(hpack_field.name_len) + hpack_field.val_len +
                                  lshpack_dec_extra_bytes(&h2_state.dec);
-        if (footprint > kH2FieldWindow ||
-            static_cast<size_t>(hpack_field.name_offset) + hpack_field.name_len > footprint ||
-            static_cast<size_t>(hpack_field.val_offset) + hpack_field.val_len > footprint)
-            throw std::length_error("h2: ls-hpack placed a field past the window it was lent");
-        fields.push_back(
-            {std::string_view(std::next(window, hpack_field.name_offset), hpack_field.name_len),
-             std::string_view(std::next(window, hpack_field.val_offset), hpack_field.val_len),
-             hpack_field.hpack_index});
-        used = static_cast<size_t>(
-            std::distance(h2_state.hdrbuf.data(),
-                          std::next(window, static_cast<std::ptrdiff_t>(footprint))));
+        *std::next(fields.begin(), static_cast<std::ptrdiff_t>(count)) = {
+            std::string_view(std::next(window, hpack_field.name_offset), hpack_field.name_len),
+            std::string_view(std::next(window, hpack_field.val_offset), hpack_field.val_len),
+            hpack_field.hpack_index};
+        count++;
+        used += footprint;
     }
+    h2_state.decoded_count = count;
+    const std::span<const H2DecodedField> decoded(fields.data(), count);
     h2_state.frag.clear();
 
     H2Stream *existing = h2_state.find(stream_id);
@@ -783,7 +780,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // trailer could spell anything at all.
         // RFC 9113 8.1.1: a malformed request is a stream error. The stream
         // ends with PROTOCOL_ERROR. The connection stays open.
-        for (const H2DecodedField &field : fields) {
+        for (const H2DecodedField &field : decoded) {
             if (!h2_field_ok(field.name, field.value, field.known != LSHPACK_HDR_UNKNOWN) ||
                 field.name.starts_with(':') ||
                 !h2_trailer_name_ok(field.name.data(), field.name.size())) {
@@ -831,7 +828,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     size_t protocol_vlen = 0;
     const char *method_val = nullptr;
     size_t method_vlen = 0;
-    for (const H2DecodedField &field : fields) {
+    for (const H2DecodedField &field : decoded) {
         if (!accepted)
             break;
         const char *const name = field.name.data();
@@ -948,7 +945,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         // kH2MaxFields keeps no slot, and SIZE_MAX says so.
         size_t index = SIZE_MAX;
         if (name_length < kH2MaxFields) {
-            header_vector.at(name_length) = {name, nlen, field_value, vlen};
+            *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
+                name, nlen, field_value, vlen};
             index = name_length;
             name_length++;
         }
@@ -986,8 +984,8 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     if (authority_val != nullptr && !vals.named.carries(http::NamedField::kHost) &&
         name_length < kH2MaxFields) {
         constexpr std::string_view kHost = "host";
-        header_vector.at(name_length) = {kHost.data(), kHost.size(), authority_val,
-                                         authority_vlen};
+        *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
+            kHost.data(), kHost.size(), authority_val, authority_vlen};
         http::header_switch({kHost, {authority_val, authority_vlen}}, {facts, vals, name_length});
         name_length++;
     }
@@ -1894,11 +1892,14 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
     (void)facts;
     H2State &h2_state = *conn.h2;
     H2Answer wire;
-    H2Block dynblk;
+    // Built only by the arm that needs it: a std::string per answer that
+    // the straight line never reads is a construction and a destruction
+    // for nothing.
+    std::optional<H2Block> dynblk;
     // #210 / #146: an error carries the same page here that h1 spells. It
     // outlives the framing below, because a body the window cannot finish
     // is copied onto the stream from this buffer.
-    H2ErrorPage err_page;
+    std::optional<H2ErrorPage> err_page;
     // #210 response.error_asset: the run named an entry of the error
     // assets, and this stream carries it the way the asset tier's own
     // streams carry one - Content::Src::kAsset, parked and framed by
@@ -1944,7 +1945,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
             else if (bytes.have_body || baked)
                 ctype = bytes.b->konst.content_type;
         }
-        h2_build_block(dynblk, {bytes.status, ctype.empty() ? nullptr : &ctype});
+        h2_build_block(dynblk.emplace(), {bytes.status, ctype.empty() ? nullptr : &ctype});
         // A p.status that sends no body cleared (*p.body) above, and a lend it does
         // not carry is handed back below - the same order h1 spells it in.
         const bool use_lent = bytes.lent_have && !bodyless && bytes.have_body;
@@ -1959,7 +1960,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
                         ? asset_len
                         : (use_lent ? bytes.lent_len
                                     : (baked ? bytes.b->konst.body.size() : (*bytes.body).size()));
-        wire.blk = &dynblk;
+        wire.blk = &*dynblk;
     } else if (bytes.have_body && bytes.status == 200) {
         wire.body =
             run_asset != nullptr ? nullptr : (bytes.lent_have ? bytes.lent : (*bytes.body).data());
@@ -2011,7 +2012,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
             field.backtrace_len = error_facts.backtrace_len;
         }
         const H2ErrorAsk request_ask = {500, field, vals, bytes.b};
-        if (!h2_error_page(request_ask, err_page, wire)) {
+        if (!h2_error_page(request_ask, err_page.emplace(), wire)) {
             wire.blk = &h2_store_[(*bytes.idx)[500]];
         }
     } else if (bytes.status == 200) {
@@ -2024,7 +2025,7 @@ bool Http1::h2_frame(Conn &conn, const H2Request &request, std::string &sink, H2
         if (bytes.status >= 400) {
             ErrorPages::Fields field;
             const H2ErrorAsk request_ask = {bytes.status, field, vals, bytes.b};
-            spelled = h2_error_page(request_ask, err_page, wire);
+            spelled = h2_error_page(request_ask, err_page.emplace(), wire);
         }
         if (!spelled)
             wire.blk = &h2_store_[(*bytes.idx)[bytes.status]];

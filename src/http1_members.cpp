@@ -121,14 +121,6 @@ H2State::~H2State()
     lshpack_dec_cleanup(&dec);
 }
 
-H2Stream *H2State::find(uint32_t stream_id)
-{
-    for (H2Stream &st : streams)
-        if (st.id == stream_id)
-            return &st;
-    return nullptr;
-}
-
 H2Stream &H2State::open(uint32_t stream_id)
 {
     if (H2Stream *st = find(stream_id))

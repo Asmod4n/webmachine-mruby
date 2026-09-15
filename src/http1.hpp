@@ -7,6 +7,7 @@
 
 #include "h2_wire.hpp"
 
+#include <optional>
 #include <picohttpparser.h>
 #include <slipstream_tmpfile.h>
 
@@ -431,6 +432,12 @@ struct H2Stream {
     bool streaming = false;
 };
 
+inline constexpr size_t kMaxHeaders = 64;
+static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
+// RFC 9113 8.1: how many fields one request may carry, head and trailer
+// section together: what h1 allows, and the pseudo-headers beside it.
+inline constexpr size_t kH2MaxFields = kMaxHeaders + 8;
+
 struct H2DecodedField {
     std::string_view name;
     std::string_view value;
@@ -472,9 +479,11 @@ struct H2State {
 
     std::string hdrbuf;
     // The fields of the block being dispatched, as views into hdrbuf.
-    // Kept on the connection so no request constructs kH2MaxFields
-    // empty views before it decodes its first one. Cleared per block.
-    std::vector<H2DecodedField> decoded_fields;
+    // Built once with the connection, so no request constructs
+    // kH2MaxFields empty views before it decodes its first one. The
+    // first decoded_count entries are the block's.
+    std::array<H2DecodedField, kH2MaxFields> decoded_fields;
+    size_t decoded_count = 0;
 
     std::vector<H2Stream> streams;
 
@@ -531,7 +540,13 @@ struct H2State {
     H2State &operator=(const H2State &) = delete;
 
     // RFC 9113 5.1: a stream in the table is open or half-closed.
-    H2Stream *find(uint32_t stream_id);
+    H2Stream *find(uint32_t stream_id)
+    {
+        for (H2Stream &st : streams)
+            if (st.id == stream_id)
+                return &st;
+        return nullptr;
+    }
     // RFC 9113 5.1: a stream the connection must remember.
     H2Stream &open(uint32_t stream_id);
     // RFC 9113 5.1: content leaves the stream when the stream does.
@@ -788,11 +803,6 @@ struct AssetEntry;
 // operator's own tree can never collide with it.
 inline constexpr char kErrorAssetsPrefix[] = "/error_assets/";
 inline constexpr size_t kErrorAssetsPrefixLen = sizeof(kErrorAssetsPrefix) - 1;
-inline constexpr size_t kMaxHeaders = 64;
-static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
-// RFC 9113 8.1: how many fields one request may carry, head and trailer
-// section together: what h1 allows, and the pseudo-headers beside it.
-inline constexpr size_t kH2MaxFields = kMaxHeaders + 8;
 inline constexpr size_t kCompressFloor = 1280;
 inline constexpr size_t kDeliverChunk = 64u * 1024;
 
@@ -2914,6 +2924,12 @@ struct Http1::H2Produced {
     std::string *body = nullptr;
     std::string *rhdrs = nullptr;
 };
+inline bool Http1::h2_can_stop(const Bundle *block)
+{
+    return block != nullptr && block->bound && block->res != nullptr &&
+           ((block->res->compute | block->res->watch) != 0 ||
+            (block->res->value_jobs | block->res->value_watch) != 0);
+}
 } // namespace webmachine
 
 #endif

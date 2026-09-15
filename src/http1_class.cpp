@@ -678,11 +678,4 @@ Http1::AnswerStep Http1::spell_answer(Round &round, Spelling spelling)
     return astep;
 }
 
-bool Http1::h2_can_stop(const Bundle *block)
-{
-    return block != nullptr && block->bound && block->res != nullptr &&
-           ((block->res->compute | block->res->watch) != 0 ||
-            (block->res->value_jobs | block->res->value_watch) != 0);
-}
-
 } // namespace webmachine

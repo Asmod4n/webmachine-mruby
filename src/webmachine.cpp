@@ -267,34 +267,6 @@ size_t path_only(const char *bytes, size_t count)
     return count;
 }
 
-flow::Method parse_method(const char *method, size_t count)
-{
-    switch (count) {
-        case 3:
-            if (std::memcmp(method, "GET", 3) == 0)
-                return flow::Method::kGet;
-            if (std::memcmp(method, "PUT", 3) == 0)
-                return flow::Method::kPut;
-            break;
-        case 4:
-            if (std::memcmp(method, "HEAD", 4) == 0)
-                return flow::Method::kHead;
-            if (std::memcmp(method, "POST", 4) == 0)
-                return flow::Method::kPost;
-            break;
-        case 6:
-            if (std::memcmp(method, "DELETE", 6) == 0)
-                return flow::Method::kDelete;
-            break;
-        case 7:
-            if (std::memcmp(method, "OPTIONS", 7) == 0)
-                return flow::Method::kOptions;
-            break;
-        default:
-            break;
-    }
-    return flow::Method::kOther;
-}
 
 std::string with_charset(const std::string &type)
 {

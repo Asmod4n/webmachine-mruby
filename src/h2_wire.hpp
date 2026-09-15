@@ -90,15 +90,50 @@ struct H2FrameHead {
     uint32_t stream;
 };
 
-void h2_put_frame_header(unsigned char *bytes, H2FrameHead facts);
 
-void h2_patch_stream_id(unsigned char *bytes, uint32_t stream);
 
 // RFC 9113 4.1: every field of a frame header is network order, and a
 // stream id carries a reserved bit that h2_u31 masks off.
-uint32_t h2_u24(const unsigned char *bytes);
-uint32_t h2_u32(const unsigned char *bytes);
-uint32_t h2_u31(const unsigned char *bytes);
+inline void h2_put_frame_header(unsigned char *bytes, H2FrameHead facts)
+{
+    const uint32_t len = facts.len;
+    const uint32_t stream = facts.stream;
+    bytes[0] = static_cast<unsigned char>(len >> 16);
+    bytes[1] = static_cast<unsigned char>(len >> 8);
+    bytes[2] = static_cast<unsigned char>(len);
+    bytes[3] = facts.type;
+    bytes[4] = facts.flags;
+    bytes[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
+    bytes[6] = static_cast<unsigned char>(stream >> 16);
+    bytes[7] = static_cast<unsigned char>(stream >> 8);
+    bytes[8] = static_cast<unsigned char>(stream);
+}
+
+inline void h2_patch_stream_id(unsigned char *bytes, uint32_t stream)
+{
+    bytes[5] = static_cast<unsigned char>((stream >> 24) & 0x7f);
+    bytes[6] = static_cast<unsigned char>(stream >> 16);
+    bytes[7] = static_cast<unsigned char>(stream >> 8);
+    bytes[8] = static_cast<unsigned char>(stream);
+}
+
+inline uint32_t h2_u24(const unsigned char *bytes)
+{
+    return (static_cast<uint32_t>(bytes[0]) << 16) | (static_cast<uint32_t>(bytes[1]) << 8) |
+           bytes[2];
+}
+
+inline uint32_t h2_u32(const unsigned char *bytes)
+{
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+           (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
+}
+
+inline uint32_t h2_u31(const unsigned char *bytes)
+{
+    return h2_u32(bytes) & 0x7fffffff;
+}
+
 uint16_t h2_u16(const unsigned char *bytes);
 
 // `at` is a reference: encoding a field advances it, and what the caller
