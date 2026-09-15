@@ -74,12 +74,6 @@ uint64_t raise_nofile(mrb_state *mrb);
 struct ListenerSpec {
     const char *unix_path = nullptr;
     int port = 0;
-    // A listening socket the caller already bound and listened on. The
-    // reactor then registers this descriptor instead of making one, which
-    // is how several worker processes answer one listener: the parent
-    // listens, forks, and every child registers the descriptor it
-    // inherited. Below zero means the reactor makes the socket itself.
-    int fd = -1;
 };
 
 // What the reactor needs and nothing else - already resolved, already
@@ -107,7 +101,7 @@ struct RingConfig {
     // How many rings share the locked-memory budget with this one. The
     // kernel charges a ring's memory to the user rather than to the
     // process, so this counts the rings of every process this server
-    // starts: N + 1 for --threads=N, N for --workers=N.
+    // starts: N + 1 for --threads=N.
     uint32_t rings_in_process = 1;
     // The VM to raise into when the reactor cannot go on. Required - init()
     // refuses without it, because the alternative is a library that ends

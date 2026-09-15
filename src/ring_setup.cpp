@@ -24,7 +24,7 @@ uint64_t raise_memlock(mrb_state *mrb)
 
 // The kernel charges a ring's memory to the user rather than to the
 // process, so every ring this server opens shares one RLIMIT_MEMLOCK:
-// threads + 1 for --threads, the child count for --workers.
+// threads + 1 for --threads.
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 {
     constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);

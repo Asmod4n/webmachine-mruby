@@ -311,19 +311,6 @@ template <class App> class Ring
     {
         const uint32_t slot = listener_base_ + listener_index;
         const bool is_unix = want.unix_path != nullptr;
-        if (want.fd >= 0) {
-            // The parent owns the path and the port, so an inherited
-            // descriptor is only registered.
-            const int inherited = want.fd;
-            const int rc = io_uring_register_files_update(&ring_, slot, &inherited, 1);
-            if (rc < 0) {
-                mrb_raisef(mrb_, E_WM_ERROR(mrb_), "listener %d: register the inherited socket: %s",
-                           static_cast<int>(listener_index), std::strerror(-rc));
-            }
-            unix_listener_[listener_index] = is_unix;
-            bound_port_[listener_index] = is_unix ? 0 : want.port;
-            return;
-        }
         struct sockaddr_un sun {
         };
         struct sockaddr_in sin {

@@ -2762,10 +2762,6 @@ struct ServerOptions {
     int stop_fd = -1;
     const char *app_path = nullptr;
     unsigned sq_entries = 0;
-    // Each child holds its own ring and its own VM, so
-    // IORING_SETUP_SINGLE_ISSUER still holds. A gem an application embeds
-    // never forks: the process is not ours to split.
-    int workers = 1;
     // IORING_OP_MSG_RING carries a registered descriptor between two rings of
     // one process and nothing else does, which is why this is threads and not
     // processes.

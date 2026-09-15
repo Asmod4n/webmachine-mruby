@@ -6,12 +6,9 @@
 #include <signal.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <poll.h>
-#include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <mruby/chrono.hpp>
 #include <mruby/class.h>
@@ -116,8 +113,6 @@ std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
-// --workers=N: the pids this process forked, and whether it is the one
-// that forked them. A supervisor holds no ring and answers no request.
 // --threads=N: one ring and one Http1 per thread, fed by the acceptor.
 struct AnswerThread {
     std::unique_ptr<Http1> app;
@@ -163,9 +158,6 @@ std::string answer_thread_why(mrb_state *mrb, mrb_value thrown)
 }
 std::vector<std::unique_ptr<AnswerThread>> answer_threads_;
 std::vector<int> answer_ring_fds_;
-std::vector<pid_t> worker_pids_;
-std::vector<std::string> supervisor_unix_paths_;
-bool supervisor_ = false;
 
 // One webmachine-logd over a socketpair, before the ring exists: which
 // log it is, the file it writes, the privacy the operator chose (none
@@ -344,203 +336,6 @@ void server_say_which_backend()
 
 namespace
 {
-// One listening socket, made with plain syscalls because it has to exist
-// before any ring does: a ring cannot be forked, so the descriptor the
-// children share must be older than every ring in the process.
-void listener_open(mrb_state *mrb, uint32_t listener_index, ListenerSpec &want, int backlog)
-{
-    const bool is_unix = want.unix_path != nullptr;
-    const int fd = ::socket(is_unix ? AF_UNIX : AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: socket: %s",
-                   static_cast<int>(listener_index), std::strerror(errno));
-    }
-    struct sockaddr_un sun {
-    };
-    struct sockaddr_in sin {
-    };
-    const struct sockaddr *sa = nullptr;
-    socklen_t salen = 0;
-    if (is_unix) {
-        sun.sun_family = AF_UNIX;
-        const size_t payload_length = std::strlen(want.unix_path);
-        if (payload_length >= sizeof(sun.sun_path)) {
-            close_or_raise(mrb, "the listening socket", fd);
-            mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb), "listener %d: unix path too long (%i)",
-                       static_cast<int>(listener_index), static_cast<mrb_int>(payload_length));
-        }
-        std::memcpy(sun.sun_path, want.unix_path, payload_length + 1);
-        sa = reinterpret_cast<const struct sockaddr *>(&sun);
-        salen = sizeof(sun);
-        if (::unlink(want.unix_path) != 0 && errno != ENOENT) {
-            const int why = errno;
-            close_or_raise(mrb, "the listening socket", fd);
-            mrb_raisef(mrb, E_WM_ERROR(mrb), "unlink %s: %s", want.unix_path, std::strerror(why));
-        }
-    } else {
-        static const int kOne = 1;
-        if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &kOne, sizeof(kOne)) != 0) {
-            const int why = errno;
-            close_or_raise(mrb, "the listening socket", fd);
-            raise_errno(mrb, "setsockopt(SO_REUSEADDR)", why);
-        }
-        sin.sin_family = AF_INET;
-        sin.sin_addr.s_addr = htonl(INADDR_ANY);
-        sin.sin_port = htons(static_cast<uint16_t>(want.port));
-        sa = reinterpret_cast<const struct sockaddr *>(&sin);
-        salen = sizeof(sin);
-    }
-    if (::bind(fd, sa, salen) != 0) {
-        const int why = errno;
-        close_or_raise(mrb, "the listening socket", fd);
-        mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: bind: %s", static_cast<int>(listener_index),
-                   std::strerror(why));
-    }
-    if (::listen(fd, backlog != 0 ? backlog : SOMAXCONN) != 0) {
-        const int why = errno;
-        close_or_raise(mrb, "the listening socket", fd);
-        mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: listen: %s",
-                   static_cast<int>(listener_index), std::strerror(why));
-    }
-    if (!is_unix && want.port == 0) {
-        // The kernel chose the port. Every child has to report the same
-        // one, so it is read here, once, before the fork.
-        struct sockaddr_storage ss {
-        };
-        socklen_t slen = sizeof(ss);
-        if (::getsockname(fd, reinterpret_cast<struct sockaddr *>(&ss), &slen) != 0) {
-            const int why = errno;
-            close_or_raise(mrb, "the listening socket", fd);
-            mrb_raisef(mrb, E_WM_ERROR(mrb), "listener %d: getsockname: %s",
-                       static_cast<int>(listener_index), std::strerror(why));
-        }
-        want.port = ntohs(reinterpret_cast<const struct sockaddr_in *>(&ss)->sin_port);
-    }
-    want.fd = fd;
-}
-
-// Bind every listener, say where the server answers, then fork one child
-// per worker. True in the supervisor, false in a child.
-//
-// The fork is as late as the ring allows: the assets, the error pages and
-// the route tables already stand, so the children share those pages
-// instead of each building its own. It cannot be later than this, because
-// a ring cannot be forked.
-bool workers_fork(mrb_state *mrb, RingConfig &ring_config)
-{
-    for (uint32_t li = 0; li < ring_config.nlisteners; li++)
-        listener_open(mrb, li, ring_config.listeners[li], ring_config.backlog);
-    // Where this server answers, said once by the process that bound it.
-    // A child says nothing on stdout: one server, one line.
-    for (uint32_t li = 0; li < ring_config.nlisteners; li++) {
-        if (ring_config.listeners[li].unix_path != nullptr) {
-            std::printf("http://localhost/ (unix socket %s)\n",
-                        ring_config.listeners[li].unix_path);
-        } else {
-            std::printf("http://localhost:%d/\n", ring_config.listeners[li].port);
-        }
-    }
-    std::fflush(stdout);
-    std::fflush(stderr);
-    for (int w = 0; w < opts_.workers; w++) {
-        const pid_t child = ::fork();
-        if (child < 0) {
-            const int why = errno;
-            for (pid_t already : worker_pids_) {
-                // ESRCH is a child that already ended, which is what this
-                // asks for. Anything else says this process may not signal
-                // its own children, and it must not raise over that first.
-                if (::kill(already, SIGTERM) != 0 && errno != ESRCH) {
-                    std::fprintf(stderr, "webmachine: kill worker %d: %s\n",
-                                 static_cast<int>(already), std::strerror(errno));
-                }
-            }
-            mrb_raisef(mrb, E_WM_ERROR(mrb), "fork worker %d of %d: %s", w + 1, opts_.workers,
-                       std::strerror(why));
-        }
-        if (child == 0) {
-            // A worker whose supervisor dies has nobody left to stop it.
-            if (::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) != 0)
-                die_errno("prctl(PR_SET_PDEATHSIG)", errno);
-            worker_pids_.clear();
-            // io_uring charges the memory of a ring to the user, not to
-            // the process - io_uring_register(2) says so of RLIMIT_NOFILE
-            // in as many words, and io_account_mem charges RLIMIT_MEMLOCK
-            // against the same user. So these children do not each get the
-            // whole limit: the N of them share it, exactly as N threads of
-            // one process do. Measured: three children of 32768 entries
-            // want 9 MiB where the user has 8, and none of them comes up.
-            ring_config.rings_in_process = static_cast<uint32_t>(opts_.workers);
-            return false;
-        }
-        worker_pids_.push_back(child);
-    }
-    // The supervisor accepts nothing. It holds the paths and the port, so
-    // it keeps no listening descriptor open beyond this point.
-    for (uint32_t li = 0; li < ring_config.nlisteners; li++) {
-        close_or_raise(mrb, "a listening socket", ring_config.listeners[li].fd);
-        ring_config.listeners[li].fd = -1;
-        if (ring_config.listeners[li].unix_path != nullptr)
-            supervisor_unix_paths_.emplace_back(ring_config.listeners[li].unix_path);
-    }
-    supervisor_ = true;
-    std::fprintf(stderr, "webmachine: up, pid %d, %d worker(s)\n", getpid(), opts_.workers);
-    return true;
-}
-
-// The supervisor's whole life: wait for the stop signal, pass it on, and
-// reap. It answers no request, so it needs no ring and no loop of its own.
-int workers_supervise()
-{
-    // The children hold the same signalfd, and a signal to the process
-    // group reaches each of them directly. This forwards for the other
-    // case: somebody signalled this pid alone.
-    if (opts_.stop_fd >= 0) {
-        struct pollfd waiting {
-        };
-        waiting.fd = opts_.stop_fd;
-        waiting.events = POLLIN;
-        while (::poll(&waiting, 1, -1) < 0) {
-            if (errno != EINTR)
-                die_errno("poll the stop signal", errno);
-        }
-        struct signalfd_siginfo seen {
-        };
-        while (::read(opts_.stop_fd, &seen, sizeof(seen)) < 0) {
-            if (errno != EINTR)
-                die_errno("read the stop signal", errno);
-        }
-        for (pid_t child : worker_pids_) {
-            if (::kill(child, SIGTERM) != 0 && errno != ESRCH) {
-                std::fprintf(stderr, "webmachine: kill worker %d: %s\n", static_cast<int>(child),
-                             std::strerror(errno));
-            }
-        }
-    }
-    int worst = 0;
-    for (pid_t child : worker_pids_) {
-        int how = 0;
-        while (::waitpid(child, &how, 0) < 0) {
-            if (errno != EINTR)
-                die_errno("wait for a worker", errno);
-        }
-        if (WIFEXITED(how) && WEXITSTATUS(how) != 0)
-            worst = WEXITSTATUS(how);
-        else if (WIFSIGNALED(how) && worst == 0)
-            worst = 128 + WTERMSIG(how);
-    }
-    worker_pids_.clear();
-    // The supervisor bound the paths, so the supervisor takes them away.
-    for (const std::string &path : supervisor_unix_paths_) {
-        // ENOENT is a path somebody already took away.
-        if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
-            std::fprintf(stderr, "webmachine: unlink %s: %s\n", path.c_str(), std::strerror(errno));
-        }
-    }
-    supervisor_unix_paths_.clear();
-    return worst;
-}
-
 // One answering thread: its own Http1, its own ring, and nothing it
 // shares with another thread but the docroot descriptor and the media
 // type table, which are read only once the server is up.
@@ -869,14 +664,6 @@ void server_build_ring_config(mrb_state *mrb)
     if (map_threshold >= 0)
         http_->set_file_map_threshold(static_cast<size_t>(map_threshold));
 
-    // --workers=N: bind once, fork, and let every child register what it
-    // inherited. This answers true in the process that forked, and that
-    // process holds no ring.
-    if (opts_.workers > 1 && workers_fork(mrb, ring_config)) {
-        built_ = true;
-        return;
-    }
-
     // --threads=N: the threads that answer come up before the acceptor,
     // because the acceptor has to know their rings before it takes the
     // first peer.
@@ -921,19 +708,17 @@ void server_build_ring_config(mrb_state *mrb)
     // start line goes to stderr, so this one line is what a script reads
     // and what an operator copies into a browser. A port the kernel chose
     // (port = 0) is only knowable here, and this is how it is said.
-    if (opts_.workers <= 1) {
-        for (uint32_t i = 0; i < ring_config.nlisteners; i++) {
-            if (ring_config.listeners[i].unix_path != nullptr) {
-                // A unix socket has no authority to write in a URL. curl
-                // takes it as --unix-socket, and this line spells that.
-                std::printf("http://localhost/ (unix socket %s)\n",
-                            ring_config.listeners[i].unix_path);
-            } else {
-                std::printf("http://localhost:%d/\n", ring_->bound_port(i));
-            }
+    for (uint32_t i = 0; i < ring_config.nlisteners; i++) {
+        if (ring_config.listeners[i].unix_path != nullptr) {
+            // A unix socket has no authority to write in a URL. curl takes
+            // it as --unix-socket, and this line spells that.
+            std::printf("http://localhost/ (unix socket %s)\n",
+                        ring_config.listeners[i].unix_path);
+        } else {
+            std::printf("http://localhost:%d/\n", ring_->bound_port(i));
         }
-        std::fflush(stdout);
     }
+    std::fflush(stdout);
     built_ = true;
 }
 
@@ -949,10 +734,6 @@ void server_ring_must_be_up(mrb_state *mrb)
 mrb_value server_method_run(mrb_state *mrb, mrb_value self)
 {
     server_ring_must_be_up(mrb);
-    if (supervisor_) {
-        workers_supervise();
-        return self;
-    }
     ring_->run();
     return self;
 }
@@ -1049,11 +830,6 @@ int server_run(mrb_state *mrb)
 {
     server_build_ring_config(mrb);
     entered_ = true;
-    if (supervisor_) {
-        const int worst = workers_supervise();
-        server_release();
-        return worst;
-    }
     ring_->run();
     server_release();
     return 0;

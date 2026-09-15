@@ -61,17 +61,10 @@ WORKERS="${WORKERS:-1}"
 # one server worker. The counts and the cpu of all N are added up, and
 # the responses= line reports the sum.
 CLIENTS="${CLIENTS:-1}"
-# FORK_WORKERS=N: one server with --workers=N. It binds and listens once,
-# forks N children, and every child registers the listening descriptor it
-# inherited. One listener, shared. WORKERS=N above is the other shape -
-# N separate servers, one listener each, sharing a port by SO_REUSEPORT -
-# and the two are not the same measurement. Works on AF_UNIX, where
-# SO_REUSEPORT has no meaning and WORKERS= therefore cannot go.
-FORK_WORKERS="${FORK_WORKERS:-1}"
 # THREADS_ANSWER=N: one server with --threads=N. One thread accepts and
 # hands every peer to the next of N answering threads through
 # IORING_OP_MSG_RING, which carries a registered descriptor between two
-# rings of one process. The third shape beside WORKERS= and FORK_WORKERS=.
+# rings of one process. The second shape beside WORKERS=.
 # Files only - a thread that answers from an application has no VM.
 THREADS_ANSWER="${THREADS_ANSWER:-1}"
 # DOCROOT=DIR: serve files from this directory and load no application.
@@ -164,18 +157,11 @@ cpu_ticks() {
 # Every worker's ticks added up, so WORKERS=2 reports the cpu two
 # processes spent and not the cpu one of them did.
 srv_ticks() {
-  local u=0 s=0 pu ps p kid
+  local u=0 s=0 pu ps p
   for p in "${SRVS[@]}"; do
     read -r pu ps <<<"$(cpu_ticks "$p")"
     u=$((u + pu))
     s=$((s + ps))
-    # --workers=N: the server this shell started is the supervisor, and
-    # the cpu that answers requests is its children's.
-    for kid in $(pgrep -P "$p" 2>/dev/null); do
-      read -r pu ps <<<"$(cpu_ticks "$kid")"
-      u=$((u + pu))
-      s=$((s + ps))
-    done
   done
   echo "$u $s"
 }
@@ -290,7 +276,6 @@ fi
 # passed. BIN= exists to run an older build beside this one, and an
 # older build refuses a flag it never had.
 SHAPE_ARGS=()
-[ "$FORK_WORKERS" = 1 ] || SHAPE_ARGS+=(--workers="$FORK_WORKERS")
 [ "$THREADS_ANSWER" = 1 ] || SHAPE_ARGS+=(--threads="$THREADS_ANSWER")
 SRVS=()
 w=0
@@ -422,7 +407,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
