@@ -103,3 +103,18 @@ bin=/tmp/claude-0/arms/B responses=91600 instructions_per_response=11596
 harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3 (built with it; the script read its own env)
 build: /tmp/claude-0/arms/C cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
 bin=/tmp/claude-0/arms/C responses=106720 instructions_per_response=10132
+
+==== 2026-09-15T17:21Z repo=4750ab6 ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/arms/D_gated cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/D_gated responses=159264 instructions_per_response=7334
+
+==== 2026-09-15T17:22Z repo=4750ab6 ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=unset
+build: /tmp/claude-0/arms/E cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:207:2@2100MHz cache=D48K/I32K/U2048K/U266240K flags=115:746827938
+bin=/tmp/claude-0/arms/E responses=117296 instructions_per_response=9229
+
+==== 2026-09-15T17:4xZ repo=4750ab6 (arms E and D, lazy h2 hold) ====
+harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3, app = a bound resource
+bin=arms/D_gated (lazy hold, gate untouched) responses=159264 instructions_per_response=7334
+bin=arms/E (lazy hold, gate open, frame on Conn) responses=117296 instructions_per_response=9229
