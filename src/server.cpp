@@ -34,9 +34,56 @@ namespace
 {
 ServerOptions opts_;
 std::vector<AppSpec *> specs_;
-std::vector<std::vector<const Resource *>> resources_;
-std::vector<std::vector<const WsResource *>> ws_resources_;
-std::vector<std::vector<const SseResource *>> sse_resources_;
+// What one Http1 is built from: the resource tables of every registered
+// application, in a form the constructor reads. The acceptor has one set,
+// and every answering thread that loads the application has its own.
+struct AppInputs {
+    std::vector<std::vector<const Resource *>> resources;
+    std::vector<std::vector<const WsResource *>> ws_resources;
+    std::vector<std::vector<const SseResource *>> sse_resources;
+    std::vector<Http1::AppInput> inputs;
+};
+AppInputs main_inputs_;
+// The thresholds the acceptor's Http1 was given, so a thread's is given
+// the same. Below zero: the built-in default stands.
+long long lend_threshold_ = -1;
+long long map_threshold_ = -1;
+bool assets_up_ = false;
+
+void app_inputs_build(const std::vector<AppSpec *> &specs, AppInputs &out)
+{
+    out.resources.resize(specs.size());
+    out.ws_resources.resize(specs.size());
+    out.sse_resources.resize(specs.size());
+    out.inputs.resize(specs.size());
+    for (size_t i = 0; i < specs.size(); i++) {
+        const AppSpec &spec = *specs.at(i);
+        std::vector<const Resource *> &resources = out.resources.at(i);
+        std::vector<const WsResource *> &ws_resources = out.ws_resources.at(i);
+        std::vector<const SseResource *> &sse_resources = out.sse_resources.at(i);
+        resources.reserve(spec.resources.size());
+        for (const auto &r : spec.resources)
+            resources.push_back(r.get());
+        ws_resources.reserve(spec.ws_resources.size());
+        for (const auto &r : spec.ws_resources)
+            ws_resources.push_back(r.get());
+        sse_resources.reserve(spec.sse_resources.size());
+        for (const auto &r : spec.sse_resources)
+            sse_resources.push_back(r.get());
+        out.inputs.at(i) = Http1::AppInput{
+            &spec.table,
+            resources.data(),
+            resources.size(),
+            &spec.ws_table,
+            ws_resources.data(),
+            ws_resources.size(),
+            &spec.sse_table,
+            sse_resources.data(),
+            sse_resources.size(),
+            spec.tls,
+            spec.max_body >= 0 ? static_cast<size_t>(spec.max_body) : kMaxBodyDefault};
+    }
+}
 int log_fd_ = -1;
 int err_fd_ = -1;
 Assets assets_;
@@ -75,10 +122,13 @@ bool entered_ = false;
 struct AnswerThread {
     std::unique_ptr<Http1> app;
     std::unique_ptr<Ring<Http1>> ring;
-    // This thread's own VM. It runs no Ruby. It exists so that a raise
-    // from the ring unwinds inside a VM this thread owns, and so the
-    // sentence reaches the acceptor.
+    // This thread's own VM. It loads the application when the server has
+    // one, so a route with a callback runs here, on this thread, in this
+    // VM. A raise from the ring unwinds inside it, and the sentence
+    // reaches the acceptor.
     mrb_state *mrb = nullptr;
+    std::vector<AppSpec *> specs;
+    AppInputs app_inputs;
     std::atomic<int> ring_fd{-1};
     std::atomic<bool> failed{false};
     std::string why;
@@ -86,8 +136,12 @@ struct AnswerThread {
 
     ~AnswerThread()
     {
-        if (mrb != nullptr)
+        app.reset();
+        ring.reset();
+        if (mrb != nullptr) {
+            app_registry_release(mrb);
             mrb_close(mrb);
+        }
     }
 };
 
@@ -505,9 +559,26 @@ mrb_value answer_thread_boot(mrb_state *mrb, void *user_data)
 {
     AnswerThreadBoot &ask = *static_cast<AnswerThreadBoot *>(user_data);
     AnswerThread &self = *ask.self;
-    self.app.reset(new Http1(ask.inputs, ask.ninputs, nullptr));
+    if (opts_.app_path != nullptr) {
+        // The same bytecode the acceptor's VM ran. Its main registers
+        // into this VM's registry, and the tables it built are this
+        // thread's. The listener is the acceptor's; the specs here only
+        // carry the routes, the conf and the hooks.
+        app_load(mrb, opts_.app_path);
+        app_registered_all(mrb, {self.specs, kMaxListeners});
+        app_inputs_build(self.specs, self.app_inputs);
+        self.app.reset(new Http1(self.app_inputs.inputs.data(), self.app_inputs.inputs.size(),
+                                 assets_up_ ? &assets_ : nullptr));
+    } else {
+        self.app.reset(new Http1(ask.inputs, ask.ninputs, nullptr));
+    }
     if (docroot_fd() >= 0)
         self.app->serve_docroot(&mime_, ask.listings);
+    self.app->open_error_assets(mrb, error_assets_up_ ? &error_assets_ : nullptr);
+    if (lend_threshold_ >= 0)
+        self.app->set_zero_copy_threshold(static_cast<size_t>(lend_threshold_));
+    if (map_threshold_ >= 0)
+        self.app->set_file_map_threshold(static_cast<size_t>(map_threshold_));
     auto ring = std::unique_ptr<Ring<Http1>>(new Ring<Http1>(*self.app));
     RingConfig base = *ask.base;
     base.mrb = mrb;
@@ -520,6 +591,11 @@ mrb_value answer_thread_boot(mrb_state *mrb, void *user_data)
     base.nworkers = 0;
     ring->init(base);
     self.ring = std::move(ring);
+    for (AppSpec *spec : self.specs) {
+        app_mark_bound(mrb, *spec, spec->form == AppSpec::Form::kUnix ? spec->unix_path.c_str() : nullptr,
+                       spec->port);
+        app_ready_run(mrb, *spec);
+    }
     return mrb_nil_value();
 }
 
@@ -749,33 +825,9 @@ void server_build_ring_config(mrb_state *mrb)
         ring_config.err_fd = err_fd_;
     }
 
-    resources_.resize(specs_.size());
-    ws_resources_.resize(specs_.size());
-    sse_resources_.resize(specs_.size());
-    std::vector<Http1::AppInput> inputs(specs_.size());
-    for (size_t i = 0; i < specs_.size(); i++) {
-        resources_[i].reserve(specs_[i]->resources.size());
-        for (const auto &r : specs_[i]->resources)
-            resources_[i].push_back(r.get());
-        ws_resources_[i].reserve(specs_[i]->ws_resources.size());
-        for (const auto &r : specs_[i]->ws_resources)
-            ws_resources_[i].push_back(r.get());
-        sse_resources_[i].reserve(specs_[i]->sse_resources.size());
-        for (const auto &r : specs_[i]->sse_resources)
-            sse_resources_[i].push_back(r.get());
-        inputs[i] = Http1::AppInput{
-            &specs_[i]->table,
-            resources_[i].data(),
-            resources_[i].size(),
-            &specs_[i]->ws_table,
-            ws_resources_[i].data(),
-            ws_resources_[i].size(),
-            &specs_[i]->sse_table,
-            sse_resources_[i].data(),
-            sse_resources_[i].size(),
-            specs_[i]->tls,
-            specs_[i]->max_body >= 0 ? static_cast<size_t>(specs_[i]->max_body) : kMaxBodyDefault};
-    }
+    app_inputs_build(specs_, main_inputs_);
+    std::vector<Http1::AppInput> &inputs = main_inputs_.inputs;
+    assets_up_ = assets_path != nullptr;
     http_.reset(
         new Http1(inputs.data(), inputs.size(), assets_path != nullptr ? &assets_ : nullptr));
     // Standalone: nobody wrote a resource, so the docroot answers through
@@ -806,12 +858,14 @@ void server_build_ring_config(mrb_state *mrb)
     for (size_t i = 0; lend_threshold < 0 && i < specs_.size(); i++) {
         lend_threshold = specs_[i]->zero_copy_threshold;
     }
+    lend_threshold_ = lend_threshold;
     if (lend_threshold >= 0)
         http_->set_zero_copy_threshold(static_cast<size_t>(lend_threshold));
     long long map_threshold = opts_.file_map_threshold;
     for (size_t i = 0; map_threshold < 0 && i < specs_.size(); i++) {
         map_threshold = specs_[i]->file_map_threshold;
     }
+    map_threshold_ = map_threshold;
     if (map_threshold >= 0)
         http_->set_file_map_threshold(static_cast<size_t>(map_threshold));
 
@@ -827,22 +881,21 @@ void server_build_ring_config(mrb_state *mrb)
     // because the acceptor has to know their rings before it takes the
     // first peer.
     if (opts_.threads > 1) {
-        // A konst route is answered from the flow table and the head, and
-        // no VM runs for it. Only a route with a callback, a WebSocket or an
-        // event stream needs the application's VM, which the threads do
-        // not have.
+        // Every answering thread loads the application into its own VM, so
+        // a route with a callback runs there. What no thread can answer yet
+        // is a compute task or a watcher: the pool answers to one ring.
         for (const Http1::AppInput &input : inputs) {
-            bool needs_vm = input.ws_nroutes != 0 || input.sse_nroutes != 0;
-            for (size_t r = 0; r < input.nroutes && !needs_vm; r++) {
+            bool needs_pool = false;
+            for (size_t r = 0; r < input.nroutes && !needs_pool; r++) {
                 const Resource *resource = *std::next(input.resources, static_cast<std::ptrdiff_t>(r));
-                needs_vm = resource != nullptr &&
-                           (resource->dynamic != 0 || resource->dynamic_body);
+                needs_pool = resource != nullptr &&
+                             ((resource->compute | resource->watch) != 0 ||
+                              (resource->value_jobs | resource->value_watch) != 0);
             }
-            if (needs_vm) {
+            if (needs_pool) {
                 mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
-                           "--threads=%d answers files and konst routes only. A route with a "
-                           "callback, a WebSocket or an event stream needs the application's "
-                           "VM, and a thread has none",
+                           "--threads=%d cannot answer a compute task or a watcher: the pool "
+                           "answers to one ring",
                            static_cast<int>(opts_.threads));
             }
         }

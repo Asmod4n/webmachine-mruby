@@ -120,9 +120,40 @@ assert('threads: a konst application is answered by the threads') do
   end
 end
 
-assert('threads: a route with a callback refuses the thread shape by name') do
+assert('threads: a route with a callback is answered in the thread\'s own VM') do
+  src = <<~'RUBY'
+    class MyResource < Webmachine::Resource
+      def to_html
+        "callback page for #{request.path}"
+      end
+    end
+
+    def main
+      Webmachine::Application.new do |app|
+        app.routes do |route|
+          route.add ['x'], MyResource
+          route.add ['y'], MyResource
+        end
+      end
+    end
+  RUBY
+  wm_server(src, '--threads=3', tag: 'wm-threads-callback') do |sock|
+    6.times do |i|
+      path = i.even? ? '/x' : '/y'
+      head, body = w_ask(sock, path)
+      assert_true head.start_with?('HTTP/1.1 200 OK'), head
+      assert_equal "callback page for #{path}", body
+    end
+  end
+end
+
+assert('threads: a compute task refuses the thread shape by name') do
   mrb = wm_compile(<<~'RUBY', 'wm-threads-refuse')
     class MyResource < Webmachine::Resource
+      compute :is_authorized?
+      def is_authorized?(_h)
+        Webmachine::ComputeTask.new(max_runtime: 500.ms) { true }
+      end
       def to_html
         'x'
       end
@@ -144,7 +175,7 @@ assert('threads: a route with a callback refuses the thread shape by name') do
   Process.wait(pid)
   said = File.read(out)
   assert_false $?.success?, said
-  assert_true said.include?('konst routes only'), said
+  assert_true said.include?('compute task or a watcher'), said
 ensure
   File.unlink(out) rescue nil
   mrb&.unlink

@@ -2713,7 +2713,9 @@ struct Registered {
 };
 void app_registered_all(mrb_state *mrb, Registered out_value);
 
-AppSpec *app_assets_only();
+AppSpec *app_assets_only(mrb_state *mrb);
+// Drops the VM's registry. Called before the VM closes.
+void app_registry_release(mrb_state *mrb);
 
 void app_listing(mrb_state *mrb);
 

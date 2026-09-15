@@ -520,7 +520,7 @@ int serve(mrb_state *mrb, Invocation &in)
             // mrblib/listing.rb.
             webmachine::app_listing(mrb);
         } else {
-            webmachine::app_assets_only();
+            webmachine::app_assets_only(mrb);
         }
     }
 

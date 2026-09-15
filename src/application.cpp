@@ -16,13 +16,29 @@
 #include <string>
 
 #include <ada.h>
+#include <map>
+#include <mutex>
 
 namespace webmachine
 {
 namespace
 {
-std::vector<std::unique_ptr<AppSpec>> specs_;
-std::vector<AppSpec *> registered_;
+// One registry per VM. An answering thread loads the application into a
+// VM of its own, and what its main registers is that VM's, not the
+// acceptor's. The map is written from several threads at boot, so the
+// lock guards it; a registry is read by its own VM only.
+struct Registry {
+    std::vector<std::unique_ptr<AppSpec>> specs;
+    std::vector<AppSpec *> registered;
+};
+std::mutex registries_lock_;
+std::map<mrb_state *, Registry> registries_;
+
+Registry &registry_of(mrb_state *mrb)
+{
+    const std::lock_guard<std::mutex> hold(registries_lock_);
+    return registries_[mrb];
+}
 
 const struct mrb_data_type app_type = {"webmachine.app", nullptr};
 
@@ -743,13 +759,14 @@ mrb_value route_assets(mrb_state *mrb, mrb_value)
 // Two applications may not name the same listener - compared on the socket.
 void register_app(mrb_state *mrb, AppSpec *spec)
 {
+    std::vector<AppSpec *> &registered = registry_of(mrb).registered;
     if (spec->form == AppSpec::Form::kNone) {
         spec->registered = true;
-        registered_.push_back(spec);
+        registered.push_back(spec);
         return;
     }
     const bool is_unix = spec->form == AppSpec::Form::kUnix;
-    for (AppSpec *other : registered_) {
+    for (AppSpec *other : registered) {
         if (other->form == AppSpec::Form::kNone)
             continue;
         const bool other_unix = other->form == AppSpec::Form::kUnix;
@@ -767,7 +784,7 @@ void register_app(mrb_state *mrb, AppSpec *spec)
         }
     }
     spec->registered = true;
-    registered_.push_back(spec);
+    registered.push_back(spec);
 }
 
 // Webmachine::Application.new { |app| ... } - the app's whole surface.
@@ -778,8 +795,9 @@ mrb_value app_initialize(mrb_state *mrb, mrb_value self)
 {
     mrb_value block = mrb_nil_value();
     mrb_get_args(mrb, "&", &block);
-    specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
-    AppSpec *spec = specs_.back().get();
+    std::vector<std::unique_ptr<AppSpec>> &specs = registry_of(mrb).specs;
+    specs.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
+    AppSpec *spec = specs.back().get();
     mrb_data_init(self, spec, &app_type);
     // Looked up here and not at gem init: mrblib runs after the C side, so
     // Webmachine::Config does not exist yet when this file's init does.
@@ -951,17 +969,18 @@ void app_registered_all(mrb_state *mrb, Registered out_)
 {
     std::vector<AppSpec *> &out_registered = out_.specs;
     const size_t max_listeners = out_.max_listeners;
-    if (registered_.empty()) {
+    std::vector<AppSpec *> &registered = registry_of(mrb).registered;
+    if (registered.empty()) {
         mrb_raise(mrb, E_WM_CONFIG_ERROR(mrb),
                   "main registered no application - Webmachine::Application.new takes a block, "
                   "and returning from it is what registers the app");
     }
-    if (registered_.size() > max_listeners) {
+    if (registered.size() > max_listeners) {
         mrb_raisef(mrb, E_WM_CONFIG_ERROR(mrb),
                    "main registered %i applications and the ring holds %i listeners",
-                   static_cast<mrb_int>(registered_.size()), static_cast<mrb_int>(max_listeners));
+                   static_cast<mrb_int>(registered.size()), static_cast<mrb_int>(max_listeners));
     }
-    out_registered.assign(registered_.begin(), registered_.end());
+    out_registered.assign(registered.begin(), registered.end());
 }
 
 // A pack and no app: the asset tier answers before routing, so this app
@@ -969,16 +988,23 @@ void app_registered_all(mrb_state *mrb, Registered out_)
 // path the pack does not name is a 404. There is deliberately no resource
 // here: an unfolded one answers out of nowhere, with no media type and no
 // callback behind any of it (#201).
-AppSpec *app_assets_only()
+AppSpec *app_assets_only(mrb_state *mrb)
 {
-    specs_.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
-    AppSpec *spec = specs_.back().get();
+    Registry &registry = registry_of(mrb);
+    registry.specs.push_back(std::unique_ptr<AppSpec>(new AppSpec()));
+    AppSpec *spec = registry.specs.back().get();
     // No open()/commit() here: that pair is a route - the one with an empty
     // token list, which is the root path. An empty table matches nothing, and
     // that is the point.
     spec->registered = true;
-    registered_.push_back(spec);
+    registry.registered.push_back(spec);
     return spec;
+}
+
+void app_registry_release(mrb_state *mrb)
+{
+    const std::lock_guard<std::mutex> hold(registries_lock_);
+    registries_.erase(mrb);
 }
 
 // --listings: the application mrblib/listing.rb holds. It registers the
