@@ -181,7 +181,7 @@ assert('threads: a TCP peer is answered after its address was read') do
     assert_equal "tcp thread page\n", body
   end
   said = File.read(err)
-  assert_false said.include?('peer address cannot be read'), said
+  assert_false said.include?('name cannot be read'), said
 ensure
   Process.kill('TERM', pid) rescue nil
   Process.wait(pid) rescue nil

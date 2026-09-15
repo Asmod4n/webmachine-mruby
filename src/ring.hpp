@@ -1267,19 +1267,36 @@ template <class App> class Ring
         hand_to_worker_at(listener_index, descriptor, worker);
     }
 
-    // A peer of a TCP listener goes to the thread its address names, so
-    // every connection one host opens is answered by one thread. FNV-1a
-    // over the address octets, the port left out: the port is the
-    // connection's, the address is the host's. A unix peer has no
-    // address, so the acceptor hands it to the next thread in turn.
+    // A peer goes to the thread its name hashes to, so every connection
+    // one peer opens is answered by one thread: the ground for a VM per
+    // thread that keeps state for its peers. A TCP peer is named by its
+    // address, FNV-1a over the octets with the port left out (the port is
+    // the connection's, the address is the host's). A unix peer is named
+    // by the pid of the process that connected.
     struct PeerName {
         Op op;
         struct sockaddr_storage addr {
         };
         socklen_t len = sizeof(addr);
+        // A unix peer has no address; its process is its name. SO_PEERCRED
+        // answers the pid of the process that connected.
+        struct ucred cred {
+        };
+        bool unix_peer = false;
         uint32_t descriptor = 0;
         uint32_t listener_index = 0;
     };
+
+    static uint32_t worker_of_pid(pid_t pid, uint32_t nworkers)
+    {
+        const auto octets = std::as_bytes(std::span(&pid, 1));
+        uint32_t hash = 2166136261u;
+        for (const std::byte octet : octets) {
+            hash ^= std::to_integer<uint32_t>(octet);
+            hash *= 16777619u;
+        }
+        return hash % nworkers;
+    }
 
     static uint32_t worker_of_address(const struct sockaddr_storage &addr, uint32_t nworkers)
     {
@@ -1306,9 +1323,16 @@ template <class App> class Ring
         auto ask = std::make_unique<PeerName>();
         ask->descriptor = descriptor;
         ask->listener_index = listener_index;
+        ask->unix_peer = unix_listener_[listener_index];
         struct io_uring_sqe *sqe = sqe_or_submit();
-        io_uring_prep_cmd_getsockname(sqe, static_cast<int>(descriptor),
-                                      reinterpret_cast<struct sockaddr *>(&ask->addr), &ask->len, 1);
+        if (ask->unix_peer) {
+            io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(descriptor),
+                                   SOL_SOCKET, SO_PEERCRED, &ask->cred, sizeof(ask->cred));
+        } else {
+            io_uring_prep_cmd_getsockname(sqe, static_cast<int>(descriptor),
+                                          reinterpret_cast<struct sockaddr *>(&ask->addr),
+                                          &ask->len, 1);
+        }
         sqe->flags |= IOSQE_FIXED_FILE;
         io_uring_sqe_set_data64(sqe, arm(ask->op, nullptr, detail::kPeerName));
         ask.release();
@@ -1322,10 +1346,13 @@ template <class App> class Ring
             if (!peer_name_said_) {
                 peer_name_said_ = true;
                 say_server_error(app_.error_log(),
-                                 std::string("the peer address cannot be read (SOCKET_URING_OP_GETSOCKNAME: ") +
+                                 std::string("the peer's name cannot be read (") +
+                                     (ask->unix_peer ? "SO_PEERCRED: " : "SOCKET_URING_OP_GETSOCKNAME: ") +
                                      std::strerror(-completion->res) +
                                      "); peers go to the threads in turn");
             }
+        } else if (ask->unix_peer) {
+            worker = worker_of_pid(ask->cred.pid, nworkers_);
         } else {
             worker = worker_of_address(ask->addr, nworkers_);
         }
@@ -1408,10 +1435,7 @@ template <class App> class Ring
             return;
         }
         if (nworkers_ != 0) {
-            if (unix_listener_[listener_index])
-                hand_to_worker(listener_index, static_cast<uint32_t>(completion->res));
-            else
-                ask_peer_name(listener_index, static_cast<uint32_t>(completion->res));
+            ask_peer_name(listener_index, static_cast<uint32_t>(completion->res));
             return;
         }
         Conn &c = *conn_new(listener_index, static_cast<uint32_t>(completion->res));
