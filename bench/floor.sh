@@ -27,6 +27,13 @@
 #   PIPELINE=8 ...     h1 requests in flight per connection (RFC 9112 9.3.2)
 #   WM_BUNDLE=0 ...    for the A/B on a kernel under suspicion
 set -u
+# htgen registers its buffer ring as locked memory, 8 MiB per process,
+# and the server's rings are charged to the same user. The server raises
+# its own soft limit to the hard one; the clients run under the shell's.
+# So the shell's goes up as well, and the line says what stands.
+memlock_hard=$(ulimit -H -l)
+ulimit -l "$memlock_hard" 2>/dev/null || true
+MEMLOCK_LINE="memlock=$(ulimit -l)"
 [ -n "${CONNS:-}" ] || {
   echo "CONNS= is mandatory - the harness is part of the number" >&2
   exit 2
@@ -415,7 +422,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS threads=$THREADS_ANSWER clients=$CLIENTS${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS fork_workers=$FORK_WORKERS threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
