@@ -363,14 +363,14 @@ struct H2Stream {
             sent = first;
             length = text_end;
         }
-        void take_lent(mrb_state *mrb, mrb_value lent_value, const char *bytes, size_t count)
+        void take_lent(mrb_state *vm, mrb_value lent_value, const char *bytes, size_t count)
         {
             src = Src::kLent;
             lent = bytes;
             sent = 0;
             length = count;
-            mrb = mrb;
-            lent_value = lent_value;
+            mrb = vm;
+            value = lent_value;
         }
         void take_owned(const char *bytes, size_t count)
         {
