@@ -46,19 +46,13 @@
 #include <utility>
 #include <vector>
 
-// openat2(2) is the docroot confinement response.file rests on, so an
-// older toolchain gets these values rather than losing the hardening.
-// They are the kernel's own, read off linux/openat2.h.
-//
-// All three flags, always, because each covers what the others do not:
-// RESOLVE_BENEATH stops ".." and absolute paths, NO_SYMLINKS stops a
-// symlink inside the docroot pointing out, NO_MAGICLINKS stops the
-// /proc-style ones.
-// A raise here is a C++ throw, and mrb_noreturn resolves to nothing
-// under -std=c++20. A function that ends in a raise says so with
-// WM_UNREACHABLE, so the compiler does not warn that a [[noreturn]]
-// function returns. The branch hints are mruby's own, mrb_likely and
-// mrb_unlikely from mruby/common.h.
+// openat2(2) is the docroot confinement that response.file rests on.
+// An older toolchain gets the kernel's own values from linux/openat2.h.
+// All three RESOLVE_ flags, always: BENEATH stops ".." and absolute
+// paths, NO_SYMLINKS stops a symlink inside the docroot that points out,
+// NO_MAGICLINKS stops the /proc-style ones.
+// mrb_noreturn resolves to nothing under -std=c++20, so a function that
+// ends in a raise needs WM_UNREACHABLE().
 #if defined(_MSC_VER) && !defined(__clang__)
 #define WM_UNREACHABLE() __assume(0)
 #else
@@ -84,13 +78,11 @@ struct open_how {
 #define RESOLVE_BENEATH 0x08
 #endif
 
-// picohttpparser's field pair; the framers include the header itself.
 struct phr_header;
 
 namespace webmachine::flow
 {
-// Alan Dean and Justin Sheehy's HTTP decision diagram; the letters are
-// its node names. Each edge's clause is in kFlow's `clause` column.
+// The node names are the letters of Alan Dean and Justin Sheehy's HTTP decision diagram.
 enum class Node : uint8_t {
     kB13,
     kB12,
@@ -151,29 +143,24 @@ enum class Node : uint8_t {
     kCount
 };
 
-// Also ours: who decides a node. RFC 9110 has no such split - it is the
-// fold's, and it is what lets a kRequest node answer without the VM.
+// RFC 9110 has no such split. It lets a kRequest node answer without the VM.
 enum class Kind : uint8_t { kRequest, kResource, kConneg, kAction };
 
 struct Target {
     Node node;
     uint16_t status;
 };
-// The graph as data: an edge that continues to a node.
 constexpr Target to(Node count)
 {
     return {count, 0};
 }
-// The graph as data: an edge that halts with a status.
 constexpr Target halt(uint16_t sqe)
 {
     return {Node::kCount, sqe};
 }
 
-// One row of the diagram. `callback` is webmachine-ruby's method name for
-// this node, verbatim - that is the contract an app writes against.
-// `clause` is the RFC 9110 section the edge implements, which is what a
-// reader needs when the diagram and the specification are both open.
+// `callback` is webmachine-ruby's method name, verbatim: an app writes against it.
+// `clause` is the RFC 9110 section the edge implements.
 struct FlowNode {
     Node id;
     Kind kind;
@@ -305,7 +292,6 @@ inline constexpr FlowNode kFlow[] = {
 inline constexpr size_t kNodeCount = sizeof(kFlow) / sizeof(kFlow[0]);
 static_assert(kNodeCount == static_cast<size_t>(Node::kCount), "one entry per node");
 
-// Proof: the table is indexed by its own ids.
 constexpr bool ids_in_order()
 {
     for (size_t i = 0; i < kNodeCount; i++) {
@@ -334,14 +320,8 @@ constexpr bool both_targets_of_every_node_name_one()
 }
 static_assert(both_targets_of_every_node_name_one(), "every edge continues or halts");
 
-// Proof: no cycle, and so every path from here halts.
-//
-// A depth-first walk that colours each node. A node met again while it
-// is still on the path is a back edge, which is what a cycle is.
-//
-// Each node is entered once, so this walks the graph. Walking every
-// path instead is exponential in the branches, and crashed gcc 16's
-// constexpr evaluator.
+// A walk of every path is exponential in the branches and crashed gcc 16's
+// constexpr evaluator, so each node is entered once.
 enum : uint8_t { kUnseen = 0, kOnThePath = 1, kFinished = 2 };
 constexpr bool no_cycle_from(Node count, uint8_t (&colour)[kNodeCount])
 {
@@ -366,7 +346,6 @@ constexpr bool the_flow_is_acyclic()
 }
 static_assert(the_flow_is_acyclic(), "the flow is acyclic from B13");
 
-// Proof: reachability, both branches from every node.
 constexpr void mark(Node count, bool (&seen)[kNodeCount])
 {
     const size_t i = static_cast<size_t>(count);
@@ -379,7 +358,6 @@ constexpr void mark(Node count, bool (&seen)[kNodeCount])
     if (f.on_false.status == 0)
         mark(f.on_false.node, seen);
 }
-// Proof: no dead entry - a dead node would be an untested lie.
 constexpr bool all_reachable()
 {
     bool seen[kNodeCount] = {};
@@ -396,23 +374,16 @@ static_assert(all_reachable(), "every node is reachable from B13");
 
 namespace webmachine::flow
 {
-// RFC 9110 9.3: the methods this server names. kOther is not a method -
-// it is "some token we did not recognise", which b12 turns into 501.
 enum class Method : uint8_t { kGet, kHead, kPost, kPut, kDelete, kOptions, kOther };
 
-// RFC 9110: everything a kRequest node needs, decided from the parsed
-// request alone. Every field is named for the field of the
-// specification it carries, spelled out.
 //   has_accept*                 RFC 9110 12.5.1-12.5.4
 //   has_if_match, *_star        RFC 9110 13.1.1
 //   has_if_unmodified_since     RFC 9110 13.1.4
 //   has_if_none_match, *_star   RFC 9110 13.1.2
 //   has_if_modified_since       RFC 9110 13.1.3
 //   *_valid                     RFC 9110 5.6.7: it parsed as an HTTP-date
-//   response_has_*              RFC 9110 10.2.2 / 6.4, set by the run
-//   plain, no_track             No RFC: the access log's privacy bits,
-//                               from DNT and Sec-GPC, neither of which
-//                               any RFC defines
+//   response_has_*              RFC 9110 10.2.2 / 6.4
+//   plain, no_track             no RFC: DNT and Sec-GPC
 struct ReqFacts {
     Method method = Method::kGet;
     bool has_accept = false;
@@ -428,22 +399,17 @@ struct ReqFacts {
     bool has_if_modified_since = false;
     bool if_modified_since_valid = false;
     bool if_modified_since_future = false;
-    // RFC 9110 12.5.1: whether this request's Accept names a media type
-    // the bound resource offers. True by default so a request without an
-    // Accept header negotiates nothing, exactly as c3 sends it.
+    // True by default: a request without Accept negotiates nothing (RFC 9110 12.5.1).
     bool accept_ok = true;
     bool response_has_location = false;
     bool response_has_body = true;
     bool plain = true;
     bool no_track = false;
 
-    // RFC 9110 12.5: did the request name any of the four negotiation fields?
-    // Derived, never stored - a second copy is a second thing to keep true.
     constexpr bool names_a_conneg_field() const
     {
         return has_accept || has_accept_language || has_accept_charset || has_accept_encoding;
     }
-    // RFC 9110 13: the same question for the four conditional fields.
     constexpr bool names_a_conditional_field() const
     {
         return has_if_match || has_if_unmodified_since || has_if_none_match ||
@@ -451,14 +417,10 @@ struct ReqFacts {
     }
 };
 
-// No RFC: the fold's own result. What a resource answered at setup, once,
-// for every node whose answer cannot change per request.
 struct KonstAnswers {
     bool ans[kNodeCount] = {};
 };
 
-// RFC 9110: the kRequest nodes - decided from the parsed request alone,
-// never from the VM.
 constexpr bool eval_request(Node stream_id, const ReqFacts &round)
 {
     switch (stream_id) {
@@ -517,15 +479,11 @@ constexpr bool eval_request(Node stream_id, const ReqFacts &round)
     }
 }
 
-// RFC 9110: the graph, run with this request's facts and a resource's
-// konst answers. Zero VM entries.
-// RFC 9110 12.5: c4/d5/e6/f7 are reachable only through the has_* node above
-// each of them, so a request naming none of the four fields walks c3 -> d4 ->
-// e5 -> f6 -> g7 and can say nothing on the way. The absence is the answer.
+// RFC 9110 12.5: c4/d5/e6/f7 each hang off their own has_* node, so a
+// request that names none of the four fields exits at g7.
 inline constexpr Node kAfterConneg = Node::kG7;
-// RFC 9110 13: the same shape - g9/g11, h11/h12, i13/k13/j18 and l14/l15/l17
-// all hang off their own has_*, so a request naming none of the four walks
-// g8 -> h10 -> i12 -> l13 -> m16.
+// RFC 9110 13: g9/g11, h11/h12, i13/k13/j18 and l14/l15/l17 each hang off
+// their own has_* node, so a request that names none of the four exits at m16.
 inline constexpr Node kAfterConditional = Node::kM16;
 
 constexpr uint16_t walk(const ReqFacts &request, const KonstAnswers &k)
@@ -537,10 +495,8 @@ constexpr uint16_t walk(const ReqFacts &request, const KonstAnswers &k)
         else if (n == Node::kG8 && !request.names_a_conditional_field())
             n = kAfterConditional;
         const FlowNode &field = kFlow[static_cast<size_t>(n)];
-        // c4 reads the request as surely as any kRequest node does - it is the
-        // client's Accept against this resource's types, and no fold can bake
-        // that. The other kConneg nodes (d5/e6/f7) stay konst: languages and
-        // charsets are named refusal in this tree, so their answer never moves.
+        // c4 compares the client's Accept against this resource's types, so no fold
+        // can bake it. d5/e6/f7 stay konst: languages and charsets never move in this tree.
         const bool ans = (field.kind == Kind::kRequest || n == Node::kC4)
                              ? eval_request(n, request)
                              : k.ans[static_cast<size_t>(n)];
@@ -556,14 +512,11 @@ struct Shortcut {
     bool always = false;
 };
 
-// One walk of the graph in progress: the konst answers it follows, and
-// which nodes it has already stood on.
 struct Walk {
     const KonstAnswers &answers;
     bool *seen;
 };
 
-// c4 counts as one, for the reason walk() gives above.
 constexpr bool reaches_a_node_that_reads_the_request(Node count, Walk window)
 {
     const KonstAnswers &k = window.answers;
@@ -580,11 +533,6 @@ constexpr bool reaches_a_node_that_reads_the_request(Node count, Walk window)
     return reaches_a_node_that_reads_the_request(text.node, window);
 }
 
-// The two skips above are claims about the graph, so the graph is asked.
-// From `from`, with the block's fields absent, follow the edges the way walk
-// does and report where it comes out. kNodeCount is the give-up bound: a
-// halt or a wrong exit both fail the assert below.
-// The request as parsed, and what the fold decided for this resource.
 struct Given {
     const ReqFacts &req;
     const KonstAnswers &konst;
@@ -602,7 +550,7 @@ constexpr Node lands_on(Node from, Given group)
                              : k.ans[static_cast<size_t>(count)];
         const Target &text = ans ? field.on_true : field.on_false;
         if (text.status != 0)
-            return Node::kB13; // halted: not an exit
+            return Node::kB13;
         count = text.node;
         if (count == kAfterConneg || count == kAfterConditional)
             return count;
@@ -610,9 +558,7 @@ constexpr Node lands_on(Node from, Given group)
     return Node::kB13;
 }
 
-// Neither block's chain reads konst - c4/d5/e6/f7 and g9/g11/h11/h12/i13/
-// k13/l14/l15/l17 all hang off a has_* that is false here - so both konst
-// extremes have to give the same exit, for every method.
+// Neither chain reads konst, so both konst extremes must give the same exit.
 constexpr bool block_skips_are_the_graphs(Method method)
 {
     ReqFacts absent;
@@ -634,8 +580,6 @@ static_assert(block_skips_are_the_graphs(Method::kDelete));
 static_assert(block_skips_are_the_graphs(Method::kOptions));
 static_assert(block_skips_are_the_graphs(Method::kOther));
 
-// RFC 9110: what the graph would say when it has nothing to decide -
-// from the same walk, run once with every header fact false.
 constexpr Shortcut shortcut_for(Method method, const KonstAnswers &k)
 {
     Shortcut s;
@@ -647,16 +591,11 @@ constexpr Shortcut shortcut_for(Method method, const KonstAnswers &k)
     return s;
 }
 
-// What the fold settled about one resource, for one method: the konst
-// answers the walk follows, and the shortcut that says when it need not
-// walk at all.
 struct Decided {
     const KonstAnswers &konst;
     const Shortcut &shortcut;
 };
 
-// RFC 9110: the one entry point the request path calls. Two integer tests
-// where the graph could not have said anything else.
 constexpr uint16_t answer(const ReqFacts &request, Decided dynamic_body)
 {
     if (dynamic_body.shortcut.always || (request.plain && !request.has_accept))
@@ -666,8 +605,6 @@ constexpr uint16_t answer(const ReqFacts &request, Decided dynamic_body)
 
 namespace detail
 {
-// The whole remaining walk from N, unrolled: K's answers are constants,
-// so only kRequest nodes survive as branches.
 template <KonstAnswers K, Node N> constexpr uint16_t status_reached_from(const ReqFacts &request)
 {
     constexpr FlowNode field = kFlow[static_cast<size_t>(N)];
@@ -698,7 +635,6 @@ template <KonstAnswers K> constexpr uint16_t walk_compiled(const ReqFacts &reque
     return detail::status_reached_from<K, Node::kB13>(request);
 }
 
-// RFC 9110: webmachine-ruby's Resource defaults, folded per method.
 constexpr KonstAnswers answers_of_an_unoverridden_resource(Method method)
 {
     KonstAnswers k{};
@@ -730,15 +666,13 @@ struct KonstSet {
     std::string allow = "GET, HEAD";
     std::string body = "OK";
     std::string content_type;
-    // RFC 9110: a resource that overrides nothing - webmachine-ruby's defaults.
     KonstSet()
     {
         for (uint8_t m = 0; m < 7; m++)
             per_method[m] = answers_of_an_unoverridden_resource(static_cast<Method>(m));
         resolve_shortcuts();
     }
-    // RFC 9110: the shortcuts are derived from per_method; whoever changes
-    // one must call this.
+    // Whoever changes per_method must call this.
     void resolve_shortcuts()
     {
         for (uint8_t m = 0; m < 7; m++) {
@@ -798,8 +732,6 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 } // namespace proof
 } // namespace webmachine::flow
 
-// The three classes this library refuses with. Defined here, above the
-// first raise, because a refusal is one of these.
 #define E_WM_ERROR(mrb)                                                                            \
     (mrb_class_get_under_id(mrb, mrb_module_get_id(mrb, MRB_SYM(Webmachine)), MRB_SYM(Error)))
 #define E_WM_CONFIG_ERROR(mrb)                                                                     \
@@ -810,77 +742,46 @@ static_assert(walk_compiled<missing>(get_plain) == 404);
 namespace webmachine
 {
 
-// mruby's GC arena is a stack, and a setup that gives up has to leave it
-// where it found it. A raise here is a C++ throw, so a destructor is the
-// one place that restore can live.
-// A setup callback raised, and the VM left the exception in mrb->exc.
-// Let it out again: its own class, message and backtrace say what went
-// wrong better than any sentence this frame could write.
-// The same, for what mrb_protect_error hands back rather than leaves in
-// mrb->exc. Only an exception object can be raised, and this returns
-// whatever was pending.
 [[noreturn]] inline void reraise(mrb_state *mrb, mrb_value pending)
 {
     if (mrb_exception_p(pending))
         mrb_exc_raise(mrb, pending);
     mrb_raisef(mrb, E_WM_ERROR(mrb), "a protected call ended with %v and no exception", pending);
-    // mrb_noreturn resolves to nothing under -std=c++20 (common.h asks for
-    // __GNUC__ && !__STRICT_ANSI__), so the compiler cannot see that the
-    // two raises above end this function, and it warns that a [[noreturn]]
-    // one returns. Ring::fatal says the same at its own raise.
     WM_UNREACHABLE();
 }
 
-// A system call said no. Two doors, and which one a caller takes depends
-// on what it holds, never on how bad the failure looks.
-//
-// With a VM: the app author gets a Ruby exception with a class, a message
-// and a backtrace into their own code.
 [[noreturn]] inline void raise_errno(mrb_state *mrb, const char *what, int code)
 {
     mrb_raisef(mrb, E_WM_ERROR(mrb), "%s: %s", what, std::strerror(code));
     WM_UNREACHABLE();
 }
 
-// The same with the name of the thing in hand, which is what an operator
-// reads on a path, a host or a descriptor.
 [[noreturn]] inline void raise_errno(mrb_state *mrb, const char *what, const char *which, int code)
 {
     mrb_raisef(mrb, E_WM_ERROR(mrb), "%s %s: %s", what, which, std::strerror(code));
     WM_UNREACHABLE();
 }
 
-// Without one - startup, a destructor's helper, any frame before or
-// outside the VM. std::system_error carries the errno as a value, so a
-// catch reads the code rather than parsing the sentence.
 [[noreturn]] inline void throw_errno(const char *what, int code)
 {
     throw std::system_error(code, std::system_category(), what);
 }
 
-// close(2) loses data when it says EIO on a file with dirty pages, and
-// says EBADF when this tree lost track of a descriptor. Neither is worth
-// hiding. EINTR on Linux means the descriptor is already gone, so the
-// call is never repeated.
+// EINTR on Linux means the descriptor is already gone, so the call is never repeated.
 inline void close_or_raise(mrb_state *mrb, const char *what, int fd)
 {
     if (::close(fd) != 0 && errno != EINTR)
         raise_errno(mrb, "close", what, errno);
 }
 
-// The one place a failure may not travel: a destructor. A throw there
-// ends the process through std::terminate with nothing said, so this
-// says what failed first and then ends it. Every caller of this is a
-// call that only fails when this tree lost track of its own resource -
-// a descriptor it no longer owns, a mapping at an address it did not
-// make - and a process that dies is the one case where stderr is read.
+// A throw in a destructor ends the process through std::terminate with
+// nothing said, so this says what failed first.
 [[noreturn]] inline void die_errno(const char *what, int code)
 {
     std::fprintf(stderr, "webmachine: %s: %s\n", what, std::strerror(code));
     std::abort();
 }
 
-// close(2) where nothing can be raised or thrown.
 inline void close_or_die(const char *what, int fd)
 {
     if (::close(fd) != 0 && errno != EINTR)
@@ -893,11 +794,8 @@ inline void close_or_throw(const char *what, int fd)
         throw_errno(what, errno);
 }
 
-// A block called with the entries of an Array as its arguments. The
-// entries are read through mrb_ary_entry, never through a pointer into
-// the Array's own storage, so the block may grow that Array while it
-// runs. Off the request path: a compute task, and a round nobody can
-// park.
+// The entries are read through mrb_ary_entry and never through a pointer
+// into the Array's storage, so the block may grow that Array while it runs.
 inline mrb_value yield_array_entries(mrb_state *mrb, mrb_value block, mrb_value array)
 {
     const mrb_int count = mrb_array_p(array) ? RARRAY_LEN(array) : 0;
@@ -914,13 +812,10 @@ inline mrb_value yield_array_entries(mrb_state *mrb, mrb_value block, mrb_value 
     reraise(mrb, exc);
 }
 
-// An sqe from this ring, or a raise. A full submission queue is
-// submitted once, and a queue still full after that is raised.
 struct io_uring_sqe *sqe_or_raise(mrb_state *mrb, struct io_uring *ring);
 
-// mrb_open runs every gem init, and a gem init that raises leaves its
-// exception in mrb->exc with the VM otherwise standing. Such a VM is
-// not open: the error is printed, the VM is closed, and nullptr says so.
+// mrb_open runs every gem init. A gem init that raises leaves its
+// exception in mrb->exc with the VM otherwise standing.
 mrb_state *open_vm_or_say(const char *who);
 
 class ArenaGuard
@@ -941,14 +836,8 @@ class ArenaGuard
     const int at_;
 };
 
-// How many segments of a path one route may bind. It is mruby's own
-// number: a mrb_funcall holds its arguments in an array of this size and
-// raises above it. A build that lowers the VM's number lowers this one,
-// because the two are one decision.
-//
-// The refusal comes earlier than mruby can make it. A route is known
-// when the app registers it, so add_route refuses the Symbol past the
-// limit and the match loop tests nothing.
+// mruby's own number: mrb_funcall holds its arguments in an array of
+// this size and raises above it.
 #ifdef MRB_FUNCALL_ARGC_MAX
 inline constexpr size_t kMaxRouteBindings = MRB_FUNCALL_ARGC_MAX;
 #else
@@ -971,7 +860,6 @@ class RouteTable
   public:
     enum Kind : uint8_t { kLiteral, kBinding, kSplat };
 
-    // route.add: begin a route. abandon() rolls it back whole.
     void open()
     {
         pending_first_ = toks_.size();
@@ -979,7 +867,6 @@ class RouteTable
         pending_binds_ = 0;
         pending_splat_ = false;
     }
-    // RFC 9110 4.2.1: a String token is a literal segment.
     bool literal(const char *bytes, size_t count)
     {
         if (count > 0xffffu)
@@ -992,8 +879,6 @@ class RouteTable
         toks_.push_back(t);
         return true;
     }
-    // RFC 9110 4.2.1: a Symbol token binds one segment; its id rides along
-    // so the request object can name what a span captured.
     bool binding(uint32_t sym)
     {
         if (pending_binds_ >= kMaxRouteBindings)
@@ -1003,7 +888,6 @@ class RouteTable
         return true;
     }
 
-    // The name of a route's i-th binding, in the order match() captured them.
     uint32_t binding_sym(int route, uint8_t i) const
     {
         const Route &retry = routes_[static_cast<size_t>(route)];
@@ -1018,18 +902,15 @@ class RouteTable
         }
         return 0;
     }
-    // RFC 9110 4.2.1: :* is the tail, and by construction the last token.
     void splat()
     {
         pending_splat_ = true;
         toks_.push_back(RouteToken{kSplat, 0, 0});
     }
-    // Is the route under construction already splatted?
     bool pending_splat() const
     {
         return pending_splat_;
     }
-    // route.add: the route stands.
     void commit()
     {
         Route r;
@@ -1037,32 +918,25 @@ class RouteTable
         r.count = static_cast<uint32_t>(toks_.size() - pending_first_);
         routes_.push_back(r);
     }
-    // route.add: a route that failed validation leaves nothing registered.
     void abandon()
     {
         toks_.resize(pending_first_);
         blob_.resize(pending_blob_);
     }
 
-    // How many routes this table holds.
     size_t size() const
     {
         return routes_.size();
     }
-    // Has this app any route of this kind at all?
     bool empty() const
     {
         return routes_.empty();
     }
 
-    // RFC 9110 4.2.1: the first route that matches wins (registration order).
-    // -1 is a miss, and a miss answers 404 before B13.
     int match(const char *path, size_t length, RouteSpans &out_value) const
     {
-        // What the caller may read whatever this returns. The spans behind
-        // them are written only as far as nbind and has_splat admit, which
-        // is what lets RouteSpans stay uninitialized at the top of a
-        // request path.
+        // The spans are written only as far as nbind and has_splat admit, so
+        // RouteSpans may stay uninitialized at the top of a request path.
         out_value.nbind = 0;
         out_value.has_splat = false;
         size_t plen = length;
@@ -1144,10 +1018,6 @@ class RouteTable
     bool pending_splat_ = false;
 };
 
-// route.add: a route is open from its first token until it stands. Every
-// other way out of that window - a token that is not a segment, a class
-// the fold refuses - leaves nothing registered, and every one of those
-// ways out is a raise.
 class OpenRoute
 {
   public:
@@ -1162,7 +1032,6 @@ class OpenRoute
     }
     OpenRoute(const OpenRoute &) = delete;
     OpenRoute &operator=(const OpenRoute &) = delete;
-    // The route stands: there is nothing left to roll back.
     void commit()
     {
         table_.commit();
@@ -1177,46 +1046,28 @@ class OpenRoute
 
 namespace webmachine
 {
-// No RFC - and that is the finding worth writing down. The access log is
-// the NCSA Combined Log Format: something httpd shipped and everyone
-// copied, never specified, so no line here can be checked against a
-// source. What the fields mean is specified (RFC 9110); how they are
-// spelled onto a line is not. Logger is this server's own plumbing - the
-// records are formatted here and drained by the ring to webmachine-logd.
+// The access log is the NCSA Combined Log Format. No specification
+// exists for it, so no line here can be checked against a source.
 struct Logger {
     bool enabled = false;
-    std::string pending; // formatted, not yet handed to the ring
-    std::string flight;  // handed over; the kernel owns these bytes
+    std::string pending;
+    std::string flight; // the kernel owns these bytes while in flight
     bool in_flight = false;
-    int64_t unix_seconds = 0; // the reactor's cached wall clock, per batch
-    // No RFC: what a log daemon that cannot keep up costs this process.
-    // One write flies at a time, so a slow disk or a daemon rewriting a
-    // capped file leaves every record of every request here until it
-    // catches up - memory the request rate decides. Past the ceiling the
-    // count is kept instead of the record, and the first record that fits
-    // again says on stderr how many there were.
+    int64_t unix_seconds = 0;
     size_t dropped = 0;
 };
-// The ceiling. Four megabytes is thousands of records, which is minutes
-// of a daemon being slow rather than one of it being gone.
+// Four megabytes is thousands of records: minutes of a slow daemon, not one that is gone.
 inline constexpr size_t kLogQueueCap = 4u * 1024 * 1024;
 
-// True when this record has no room. The caller writes nothing and the
-// count carries what was lost.
 bool log_queue_full(Logger &logger);
 
-// One response as one record. The format is ours (see Logger above); the
-// fields are not:
 //   status_code      RFC 9110 15
 //   content_length   RFC 9110 8.6 - octets of content, headers excluded
 //   method_token     RFC 9110 9.1
 //   request_target   RFC 9112 3.2
 //   referer          RFC 9110 10.1.3 - the RFC misspells it, so do we
 //   user_agent       RFC 9110 10.1.5
-//   peer             no RFC: the socket's address, already spelled
-//   unix_seconds     no RFC: the clock
-// The *_len fields are this record's framing, not content: their widths
-// are the truncation caps, which is why log_access clamps to them.
+// The *_len widths are the truncation caps, so log_access clamps to them.
 struct LogRec {
     uint8_t version;
     uint8_t flags;
@@ -1231,71 +1082,44 @@ struct LogRec {
 };
 inline constexpr uint8_t kLogRecVersion = 3;
 
-// One row of the password database, shared by webmachine-passwd, which
-// writes it, and the server, which verifies against it.
-//
 // The format is ours because argon2's own encoded form cannot carry the
-// ad parameter. So salt and cost are written here rather than read out
-// of a string.
-//
-// ad is the sub-database's name, and it is not stored: both sides
-// already hold it. A record therefore verifies only in the set it was
-// made for, and a row copied to another sub-database is unverifiable.
-//
-// Native widths and native order, because LMDB already refuses a file
-// written by another endianness or word size.
+// ad parameter. ad is the sub-database's name and is not stored: both
+// sides hold it, so a row copied to another sub-database is unverifiable.
+// Native widths and native order: LMDB already refuses a file written by
+// another endianness or word size.
 struct PasswdRec {
     uint8_t version;
     uint8_t salt_len;
     uint8_t hash_len;
-    uint8_t lanes;  // argon2's p
+    uint8_t lanes; // argon2's p
     uint32_t m_kib; // argon2's m, in KiB
-    uint32_t t;     // argon2's t
-    // When this user was first written, and when their password last
-    // changed. Seconds, the clock's, and they answer the questions an
-    // operator actually asks of a user list: who is new, and who has not
-    // changed a password since the cost was raised. A record whose m_kib
-    // is below what the machine now uses and whose mtime is old is
-    // exactly the row to ask about.
+    uint32_t t; // argon2's t
     int64_t ctime;
     int64_t mtime;
     // salt_len bytes of salt follow, then hash_len bytes of hash.
 };
 inline constexpr uint8_t kPasswdRecVersion = 1;
 
-inline constexpr uint8_t kLogH2 = 1;      // RFC 9113: the version token
-inline constexpr uint8_t kLogNoTrack = 2; // no RFC: operator's choice
+inline constexpr uint8_t kLogH2 = 1; // RFC 9113
+inline constexpr uint8_t kLogNoTrack = 2;
 
-// Combined Log Format: one response as one record. The five views and the
-// four numbers travelled together through fourteen arguments before -
-// see #std-first; this is what they are.
 struct AccessLine {
-    std::string_view peer;           // the socket's address, already spelled
-    std::string_view method_token;   // RFC 9110 9.1
+    std::string_view peer;
+    std::string_view method_token; // RFC 9110 9.1
     std::string_view request_target; // RFC 9112 3.2
-    std::string_view referer;        // RFC 9110 10.1.3 - the RFC misspells it
-    std::string_view user_agent;     // RFC 9110 10.1.5
-    size_t content_length = 0;       // RFC 9110 8.6 - content octets, no headers
-    uint16_t status_code = 0;        // RFC 9110 15
+    std::string_view referer; // RFC 9110 10.1.3 - the RFC misspells it
+    std::string_view user_agent; // RFC 9110 10.1.5
+    size_t content_length = 0; // RFC 9110 8.6 - content octets, no headers
+    uint16_t status_code = 0; // RFC 9110 15
     uint8_t flags = 0;
 };
 
-// Truncation caps are the wire fields' widths.
 void log_access(Logger &logger, const AccessLine &line);
 
-// One raise as one record. No format specifies this, and most of what is
-// in it has no RFC either - an exception class, a message and a
-// backtrace are mruby's.
-//   status_code           RFC 9110 15, or 0 when the raise never reached
-//                         an answer
-//   request_target        RFC 9112 3.2
-//   peer                  the socket's address
-//   exception_class,      mruby's. message_len is the exception's
-//   message, backtrace    message; LogRec's field of the same shape is a
-//                         method's length, so neither is called mlen.
-//   dynamic_len           the length argument of the second
-//                         io_uring_prep_send: the daemon reads this
-//                         fixed header, then takes that many bytes.
+//   status_code      RFC 9110 15, or 0 when the raise never reached an answer
+//   request_target   RFC 9112 3.2
+//   dynamic_len      the length of the second io_uring_prep_send: the daemon
+//                    reads this fixed header, then takes that many bytes
 struct ErrRec {
     uint8_t version;
     uint8_t flags;
@@ -1308,182 +1132,111 @@ struct ErrRec {
     uint16_t backtrace_len;
     uint8_t method_len;
     uint8_t steering_len;
-    // What the request carried, capped at kBodyKept - body_full_len is what
-    // it really was, so a record says "50 MB, here are the first 4 KB"
-    // rather than passing a truncation off as the whole of it.
+    // body_full_len is the real length, so a truncated body is not passed off as whole.
     uint16_t body_len;
     uint32_t body_full_len;
-    // #210: the fingerprint of what led here, as the page spells it. The
-    // same 16 bytes in both, so the hash a user reads off a page is the
-    // string that finds this record - no lookup table in between. app_build
-    // is the build it happened in, so a hash from before a deploy is told
-    // apart from one from the running code instead of being chased.
+    // The same 16 bytes the page spells, so the hash a user reads off a page
+    // finds this record. app_build tells a hash from before a deploy apart
+    // from one from the running code.
     char fingerprint[16];
     char app_build[16];
     uint32_t dynamic_len;
 };
 inline constexpr uint8_t kErrRecVersion = 2;
 inline constexpr size_t kFingerprintLen = 16;
-// How much of a request body one record keeps. The body is what an app
-// was asked to do, so it is what says why a raise happened - and it is
-// also whatever the app put there, which for a form login is a password.
-// An error log is a file with secrets in it; give it the permissions and
-// the retention that says so.
+// The body may hold a password, so an error log is a file with secrets in it.
 inline constexpr size_t kBodyKept = 4096;
 
-// When a body is worth lending instead of copying.
-//
-// A lend saves the copy and costs a segment: the head is in the sink and
-// the body is somewhere else, so the answer leaves as sendmsg with an
-// iovec instead of send with one pointer. Two profiles of the same h1
-// run say what that costs. Before the lend: io_send 2.26%, import_ubuf
-// 0.27%, io_send_setup 0.14%. After it: io_msg_copy_hdr 1.68,
-// copy_iovec_from_user 1.39, ____sys_sendmsg 1.42, __import_iovec 0.81,
-// io_net_import_vec 0.72, iovec_from_user 0.50, __copy_msghdr 0.13, plus
-// io_sendmsg_prep and io_sendmsg_setup. Five points of one core.
-//
-// examples/hello.rb has a 39-byte body. The copy it saves is nothing.
-// So a small body is copied, as it was, and a big one is lent - which is
-// the case the lend was written for: 300 stalled readers of a 64 KB
-// answer held 19.5 MB of duplicates.
-//
-// The number is a break-even and belongs to the machine that runs it.
-// bench/floor.sh moves it, not an argument.
+// A lend costs a segment: sendmsg with an iovec instead of send with one
+// pointer. Two h1 profiles measured it at five points of one core (before:
+// io_send 2.26%; after: io_msg_copy_hdr 1.68, ____sys_sendmsg 1.42,
+// copy_iovec_from_user 1.39, __import_iovec 0.81). A 39-byte body saves
+// nothing by a lend. 300 stalled readers of a 64 KB answer held 19.5 MB
+// of duplicates. bench/floor.sh moves this number.
 inline constexpr size_t kLendFloor = 4096;
 
-// What this build of the app is: FNV-1a over the bytecode the server
-// loaded, taken once at startup. Every fingerprint carries it, so a rake
-// that changed anything gives every failure a new hash - a hash reported
-// yesterday can never point at a line that has moved or a method that is
-// gone. A build property, not a request's: it is the same for every
-// answer this process gives.
+// FNV-1a over the bytecode the server loaded, taken once at startup.
+// Every fingerprint carries it, so a hash from before a deploy cannot
+// point at a line that has moved.
 uint64_t &app_build_hash();
 
-// FNV-1a, 64 bit (Fowler/Noll/Vo, offset basis and prime by the reference
-// implementation). One raise's fingerprint is this over everything that
-// led to it, fed piece by piece.
+// FNV-1a, 64 bit: offset basis and prime from the reference implementation.
 inline constexpr uint64_t kFnvBasis = 0xcbf29ce484222325ULL;
 uint64_t fnv1a(uint64_t headers, const void *bytes, size_t count);
-// A length in front of every piece, so two pieces that meet cannot spell
-// what a different pair would: "/a" + "bc" and "/ab" + "c" are two
-// fingerprints, not one.
+// A length in front of every piece, so "/a" + "bc" and "/ab" + "c" are
+// two fingerprints and not one.
 uint64_t fnv1a_piece(uint64_t headers, const void *bytes, size_t count);
-// The 16 lowercase hex digits a page shows and a log carries.
 void spell_fingerprint(char *out_value, uint64_t headers);
 
-// What one failure was: the request that led there, and the raise that
-// ended it. Read, never written, by everything below - the fingerprint is
-// this and nothing else, so a record and a page cannot disagree about
-// what the hash was taken over.
+// The fingerprint is taken over this and nothing else, so a record and a page cannot disagree.
 struct ErrFacts {
     const void *peer = nullptr;
     size_t peer_len = 0;
-    // The request, as far as it steered: the target the client asked for,
-    // the method it asked with, and the fields the server reads because
-    // they change the answer (spell_steering below). Referer and
-    // User-Agent are not among them - they steer nothing.
     const char *request_target = nullptr;
     size_t request_target_len = 0;
     const char *method = nullptr;
     size_t method_len = 0;
     const char *steering = nullptr;
     size_t steering_len = 0;
-    // The raise: what was thrown, what it said, and where from.
     const char *exception_class = nullptr;
     size_t exception_class_len = 0;
     const char *message = nullptr;
     size_t message_len = 0;
     const char *backtrace = nullptr;
     size_t backtrace_len = 0;
-    // What the request carried. Without it a raise inside a handler says
-    // where it happened and not what it was asked to do. body_full is what
-    // arrived; log_error keeps kBodyKept of it and records the rest as a
-    // number.
     const char *body = nullptr;
     size_t body_len = 0;
     size_t body_full = 0;
     uint16_t status_code = 0;
 };
 
-// The hash a user reads off the page and an operator greps the log for.
-// Everything that led here goes in, each piece behind its own length; the
-// message does not - the same fault at the same place under the same
-// request is one failure, whatever the exception chose to say about it.
+// The message is not in the hash: the same fault at the same place under
+// the same request is one failure, whatever the exception said.
 uint64_t fingerprint_of(const ErrFacts &field);
 
-// One raise as one record: a fixed header whose last field is the size of
-// the second send, then that many bytes - peer, class, target, message,
-// backtrace, method, steering, in that order.
+// A fixed header whose last field is the size of the second send, then
+// that many bytes: peer, class, target, message, backtrace, method, steering.
 void log_error(Logger &logger, const ErrFacts &field);
 
-// The server's own fault, spelled the same way at every call site: one
-// error-log record, class Webmachine::Error/17, never reaching the answer.
-// One internal failure as one record. The three views and the status
-// travelled together through eight arguments - see #std-first.
 struct ErrorLine {
-    std::string_view peer;           // the socket's address, already spelled
+    std::string_view peer;
     std::string_view request_target; // RFC 9112 3.2
-    std::string_view why;            // no RFC: ours, and it never repeats the request
-    uint16_t status_code = 0;        // RFC 9110 15
+    std::string_view why;
+    uint16_t status_code = 0; // RFC 9110 15
 };
 
 void log_internal_error(Logger &logger, const ErrorLine &line);
 
-// A raise inside a worker VM, written by the reactor. The exception
-// object itself cannot cross - an mrb_value belongs to the VM that made
-// it - so the worker spells it out as text and these are its words. The
-// worker's thread name goes into the message, because a fault that says
-// what broke and not where it ran sends the reader to the wrong core.
-// A raise inside a worker, reported on the reactor as the exception the
-// worker's VM made, decoded from CBOR. The step and the worker go into
-// the record's steering field, so the message stays the VM's own.
+// An mrb_value belongs to the VM that made it, so the worker spells the exception as text.
 struct ComputeFault {
-    std::string_view exception; // CBOR, may be empty when it could not cross
+    std::string_view exception; // CBOR
     std::string_view step;
     std::string_view worker_name;
     std::string_view peer;
     uint16_t status;
 };
 
-// A condition the server hit with nobody to answer for it: no request, no
-// peer, no status. The error log is where it belongs and it goes there
-// whole. stderr gets it only when no error log was configured, because
-// then there is nothing else to read - a line printed beside a log that
-// is being read is a line nobody reads.
 void say_server_error(Logger *logger, std::string_view why);
 
-// Which build this is. mruby's enable_debug defines MRB_DEBUG and the
-// ship configs do not, so this is the build's own word for itself and
-// not a second switch to keep in step with the first.
+// mruby's enable_debug defines MRB_DEBUG and the ship configs do not.
 #ifdef MRB_DEBUG
 inline constexpr bool kDebugBuild = true;
 #else
 inline constexpr bool kDebugBuild = false;
 #endif
 
-// The raise half of the facts, read off the VM. Defined in resource.cpp,
-// which is where a VM is.
-//
-// The caller fills what it knows of the request and owns `backtrace`,
-// which the facts point into. So one hash is taken over the whole and
-// handed to both the page and log_error.
-// What one raise leaves behind: the record's fields, and the backtrace
-// text they point into.
+// The caller owns `backtrace`, and the facts point into it.
 struct Raised {
     ErrFacts &facts;
     std::string &backtrace;
 };
 void exception_facts(mrb_state *mrb, Raised out_value);
 
-// A raise with no request around it: a stream that was answered long ago
-// and is now running app code of its own (SSE, a WebSocket). There is no
-// target and no method to name, so the fingerprint is the build, the
-// class and the place - which is exactly what such a failure is.
+// No request: a stream answered long ago now runs app code of its own.
+// There is no target and no method, so the fingerprint is the build, the
+// class and the place.
 void log_raise(Logger &logger, mrb_state *mrb, uint16_t status);
 
-// Every exception the VM raised and the server does not hand back to a
-// client goes through here: into the error log when there is one, and
-// on screen in a debug build, as the VM made it. Then it is cleared.
 void report_raise(Logger *logger, mrb_state *mrb, uint16_t status);
 void fault_report(Logger *logger, mrb_state *mrb, const ComputeFault &one);
 } // namespace webmachine
@@ -1507,7 +1260,7 @@ constexpr bool tok_eq(std::string_view text, std::string_view lit)
     return true;
 }
 
-// RFC 9110 13.1.1/13.1.2: If-Match / If-None-Match spell "any" as *.
+// RFC 9110 13.1.1 / 13.1.2: If-Match and If-None-Match spell "any" as *.
 constexpr bool star_value(const char *value, size_t count)
 {
     if (count == 1 && value[0] == '*')
@@ -1548,11 +1301,9 @@ inline flow::Method parse_method(const char *method, size_t count)
     return flow::Method::kOther;
 }
 
-// RFC 9110 8.3: text/* without parameters gets charset=utf-8. Setup only,
-// and every writer goes through here.
+// RFC 9110 8.3: text/* without parameters gets charset=utf-8.
 std::string with_charset(const std::string &type);
 
-// A literal's length, at compile time.
 constexpr size_t clen(const char *sqe)
 {
     size_t n = 0;
@@ -1560,8 +1311,7 @@ constexpr size_t clen(const char *sqe)
         n++;
     return n;
 }
-// RFC 6839 / RFC 9110 8.3: is a body of this type worth compressing?
-// Structural, conservative downward, decided once per resource.
+// RFC 6839: +json and +xml are structured-syntax suffixes.
 constexpr bool compressible_media_type(const char *value, size_t count)
 {
     size_t tn = 0;
@@ -1583,11 +1333,9 @@ constexpr bool compressible_media_type(const char *value, size_t count)
     }
     return false;
 }
-// RFC 6839: the same question, from a std::string.
 bool compressible_media_type(const std::string &value);
 namespace proof
 {
-// The table's own self-check, at compile time.
 constexpr bool ct(const char *sqe)
 {
     return compressible_media_type(sqe, clen(sqe));
@@ -1606,7 +1354,7 @@ static_assert(!ct("application/octet-stream"), "unknown is conservative no");
 static_assert(!ct(""), "empty is no, not a crash");
 } // namespace proof
 
-// RFC 9110 15: the status names.
+// RFC 9110 15.
 constexpr const char *reason(uint16_t status)
 {
     switch (status) {
@@ -1673,25 +1421,22 @@ constexpr const char *reason(uint16_t status)
 inline constexpr char kDatePlaceholder[] = "Sun, 00 Jan 1970 00:00:00 GMT";
 inline constexpr size_t kDateLen = sizeof(kDatePlaceholder) - 1;
 
-// Two digits, zero-padded, at out[0..1].
 void write_two_digits(char *out_value, int value);
 
-// RFC 9110 5.6.7: IMF-fixdate by hand - strftime would obey the locale.
+// RFC 9110 5.6.7: IMF-fixdate by hand, because strftime obeys the locale.
 void date_core(char out_value[kDateLen], const struct tm &broken_time);
 
-// RFC 9110 8.6: "Content-Length: N\r\n\r\n", spelled by hand.
 size_t spell_content_length(char (&buf)[40], size_t length);
 
-// RFC 9112 7.1: one octet of a chunk size. -1 = not a hexadecimal digit.
+// RFC 9112 7.1: one hexadecimal digit of a chunk size.
 int hex_digit(char character);
 
 enum class ClStatus : uint8_t { kOk, kBad, kOverflow };
 // RFC 9110 8.6: 1*DIGIT. kBad is the caller's 400, kOverflow its 413.
 ClStatus parse_content_length(std::string_view value, size_t *out_value);
 
-// RFC 9110: the ten fields Resource#request hands back by name. The one
-// pass over the field array notes where each one sits; a later ask is a bit
-// test and an index, never a second walk over the fields.
+// One pass over the field array notes where each of these sits. A later
+// ask is a bit test and an index, never a second walk.
 enum class NamedField : uint8_t {
     kContentType,
     kContentLength,
@@ -1706,35 +1451,23 @@ enum class NamedField : uint8_t {
     kCount
 };
 
-// The parsed field array and how many fields it holds - the pair every
-// stored position is only meaningful against.
 struct HeaderList {
     const struct phr_header *items;
     size_t count;
 };
 
 struct NamedFieldIndex {
-    // The index never leaves. A stored position means something only for
-    // the array it was taken from, so reading one means handing that array
-    // back in: `find` applies the index and answers nullptr for anything
-    // it cannot reach. Nobody outside can apply it to another array.
-    //
-    // The static_assert below fixes the byte width, and `find` checks the
-    // length of this request's array.
-    //
-    // Declared here, defined in request.cpp, where the framer's header has
-    // been included and phr_header is complete.
+    // A stored position means something only for the array it was taken
+    // from, so `find` takes that array back in and answers nullptr for
+    // anything it cannot reach.
     const struct phr_header *find(NamedField field, HeaderList fields) const;
 
     constexpr void note(NamedField field, size_t i)
     {
-        // The framer kept no slot for this one (its field array was full), so
-        // there is no place to point at and the bit stays clear.
         if (i > 255)
             return;
         const auto block = static_cast<uint8_t>(field);
-        // RFC 9110 5.2: a repeated field is one list, and the first occurrence
-        // is where it starts. A second Host is the framer's 400, not ours.
+        // RFC 9110 5.2: a repeated field is one list, and the first occurrence starts it.
         if (((present >> block) & 1u) != 0)
             return;
         present = static_cast<uint16_t>(present | (1u << block));
@@ -1746,10 +1479,8 @@ struct NamedFieldIndex {
     }
 
   private:
-    // One bit per NamedField. A field the request did not carry has no
-    // position, and the bit is how that is said.
     uint16_t present = 0;
-    // Its place in the field array. kMaxHeaders is 64, so a byte holds it.
+    // kMaxHeaders is 64, so a byte holds it.
     uint8_t index[static_cast<size_t>(NamedField::kCount)] = {};
 };
 struct ReqValues {
@@ -1769,42 +1500,32 @@ struct ReqValues {
     const char *if_range = nullptr;
     size_t if_range_len = 0;
 
-    // Handed to a callback that declared the parameter: b8 gets
-    // Authorization (RFC 9110 11.6.2), b5 gets Content-Type (8.3).
+    // b8 gets Authorization (RFC 9110 11.6.2), b5 gets Content-Type (8.3).
     const char *authorization = nullptr;
     size_t authorization_len = 0;
     const char *content_type = nullptr;
     size_t content_type_len = 0;
-    // The values the 1:1 runtime reads: c4 negotiates against Accept
-    // (12.5.1), request.base_uri and request.cookies read Host (7.2) and
-    // Cookie (RFC 6265).
+    // c4 negotiates against Accept (RFC 9110 12.5.1). request.base_uri and
+    // request.cookies read Host (7.2) and Cookie (RFC 6265).
     const char *accept = nullptr;
     size_t accept_len = 0;
     const char *host = nullptr;
     size_t host_len = 0;
     const char *cookie = nullptr;
     size_t cookie_len = 0;
-    // If-Unmodified-Since / If-Modified-Since, parsed at the switch
-    // (5.6.7); valid only when the facts' if_unmodified_since_valid/if_modified_since_valid bit
-    // says.
+    // RFC 9110 5.6.7. Valid only when the matching *_valid fact is set.
     int64_t if_unmodified_since_epoch = 0;
     int64_t if_modified_since_epoch = 0;
     NamedFieldIndex named;
-    // RFC 9110 5.3: the field came more than once. The span above is the
-    // first line's; a reader that wants all of them joins the field array
-    // (join_repeated_fields). RFC 9113 8.2.3 lets an h2 client split
-    // Cookie, and a list field may come split on either protocol.
+    // RFC 9110 5.3: the field came more than once, and the span above is the
+    // first line's. RFC 9113 8.2.3 lets an h2 client split Cookie.
     bool cookie_repeats = false;
     bool if_none_match_repeats = false;
 };
 
-// #80: every pointer in ReqValues, in one place. A parked run rebases
-// all of them onto bytes it owns, and rebasing eleven of twelve leaves
-// a dangling pointer on the rarest path there is. One list is one thing
-// to be right about.
-//
-// The size assert is the guard: add a field to the struct above and the
-// build stops until it is listed here too.
+// A parked run rebases every pointer in ReqValues, and one missed is a
+// dangling pointer. The size assert stops the build when a field is added
+// and not listed here.
 inline constexpr const char *ReqValues::*kReqValueSpans[] = {
     &ReqValues::log_ref,  &ReqValues::log_ua,        &ReqValues::accept_encoding,
     &ReqValues::if_match, &ReqValues::if_none_match, &ReqValues::range,
@@ -1815,51 +1536,27 @@ static_assert(sizeof(ReqValues) == 224,
               "ReqValues changed shape: a new field belongs in kReqValueSpans, and a "
               "removed one has to leave it - see #80, the parked run's rebase");
 
-// A pointer that has to follow a copy. `was` is the run of bytes that
-// moved, `now` is the same run in its new place.
-//
-// True when `was` held the pointer, and it then names the same octet of
-// `now`. False when `was` never held it - a literal, or the bytes of
-// another buffer - and then the pointer stays where it is.
-//
-// Nothing here is arithmetic of ours. std::less orders any two pointers,
-// which is the question this asks: `<` between pointers into two
-// different objects is undefined. std::distance says how far into `was`
-// the pointer sat, and std::next walks that far into `now`.
+// std::less orders two pointers into different objects, where `<` is
+// undefined.
 bool follow_copy(std::string_view was, std::string_view now, const char *&bytes);
 
-// Every span in `value` that `was` held, moved into `now`. A null span
-// stays null: it names no bytes, so there is nothing to follow.
 void rebase(ReqValues &value, std::string_view was, std::string_view now);
 
-// #210: the fields this request steered by, one per line, for the error
-// record and the fingerprint over it. These are the ones the server reads
-// because they change the answer - which is why ReqValues holds them at
-// all. Referer and User-Agent sit beside them in that struct and are not
-// here: they are the access log's, and they steer nothing.
-//
-// Authorization is named by its scheme and never by what follows it
-// (RFC 9110 11.6.2; the schemes are Basic 7617, Bearer 6750, Digest
-// 7616, and whatever else the IANA registry grows). Which scheme ran
-// decides which code ran; the credential decides nothing and belongs in
-// no file. Cookie is named without its value for the same reason.
+// Referer and User-Agent steer nothing, so they stay out of the fingerprint.
+// Authorization is named by its scheme and never by what follows it (RFC
+// 9110 11.6.2): the credential belongs in no file. Cookie is named without
+// its value for the same reason.
 void spell_steering(const ReqValues *value, std::string &out_value);
 
-// A run of digits at v[i], cursor left on the first that is not one.
-// False = none there, or the value does not fit a size_t.
 bool read_size(const char *value, size_t count, size_t &i, size_t *out_value);
 
 enum class RangeParse : uint8_t { kNone, kOne, kUnsat };
-// RFC 9110 14.1.2: one range over the selected representation's octets.
-// kNone means act as if the field were absent (14.2 permits it).
-// The Range field's value, and the length of the representation it is
-// measured against.
+// RFC 9110 14.1.2. kNone means act as if the field were absent, which 14.2 permits.
 struct RangeField {
     std::string_view value;
     size_t complete;
 };
 
-// The one range it named, inclusive at both ends.
 struct ByteRange {
     size_t first;
     size_t last;
@@ -1867,39 +1564,24 @@ struct ByteRange {
 
 RangeParse parse_range(RangeField field, ByteRange &out_value);
 
-// RFC 9110 14.2: one validator, compared strongly; a date reads as no match.
+// RFC 9110 14.2: one validator, compared strongly. A date reads as no match.
 bool if_range_matches(std::string_view value, std::string_view poll_tag);
 
-// RFC 9110 12.5.3: may gzip be sent? Most specific wins; an absent field
-// never reaches this parse.
+// RFC 9110 12.5.3: the most specific match wins.
 bool gzip_acceptable(const char *value, size_t count);
 
-// RFC 9111 4.2.2: a response with a validator and no freshness directive
-// lets a cache guess how long it stays fresh, and the guess is a fraction
-// of the age of the representation. An index page is the case that breaks
-// under it: the target "/" keeps its name while the page behind it
-// changes, so a browser that guessed once answers the old page for as
-// long as the guess lasts, and no update ever lands.
-//
-// A target whose path ends in "/" names such a page. A target that names
-// a file does not: "/app.7f3c.js" is a new name for new bytes, and the
-// asset tier gives it a year.
+// RFC 9111 4.2.2: a cache may guess freshness from a validator. The target
+// "/" keeps its name while the page behind it changes, so a guessed index
+// page never updates. "/app.7f3c.js" is a new name for new bytes.
 bool target_names_a_directory(std::string_view target);
 
-// RFC 9111 5.2.2.4: "no-cache" lets a cache keep the answer and makes it
-// revalidate before every reuse. The Last-Modified and the ETag this
-// server already sends then answer the conditional request with a 304, so
-// the copy is kept and an update lands at the next request.
+// RFC 9111 5.2.2.4: no-cache keeps the copy and revalidates it before every reuse.
 inline constexpr char kNoCacheLine[] = "Cache-Control: no-cache\r\n";
 
-// Does this run's field lines already say how long the answer stays
-// fresh? Cache-Control wins over Expires where both are present, so a
-// default written over either one would cancel what the author asked for.
+// Cache-Control wins over Expires where both are present (RFC 9111 4.2.1).
 bool freshness_is_stated(std::string_view field_lines);
 
-// RFC 9110 13.1.1/13.1.2: the field's list of entity-tags, the selected
-// representation's own tag, and which comparison applies - strong for
-// If-Match, weak for If-None-Match.
+// RFC 9110 13.1.1 / 13.1.2: strong for If-Match, weak for If-None-Match.
 struct EtagMatch {
     std::string_view list;
     std::string_view tag;
@@ -1908,14 +1590,11 @@ struct EtagMatch {
 
 bool etag_list_match(EtagMatch method);
 
-// Exactly k digits at p[at], as one number. -1 = one of them is not a digit.
 int read_fixed_digits(const char *bytes, size_t index, size_t k);
 
-// The three-letter month name at p[at], 1..12. -1 = none of them.
 int read_month_name(const char *bytes, size_t index);
 
 // days_from_civil (Howard Hinnant): proleptic Gregorian, no libc.
-// One civil date and time, as the fields a Date line spells.
 struct Civil {
     int y;
     int m;
@@ -1927,77 +1606,52 @@ struct Civil {
 
 int64_t epoch_from_civil(Civil conn);
 
-// RFC 9110 5.6.7: an HTTP-date in any of its three forms - IMF-fixdate
-// ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete RFC 850
-// ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
-// ("Sun Nov  6 08:49:37 1994") - to Unix seconds. False = not a date.
+// RFC 9110 5.6.7: IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT"), obsolete
+// RFC 850 ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime
+// ("Sun Nov  6 08:49:37 1994").
 bool parse_http_date(const char *bytes, size_t count, int64_t *out_value);
 
-// RFC 9110 12.5.1: choose among the provided types given an Accept
-// value - q-values and both wildcard forms, most specific match per
-// type, highest q wins, the provided order breaks ties (webmachine
-// conneg semantics). -1 = nothing acceptable (406). `types` may carry
-// parameters; matching reads only the type/subtype half.
-// RFC 9110 12.5.1: the media types this resource provides, and the Accept
-// the request sent.
+// RFC 9110 12.5.1: most specific match per type, highest q wins, the
+// provided order breaks ties. Matching reads only the type/subtype half.
 struct Conneg {
     std::span<const std::string> provided;
     std::string_view accept;
 };
 
 // RFC 9110 12.5.1: an exact type/subtype is the most specific match a
-// range can be. So a first range that is the offered type answers the
-// whole question - nothing later can outrank it, and one memcmp
-// settles it whatever follows.
-//
-// Deliberately narrow: a parameter on that first range, or a case that
-// does not match byte for byte, falls back to choose_media_type, which
-// is case-insensitive and weighs q properly.
+// range can be, so a first range equal to the offered type settles the
+// question. A parameter or a case difference falls back to choose_media_type.
 bool accept_is_exact(std::string_view accept, std::string_view type);
 
 int choose_media_type(Conneg conn);
 
-// RFC 9110 8.8.3: spell an application-supplied ETag for the wire - an
-// already-quoted or weak form passes verbatim, bare bytes are quoted
-// (webmachine ETag.new semantics).
+// RFC 9110 8.8.3: a quoted or weak form passes verbatim, bare bytes are quoted.
 void etag_spell(const char *raw, size_t count, std::string &out_value);
 
-// RFC 3986 5.3: a reference and the base it is resolved against.
 struct UriRef {
     std::string_view base;
     std::string_view ref;
 };
 
-// The n11 subset: join create_path onto a base. A full URI passes
-// verbatim; an absolute-path ref replaces the base's path; a relative
-// segment appends after the base's last '/'.
+// RFC 3986 5.3: a full URI passes verbatim, an absolute-path ref replaces
+// the base's path, a relative segment appends after the base's last '/'.
 void uri_join(UriRef round, std::string &out_value);
 
-// RFC 9110 5.1 / 5.6.2: a field name is a token. Both writers that put
-// a field in an answer call this, so the shape is decided here and
-// nowhere after.
-//
-// Without it, an app that answers `generate_etag` with
-// "v1\r\nSet-Cookie: a=b" splices a whole field into the answer - and
-// an app that echoes a request header hands that splice to whoever
-// sent the request.
-// RFC 9110 6.1: the fields that say how a message is framed, and the
-// ones that belong to one hop. The server spells all of these itself -
-// Content-Length from the body it is about to send, Connection from what
-// the request allowed - so a resource that writes one of them puts a
-// second copy on the wire. Two Content-Length fields are what a proxy
-// and this server then disagree about, which is a response desync; over
-// HTTP/2 the hop-by-hop names are refused outright (RFC 9113 8.2.2).
+// RFC 9110 6.1: the server spells Content-Length and Connection itself, so
+// a resource that writes one puts a second copy on the wire. Two
+// Content-Length fields are a response desync. Over HTTP/2 the hop-by-hop
+// names are refused (RFC 9113 8.2.2).
+// RFC 9110 5.1 / 5.6.2: a field name is a token. Without the check, an app
+// that answers generate_etag with "v1\r\nSet-Cookie: a=b" splices a field
+// into the answer.
 bool field_name_is_the_servers(const char *bytes, size_t count);
 
 bool field_name_ok(const char *bytes, size_t count);
 
-// Eight octets at a time, for the rules that read every octet of a
-// value. A word minus 0x01 in every octet, and-not the word, and 0x80
-// in every octet, is non-zero exactly when an octet was zero. The XOR
-// with an octet repeated eight times turns "is CR" and "is LF" into the
-// same zero test. Under n of 0x80, the same form with n in place of
-// 0x01 is non-zero exactly when an octet is under n.
+// Eight octets at a time. A word minus 0x01 in every octet, and-not the
+// word, and 0x80 in every octet, is non-zero exactly when an octet was
+// zero. XOR with a repeated octet turns "is CR" into the same zero test.
+// With n in place of 0x01 it is non-zero exactly when an octet is under n.
 inline constexpr uint64_t kOctet01Repeated = 0x0101010101010101ULL;
 inline constexpr uint64_t kOctet80Repeated = 0x8080808080808080ULL;
 
@@ -2022,9 +1676,9 @@ constexpr bool word_is_field_value(uint64_t word)
            !word_has_zero_octet(word ^ octet_repeated('\n'));
 }
 
-// RFC 9110 5.5: a field value carries no CR, no LF and no NUL. Obs-fold
-// is gone from HTTP/1.1 (RFC 9112 5.2) and RFC 9113 8.2.1 makes either
-// byte a malformed h2 field, so one rule serves both writers.
+// RFC 9110 5.5: a field value carries no CR, LF or NUL. Obs-fold is gone
+// (RFC 9112 5.2) and RFC 9113 8.2.1 makes either byte malformed, so one
+// rule serves both writers.
 inline bool field_value_ok(const char *bytes, size_t count)
 {
     std::string_view left(bytes, count);
@@ -2042,10 +1696,7 @@ inline bool field_value_ok(const char *bytes, size_t count)
     return true;
 }
 
-// RFC 9110 5.1: a field name is known by its length first. The switches
-// below have a case for these and no other, so a name of any other length is
-// none of them - one shift and one test, before a byte is compared. The mask
-// is derived from the list, so a new case cannot forget to widen it.
+// The mask is derived from the list, so a new case cannot forget to widen it.
 constexpr uint32_t lengths_mask(const size_t *value, size_t count)
 {
     uint32_t m = 0;
@@ -2058,7 +1709,7 @@ constexpr bool length_is_one_of(size_t nlen, uint32_t mask)
     return nlen < 32 && ((mask >> nlen) & 1u) != 0;
 }
 
-// RFC 9110: dnt(3) host(4) range(5) accept/cookie(6) sec-gpc(7)
+// dnt(3) host(4) range(5) accept/cookie(6) sec-gpc(7)
 // if-match/if-range(8) content-type(12) authorization/if-none-match(13)
 // accept-charset(14) accept-encoding/accept-language(15)
 // if-modified-since(17) if-unmodified-since(19).
@@ -2066,23 +1717,18 @@ inline constexpr size_t kFieldLengths[] = {3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 17,
 inline constexpr uint32_t kFieldLengthMask =
     lengths_mask(kFieldLengths, sizeof(kFieldLengths) / sizeof(kFieldLengths[0]));
 
-// One header field as it lies in the head: its name and its value.
 struct Field {
     std::string_view name;
     std::string_view value;
 };
 
-// Where one request's parsed facts are being filled: the facts themselves,
-// the values that point back into the head, and the index of the field
-// being read - a value's own position is how the framer finds it again.
 struct FactSink {
     flow::ReqFacts &facts;
     ReqValues &vals;
     size_t at;
 };
 
-// RFC 9110: one length-switch per header. The 9110 facts are filled here;
-// true means the name is not one of them and the framer must read it.
+// True means the name is not one of the RFC 9110 facts and the framer must read it.
 static inline bool header_switch(Field field, FactSink into)
 {
     const char *const name = field.name.data();
@@ -2104,10 +1750,8 @@ static inline bool header_switch(Field field, FactSink into)
             break;
         case 4:
             if (tok_eq({name, nlen}, "host")) {
-                // The value is 9110's (request.base_uri reads it); the
-                // presence check stays the framer's (9112 requires Host), so
-                // this arm both keeps the bytes and falls through to the wire
-                // functor.
+                // RFC 9112 requires Host, so the presence check stays the framer's. This
+                // arm keeps the bytes and falls through to the framer.
                 vals.host = value;
                 vals.host_len = vlen;
                 vals.named.note(NamedField::kHost, at);
@@ -2123,11 +1767,8 @@ static inline bool header_switch(Field field, FactSink into)
             break;
         case 6:
             if (tok_eq({name, nlen}, "accept")) {
-                // Not plain = false: has_accept is asked separately by answer(),
-                // so the request path can clear it when the Accept turns out to
-                // name exactly what the route offers - a negotiation with one
-                // outcome, back on the shortcut. Everything else that clears
-                // plain stays as it is.
+                // `plain` stays true: answer() asks has_accept separately, so the request
+                // path can clear it when the Accept names exactly what the route offers.
                 facts.has_accept = true;
                 vals.accept = value;
                 vals.accept_len = vlen;
@@ -2169,7 +1810,6 @@ static inline bool header_switch(Field field, FactSink into)
             break;
         case 12:
             if (tok_eq({name, nlen}, "content-type")) {
-                // RFC 9110 8.3: b5's argument and accept_helper's key.
                 vals.content_type = value;
                 vals.content_type_len = vlen;
                 vals.named.note(NamedField::kContentType, at);
@@ -2178,7 +1818,6 @@ static inline bool header_switch(Field field, FactSink into)
             break;
         case 13:
             if (tok_eq({name, nlen}, "authorization")) {
-                // RFC 9110 11.6.2: b8's argument.
                 vals.authorization = value;
                 vals.authorization_len = vlen;
                 vals.named.note(NamedField::kAuthorization, at);
@@ -2188,7 +1827,6 @@ static inline bool header_switch(Field field, FactSink into)
                 facts.has_if_none_match = true;
                 facts.plain = false;
                 if (vals.if_none_match != nullptr) {
-                    // A star on any line is a star; the lines are joined by the reader.
                     if (star_value(value, vlen))
                         facts.if_none_match_star = true;
                     vals.if_none_match_repeats = true;
@@ -2227,11 +1865,11 @@ static inline bool header_switch(Field field, FactSink into)
             if (tok_eq({name, nlen}, "if-modified-since")) {
                 facts.has_if_modified_since = true;
                 facts.plain = false;
-                // 13.1.3: an unparseable date reads as "field absent" (l14).
+                // RFC 9110 13.1.3: an unparseable date reads as field absent (l14).
                 vals.named.note(NamedField::kIfModifiedSince, at);
                 facts.if_modified_since_valid =
                     parse_http_date(value, vlen, &vals.if_modified_since_epoch);
-                // 13.1.3: a date in the future is ignored (l15).
+                // RFC 9110 13.1.3: a date in the future is ignored (l15).
                 if (facts.if_modified_since_valid) {
                     facts.if_modified_since_future = vals.if_modified_since_epoch > ::time(nullptr);
                 }
@@ -2242,7 +1880,7 @@ static inline bool header_switch(Field field, FactSink into)
             if (tok_eq({name, nlen}, "if-unmodified-since")) {
                 facts.has_if_unmodified_since = true;
                 facts.plain = false;
-                // 13.1.4: same rule as IMS (h11).
+                // RFC 9110 13.1.4: the same rule as If-Modified-Since (h11).
                 vals.named.note(NamedField::kIfUnmodifiedSince, at);
                 facts.if_unmodified_since_valid =
                     parse_http_date(value, vlen, &vals.if_unmodified_since_epoch);
@@ -2258,65 +1896,38 @@ static inline bool header_switch(Field field, FactSink into)
 
 namespace webmachine
 {
-// RFC 9110 3.4: one request message, as the parser left it - every field
-// lent, nothing copied, valid for the frame that dispatches it. This is
-// what a run may read; it is not what a run may keep.
+// RFC 9110 3.4: every field is lent and valid for the frame that
+// dispatches it. A run may read this. A run may not keep it.
 struct ReqView {
-    // RFC 9112 3.2 / RFC 9113 8.3.1: the request-target, and how much of it
-    // is RFC 3986 3.3's path.
+    // RFC 9112 3.2 / RFC 9113 8.3.1. path_len is RFC 3986 3.3's path.
     const char *request_target = nullptr;
     size_t request_target_len = 0;
     size_t path_len = 0;
-    // RFC 9110 9: the method, folded to what the flow branches on and kept
-    // verbatim for what has to spell it back (405's Allow, the access line).
     flow::Method method = flow::Method::kGet;
     const char *method_token = nullptr;
     size_t method_token_len = 0;
-    // No RFC: this server's route table and what the match captured.
     const RouteTable *table = nullptr;
     int route = -1;
-    // Lent, not carried. The match loop's RouteSpans lives in the frame
-    // this view is read from, so pointing at it costs one store where a
-    // copy costs 280 bytes. nullptr where nothing matched.
+    // Lent from the caller's frame. A copy costs 280 bytes.
     const RouteSpans *spans = nullptr;
-    // RFC 9110 6.3: the header field section, in the parser's own layout.
-    // Only request.headers reads it - it is the one caller that asked for
-    // all of them. Every named accessor reads `values` instead.
     const void *fields = nullptr;
     size_t field_count = 0;
-    // Where the one pass found the ten fields Resource#request names. The
-    // field array is walked once; answering request.accept by walking it
-    // again would be that same work a second time.
     const http::ReqValues *values = nullptr;
-    // RFC 9110 4.2.2: the listener this came in on serves TLS, so
-    // request.base_uri says https.
     bool tls = false;
-    // RFC 9110 6.4: the request's content, lent for the frame like
-    // everything else here - the framer collected it (bounded by its own
-    // 413) and it dies with the dispatch. Null = no content arrived.
+    // RFC 9110 6.4. Lent for the frame: it dies with the dispatch.
     const char *content = nullptr;
     size_t content_len = 0;
-    // RFC 9110 6.4: a body of kBodySpill or more is in a file, not in the
-    // connection's buffer, so `content` is null and this names it instead.
-    // -1 says the body is where `content` points. content_len is the
-    // length either way.
+    // A body of kBodySpill or more is in a file, and then `content` is null.
+    // -1 says the body is where `content` points.
     int content_fd = -1;
-    // RFC 9110 6.4: is the whole body here? False says the client declared
-    // content that has not all arrived. The flow walks the head either
-    // way, and the three nodes that read content stop rather than ask a
-    // callback about a body that is still coming.
+    // False says the client declared content that has not all arrived.
     bool content_ready = true;
-    // RFC 9110 8.6: how many octets the client declared, which is not the
-    // same number as content_len. content_len is what is bound and
-    // readable now, and it is zero while the body is still coming. B4
-    // asks valid_entity_length? about the declared number, at the head,
-    // before one octet of content is read.
+    // RFC 9110 8.6: the declared count, which is not content_len. content_len
+    // is zero while the body is still coming. B4 asks about the declared
+    // number at the head.
     size_t declared_len = 0;
 };
 
-// RFC 9110 5.3: every line of one field, joined with `sep`, in the
-// order they came. Written for the rare request whose field came more
-// than once; the one-pass span in ReqValues is the first line only.
 void join_repeated_fields(const ReqView *value, std::string_view name, std::string_view sep,
                           std::string &out);
 
@@ -2324,40 +1935,22 @@ void request_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 void request_bind(const ReqView *view);
 
-// RFC 9110 12.5: the ReqValues a parked h2 stream no longer has, re-derived
-// from the fields it copied. Cold, and it lives in request.cpp so that
-// h2_dispatch stays header_switch's only caller in http2.cpp - two callers
-// there and the switch stops being inlined into the hot path.
+// Lives in request.cpp so that h2_dispatch stays header_switch's only
+// caller in http2.cpp. A second caller there stops the switch from inlining.
 void values_of_copied_fields(http::HeaderList headers, http::ReqValues &out_value);
 
-// RFC 9110: n11's create_path names a new disp_path for this run;
-// request_bind clears the override. request.cpp owns the storage.
 void request_disp_override(const char *bytes, size_t count);
 } // namespace webmachine
 
 namespace webmachine
 {
-// Webmachine's names, and they stay. Every cb_* below is a callback of
-// webmachine-ruby's Webmachine::Resource::Callbacks, spelled exactly as
-// an app spells it: content_types_provided, generate_etag,
-// moved_permanently?, post_is_create?. That is the contract, and it is
-// why no name here is abbreviated - an app has to be able to grep for
-// it. RFC 9110 names none of them; it says what each one decides, and
-// that clause sits in kFlow.
-//
-// The run_* slots are ours. They hold what one request's callbacks
-// produced, are reset at frame entry, and keep their capacity.
-// A C++ resource callback. Arguments arrive as C++ arguments, never through
-// mrb_get_args, so the function never reads the callinfo and may be
-// entered straight from C++ - which is what makes it cheaper than the
-// same callback written in Ruby, instead of dearer.
+// Every cb_* is a callback of webmachine-ruby's Resource::Callbacks,
+// spelled exactly as an app spells it. That is the contract, so no name
+// here is abbreviated. Arguments of a NativeCb arrive as C++ arguments and
+// never through mrb_get_args, so it never reads the callinfo and may be
+// entered straight from C++.
 using NativeCb = mrb_value (*)(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv);
 
-// Define one on a resource class. Ruby can still call it - a wrapper is
-// registered as an ordinary method - but the fold records the raw
-// pointer, and the engine calls that pointer.
-// One native callback to register: the name Ruby calls it by, the C++ body
-// the engine calls instead, and the argument spec the wrapper declares.
 struct Native {
     mrb_sym sym;
     NativeCb fn;
@@ -2365,23 +1958,15 @@ struct Native {
 };
 void define_native(mrb_state *mrb, struct RClass *conn, Native count);
 
-// #210: a run may hand over one of these (response.error_asset). The
-// definition is further down, with the tier that owns it - a run only
-// ever passes the handle on.
 struct AssetEntry;
 
-// #30: how many watchers one connection may run. It is what fits in the
-// tag's spare byte, and 256 is far past anything a connection has reason
-// to hold.
+// What fits in the tag's spare byte.
 inline constexpr unsigned kMaxWatchers = 256;
 
-// #30: how many jobs one stop can hand over. A node's own callback is
-// one. A value round asks for an ETag, a Last-Modified, an Expires and
-// a body, and the flow lets all four run at the same time - none of
-// them chooses an edge.
+// A node's own callback is one. A value round asks for an ETag, a
+// Last-Modified, an Expires and a body, and none of them chooses an edge,
+// so all four may run at the same time.
 inline constexpr int kValueJobs = 4;
-// What a job answers. kJobNode is a node's own callback, and it is
-// alone in its round.
 enum : uint8_t { kJobNode = 0, kJobEtag = 1, kJobLastModified = 2, kJobExpires = 3 };
 
 struct Resource {
@@ -2389,106 +1974,62 @@ struct Resource {
     flow::KonstSet konst;
     mrb_state *mrb = nullptr;
     struct RClass *klass = nullptr;
-    // The class's own class - where a `def self.x` lives. Kept because
-    // entering such a method directly needs the class it was found in, and
-    // the fold freezes klass, so this pointer is as stable as klass itself.
+    // Entering a `def self.x` method directly needs the class it was found
+    // in. The fold freezes klass, so this pointer is as stable as klass.
     struct RClass *meta_klass = nullptr;
     uint64_t dynamic = 0;
-    // #80: one bit per node whose callback a worker answers. A subset of
-    // `dynamic` - only a node the VM decides can be promised at all - and
-    // read in the same load, so a run knows before it enters the VM
-    // whether this node can stop. Zero for every resource that never says
-    // `compute`, which is what keeps the pool out of a server that has no
-    // use for it.
+    // A subset of `dynamic`, read in the same load, so a run knows before it
+    // enters the VM whether this node can stop.
     uint64_t compute = 0;
-    // #30: which nodes answer with a Webmachine::Watcher. Declared with
-    // `watch :is_authorized?`, the same shape as `compute` and for the
-    // same reason: the frame that can hold a stopped run is chosen before
-    // any callback runs, so the resource has to say so in advance.
-    //
-    // Unlike a compute task, the block here is never dumped - it runs in
-    // this VM, on this thread - so it may keep its environment and the
-    // callback may live on the instance.
+    // Nodes declared with `watch :name`. The block runs in this VM, so it
+    // may keep its environment and live on the instance.
     uint64_t watch = 0;
     mrb_sym node_sym[flow::kNodeCount] = {};
     mrb_method_t node_m[flow::kNodeCount] = {};
     bool node_irep[flow::kNodeCount] = {};
     NativeCb node_native[flow::kNodeCount] = {};
-    // One bit per node: its callback answers on the class, not on the live
-    // instance. Same reason as ValueCb::on_class - the method is resolved
-    // once, here, and never searched again.
     uint64_t node_on_class = 0;
     bool dynamic_body = false;
     bool gzip_offered = false;
-    // The engine frame is entered as a C++ call, not a Ruby one: no
-    // hidden class, no proc, no per-resource object for the GC to mark.
     bool init_needed = false;
-    // mruby: the initialize the fold resolved, entered directly by the run.
-    // Object's is undef'd on Webmachine::Resource, so init_needed means
-    // "the author wrote one".
-    //
-    // mrb_obj_new is never used: it would search for this same method
-    // twice per request to arrive where the fold already stands.
+    // Object's initialize is undef'd on Webmachine::Resource, so init_needed
+    // means the author wrote one.
     mrb_method_t init_m = {};
     bool init_irep = false;
     enum mrb_vtype live_tt = MRB_TT_OBJECT;
 
-    // How many arguments each node's callback asked for, read once at
-    // fold from its own signature. webmachine-ruby hands several of them
-    // one - is_authorized?(header), uri_too_long?(uri),
-    // known_content_type?(type), valid_content_headers?(headers),
-    // valid_entity_length?(length) - and a method that declared the
-    // parameter must not be called with nothing.
+    // webmachine-ruby hands several callbacks one argument. A method that
+    // declared the parameter must not be called with nothing.
     uint8_t node_argc[flow::kNodeCount] = {};
 
-    // A value callback: it answers with a String/Array/Time/Hash the
-    // engine marshals into C++ right after the yield, not with a
-    // truthiness the graph consumes. Resolved at fold like every other
-    // callback; `has` false = webmachine-ruby's default stands in C++.
     struct ValueCb {
         bool has = false;
         mrb_sym sym = {};
         mrb_method_t m = {};
         bool irep = false;
-        // A C++ callback registered through define_native, and the reason it
-        // is a separate pointer rather than "call the cfunc we resolved":
-        // mruby hands a cfunc its arguments through the callinfo the VM
-        // pushed (vm.c: check_argument_count, then MRB_METHOD_FUNC(m)(mrb,
-        // self)), so calling one from a C++ frame gives it the caller's
-        // registers and mrb_get_args reads a stranger's. Only a function
-        // whose convention we set can be entered directly - the same trick
-        // the VM plays on mrb_attr_reader, which it recognises by pointer.
+        // mruby hands a cfunc its arguments through the callinfo the VM pushed,
+        // so a cfunc called from a C++ frame reads a stranger's registers. Only a
+        // function whose convention we set can be entered directly.
         NativeCb native = nullptr;
-        // Which receiver: the live instance, or the class itself. The fold
-        // resolves both kinds, so neither is looked up again per request - an
-        // undefined m used to be the marker for "class-only", and it cost a
-        // full mrb_funcall_argv every time it was read.
         bool on_class = false;
     };
-    ValueCb cb_known_methods; // instance-level; class-level folds konst
+    ValueCb cb_known_methods;
     ValueCb cb_allowed_methods;
-    ValueCb cb_content_types_provided; // instance content_types_provided
-    ValueCb cb_content_types_accepted; // content_types_accepted (accept_helper)
-    ValueCb cb_options;                // b3: Hash of extra response fields
-    ValueCb cb_variances;              // Vary's tail (helpers.rb variances)
-    ValueCb cb_generate_etag;          // generate_etag
+    ValueCb cb_content_types_provided;
+    ValueCb cb_content_types_accepted;
+    ValueCb cb_options;
+    ValueCb cb_variances;
+    ValueCb cb_generate_etag;
     ValueCb cb_last_modified;
     ValueCb cb_expires;
-    ValueCb cb_moved_permanently; // i4/k5: String/URI = Location + 301
-    ValueCb cb_moved_temporarily; // l5: String/URI = Location + 307
-    ValueCb cb_post_is_create;    // n11's fork
+    ValueCb cb_moved_permanently;
+    ValueCb cb_moved_temporarily;
+    ValueCb cb_post_is_create;
     ValueCb cb_create_path;
     ValueCb cb_base_uri;
     ValueCb cb_process_post;
-    ValueCb cb_finish_request; // after the walk, always (fsm.rb ensure)
+    ValueCb cb_finish_request;
 
-    // `dynamic` above answers "is this flow node decided by the VM" in one
-    // load. `cb_mask` answers "does this value callback exist" the same
-    // way, one bit per ValueCb.
-    //
-    // So a node handler that only needs the yes or no never loads the
-    // ValueCb itself; its payload is touched once the bit says yes. Set at
-    // the fold, read every run.
     enum CbBit : uint32_t {
         kCbKnownMethods = 1u << 0,
         kCbAllowedMethods = 1u << 1,
@@ -2508,292 +2049,165 @@ struct Resource {
         kCbFinishRequest = 1u << 15,
     };
     uint32_t cb_mask = 0;
-    // The mask of the three callbacks that read the request body. A
-    // resource reaches the body through kN11 (post_is_create? ->
-    // create_path or process_post) or through kO14 and kP3 (is_conflict?
-    // -> content_types_accepted). A resource that defines none of them
-    // has no node that can ask for the body.
+    // A resource reaches the body through kN11 (create_path or process_post)
+    // or through kO14 and kP3 (content_types_accepted).
     static constexpr uint32_t kCbBodyReaders =
         kCbContentTypesAccepted | kCbCreatePath | kCbProcessPost;
-    // Can any node of this resource read the request body? Folded once,
-    // so both writers can decide on the head alone whether to keep the
-    // octets of a body or to step over them.
     bool takes_body = false;
-    // #54: the callbacks `reads_body` named, and the ones it named with
-    // `save: true`. Every stop this server makes is declared, and waiting
-    // for octets is a stop.
-    //
-    // A body that a callback may save goes to a file whatever its size,
-    // so request.body.save is a link and never a second write. That is
-    // what the head reads this for, before the first octet.
+    // A body a callback may save goes to a file whatever its size, so
+    // request.body.save is a link and never a second write.
     bool saves_body = false;
-    // The callbacks `reads_body` named. One of process_post and
-    // create_path, or a handler that content_types_accepted points at -
-    // that callback is the one a body reaches, and the mapping itself
-    // never sees one.
     std::vector<mrb_sym> body_readers;
     std::vector<mrb_sym> body_savers;
-    // RFC 9110 15.5.14: what this resource accepts as a request body, in
-    // octets, from `def self.max_body`. -1 means this resource said
-    // nothing, and the application's number answers instead.
-    //
-    // The nearest answer wins: the resource, then conf.max_body, then
-    // kMaxBodyDefault. A resource that serves uploads raises its own
-    // limit without raising it for every route of the application.
+    // RFC 9110 15.5.14. -1 means this resource said nothing. The nearest
+    // answer wins: the resource, then conf.max_body, then kMaxBodyDefault.
     long long max_body = -1;
-    // The media types this resource asked to sniff, from `sniff: true` on
-    // a content_types_accepted row. Only the class form of that callback
-    // can be read at fold time, and only what is read here can refuse a
-    // body at its first buffer; the row is checked again when the flow
-    // reaches accept_helper, which is what an instance-level
-    // content_types_accepted gets instead.
-    //
-    // A resource accepts a handful of types, so this is a short list and
-    // a walk over it is cheaper than anything with a hash in it.
+    // Only the class form of content_types_accepted can be read at fold time.
+    // An instance-level one is checked again when the flow reaches accept_helper.
     std::vector<std::string> sniff_types;
 
-    // Konst-folded content_types_provided: [type, handler] in the
-    // resource's own order, [0] the default choice (c3 with no Accept).
-    // Never empty after fold - the default is [["text/html", :to_html]].
+    // Never empty after fold: the default is [["text/html", :to_html]].
     struct TypedHandler {
         std::string type;
         mrb_sym handler = {};
         mrb_method_t m = {};
         bool irep = false;
         NativeCb native = nullptr;
-        // cb.rb: a handler written as `def self.x` is asked once, at setup -
-        // the same rule the first pair has always followed. `baked` is what it
-        // answered; without it a negotiated second type would look the handler
-        // up on the instance and find whatever Object happens to define.
+        // A handler written as `def self.x` is asked once, at setup. `baked` is
+        // what it answered.
         std::string baked;
         bool has_baked = false;
     };
     std::vector<TypedHandler> content_types_provided;
 
-    // #80: everything one request writes on the way through, in one place.
-    //
-    // A run that parks is why it is one struct: the next request on the
-    // same route would otherwise write these while the parked run still
-    // needs them. The parked run takes the whole struct with it and gives
-    // it back on the way in - one move each way, and no member list that
-    // can be short by one.
+    // One struct, because a parked run takes the whole of it with it and
+    // gives it back on the way in.
     struct RunState {
         mrb_value live = {};
-        // #80: where the walk stands. A run that parks returns out of the
-        // node loop, and these three are what it re-enters with - the node
-        // it stopped before, the status it had collected, and the media type
-        // conneg had settled on. Nothing of a Ruby stack is here, because
-        // the stop is between callbacks and never inside one.
+        // The stop is between callbacks and never inside one, so nothing of a
+        // Ruby stack is here.
         flow::Node stop_node = flow::Node::kB13;
         uint16_t stop_status = 0;
         int chosen = 0;
-        // May this run stop at all? The konst tier and the error resource
-        // say no: they are not called through a frame that could hold a
-        // parked run, and a stop with nobody to resume it is a hang.
+        // The konst tier and the error resource say no: a stop with nobody to
+        // resume it is a hang.
         bool can_park = false;
-        // It stopped, and the reactor has the job now.
         bool stopped = false;
-        // #36: the third reason a run stops, beside a worker and a watcher.
-        // This one owes nothing to the reactor: the connection is already
-        // reading the body, and the run goes on when the last octet lands.
         bool wants_body = false;
-        // #36: the walk asked about content once. Set at the first of the
-        // three nodes that read it, so a walk that comes back to that node
-        // does not stop on it a second time.
+        // Set at the first node that reads content, so a walk that comes back does not stop twice.
         bool content_seen = false;
-        // The worker answered, and the answer is `answer`. The node the run
-        // re-enters reads this instead of calling its callback - that is the
-        // whole of "the graph carries on from B8".
         bool answered = false;
         mrb_value answer = {};
-        // #80: what the stopped run owes a worker - which block, and the
-        // arguments this request built for it. The arguments are an Array
-        // in this VM until the reactor turns them into CBOR.
-        // The block itself, until the reactor interns it. It is a value of
-        // this VM, so it never leaves this struct - what leaves is the id
-        // the intern answers with.
+        // The block is a value of this VM, so it never leaves this struct. What
+        // leaves is the id the intern answers with.
         struct HeldTask {
             mrb_value block = {};
             mrb_value args = {};
             double deadline = 0.0;
-            // Which answer this task is: a node's own callback, or one of the
-            // values a round asks for at the same time.
             uint8_t what = 0;
         };
         HeldTask compute_task[kValueJobs];
-        // How many tasks this stop holds. One for a node's own callback.
         uint8_t compute_task_count = 0;
-        // #30: the Watcher this run stopped on. A value of this VM, held
-        // until the frame hands it to the connection - the connection's hash
-        // is what roots it while the run waits.
-        // #30: what the application itself carries from one callback to the
-        // next. A Hash, made when a callback first asks for it, and let go
-        // when the run ends. The run frame is its whole life - a value put
-        // here in generate_etag is there in to_html, and it is gone before
-        // the next request on this connection.
-        // #30: `response.userdata` - one slot the application carries from
-        // one callback of this run to the next. Undef until something is
-        // put there, so a run that never uses it allocates nothing and
-        // Ruby never sees the undef. The server never reads what is in it.
+        // Undef until something is put there, so a run that never uses it
+        // allocates nothing. The server never reads what is in it.
         mrb_value userdata = {};
         bool userdata_held = false;
         mrb_value watch[kValueJobs] = {};
         uint8_t watch_what[kValueJobs] = {};
         uint8_t watch_count = 0;
-        // #30: the value round started. It starts once per run, at the
-        // first node that needs any of its answers.
         bool values_started = false;
         const flow::ReqFacts *facts = nullptr;
         std::string *body = nullptr;
         bool have_body = false;
-        // #210 response.error_asset: the entry, not its bytes. The error
-        // assets are mapped for the life of the process, and both writers
-        // already know how to put a mapped entry on the wire.
-        //
-        // So this run hands over the same handle the asset tier does, and
-        // nothing is rooted, copied or released for it.
+        // The error assets are mapped for the life of the process, so nothing is
+        // rooted, copied or released for this handle.
         const AssetEntry *asset = nullptr;
         uint16_t status = 0;
-        // Zero-copy hand-off: at or above run_zc_min bytes the body handler's
-        // own String is frozen and rooted and lent to the writer, instead of
-        // being copied into run_body. 0 = never lend, which is every caller
-        // that does not pass a threshold.
+        // 0 = never lend.
         size_t zc_min = 0;
         mrb_value zc = {};
         bool zc_have = false;
 
-        // Per-request slots for the runtime tier, all reset by resource_run
-        // at frame entry. `run_headers` takes the field lines this request
-        // produced; the writer appends it between the prebuilt head and
-        // Content-Length, which is exactly where the prebuilt head stops, so
-        // no prebuilt byte moves.
         std::string *headers = nullptr;
         const http::ReqValues *vals = nullptr;
         const ReqView *req = nullptr;
-        // response.code= / response.do_redirect (response.cpp writes these;
-        // the flow's halt seeds run_resp_code, finish_request may change it
-        // - fsm.rb's respond order).
         uint16_t resp_code = 0;
         bool redirect = false;
-        // The conneg choice when the head cannot stay prebuilt: non-empty
-        // means the writer spells this Content-Type in a dynamic head.
-        // Empty means the prebuilt path.
-        //
-        // There is no flag saying "the head went dynamic", because these two
-        // buffers already say it: a run needs its own head exactly when it
-        // negotiated a Content-Type (this) or produced a field line
-        // (run_headers).
+        // Non-empty means the writer spells this Content-Type in a dynamic head.
+        // There is no separate flag: a run needs its own head exactly when it
+        // negotiated a Content-Type or produced a field line.
         std::string content_type;
-        // n11: create_path's override of request.disp_path.
         std::string disp_path;
         bool disp_set = false;
-        // response.file = "rel/path": the name only. Nothing is opened here - the
-        // reactor does that through the ring, so a callback never blocks on a
-        // disk. run_file_bad is a name this process refused before the kernel saw
-        // it (empty, embedded NUL); it answers 404 in the same shape a rejected
-        // resolve does, so neither is distinguishable from a plain miss.
+        // Nothing is opened here. The reactor opens it through the ring, so a
+        // callback never blocks on a disk. file_bad answers 404 in the same shape
+        // as a rejected resolve.
         std::string file;
         bool have_file = false;
         bool file_bad = false;
 
-        // Once-per-run memos: generate_etag / last_modified / expires are
-        // asked at most once (g11+k13+o18 share etag; h12+l17+o18 share
-        // last_modified), whatever the graph visits.
+        // Asked at most once: g11, k13 and o18 share etag; h12, l17 and o18 share last_modified.
         bool etag_asked = false;
         bool etag_present = false;
-        std::string etag_value; // spelled, quoted form
+        std::string etag_value;
         bool last_modified_asked = false;
         bool last_modified_present = false;
         int64_t last_modified_epoch = 0;
         bool expires_asked = false;
         bool expires_present = false;
         int64_t expires_epoch = 0;
-        // Marshalled once per run where the app answered dynamically;
-        // capacity survives across requests.
-        // The dynamic content_types_provided, marshalled from the app's Array.
-        // It survives the run on purpose: the handler's method is resolved here,
-        // and re-resolving it per request is a method search per request on the
-        // path that renders every body. marshal_ct compares the app's fresh
-        // answer against this and only rebuilds when it actually differs - which
-        // for every resource that answers the same list each time is never.
+        // Survives the run: re-resolving the handler's method per request is a
+        // method search on the path that renders every body. marshal_ct rebuilds
+        // only when the app's answer differs.
         std::vector<TypedHandler> content_types_provided;
         bool content_types_marshalled = false;
         std::vector<std::string> methods;
         std::vector<std::string> variances;
     };
     mutable RunState run;
-    // #202: what a `def self.x` answered, once, while the app was being set
-    // up. That is what the class form is for - the value belongs to the
-    // process, not to a request, so no request ever enters the VM for it.
-    // `asked` says the class form existed and was evaluated; `present` says
-    // its answer was neither nil nor false.
+    // What a `def self.x` answered, once, at setup. The value belongs to the
+    // process, so no request enters the VM for it.
     struct KonstValue {
         bool asked = false;
         bool present = false;
-        std::string text;  // RFC 9110 8.8.3: the ETag, already spelled
-        int64_t epoch = 0; // RFC 9110 5.6.7: the moment, for the date fields
+        std::string text; // RFC 9110 8.8.3
+        int64_t epoch = 0; // RFC 9110 5.6.7
     };
     KonstValue konst_etag;
     KonstValue konst_last_modified;
     KonstValue konst_expires;
-    // #202: whether this resource has any of the three caching answers to
-    // give - a class form that answered at setup, or a callback still to
-    // ask. Decided once when the resource is baked, because the answer
-    // cannot change afterwards, and o18 asks it on every GET.
-    // #30: which values a round asks a worker for, one bit per kJob*.
-    // The flow never lets one of them choose an edge, so all of them can
-    // be out at the same time.
+    // One bit per kJob*. The flow never lets one of these choose an edge, so
+    // all of them can be out at the same time.
     uint8_t value_jobs = 0;
-    // #30: the same, for values a watcher answers. A descriptor says when
-    // the value is there; the flow reads it in the same places.
     uint8_t value_watch = 0;
     bool has_caching = false;
 };
 
 void resource_fold(mrb_state *mrb, mrb_value klass, Resource &out_value);
 
-// One request as a bound run receives it: what the parse settled, the
-// header values the calling frame still holds, the bytes themselves, and
-// the smallest body worth lending rather than copying. That last one is
-// 0 where nothing downstream could hold a lend.
 struct RunAsk {
     const flow::ReqFacts &facts;
     const http::ReqValues *vals;
     const ReqView *req;
     size_t zc_min = 0;
-    // #80: may this run stop at a promised node? Only a caller that holds
-    // a frame able to keep the parked run says yes. The konst tier and the
-    // error resource say no, and then `compute` costs one branch and
-    // changes nothing else.
     bool can_park = false;
 };
 
-// Where a bound run writes what it produced: the body it spelled, whether
-// it spelled one at all, and the field lines it named.
 struct RunAnswer {
     std::string *body;
     bool *have_body;
     std::string *headers;
 };
 
-// The walk, once. It answers a status, or it stopped: `run_stopped`
-// says which, and the job the reactor owes a worker is read with
-// `resource_job`. A stopped run keeps everything it wrote in res.run,
-// which the caller takes with it.
+// A stopped run keeps everything it wrote in res.run, and the caller takes it.
 uint16_t resource_run(const Resource &resource, RunAsk request_ask, RunAnswer out_value);
-// #80: the same walk, re-entered at the node it stopped before, with the
-// worker's answer standing in for that node's callback.
-// #30: what a round answered. One entry per job: the value, and which
-// answer it is (kJob*). A node's own callback is one entry of kJobNode.
 struct RunRound {
     const std::array<mrb_value, kValueJobs> &answers;
     const std::array<uint8_t, kValueJobs> &what;
-    // How many entries are the round's. An index past it is a throw.
     uint8_t n;
 };
-// A checked index into a round's arrays, for code that runs under
-// mrb_protect_error: mruby catches what this raises, and a
-// std::out_of_range would pass that protect by and unwind the VM.
+// mruby catches what this raises. A std::out_of_range would pass the
+// protect by and unwind the VM.
 template <typename Array>
 const typename Array::value_type &round_at(mrb_state *mrb, const Array &answer, size_t i)
 {
@@ -2811,163 +2225,75 @@ bool run_stopped(const Resource &resource);
 
 bool resource_exception_take(const Resource &resource, mrb_value *out_value);
 
-// The body a bound run lent rather than copied: the value the connection
-// has to hold until its send drains, and the bytes it may point at.
-// What a run lent: the value the connection has to hold until its send
-// drains, and the bytes it may point at.
+// The connection holds the value until its send drains.
 struct LentBody {
     mrb_value value;
     std::string_view bytes;
 };
 bool resource_body_lent(const Resource &resource, LentBody &out_value);
 
-// Hand a lent body back - the only legal end of the window opened above.
 void resource_body_unlend(mrb_state *mrb, mrb_value value);
 
-// Did this run name a file instead of spelling a body? Same hand-off shape
-// as resource_body_lent: the run is over, so the slot leaves the Resource.
-// The file a run named, and whether the name was one this server refuses
-// to open at all.
 struct WantedFile {
     std::string_view name;
     bool bad;
 };
 bool resource_file_wanted(const Resource &resource, WantedFile &out_value);
 
-// RFC 9110: Webmachine::Response - the object a runtime callback
-// writes to. Handles over the run slots above, nothing owns storage;
-// response.cpp owns every line. response_bind mirrors request_bind:
-// the run frame points it at this run's Resource, and at nothing
-// after it.
 void response_init(mrb_state *mrb, struct RClass *webmachine_module);
 void response_bind(const Resource *resource);
-// Assets is declared further down - this only needs the name.
 class Assets;
 void response_bind_error_assets(Assets *answer);
 
-// #80: the compute pool. Threads that answer a compute task, fed and heard
-// through io_uring's own MSG_RING - see src/compute_task.cpp for why that is
-// the queue and not a ring buffer of this tree's own.
-//
-// It holds no mrb_state and touches none: a job is a C function over
-// bytes, because the VM is not thread-safe and work that wanted it would
-// be work for the reactor's core.
-// #80: what a declared callback returns. Webmachine::ComputeTask,
-// built on the reactor by a callback that only builds it:
-//
-//   compute :is_authorized?
-//   def self.is_authorized?(header)
-//     Webmachine::ComputeTask.new(header, max_runtime: 50.ms) do |h|
-//       argon2_verify(h)
-//     end
-//   end
-//
-// The method is fast and runs where every other callback runs. What
-// goes to a worker is the block, with its own arguments and its own
-// deadline - so the stop still lies between two flow nodes, and no
-// Ruby method is ever suspended mid-run.
-//
-// A callback that is declared `compute` and answers anything else is a
-// mistake this tree names rather than guesses at.
+// A job is a C function over bytes: the VM is not thread-safe. What goes
+// to a worker is the block, with its own arguments and deadline, so the
+// stop lies between two flow nodes and no Ruby method is suspended mid-run.
 struct ComputeTaskAsk {
-    // The block, and the arguments it is called with. Both belong to the
-    // reactor's VM; the crossing turns them into bytes.
     mrb_value block = {};
     mrb_value args = {};
     // Seconds. mruby-chrono spells it: 50.ms is 0.05.
     double max_runtime = 0.0;
 };
-// Reads the three fields off a Promise, or answers false. It raises
-// when the value is not a Promise at all, because a callback that
-// declared one owes one.
 bool compute_task_read_from_value(mrb_state *mrb, mrb_value value, ComputeTaskAsk *out_value);
 void compute_task_init_class(mrb_state *mrb, struct RClass *webmachine_module);
 
-// src/passwd.cpp: Webmachine::Passwd - the database webmachine-passwd
-// writes, read for one question: is this password right for this
-// user. Meant to be built once per worker, through
-// Webmachine::Workers::Registry, and used inside a compute block.
 void passwd_init_class(mrb_state *mrb, struct RClass *webmachine_module);
 
-// #80: a declared callback, ready to cross into a worker. Filled at
-// fold, read by every worker when the pool starts. The id is the index -
-// what crosses a MSG_RING is a slot number, and the slot names this.
-//
-// Exactly one of the two is set. A Ruby callback travels as its dumped
-// irep, which every worker loads once. A native one travels as nothing
-// at all: the pointer is the same number in every VM of this process.
+// A Ruby callback travels as its dumped irep, which every worker loads
+// once. A native one travels as nothing: the pointer is the same number
+// in every VM of this process.
 struct ComputeTaskCode {
-    // The block, dumped once. A worker loads it once and calls it many
-    // times.
     std::string irep;
-    // Seconds, from max_runtime:. Admission is arithmetic over this, and
-    // a worker ends a Task that runs past it. It comes from the same
-    // Promise the block came from, so it is read once as well.
     double max_runtime = 0.0;
 };
-// #80: what a worker keeps between jobs. A block carries no
-// environment, so it cannot hold a database or a connection - and
-// opening one per request would cost more than the work it exists for.
-//
-// So the application registers how to build one, and every worker runs
-// that once when it opens its VM:
-//
-//   Webmachine::Workers::Registry[:db] = proc { MDB::Env.new(path) }
-//
-// and a block reads back its own worker's value under the same key. No
-// lock anywhere: nothing is shared, because each worker built its own.
-//
-// The key crosses as a string, not as a symbol. An mrb_sym is a number
-// one VM handed out, and it means nothing in another.
+// A block carries no environment, so it cannot hold a database. The
+// application registers how to build one, and every worker runs that once
+// when it opens its VM. The key crosses as a string: an mrb_sym is a
+// number one VM handed out.
 struct WorkerBuild {
     std::string key;
     std::string irep;
 };
-// Registered from the main VM at startup. Answers false when the pool
-// has already started - a key set then exists in no worker.
 bool worker_build_register(mrb_state *mrb, std::string key_name, mrb_value block);
 const std::vector<WorkerBuild> &worker_builds();
-// Said once, when the first worker starts. After it a registration is
-// refused rather than silently missing from every worker.
 void worker_builds_close();
 
-// No block: the dump refused, which only a proc that mruby cannot dump
-// does. A run that gets this answers as if the pool were full.
 inline constexpr unsigned kComputeTaskNoCode = ~0u;
 
-// The id of this block, dumping it the first time it is seen.
-//
-// Not at fold: the class method that answers the Promise builds its
-// arguments out of the request, and add_route has no request.
-//
-// So the first request through the node pays one dump - 0.63 us,
-// measured - and every request after it pays a lookup. The same code at
-// the same place carries the same irep, whatever RProc is around it.
+// Not at fold: the class method builds its arguments out of the request,
+// and add_route has no request. The first request pays one dump, 0.63 us
+// measured.
 unsigned compute_task_intern(mrb_state *mrb, mrb_value block, double max_runtime);
-// The bytes and the deadline of one entry, copied out under the lock.
-// A worker calls this the first time it meets an id, and never again
-// for that id.
 bool compute_task_code_of(unsigned stream_id, std::string *irep, double *max_runtime);
 
-// What one job left behind. The bytes are the answer; the rest is what
-// the reactor needs to write a failure down, because a worker cannot -
-// the error log belongs to the reactor's thread.
+// The error log belongs to the reactor's thread, so a worker cannot write a failure down.
 struct ComputeAnswer {
-    std::string bytes; // the answer as CBOR, empty when the job raised
+    std::string bytes; // CBOR
     bool raised = false;
-    // The task ran past its max_runtime and the worker ended it. Not a
-    // raise: the author's number was wrong, and a retry costs the same
-    //.
     bool over_deadline = false;
-    // What the worker raised, as CBOR, decoded on the reactor to the same
-    // exception; and the step of the job it raised in.
     std::string exception;
     std::string step;
-    // The thread that ran it, as the name a backtrace shows.
     std::string worker_name;
-    // #113: the reactor's own name for the timeout that bounded this job,
-    // or 0 where there was none. The answer came first, so the timeout is
-    // taken out of the ring and its record is free again.
     uint64_t deadline_tag = 0;
 };
 
@@ -2982,38 +2308,19 @@ class ComputePool
     ComputePool(const ComputePool &) = delete;
     ComputePool &operator=(const ComputePool &) = delete;
 
-    // nullptr, or the reason it could not start. A pool that cannot be
-    // built refuses startup rather than falling back to the reactor's
-    // core, which is the thing it exists to keep free.
+    // A pool that cannot be built refuses startup rather than falling back to the reactor's core.
     const char *start(unsigned workers, unsigned depth, struct io_uring *home);
     void stop();
 
-    // One declared callback, sent to a worker. `arg` is the argument as
-    // CBOR - bytes, because an mrb_value belongs to one VM. False when
-    // every slot is taken; the caller decides what a full pool means, and
-    // this layer does not invent a refusal for it.
-    // False means every slot is taken. The sqe itself is never the reason:
-    // a full submission queue is a raise (sqe_or_raise).
+    // False means every slot is taken. A full submission queue is a raise (sqe_or_raise).
     bool submit(mrb_state *mrb, unsigned code_id, std::string_view arg, double deadline,
                 uint64_t answer, uint64_t started);
-    // A worker began the job in `slot`, its `gen`th taking. The deadline
-    // to arm for it, or 0 when it has none or the slot moved on.
     double started(unsigned slot, uint16_t generation);
-    // The deadline passed. This is the one thing the reactor does to a
-    // worker's VM: mrb_vm_interrupt writes one word and reads none, so it
-    // is safe from this thread. The job is named by its slot and the
-    // taking of it, and only when that job is the one its worker runs now
-    // is the worker interrupted.
+    // mrb_vm_interrupt writes one word and reads none, so it is safe from
+    // this thread.
     void interrupt(unsigned slot, uint16_t generation);
-    // #113: which pool slot a job lives in, named by the answer tag the
-    // reactor gave it. The started message carries no slot number any
-    // more, only the address of the record that named the job.
     bool slot_of_answer(uint64_t answer, unsigned *slot, uint16_t *generation) const;
-    // The reactor armed a timeout for this job and says what it named it,
-    // so take() can hand the name back when the answer comes first.
     void name_deadline(unsigned slot, uint16_t generation, uint64_t timeout_tag);
-    // What the worker answered. Reading it frees the slot: the answer is
-    // handed over once.
     bool take(uint64_t answer, ComputeAnswer *out_value);
     unsigned workers() const;
 
@@ -3024,35 +2331,21 @@ class ComputePool
     Impl *impl_ = nullptr;
 };
 
-// Webmachine::Watcher - a description, never a registration. Ruby builds
-// one and hands it back; the server arms it. The mask, the abort flag and
-// the handle live in its CDATA and not in its iv table, which holds
-// exactly the two things a GC has to see: the source and the block.
+// The mask, the abort flag and the handle live in its CDATA and not in
+// its iv table, which holds exactly what a GC has to see.
 void watcher_init_class(mrb_state *mrb, struct RClass *webmachine_module);
 bool value_is_watcher(mrb_state *mrb, mrb_value value);
 unsigned watcher_events_mask(mrb_value value);
 bool watcher_is_aborted(mrb_value value);
-// The seconds a watcher may stay quiet, as `timeout:` gave them.
 double watcher_timeout(mrb_value value);
-// The deadline passed. The block runs with the `:timeout` event and
-// answers what happens next: true says the watcher waits again, false
-// says it aborted and the run goes on without it.
 bool watcher_deadline_passed(mrb_state *mrb, mrb_value value, mrb_value *said);
 int watcher_fd(mrb_value value);
 int watcher_slot(mrb_value value);
-// #30: when this watcher may be asked why it is quiet, as the whole
-// second the sweep reads, or 0 when it owes no deadline. It lives on
-// the watcher because a connection can wait on many at once and each
-// one allows its own time.
 int64_t watcher_deadline_at(mrb_value value);
 void watcher_set_deadline_at(mrb_value value, int64_t index);
-// #30: the state of the run this watcher belongs to, or nothing. It
-// points into the coroutine frame that parked - the one thing that
-// holds everything about that run - so each watcher finds its own,
-// and a connection carrying many runs keeps them apart.
+// Points into the coroutine frame that parked.
 Resource::RunState *watcher_run(mrb_value value);
 void watcher_set_run(mrb_value value, Resource::RunState *run);
-// #30: which job of the round this watcher answers.
 int watcher_job(mrb_value value);
 void watcher_set_job(mrb_value value, int job);
 void watcher_set_slot(mrb_value value, int slot);
@@ -3068,27 +2361,22 @@ namespace webmachine::gzip
 {
 inline constexpr unsigned char kHeader[10] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff};
 
-// RFC 1951/1952: a dynamic body, level 1, raw deflate. False means serve
-// identity - compression never fails a response.
+// RFC 1951 / RFC 1952: level 1, raw deflate. False means serve identity.
 bool compress(const std::string &incoming, std::string &out_value);
 } // namespace webmachine::gzip
 
 namespace webmachine
 {
-// RFC 9110 8.3: Content-Type needs a media type, and the mapping from a
-// file's extension to one is not specified by any RFC - it is the
-// platform's database (mime.types / shared-mime-info). This class is that
-// lookup and says which file answered, because the answer differs per host.
+// No RFC maps a file's extension to a media type. It is the platform's
+// database (mime.types / shared-mime-info), and the answer differs per host.
 class MimeDb
 {
   public:
     void load(mrb_state *mrb, const char *configured);
-    // RFC 9110 8.3: which media-type database answered.
     const std::string &source() const
     {
         return source_;
     }
-    // RFC 9110 8.3: how many extensions it holds.
     size_t size() const
     {
         return by_ext_.size();
@@ -3104,19 +2392,14 @@ class MimeDb
     std::string source_;
 };
 
-// Two sources, and the split runs right through this struct. The store is
-// a ZIP file, so the stored fields carry PKWARE APPNOTE 4.3.7's names for
-// them (file name, file data, compressed size, uncompressed size, CRC-32,
-// method 8 = deflate, RFC 1951). What we answer with is HTTP, so the
-// derived fields carry RFC 9110's:
+// The stored fields carry PKWARE APPNOTE 4.3.7's names. The derived
+// fields carry RFC 9110's:
 //   etag           RFC 9110 8.8.3
 //   last_modified  RFC 9110 8.8.2
 //   content_type   RFC 9110 8.3
-//   gzip_*         RFC 1952 2.2/2.3 - the 10 header and 8 trailer octets
+//   gzip_*         RFC 1952 2.2/2.3: the 10 header and 8 trailer octets
 //                  that turn ZIP's raw deflate stream into a gzip member
-// The heads are prebuilt because they never vary per request except in
-// their Date (RFC 9110 6.6.1), which is why each one remembers where its
-// Date sits and which second it spells.
+// Each head remembers where its Date sits (RFC 9110 6.6.1) and which second it spells.
 struct AssetEntry {
     std::string file_name;
     const char *file_data = nullptr;
@@ -3128,18 +2411,13 @@ struct AssetEntry {
     char etag[10] = {};
     char last_modified[http::kDateLen] = {};
     std::string content_type;
-    // APPNOTE 4.5: the pack's own extra field 0x574D, which holds the whole
-    // <img> for this picture - src, size and alt - as a page emits it. Null
-    // on an entry that carries none.
+    // APPNOTE 4.5: the pack's extra field 0x574D holds the whole <img> for this picture.
     const char *img_tag = nullptr;
     size_t img_tag_len = 0;
-    // The pack's extra field 0x574E: this entry's Cache-Control value,
-    // baked into the prebuilt 200 and 304 heads at open. Empty when the
-    // pack says nothing, and then no answer names the field.
+    // The pack's extra field 0x574E: this entry's Cache-Control value.
     std::string cache_control;
 
-    // RFC 9112 2.1: a status-line and a header section, complete, ending in
-    // the empty line - everything of a response except its content.
+    // RFC 9112 2.1.
     struct Head {
         std::string bytes;
         size_t date_offset = 0;
@@ -3151,16 +2429,13 @@ struct AssetEntry {
     unsigned char gzip_header[10] = {};
     unsigned char gzip_trailer[8] = {};
 
-    std::string h2_head_200; // RFC 9113 8.3 / RFC 7541: the same, encoded
+    std::string h2_head_200; // RFC 9113 8.3 / RFC 7541
     std::string h2_head_304;
 };
 
-// PKWARE APPNOTE: the store. One mapping of one ZIP file, its entries
-// sorted, answered from RAM. Everything this class emits is RFC 9110's,
-// so its own vocabulary has to stay clear of HTTP's: the three prebuilt
-// head flavours differ only in their Connection field line (RFC 9110
-// 7.6.1, "connection option"), which is why they are not called variants
-// - RFC 9110 12.1 already means something else by that word.
+// The three prebuilt heads differ only in their Connection field line
+// (RFC 9110 7.6.1), so they are not called variants: RFC 9110 12.1 means
+// something else by that word.
 class Assets
 {
   public:
@@ -3177,21 +2452,12 @@ class Assets
 
     AssetEntry *find(const char *path, size_t length);
 
-    // What the asset tier weighs one request by: the facts the parse settled
-    // - the method among them - and the header values behind them.
     struct AssetRequest {
         const flow::ReqFacts &facts;
         const http::ReqValues &vals;
     };
     uint16_t entry_verdict(const AssetEntry &entry, const AssetRequest &round) const;
 
-    // Everything this tier needs to spell one head: the entry it describes,
-    // the status it carries, whether the connection stays open, the Date
-    // line for this second and the second it stands for, the satisfied range
-    // where the status is 206, and - where the caller already holds an error
-    // page - the type and length that page must be declared with. The page's
-    // bytes are the caller's to append: this tier spells heads and lends its
-    // own file data, and a page is neither.
     struct HeadAsk {
         AssetEntry &entry;
         uint16_t status_code = 0;
@@ -3208,19 +2474,13 @@ class Assets
     void answer_206_head(const HeadAsk &request_ask, std::string &sink);
     void answer_416_head(const HeadAsk &request_ask, std::string &sink);
 
-    // RFC 1952 2.2: the wire body's length - the deflate stream plus the 10
-    // header and 8 trailer octets of a gzip member, or the stored bytes
-    // alone when nothing was deflated.
+    // RFC 1952 2.2: the deflate stream plus 10 header and 8 trailer octets.
     static size_t wire_len(const AssetEntry &entry)
     {
         return entry.deflated ? entry.compressed_size + 18 : entry.compressed_size;
     }
-    // RFC 1952 2.2: [off, off+n) of that body without copying it, which is
-    // why it returns a count: a gzip member is three separate spans - our
-    // header, the mapping, our trailer - so one logical window is up to
-    // three iovecs, and only the middle one is the file.
-    // A half-open window of the wire body: where it starts and how long
-    // it is.
+    // RFC 1952 2.2: a gzip member is three spans (our header, the mapping,
+    // our trailer), so one window is up to three iovecs.
     struct Window {
         size_t off;
         size_t n;
@@ -3228,7 +2488,6 @@ class Assets
     static unsigned entry_wire_iov(const AssetEntry &entry, Window window, iovec *out_iov);
     static void entry_copy_wire(const AssetEntry &entry, Window window, std::string &out_value);
 
-    // ZIP (APPNOTE): the entry table, for the h2 setup half.
     std::vector<AssetEntry> &entries()
     {
         return entries_;
@@ -3236,15 +2495,12 @@ class Assets
 
   private:
     const AssetEntry *find_exact(const char *name, size_t length) const;
-    // The Date line for one second, and the second it stands for - what
-    // patch_date compares before it rewrites a prebuilt head.
     struct DateStamp {
         const char *line;
         time_t unix_seconds;
     };
     static void head_patch_date(AssetEntry::Head &headers, DateStamp when);
 
-    // munmap(addr, length) - the names of the arguments they become.
     const char *map_addr_ = nullptr;
     size_t map_length_ = 0;
     std::vector<AssetEntry> entries_;
@@ -3252,27 +2508,15 @@ class Assets
     AssetEntry::Head s406_[3]; // RFC 9110 15.5.7
 };
 
-// RFC 9110 15: what a status is called and who registered it. reason()
-// spells the name the status line carries; these two answer the page's
-// question, which is not the same set - 15 of the 54 statuses with a
-// page are vendor inventions, and the page says so.
-// XDG Base Directory Specification over FHS: where the shipped error
-// pack is looked for when nobody named one. Empty when there is none -
-// a missing picture is no reason not to start.
+// 15 of the 54 statuses with a page are vendor inventions, and the page
+// says so. XDG Base Directory Specification over FHS for the shipped pack.
 std::string error_assets_path(const char *configured);
 
 const char *status_title(uint16_t status);
 const char *status_source(uint16_t status);
 
-// #210: the error resource. Always there, never routed - the route that
-// produced the error calls it, so an error is delivered by whoever made
-// it and not by a second trip through the router. A handler is named
-// to_<ext>_error, the way an ordinary resource names to_html, and this
-// holds the ones Webmachine::ErrorResource actually answers to.
-//
-// Rendered per response: a 404 names what was not found, so the set of
-// bodies is the set of request targets and there is nothing a boot could
-// have prepared.
+// Always there, never routed: the route that produced the error calls
+// it, so an error is delivered by whoever made it.
 class ErrorPages
 {
   public:
@@ -3281,75 +2525,46 @@ class ErrorPages
     ErrorPages(const ErrorPages &) = delete;
     ErrorPages &operator=(const ErrorPages &) = delete;
 
-    // One instance of the class, and the handlers it answers to. A class
-    // that answers to none, or that raises being built, is a startup
-    // refusal with a name.
     void open(mrb_state *mrb, Assets *assets, Logger *elog);
     bool ready() const
     {
         return ready_;
     }
 
-    // RFC 9110 12.5.1: which form this client can read, as an index into
-    // what the error resource offers. -1 when it offers nothing.
     int media_pick_for_status(uint16_t status, const char *accept, size_t length) const;
-    // The picture is the answer for an image form: not rendered, lent out
-    // of the error assets's mapping. nullptr when this slot is not one, or when
-    // this status has no cat.
     const char *pack_body_of_status(uint16_t status, int slot, size_t *length) const;
-    // #210: the page for a status in a form, rendered once at boot and
-    // lent from there. Every 4xx is one of these - it names no failure and
-    // repeats nothing the client sent, so two answers with the same status
-    // are the same bytes. Null for a status no page was prepared for, and
-    // for any answer that has something of its own to say.
+    // Every 4xx names no failure and repeats nothing the client sent, so two
+    // answers with the same status are the same bytes.
     const char *prepared_body(uint16_t status, int slot, size_t *length) const;
     const char *media_type_of_slot(int slot) const;
     bool accept_names_one_of_ours(const char *accept, size_t length) const;
     static bool accept_names_anything(const char *accept, size_t length);
 
-    // fsm.rb handle_exception, on the error resource and nowhere else.
     bool exception_text(mrb_value exc, std::string &out_value);
 
-    // What one answer adds to the status. Nothing the client sent is in
-    // here: a page that repeated the target back would be reflecting a
-    // request into a document, and the target is in the error log, which
-    // is where a request belongs. What is left is ours - what
-    // handle_exception made of the exception, and the fingerprint of the
-    // failure, which is what a user can read out and an operator can grep.
+    // Nothing the client sent is in here. A page that repeated the target
+    // would reflect a request into a document.
     struct Fields {
         const char *message = nullptr;
         size_t message_len = 0;
         const char *backtrace = nullptr;
         size_t backtrace_len = 0;
-        // kFingerprintLen hex digits, not terminated. Null on a page that
-        // stands for no failure - every 4xx.
         const char *fingerprint = nullptr;
     };
-    // One error page being asked for: the status it explains, the media slot
-    // it renders in, and the words #210 filled in.
     struct Page {
         uint16_t status;
         int slot;
         const Fields &fields;
     };
 
-    // false when there is no page to offer - the caller still owes an
-    // answer and falls back to the bodyless status.
     bool render(const Page &bytes, std::string &out_value);
-    // The bytes this status answers with, whichever way this build has
-    // them: the picture where the error assets hold one, the page prepared
-    // at boot where the answer names no failure of its own, a render where
-    // it does. `held` is the caller's storage and is used for that last
-    // case only - the other two are lent where they lie. Null when this
-    // build can spell no page at all.
+    // `held` is the caller's storage, used for the rendered case only.
     const char *body_of_page(const Page &bytes, std::string &held, size_t *length);
 
   private:
     struct Handler {
         mrb_sym sym = 0;
         std::string type;
-        // An image form is answered from the error assets, so no method is called
-        // and none has to exist.
         bool from_pack = false;
     };
     struct Cat {
@@ -3362,115 +2577,58 @@ class ErrorPages
     mrb_value res_ = mrb_nil_value();
     mrb_sym exc_sym_ = 0;
     std::vector<Handler> have_;
-    // The same strings again, laid out the way choose_media_type wants them.
     std::vector<std::string> types_;
-    // The way out when Accept matches nothing offered: text/plain, by name.
     int plain_ = 0;
-    // And what a client with no Accept at all gets: the first form that is
-    // not a picture.
     int html_ = 0;
-    // Both tables below are indexed by status - kFirstError: an answer under
-    // 400 did not fail and has no page, and 600 is not a status.
     static constexpr uint16_t kFirstError = 400;
     static constexpr uint16_t kPastLastError = 600;
-    // The same shape the status store uses: a slot per status into a dense
-    // list, 0 for the statuses these error assets has no picture for.
     std::vector<Cat> cats_;
     std::array<int16_t, kPastLastError - kFirstError> cat_index_{};
-    // One page per status and rendered form, status-major with a row of
-    // have_.size(). 0 in the index is "this status has none prepared".
     std::vector<std::string> prepared_;
     std::array<int16_t, kPastLastError - kFirstError> prep_index_{};
     bool ready_ = false;
-    // Where a handler's raise is reported. Set at open, may be null.
     Logger *elog_ = nullptr;
 };
 } // namespace webmachine
 
 namespace webmachine
 {
-// No specification, and that is the entry. Nothing below is HTTP or the
-// kernel's; these are operating decisions.
-//
-// The only source that names them is the surface an operator types at -
-// the TOML keys, the CLI flags, the conf.* setters - so those are the
-// names here, verbatim. A knob spelled header_timeout in the file is
-// header_timeout here too.
-//
-// A field of -1 means "nobody said", because 0 is an answer an operator
-// can give.
-// The largest request head the framers take, and what the tiers that
-// build a path from one size their buffers by.
+// The names are the TOML keys, the CLI flags and the conf.* setters,
+// verbatim. -1 means nobody said, because 0 is an answer an operator can give.
 inline constexpr size_t kMaxHead = 8192;
 
-// The numbers an operator tunes, and --write-config states. They live
-// here and not with the connection layer because config.cpp and
-// application.cpp read them without reading that layer.
-// At or above this many bytes a dynamic body is lent to the writer instead
-// of copied into the send buffer. 128 KiB and not 64: through the real ring
-// the measured win at 64 KiB (+7.5%) sits inside the harness's own +/-10%
-// spread and is not a number a default can be defended with, while 128 KiB
-// (+25%) is several times that noise. At and below 32 KiB lending is a small
-// net loss, and a wrong-direction default silently regresses every
-// deployment that never tunes it - so the default errs high. 0 turns lending
-// off and every body is copied, exactly as before.
+// 128 KiB and not 64: measured through the real ring, 64 KiB gave +7.5%,
+// inside the harness's own +/-10% spread, and 128 KiB gave +25%. At and
+// below 32 KiB lending is a small net loss. 0 turns lending off.
 inline constexpr size_t kZeroCopyDefault = 128u * 1024;
 
-// The submission queue the ring asks for. It is halved until the kernel
-// agrees, so this is a wish and not a promise - and it is named here
-// rather than in ring.hpp because --write-config states it too, and one
-// number stated twice is one too many.
+// The ring halves this until the kernel agrees. Named here because
+// --write-config states it too.
 inline constexpr unsigned kSqWanted = 32768;
-// A ceiling on what an operator may ask for, so a typo cannot quietly mean
-// "never lend": beyond this a body is larger than anything this tier serves.
-// 1 GiB and not 2, so it still fits an mrb_int on a 32-bit-integer build -
-// the TOML range check is spelled in mrb_int, and a wrapped bound would
-// refuse every value instead of refusing none.
+// 1 GiB and not 2, so it fits an mrb_int on a 32-bit-integer build. The
+// TOML range check is spelled in mrb_int, and a wrapped bound refuses every value.
 inline constexpr size_t kZeroCopyMax = 1u << 30;
 
 inline constexpr size_t kResponseFileWindow = 256u * 1024;
 
-// From this size up a file is mapped and handed to one send instead of being
-// read window by window: the kernel walks the mapping itself, so there is no
-// read into user space and no window buffer at all. Below it the mmap/munmap
-// pair - two syscalls the ring cannot carry - costs more than the reads it
-// saves. The crossover is a property of the machine, so it is a [tune] knob:
-// 0 is the operator saying "never map", which is a real answer.
-//
-// The default is one window, and that is the line itself: a file this size
-// or smaller is a single read and a single send, so a mapping would replace
-// nothing and still cost the pair. From one window up, every further window
-// is a read the mapping does not do.
+// The mmap/munmap pair is two syscalls the ring cannot carry. A file of
+// one window is a single read and a single send, so a mapping replaces
+// nothing below that. 0 is the operator saying "never map".
 inline constexpr size_t kFileMapDefault = kResponseFileWindow;
-// The same ceiling kZeroCopyMax carries, for the same reason: it has to fit
-// an mrb_int on a 32-bit-integer build or the range check refuses everything.
+// The same ceiling as kZeroCopyMax, for the same reason.
 inline constexpr size_t kFileMapMax = 1u << 30;
 
-// --listings: how many names one generated directory page carries. The
-// page is built on the reactor thread, one stat per name, so the count
-// is what bounds that work and the size of the page. A directory with
-// more names says so at the end of the list.
+// The page is built on the reactor thread, one stat per name, so the count bounds that work.
 inline constexpr size_t kListingMax = 4096;
 
-// The TCP port a files-only server takes when the operator named no
-// listener. 8080 is the unprivileged port every such server has used for
-// thirty years, so a browser needs no telling. An application names its
-// own listener in its conf, so this is never an application's default.
 inline constexpr int kStandalonePort = 8080;
 
-// RFC 9110 15.5.14: what an application accepts as a request body, in
-// octets. A larger declared Content-Length gets 413 before one byte of
-// the body is read.
-//
-// 1 MiB is what nginx's client_max_body_size defaults to, and Tomcat's
-// maxPostSize is 2 MiB. An operator who serves uploads raises it. The
-// ceiling is the one kZeroCopyMax and kFileMapMax carry, for the same
-// reason: it has to fit an mrb_int on a 32-bit-integer build.
+// RFC 9110 15.5.14. 1 MiB is nginx's client_max_body_size default, and
+// Tomcat's maxPostSize is 2 MiB. The ceiling has to fit an mrb_int on a
+// 32-bit-integer build.
 inline constexpr size_t kMaxBodyDefault = 1u << 20;
 inline constexpr size_t kMaxBodyMax = 1u << 30;
 
-// The WebSocket and event-stream resources are the connection layer's
-// (http1.hpp). An application folds them and holds them, through these.
 struct WsResource;
 void ws_fold(mrb_state *mrb, mrb_value klass, WsResource &out_value);
 WsResource *ws_resource_new();
@@ -3498,46 +2656,31 @@ struct AppSpec {
     std::vector<std::unique_ptr<SseResource, void (*)(SseResource *)>> sse_resources;
     mrb_value ready = mrb_nil_value();
     bool have_ready = false;
-    // The Webmachine::Config struct this app was configured through,
-    // kept because app_mark_bound writes the bound listener back into
-    // its url slot - conf.url reads the ask before the bind and the
-    // truth after it. GC-registered at Application.new.
     mrb_value conf = mrb_nil_value();
     bool registered = false;
-    // conf.disable_http_cats = true; -1 = this app said nothing. The pack
-    // is one mount for the process, so the first app with an opinion is the
-    // one it follows - the same order every other conf answer here takes.
+    // -1 = this app said nothing. The pack is one mount for the process,
+    // so the first app with an opinion decides.
     int8_t disable_http_cats = -1;
-    // conf.zero_copy_threshold = N; -1 = this app said nothing.
+    // -1 = this app said nothing.
     long long zero_copy_threshold = -1;
-    // conf.file_map_threshold = N; -1 = this app said nothing.
+    // -1 = this app said nothing.
     long long file_map_threshold = -1;
-    // conf.max_body = N; -1 = this app said nothing, so kMaxBodyDefault.
+    // -1 = this app said nothing.
     long long max_body = -1;
-    // conf.docroot = PATH; empty = this app said nothing. The docroot is
-    // one anchor for the process, so the first app that names one decides.
+    // Empty = this app said nothing. The docroot is one anchor for the
+    // process, so the first app that names one decides.
     std::string docroot;
-    // conf.spill_dir = PATH; empty = this app said nothing, so the
-    // platform decides (TMPDIR, then /tmp).
-    //
-    // RFC-free, and it decides one thing that shows: a body that is
-    // placed by request_body_path is linked when its temporary file and
-    // its destination share a filesystem, and copied when they do not.
-    // /tmp is tmpfs on most machines, so a body spilled there is memory
-    // and every placement is a copy. Naming a directory on the disk the
-    // uploads live on makes every placement a link.
+    // Empty = this app said nothing, so the platform decides (TMPDIR, then
+    // /tmp). A spilled body is linked into place when its temporary file and
+    // its destination share a filesystem, and copied when they do not. /tmp is
+    // tmpfs on most machines, so a body spilled there makes every placement a copy.
     std::string spill_dir;
-    // conf.assets = FILE.zip; empty = this app said nothing. The pack is
-    // one mapping for the process, so the first app that names one decides.
+    // Empty = this app said nothing. The pack is one mapping for the
+    // process, so the first app that names one decides.
     std::string assets;
-    // conf.certificate = PATH, conf.private_key = PATH, and whether
-    // conf.url said https. All three have to agree, and server.cpp is
-    // where that is checked - a listener either serves TLS or does not.
     std::string cert_path;
     std::string key_path;
-    // RFC 6066 3: conf.certificates - one pair per host name, beside the
-    // default pair above. The ClientHello's server_name picks between
-    // them, and the default answers a client that names nothing.
+    // RFC 6066 3: one pair per host name. The ClientHello's server_name picks between them.
     struct NamedPair {
         std::string host;
         std::string cert_path;
@@ -3547,8 +2690,7 @@ struct AppSpec {
     bool tls = false;
 };
 
-// The octets a body begins with, against the type its head declared.
-// See src/sniff.cpp: the table is the WHATWG MIME Sniffing Standard's.
+// The table is the WHATWG MIME Sniffing Standard's.
 namespace sniff
 {
 enum class Verdict : uint8_t { kAgrees, kContradicts, kUnknown };
@@ -3558,18 +2700,13 @@ size_t octets_needed();
 Verdict check_declaration(std::string_view declared, std::string_view head);
 } // namespace sniff
 
-// The answer's body, set by something that is not a callback of the
-// resource. See response.cpp.
 bool response_take_body(mrb_state *mrb, std::string_view sqe);
-// Did the resource being answered declare `reads_body ..., save: true`?
 bool response_saves_body(mrb_state *mrb);
 
 void application_init(mrb_state *mrb, struct RClass *webmachine_module);
 
 void app_load(mrb_state *mrb, const char *path);
 
-// Where every registered application goes, and how many listeners this
-// build can carry - one more than that is a refusal, not a truncation.
 struct Registered {
     std::vector<AppSpec *> &specs;
     size_t max_listeners;
@@ -3578,9 +2715,6 @@ void app_registered_all(mrb_state *mrb, Registered out_value);
 
 AppSpec *app_assets_only();
 
-// --listings: the application mrblib/listing.rb registers. One route,
-// one resource, and the directory the file tier handed over is what it
-// answers.
 void app_listing(mrb_state *mrb);
 
 void app_mark_bound(mrb_state *mrb, AppSpec &spec, const char *unix_path, int port);
@@ -3590,61 +2724,30 @@ void app_ready_run(mrb_state *mrb, AppSpec &spec);
 
 namespace webmachine
 {
-// server.docroot: the one directory response.file may reach, resolved to a
-// canonical absolute path and opened O_DIRECTORY|O_PATH once at startup. That
-// fd is what RESOLVE_BENEATH anchors against - the kernel does the
-// confinement, this code never does path math of its own.
+// That fd is what RESOLVE_BENEATH anchors against. The kernel does the
+// confinement, and this code does no path math of its own.
 void docroot_open(mrb_state *mrb, const char *path);
 
-// Webmachine.docroot_listing(path), which the listing application calls
-// and nothing else does. Defined where the docroot fd lives, because that
-// descriptor is what confines the read.
 void docroot_init(mrb_state *mrb, struct RClass *webmachine_module);
 
-// Did an operator configure one? response.file= refuses by name when not.
 bool docroot_is_open();
 
-// The dirfd every per-request openat2 resolves relative to; -1 when unset.
 int docroot_fd();
-// RFC-free: the directory a request body spills into, or nullptr for
-// the platform's own choice. One directory for the process, settled
-// before the first accept, the way the docroot is.
 const char *spill_dir_get();
 void spill_dir_set(const char *path);
-// RFC 9110 6.4: the count of request body files this process holds
-// open. take answers false when kBodyFilesMax are open, and give returns
-// one. BodySpill::open_file and close_file are the only callers in src/.
 bool body_file_slot_take();
 void body_file_slot_give();
-// How many are open now. The tests read it; nothing in src/ does.
 uint32_t body_file_slots_taken();
 
-// The canonical absolute path, for the refusals that have to name it.
 const char *docroot_path();
 
-// The open_how every response.file open uses - built once, never per request.
 const struct open_how *docroot_how();
 
-// What main() resolved: the CLI flags and the [server]/[log]/[tune]
-// sections, merged, with the CLI winning. cli_* keeps its prefix on
-// purpose - it is the reason those two beat the file.
-// What one process is set to, from the command line and the config
-// file. Two kinds live here, and the names say which is which.
-//
-// Most of it is the process's: the log, the timeouts, the ring, the
-// media types, the error pages. Every application in the process gets
-// the same answer.
-//
-// The four standalone_* are not. They are one application's - the one
-// app_assets_only makes, which serves files and enters no VM. Every
-// other application names its own listener, pack and docroot in its
-// conf, so the command line names none for it: main.cpp refuses
-// --unix, --port, --assets and --docroot beside --app, which is why
-// these four are null in every run that loads one.
+// The four standalone_* fields belong to the one application
+// app_assets_only makes. Every other application names its listener, pack
+// and docroot in its conf, so main.cpp refuses --unix, --port, --assets
+// and --docroot beside --app.
 struct ServerOptions {
-    // #210: the file an error answer may hand over - the shipped one by
-    // default, or the operator's, in which case whatever they put in it is
-    // what response.error_asset can name.
     const char *error_assets_path = nullptr;
     const char *mime_types_path = nullptr;
     const char *log_path = nullptr;
@@ -3654,42 +2757,28 @@ struct ServerOptions {
     int stop_fd = -1;
     const char *app_path = nullptr;
     unsigned sq_entries = 0;
-    // How many processes answer. Above one, the tool binds and listens
-    // once, forks that many children, and every child registers the
-    // listening descriptors it inherited. Each child holds its own ring
-    // and its own VM, so IORING_SETUP_SINGLE_ISSUER still holds. This is
-    // the tool's knob: a gem an application embeds never forks, because
-    // the process is not ours to split.
+    // Each child holds its own ring and its own VM, so
+    // IORING_SETUP_SINGLE_ISSUER still holds. A gem an application embeds
+    // never forks: the process is not ours to split.
     int workers = 1;
-    // --threads=N: N threads in this process, each with its own ring,
-    // and one acceptor that hands every peer it takes to the next of
-    // them by IORING_OP_MSG_RING. That operation carries a registered
-    // descriptor between two rings of one process and nothing else does,
-    // which is why this shape is threads and not processes.
-    //
-    // Files only, for now: a thread that answers from an application
-    // needs a VM of its own, and this build gives it none.
+    // IORING_OP_MSG_RING carries a registered descriptor between two rings of
+    // one process and nothing else does, which is why this is threads and not
+    // processes.
     int threads = 1;
     int backlog = 0;
     int header_timeout = 0;
     int send_timeout = 0;
     int idle_timeout = 0;
-    // -1 = nobody said; 0 = said "never lend". See kZeroCopyDefault.
+    // -1 = nobody said; 0 = never lend.
     long long zero_copy_threshold = -1;
-    // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+    // -1 = nobody said; 0 = never map.
     long long file_map_threshold = -1;
 
-    // Standalone: files only. Nobody named an application, so no app is
-    // loaded, no route table exists, and no request enters the VM. The
-    // five below are that application's listener, pack and docroot, and
-    // they are set in no other run.
     bool standalone = false;
     const char *standalone_unix_path = nullptr;
     int standalone_port = 0;
     const char *standalone_assets_path = nullptr;
     const char *standalone_docroot_path = nullptr;
-    // --listings: a docroot directory with no index document answers a
-    // generated list of what is in it, rather than 404.
     bool standalone_listings = false;
 };
 
@@ -3703,18 +2792,14 @@ int server_run(mrb_state *mrb);
 
 bool server_entered();
 
-// The server, and everything it holds in the VM, released while the VM
-// still stands. The error pages hold a GC root, and a connection's
-// watchers hold one. A file scope object dies at exit, and mrb_close
-// runs before that, so the owner of the VM calls this first.
+// mrb_close runs before a file scope object dies, so the owner of the VM
+// calls this first.
 void server_release();
 } // namespace webmachine
 
 namespace webmachine
 {
-// The TOML file as read, one member per key, grouped as the file groups
-// them: [server], then [log], then [tune]. Nothing is defaulted here -
-// absence has to stay visible, or --flag and conf.* cannot beat it.
+// Nothing is defaulted here. Absence has to stay visible, or --flag and conf.* cannot beat it.
 struct Config {
     std::string path;
 
@@ -3737,22 +2822,14 @@ struct Config {
     int header_timeout = 0;
     int send_timeout = 0;
     int idle_timeout = 0;
-    // 0 is a choice here ("never lend"), so absence is -1 and not 0.
+    // 0 is a choice here (never lend), so absence is -1.
     long long zero_copy_threshold = -1;
-    // -1 = nobody said; 0 = said "never map". See kFileMapDefault.
+    // -1 = nobody said; 0 = never map.
     long long file_map_threshold = -1;
 };
 
-// webmachine.toml, written because somebody asked - --write-config, and
-// nothing else. A server that leaves files behind on its own is a server
-// an operator has to clean up after, and a config that appeared without
-// being asked for is one nobody knows the provenance of.
-//
-// What it writes is what this server does without it, so the file is a
-// starting point that changes nothing until a line in it is changed.
-// False when the path already exists: it is never written over.
-// `error_assets` names the archive the written file points at, or is
-// null for the commented example line.
+// Written only on --write-config. False when the path already exists: it
+// is never written over.
 bool config_write_default(const char *path, const char *error_assets);
 
 void config_load(mrb_state *mrb, const char *path, Config &out_value);
