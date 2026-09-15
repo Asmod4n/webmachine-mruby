@@ -6275,3 +6275,30 @@ build: /tmp/claude-0/wm-rev2-znver3/mruby/build/host/bin/webmachine-server cc=gc
 env: runnable=1/132 busy=2% (200ms sample)
 responses=40792274 bad=0 seconds=10.000 rps=4079204 bytes=3426551800 MB/s=326.78 conns=16 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=530325706 tx_MB/s=50.58
 server: 65% of one core (49u/16s)   client: 68% of one core (50u/18s)   other: 7% of one core
+
+==== 2026-09-15T19:4xZ repo=cd79487 TechEmpower plaintext, webmachine against libreactor ====
+harness: htgen -c32 -d5s h1 --pipeline 128, nice=-15, transport=tcp 127.0.0.1, five reps, median.
+  The test is TechEmpower's Plaintext: GET /plaintext answers "Hello, World!"
+  as text/plain with Date and Content-Length. libreactor is the round 23 entry
+  (frameworks/C/libreactor), built from its own Makefile flags (-O3 -march=native
+  -flto) against libdynamic 2.2.0, libclo 1.0.0 and libreactor 63fa717a8047.
+  webmachine answers the same bytes from a konst resource.
+name=webmachine threads=1  median_rps=6207621  all=6101468 6182600 6207621 6218751 6281004
+  server: 99% of one core. The server is the limit.
+name=libreactor workers=4  median_rps=7127602  all=7074571 7115440 7127602 7207385 7240389
+  server: 82% of one core summed over its four forked workers, while the client
+  holds 100% of one core. The client is the limit, so this row is a floor.
+Per core of server cpu: webmachine 6.27M, libreactor at least 8.69M, about 1.4x.
+
+Two things this run settles about the shape, both measured here:
+- More threads are slower at low concurrency. At -c8 --pipeline 16, webmachine
+  read 2025341 (1 thread), 1408399 (2), 1237208 (3), 1197034 (4). The first
+  comparison of this pair used 4 threads and -c8 and read 1167228, which is
+  the worst configuration on that list and said nothing about the server.
+- The ISA barely matters. webmachine read 1147915 at x86-64-v3 -g1 and 1167228
+  at native, 1.7% apart. libreactor read 2386125 at x86-64-v2 and 2231277 at
+  native -flto, which is lower and inside its own spread.
+
+Not measurable here, for the record: instructions per response. callgrind cannot
+decode libreactor's PCMPESTRI parser in either encoding, and this guest has no
+PMU, so perf answers <not supported> for instructions and cycles.
