@@ -118,3 +118,38 @@ bin=/tmp/claude-0/arms/E responses=117296 instructions_per_response=9229
 harness: htgen --conns 4 --streams 16 --seconds 8 h2 (callgrind) WM_MARCH=x86-64-v3, app = a bound resource
 bin=arms/D_gated (lazy hold, gate untouched) responses=159264 instructions_per_response=7334
 bin=arms/E (lazy hold, gate open, frame on Conn) responses=117296 instructions_per_response=9229
+
+==== NOTE, written 2026-09-16, about the arms in the rows above ====
+An outside reading of src/ dated 16 September took the rows named arms/A,
+arms/B, arms/C, arms/D_gated and arms/E from this file and drew three
+conclusions from them. All three are wrong, so what the arms were is
+written down here beside them.
+
+  A         the tree as it is, unmodified
+  B         the feed_parse gate forced open, run coroutine frame from
+            ::operator new
+  C         the gate forced open, frame placed in storage the Conn owns
+  D_gated   the lazy h2 head hold, gate untouched
+  E         the lazy hold, gate open, frame on the Conn
+
+1. The rows where A, B and C all read 2043 are NOT a stable reproduction.
+   The app was bench/apps/hello.rb, which answers from `def self.to_html`
+   and is therefore konst. A konst answer reaches neither the gate nor the
+   coroutine, so all three binaries ran the same code. That run measured
+   nothing. The rows that measure something are the ones whose app is a
+   bound resource, and they read 7332, 11596, 10132, 7334 and 9229.
+
+2. D_gated is NOT what landed in the code. Nothing landed. The lazy hold
+   is one failing bintest short - the POST that stops twice, which answers
+   500 with NoMemoryError - and it was reverted. `grep -c "else if
+   (h2_held)" src/http1.cpp` answers 0 on this tree. The change and the
+   reasoning are in the task list.
+
+3. The rise from about 5 to about 7 million responses per second was NOT
+   webmachine's. 7127602 is libreactor's TechEmpower plaintext median on
+   this box. webmachine read 6207621 on the same test, one thread, the
+   server at 99 percent of one core.
+
+What the reading got right, from misread rows: 7332 against 2043 is real,
+the bound path does cost about 3.6 times the konst path, and that is where
+the mass is.
