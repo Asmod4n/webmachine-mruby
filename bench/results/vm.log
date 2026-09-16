@@ -6302,3 +6302,41 @@ Two things this run settles about the shape, both measured here:
 Not measurable here, for the record: instructions per response. callgrind cannot
 decode libreactor's PCMPESTRI parser in either encoding, and this guest has no
 PMU, so perf answers <not supported> for instructions and cycles.
+
+==== CORRECTION, written 2026-09-16, to the last paragraph above ====
+"callgrind cannot decode libreactor's PCMPESTRI parser in either encoding"
+is two claims. The first is right, the second is wrong, and the conclusion
+that follows from them does not hold.
+
+The evidence that settles it is a run that did not happen. Valgrind does not
+fail quietly on an instruction it cannot decode: it prints "unhandled
+instruction bytes" and kills the process with SIGILL. A probe built today
+that calls phr_parse_request at WM_MARCH=x86-64-v3 holds 3 pcmpestri sites
+and dies exactly that way under valgrind-3.22.0, on 0xC4 0xE3 0x79 0x61. No
+run in /tmp/wm-ir.*/srv.* ever printed it. So no counted run ever executed
+the instruction, and the h2 rows in vm-instructions.log - 7332, 11596,
+10132, 7334 and 9229 - are intact. That holds whatever the code paths turn
+out to be, which is why it is written here and the reasoning below is not
+the proof.
+
+Why no h2 run reaches the parser, for the record and not as the argument:
+valgrind decodes lazily, one executed basic block at a time, so an
+instruction no run reaches costs nothing. h2 parses header fields with
+ls-hpack. htgen speaks h2 with prior knowledge and never upgrades
+(htgen/src/htgen.cpp:15), and on a fresh connection h1_preface answers kH2
+and http1.cpp:1961 returns into h2_feed before the line that calls
+phr_parse_request. Counting the word in http2.cpp proves none of this: the
+Http1 class carries the whole h2 half, so the parser and the h2 code sit in
+one file.
+
+The second thing that changes: an h1 count is possible after all. At
+-march=x86-64 the same probe holds 0 string-compare sites, runs clean under
+callgrind, and reads 213639 I refs.
+
+What such a count would NOT be is a webmachine-against-libreactor number.
+Both binaries would be built without the SIMD parser that both of them
+ship, and the two do not lose the same amount by it: whichever leans harder
+on SIMD loses more. So a row from that run names "no SIMD parser, both
+arms" and says nothing about the binaries in production. It is an
+instrument for a change inside one server, not a comparison between two.
+Nobody has run it.
