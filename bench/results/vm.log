@@ -6928,3 +6928,76 @@ percent of a core; 7.20M with two at 198 percent of a core. That is
 
 Nothing is remembered between connections to reach it. The thread
 comes from the peer's name alone.
+==== 2026-09-17T09:23Z repo=e0fd05e ====
+harness: switch_bench runs=5 d=2s peers=24 loaders=3 liburing=2.5 cflags=-O2 -march=native 6.18.44-fc-v33 x86_64
+build: bench/switch/switch_bench cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+-- run 1 --
+clock: one pair of CLOCK_MONOTONIC reads = 21.7 ns
+futex: 26134.2 ns per round trip, 13067.1 ns per handover (blocks: two switches per round trip), 76544 round trips
+spin:  219.7 ns per round trip, 109.8 ns per handover (never blocks: one cache line), 9106432 round trips
+ring:  7.2 ns per cqe raw, 7.1 ns after the clock pair (21.7 ns over 190.7 cqes per batch)
+ring:  129305 cqes in 678 batches, 678 enters, 24 accepts, 129281 recvs, 130778624 bytes, 0 recv rearms, 190.72 cqes per enter
+-- run 2 --
+clock: one pair of CLOCK_MONOTONIC reads = 21.0 ns
+futex: 25139.3 ns per round trip, 12569.6 ns per handover (blocks: two switches per round trip), 79616 round trips
+spin:  211.7 ns per round trip, 105.9 ns per handover (never blocks: one cache line), 9446400 round trips
+ring:  7.3 ns per cqe raw, 7.2 ns after the clock pair (21.0 ns over 164.2 cqes per batch)
+ring:  176402 cqes in 1074 batches, 1074 enters, 24 accepts, 176369 recvs, 178242496 bytes, 0 recv rearms, 164.25 cqes per enter
+-- run 3 --
+clock: one pair of CLOCK_MONOTONIC reads = 21.1 ns
+futex: 24789.0 ns per round trip, 12394.5 ns per handover (blocks: two switches per round trip), 80704 round trips
+spin:  622.8 ns per round trip, 311.4 ns per handover (never blocks: one cache line), 3211264 round trips
+ring:  8.8 ns per cqe raw, 8.7 ns after the clock pair (21.1 ns over 225.3 cqes per batch)
+ring:  92368 cqes in 410 batches, 410 enters, 24 accepts, 92336 recvs, 93653376 bytes, 0 recv rearms, 225.29 cqes per enter
+-- run 4 --
+clock: one pair of CLOCK_MONOTONIC reads = 21.0 ns
+futex: 30852.4 ns per round trip, 15426.2 ns per handover (blocks: two switches per round trip), 64896 round trips
+spin:  618.3 ns per round trip, 309.2 ns per handover (never blocks: one cache line), 3234816 round trips
+ring:  8.3 ns per cqe raw, 8.2 ns after the clock pair (21.0 ns over 210.1 cqes per batch)
+ring:  94130 cqes in 448 batches, 448 enters, 24 accepts, 94106 recvs, 95421184 bytes, 0 recv rearms, 210.11 cqes per enter
+-- run 5 --
+clock: one pair of CLOCK_MONOTONIC reads = 21.4 ns
+futex: 34021.2 ns per round trip, 17010.6 ns per handover (blocks: two switches per round trip), 58816 round trips
+spin:  208.2 ns per round trip, 104.1 ns per handover (never blocks: one cache line), 9608192 round trips
+ring:  7.2 ns per cqe raw, 7.1 ns after the clock pair (21.4 ns over 193.5 cqes per batch)
+ring:  130002 cqes in 672 batches, 672 enters, 24 accepts, 129976 recvs, 131521472 bytes, 0 recv rearms, 193.46 cqes per enter
+
+---- note 2026-09-17: what a thread crossing costs, and what a cqe costs ----
+
+Five runs of bench/switch.sh on this vm, medians per handover:
+
+| arm | median | what it measures |
+| --- | --- | --- |
+| futex | 13067 ns | a handover that blocks: two context switches |
+| spin | 110 ns | the same handover without blocking: one cache line |
+| ring | 7.2 ns | one cqe out of io_uring_for_each_cqe |
+
+The five values, in run order. futex: 13067, 12570, 12395, 15426,
+17011. spin: 110, 106, 311, 309, 104. ring: 7.1, 7.2, 8.7, 8.2, 7.1.
+
+The spin arm is bimodal, near 105 and near 310, and the two slow runs
+are the two runs whose ring arm also read fewest completions. That is
+the host and not the code: this vm has four cpus, the run holds one
+for the harvester and three for the load, and an agent shell sits
+beside it. Read the pair, not the single number.
+
+So a blocking handover costs about 1800 times what taking a completion
+costs, and about 120 times what the cache line alone costs. The
+earlier claim in this session - that a wandering cache line costs
+several requests - now has a number under it: 110 ns against a
+response this tree answers in single-digit nanoseconds of flow work.
+
+What the ring number contains: the loop takes the cqe, reads its tag,
+counts it, and gives the buffer back to the provided-buffer ring. It
+does not contain the wait. Batches held 164 to 225 completions, one
+io_uring_enter each, so the enter is amortised over about 190 cqes and
+the 21 ns clock pair around each batch is 0.1 ns per cqe.
+
+What it is not: a cqe is not a handover of a value between threads.
+Nothing crosses here - the completion is already in this thread's
+memory. That is the whole point of the comparison and also its limit.
+
+The probe links the distribution's liburing 2.5, not the copy the
+server carries: slipstreamIO's liburing calls its own mmap and close
+wrappers and does not link outside that gem. The ring's setup flags
+are the reactor's.
