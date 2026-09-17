@@ -210,6 +210,13 @@ snap_times() { times > "$WORK/.times"; }
 #
 # Read at the end of the run, so it names where the threads finished,
 # not where they started. Nothing is pinned, so a thread may have moved.
+#
+# Linux only. Field 39 of /proc/<tid>/stat, cpufreq/cpuinfo_max_freq and
+# topology/thread_siblings_list are Linux's, and a kernel may be built
+# without the last two. Where a part cannot be read the field says so
+# rather than printing nothing: an empty field reads as "the threads ran
+# nowhere", which is a lie about the machine.
+PLACEMENT_NONE="unreadable (needs Linux /proc/<tid>/stat)"
 # Where the clients ran. On a machine with fast and slow cores this
 # matters as much as the server's placement: a client on a P core
 # finishes early and reports headroom the server does not have, and the
@@ -227,6 +234,7 @@ cli_placement() {
       cp_out="$cp_out cpu$cp_cpu[${cp_max:-?}kHz,smt$cp_smt]"
     done
   done
+  [ -n "$cp_out" ] || cp_out=" $PLACEMENT_NONE"
   printf '%s' "${cp_out# }"
 }
 
@@ -240,6 +248,7 @@ srv_placement() {
     sp_smt=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
     sp_out="$sp_out cpu$sp_cpu[${sp_max:-?}kHz,smt$sp_smt]"
   done
+  [ -n "$sp_out" ] || sp_out=" $PLACEMENT_NONE"
   printf '%s' "${sp_out# }"
 }
 # times(1) line 2 is the children's user and sys - the same split as
@@ -637,7 +646,7 @@ OUT=$(mktemp)
     OTHER=$(awk -v m0="$M0" -v m1="$M1" -v hz="$HZ" -v d="$DURATION" -v sc="$SCPU" -v cc="$CCPU" \
       'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
     echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
-    echo "threads: server $PLACEMENT   client ${CLI_PLACEMENT:-?}"
+    echo "threads: server ${PLACEMENT:-$PLACEMENT_NONE}   client ${CLI_PLACEMENT:-$PLACEMENT_NONE}"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
