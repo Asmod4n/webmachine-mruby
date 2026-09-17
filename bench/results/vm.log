@@ -7025,6 +7025,11 @@ second recv on one socket delivers bytes out of order". That guard is
 right, and on this kernel its first branch is the one that runs.
 
 This says nothing about other kernels. It is one host, one version.
+The kernel fixed this in 7.1, so a kernel from 7.1 on is expected to
+keep the multishot armed and the rearm branch never runs there. The
+other half of the table is not measured: forgecore is the only host in
+reach of this tree that runs 7.1 or later, and it is off. Do not write
+the second row until a machine produces it.
 
 A correction to the note above, and to the commit that carried it. It
 named the missing rearm as the reason the first ring run hung. That is
