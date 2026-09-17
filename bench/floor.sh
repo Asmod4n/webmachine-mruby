@@ -180,12 +180,35 @@ fi
 # process that called send, so a client that "does almost nothing" still
 # pays for moving every response byte. A client that is mostly sys is
 # the socket; a client that is mostly user is its own loop.
+cpu_ticks_of() {
+  awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12] + f[13] }' \
+    "$1" 2>/dev/null || echo 0
+}
 cpu_ticks() {
   awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12], f[13] }' \
     "/proc/$1/stat" 2>/dev/null || echo "0 0"
 }
 srv_ticks() {
   cpu_ticks "$SRV"
+}
+# The same ticks, one line per thread: tid, name, utime+stime. The sum
+# over the threads is what srv_ticks reads, and the sum is what hides
+# the question this answers. Two answering threads that read 91 percent
+# together did not do 45 percent each: one worked and one waited, and
+# only the split says so. The server spreads an AF_UNIX peer by the
+# client's pid, so which thread gets the load is decided per run.
+#
+# Read at the start and at the end. A thread that lived for both is
+# matched by its tid; one that came or went in between is left out and
+# the line says how many that was.
+srv_thread_ticks() {
+  for st_task in /proc/"$SRV"/task/*; do
+    [ -d "$st_task" ] || continue
+    st_tid=${st_task##*/}
+    st_who=$(tr -d '\n' < "$st_task/comm" 2>/dev/null) || continue
+    st_t=$(cpu_ticks_of "$st_task/stat") || continue
+    printf '%s %s %s\n' "$st_tid" "${st_who:-?}" "$st_t"
+  done
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # The whole machine's busy ticks, all cores, from /proc/stat's first line.
@@ -524,6 +547,7 @@ OUT=$(mktemp)
   echo "env: runnable=$RUNQ busy=${BUSYPCT}% (200ms sample)${ENV_NOTE:+ note=$ENV_NOTE}"
   sysc_begin "$SRV" "$DURATION"
   read -r SU0 SS0 <<<"$(srv_ticks)"
+  srv_thread_ticks > "$WORK/thr0"
   M0=$(machine_busy)
   snap_times
   read -r CU0 CS0 <<<"$(parse_child_cpu)"
@@ -614,6 +638,7 @@ OUT=$(mktemp)
   M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
   read -r SU1 SS1 <<<"$(srv_ticks)"
+  srv_thread_ticks > "$WORK/thr1"
   CLI_PLACEMENT=$(sed -n '1p' "$WORK/place" 2>/dev/null)
   PLACEMENT=$(sed -n '2p' "$WORK/place" 2>/dev/null)
   [ -n "$PLACEMENT" ] || PLACEMENT=$(srv_placement)
@@ -677,6 +702,17 @@ OUT=$(mktemp)
       'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
     echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
     echo "threads: server ${PLACEMENT:-$PLACEMENT_NONE}   client ${CLI_PLACEMENT:-$PLACEMENT_NONE}"
+    # What each server thread itself burned, so a run that left a thread
+    # waiting is read and not derived from the sum above.
+    awk -v hz="$HZ" -v d="$DURATION" '
+      NR == FNR { was[$1] = $3; name[$1] = $2; next }
+      { if ($1 in was) { pct[$1] = ($3 - was[$1]) * 100 / hz / d; name[$1] = $2 }
+        else { came++ } }
+      END { line = ""
+            for (t in pct) line = line sprintf(" %s/%s %.0f%%", name[t], t, pct[t])
+            if (line == "") { print "per thread: unreadable"; exit }
+            printf "per thread:%s%s\n", line, (came ? sprintf("  (%d thread(s) started during the run)", came) : "") }' \
+      "$WORK/thr0" "$WORK/thr1"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
