@@ -8,6 +8,14 @@
 # thing worth knowing. So this runs the whole ladder and prints the
 # factor against one thread beside every rung.
 #
+# The rungs above the cpu count are the point, not an afterthought. An
+# operator who came from a server that spends one thread per connection
+# types a number in the hundreds out of habit, and what this server
+# does then has to be one of two things: answer more slowly, or refuse
+# and say why. Becoming quietly worse is the outcome this ladder is
+# built to catch, so every rung records whether the server started at
+# all beside what it achieved.
+#
 # Both sides grow together, which is the only shape that stays fair as
 # N rises: a fixed client becomes the limit long before the server
 # does. On a host with C logical cpus the run holds 2N of them, so
@@ -60,7 +68,7 @@ RUNS="${RUNS:-5}"
 
 RESULTS="bench/results/$(hostname).log"
 SUMMARY=$(mktemp)
-trap 'rm -f "$SUMMARY"' EXIT
+trap 'rm -f "$SUMMARY" "$SUMMARY.why"' EXIT
 
 # The median of a rung, and its spread as max minus min over the
 # median. Five runs are five numbers; one of them is not a measurement.
@@ -77,22 +85,36 @@ summarize() {
 for n in $LADDER; do
   rungs=$(mktemp)
   refused=0
+  broken=0
   for _ in $(seq "$RUNS"); do
     out=$(THREADS_ANSWER="$n" CLIENTS="$n" bench/floor.sh 2>&1) || true
     printf '%s\n' "$out" | grep -q REFUSED && refused=$((refused + 1))
-    printf '%s\n' "$out" | grep -oE '^responses=[0-9]+ .*rps=[0-9]+' |
-      grep -oE 'rps=[0-9]+' | cut -d= -f2 >> "$rungs"
+    got=$(printf '%s\n' "$out" | grep -oE '^responses=[0-9]+ .*rps=[0-9]+' |
+      grep -oE 'rps=[0-9]+' | cut -d= -f2)
+    if [ -n "$got" ]; then
+      printf '%s\n' "$got" >> "$rungs"
+    else
+      # No rate at all: the server died, the clients did not start, or
+      # the run produced nothing. Whatever the reason, the operator who
+      # typed this number gets no server, and the rung must say so
+      # rather than leave a gap that reads like a missing sample.
+      broken=$((broken + 1))
+      printf '%s\n' "$out" | tail -3 >> "$SUMMARY.why"
+      printf 'rung %s: no rate\n' "$n" >> "$SUMMARY.why"
+    fi
   done
-  printf '%s\t%s\n' "$(summarize "$n" < "$rungs")" "$refused" >> "$SUMMARY"
+  printf '%s\t%s\t%s\n' "$(summarize "$n" < "$rungs")" "$refused" "$broken" >> "$SUMMARY"
   rm -f "$rungs"
 done
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) threads ladder ===="
   echo "harness: threads.sh ladder=\"$LADDER\" runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${STREAMS:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
-  echo "threads/clients  median rps  spread  factor  client-bound runs"
+  echo "host: $(nproc) cpus online"
+  echo "threads/clients  median rps  spread  factor  client-bound  no-rate runs"
   awk -F'\t' '
     NR == 1 { base = $2 }
-    { printf "%15s  %10s  %5s%%  %5.2f  %s\n", $1, $2, $3, base ? $2 / base : 0, $4 }
+    { printf "%15s  %10s  %5s%%  %5.2f  %12s  %s\n", $1, $2, $3, base ? $2 / base : 0, $4, $5 }
   ' "$SUMMARY"
+  [ -s "$SUMMARY.why" ] && { echo "-- what the runs without a rate said --"; cat "$SUMMARY.why"; }
 } | tee -a "$RESULTS"

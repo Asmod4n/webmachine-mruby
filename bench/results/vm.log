@@ -7178,3 +7178,77 @@ threads/clients  median rps  spread  factor  client-bound runs
 (Two more ladder checks above, runs=1 and runs=2: the table prints, and
 1.96 and 2.02 at two threads agree with the morning's 2.03. Neither is
 a measurement.)
+==== 2026-09-17T11:10Z repo=5b14200 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/132 busy=1% (200ms sample)
+responses=18437601 bad=0 seconds=5.001 rps=3687123 bytes=1548761566 MB/s=295.37 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=239752044 tx_MB/s=45.72
+server: 99% of one core (78u/21s)   client: 84% of one core (60u/24s)   other: 5% of one core
+threads: cpu0[?kHz,smt0]
+==== 2026-09-17T11:10Z repo=5b14200 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/134 busy=1% (200ms sample)
+responses=33568150 bad=0 seconds=5.000 rps=6713127 bytes=2819730676 MB/s=537.79 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=436523254 tx_MB/s=83.25
+server: 195% of one core (146u/48s)   client: 171% of one core (116u/54s)   other: 4% of one core
+threads: cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1]
+==== 2026-09-17T11:10Z repo=5b14200 threads ladder ====
+harness: threads.sh ladder="1 2" runs=1 conns=62 proto=h2 streams=128 app=bench/apps/hello.rb transport=tcp duration=5s
+host: 4 cpus online
+threads/clients  median rps  spread  factor  client-bound  no-rate runs
+              1     3687123      0%   1.00             0  0
+              2     6713127      0%   1.82             0  0
+==== 2026-09-17T11:11Z repo=5b14200 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=16 clients=16 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=2/149 busy=1% (200ms sample)
+responses=32545433 bad=0 seconds=5.001 rps=6504675 bytes=2733864882 MB/s=521.08 conns=992 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=424623347 tx_MB/s=80.93
+server: 212% of one core (151u/61s)   client: 185% of one core (116u/68s)   other: 5% of one core
+threads: cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu2[?kHz,smt2]
+==== 2026-09-17T11:11Z repo=5b14200 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=64 clients=64 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/212 busy=0% (200ms sample)
+responses=27924891 bad=0 seconds=5.008 rps=5569341 bytes=2345812540 MB/s=446.17 conns=3968 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=368777876 tx_MB/s=70.11
+server: 225% of one core (145u/80s)   client: 175% of one core (98u/76s)   other: 4% of one core
+threads: cpu2[?kHz,smt2] cpu0[?kHz,smt0] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu0[?kHz,smt0] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu0[?kHz,smt0] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu3[?kHz,smt3] cpu0[?kHz,smt0] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu3[?kHz,smt3] cpu0[?kHz,smt0] cpu3[?kHz,smt3] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu1[?kHz,smt1] cpu0[?kHz,smt0] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu0[?kHz,smt0] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu3[?kHz,smt3] cpu0[?kHz,smt0] cpu2[?kHz,smt2] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu0[?kHz,smt0] cpu2[?kHz,smt2] cpu3[?kHz,smt3] cpu2[?kHz,smt2] cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu0[?kHz,smt0] cpu0[?kHz,smt0] cpu2[?kHz,smt2] cpu2[?kHz,smt2]
+==== 2026-09-17T11:11Z repo=5b14200 threads ladder ====
+harness: threads.sh ladder="16 64" runs=1 conns=62 proto=h2 streams=128 app=bench/apps/hello.rb transport=tcp duration=5s
+host: 4 cpus online
+threads/clients  median rps  spread  factor  client-bound  no-rate runs
+             16     6504675      0%   1.00             0  0
+             64     5569341      0%   0.86             0  0
+==== 2026-09-17T11:11Z repo=5b14200 threads ladder ====
+harness: threads.sh ladder="256" runs=1 conns=16 proto=h2 streams=128 app=bench/apps/hello.rb transport=tcp duration=5s
+host: 4 cpus online
+threads/clients  median rps  spread  factor  client-bound  no-rate runs
+            256     4806820      0%   1.00             1  0
+
+---- note 2026-09-17: what the thread-per-connection habit costs here ----
+
+An operator who came from a server that spends one thread per
+connection types a number in the hundreds out of habit. This is what
+this server does then, on a vm with four cpus. One run per rung, five
+seconds, so the shape is the answer and not the digits:
+
+| threads/clients | rps | against 16 |
+| --- | --- | --- |
+| 16 | 6.50M | 1.00 |
+| 64 | 5.57M | 0.86 |
+| 256 | 4.81M | 0.74 |
+
+The 256 rung ran at CONNS=16 and floor.sh flagged it client-bound: 256
+htgen processes on four cpus are the limit there, not the server. So
+0.74 is a floor under what the server did, not a measurement of it.
+
+The answer to the operator question is the shape and it is a good one.
+At 64 times the cpu count the server still starts, still answers, and
+loses 26 percent. It does not fail, it does not refuse, and nothing
+collapses. The habit is wasteful here rather than dangerous.
+
+Two things this did not establish. Whether the submission queue shrank
+on the way - derive_sq_entries divides the memlock budget by the ring
+count, and no line in the run says what each ring got. And whether 256
+threads really took the 2 GiB their buffer pools add up to, or whether
+the pages stayed untouched. Both are questions for the rung that bends,
+and this vm did not bend.
