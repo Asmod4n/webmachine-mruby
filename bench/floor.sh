@@ -609,8 +609,17 @@ OUT=$(mktemp)
   fi
   # The client must not be the bottleneck - a conjunction, not a
   # comparison (bench/assets.sh already learned this the hard way): the
-  # server had headroom and the client was pegged. Both ends are one
-  # thread now, so "pegged" is one core.
+  # server had headroom and the client was pegged. Each end may run
+  # several threads, so "pegged" is one core per thread: the two
+  # numbers are divided by the thread count of their own side before
+  # they are compared. THREADS=3 CLIENT_WORKERS=3 with the client at
+  # 230 percent is 77 percent per worker, which has room, and the same
+  # 230 against one worker is over its limit.
+  #
+  # The server's divisor is THREADS, the threads this bench started.
+  # The io-wq workers the kernel adds are not counted, so a server that
+  # reads files looks busier per thread than it is. That error refuses
+  # fewer runs, never more.
   # Headroom is a gap, not "below 90". The rule refused a run where the
   # server sat at 89 and the client at 90 - one point apart, inside the
   # noise of a percentage derived from /proc over the run, and with no
@@ -627,8 +636,10 @@ OUT=$(mktemp)
   CUPCT=$(awk -v a="$CU1" -v b="$CU0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   CSPCT=$(awk -v a="$CS1" -v b="$CS0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   HEADROOM=15
-  if [ "$SU" -gt 0 ] && [ "$CCPU" -ge 90 ] && [ "$SCPU" -le $((${CCPU%.*} - HEADROOM)) ]; then
-    echo "REFUSED: the server had headroom (${SCPU}% of its core (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CCPU}% (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
+  SPER=$((SCPU / THREADS))
+  CPER=$((${CCPU%.*} / CLIENT_WORKERS))
+  if [ "$SU" -gt 0 ] && [ "$CPER" -ge 90 ] && [ "$SPER" -le $((CPER - HEADROOM)) ]; then
+    echo "REFUSED: the server had headroom (${SPER}% of a core per thread, ${SCPU}% over ${THREADS} (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CPER}% per worker, ${CCPU}% over ${CLIENT_WORKERS} (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
     # What else ran. Same unit as the two numbers beside it, so a run
