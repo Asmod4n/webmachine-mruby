@@ -10,6 +10,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <mruby/chrono.hpp>
 #include <mruby/class.h>
 #include <mruby/error.h>
@@ -128,6 +131,8 @@ struct AnswerThread {
     std::atomic<bool> failed{false};
     std::string why;
     std::thread thread;
+    // What this thread calls itself, counted from 1 as an operator counts.
+    int number = 0;
 
     ~AnswerThread()
     {
@@ -415,9 +420,28 @@ mrb_value answer_thread_serve(mrb_state *, void *user_data)
 // the acceptor's VM is no answer either, because that writes mrb->exc
 // from a second thread. So the thread carries a VM of its own and reads
 // the exception back as a value.
+// A thread carries the name of the work it does. Without one every
+// thread of this process answers webmachine-serv, which names the
+// program and not the thread, and a reader of top, of ps, or of the
+// placement line in bench/floor.sh cannot tell the thread that accepts
+// from the threads that answer. The kernel's own io-wq workers already
+// say iou-wrk-<pid> and are not ours to name.
+//
+// Linux takes fifteen octets and cuts the rest. "wm-answer-10" is
+// twelve, so the number fits as far as a thread count goes.
+void thread_name_set(const std::string &name)
+{
+#ifdef __linux__
+    ::prctl(PR_SET_NAME, name.c_str(), 0, 0, 0);
+#else
+    (void) name;
+#endif
+}
+
 void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inputs, size_t ninputs,
                        bool listings)
 {
+    thread_name_set("wm-answer-" + std::to_string(self.number));
     mrb_state *const mrb = mrb_open();
     if (mrb == nullptr) {
         self.why = "no VM for the answering thread: out of memory";
@@ -451,6 +475,7 @@ void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInpu
     for (int t = 0; t < opts_.threads; t++) {
         auto one = std::unique_ptr<AnswerThread>(new AnswerThread());
         AnswerThread &self = *one;
+        self.number = t + 1;
         answer_threads_.push_back(std::move(one));
         self.thread =
             std::thread(answer_thread_run, std::ref(self), base, inputs, ninputs, listings);
@@ -667,6 +692,10 @@ void server_build_ring_config(mrb_state *mrb)
     if (map_threshold >= 0)
         http_->set_file_map_threshold(static_cast<size_t>(map_threshold));
 
+    // This thread says what it does as well. With answering threads it
+    // only takes peers and hands them on; alone it takes them and
+    // answers them itself.
+    thread_name_set(opts_.threads > 1 ? "wm-accept" : "wm-serve");
     // --threads=N: the threads that answer come up before the acceptor,
     // because the acceptor has to know their rings before it takes the
     // first peer.
