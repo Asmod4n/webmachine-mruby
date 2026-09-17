@@ -7038,3 +7038,74 @@ read 0, so ENOBUFS never happened in it. What hung it was a load
 thread blocked in send(2) on a socket nobody drained, and MSG_DONTWAIT
 is what fixed it. Two changes went in together and the wrong one got
 the credit.
+==== 2026-09-17T09:58Z repo=d133226 ====
+harness: switch_bench runs=5 d=2s peers=24 loaders=3 liburing=2.5 cflags=-O2 -march=native 6.18.44-fc-v33 x86_64
+build: bench/switch/switch_bench cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+-- run 1 --
+host:  4 cpus online
+clock: one pair of CLOCK_MONOTONIC reads = 21.2 ns
+futex: 29564.4 ns per round trip, 14782.2 ns per handover (blocks: two switches per round trip), 67712 round trips
+futex:  last on cpu 2 and cpu 3 (siblings of 2: 2; 2 is cap1024, 3 is cap1024)
+spin:  271.8 ns per round trip, 135.9 ns per handover (never blocks: one cache line), 7358464 round trips
+spin :  last on cpu 2 and cpu 1 (siblings of 2: 2; 2 is cap1024, 1 is cap1024)
+ring:  8.3 ns per cqe raw, 8.2 ns after the clock pair (21.2 ns over 178.4 cqes per batch)
+ring:  174696 cqes in 979 batches, 979 enters, 24 accepts, 174671 recvs, 176611456 bytes, 0 recv rearms, 178.44 cqes per enter
+ring:  0 enobufs completions, 0 of them kept the multishot armed (IORING_CQE_F_MORE)
+-- run 2 --
+host:  4 cpus online
+clock: one pair of CLOCK_MONOTONIC reads = 21.0 ns
+futex: 29317.8 ns per round trip, 14658.9 ns per handover (blocks: two switches per round trip), 68224 round trips
+futex:  last on cpu 0 and cpu 2 (siblings of 0: 0; 0 is cap1024, 2 is cap1024)
+spin:  281.0 ns per round trip, 140.5 ns per handover (never blocks: one cache line), 7116800 round trips
+spin :  last on cpu 0 and cpu 1 (siblings of 0: 0; 0 is cap1024, 1 is cap1024)
+ring:  7.2 ns per cqe raw, 7.1 ns after the clock pair (21.0 ns over 176.2 cqes per batch)
+ring:  176033 cqes in 999 batches, 999 enters, 24 accepts, 176004 recvs, 177947840 bytes, 0 recv rearms, 176.21 cqes per enter
+ring:  0 enobufs completions, 0 of them kept the multishot armed (IORING_CQE_F_MORE)
+-- run 3 --
+host:  4 cpus online
+clock: one pair of CLOCK_MONOTONIC reads = 21.2 ns
+futex: 28624.4 ns per round trip, 14312.2 ns per handover (blocks: two switches per round trip), 69888 round trips
+futex:  last on cpu 0 and cpu 2 (siblings of 0: 0; 0 is cap1024, 2 is cap1024)
+spin:  292.2 ns per round trip, 146.1 ns per handover (never blocks: one cache line), 6846464 round trips
+spin :  last on cpu 0 and cpu 3 (siblings of 0: 0; 0 is cap1024, 3 is cap1024)
+ring:  8.2 ns per cqe raw, 8.1 ns after the clock pair (21.2 ns over 177.2 cqes per batch)
+ring:  114446 cqes in 646 batches, 646 enters, 24 accepts, 114418 recvs, 115769920 bytes, 0 recv rearms, 177.16 cqes per enter
+ring:  0 enobufs completions, 0 of them kept the multishot armed (IORING_CQE_F_MORE)
+-- run 4 --
+host:  4 cpus online
+clock: one pair of CLOCK_MONOTONIC reads = 21.0 ns
+futex: 34716.7 ns per round trip, 17358.4 ns per handover (blocks: two switches per round trip), 57664 round trips
+futex:  last on cpu 0 and cpu 1 (siblings of 0: 0; 0 is cap1024, 1 is cap1024)
+spin:  684.2 ns per round trip, 342.1 ns per handover (never blocks: one cache line), 2923520 round trips
+spin :  last on cpu 0 and cpu 2 (siblings of 0: 0; 0 is cap1024, 2 is cap1024)
+ring:  8.4 ns per cqe raw, 8.3 ns after the clock pair (21.0 ns over 188.5 cqes per batch)
+ring:  115159 cqes in 611 batches, 611 enters, 24 accepts, 115135 recvs, 116487424 bytes, 0 recv rearms, 188.48 cqes per enter
+ring:  0 enobufs completions, 0 of them kept the multishot armed (IORING_CQE_F_MORE)
+-- run 5 --
+host:  4 cpus online
+clock: one pair of CLOCK_MONOTONIC reads = 21.0 ns
+futex: 33209.4 ns per round trip, 16604.7 ns per handover (blocks: two switches per round trip), 60224 round trips
+futex:  last on cpu 1 and cpu 2 (siblings of 1: 1; 1 is cap1024, 2 is cap1024)
+spin:  629.3 ns per round trip, 314.7 ns per handover (never blocks: one cache line), 3178496 round trips
+spin :  last on cpu 1 and cpu 0 (siblings of 1: 1; 1 is cap1024, 0 is cap1024)
+ring:  7.8 ns per cqe raw, 7.7 ns after the clock pair (21.0 ns over 211.8 cqes per batch)
+ring:  100834 cqes in 476 batches, 476 enters, 24 accepts, 100808 recvs, 102177344 bytes, 0 recv rearms, 211.84 cqes per enter
+ring:  0 enobufs completions, 0 of them kept the multishot armed (IORING_CQE_F_MORE)
+
+---- note 2026-09-17: the handover arms now say where they ran ----
+
+Each handover arm prints the two cpus it was last seen on, that cpu's
+thread siblings, and each cpu's capacity and top frequency. A hybrid
+host answers there - a performance core carries a higher capacity than
+an efficiency core - and two threads on one core's siblings share a
+cache level that two cores do not. Without the line, a reader has to
+guess which of those a number is.
+
+On this vm the line closes one question rather than opening it. Every
+cpu lists only itself as its siblings and all four read cap1024, so
+there is no topology here to explain anything: the spin arm's two
+groups, near 140 and near 330 in these five runs, are the host and not
+the placement.
+
+The placement is a sample, not a promise. Nothing is pinned, and the
+scheduler may move a thread in the middle of a run.

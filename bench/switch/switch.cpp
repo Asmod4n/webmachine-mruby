@@ -43,6 +43,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <sched.h>
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +52,7 @@
 #include <cerrno>
 #include <ctime>
 #include <new>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -86,6 +89,57 @@ double clock_pair_ns()
     return static_cast<double>(ended - began) / rounds / 2.0;
 }
 
+// Which cpu a thread ended on, and whether the two are siblings of one
+// core. This decides the handover arms more than anything else: two
+// threads on one core's SMT siblings share a cache level that two
+// cores do not, and two sockets share less still. The run reads it off
+// itself rather than trusting whoever writes the row.
+std::string read_line_of(const char *path)
+{
+    std::FILE *f = std::fopen(path, "r");
+    if (f == nullptr)
+        return std::string();
+    char line[64] = {0};
+    if (std::fgets(line, sizeof line, f) == nullptr)
+        line[0] = 0;
+    std::fclose(f);
+    std::string out(line);
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
+        out.pop_back();
+    return out;
+}
+
+// A hybrid cpu answers here: a performance core carries a higher
+// capacity and a higher top frequency than an efficiency core, and a
+// handover between the two kinds is a different measurement from a
+// handover between two of one kind.
+std::string kind_of(int cpu)
+{
+    char path[160];
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
+    const std::string capacity = read_line_of(path);
+    std::snprintf(path, sizeof path,
+                  "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu);
+    const std::string top = read_line_of(path);
+    if (capacity.empty() && top.empty())
+        return std::string("?");
+    std::string out;
+    if (!capacity.empty())
+        out += "cap" + capacity;
+    if (!top.empty())
+        out += (out.empty() ? "" : "/") + top + "kHz";
+    return out;
+}
+
+std::string siblings_of(int cpu)
+{
+    char path[160];
+    std::snprintf(path, sizeof path,
+                  "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+    const std::string out = read_line_of(path);
+    return out.empty() ? std::string("?") : out;
+}
+
 // One word per cache line, so the two threads do not share one by
 // accident. The value is the ball: A writes 1, B writes 2, and so on.
 struct alignas(std::hardware_destructive_interference_size) Cell {
@@ -107,6 +161,8 @@ long futex_wake(std::atomic<uint32_t> *word)
 struct Handovers {
     uint64_t trips = 0;
     uint64_t ns = 0;
+    int cpu_here = -1;
+    int cpu_peer = -1;
 };
 
 Handovers futex_round_trips(double seconds)
@@ -127,6 +183,7 @@ Handovers futex_round_trips(double seconds)
             seen = a.word.load(std::memory_order_acquire);
             b.word.store(seen, std::memory_order_release);
             futex_wake(&b.word);
+            out.cpu_peer = sched_getcpu();
         }
     });
 
@@ -147,6 +204,7 @@ Handovers futex_round_trips(double seconds)
         }
     }
     out.ns = now_ns() - began;
+    out.cpu_here = sched_getcpu();
     stop.store(true, std::memory_order_relaxed);
     a.word.fetch_add(1, std::memory_order_release);
     futex_wake(&a.word);
@@ -174,6 +232,7 @@ Handovers spin_round_trips(double seconds)
             }
             seen = got;
             b.word.store(seen, std::memory_order_release);
+            out.cpu_peer = sched_getcpu();
         }
     });
 
@@ -192,6 +251,7 @@ Handovers spin_round_trips(double seconds)
         }
     }
     out.ns = now_ns() - began;
+    out.cpu_here = sched_getcpu();
     stop.store(true, std::memory_order_relaxed);
     peer.join();
     return out;
@@ -416,6 +476,16 @@ RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, unsigne
     return out;
 }
 
+// Where a handover arm ran, so the number can be read. This is where
+// the two threads were last seen, not where they stayed: nothing is
+// pinned here, and the scheduler may move a thread mid-run.
+void print_where(const char *arm, const Handovers &h)
+{
+    std::printf("%s:  last on cpu %d and cpu %d (siblings of %d: %s; %d is %s, %d is %s)\n", arm,
+                h.cpu_here, h.cpu_peer, h.cpu_here, siblings_of(h.cpu_here).c_str(), h.cpu_here,
+                kind_of(h.cpu_here).c_str(), h.cpu_peer, kind_of(h.cpu_peer).c_str());
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -442,6 +512,7 @@ int main(int argc, char **argv)
         }
     }
 
+    std::printf("host:  %ld cpus online\n", sysconf(_SC_NPROCESSORS_ONLN));
     const double clock_ns = clock_pair_ns();
     std::printf("clock: one pair of CLOCK_MONOTONIC reads = %.1f ns\n", clock_ns);
 
@@ -451,6 +522,7 @@ int main(int argc, char **argv)
     std::printf("futex: %.1f ns per round trip, %.1f ns per handover (blocks: two switches "
                 "per round trip), %llu round trips\n",
                 futex_ns, futex_ns / 2.0, static_cast<unsigned long long>(futex_trips));
+    print_where("futex", futex);
 
     const Handovers spin = spin_round_trips(seconds);
     const uint64_t spin_trips = spin.trips;
@@ -458,6 +530,7 @@ int main(int argc, char **argv)
     std::printf("spin:  %.1f ns per round trip, %.1f ns per handover (never blocks: one cache "
                 "line), %llu round trips\n",
                 spin_ns, spin_ns / 2.0, static_cast<unsigned long long>(spin_trips));
+    print_where("spin ", spin);
 
     if (loaders == 0 || peers / loaders == 0) {
         std::fprintf(stderr, "--peers must be at least --loaders\n");
