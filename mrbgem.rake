@@ -128,6 +128,11 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-proc-irep-ext'
   spec.add_dependency 'mruby-cbor'
 
+  # test/wm_spread.rb writes the bytes of a pid and of an address with
+  # Array#pack. The server never calls that method, so the gem joins the
+  # test build only and stays out of the shipped libmruby.a.
+  spec.add_test_dependency 'mruby-pack'
+
   lshp = "#{dir}/deps/ls-hpack"
   spec.cc.include_paths  << lshp << "#{lshp}/deps/xxhash"
   spec.cxx.include_paths << lshp << "#{lshp}/deps/xxhash"

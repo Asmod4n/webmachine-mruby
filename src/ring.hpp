@@ -1040,13 +1040,7 @@ template <class App> class Ring
 
     static uint32_t worker_of_pid(pid_t pid, uint32_t nworkers)
     {
-        const auto octets = std::as_bytes(std::span(&pid, 1));
-        uint32_t hash = 2166136261u;
-        for (const std::byte octet : octets) {
-            hash ^= std::to_integer<uint32_t>(octet);
-            hash *= 16777619u;
-        }
-        return hash % nworkers;
+        return worker_of_name(std::as_bytes(std::span(&pid, 1)), nworkers);
     }
 
     static uint32_t worker_of_address(const struct sockaddr_storage &addr, uint32_t nworkers)
@@ -1061,12 +1055,7 @@ template <class App> class Ring
         } else {
             return nworkers;
         }
-        uint32_t hash = 2166136261u;
-        for (const std::byte octet : octets) {
-            hash ^= std::to_integer<uint32_t>(octet);
-            hash *= 16777619u;
-        }
-        return hash % nworkers;
+        return worker_of_name(octets, nworkers);
     }
 
     void ask_peer_name(uint32_t listener_index, uint32_t descriptor)

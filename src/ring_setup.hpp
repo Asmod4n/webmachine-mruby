@@ -52,6 +52,18 @@ struct FdBudget {
 
 uint32_t derive_max_conns(FdBudget block);
 
+// Which answering thread a peer belongs to, from the peer's name alone.
+// No table, no per-client state: the same name always answers the same
+// thread, and nothing has to be remembered between connections.
+//
+// The mix is murmur3's. What it replaces was FNV-1a, whose last step is a
+// multiply, so `% nworkers` read bits that carry the input through rather
+// than a mix of it. For an address that did not show - four octets of a
+// client address carry enough spread on their own - but for a pid it did:
+// two pids an even distance apart met the same thread in 99 percent of
+// the pairs measured, which left half a two-thread server unused.
+uint32_t worker_of_name(std::span<const std::byte> name, uint32_t nworkers);
+
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
 // of it only hides that every worker is already busy.
