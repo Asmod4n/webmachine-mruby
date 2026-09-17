@@ -7109,3 +7109,13 @@ the placement.
 
 The placement is a sample, not a promise. Nothing is pinned, and the
 scheduler may move a thread in the middle of a run.
+==== 2026-09-17T10:42Z repo=a6420fc mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/131 busy=1% (200ms sample)
+responses=21614120 bad=0 seconds=5.000 rps=4322632 bytes=1815589118 MB/s=346.28 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=281036404 tx_MB/s=53.60
+server: 122% of one core (95u/27s)   client: 100% of one core (70u/29s)   other: 3% of one core
+threads: cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu3[?kHz,smt3]
+(The row above is the check that the threads: line works, one run of
+five seconds. It is not a measurement: one run is not a measurement,
+and 4.32M at two threads sits inside what five runs already showed.)
