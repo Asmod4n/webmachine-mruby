@@ -6,7 +6,6 @@
 namespace webmachine
 {
 inline constexpr uint32_t kMaxListeners = 16;
-inline constexpr uint32_t kFdReserve = 128;
 // RFC 9110 6.4: how many request body files this process holds open at
 // once. A body of kBodySpill or more lives in a file, and so does every
 // body for a resource that saves it, whatever its length. That file is
@@ -18,11 +17,11 @@ inline constexpr uint32_t kFdReserve = 128;
 // the body as load: 503 on h1, REFUSED_STREAM on h2.
 //
 // The size: 1024 is 64 h2 connections at kH2SpillFilesMax, or 1024 h1
-// uploads over kBodySpill at the same time. The server raises itself to
-// the hard limit (raise_nofile). Under the 524288 systemd gives a
-// service, and the 1048576 a container gets, this costs 0.2 % of the
-// connections. A limit under 1169 - this, kFdReserve, kMaxListeners and
-// one connection - refuses to start, and the message names the numbers.
+// uploads over kBodySpill at the same time. It bounds how many bodies
+// this process holds in files at once, and nothing else - it is not
+// taken off the connection table, because RLIMIT_NOFILE already counts
+// every descriptor this process holds, a direct one as much as an
+// ordinary one.
 inline constexpr uint32_t kBodyFilesMax = 1024;
 // The locked-memory limit this process runs under, with the soft limit
 // raised to the hard one first. A ring's SQ and CQ pages are charged to

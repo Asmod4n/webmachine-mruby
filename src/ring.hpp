@@ -142,29 +142,30 @@ template <class App> class Ring
         // The kernel picks the table entry for every accept, so nothing
         // here indexes by it.
         //
-        // How many peers a ring holds is what RLIMIT_NOFILE allows, less
-        // the descriptors that are not peers: the process's own, the
-        // request bodies in files, and the listeners. No ceiling of ours
-        // sits on top of that. One did - 512 - and it decided the answer
-        // on every machine that allows more, whatever the limit said: a
-        // server on a 20000 limit stalled at 496 peers and the message
-        // sent its reader to ulimit, where the number is not.
-        const uint64_t not_peers =
-            static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners;
-        if (nofile <= not_peers) {
+        // The table is RLIMIT_NOFILE, and nothing is taken off it. Every
+        // descriptor this process holds is charged to that limit, a
+        // direct one in the table as much as an ordinary one, so the
+        // kernel already enforces the sum and an arithmetic of ours
+        // could only enforce it twice - once correctly and once with
+        // numbers it invented.
+        //
+        // Two such numbers were here. kFixedTableKernelMax = 512 named
+        // a kernel that does not have it, and decided the size on every
+        // machine that allows more: with the limit at 20000 the server
+        // stalled at 496 peers, measured. A reserve of 128 and 1024
+        // body-file slots came off the top as well, for descriptors the
+        // limit already counts.
+        if (nofile <= kMaxListeners) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
-                       "RLIMIT_NOFILE %i leaves no room for connections "
-                       "(reserve %d + body files %d + listeners %d)",
-                       static_cast<mrb_int>(nofile), static_cast<int>(kFdReserve),
-                       static_cast<int>(kBodyFilesMax), static_cast<int>(kMaxListeners));
+                       "RLIMIT_NOFILE %i leaves no room for connections: the listeners take %d "
+                       "slots of the table",
+                       static_cast<mrb_int>(nofile), static_cast<int>(kMaxListeners));
         }
-        table_size_ = static_cast<uint32_t>(nofile - not_peers);
+        table_size_ = static_cast<uint32_t>(nofile - kMaxListeners);
         listener_base_ = table_size_;
 
-        // The kernel says how large a table it will take. Its own ceiling
-        // is IORING_MAX_FIXED_FILES, and it answers -EMFILE or -EINVAL
-        // over it, so the refusal names the number asked for rather than
-        // this tree guessing what the kernel would have allowed.
+        // What the kernel will not take, it refuses, and the refusal
+        // names the number asked for.
         rc = io_uring_register_files_sparse(&ring_, table_size_ + kMaxListeners);
         if (rc != 0) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
@@ -1102,9 +1103,8 @@ template <class App> class Ring
                                      "the registered descriptor table is full, all " +
                                          std::to_string(table_size_) +
                                          " slots hold a peer; the next peers wait until it "
-                                         "drains. The table is RLIMIT_NOFILE less the "
-                                         "descriptors that are not peers, so a larger limit "
-                                         "holds more");
+                                         "drains. The table is RLIMIT_NOFILE, so a larger "
+                                         "limit holds more");
                 }
             }
             return;

@@ -18,7 +18,6 @@ BIN=mruby/build/host/bin/webmachine-server
 # The constants come out of the one source of truth so this tool can
 # never drift from the code it advises about. A failed parse is a
 # named refusal for that section, not a silent default.
-FD_RESERVE=$(sed -n 's/.*kFdReserve = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 BODY_FILES=$(sed -n 's/.*kBodyFilesMax = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 MAX_LISTENERS=$(sed -n 's/.*kMaxListeners = \([0-9][0-9]*\);.*/\1/p' src/ring_setup.hpp)
 # The backlog is not a literal in the source: the server takes [tune]
@@ -329,8 +328,8 @@ echo ""
 echo "-- capacity (the server derives this itself at init)"
 HARD=$(ulimit -Hn)
 NR_OPEN=$(read_or /proc/sys/fs/nr_open "")
-if [ -z "$FD_RESERVE" ] || [ -z "$BODY_FILES" ] || [ -z "$MAX_LISTENERS" ]; then
-  echo "cannot parse kFdReserve/kBodyFilesMax/kMaxListeners out of src/ring_setup.hpp - capacity arithmetic not printed (fix the parse, do not guess)"
+if [ -z "$MAX_LISTENERS" ]; then
+  echo "cannot parse kMaxListeners out of src/ring_setup.hpp - capacity arithmetic not printed (fix the parse, do not guess)"
 else
   if [ "$HARD" = "unlimited" ]; then
     LIMIT=${NR_OPEN:-1048576}
@@ -343,11 +342,14 @@ else
   # number that would have decided the answer on a large limit. The
   # kernel refuses a table it will not take, and the server's refusal
   # names the number it asked for.
-  MAXC=$((LIMIT - FD_RESERVE - BODY_FILES - MAX_LISTENERS))
+  MAXC=$((LIMIT - MAX_LISTENERS))
   echo "RLIMIT_NOFILE hard: $HARD   fs.nr_open: ${NR_OPEN:-unreadable}"
-  echo "max connections: $LIMIT - $FD_RESERVE (fd reserve) - $BODY_FILES (body files) - $MAX_LISTENERS (listeners) = $MAXC"
+  echo "max connections: $LIMIT - $MAX_LISTENERS (listeners) = $MAXC"
+  echo "  every descriptor is charged to RLIMIT_NOFILE, a direct one in the ring's"
+  echo "  table as much as an ordinary one, so nothing else is taken off the top."
+  echo "  ${BODY_FILES:-?} request bodies may sit in files at once, out of that same limit."
   if [ "$MAXC" -le 0 ]; then
-    echo "the limit leaves no room - the server will refuse to start; raise it: systemd LimitNOFILE=$((FD_RESERVE + BODY_FILES + MAX_LISTENERS + 1024)) or higher"
+    echo "the limit leaves no room - the server will refuse to start; raise it: systemd LimitNOFILE=524288 or higher"
   elif [ "$HARD" != "unlimited" ] && [ "$HARD" -lt 65536 ]; then
     echo "hard limit is low; more connections need a raised hard limit, e.g. systemd LimitNOFILE=524288"
   fi
