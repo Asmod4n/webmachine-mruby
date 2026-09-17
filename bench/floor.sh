@@ -211,6 +211,15 @@ snap_times() { times > "$WORK/.times"; }
 # Read at the end of the run, so it names where the threads finished,
 # not where they started. Nothing is pinned, so a thread may have moved.
 #
+# Each entry carries two clocks, now over max: scaling_cur_freq at the
+# instant of the sample, and cpuinfo_max_freq. Max alone says what the
+# core can do, and a core held back by heat looks in the line exactly
+# like a core that was never fast. On a machine with one fan that
+# difference is larger than anything this tree has changed in the code,
+# so the row states it. cpu= in the build line does not answer it: that
+# reads cpu0 out of /proc/cpuinfo, once, before the run, from a core the
+# run need not have used.
+#
 # Each entry names the thread as well, from /proc/<tid>/comm. Which
 # thread sat where is the whole question on a part with two kinds of
 # core: an answering thread on a slow core decides the rate, an idle
@@ -237,8 +246,9 @@ cli_placement() {
       [ -n "$cp_cpu" ] || continue
       cp_max=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
       cp_smt=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
+      cp_now=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/cpufreq/scaling_cur_freq" 2>/dev/null || echo "")
       cp_who=$(tr -d '\n' < "$cp_task/comm" 2>/dev/null || echo "?")
-      cp_out="$cp_out ${cp_who:-?}:cpu$cp_cpu[${cp_max:-?}kHz,smt$cp_smt]"
+      cp_out="$cp_out ${cp_who:-?}:cpu$cp_cpu[${cp_now:-?}/${cp_max:-?}kHz,smt$cp_smt]"
     done
   done
   [ -n "$cp_out" ] || cp_out=" $PLACEMENT_NONE"
@@ -253,8 +263,9 @@ srv_placement() {
     [ -n "$sp_cpu" ] || continue
     sp_max=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
     sp_smt=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
+    sp_now=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/cpufreq/scaling_cur_freq" 2>/dev/null || echo "")
     sp_who=$(tr -d '\n' < "$sp_task/comm" 2>/dev/null || echo "?")
-    sp_out="$sp_out ${sp_who:-?}:cpu$sp_cpu[${sp_max:-?}kHz,smt$sp_smt]"
+    sp_out="$sp_out ${sp_who:-?}:cpu$sp_cpu[${sp_now:-?}/${sp_max:-?}kHz,smt$sp_smt]"
   done
   [ -n "$sp_out" ] || sp_out=" $PLACEMENT_NONE"
   printf '%s' "${sp_out# }"
