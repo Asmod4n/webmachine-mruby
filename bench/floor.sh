@@ -62,10 +62,22 @@ WORKERS="${WORKERS:-1}"
 # the responses= line reports the sum.
 CLIENTS="${CLIENTS:-1}"
 # THREADS_ANSWER=N: one server with --threads=N. One thread accepts and
-# hands every peer to the next of N answering threads through
+# hands every peer to one of N answering threads through
 # IORING_OP_MSG_RING, which carries a registered descriptor between two
 # rings of one process. The second shape beside WORKERS=.
-# Files only - a thread that answers from an application has no VM.
+#
+# Which thread is not a turn. The acceptor reads the peer's name first -
+# SO_PEERCRED for AF_UNIX, SOCKET_URING_OP_GETSOCKNAME for TCP - and
+# derives the thread from it (ring.hpp on_peer_name), so one client meets
+# one answering thread and one VM for every connection it makes. Peers go
+# to the threads in turn only where that name cannot be read, and the
+# error log says so once when it happens.
+#
+# An application runs here. Each answering thread holds its own ring, its
+# own app and its own VM (server.cpp answer_threads_start). This comment
+# said "files only, a thread that answers from an application has no VM"
+# until 2026-09-17; a server started with --threads=2 and an app answers
+# 200 with the app's own body, so the line was wrong.
 THREADS_ANSWER="${THREADS_ANSWER:-1}"
 # DOCROOT=DIR: serve files from this directory and load no application.
 # The file path is the only one --threads answers on, so a comparison
