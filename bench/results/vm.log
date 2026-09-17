@@ -7312,3 +7312,27 @@ env: runnable=1/133 busy=1% (200ms sample)
 responses=516535 bad=0 seconds=3.000 rps=172178 bytes=80062925 MB/s=25.45 conns=32 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=18079495 tx_MB/s=5.75
 server: 99% of one core (7u/91s)   client: 94% of one core (8u/86s)   other: 1% of one core
 threads: server webmachine-serv:cpu0[?/?kHz,smt0] webmachine-serv:cpu3[?/?kHz,smt3] webmachine-serv:cpu3[?/?kHz,smt3] iou-wrk-1784:cpu0[?/?kHz,smt0]   client htgen:cpu1[?/?kHz,smt1] htgen:cpu2[?/?kHz,smt2]
+==== 2026-09-17T19:40Z repo=b72b080 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d3s h1 (one ring, one thread) impl=uring threads=2 clients=2 memlock=8192 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 sched=none host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=2/130 busy=0% (200ms sample)
+responses=762555 bad=0 seconds=3.000 rps=254184 bytes=118196025 MB/s=37.57 conns=32 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=26690230 tx_MB/s=8.49
+server: 99% of one core (10u/89s)   client: 83% of one core (11u/73s)   other: 6% of one core
+threads: server webmachine-serv:cpu2[?/?kHz,smt2] webmachine-serv:cpu2[?/?kHz,smt2] webmachine-serv:cpu1[?/?kHz,smt1] iou-wrk-530:cpu0[?/?kHz,smt0]   client htgen:cpu0[?/?kHz,smt0] htgen:cpu3[?/?kHz,smt3]
+per thread: webmachine-serv/530 0% iou-wrk-530/534 0% webmachine-serv/533 99% webmachine-serv/532 0%
+==== 2026-09-17T19:40Z repo=b72b080 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d3s h1 (one ring, one thread) impl=uring threads=3 clients=2 memlock=8192 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 sched=none host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/132 busy=0% (200ms sample)
+responses=753202 bad=0 seconds=3.000 rps=251065 bytes=116746310 MB/s=37.11 conns=32 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=26363120 tx_MB/s=8.38
+server: 99% of one core (9u/89s)   client: 84% of one core (13u/71s)   other: 0% of one core
+threads: server webmachine-serv:cpu1[?/?kHz,smt1] webmachine-serv:cpu3[?/?kHz,smt3] webmachine-serv:cpu1[?/?kHz,smt1] webmachine-serv:cpu3[?/?kHz,smt3] iou-wrk-919:cpu1[?/?kHz,smt1]   client htgen:cpu2[?/?kHz,smt2] htgen:cpu1[?/?kHz,smt1]
+per thread: webmachine-serv/922 0% webmachine-serv/919 0% webmachine-serv/923 99% iou-wrk-919/924 0% webmachine-serv/921 0%
+==== 2026-09-17T19:41Z repo=b72b080 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c16 -d3s h1 (one ring, one thread) impl=uring threads=2 clients=2 memlock=8192 nice=-15 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 sched=none host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/132 busy=0% (200ms sample)
+responses=740921 bad=0 seconds=3.000 rps=246973 bytes=114842755 MB/s=36.51 conns=32 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=25933285 tx_MB/s=8.25
+server: 98% of one core (9u/89s)   client: 83% of one core (12u/71s)   other: 3% of one core
+threads: server webmachine-serv:cpu3[?/?kHz,smt3] webmachine-serv:cpu1[?/?kHz,smt1] webmachine-serv:cpu2[?/?kHz,smt2] iou-wrk-1336:cpu2[?/?kHz,smt2]   client htgen:cpu3[?/?kHz,smt3] htgen:cpu1[?/?kHz,smt1]
+per thread: iou-wrk-1336/1340 0% webmachine-serv/1339 98% webmachine-serv/1336 0% webmachine-serv/1338 0%

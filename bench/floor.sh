@@ -707,11 +707,16 @@ OUT=$(mktemp)
     awk -v hz="$HZ" -v d="$DURATION" '
       NR == FNR { was[$1] = $3; name[$1] = $2; next }
       { if ($1 in was) { pct[$1] = ($3 - was[$1]) * 100 / hz / d; name[$1] = $2 }
-        else { came++ } }
+        else { came[$2]++ } }
       END { line = ""
             for (t in pct) line = line sprintf(" %s/%s %.0f%%", name[t], t, pct[t])
             if (line == "") { print "per thread: unreadable"; exit }
-            printf "per thread:%s%s\n", line, (came ? sprintf("  (%d thread(s) started during the run)", came) : "") }' \
+            # A thread with no first sample has no share to state. Most
+            # are io-wq workers, which the kernel makes when the work
+            # arrives, so the names say whose they were.
+            late = ""
+            for (n in came) late = late sprintf(" %s x%d", n, came[n])
+            printf "per thread:%s%s\n", line, (late == "" ? "" : "  (came during the run:" late ")") }' \
       "$WORK/thr0" "$WORK/thr1"
     echo 0 > "$WORK/client_bound"
   fi
