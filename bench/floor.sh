@@ -220,6 +220,26 @@ snap_times() { times > "$WORK/.times"; }
 #
 # Read at the end of the run, so it names where the threads finished,
 # not where they started. Nothing is pinned, so a thread may have moved.
+# Where the clients ran. On a machine with fast and slow cores this
+# matters as much as the server's placement: a client on a P core
+# finishes early and reports headroom the server does not have, and the
+# row then looks server-bound when it is only slow-core-bound. It has to
+# be read while the clients live, so both samples are taken mid-run.
+cli_placement() {
+  cp_out=""
+  for cp_pid in "${CLIS[@]}"; do
+    for cp_task in /proc/"$cp_pid"/task/*; do
+      [ -d "$cp_task" ] || continue
+      cp_cpu=$(awk '{ print $39 }' "$cp_task/stat" 2>/dev/null) || continue
+      [ -n "$cp_cpu" ] || continue
+      cp_max=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
+      cp_smt=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
+      cp_out="$cp_out cpu$cp_cpu[${cp_max:-?}kHz,smt$cp_smt]"
+    done
+  done
+  printf '%s' "${cp_out# }"
+}
+
 srv_placement() {
   sp_out=""
   for sp_task in /proc/"$SRV"/task/*; do
@@ -538,6 +558,14 @@ OUT=$(mktemp)
     n=$((n + 1))
   done
   CLI=${CLIS[0]}
+  # One sample of both ends, halfway through. It names where each
+  # thread ran at that instant and not where it spent the run: the
+  # scheduler moves them, and a row that shows one placement while the
+  # rate came from another is why this is a hint and not a gate.
+  (
+    sleep $(( (DURATION + 1) / 2 ))
+    { cli_placement; printf '\n'; srv_placement; } > "$WORK/place" 2>/dev/null
+  ) &
   for p in "${CLIS[@]}"; do wait "$p" 2>/dev/null; done
   # A client that ended without its responses= line measured nothing, and
   # a sum over the others would say the machine did what those few did.
@@ -580,7 +608,9 @@ OUT=$(mktemp)
   M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
   read -r SU1 SS1 <<<"$(srv_ticks)"
-  PLACEMENT=$(srv_placement)
+  CLI_PLACEMENT=$(sed -n '1p' "$WORK/place" 2>/dev/null)
+  PLACEMENT=$(sed -n '2p' "$WORK/place" 2>/dev/null)
+  [ -n "$PLACEMENT" ] || PLACEMENT=$(srv_placement)
   CLIOUT=$(cat "$WORK/cli.out")
   echo "$CLIOUT" | grep -E "^responses="
   echo "$CLIOUT" | grep -E "^latency_us" || true
@@ -629,7 +659,7 @@ OUT=$(mktemp)
     OTHER=$(awk -v m0="$M0" -v m1="$M1" -v hz="$HZ" -v d="$DURATION" -v sc="$SCPU" -v cc="$CCPU" \
       'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
     echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
-    echo "threads: $PLACEMENT"
+    echo "threads: server $PLACEMENT   client ${CLI_PLACEMENT:-?}"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
