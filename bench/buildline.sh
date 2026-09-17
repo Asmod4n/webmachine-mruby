@@ -116,7 +116,40 @@ wm_build_line() {
   else
     wm_bl_flags=unreadable
   fi
+  # Which scheduler actually placed the threads.
+  #
+  # kernel= does not answer this. A sched_ext scheduler is BPF, it is
+  # loaded at run time, and it takes the decision out of the kernel the
+  # name above belongs to: a CachyOS box reports kernel=...-bore-lto
+  # while scx_pandemonium does the placing and BORE does nothing. It is
+  # also swapped without a reboot, so the same binary on the same
+  # machine gives different placements and different rates through the
+  # day, and a row that does not name it cannot be read a month later.
+  #
+  # This was found by reading a row: server 94 percent on a 3.3 GHz E
+  # core, client 80 percent on a 4.5 GHz P core, and the rate called
+  # server-bound when it was slow-core-bound. The placement line says
+  # where; this says who decided.
+  #
+  # The files sit at the top on this kernel and under root/ on others,
+  # so both are read and the first that answers wins. Nothing here
+  # guesses: a machine with no sched_ext says none, which is the whole
+  # truth about it.
+  wm_bl_scx=none
+  if [ "$(cat /sys/kernel/sched_ext/state 2>/dev/null)" = enabled ] ||
+     [ "$(cat /sys/kernel/sched_ext/root/state 2>/dev/null)" = enabled ]; then
+    wm_bl_scx=$(cat /sys/kernel/sched_ext/root/ops 2>/dev/null ||
+                cat /sys/kernel/sched_ext/ops 2>/dev/null || echo enabled-unnamed)
+    # 1 means every task is on it, and that is the ordinary case, so it
+    # is not printed. Anything else means the machine ran two
+    # schedulers at once and the row has to say so.
+    wm_bl_all=$(cat /sys/kernel/sched_ext/switch_all 2>/dev/null ||
+                cat /sys/kernel/sched_ext/root/switch_all 2>/dev/null || echo "")
+    [ "$wm_bl_all" = 1 ] || [ -z "$wm_bl_all" ] ||
+      wm_bl_scx="$wm_bl_scx(switch_all=$wm_bl_all)"
+  fi
   echo "build: $wm_bl_bin cc=${wm_bl_cc:-?} libstdc++=${wm_bl_cxx:-static}" \
-       "libc=${wm_bl_libc:-?} kernel=$(uname -r) host=$(uname -n) on=$wm_bl_on" \
+       "libc=${wm_bl_libc:-?} kernel=$(uname -r) sched=$wm_bl_scx" \
+       "host=$(uname -n) on=$wm_bl_on" \
        "cpu=${wm_bl_cpu:-unreadable} cache=$wm_bl_cache flags=$wm_bl_flags"
 }
