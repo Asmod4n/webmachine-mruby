@@ -291,16 +291,6 @@ mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(webmachine::sniff::knows_media_type({type, static_cast<size_t>(tlen)}));
 }
 
-
-// How many submission entries a locked-memory limit allows, for
-// test/wm_fd.rb.
-mrb_value spec_fd_sq_entries(mrb_state* mrb, mrb_value) {
-  mrb_int memlock = 0;
-  mrb_int rings = 1;
-  mrb_get_args(mrb, "i|i", &memlock, &rings);
-  return mrb_int_value(
-      mrb, webmachine::derive_sq_entries(static_cast<uint64_t>(memlock), static_cast<uint32_t>(rings)));
-}
 mrb_value spec_fd_body_file_take(mrb_state*, mrb_value) {
   return mrb_bool_value(webmachine::body_file_slot_take());
 }
@@ -331,8 +321,6 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
                                 MRB_ARGS_REQ(1));
 
   struct RClass* fd = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecFd"));
-  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "sq_entries"), spec_fd_sq_entries,
-                                MRB_ARGS_ARG(1, 1));
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_file_take"),
                                 spec_fd_body_file_take, MRB_ARGS_NONE());
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_file_give"),

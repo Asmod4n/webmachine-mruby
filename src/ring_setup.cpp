@@ -22,25 +22,6 @@ uint64_t raise_memlock(mrb_state *mrb)
     return static_cast<uint64_t>(rl.rlim_cur);
 }
 
-// The kernel charges a ring's memory to the user rather than to the
-// process, so every ring this server opens shares one RLIMIT_MEMLOCK:
-// threads + 1 for --threads.
-unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
-{
-    constexpr uint64_t per_entry = sizeof(struct io_uring_sqe) + 2 * sizeof(struct io_uring_cqe);
-    if (rings == 0)
-        rings = 1;
-    if (memlock_limit == UINT64_MAX)
-        return kSqEntriesMax;
-    const uint64_t fit = (memlock_limit / 4) * 3 / rings / per_entry;
-    if (fit >= kSqEntriesMax)
-        return kSqEntriesMax;
-    // A submission queue is a power of two.
-    unsigned answer = 1;
-    while (answer * 2u <= fit)
-        answer *= 2;
-    return answer;
-}
 
 
 uint64_t raise_nofile(mrb_state *mrb)

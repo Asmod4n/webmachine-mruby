@@ -32,8 +32,6 @@ uint64_t raise_memlock(mrb_state *mrb);
 // queue are locked memory, shared by every ring of the process.
 inline constexpr unsigned kSqEntriesMax = 512;
 
-unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings);
-
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
 // of it only hides that every worker is already busy.

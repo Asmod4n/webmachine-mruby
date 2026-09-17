@@ -100,9 +100,15 @@ template <class App> class Ring
         constexpr unsigned kSqFloor = 1024;
         constexpr unsigned kSetupFlags =
             IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
-        const unsigned sq_wanted = ring_config.sq_entries != 0
-                                       ? ring_config.sq_entries
-                                       : derive_sq_entries(memlock, ring_config.rings_in_process);
+        // The largest queue this tree asks for, and the loop below takes
+        // the kernel's answer for the rest. What stood here divided three
+        // quarters of RLIMIT_MEMLOCK by the rings of this process - but
+        // the kernel charges a ring's pages to the user, so a second
+        // server of the same user is in that budget and not in that
+        // arithmetic. The kernel knows the sum and says no; halving from
+        // the top asks it.
+        const unsigned sq_wanted =
+            ring_config.sq_entries != 0 ? ring_config.sq_entries : kSqEntriesMax;
         const unsigned sq_floor = sq_wanted < kSqFloor ? sq_wanted : kSqFloor;
         struct io_uring_params p {
         };
