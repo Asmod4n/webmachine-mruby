@@ -27,7 +27,7 @@ TUNE
   --file-map-threshold=N   map a file this big instead of reading  (256 KiB)
 
 OTHER
-  --threads=N              answer from N threads, one ring each; one accepts
+  --threads=N              answer from N threads, one ring each; this one accepts
                            and hands every peer to the thread its address
                            or its pid names                           (1)
   --config=FILE.toml       these choices from a file; flags beat it.

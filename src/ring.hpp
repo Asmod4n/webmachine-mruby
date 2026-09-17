@@ -1003,25 +1003,30 @@ template <class App> class Ring
         io_uring_sqe_set_data64(sqe, arm(c.op_close, &c, detail::kClose));
     }
 
-    // A direct descriptor has no number another ring could take, so
-    // IORING_OP_MSG_RING is the only way to hand it over.
+    // Which place takes the next peer. This ring is one of the places:
+    // it accepts, and it answers what it keeps. The others are the
+    // answering threads, and a peer reaches one of them through
+    // IORING_OP_MSG_RING, which is the only way to hand over a direct
+    // descriptor - it has no number another ring could take.
     //
-    // The peers go to the threads in turn. What this replaced asked the
+    // The places take one each, in turn. What this replaced asked the
     // kernel for the peer's name first - SO_PEERCRED on a unix socket,
     // getsockname on a TCP socket - and hashed that name, so every
     // connection one peer opened met one thread. It cost one submission
     // and one completion per accepted connection, and it decided by a
-    // hash of a name the acceptor cannot choose: three htgen processes
-    // on three answering threads left two threads idle in four runs out
-    // of seven, and the row read 91 percent where 300 was the ceiling.
-    // Turn by turn cannot do that, and it asks the kernel nothing.
-    void hand_to_worker(uint32_t listener_index, uint32_t descriptor)
+    // hash of a name nobody chooses: two client processes on two
+    // answering threads left one thread idle in four runs out of seven,
+    // and the row read 91 percent where 200 was the ceiling.
+    //
+    // nworkers_ is this ring's own place, because the threads hold 0 to
+    // nworkers_ - 1.
+    uint32_t place_of_next_peer()
     {
-        const uint32_t worker = next_worker_;
-        next_worker_++;
-        if (next_worker_ == nworkers_)
-            next_worker_ = 0;
-        hand_to_worker_at(listener_index, descriptor, worker);
+        const uint32_t place = next_place_;
+        next_place_++;
+        if (next_place_ > nworkers_)
+            next_place_ = 0;
+        return place;
     }
 
     void hand_to_worker_at(uint32_t listener_index, uint32_t descriptor, uint32_t worker)
@@ -1088,8 +1093,11 @@ template <class App> class Ring
             return;
         }
         if (nworkers_ != 0) {
-            hand_to_worker(listener_index, static_cast<uint32_t>(completion->res));
-            return;
+            const uint32_t place = place_of_next_peer();
+            if (place != nworkers_) {
+                hand_to_worker_at(listener_index, static_cast<uint32_t>(completion->res), place);
+                return;
+            }
         }
         Conn &c = *conn_new(listener_index, static_cast<uint32_t>(completion->res));
         if (!unix_listener_[listener_index]) {
@@ -2236,7 +2244,7 @@ template <class App> class Ring
     // listener was uneven.
     const int *worker_ring_fds_ = nullptr;
     uint32_t nworkers_ = 0;
-    uint32_t next_worker_ = 0;
+    uint32_t next_place_ = 0;
     bool draining_ = false;
     int64_t drain_deadline_ = 0;
     uint32_t live_ = 0;

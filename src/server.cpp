@@ -116,7 +116,8 @@ std::unique_ptr<Http1> http_;
 std::unique_ptr<Ring<Http1>> ring_;
 bool built_ = false;
 bool entered_ = false;
-// --threads=N: one ring and one Http1 per thread, fed by the acceptor.
+// --threads=N: one ring and one Http1 per thread. The thread that
+// accepts is one of the N and keeps every Nth peer for itself.
 struct AnswerThread {
     std::unique_ptr<Http1> app;
     std::unique_ptr<Ring<Http1>> ring;
@@ -472,7 +473,7 @@ void answer_thread_run(AnswerThread &self, RingConfig base, Http1::AppInput *inp
 void answer_threads_start(mrb_state *mrb, const RingConfig &base, Http1::AppInput *inputs,
                           size_t ninputs, bool listings)
 {
-    for (int t = 0; t < opts_.threads; t++) {
+    for (int t = 0; t < opts_.threads - 1; t++) {
         auto one = std::unique_ptr<AnswerThread>(new AnswerThread());
         AnswerThread &self = *one;
         self.number = t + 1;
@@ -692,14 +693,14 @@ void server_build_ring_config(mrb_state *mrb)
     if (map_threshold >= 0)
         http_->set_file_map_threshold(static_cast<size_t>(map_threshold));
 
-    // --threads=N: the threads that answer come up before the acceptor,
-    // because the acceptor has to know their rings before it takes the
-    // first peer.
+    // --threads=N: N places answer, and this thread is one of them. It
+    // takes the peers and answers what it keeps, so N - 1 threads join
+    // it. They come up first, because it has to know their rings before
+    // it takes the first peer.
     if (opts_.threads > 1) {
-        // The rings are locked memory and the limit is this process's. It
-        // opens one per answering thread and one that accepts, and they
-        // share three quarters of that limit.
-        ring_config.rings_in_process = static_cast<uint32_t>(opts_.threads) + 1;
+        // The rings are locked memory and the limit is this process's.
+        // One per place, and they share three quarters of that limit.
+        ring_config.rings_in_process = static_cast<uint32_t>(opts_.threads);
         answer_threads_start(mrb, ring_config, inputs.data(), inputs.size(),
                              opts_.standalone_listings);
         ring_config.worker_ring_fds = answer_ring_fds_.data();
@@ -721,7 +722,8 @@ void server_build_ring_config(mrb_state *mrb)
     std::fprintf(stderr, "webmachine: up, pid %d, %u listener(s)%s\n", getpid(),
                  ring_config.nlisteners, opts_.threads > 1 ? ", answered by threads" : "");
     if (opts_.threads > 1) {
-        std::fprintf(stderr, "webmachine: %d threads answer, one ring each; this one accepts\n",
+        std::fprintf(stderr,
+                     "webmachine: %d threads answer, one ring each; this one accepts as well\n",
                      opts_.threads);
     }
     for (uint32_t i = 0; i < ring_config.nlisteners; i++) {

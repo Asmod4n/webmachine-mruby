@@ -146,7 +146,7 @@ if [ -n "$QUEUED" ]; then
   echo "  $(echo $QUEUED | tr ' ' ',') has more than one receive queue. That is the one"
   echo "  case where a pin pays: each queue's interrupt on one core, and the"
   echo "  thread that drains it on the same core. This server does not build"
-  echo "  that shape - its acceptor spreads round robin and knows nothing of"
+  echo "  that shape - it spreads the peers in turn and knows nothing of"
   echo "  the queue a peer arrived on - so the advice above still stands here."
 else
   echo "  one receive queue everywhere, so there is nothing to align: no"
@@ -170,8 +170,8 @@ echo "  every measurement behind this advice is loopback either way."
 # that queue on the same core. The packet then arrives, is softirq'd
 # and is answered without leaving the core.
 #
-# This server does not align with that yet. The acceptor picks the next
-# answering ring round robin and knows nothing of the queue a peer
+# This server does not align with that yet. It gives each peer to the
+# next answering ring in turn and knows nothing of the queue a peer
 # arrived on, so it can hand a connection whose packets land on one
 # core to a thread on another. Aligning it needs SO_INCOMING_CPU or a
 # reuseport BPF program, and neither is in this tree.
@@ -222,10 +222,14 @@ echo "recv bundles: as the kernel offers them (IORING_FEAT_RECVSEND_BUNDLE); the
 #   than assuming it. Most onboard cards have one queue, and below 40
 #   Gbit one is enough, so the common machine is fully covered here.)
 #
-#   An acceptor with answering threads spreads, and is the only shape
-#   that spreads on AF_UNIX. One thread accepts and hands each peer to
-#   the next ring by IORING_OP_MSG_RING. Three answering threads spent
-#   356, 345 and 350 ticks while the acceptor spent 3.
+#   Answering threads spread, and are the only shape that spreads on
+#   AF_UNIX. One thread takes the peers and gives them to the rings in
+#   turn by IORING_OP_MSG_RING, keeping every Nth for itself.
+#
+#   (The run below is older than that last clause. There the thread
+#   that accepted answered nothing, and it showed: three answering
+#   threads spent 356, 345 and 350 ticks while it spent 3. That is why
+#   it answers now.)
 #
 # The whole matrix, on 4 cpus, req/s, median of three runs. Read the
 # count across, the shape down:
@@ -272,8 +276,8 @@ echo "cpu this process may use: $BUDGET (cores $NPROC)"
 # One core is left over on purpose: the kernel does the socket work of
 # every answer, and on a machine that also runs the client there is
 # nothing left to do it with. The count is answering threads, or
-# servers in a reuseport group - not counting the acceptor, which does
-# almost nothing (3 ticks against 350 in the run above).
+# servers in a reuseport group. The thread that takes the peers is one
+# of them: it keeps every Nth peer and answers it.
 SHAPE_N=$(( BUDGET - 1 ))
 [ "$SHAPE_N" -lt 1 ] && SHAPE_N=1
 echo "recommend: $SHAPE_N answering ring(s)"
@@ -294,8 +298,8 @@ fi
 echo ""
 echo "  files only, any transport (--docroot / --assets, no --app):"
 echo "    $BIN --unix=/run/webmachine.sock --docroot=DIR --threads=$SHAPE_N"
-echo "    one acceptor, $SHAPE_N answering threads, one ring each. The only shape"
-echo "    that spreads on AF_UNIX."
+echo "    $SHAPE_N answering threads, one ring each, and the thread that takes"
+echo "    the peers is one of them. The only shape that spreads on AF_UNIX."
 echo ""
 echo "  an application, TCP:"
 echo "    $SHAPE_N separate servers on one port. Each binds its own socket and"

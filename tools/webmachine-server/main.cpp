@@ -65,7 +65,7 @@ void usage(const char *me)
                  "  --file-map-threshold=N   map a file this big instead of reading  (256 KiB)\n"
                  "\n"
                  "OTHER\n"
-                 "  --threads=N              answer from N threads, one ring each; one accepts\n"
+                 "  --threads=N              answer from N threads, one ring each; this one accepts\n"
                  "                           and hands every peer to the thread its address\n"
                  "                           or its pid names                           (1)\n"
                  "  --config=FILE.toml       these choices from a file; flags beat it.\n"

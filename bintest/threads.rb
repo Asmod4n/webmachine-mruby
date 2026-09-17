@@ -1,9 +1,8 @@
-# --threads=N: one thread accepts and hands every peer to an answering
-# thread, each with its own ring and its own VM. What is proven here is
-# what an operator can see: the answers are right whichever thread gives
-# them, a route with a callback runs in the thread's own VM, a compute
-# task and a watcher work from there, and a peer is answered by the
-# thread its name picks.
+# --threads=N: N threads answer, each with its own ring and its own VM,
+# and the thread that takes the peers is one of them. What is proven
+# here is what an operator can see: the answers are right whichever
+# thread gives them, a route with a callback runs in the thread's own
+# VM, and a compute task and a watcher work from there.
 require 'socket'
 require 'fileutils'
 
@@ -14,10 +13,10 @@ def w_ask(sock_path, target)
   end
 end
 
-# --threads=N: one thread accepts and hands every peer to the next of N
-# answering threads, each with its own ring. IORING_OP_MSG_RING carries
-# the registered descriptor between the two rings, which is the only way
-# a direct descriptor moves at all.
+# --threads=N: the thread that takes the peers gives each one to the
+# next ring in turn and keeps every Nth for itself. IORING_OP_MSG_RING
+# carries the registered descriptor between two rings, which is the
+# only way a direct descriptor moves at all.
 def t_server(threads, &block)
   root = "/tmp/wm-threads-#{$$}"
   FileUtils.mkdir_p(root)
@@ -28,7 +27,7 @@ ensure
   FileUtils.rm_rf(root)
 end
 
-assert('threads: every answering thread answers what the acceptor sends it') do
+assert('threads: every answering thread answers what it is given') do
   t_server(3) do |sock|
     12.times do
       head, body = w_ask(sock, '/')
@@ -38,8 +37,8 @@ assert('threads: every answering thread answers what the acceptor sends it') do
   end
 end
 
-# What is not tested here: that the acceptor spreads the peers over the
-# answering threads. The only instrument that was available for it was
+# What is not tested here: that the peers spread over the answering
+# threads. The only instrument that was available for it was
 # utime plus stime out of /proc, which counts in clock ticks of 10ms,
 # and a run of small answers costs less than one tick per thread - so
 # the test read zero everywhere and called that a failure to spread.
@@ -50,7 +49,7 @@ end
 # io_uring send never goes through the path that counts wchar. Naming
 # the thread is operator-visible surface, and it is not added for a
 # test. The case below still proves that every answering thread answers
-# what the acceptor sends it.
+# what it is given.
 
 assert('threads: a konst application is answered by the threads') do
   src = <<~'RUBY'
@@ -133,10 +132,9 @@ assert('threads: a compute task is answered to the thread that asked') do
   end
 end
 
-# A TCP peer is handed to the thread its address names, so the acceptor
-# asks the kernel for the peer's address first. This case proves that the
-# ask completes and every answer over TCP is a whole one.
-assert('threads: a TCP peer is answered after its address was read') do
+# A TCP peer goes round the answering threads like a unix peer does.
+# This case proves that every answer over TCP is a whole one.
+assert('threads: a TCP peer is answered whichever thread takes it') do
   root = "/tmp/wm-threads-tcp-#{$$}"
   FileUtils.mkdir_p(root)
   File.binwrite(File.join(root, 'index.html'), "tcp thread page\n")
