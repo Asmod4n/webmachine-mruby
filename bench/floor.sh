@@ -1,8 +1,16 @@
 #!/bin/bash
-# The floor: raw reactor, no HTTP. Its number is the ceiling every later
-# layer is measured against, so the harness line is part of the result -
-# CONNS is mandatory, never a silent default (three separate debugging
-# days in the old tree came from silently differing harnesses).
+# The floor: the reactor with the smallest answer there is. Its number
+# is the ceiling every later layer is measured against, so the harness
+# line is part of the result - CONNS is mandatory, never a silent
+# default (three separate debugging days in the old tree came from
+# silently differing harnesses).
+#
+# It said "raw reactor, no HTTP" until this line was written, and that
+# had been false since 0fdc90a: a server with nothing to serve refuses
+# to start, so this script could not run without an app at all and said
+# only "server died". bintest/floor.rb learned that and carries its own
+# smallest resource; this did not, and was left behind for 132 commits.
+# The number that is genuinely free of HTTP is bench/echo.sh.
 #
 # Everything is single-threaded, both ends. The server is one thread and
 # one ring by measurement (#120), and since #196 the client is too: htgen
@@ -83,6 +91,18 @@ THREADS_ANSWER="${THREADS_ANSWER:-1}"
 # The file path is the only one --threads answers on, so a comparison
 # that includes the thread shape is a comparison on this path.
 DOCROOT="${DOCROOT:-}"
+# The smallest resource in the tree: one route, one baked body. h2.sh,
+# pipeline.sh and profile.sh all default to it; this one was the odd
+# script out. APP= with nothing after it still means no app, and the
+# check below says what that costs rather than letting the server die
+# with a message about a flag the caller never saw.
+[ -n "$DOCROOT" ] || APP="${APP-bench/apps/hello.rb}"
+[ -n "${APP:-}" ] || [ -n "$DOCROOT" ] || {
+  echo "APP= and no DOCROOT= leaves the server nothing to serve, and it refuses to start." >&2
+  echo "Name one, or drop APP= to take bench/apps/hello.rb." >&2
+  echo "For a number with no HTTP in it at all, bench/echo.sh is that bench." >&2
+  exit 2
+}
 # BIN=path names the binary directly, for an A/B between two builds of the
 # same impl: keep both, alternate them, and the harness line records which
 # one ran. Without it the only way to compare two builds was to copy one
