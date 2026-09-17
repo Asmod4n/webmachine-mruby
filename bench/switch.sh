@@ -28,8 +28,14 @@ PEERS="${PEERS:-24}"
 LOADERS="${LOADERS:-3}"
 BIN=bench/switch/switch_bench
 
+# aarch64 GCC takes -mcpu=native, not -march=native.
+case "$(uname -m)" in
+  aarch64 | arm64) TUNE=-mcpu=native ;;
+  *) TUNE=-march=native ;;
+esac
+
 if [ ! -x "$BIN" ] || [ bench/switch/switch.cpp -nt "$BIN" ]; then
-  g++ -O2 -march=native -std=c++20 bench/switch/switch.cpp -luring -o "$BIN"
+  g++ -O2 "$TUNE" -std=c++20 bench/switch/switch.cpp -luring -o "$BIN"
 fi
 
 WORK=$(mktemp -d)
@@ -41,7 +47,7 @@ mkdir -p bench/results
 . bench/buildline.sh
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) ===="
-  echo "harness: switch_bench runs=$RUNS d=${DURATION}s peers=$PEERS loaders=$LOADERS liburing=$(pkg-config --modversion liburing 2>/dev/null || echo '?') cflags=-O2 -march=native $(uname -mr)"
+  echo "harness: switch_bench runs=$RUNS d=${DURATION}s peers=$PEERS loaders=$LOADERS liburing=$(pkg-config --modversion liburing 2>/dev/null || echo '?') cflags=-O2 $TUNE $(uname -mr)"
   wm_build_line "$BIN"
   for i in $(seq "$RUNS"); do
     echo "-- run $i --"

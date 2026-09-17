@@ -25,6 +25,8 @@
 // and run:
 //
 //     g++ -O2 -march=native -std=c++20 switch.cpp -luring -o switch_bench
+//
+// On aarch64 the flag is -mcpu=native, not -march=native.
 //     ./switch_bench --seconds 2 --peers 24 --loaders 3
 //
 // The ENOBUFS question needs a buffer group that runs dry, so ask for a
@@ -131,20 +133,20 @@ std::string kind_of(int cpu)
     return out;
 }
 
-// Which cpus share this one's L2. On a hybrid part the efficiency
-// cores come in clusters that share an L2, and two cores of one
-// cluster hand a line over without leaving it. The SMT sibling list
-// does not say this: it covers threads of one core only.
-std::string l2_of(int cpu)
+// Which cpus share a cache level with this one. Two levels matter and
+// each names a different machine's expensive case: an efficiency
+// cluster of a hybrid part shares an L2, and a chiplet shares an L3, so
+// two cores of one chiplet hand a line over without crossing the link
+// between chiplets. The SMT sibling list says neither: it covers the
+// threads of one core.
+std::string cache_sharers(int cpu, const char *want_level)
 {
     for (int index = 0; index < 8; index++) {
         char path[192];
         std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index%d/level", cpu,
                       index);
         const std::string level = read_line_of(path);
-        if (level.empty())
-            continue;
-        if (level != "2")
+        if (level.empty() || level != want_level)
             continue;
         std::snprintf(path, sizeof path,
                       "/sys/devices/system/cpu/cpu%d/cache/index%d/shared_cpu_list", cpu, index);
@@ -532,10 +534,12 @@ std::string cpu_model()
 // pinned here, and the scheduler may move a thread mid-run.
 void print_where(const char *arm, const Handovers &h)
 {
-    std::printf("%s:  last on cpu %d [%s, smt %s, l2 %s] and cpu %d [%s, smt %s, l2 %s]\n", arm,
-                h.cpu_here, kind_of(h.cpu_here).c_str(), siblings_of(h.cpu_here).c_str(),
-                l2_of(h.cpu_here).c_str(), h.cpu_peer, kind_of(h.cpu_peer).c_str(),
-                siblings_of(h.cpu_peer).c_str(), l2_of(h.cpu_peer).c_str());
+    std::printf("%s:  last on cpu %d [%s, smt %s, l2 %s, l3 %s]\n", arm, h.cpu_here,
+                kind_of(h.cpu_here).c_str(), siblings_of(h.cpu_here).c_str(),
+                cache_sharers(h.cpu_here, "2").c_str(), cache_sharers(h.cpu_here, "3").c_str());
+    std::printf("%s:      and cpu %d [%s, smt %s, l2 %s, l3 %s]\n", arm, h.cpu_peer,
+                kind_of(h.cpu_peer).c_str(), siblings_of(h.cpu_peer).c_str(),
+                cache_sharers(h.cpu_peer, "2").c_str(), cache_sharers(h.cpu_peer, "3").c_str());
 }
 
 } // namespace
