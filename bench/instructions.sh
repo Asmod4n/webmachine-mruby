@@ -16,14 +16,14 @@
 #   APP        the app, default bench/apps/hello.rb
 #   SECONDS_   how long the client runs, default 8
 #   CONNS      client connections, default 4
-#   STREAMS    h2 streams per connection, default 16
+#   MULTI    h2 streams per connection, default 16
 set -u
 cd "$(dirname "$0")/.."
 . bench/_app.sh
 BIN="${BIN:-mruby/build/host/bin/webmachine-server}"
 SECS="${SECONDS_:-8}"
 CONNS="${CONNS:-4}"
-STREAMS="${STREAMS:-16}"
+MULTI="${MULTI:-16}"
 export APP="${APP:-bench/apps/hello.rb}"
 export MRBC="${MRBC:-mruby/build/host/mrbc/bin/mrbc}"
 command -v valgrind >/dev/null || { echo "valgrind is not installed" >&2; exit 2; }
@@ -70,7 +70,7 @@ count() {
   local responses=0
   if [ "$1" != 0 ]; then
     local out
-    out=$(htgen --sock "$SOCK" --conns "$CONNS" --seconds "$1" --path / --h2 --streams "$STREAMS" 2>&1)
+    out=$(htgen --sock "$SOCK" --conns "$CONNS" --seconds "$1" --path / --h2 --streams "$MULTI" 2>&1)
     responses=$(echo "$out" | grep -o 'responses=[0-9]*' | cut -d= -f2)
   else
     sleep 2
@@ -99,7 +99,7 @@ mkdir -p "$(dirname "$RESULTS")"
 {
   echo
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD 2>/dev/null) ===="
-  echo "harness: htgen --conns $CONNS --streams $STREAMS --seconds $SECS h2 (callgrind) WM_MARCH=${WM_MARCH:-unset}"
+  echo "harness: htgen --conns $CONNS --streams $MULTI --seconds $SECS h2 (callgrind) WM_MARCH=${WM_MARCH:-unset}"
   . bench/buildline.sh
   wm_build_line "$BIN"
   echo "$ROW"

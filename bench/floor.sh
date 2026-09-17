@@ -12,11 +12,9 @@
 # smallest resource; this did not, and was left behind for 132 commits.
 # The number that is genuinely free of HTTP is bench/echo.sh.
 #
-# Everything is single-threaded, both ends. The server is one thread and
-# one ring by measurement (#120), and since #196 the client is too: htgen
-# saturates it from one ring. A -t knob only invited the question "how
-# many threads did that number cost", which is not a property of
-# webmachine.
+# One thread each end by default. THREADS=N gives the server N answering
+# threads; CLIENT_WORKERS=M drives it with M htgen processes. The harness
+# line carries both, so a number always says which shape it came from.
 #
 # One generator, htgen. wrk and h2load are gone from this tree - the
 # machine that measures does not have them installed any more, and a
@@ -46,32 +44,29 @@ MEMLOCK_LINE="memlock=$(ulimit -l)"
   echo "CONNS= is mandatory - the harness is part of the number" >&2
   exit 2
 }
-# THREADS was a knob here until #120 and #196 made both ends one thread.
-# Refused rather than ignored: a silently dropped harness knob is how a
-# number ends up describing a run nobody performed.
-[ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone from this script: server and client are one thread each (#120, #196)." >&2
-  echo "Drop it - no bench script in this tree takes it any more." >&2
-  exit 2
-}
 DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
 IMPL="${IMPL:-uring}"
 # WORKERS= is gone. Nothing in this tree forks but logd, and the server
-# is one process with THREADS_ANSWER answering threads. Refused rather
+# is one process with THREADS answering threads. Refused rather
 # than ignored, as THREADS= above: a silently dropped harness knob is
 # how a number ends up describing a run nobody performed.
 [ -z "${WORKERS:-}" ] || {
-  echo "WORKERS= is gone: the server is one process. Use THREADS_ANSWER=N for N answering threads." >&2
+  echo "WORKERS= is gone: the server is one process. Use THREADS=N for N answering threads." >&2
   exit 2
 }
-# CLIENTS=N: N htgen processes, each with CONNS connections of its own.
+# CLIENT_WORKERS=N: N htgen processes, each with CONNS connections of its
+# own. Processes and not threads, and the server decides that: over
+# AF_UNIX a peer has no address, so SO_PEERCRED's pid is its name and the
+# acceptor derives the answering thread from it (ring.hpp worker_of_pid).
+# Threads inside one htgen would share one pid and meet one answering
+# thread, however many of them there were.
 # htgen is one ring and one thread, so one of them cannot fill more than
 # one server worker. The counts and the cpu of all N are added up, and
 # the responses= line reports the sum.
-CLIENTS="${CLIENTS:-1}"
-# THREADS_ANSWER=N: one server with --threads=N. One thread accepts and
+CLIENT_WORKERS="${CLIENT_WORKERS:-1}"
+# THREADS=N: one server with --threads=N. One thread accepts and
 # hands every peer to one of N answering threads through
 # IORING_OP_MSG_RING, which carries a registered descriptor between two
 # rings of one process. This is the only shape: nothing in this tree
@@ -89,7 +84,7 @@ CLIENTS="${CLIENTS:-1}"
 # said "files only, a thread that answers from an application has no VM"
 # until 2026-09-17; a server started with --threads=2 and an app answers
 # 200 with the app's own body, so the line was wrong.
-THREADS_ANSWER="${THREADS_ANSWER:-1}"
+THREADS="${THREADS:-1}"
 # DOCROOT=DIR: serve files from this directory and load no application.
 # The file path is the only one --threads answers on, so a comparison
 # that includes the thread shape is a comparison on this path.
@@ -136,7 +131,7 @@ PROTO="${PROTO:-h1}"
 # splat app has; an app with several resources (examples/cpp_resource.rb)
 # is A/B'd by pointing this at one of them and then the other.
 REQPATH="${REQPATH:-/}"
-STREAMS="${STREAMS:-1}"
+MULTI="${MULTI:-1}"
 # PIPELINE=D: h1 requests in flight per connection (RFC 9112 9.3.2).
 # bench/pipeline.sh is the script that sweeps it; here it is one knob so
 # a floor number can be taken at depth without a second harness.
@@ -166,12 +161,12 @@ case "$PROTO" in
   h2) ;;
   *) echo "PROTO must be h1 or h2" >&2; exit 2 ;;
 esac
-if [ "$PROTO" = h1 ] && [ "$STREAMS" != 1 ]; then
-  echo "STREAMS needs PROTO=h2 - h1 multiplexes with PIPELINE, not streams" >&2
+if [ "$PROTO" = h1 ] && [ "$MULTI" != 1 ]; then
+  echo "MULTI needs PROTO=h2 - h1 multiplexes with PIPELINE, not streams" >&2
   exit 2
 fi
 if [ "$PROTO" = h2 ] && [ "$PIPELINE" != 1 ]; then
-  echo "PIPELINE is h1's (RFC 9112 9.3.2) - h2 has STREAMS" >&2
+  echo "PIPELINE is h1's (RFC 9112 9.3.2) - h2 has MULTI" >&2
   exit 2
 fi
 
@@ -266,8 +261,9 @@ LOG_ARGS=()
 # taken without BROWSER=1 measures the path a browser never takes.
 # PIN="0 2": the server on the first cpu, the client on the second. The
 # priority is not this knob's - bench/priority.sh takes -10 for the whole
-# run, and the children inherit it. Not a default - #120 refused pinning the server's ring
-# workers, and this is not that: it pins the two processes apart so they
+# run, and the children inherit it. Not a default - pinning the server's
+# ring was refused on measurement, and this is not that: it pins the two
+# processes apart so they
 # stop trading one core, which is what a machine with few cores does to a
 # number. Whether it helps is a property of the machine, so the harness
 # line records it and bench/ratchet.sh decides from the spread.
@@ -341,7 +337,7 @@ fi
 # passed. BIN= exists to run an older build beside this one, and an
 # older build refuses a flag it never had.
 SHAPE_ARGS=()
-[ "$THREADS_ANSWER" = 1 ] || SHAPE_ARGS+=(--threads="$THREADS_ANSWER")
+[ "$THREADS" = 1 ] || SHAPE_ARGS+=(--threads="$THREADS")
 "${SRV_PIN[@]}" "$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
   "${SHAPE_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
 SRV=$!
@@ -460,10 +456,10 @@ OUT=$(mktemp)
   # did not have.
   NICE_LINE=""
   [ "${BENCH_NICE:-0}" = 1 ] && NICE_LINE=" nice=-15"
-  [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
+  [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$MULTI"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL threads=$THREADS clients=$CLIENT_WORKERS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
@@ -505,7 +501,7 @@ OUT=$(mktemp)
   read -r CU0 CS0 <<<"$(parse_child_cpu)"
   # One ring, one thread - the same shape as the reactor it drives.
   HTGEN_SHAPE=()
-  [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$STREAMS")
+  [ "$PROTO" = h2 ] && HTGEN_SHAPE=(--h2 --streams "$MULTI")
   [ "$PIPELINE" != 1 ] && HTGEN_SHAPE=(--pipeline "$PIPELINE")
   # LATENCY=1: the client times every answer and prints one line of
   # percentiles beside the counts. It costs two clock reads per answer,
@@ -527,7 +523,7 @@ OUT=$(mktemp)
   fi
   CLIS=()
   n=0
-  while [ "$n" -lt "$CLIENTS" ]; do
+  while [ "$n" -lt "$CLIENT_WORKERS" ]; do
     if [ "$TRANSPORT" = unix ]; then
       "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
         --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.$n" 2>&1 &
@@ -554,7 +550,7 @@ OUT=$(mktemp)
   # Every such client is shown and the run ends.
   n=0
   failed=0
-  while [ "$n" -lt "$CLIENTS" ]; do
+  while [ "$n" -lt "$CLIENT_WORKERS" ]; do
     if ! grep -q '^responses=' "$WORK/cli.$n"; then
       echo "client $n ended without a result:" >&2
       cat "$WORK/cli.$n" >&2
@@ -567,7 +563,7 @@ OUT=$(mktemp)
   # bad= is summed as well: a client that failed must not hide behind
   # one that did not.
   cat "$WORK"/cli.* > "$WORK/cli.all"
-  if [ "$CLIENTS" != 1 ]; then
+  if [ "$CLIENT_WORKERS" != 1 ]; then
     awk '/^responses=/ {
            for (i = 1; i <= NF; i++) {
              split($i, kv, "=")

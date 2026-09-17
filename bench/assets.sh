@@ -1,5 +1,5 @@
 #!/bin/bash
-# Asset delivery (#168): how fast does a body that already exists in
+# Asset delivery: how fast does a body that already exists in
 # a mapping reach the wire, per size and per delivery shape.
 #
 # What was tried and lost, so nobody re-runs it:
@@ -98,8 +98,8 @@ cd "$(dirname "$0")/.." || exit 1
   exit 2
 }
 [ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone: both ends are one thread (#120, #196), and the knob only ever" >&2
-  echo "described h2load, which this tree no longer uses." >&2
+  echo "THREADS= is bench/floor.sh's knob, not this script's: both ends here are one" >&2
+  echo "thread each." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"

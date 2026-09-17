@@ -28,7 +28,7 @@ before you read the rate.
    every other knob the same.
 
        for c in 16 32 64 128; do
-         CONNS=$c DURATION=10 PROTO=h2 STREAMS=128 \
+         CONNS=$c DURATION=10 PROTO=h2 MULTI=128 \
            APP=bench/apps/hello.rb bench/floor.sh
        done
 
@@ -88,7 +88,7 @@ before you read the rate.
    | h2, 128 streams | 32 | 3.34M | 14% |
    | h2, 128 streams | 62 | 3.61M | 19% |
 
-   So the best run on the slow `vm` is `PROTO=h2 STREAMS=128
+   So the best run on the slow `vm` is `PROTO=h2 MULTI=128
    CONNS=32`. It is the only count that stays under 15 percent, and
    its median is 8 percent under the best rate. Take a difference of
    15 percent or more, and nothing smaller.

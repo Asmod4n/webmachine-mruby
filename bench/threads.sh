@@ -23,11 +23,11 @@
 # when the machine runs out, and it is part of the curve.
 #
 # Knobs: LADDER (the rungs, default "1 2 3 4 6 8"), RUNS per rung
-# (default 5), and every knob bench/floor.sh takes (PROTO, STREAMS,
+# (default 5), and every knob bench/floor.sh takes (PROTO, MULTI,
 # CONNS, APP, TRANSPORT, DURATION). CONNS stays mandatory, as it is
 # there.
 #
-#   PROTO=h2 STREAMS=128 CONNS=62 APP=bench/apps/hello.rb bench/threads.sh
+#   PROTO=h2 MULTI=128 CONNS=62 APP=bench/apps/hello.rb bench/threads.sh
 #   LADDER="1 4 16 64 256" CONNS=62 ... bench/threads.sh
 #
 # Name the rungs rather than a maximum, because a ladder to hundreds is
@@ -87,7 +87,7 @@ for n in $LADDER; do
   refused=0
   broken=0
   for _ in $(seq "$RUNS"); do
-    out=$(THREADS_ANSWER="$n" CLIENTS="$n" bench/floor.sh 2>&1) || true
+    out=$(THREADS="$n" CLIENT_WORKERS="$n" bench/floor.sh 2>&1) || true
     printf '%s\n' "$out" | grep -q REFUSED && refused=$((refused + 1))
     got=$(printf '%s\n' "$out" | grep -oE '^responses=[0-9]+ .*rps=[0-9]+' |
       grep -oE 'rps=[0-9]+' | cut -d= -f2)
@@ -109,7 +109,7 @@ done
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) threads ladder ===="
-  echo "harness: threads.sh ladder=\"$LADDER\" runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${STREAMS:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
+  echo "harness: threads.sh ladder=\"$LADDER\" runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${MULTI:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
   echo "host: $(nproc) cpus online"
   echo "threads/clients  median rps  spread  factor  client-bound  no-rate runs"
   awk -F'\t' '

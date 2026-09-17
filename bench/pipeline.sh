@@ -34,7 +34,8 @@ set -u
   exit 2
 }
 [ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone: both ends are one thread (#120, #196)." >&2
+  echo "THREADS= is bench/floor.sh's knob, not this script's: both ends here are one" >&2
+  echo "thread each." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"

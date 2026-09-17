@@ -34,8 +34,8 @@
 #
 # Knobs: CONNS mandatory (the harness is part of the number). A rep with
 # nothing to show is refused rather than logged as a blank row.
-# THREADS is gone: both ends are one thread (#120, #196), and the knob
-# only ever described h2load.
+# THREADS is bench/floor.sh's knob, not this one's: both ends here are
+# one thread each.
 # DURATION (default 10), REPS (default 1), PORT (default 8123), APP (default
 # bench/apps/hello.rb; empty = the bare floor). Appends to
 # bench/results/$(hostname).log; failed runs write nothing.
@@ -56,8 +56,8 @@ cd "$(dirname "$0")/.." || exit 1
   exit 2
 }
 [ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone: both ends are one thread (#120, #196), and the knob only ever" >&2
-  echo "described h2load, which this tree no longer uses." >&2
+  echo "THREADS= is bench/floor.sh's knob, not this script's: both ends here are one" >&2
+  echo "thread each." >&2
   exit 2
 }
 DURATION="${DURATION:-10}"

@@ -22,7 +22,7 @@
 # below for why that binary's samples are trustworthy despite being a
 # test build. Its req/s numbers are still not the ones bench/results/
 # archives (enable_test/enable_bintest add test-only gems the ship
-# build never links, per #176) - trust floor.sh/h2.sh's build/host
+# build never links) - trust floor.sh/h2.sh's build/host
 # numbers for throughput, this script's own numbers only for where
 # time goes.
 #
@@ -109,15 +109,15 @@
 #
 set -u
 
-# STREAMS is floor.sh's name for h2 multiplexing depth; here it is MULTI,
+# MULTI is floor.sh's name for h2 multiplexing depth; here it is MULTI,
 # which also picks the mode (1 = diff, >1 = load). Passing the other name
 # used to be accepted and dropped, so a run asked for at c16 --streams 128
 # quietly measured one connection and one stream - the number then
 # described a latency probe while its caller believed it was load.
-[ -z "${STREAMS:-}" ] || {
-  echo "STREAMS= is floor.sh's knob. Here it is MULTI= - and MULTI also picks" >&2
+[ -z "${MULTI:-}" ] || {
+  echo "MULTI= is floor.sh's knob. Here it is MULTI= - and MULTI also picks" >&2
   echo "the mode: 1 is diff (-c1), anything above is load at that depth." >&2
-  echo "You probably want: MULTI=$STREAMS CONNS=${CONNS:-16}" >&2
+  echo "You probably want: MULTI=$MULTI CONNS=${CONNS:-16}" >&2
   exit 2
 }
 cd "$(dirname "$0")/.." || exit 1
@@ -174,7 +174,7 @@ echo "profile log: $PROFILE_LOG"
 # MRB_DEBUG (enable_debug) only turns mrb_assert into a real assert()
 # and adds one trivial local in mrb_vm_run - no structural change to
 # the VM/GC. BUILD_DIR=build/host profiles the literal shipped binary,
-# but #184 strips -g from it, so its symbols are gone and nothing in
+# but the ship build strips -g from it, so its symbols are gone and nothing in
 # the tree adds them back - WM_PROFILE is named in this file only.
 # build/debug does not get -fno-omit-frame-pointer unless WM_PROFILE=1
 # was also set for it - CALLGRAPH=dwarf sidesteps that, since its DWARF
@@ -219,7 +219,7 @@ ASSETS="${ASSETS:-}"
 ASSET_CODING="${ASSET_CODING:-stored}"
 # REQPATH is the path to ask for. It was TARGET here while bench/floor.sh
 # called the same thing REQPATH, so no line could be carried from one
-# script to the other (#34).
+# script to the other.
 [ -z "${TARGET:-}" ] || {
   echo "TARGET= is REQPATH= in this script now - the name bench/floor.sh already used." >&2
   echo "Same meaning: the path to ask for." >&2
@@ -275,10 +275,6 @@ bench_priority
 . "$(dirname "$0")/htgen.sh"
 . "$(dirname "$0")/_app.sh"
 HTGEN=$(bench_htgen) || exit 1
-[ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone: both ends are one thread (#120, #196)." >&2
-  exit 2
-}
 
 # Everything this run writes lives here. A fixed name under /tmp is a
 # name somebody else's run - or somebody else's user - already owns.

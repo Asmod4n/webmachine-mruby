@@ -6,7 +6,7 @@
 # only when it runs, so it writes the listener into the app source
 # before it compiles it. A bench app reads BENCH_LISTEN.
 #
-# The server also loads bytecode only (#100). The tree's own mrbc
+# The server also loads bytecode only. The tree's own mrbc
 # compiles the source into a scratch .mrb, and the harness line keeps
 # naming the .rb.
 #

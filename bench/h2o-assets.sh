@@ -47,8 +47,7 @@ WORKERS="${WORKERS:-1}"
 H2O="${H2O:-h2o}"
 command -v "$H2O" >/dev/null || { echo "h2o not found (set H2O=)" >&2; exit 1; }
 [ -z "${THREADS:-}" ] || {
-  echo "THREADS= is gone: the client is one thread (#196), and the knob only ever" >&2
-  echo "described h2load, which this tree no longer uses." >&2
+  echo "THREADS= is not this script's knob: the client is one thread." >&2
   exit 2
 }
 # The bench owns the machine while it runs; see bench/priority.sh.
