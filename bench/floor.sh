@@ -190,6 +190,28 @@ bench_config "$WORK"
 # Split like sysc_wait: the wait must run in the shell that backgrounded
 # the client (a $() subshell is not its parent), only the read below may fork.
 snap_times() { times > "$WORK/.times"; }
+
+# Which cpu each server thread last ran on, and what kind of cpu that
+# is. A part whose cores differ - an efficiency cluster beside two
+# performance cores, or two chiplets with an L3 each - answers a
+# different number depending on where the scheduler put the threads,
+# and nothing else in the row says where that was. Field 39 of
+# /proc/<tid>/stat is the cpu the thread last ran on.
+#
+# Read at the end of the run, so it names where the threads finished,
+# not where they started. Nothing is pinned, so a thread may have moved.
+srv_placement() {
+  sp_out=""
+  for sp_task in /proc/"$SRV"/task/*; do
+    [ -d "$sp_task" ] || continue
+    sp_cpu=$(awk '{ print $39 }' "$sp_task/stat" 2>/dev/null) || continue
+    [ -n "$sp_cpu" ] || continue
+    sp_max=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
+    sp_smt=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
+    sp_out="$sp_out cpu$sp_cpu[${sp_max:-?}kHz,smt$sp_smt]"
+  done
+  printf '%s' "${sp_out# }"
+}
 # times(1) line 2 is the children's user and sys - the same split as
 # above, from the other side.
 parse_child_cpu() {
@@ -538,6 +560,7 @@ OUT=$(mktemp)
   M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
   read -r SU1 SS1 <<<"$(srv_ticks)"
+  PLACEMENT=$(srv_placement)
   CLIOUT=$(cat "$WORK/cli.out")
   echo "$CLIOUT" | grep -E "^responses="
   echo "$CLIOUT" | grep -E "^latency_us" || true
@@ -586,6 +609,7 @@ OUT=$(mktemp)
     OTHER=$(awk -v m0="$M0" -v m1="$M1" -v hz="$HZ" -v d="$DURATION" -v sc="$SCPU" -v cc="$CCPU" \
       'BEGIN { o = (m1 - m0) * 100 / hz / d - sc - cc; printf "%.0f", o < 0 ? 0 : o }')
     echo "server: ${SCPU}% of one core (${SUPCT}u/${SSPCT}s)   client: ${CCPU}% of one core (${CUPCT}u/${CSPCT}s)   other: ${OTHER}% of one core"
+    echo "threads: $PLACEMENT"
     echo 0 > "$WORK/client_bound"
   fi
 } | tee "$OUT"
