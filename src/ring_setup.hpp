@@ -24,10 +24,6 @@ inline constexpr uint32_t kFdReserve = 128;
 // connections. A limit under 1169 - this, kFdReserve, kMaxListeners and
 // one connection - refuses to start, and the message names the numbers.
 inline constexpr uint32_t kBodyFilesMax = 1024;
-// Slots in a ring's registered file table, and with it the peers one
-// ring holds at once. A direct descriptor lives only in this table.
-inline constexpr uint32_t kFixedTableKernelMax = 512;
-
 // The locked-memory limit this process runs under, with the soft limit
 // raised to the hard one first. A ring's SQ and CQ pages are charged to
 // it. Every refusal of the two limit calls raises.
@@ -38,19 +34,6 @@ uint64_t raise_memlock(mrb_state *mrb);
 inline constexpr unsigned kSqEntriesMax = 512;
 
 unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings);
-
-// The one arithmetic with two consumers: the server sizes itself with it,
-// webmachine-tune.sh only prints it.
-// The file-descriptor budget one process has: what RLIMIT_NOFILE allows,
-// and how many descriptors something other than a connection takes:
-// kFdReserve for the process's own, kBodyFilesMax for request bodies in
-// files, and the listeners.
-struct FdBudget {
-    uint64_t nofile_limit;
-    uint32_t extra_slots = 0;
-};
-
-uint32_t derive_max_conns(FdBudget block);
 
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front

@@ -338,10 +338,12 @@ else
     LIMIT=$HARD
     [ -n "$NR_OPEN" ] && [ "$NR_OPEN" -lt "$LIMIT" ] && LIMIT=$NR_OPEN
   fi
-  # Kernel cap on a fixed-file table: 2^20 (io_uring/rsrc.c).
-  TABLE_CAP=1048576
+  # No ceiling is applied here. This line used to clamp at 2^20 and name
+  # io_uring/rsrc.c for it, and nobody had read that file - a guessed
+  # number that would have decided the answer on a large limit. The
+  # kernel refuses a table it will not take, and the server's refusal
+  # names the number it asked for.
   MAXC=$((LIMIT - FD_RESERVE - BODY_FILES - MAX_LISTENERS))
-  [ $((MAXC + MAX_LISTENERS)) -gt "$TABLE_CAP" ] && MAXC=$((TABLE_CAP - MAX_LISTENERS))
   echo "RLIMIT_NOFILE hard: $HARD   fs.nr_open: ${NR_OPEN:-unreadable}"
   echo "max connections: $LIMIT - $FD_RESERVE (fd reserve) - $BODY_FILES (body files) - $MAX_LISTENERS (listeners) = $MAXC"
   if [ "$MAXC" -le 0 ]; then

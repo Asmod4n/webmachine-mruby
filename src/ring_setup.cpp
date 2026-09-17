@@ -43,21 +43,6 @@ unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 }
 
 
-uint32_t derive_max_conns(FdBudget block)
-{
-    const uint64_t nofile_limit = block.nofile_limit;
-    const uint32_t extra_slots = block.extra_slots;
-    const uint64_t taken =
-        static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners + extra_slots;
-    if (nofile_limit <= taken)
-        return 0;
-    uint64_t n = nofile_limit - taken;
-    if (n + kMaxListeners + extra_slots > kFixedTableKernelMax) {
-        n = kFixedTableKernelMax - kMaxListeners - extra_slots;
-    }
-    return static_cast<uint32_t>(n);
-}
-
 uint64_t raise_nofile(mrb_state *mrb)
 {
     struct rlimit rl {

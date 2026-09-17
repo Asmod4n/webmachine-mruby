@@ -292,12 +292,6 @@ mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
 }
 
 
-// The descriptor budget and the body file count, for test/wm_fd.rb.
-mrb_value spec_fd_max_conns(mrb_state* mrb, mrb_value) {
-  mrb_int nofile = 0;
-  mrb_get_args(mrb, "i", &nofile);
-  return mrb_int_value(mrb, webmachine::derive_max_conns({static_cast<uint64_t>(nofile)}));
-}
 // How many submission entries a locked-memory limit allows, for
 // test/wm_fd.rb.
 mrb_value spec_fd_sq_entries(mrb_state* mrb, mrb_value) {
@@ -337,8 +331,6 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
                                 MRB_ARGS_REQ(1));
 
   struct RClass* fd = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecFd"));
-  mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "max_conns"), spec_fd_max_conns,
-                                MRB_ARGS_REQ(1));
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "sq_entries"), spec_fd_sq_entries,
                                 MRB_ARGS_ARG(1, 1));
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "body_file_take"),

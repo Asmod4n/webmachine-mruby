@@ -1,16 +1,12 @@
-# The descriptor budget (src/ring_setup.hpp) and the count of open request
-# body files (src/docroot.cpp), driven through Webmachine::SpecFd.
+# The count of open request body files (src/docroot.cpp) and the
+# submission entry arithmetic (src/ring_setup.cpp), driven through
+# Webmachine::SpecFd.
+#
+# How many peers a ring holds is no longer derived here: it is
+# RLIMIT_NOFILE less the descriptors that are not peers, and the kernel
+# refuses a table it will not take. There is no number of ours left to
+# pin.
 WM_FD = Webmachine::SpecFd unless defined?(WM_FD)
-
-assert('fd: max_conns is the limit minus the reserve, the body files and the listeners') do
-  # The registered file table holds kFixedTableKernelMax slots, listeners
-  # included, so a large limit answers that ceiling minus the listeners.
-  assert_equal 496, WM_FD.max_conns(20_000)
-  # 1168 is taken whole; 1169 leaves one connection.
-  assert_equal 0, WM_FD.max_conns(1168)
-  assert_equal 1, WM_FD.max_conns(1169)
-  assert_equal 496, WM_FD.max_conns(1 << 21)
-end
 
 # The count is process-wide for the whole mrbtest run. No other case
 # opens a body file, so it starts at 0, and this case gives every slot

@@ -141,16 +141,30 @@ template <class App> class Ring
         app_.set_send_timeout(send_timeout_);
         // The kernel picks the table entry for every accept, so nothing
         // here indexes by it.
-        table_size_ = derive_max_conns({nofile});
-        if (table_size_ == 0) {
+        //
+        // How many peers a ring holds is what RLIMIT_NOFILE allows, less
+        // the descriptors that are not peers: the process's own, the
+        // request bodies in files, and the listeners. No ceiling of ours
+        // sits on top of that. One did - 512 - and it decided the answer
+        // on every machine that allows more, whatever the limit said: a
+        // server on a 20000 limit stalled at 496 peers and the message
+        // sent its reader to ulimit, where the number is not.
+        const uint64_t not_peers =
+            static_cast<uint64_t>(kFdReserve) + kBodyFilesMax + kMaxListeners;
+        if (nofile <= not_peers) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
                        "RLIMIT_NOFILE %i leaves no room for connections "
                        "(reserve %d + body files %d + listeners %d)",
                        static_cast<mrb_int>(nofile), static_cast<int>(kFdReserve),
                        static_cast<int>(kBodyFilesMax), static_cast<int>(kMaxListeners));
         }
+        table_size_ = static_cast<uint32_t>(nofile - not_peers);
         listener_base_ = table_size_;
 
+        // The kernel says how large a table it will take. Its own ceiling
+        // is IORING_MAX_FIXED_FILES, and it answers -EMFILE or -EINVAL
+        // over it, so the refusal names the number asked for rather than
+        // this tree guessing what the kernel would have allowed.
         rc = io_uring_register_files_sparse(&ring_, table_size_ + kMaxListeners);
         if (rc != 0) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
@@ -1085,9 +1099,12 @@ template <class App> class Ring
                 if (!table_full_said_) {
                     table_full_said_ = true;
                     say_server_error(app_.error_log(),
-                                     std::string("the registered descriptor table is full (") +
-                                         std::strerror(-completion->res) +
-                                         "); peers wait until it drains");
+                                     "the registered descriptor table is full, all " +
+                                         std::to_string(table_size_) +
+                                         " slots hold a peer; the next peers wait until it "
+                                         "drains. The table is RLIMIT_NOFILE less the "
+                                         "descriptors that are not peers, so a larger limit "
+                                         "holds more");
                 }
             }
             return;
