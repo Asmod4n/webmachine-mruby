@@ -6340,3 +6340,192 @@ on SIMD loses more. So a row from that run names "no SIMD parser, both
 arms" and says nothing about the binaries in production. It is an
 instrument for a change inside one server, not a comparison between two.
 Nobody has run it.
+==== 2026-09-17T06:55Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/133 busy=2% (200ms sample)
+responses=3653255 bad=0 seconds=10.000 rps=365324 bytes=657585900 MB/s=62.71 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=127876560 tx_MB/s=12.20
+server: 99% of one core (29u/70s)   client: 84% of one core (9u/75s)   other: 6% of one core
+==== 2026-09-17T06:55Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=0% (200ms sample)
+responses=2603403 bad=0 seconds=10.000 rps=260340 bytes=468612540 MB/s=44.69 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=91132125 tx_MB/s=8.69
+server: 99% of one core (22u/77s)   client: 91% of one core (7u/84s)   other: 6% of one core
+==== 2026-09-17T06:55Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:jemalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/jemalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=1% (200ms sample)
+responses=2791219 bad=0 seconds=10.000 rps=279121 bytes=502419420 MB/s=47.91 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97705475 tx_MB/s=9.32
+server: 99% of one core (23u/76s)   client: 83% of one core (8u/76s)   other: 2% of one core
+==== 2026-09-17T06:56Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:mimalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/mimalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=0% (200ms sample)
+responses=2655091 bad=0 seconds=10.000 rps=265506 bytes=477916380 MB/s=45.58 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=92940785 tx_MB/s=8.86
+server: 99% of one core (20u/78s)   client: 95% of one core (7u/88s)   other: 3% of one core
+==== 2026-09-17T06:56Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tcmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tcmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=1% (200ms sample)
+responses=2642055 bad=0 seconds=10.000 rps=264204 bytes=475569900 MB/s=45.35 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=92484525 tx_MB/s=8.82
+server: 99% of one core (20u/78s)   client: 97% of one core (7u/91s)   other: 4% of one core
+==== 2026-09-17T06:56Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tbbmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tbbmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=1% (200ms sample)
+responses=2110299 bad=0 seconds=10.000 rps=211028 bytes=379853820 MB/s=36.23 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=73873415 tx_MB/s=7.05
+server: 100% of one core (19u/80s)   client: 81% of one core (5u/76s)   other: 3% of one core
+==== 2026-09-17T06:56Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=3378109 bad=0 seconds=10.000 rps=337811 bytes=608059620 MB/s=57.99 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=118247815 tx_MB/s=11.28
+server: 99% of one core (28u/71s)   client: 81% of one core (9u/73s)   other: 9% of one core
+==== 2026-09-17T06:56Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:jemalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/jemalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=1% (200ms sample)
+responses=3318261 bad=0 seconds=10.000 rps=331826 bytes=597286980 MB/s=56.96 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=116151735 tx_MB/s=11.08
+server: 98% of one core (27u/71s)   client: 82% of one core (9u/73s)   other: 7% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:mimalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/mimalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/138 busy=0% (200ms sample)
+responses=3269256 bad=0 seconds=10.000 rps=326925 bytes=588466080 MB/s=56.12 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=114436560 tx_MB/s=10.91
+server: 99% of one core (27u/72s)   client: 79% of one core (8u/71s)   other: 5% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tcmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tcmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=2% (200ms sample)
+responses=3256516 bad=0 seconds=10.000 rps=325651 bytes=586172880 MB/s=55.90 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=113990695 tx_MB/s=10.87
+server: 99% of one core (27u/72s)   client: 81% of one core (8u/72s)   other: 5% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tbbmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tbbmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=1% (200ms sample)
+responses=3236169 bad=0 seconds=10.000 rps=323617 bytes=582510420 MB/s=55.55 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=113279880 tx_MB/s=10.80
+server: 99% of one core (29u/70s)   client: 80% of one core (9u/71s)   other: 4% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/136 busy=0% (200ms sample)
+responses=3185608 bad=0 seconds=10.000 rps=318561 bytes=573409440 MB/s=54.68 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=111509965 tx_MB/s=10.63
+server: 99% of one core (28u/70s)   client: 78% of one core (8u/70s)   other: 2% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:jemalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/jemalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=3184861 bad=0 seconds=10.000 rps=318486 bytes=573274980 MB/s=54.67 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=111484135 tx_MB/s=10.63
+server: 99% of one core (30u/69s)   client: 80% of one core (8u/71s)   other: 4% of one core
+==== 2026-09-17T06:57Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:mimalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/mimalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=1% (200ms sample)
+responses=3314276 bad=0 seconds=10.000 rps=331427 bytes=596569680 MB/s=56.89 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=116012225 tx_MB/s=11.06
+server: 99% of one core (27u/72s)   client: 81% of one core (8u/73s)   other: 2% of one core
+==== 2026-09-17T06:58Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tcmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tcmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/136 busy=0% (200ms sample)
+responses=2863285 bad=0 seconds=10.000 rps=286325 bytes=515391300 MB/s=49.15 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=100227575 tx_MB/s=9.56
+server: 99% of one core (22u/77s)   client: 91% of one core (7u/84s)   other: 3% of one core
+==== 2026-09-17T06:58Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tbbmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tbbmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=2% (200ms sample)
+responses=3047120 bad=0 seconds=10.000 rps=304710 bytes=548481600 MB/s=52.31 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=106661800 tx_MB/s=10.17
+server: 99% of one core (28u/71s)   client: 76% of one core (8u/68s)   other: 4% of one core
+==== 2026-09-17T06:58Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=3430959 bad=0 seconds=10.000 rps=343095 bytes=617572620 MB/s=58.90 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=120096200 tx_MB/s=11.45
+server: 99% of one core (27u/71s)   client: 81% of one core (8u/73s)   other: 5% of one core
+==== 2026-09-17T06:58Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:jemalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/jemalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=3371509 bad=0 seconds=10.000 rps=337150 bytes=606871620 MB/s=57.88 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=118016780 tx_MB/s=11.25
+server: 99% of one core (27u/72s)   client: 80% of one core (8u/71s)   other: 4% of one core
+==== 2026-09-17T06:58Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:mimalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/mimalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=1% (200ms sample)
+responses=2927768 bad=0 seconds=10.000 rps=292776 bytes=526998240 MB/s=50.26 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=102485880 tx_MB/s=9.77
+server: 99% of one core (25u/73s)   client: 90% of one core (7u/83s)   other: 3% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tcmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tcmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/135 busy=1% (200ms sample)
+responses=2251095 bad=0 seconds=10.000 rps=225109 bytes=405197100 MB/s=38.64 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=78802150 tx_MB/s=7.52
+server: 99% of one core (18u/81s)   client: 89% of one core (6u/82s)   other: 3% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tbbmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tbbmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=2232547 bad=0 seconds=10.000 rps=223255 bytes=401858460 MB/s=38.32 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=78152795 tx_MB/s=7.45
+server: 99% of one core (21u/78s)   client: 88% of one core (6u/82s)   other: 6% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:glibc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=2% (200ms sample)
+responses=3393569 bad=0 seconds=10.000 rps=339356 bytes=610842420 MB/s=58.25 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=118788915 tx_MB/s=11.33
+server: 99% of one core (27u/72s)   client: 85% of one core (8u/77s)   other: 5% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:jemalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/jemalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=1% (200ms sample)
+responses=2662489 bad=0 seconds=10.000 rps=266245 bytes=479248020 MB/s=45.70 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=93199715 tx_MB/s=8.89
+server: 99% of one core (22u/77s)   client: 92% of one core (6u/86s)   other: 6% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:mimalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/mimalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=1% (200ms sample)
+responses=2311037 bad=0 seconds=10.000 rps=231104 bytes=415986660 MB/s=39.67 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=80899455 tx_MB/s=7.72
+server: 99% of one core (20u/79s)   client: 84% of one core (6u/79s)   other: 5% of one core
+==== 2026-09-17T06:59Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tcmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tcmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=2796202 bad=0 seconds=10.000 rps=279620 bytes=503316360 MB/s=48.00 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=97881035 tx_MB/s=9.33
+server: 99% of one core (23u/75s)   client: 90% of one core (6u/84s)   other: 4% of one core
+==== 2026-09-17T07:00Z repo=c17c707 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c400 -d10s h1 (one ring, one thread) impl=bin:tbbmalloc workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=unix app=/tmp/claude-0/alloc/bound.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: /tmp/claude-0/alloc/tbbmalloc cc=? libstdc++=static libc=static kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/137 busy=0% (200ms sample)
+responses=2856301 bad=0 seconds=10.000 rps=285629 bytes=514134180 MB/s=49.03 conns=400 streams=1 pipeline=1 method=GET proto=h1 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=99984500 tx_MB/s=9.54
+server: 99% of one core (25u/74s)   client: 89% of one core (7u/82s)   other: 6% of one core
+
+==== NOTE, written 2026-09-17, about the 26 rows above ====
+Those rows are five allocators against each other, five runs each,
+interleaved: glibc, jemalloc, mimalloc, tcmalloc-minimal and tbbmalloc.
+The binary is one and the same; only LD_PRELOAD differs, through one
+wrapper per arm so every arm pays the same exec. The wrappers and the app
+the rows name live under /tmp and are gone with the container.
+
+The run does not answer the question, and no ranking may be read out of
+it. The spread inside one arm is larger than the distance between the
+arms:
+
+  glibc      median 337811   spread 24.5 percent
+  jemalloc   median 318486   spread 22.3
+  mimalloc   median 292776   spread 34.3
+  tbbmalloc  median 285629   spread 39.4
+  tcmalloc   median 279620   spread 36.0
+
+The widest gap between two medians is 21 percent, so every arm sits
+inside every other arm's noise.
+
+The noise is not the host. sysbench on the same box in the same hour read
+a spread of 1.5 percent over five runs, steal at 0.001 percent and 4/1
+scaling of 3.95. What was wrong is the operating point: CONNS=400 was
+taken from an older row in this file rather than swept for. This
+document's own steps say to sweep the connection count first and to read
+the spread before the rate, because a count with a 40 percent spread
+exists and answers nothing. That step was skipped.
+
+What would answer it: a sweep for a count whose spread is small, then the
+five arms at that count, again interleaved. Until then this tree has no
+measured statement about allocators, and the only checked fact is that it
+links none of them - glibc ptmalloc2 is what a build gets.
