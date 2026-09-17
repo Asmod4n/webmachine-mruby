@@ -7001,3 +7001,35 @@ The probe links the distribution's liburing 2.5, not the copy the
 server carries: slipstreamIO's liburing calls its own mmap and close
 wrappers and does not link outside that gem. The ring's setup flags
 are the reactor's.
+
+---- note 2026-09-17: ENOBUFS ends the multishot recv on this kernel ----
+
+Measured, not assumed. bench/switch/switch_bench takes --bufs N, so the
+buffer group can be made to run dry on purpose, and it counts how many
+ENOBUFS completions kept IORING_CQE_F_MORE set.
+
+Kernel 6.18.44-fc-v33, liburing 2.5, multishot recv on a unix socket:
+
+| buffers | enobufs completions | kept armed |
+| --- | --- | --- |
+| 8 | 84651 | 0 |
+| 16 | 115683 | 0 |
+| 64 | 10665 | 0 |
+| 256 | 1367 | 0 |
+
+So the multishot ends every time here, and a reader that does not arm
+it again never reads that socket again. src/ring.hpp:1228 already
+handles both answers: it arms again only when F_MORE is clear, because
+"a kernel that keeps the multishot armed owes more completions, and a
+second recv on one socket delivers bytes out of order". That guard is
+right, and on this kernel its first branch is the one that runs.
+
+This says nothing about other kernels. It is one host, one version.
+
+A correction to the note above, and to the commit that carried it. It
+named the missing rearm as the reason the first ring run hung. That is
+wrong. The run that hung had a 4096 buffer pool and its rearm counter
+read 0, so ENOBUFS never happened in it. What hung it was a load
+thread blocked in send(2) on a socket nobody drained, and MSG_DONTWAIT
+is what fixed it. Two changes went in together and the wrong one got
+the credit.

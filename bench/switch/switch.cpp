@@ -210,6 +210,10 @@ struct RingArm {
     uint64_t recvs = 0;
     uint64_t bytes = 0;
     uint64_t rearms = 0;
+    // ENOBUFS is the question this counts: does the kernel keep the
+    // multishot armed when the buffer group runs dry?
+    uint64_t enobufs = 0;
+    uint64_t enobufs_more = 0;
 };
 
 int listen_unix(const char *path)
@@ -289,8 +293,8 @@ void arm_accept(struct io_uring *ring, int listen_fd)
     io_uring_sqe_set_data64(sqe, kAcceptTag);
 }
 
-RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, double seconds,
-                     double clock_ns)
+RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, unsigned nbufs,
+                     double seconds, double clock_ns)
 {
     RingArm out;
     const int listen_fd = listen_unix(path);
@@ -307,7 +311,6 @@ RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, double 
     if (io_uring_register_files_sparse(&ring, 1024) < 0)
         die("register_files_sparse");
 
-    const unsigned nbufs = 4096;
     const unsigned bufsize = 1024;
     int err = 0;
     struct io_uring_buf_ring *br = io_uring_setup_buf_ring(&ring, nbufs, kBufGroup, 0, &err);
@@ -358,6 +361,10 @@ RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, double 
                 if (cqe->res > 0) {
                     out.recvs++;
                     out.bytes += static_cast<uint64_t>(cqe->res);
+                } else if (cqe->res == -ENOBUFS) {
+                    out.enobufs++;
+                    if ((cqe->flags & IORING_CQE_F_MORE) != 0)
+                        out.enobufs_more++;
                 }
                 if ((cqe->flags & IORING_CQE_F_BUFFER) != 0) {
                     const unsigned bid = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
@@ -400,6 +407,7 @@ int main(int argc, char **argv)
     double seconds = 3.0;
     unsigned peers = 32;
     unsigned loaders = 1;
+    unsigned nbufs = 4096;
     const char *path = "/tmp/switch_bench.sock";
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
@@ -408,6 +416,8 @@ int main(int argc, char **argv)
             peers = static_cast<unsigned>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--loaders") == 0 && i + 1 < argc) {
             loaders = static_cast<unsigned>(std::atoi(argv[++i]));
+        } else if (std::strcmp(argv[i], "--bufs") == 0 && i + 1 < argc) {
+            nbufs = static_cast<unsigned>(std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--sock") == 0 && i + 1 < argc) {
             path = argv[++i];
         } else {
@@ -437,7 +447,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "--peers must be at least --loaders\n");
         return 2;
     }
-    const RingArm r = ring_harvest(path, peers, loaders, seconds, clock_ns);
+    const RingArm r = ring_harvest(path, peers, loaders, nbufs, seconds, clock_ns);
     if (r.cqes == 0) {
         std::fprintf(stderr, "ring: no completions - the peer thread sent nothing\n");
         return 1;
@@ -458,5 +468,9 @@ int main(int argc, char **argv)
                 static_cast<unsigned long long>(r.bytes),
                 static_cast<unsigned long long>(r.rearms),
                 static_cast<double>(r.cqes) / static_cast<double>(r.enters));
+    std::printf("ring:  %llu enobufs completions, %llu of them kept the multishot armed "
+                "(IORING_CQE_F_MORE)\n",
+                static_cast<unsigned long long>(r.enobufs),
+                static_cast<unsigned long long>(r.enobufs_more));
     return 0;
 }
