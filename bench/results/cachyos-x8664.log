@@ -313,3 +313,45 @@ env: runnable=4/1284 busy=4% (200ms sample)
 responses=54842329 bad=0 seconds=10.001 rps=5483785 bytes=4606758772 MB/s=439.30 conns=64 streams=256 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=713058350 tx_MB/s=68.00
 server: 94% of one core (82u/11s)   client: 80% of one core (70u/10s)   other: 29% of one core
 threads: server cpu6[3300000kHz,smt6] cpu6[3300000kHz,smt6]   client cpu5[3300000kHz,smt5]
+==== 2026-09-17T18:47Z repo=822d22e mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=lavd_1.1.3_x86_64_unknown_linux_gnu host=cachyos-x8664 on=metal cpu=6:186:3@3125MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=3/1279 busy=5% (200ms sample)
+responses=50109973 bad=0 seconds=10.000 rps=5010827 bytes=4209239300 MB/s=401.41 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=651432017 tx_MB/s=62.12
+server: 91% of one core (80u/11s)   client: 70% of one core (60u/10s)   other: 42% of one core
+threads: server cpu4[3300000kHz,smt4] cpu6[3300000kHz,smt6]   client cpu6[3300000kHz,smt6]
+==== 2026-09-17T18:49Z repo=1c8ef94 mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=none host=cachyos-x8664 on=metal cpu=6:186:3@3320MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=2/983 busy=2% (200ms sample)
+responses=85593696 bad=0 seconds=10.000 rps=8559368 bytes=7189872032 MB/s=685.68 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1112773664 tx_MB/s=106.12
+server: 89% of one core (78u/11s)   client: 80% of one core (70u/10s)   other: 12% of one core
+threads: server webmachine-serv:cpu1[4500000kHz,smt0-1] iou-wrk-38768:cpu4[3300000kHz,smt4]   client htgen:cpu3[4500000kHz,smt2-3]
+==== 2026-09-17T18:49Z repo=1c8ef94 mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=none host=cachyos-x8664 on=metal cpu=6:186:3@3269MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=2/974 busy=1% (200ms sample)
+responses=77279370 bad=0 seconds=10.000 rps=7727869 bytes=6540805640 MB/s=623.77 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1004660802 tx_MB/s=95.81
+server: 82% of one core (70u/11s)   client: 70% of one core (60u/10s)   other: 19% of one core
+threads: server webmachine-serv:cpu6[3300000kHz,smt6] iou-wrk-39037:cpu7[3300000kHz,smt7]   client htgen:cpu3[4500000kHz,smt2-3]
+==== 2026-09-17T18:49Z repo=1c8ef94 mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=none host=cachyos-x8664 on=metal cpu=6:186:3@3298MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=1/970 busy=1% (200ms sample)
+responses=86116142 bad=0 seconds=10.000 rps=8611473 bytes=7293185560 MB/s=695.52 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1119538838 tx_MB/s=106.77
+server: 90% of one core (79u/11s)   client: 80% of one core (70u/10s)   other: 14% of one core
+threads: server webmachine-serv:cpu1[4500000kHz,smt0-1] iou-wrk-39304:cpu4[3300000kHz,smt4]   client htgen:cpu2[4500000kHz,smt2-3]
+==== 2026-09-17T18:50Z repo=1c8ef94 mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=none host=cachyos-x8664 on=metal cpu=6:186:3@3295MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=1/970 busy=1% (200ms sample)
+responses=77194667 bad=0 seconds=10.000 rps=7719447 bytes=6484353596 MB/s=618.39 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1003559663 tx_MB/s=95.71
+server: 82% of one core (71u/11s)   client: 70% of one core (60u/10s)   other: 18% of one core
+threads: server webmachine-serv:cpu2[4500000kHz,smt2-3] iou-wrk-39572:cpu4[3300000kHz,smt4]   client htgen:cpu2[4500000kHz,smt2-3]
+==== 2026-09-17T18:50Z repo=1c8ef94 mruby=8769ac7 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c32 -d10s h2 -m128 (one ring, one thread) impl=uring threads=1 clients=1 memlock=2147484 transport=unix app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:alderlake 7.2.6-1-cachyos-bore-lto x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (GNU) 16.1.1 20260728 libstdc++=libstdc++.so.6.0.36 libc=glibc 2.44 kernel=7.2.6-1-cachyos-bore-lto sched=none host=cachyos-x8664 on=metal cpu=6:186:3@3300MHz cache=D48K/I32K/U1280K/U10240K flags=137:1054430341
+env: runnable=4/968 busy=1% (200ms sample)
+responses=95245634 bad=0 seconds=10.000 rps=9524547 bytes=8000634824 MB/s=763.00 conns=32 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=1238222234 tx_MB/s=118.09
+server: 98% of one core (87u/11s)   client: 90% of one core (80u/10s)   other: 12% of one core
+threads: server webmachine-serv:cpu3[4500000kHz,smt2-3] iou-wrk-39827:cpu5[3300000kHz,smt5]   client htgen:cpu1[4500000kHz,smt0-1]
