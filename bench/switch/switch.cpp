@@ -476,6 +476,33 @@ RingArm ring_harvest(const char *path, unsigned peers, unsigned loaders, unsigne
     return out;
 }
 
+// What the cpu calls itself. A hybrid part names one model for every
+// core, so this says which machine and the per cpu lines say which kind
+// of core inside it.
+std::string cpu_model()
+{
+    std::FILE *f = std::fopen("/proc/cpuinfo", "r");
+    if (f == nullptr)
+        return std::string("?");
+    char line[512];
+    std::string out("?");
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        if (std::strncmp(line, "model name", 10) != 0)
+            continue;
+        const char *colon = std::strchr(line, ':');
+        if (colon == nullptr)
+            break;
+        out = std::string(colon + 1);
+        while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
+            out.pop_back();
+        while (!out.empty() && out.front() == ' ')
+            out.erase(out.begin());
+        break;
+    }
+    std::fclose(f);
+    return out;
+}
+
 // Where a handover arm ran, so the number can be read. This is where
 // the two threads were last seen, not where they stayed: nothing is
 // pinned here, and the scheduler may move a thread mid-run.
@@ -512,7 +539,8 @@ int main(int argc, char **argv)
         }
     }
 
-    std::printf("host:  %ld cpus online\n", sysconf(_SC_NPROCESSORS_ONLN));
+    std::printf("host:  %ld cpus online, %s\n", sysconf(_SC_NPROCESSORS_ONLN),
+                cpu_model().c_str());
     const double clock_ns = clock_pair_ns();
     std::printf("clock: one pair of CLOCK_MONOTONIC reads = %.1f ns\n", clock_ns);
 
