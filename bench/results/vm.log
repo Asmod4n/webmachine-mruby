@@ -7252,3 +7252,35 @@ count, and no line in the run says what each ring got. And whether 256
 threads really took the 2 GiB their buffer pools add up to, or whether
 the pages stayed untouched. Both are questions for the rung that bends,
 and this vm did not bend.
+
+---- note 2026-09-17: the registered table is capped by RLIMIT_NOFILE ----
+
+A direct descriptor is not charged against RLIMIT_NOFILE once the ring
+holds it. The registration is. io_uring_register_files_sparse checks
+the table size against that limit and refuses a larger one.
+
+Measured on this vm, kernel 6.18.44-fc-v33, liburing 2.5, nofile 20000,
+a table registered at every x8 and then at the boundary itself:
+
+| entries | result | rss delta |
+| --- | --- | --- |
+| 1024 | ok | 256 KiB |
+| 8192 | ok | 0 |
+| 65536 | EMFILE | - |
+| 19999 | ok | - |
+| 20000 | ok | - |
+| 20001 | EMFILE | - |
+
+Two things follow. The cap is exactly nofile, so derive_max_conns is
+required rather than a habit of ours - task #110 is corrected. And the
+size is practically free: 1024 against 8192 entries cost no measurable
+RSS, so there is no reason to stay under the cap.
+
+An operator who wants 250k connections therefore raises nofile to 250k,
+and the message at ring.hpp:157 already tells them the limit is the
+user's rather than the process's.
+
+Not measurable here: this container drops CAP_SYS_RESOURCE, so the hard
+limit of 20000 cannot be raised. /proc/sys/fs/nr_open is 1048576, so
+the kernel would take a table of a million on a host that grants the
+capability.
