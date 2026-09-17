@@ -18,7 +18,23 @@
 // The ring arm needs traffic, so a peer thread opens unix sockets and
 // writes to them. That thread is the load generator, not the subject.
 //
-//   switch_bench [--seconds S] [--peers N] [--sock PATH]
+//   switch_bench [--seconds S] [--peers N] [--loaders N] [--bufs N]
+//                [--sock PATH]
+//
+// One file, one library. To carry it to another host, copy this file
+// and run:
+//
+//     g++ -O2 -march=native -std=c++20 switch.cpp -luring -o switch_bench
+//     ./switch_bench --seconds 2 --peers 24 --loaders 3
+//
+// The ENOBUFS question needs a buffer group that runs dry, so ask for a
+// small one and read the last line:
+//
+//     ./switch_bench --seconds 2 --peers 24 --loaders 3 --bufs 16
+//
+// Record `uname -r` and the liburing version beside whatever it says.
+// On 6.18.44-fc every ENOBUFS ended the multishot; the kernel fixed
+// that in 7.1, and no host here runs 7.1 or later.
 
 #include <liburing.h>
 #include <linux/futex.h>
