@@ -211,6 +211,12 @@ snap_times() { times > "$WORK/.times"; }
 # Read at the end of the run, so it names where the threads finished,
 # not where they started. Nothing is pinned, so a thread may have moved.
 #
+# Each entry names the thread as well, from /proc/<tid>/comm. Which
+# thread sat where is the whole question on a part with two kinds of
+# core: an answering thread on a slow core decides the rate, an idle
+# io-wq worker beside it decides nothing. The kernel's own io-wq
+# workers are called iou-wrk-<pid> and nobody in this tree starts them.
+#
 # Linux only. Field 39 of /proc/<tid>/stat, cpufreq/cpuinfo_max_freq and
 # topology/thread_siblings_list are Linux's, and a kernel may be built
 # without the last two. Where a part cannot be read the field says so
@@ -231,7 +237,8 @@ cli_placement() {
       [ -n "$cp_cpu" ] || continue
       cp_max=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
       cp_smt=$(cat "/sys/devices/system/cpu/cpu$cp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
-      cp_out="$cp_out cpu$cp_cpu[${cp_max:-?}kHz,smt$cp_smt]"
+      cp_who=$(tr -d '\n' < "$cp_task/comm" 2>/dev/null || echo "?")
+      cp_out="$cp_out ${cp_who:-?}:cpu$cp_cpu[${cp_max:-?}kHz,smt$cp_smt]"
     done
   done
   [ -n "$cp_out" ] || cp_out=" $PLACEMENT_NONE"
@@ -246,7 +253,8 @@ srv_placement() {
     [ -n "$sp_cpu" ] || continue
     sp_max=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo "")
     sp_smt=$(cat "/sys/devices/system/cpu/cpu$sp_cpu/topology/thread_siblings_list" 2>/dev/null || echo "?")
-    sp_out="$sp_out cpu$sp_cpu[${sp_max:-?}kHz,smt$sp_smt]"
+    sp_who=$(tr -d '\n' < "$sp_task/comm" 2>/dev/null || echo "?")
+    sp_out="$sp_out ${sp_who:-?}:cpu$sp_cpu[${sp_max:-?}kHz,smt$sp_smt]"
   done
   [ -n "$sp_out" ] || sp_out=" $PLACEMENT_NONE"
   printf '%s' "${sp_out# }"
