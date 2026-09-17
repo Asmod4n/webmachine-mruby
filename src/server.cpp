@@ -692,10 +692,6 @@ void server_build_ring_config(mrb_state *mrb)
     if (map_threshold >= 0)
         http_->set_file_map_threshold(static_cast<size_t>(map_threshold));
 
-    // This thread says what it does as well. With answering threads it
-    // only takes peers and hands them on; alone it takes them and
-    // answers them itself.
-    thread_name_set(opts_.threads > 1 ? "wm-accept" : "wm-serve");
     // --threads=N: the threads that answer come up before the acceptor,
     // because the acceptor has to know their rings before it takes the
     // first peer.
