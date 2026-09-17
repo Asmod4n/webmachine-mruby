@@ -1,6 +1,6 @@
 #!/bin/bash
-# Where the scaling curve bends: N answering threads against N htgen
-# processes, for N from 1 to MAX.
+# Where the scaling curve bends: N answering threads against a client of
+# N threads, for N from 1 to MAX.
 #
 # One number per thread count is not the answer - the answer is the
 # shape. A server that reads 2.0 times at two threads and 2.1 times at
@@ -38,9 +38,9 @@
 # curve for its own reason rather than the scheduler's. Read them off
 # the harness line before blaming contention:
 #
-#   Locked memory. Each htgen registers a buffer ring of 8 MiB, and the
-#   server's rings are charged to the same user. The line says
-#   memlock=; when N htgen processes no longer fit, they fail to start
+#   Locked memory. Each htgen thread registers a buffer ring of 8 MiB,
+#   and the server's rings are charged to the same user. The line says
+#   memlock=; when the client's N rings no longer fit, it fails to start
 #   and the rung is not a measurement.
 #   The submission queue. derive_sq_entries divides the memlock budget
 #   by the number of rings, so each ring's queue shrinks as N rises -
@@ -87,7 +87,7 @@ for n in $LADDER; do
   refused=0
   broken=0
   for _ in $(seq "$RUNS"); do
-    out=$(THREADS="$n" CLIENT_WORKERS="$n" bench/floor.sh 2>&1) || true
+    out=$(THREADS="$n" CLIENT_THREADS="$n" bench/floor.sh 2>&1) || true
     printf '%s\n' "$out" | grep -q REFUSED && refused=$((refused + 1))
     got=$(printf '%s\n' "$out" | grep -oE '^responses=[0-9]+ .*rps=[0-9]+' |
       grep -oE 'rps=[0-9]+' | cut -d= -f2)

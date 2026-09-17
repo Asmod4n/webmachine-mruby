@@ -13,7 +13,7 @@
 # The number that is genuinely free of HTTP is bench/echo.sh.
 #
 # One thread each end by default. THREADS=N gives the server N answering
-# threads; CLIENT_WORKERS=M drives it with M htgen processes. The harness
+# threads; CLIENT_THREADS=M drives it with one htgen of M threads. The harness
 # line carries both, so a number always says which shape it came from.
 #
 # One generator, htgen. wrk and h2load are gone from this tree - the
@@ -56,16 +56,22 @@ IMPL="${IMPL:-uring}"
   echo "WORKERS= is gone: the server is one process. Use THREADS=N for N answering threads." >&2
   exit 2
 }
-# CLIENT_WORKERS=N: N htgen processes, each with CONNS connections of its
-# own. Processes and not threads, and the server decides that: over
-# AF_UNIX a peer has no address, so SO_PEERCRED's pid is its name and the
-# acceptor derives the answering thread from it (ring.hpp worker_of_pid).
-# Threads inside one htgen would share one pid and meet one answering
-# thread, however many of them there were.
-# htgen is one ring and one thread, so one of them cannot fill more than
-# one server worker. The counts and the cpu of all N are added up, and
-# the responses= line reports the sum.
-CLIENT_WORKERS="${CLIENT_WORKERS:-1}"
+# CLIENT_THREADS=N: one htgen with N threads, each holding its own ring
+# and CONNS connections of its own, so the total is N times CONNS as it
+# was with N processes.
+#
+# It was N processes until 2026-09-17, and the server decided that: over
+# AF_UNIX a peer has no address, so SO_PEERCRED gave its pid, and the
+# server derived the answering thread from that pid. Threads inside one
+# htgen share one pid and would have met one answering thread, however
+# many of them there were. The server hands the peers round in turn now,
+# so the client can be one process and htgen counts its own threads up
+# into one responses= line.
+[ -z "${CLIENT_WORKERS:-}" ] || {
+  echo "CLIENT_WORKERS= is gone: htgen is one process with threads. Use CLIENT_THREADS=N." >&2
+  exit 2
+}
+CLIENT_THREADS="${CLIENT_THREADS:-1}"
 # THREADS=N: one server with --threads=N. One thread accepts and
 # hands every peer to one of N answering threads through
 # IORING_OP_MSG_RING, which carries a registered descriptor between two
@@ -510,7 +516,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$MULTI"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL threads=$THREADS clients=$CLIENT_WORKERS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL threads=$THREADS clients=$CLIENT_THREADS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
@@ -573,20 +579,21 @@ OUT=$(mktemp)
     fi
     HTGEN_SHAPE+=(--latency)
   fi
-  CLIS=()
-  n=0
-  while [ "$n" -lt "$CLIENT_WORKERS" ]; do
-    if [ "$TRANSPORT" = unix ]; then
-      "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CONNS" --seconds "$DURATION" \
-        --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.$n" 2>&1 &
-    else
-      "${CLI_PIN[@]}" "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CONNS" \
-        --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
-        >"$WORK/cli.$n" 2>&1 &
-    fi
-    CLIS+=($!)
-    n=$((n + 1))
-  done
+  # CONNS is one thread's share, as it was one process's, so the run
+  # drives the same total over the same shape. An htgen that does not
+  # know --threads refuses the whole argument list and says so, and the
+  # check below shows what it said.
+  CLI_CONNS=$((CONNS * CLIENT_THREADS))
+  if [ "$TRANSPORT" = unix ]; then
+    "${CLI_PIN[@]}" "$HTGEN" --sock "$SOCK" --conns "$CLI_CONNS" --threads "$CLIENT_THREADS" \
+      --seconds "$DURATION" --path "$REQPATH" "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" \
+      >"$WORK/cli.0" 2>&1 &
+  else
+    "${CLI_PIN[@]}" "$HTGEN" --host 127.0.0.1 --port "$PORT" --conns "$CLI_CONNS" \
+      --threads "$CLIENT_THREADS" --seconds "$DURATION" --path "$REQPATH" \
+      "${HTGEN_SHAPE[@]}" "${CLI_HDRS[@]}" >"$WORK/cli.0" 2>&1 &
+  fi
+  CLIS=($!)
   CLI=${CLIS[0]}
   # One sample of both ends, halfway through. It names where each
   # thread ran at that instant and not where it spent the run: the
@@ -600,40 +607,14 @@ OUT=$(mktemp)
   # A client that ended without its responses= line measured nothing, and
   # a sum over the others would say the machine did what those few did.
   # Every such client is shown and the run ends.
-  n=0
-  failed=0
-  while [ "$n" -lt "$CLIENT_WORKERS" ]; do
-    if ! grep -q '^responses=' "$WORK/cli.$n"; then
-      echo "client $n ended without a result:" >&2
-      cat "$WORK/cli.$n" >&2
-      failed=1
-    fi
-    n=$((n + 1))
-  done
-  [ "$failed" = 0 ] || exit 1
-  # One responses= line out of N, with the counts and the rates added.
-  # bad= is summed as well: a client that failed must not hide behind
-  # one that did not.
-  cat "$WORK"/cli.* > "$WORK/cli.all"
-  if [ "$CLIENT_WORKERS" != 1 ]; then
-    awk '/^responses=/ {
-           for (i = 1; i <= NF; i++) {
-             split($i, kv, "=")
-             k = kv[1]; v = kv[2]
-             if (k == "responses" || k == "bad" || k == "rps" || k == "bytes" ||
-                 k == "MB/s" || k == "conns" || k == "tx_bytes" || k == "tx_MB/s") sum[k] += v
-             else keep[k] = v
-             if (!(k in seen)) { seen[k] = 1; ord[++m] = k }
-           }
-         }
-         END { line = ""
-               for (i = 1; i <= m; i++) { k = ord[i]
-                 v = (k in sum) ? sum[k] : keep[k]
-                 line = line (i > 1 ? " " : "") k "=" v }
-               print line }' "$WORK/cli.all" > "$WORK/cli.out"
-  else
-    cp "$WORK/cli.all" "$WORK/cli.out"
+  if ! grep -q '^responses=' "$WORK/cli.0"; then
+    echo "the client ended without a result:" >&2
+    cat "$WORK/cli.0" >&2
+    exit 1
   fi
+  # htgen adds its threads up itself, so the one line it printed is the
+  # whole run.
+  cp "$WORK/cli.0" "$WORK/cli.out"
   snap_times
   M1=$(machine_busy)
   read -r CU1 CS1 <<<"$(parse_child_cpu)"
@@ -656,7 +637,7 @@ OUT=$(mktemp)
   # server had headroom and the client was pegged. Each end may run
   # several threads, so "pegged" is one core per thread: the two
   # numbers are divided by the thread count of their own side before
-  # they are compared. THREADS=3 CLIENT_WORKERS=3 with the client at
+  # they are compared. THREADS=3 CLIENT_THREADS=3 with the client at
   # 230 percent is 77 percent per worker, which has room, and the same
   # 230 against one worker is over its limit.
   #
@@ -681,9 +662,9 @@ OUT=$(mktemp)
   CSPCT=$(awk -v a="$CS1" -v b="$CS0" -v d="$DURATION" 'BEGIN { printf "%.0f", (a - b) * 100 / d }')
   HEADROOM=15
   SPER=$((SCPU / THREADS))
-  CPER=$((${CCPU%.*} / CLIENT_WORKERS))
+  CPER=$((${CCPU%.*} / CLIENT_THREADS))
   if [ "$SU" -gt 0 ] && [ "$CPER" -ge 90 ] && [ "$SPER" -le $((CPER - HEADROOM)) ]; then
-    echo "REFUSED: the server had headroom (${SPER}% of a core per thread, ${SCPU}% over ${THREADS} (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CPER}% per worker, ${CCPU}% over ${CLIENT_WORKERS} (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
+    echo "REFUSED: the server had headroom (${SPER}% of a core per thread, ${SCPU}% over ${THREADS} (${SUPCT}u/${SSPCT}s), ${HEADROOM}+ points under the client's ${CPER}% per thread, ${CCPU}% over ${CLIENT_THREADS} (${CUPCT}u/${CSPCT}s)) while the client was pegged. This measures the client, not webmachine. Drive the load from a second machine." >&2
     echo 1 > "$WORK/client_bound"
   else
     # What else ran. Same unit as the two numbers beside it, so a run
