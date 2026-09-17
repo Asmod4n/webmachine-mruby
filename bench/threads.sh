@@ -1,0 +1,74 @@
+#!/bin/bash
+# Where the scaling curve bends: N answering threads against N htgen
+# processes, for N from 1 to MAX.
+#
+# One number per thread count is not the answer - the answer is the
+# shape. A server that reads 2.0 times at two threads and 2.1 times at
+# eight has found its limit somewhere between, and the bend is the
+# thing worth knowing. So this runs the whole ladder and prints the
+# factor against one thread beside every rung.
+#
+# Both sides grow together, which is the only shape that stays fair as
+# N rises: a fixed client becomes the limit long before the server
+# does. On a host with C logical cpus the run holds 2N of them, so
+# N > C/2 is oversubscribed on purpose - that rung says what happens
+# when the machine runs out, and it is part of the curve.
+#
+# Knobs: MAX (default 8), RUNS per rung (default 5), and every knob
+# bench/floor.sh takes (PROTO, STREAMS, CONNS, APP, TRANSPORT,
+# DURATION). CONNS stays mandatory, as it is there.
+#
+#   PROTO=h2 STREAMS=128 CONNS=62 APP=bench/apps/hello.rb bench/threads.sh
+#
+# Each rung's runs go through floor.sh, so every one of them lands in
+# bench/results/$(hostname).log with its own harness line, its two cpu
+# numbers and the cpus its threads ran on. This script adds the summary
+# table at the end and nothing else: it measures nothing itself.
+set -eu
+cd "$(dirname "$0")/.."
+
+MAX="${MAX:-8}"
+RUNS="${RUNS:-5}"
+[ -n "${CONNS:-}" ] || {
+  echo "CONNS= is mandatory - the harness is part of the number" >&2
+  exit 2
+}
+
+RESULTS="bench/results/$(hostname).log"
+SUMMARY=$(mktemp)
+trap 'rm -f "$SUMMARY"' EXIT
+
+# The median of a rung, and its spread as max minus min over the
+# median. Five runs are five numbers; one of them is not a measurement.
+summarize() {
+  sort -n | awk -v n="$1" '
+    { v[NR] = $1 }
+    END {
+      if (NR == 0) { printf "%s\t-\t-\n", n; exit }
+      med = (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
+      printf "%s\t%d\t%.0f\n", n, med, (v[NR] - v[1]) * 100 / med
+    }'
+}
+
+for n in $(seq 1 "$MAX"); do
+  rungs=$(mktemp)
+  refused=0
+  for _ in $(seq "$RUNS"); do
+    out=$(THREADS_ANSWER="$n" CLIENTS="$n" bench/floor.sh 2>&1) || true
+    printf '%s\n' "$out" | grep -q REFUSED && refused=$((refused + 1))
+    printf '%s\n' "$out" | grep -oE '^responses=[0-9]+ .*rps=[0-9]+' |
+      grep -oE 'rps=[0-9]+' | cut -d= -f2 >> "$rungs"
+  done
+  printf '%s\t%s\n' "$(summarize "$n" < "$rungs")" "$refused" >> "$SUMMARY"
+  rm -f "$rungs"
+done
+
+{
+  echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) threads ladder ===="
+  echo "harness: threads.sh max=$MAX runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${STREAMS:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
+  echo "threads/clients  median rps  spread  factor  client-bound runs"
+  awk -F'\t' '
+    NR == 1 { base = $2 }
+    { printf "%15s  %10s  %5s%%  %5.2f  %s\n", $1, $2, $3, base ? $2 / base : 0, $4 }
+  ' "$SUMMARY"
+} | tee -a "$RESULTS"

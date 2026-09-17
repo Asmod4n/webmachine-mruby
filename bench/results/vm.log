@@ -7119,3 +7119,40 @@ threads: cpu2[?kHz,smt2] cpu1[?kHz,smt1] cpu3[?kHz,smt3]
 (The row above is the check that the threads: line works, one run of
 five seconds. It is not a measurement: one run is not a measurement,
 and 4.32M at two threads sits inside what five runs already showed.)
+==== 2026-09-17T11:07Z repo=33b0ee1 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/132 busy=1% (200ms sample)
+responses=16931456 bad=0 seconds=5.001 rps=3385555 bytes=1422245342 MB/s=271.21 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=220165100 tx_MB/s=41.98
+server: 98% of one core (72u/26s)   client: 87% of one core (55u/32s)   other: 7% of one core
+threads: cpu2[?kHz,smt2]
+==== 2026-09-17T11:07Z repo=33b0ee1 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/132 busy=1% (200ms sample)
+responses=17906944 bad=0 seconds=5.000 rps=3581367 bytes=1504186334 MB/s=286.90 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=232872665 tx_MB/s=44.42
+server: 99% of one core (75u/24s)   client: 85% of one core (58u/28s)   other: 5% of one core
+threads: cpu0[?kHz,smt0]
+==== 2026-09-17T11:07Z repo=33b0ee1 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/134 busy=2% (200ms sample)
+responses=34905768 bad=0 seconds=5.001 rps=6980615 bytes=2932090632 MB/s=559.21 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=453913094 tx_MB/s=86.57
+server: 197% of one core (144u/53s)   client: 173% of one core (115u/58s)   other: 3% of one core
+threads: cpu3[?kHz,smt3] cpu1[?kHz,smt1] cpu3[?kHz,smt3]
+==== 2026-09-17T11:07Z repo=33b0ee1 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/134 busy=0% (200ms sample)
+responses=33383208 bad=0 seconds=5.001 rps=6676113 bytes=2804195548 MB/s=534.82 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=434143968 tx_MB/s=82.8
+server: 197% of one core (144u/53s)   client: 171% of one core (113u/58s)   other: 2% of one core
+threads: cpu1[?kHz,smt1] cpu1[?kHz,smt1] cpu2[?kHz,smt2]
+==== 2026-09-17T11:07Z repo=33b0ee1 threads ladder ====
+harness: threads.sh max=2 runs=2 conns=62 proto=h2 streams=128 app=bench/apps/hello.rb transport=tcp duration=5s
+threads/clients  median rps  spread  factor  client-bound runs
+              1     3483461      6%   1.00  0
+              2     6828364      4%   1.96  0
+(The ladder above is the check that bench/threads.sh prints a correct
+table, two rungs of two runs each. runs=2 is below what the doctrine
+asks, and the header says so. Its 1.96 at two threads agrees with the
+2.03 five runs gave earlier today, which is all it was meant to show.)
