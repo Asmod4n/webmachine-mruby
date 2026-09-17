@@ -82,4 +82,54 @@ const char *stage_name(uint32_t conn)
     return "?";
 }
 } // namespace detail
+// The queue, and nothing of the reactor. Halving from `want` is how the
+// kernel is asked what fits: the pages are charged to the user, so a
+// second server of the same user is in that budget and cannot be in any
+// arithmetic here.
+void boot_queue_up(mrb_state *mrb, BootQueue &queue, unsigned want)
+{
+    if (queue.up)
+        mrb_raise(mrb, E_WM_ERROR(mrb), "the queue is up already");
+    constexpr unsigned kSqFloor = 1024;
+    constexpr unsigned kSetupFlags =
+        IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
+    const uint64_t memlock = raise_memlock(mrb);
+    const unsigned floor = want < kSqFloor ? want : kSqFloor;
+    struct io_uring_params p {
+    };
+    int rc = 0;
+    for (queue.entries = want;; queue.entries /= 2) {
+        p = io_uring_params{};
+        p.flags = kSetupFlags;
+        rc = io_uring_queue_init_params(queue.entries, &queue.ring, &p);
+        if (rc == 0) {
+            queue.entries = p.sq_entries;
+            break;
+        }
+        if (queue.entries <= floor) {
+            mrb_raisef(mrb, E_WM_ERROR(mrb),
+                       "io_uring_queue_init(%d): %s. RLIMIT_MEMLOCK is %i, and the kernel "
+                       "charges a ring's pages to the user rather than to this process",
+                       static_cast<int>(queue.entries), std::strerror(-rc),
+                       static_cast<mrb_int>(memlock));
+        }
+    }
+    // A kernel without register_ring_fd answers -EINVAL, and that is no
+    // reason not to start.
+    rc = io_uring_register_ring_fd(&queue.ring);
+    if (rc < 0 && rc != -EINVAL) {
+        io_uring_queue_exit(&queue.ring);
+        mrb_raisef(mrb, E_WM_ERROR(mrb), "register_ring_fd: %s", std::strerror(-rc));
+    }
+    queue.up = true;
+}
+
+void boot_queue_down(BootQueue &queue)
+{
+    if (!queue.up)
+        return;
+    io_uring_queue_exit(&queue.ring);
+    queue.up = false;
+    queue.entries = 0;
+}
 } // namespace webmachine

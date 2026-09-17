@@ -29,8 +29,41 @@ inline constexpr uint32_t kBodyFilesMax = 1024;
 uint64_t raise_memlock(mrb_state *mrb);
 
 // Submission entries a ring asks for. The queue and its completion
-// queue are locked memory, shared by every ring of the process.
+// queue are locked memory, and the kernel charges those pages to the
+// user, so what fits is not this process's to compute - the ring asks
+// from here downward and the kernel answers.
 inline constexpr unsigned kSqEntriesMax = 512;
+
+// An io_uring and nothing else: no buffers, no descriptor table, no
+// listeners.
+//
+// One of these comes up before the configuration is read, so that every
+// file the start opens - the mime database, the asset archive, the
+// error pages, the docroot - goes through a ring rather than through a
+// syscall that blocks the thread. slipstreamIO answers the same API
+// where the kernel refuses io_uring, so a ring exists on every host
+// this server starts on, and "before the ring" is only the lines that
+// fork and exec webmachine-logd.
+//
+// That one dies when the configuration stands. It cannot become the
+// reactor's: [tune] sq_entries is the operator's and is read through
+// it, so the queue that carries the answers is made after the answer is
+// known. Ring::init makes its own with the same call.
+struct BootQueue {
+    struct io_uring ring {
+    };
+    unsigned entries = 0;
+    bool up = false;
+};
+
+// Bring one up, halving the queue until the kernel takes it. `want` is
+// kSqEntriesMax at the start, or what the operator named once that is
+// known. Every refusal raises.
+void boot_queue_up(mrb_state *mrb, BootQueue &queue, unsigned want);
+
+// And close it. A queue that was handed on (up set to false by the
+// taker) is not closed twice.
+void boot_queue_down(BootQueue &queue);
 
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front

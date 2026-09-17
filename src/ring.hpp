@@ -95,46 +95,20 @@ template <class App> class Ring
                        stderr);
             std::abort();
         }
+        // The queue this reactor runs on. It is not the boot queue: that
+        // one came up before the configuration was read, so that the
+        // files of the start could go through a ring, and it cannot
+        // carry [tune] sq_entries, which the configuration decides. It
+        // is closed before this line and this one is made to the size
+        // the operator asked for.
         int rc = 0;
-        const uint64_t memlock = raise_memlock(mrb_);
-        constexpr unsigned kSqFloor = 1024;
-        constexpr unsigned kSetupFlags =
-            IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN;
-        // The largest queue this tree asks for, and the loop below takes
-        // the kernel's answer for the rest. What stood here divided three
-        // quarters of RLIMIT_MEMLOCK by the rings of this process - but
-        // the kernel charges a ring's pages to the user, so a second
-        // server of the same user is in that budget and not in that
-        // arithmetic. The kernel knows the sum and says no; halving from
-        // the top asks it.
         const unsigned sq_wanted =
             ring_config.sq_entries != 0 ? ring_config.sq_entries : kSqEntriesMax;
-        const unsigned sq_floor = sq_wanted < kSqFloor ? sq_wanted : kSqFloor;
-        struct io_uring_params p {
-        };
-        for (sq_entries_ = sq_wanted;; sq_entries_ /= 2) {
-            p = io_uring_params{};
-            p.flags = kSetupFlags;
-            rc = io_uring_queue_init_params(sq_entries_, &ring_, &p);
-            if (rc == 0) {
-                sq_entries_ = p.sq_entries;
-                break;
-            }
-            if (sq_entries_ <= sq_floor) {
-                mrb_raisef(mrb_, E_WM_ERROR(mrb_),
-                           "io_uring_queue_init(%d): %s. RLIMIT_MEMLOCK is %i and %d ring(s) "
-                           "share three quarters of it",
-                           static_cast<int>(sq_entries_), std::strerror(-rc),
-                           static_cast<mrb_int>(memlock),
-                           static_cast<int>(ring_config.rings_in_process));
-            }
-        }
-        // A kernel without register_ring_fd answers -EINVAL, and that is
-        // no reason not to start.
-        rc = io_uring_register_ring_fd(&ring_);
-        if (rc < 0 && rc != -EINVAL) {
-            mrb_raisef(mrb_, E_WM_ERROR(mrb_), "register_ring_fd: %s", std::strerror(-rc));
-        }
+        BootQueue own;
+        boot_queue_up(mrb_, own, sq_wanted);
+        ring_ = own.ring;
+        sq_entries_ = own.entries;
+        own.up = false;
         ring_up_ = true;
 
         const uint64_t nofile = raise_nofile(mrb_);
@@ -198,12 +172,11 @@ template <class App> class Ring
         if (buf_ring_ == nullptr) {
             mrb_raisef(mrb_, E_WM_ERROR(mrb_),
                        "setup_buf_ring(%d): %s. This ring asked for %d submission entries and a "
-                       "table of %d slots; RLIMIT_MEMLOCK is %i and %d ring(s) share three "
-                       "quarters of it",
+                       "table of %d slots, and its pages are locked memory that the kernel "
+                       "charges to the user rather than to this process",
                        static_cast<int>(kBufCount), std::strerror(-bre),
-                       static_cast<int>(sq_entries_), static_cast<int>(table_size_ + kMaxListeners),
-                       static_cast<mrb_int>(memlock),
-                       static_cast<int>(ring_config.rings_in_process));
+                       static_cast<int>(sq_entries_),
+                       static_cast<int>(table_size_ + kMaxListeners));
         }
         const int mask = io_uring_buf_ring_mask(kBufCount);
         for (uint32_t i = 0; i < kBufCount; i++) {
