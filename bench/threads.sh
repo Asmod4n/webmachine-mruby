@@ -14,11 +14,35 @@
 # N > C/2 is oversubscribed on purpose - that rung says what happens
 # when the machine runs out, and it is part of the curve.
 #
-# Knobs: MAX (default 8), RUNS per rung (default 5), and every knob
-# bench/floor.sh takes (PROTO, STREAMS, CONNS, APP, TRANSPORT,
-# DURATION). CONNS stays mandatory, as it is there.
+# Knobs: LADDER (the rungs, default "1 2 3 4 6 8"), RUNS per rung
+# (default 5), and every knob bench/floor.sh takes (PROTO, STREAMS,
+# CONNS, APP, TRANSPORT, DURATION). CONNS stays mandatory, as it is
+# there.
 #
 #   PROTO=h2 STREAMS=128 CONNS=62 APP=bench/apps/hello.rb bench/threads.sh
+#   LADDER="1 4 16 64 256" CONNS=62 ... bench/threads.sh
+#
+# Name the rungs rather than a maximum, because a ladder to hundreds is
+# a doubling one: 256 rungs of five runs is a night, and a rung at 200
+# says nothing a rung at 256 does not.
+#
+# Three walls stand between here and hundreds, and each one bends the
+# curve for its own reason rather than the scheduler's. Read them off
+# the harness line before blaming contention:
+#
+#   Locked memory. Each htgen registers a buffer ring of 8 MiB, and the
+#   server's rings are charged to the same user. The line says
+#   memlock=; when N htgen processes no longer fit, they fail to start
+#   and the rung is not a measurement.
+#   The submission queue. derive_sq_entries divides the memlock budget
+#   by the number of rings, so each ring's queue shrinks as N rises -
+#   512 entries up to about 128 rings, 64 at 512 rings with an 8 MiB
+#   budget, and no floor under that. A queue that small is a different
+#   server, not a busier one.
+#   Memory per thread. Each answering thread holds its own VM, its own
+#   Http1 and its own provided-buffer pool of kBufCount * kBufSize =
+#   8 MiB. At 256 threads that is 2 GiB of buffers before a single
+#   request arrives.
 #
 # Each rung's runs go through floor.sh, so every one of them lands in
 # bench/results/$(hostname).log with its own harness line, its two cpu
@@ -27,7 +51,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-MAX="${MAX:-8}"
+LADDER="${LADDER:-1 2 3 4 6 8}"
 RUNS="${RUNS:-5}"
 [ -n "${CONNS:-}" ] || {
   echo "CONNS= is mandatory - the harness is part of the number" >&2
@@ -50,7 +74,7 @@ summarize() {
     }'
 }
 
-for n in $(seq 1 "$MAX"); do
+for n in $LADDER; do
   rungs=$(mktemp)
   refused=0
   for _ in $(seq "$RUNS"); do
@@ -65,7 +89,7 @@ done
 
 {
   echo "==== $(date -u +%FT%RZ) repo=$(git rev-parse --short HEAD) threads ladder ===="
-  echo "harness: threads.sh max=$MAX runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${STREAMS:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
+  echo "harness: threads.sh ladder=\"$LADDER\" runs=$RUNS conns=$CONNS proto=${PROTO:-h1} streams=${STREAMS:-1} app=${APP:-none} transport=${TRANSPORT:-unix} duration=${DURATION:-10}s"
   echo "threads/clients  median rps  spread  factor  client-bound runs"
   awk -F'\t' '
     NR == 1 { base = $2 }

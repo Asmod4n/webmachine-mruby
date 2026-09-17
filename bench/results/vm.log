@@ -7156,3 +7156,25 @@ threads/clients  median rps  spread  factor  client-bound runs
 table, two rungs of two runs each. runs=2 is below what the doctrine
 asks, and the header says so. Its 1.96 at two threads agrees with the
 2.03 five runs gave earlier today, which is all it was meant to show.)
+==== 2026-09-17T11:09Z repo=040f90f mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/133 busy=2% (200ms sample)
+responses=17168772 bad=0 seconds=5.000 rps=3433547 bytes=1442179886 MB/s=275.06 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=223281824 tx_MB/s=42.59
+server: 98% of one core (72u/25s)   client: 88% of one core (58u/30s)   other: 5% of one core
+threads: cpu3[?kHz,smt3]
+==== 2026-09-17T11:09Z repo=040f90f mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d5s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/135 busy=0% (200ms sample)
+responses=34616061 bad=0 seconds=5.000 rps=6922645 bytes=2907755200 MB/s=554.57 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=450144433 tx_MB/s=85.85
+server: 196% of one core (148u/48s)   client: 172% of one core (117u/55s)   other: 0% of one core
+threads: cpu2[?kHz,smt2] cpu2[?kHz,smt2] cpu1[?kHz,smt1]
+==== 2026-09-17T11:09Z repo=040f90f threads ladder ====
+harness: threads.sh ladder="1 2" runs=1 conns=62 proto=h2 streams=128 app=bench/apps/hello.rb transport=tcp duration=5s
+threads/clients  median rps  spread  factor  client-bound runs
+              1     3433547      0%   1.00  0
+              2     6922645      0%   2.02  0
+(Two more ladder checks above, runs=1 and runs=2: the table prints, and
+1.96 and 2.02 at two threads agree with the morning's 2.03. Neither is
+a measurement.)
