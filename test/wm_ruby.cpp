@@ -298,13 +298,14 @@ mrb_value spec_spread_worker_of(mrb_state* mrb, mrb_value) {
   const char* name = nullptr;
   mrb_int nlen = 0;
   mrb_int nworkers = 0;
-  mrb_get_args(mrb, "si", &name, &nlen, &nworkers);
+  mrb_int seed = 0;
+  mrb_get_args(mrb, "si|i", &name, &nlen, &nworkers, &seed);
   if (nworkers <= 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "nworkers must be positive");
   }
   const std::span<const std::byte> octets{reinterpret_cast<const std::byte*>(name),
                                           static_cast<size_t>(nlen)};
-  return mrb_int_value(mrb, webmachine::worker_of_name(octets,
+  return mrb_int_value(mrb, webmachine::worker_of_name(octets, static_cast<uint32_t>(seed),
                                                        static_cast<uint32_t>(nworkers)));
 }
 
@@ -354,7 +355,7 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
 
   struct RClass* sp = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecSpread"));
   mrb_define_module_function_id(mrb, sp, mrb_intern_lit(mrb, "worker_of"),
-                                spec_spread_worker_of, MRB_ARGS_REQ(2));
+                                spec_spread_worker_of, MRB_ARGS_ARG(2, 1));
 
   struct RClass* fd = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecFd"));
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "max_conns"), spec_fd_max_conns,

@@ -1040,22 +1040,28 @@ template <class App> class Ring
 
     static uint32_t worker_of_pid(pid_t pid, uint32_t nworkers)
     {
-        return worker_of_name(std::as_bytes(std::span(&pid, 1)), nworkers);
+        return worker_of_name(std::as_bytes(std::span(&pid, 1)), 0, nworkers);
     }
 
     static uint32_t worker_of_address(const struct sockaddr_storage &addr, uint32_t nworkers)
     {
         std::span<const std::byte> octets;
+        uint16_t port = 0;
         if (addr.ss_family == AF_INET) {
             const auto *in4 = reinterpret_cast<const struct sockaddr_in *>(&addr);
             octets = std::as_bytes(std::span(&in4->sin_addr, 1));
+            port = in4->sin_port;
         } else if (addr.ss_family == AF_INET6) {
             const auto *in6 = reinterpret_cast<const struct sockaddr_in6 *>(&addr);
             octets = std::as_bytes(std::span(&in6->sin6_addr, 1));
+            port = in6->sin6_port;
         } else {
             return nworkers;
         }
-        return worker_of_name(octets, nworkers);
+        // The port seeds the mix. Without it every peer behind one address
+        // meets one thread, and a bench over the loopback address is the
+        // extreme case: one thread answered and the other idled.
+        return worker_of_name(octets, port, nworkers);
     }
 
     void ask_peer_name(uint32_t listener_index, uint32_t descriptor)

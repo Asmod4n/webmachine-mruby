@@ -6843,3 +6843,88 @@ build: /tmp/claude-0/alloc/glibc cc=? libstdc++=static libc=static kernel=6.18.4
 env: runnable=1/136 busy=0% (200ms sample)
 responses=4925244 bad=0 seconds=3.000 rps=1641725 bytes=428512224 MB/s=136.22 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=64242020 tx_MB/s=20.42
 server: 200% of one core (192u/8s)   client: 35% of one core (26u/9s)   other: 13% of one core
+==== 2026-09-17T07:59Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/142 busy=0% (200ms sample)
+responses=40379007 bad=0 seconds=10.001 rps=4037602 bytes=3391839626 MB/s=323.45 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=524976607 tx_MB/s=50.06
+server: 116% of one core (88u/28s)   client: 100% of one core (67u/33s)   other: 5% of one core
+==== 2026-09-17T08:02Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=2/141 busy=2% (200ms sample)
+responses=34066603 bad=0 seconds=10.000 rps=3406564 bytes=2861597690 MB/s=272.90 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=442935323 tx_MB/s=42.24
+server: 99% of one core (72u/26s)   client: 87% of one core (56u/32s)   other: 4% of one core
+==== 2026-09-17T08:02Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/143 busy=1% (200ms sample)
+responses=41740515 bad=0 seconds=10.000 rps=4173968 bytes=3506206298 MB/s=334.37 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=542697843 tx_MB/s=51.75
+server: 123% of one core (93u/29s)   client: 99% of one core (67u/32s)   other: 4% of one core
+==== 2026-09-17T08:03Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/140 busy=2% (200ms sample)
+responses=35034248 bad=0 seconds=10.000 rps=3503327 bytes=2942879870 MB/s=280.65 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=455524692 tx_MB/s=43.44
+server: 99% of one core (74u/25s)   client: 88% of one core (57u/31s)   other: 3% of one core
+==== 2026-09-17T08:03Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/143 busy=1% (200ms sample)
+responses=40991743 bad=0 seconds=10.001 rps=4098736 bytes=3443309450 MB/s=328.34 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=532942175 tx_MB/s=50.82
+server: 120% of one core (91u/28s)   client: 100% of one core (66u/33s)   other: 7% of one core
+==== 2026-09-17T08:03Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/141 busy=0% (200ms sample)
+responses=35748019 bad=0 seconds=10.000 rps=3574801 bytes=3002836634 MB/s=286.37 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=464830339 tx_MB/s=44.33
+server: 98% of one core (76u/22s)   client: 86% of one core (59u/27s)   other: 8% of one core
+==== 2026-09-17T08:03Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/143 busy=0% (200ms sample)
+responses=42929390 bad=0 seconds=10.001 rps=4292657 bytes=3606071798 MB/s=343.88 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=558149487 tx_MB/s=53.23
+server: 120% of one core (93u/26s)   client: 100% of one core (67u/33s)   other: 2% of one core
+==== 2026-09-17T08:03Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/139 busy=0% (200ms sample)
+responses=34664161 bad=0 seconds=10.000 rps=3466342 bytes=2911792562 MB/s=277.68 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=450713561 tx_MB/s=42.98
+server: 98% of one core (73u/25s)   client: 88% of one core (58u/30s)   other: 7% of one core
+==== 2026-09-17T08:04Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=1 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/141 busy=0% (200ms sample)
+responses=40470108 bad=0 seconds=10.001 rps=4046792 bytes=3399492110 MB/s=324.18 conns=62 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=526177157 tx_MB/s=50.18
+server: 120% of one core (90u/30s)   client: 100% of one core (66u/34s)   other: 4% of one core
+==== 2026-09-17T08:04Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=1 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/139 busy=0% (200ms sample)
+responses=35424613 bad=0 seconds=10.000 rps=3542428 bytes=2975673568 MB/s=283.78 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=460733817 tx_MB/s=43.94
+server: 99% of one core (75u/24s)   client: 94% of one core (66u/29s)   other: 9% of one core
+==== 2026-09-17T08:04Z repo=de25166 mruby=6b9c17730 ====
+harness: /usr/local/bin/htgen(25b5ad27) -c62 -d10s h2 -m128 (one ring, one thread) impl=uring workers=1 threads=2 clients=2 memlock=8192 nice=-15 transport=tcp app=bench/apps/hello.rb docroot=none path=/ browser=0 WM_BUNDLE=default cflags=-O3 -march=native:cascadelake 6.18.44-fc-v33 x86_64
+build: mruby/build/host/bin/webmachine-server cc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 libstdc++=libstdc++.so.6.0.33 libc=glibc 2.39 kernel=6.18.44-fc-v33 host=vm on=kvm/docker cpu=6:85:7@2800MHz cache=D32K/I32K/U1024K/U33792K flags=92:681481549
+env: runnable=1/141 busy=1% (200ms sample)
+responses=71965535 bad=0 seconds=10.000 rps=7196456 bytes=6045111016 MB/s=576.49 conns=124 streams=128 pipeline=1 method=GET proto=h2 tls=0 bundles=1 bufs=2048/4096 enobufs=0 rearms=0 tx_bytes=935710839 tx_MB/s=89.24
+server: 198% of one core (152u/46s)   client: 171% of one core (122u/49s)   other: 2% of one core
+
+---- note 2026-09-17: two threads answer, and both of them work ----
+
+The rows above are the murmur3 mix with the peer's port in the seed,
+against the same tree with one answering thread. The port belongs in
+the seed: without it every peer behind one address meets one thread,
+and a bench over 127.0.0.1 is that case at its worst.
+
+One htgen process cannot show it. It holds 88 to 100 percent of a core
+by itself, so the two-thread arm reads 4.05M against 3.47M and the
+server holds 120 percent of a core: the client is the limit, not the
+spread.
+
+Two htgen processes show it. 3.54M with one answering thread at 99
+percent of a core; 7.20M with two at 198 percent of a core. That is
+2.03 times the rate for 2.0 times the cpu, and both threads are full.
+
+Nothing is remembered between connections to reach it. The thread
+comes from the peer's name alone.

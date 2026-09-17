@@ -86,3 +86,15 @@ end
 assert('spread: a thread count of zero is refused') do
   assert_raise(ArgumentError) { WM_SPREAD.worker_of(spread_pid(1), 0) }
 end
+
+# TCP takes the peer's port as well. Every browser behind one address
+# would otherwise meet one thread, and a client on the loopback address
+# is the extreme case: one thread answers and the others idle.
+assert('spread: the port spreads peers that share an address') do
+  addr = [127, 0, 0, 1].pack('C4')
+  seen = Array.new(4, 0)
+  (1024..2047).each { |port| seen[WM_SPREAD.worker_of(addr, 4, port)] += 1 }
+  ideal = 1024.0 / 4
+  assert_true seen.min / ideal > 0.5,
+              "the quietest thread took #{(seen.min * 100 / ideal).round(1)}% of its share"
+end

@@ -46,9 +46,9 @@ unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
 // whole number of words - four octets for a pid or an IPv4 address,
 // sixteen for IPv6 - and a tail is folded in rather than refused, so a
 // name of any length still answers.
-uint32_t worker_of_name(std::span<const std::byte> name, uint32_t nworkers)
+uint32_t worker_of_name(std::span<const std::byte> name, uint32_t seed, uint32_t nworkers)
 {
-    uint32_t hash = 0;
+    uint32_t hash = seed;
     size_t at = 0;
     for (; at + sizeof(uint32_t) <= name.size(); at += sizeof(uint32_t)) {
         uint32_t word = 0;

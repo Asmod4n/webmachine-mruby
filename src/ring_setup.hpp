@@ -62,7 +62,7 @@ uint32_t derive_max_conns(FdBudget block);
 // client address carry enough spread on their own - but for a pid it did:
 // two pids an even distance apart met the same thread in 99 percent of
 // the pairs measured, which left half a two-thread server unused.
-uint32_t worker_of_name(std::span<const std::byte> name, uint32_t nworkers);
+uint32_t worker_of_name(std::span<const std::byte> name, uint32_t seed, uint32_t nworkers);
 
 // #80: jobs in flight per worker. Small on purpose - a compute task is work
 // this process decided not to do on its core, and a deep queue in front
