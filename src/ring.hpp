@@ -1005,6 +1005,16 @@ template <class App> class Ring
 
     // A direct descriptor has no number another ring could take, so
     // IORING_OP_MSG_RING is the only way to hand it over.
+    //
+    // The peers go to the threads in turn. What this replaced asked the
+    // kernel for the peer's name first - SO_PEERCRED on a unix socket,
+    // getsockname on a TCP socket - and hashed that name, so every
+    // connection one peer opened met one thread. It cost one submission
+    // and one completion per accepted connection, and it decided by a
+    // hash of a name the acceptor cannot choose: three htgen processes
+    // on three answering threads left two threads idle in four runs out
+    // of seven, and the row read 91 percent where 300 was the ceiling.
+    // Turn by turn cannot do that, and it asks the kernel nothing.
     void hand_to_worker(uint32_t listener_index, uint32_t descriptor)
     {
         const uint32_t worker = next_worker_;
@@ -1012,111 +1022,6 @@ template <class App> class Ring
         if (next_worker_ == nworkers_)
             next_worker_ = 0;
         hand_to_worker_at(listener_index, descriptor, worker);
-    }
-
-    // A peer goes to the thread its name hashes to, so one thread answers
-    // every connection one peer opens. The port is left out of the hash:
-    // the port is the connection's, the address is the host's.
-    struct PeerName {
-        Op op;
-        struct sockaddr_storage addr {
-        };
-        socklen_t len = sizeof(addr);
-        // A unix peer has no address, so SO_PEERCRED's pid is its name.
-        struct ucred cred {
-        };
-        bool unix_peer = false;
-        uint32_t descriptor = 0;
-        uint32_t listener_index = 0;
-    };
-
-    static uint32_t worker_of_pid(pid_t pid, uint32_t nworkers)
-    {
-        return worker_of_name(std::as_bytes(std::span(&pid, 1)), 0, nworkers);
-    }
-
-    static uint32_t worker_of_address(const struct sockaddr_storage &addr, uint32_t nworkers)
-    {
-        std::span<const std::byte> octets;
-        uint16_t port = 0;
-        if (addr.ss_family == AF_INET) {
-            const auto *in4 = reinterpret_cast<const struct sockaddr_in *>(&addr);
-            octets = std::as_bytes(std::span(&in4->sin_addr, 1));
-            port = in4->sin_port;
-        } else if (addr.ss_family == AF_INET6) {
-            const auto *in6 = reinterpret_cast<const struct sockaddr_in6 *>(&addr);
-            octets = std::as_bytes(std::span(&in6->sin6_addr, 1));
-            port = in6->sin6_port;
-        } else {
-            return nworkers;
-        }
-        // The port seeds the mix. Without it every peer behind one address
-        // meets one thread, and a bench over the loopback address is the
-        // extreme case: one thread answered and the other idled.
-        return worker_of_name(octets, port, nworkers);
-    }
-
-    void ask_peer_name(uint32_t listener_index, uint32_t descriptor)
-    {
-        // The record is never freed while the ring runs: handle()'s release
-        // guard reads the op after on_peer_name returns.
-        std::unique_ptr<PeerName> ask;
-        if (peer_asks_free_.empty()) {
-            ask = std::make_unique<PeerName>();
-        } else {
-            ask = std::move(peer_asks_free_.back());
-            peer_asks_free_.pop_back();
-            *ask = PeerName{};
-        }
-        ask->descriptor = descriptor;
-        ask->listener_index = listener_index;
-        ask->unix_peer = unix_listener_[listener_index];
-        struct io_uring_sqe *sqe = sqe_or_submit();
-        if (ask->unix_peer) {
-            io_uring_prep_cmd_sock(sqe, SOCKET_URING_OP_GETSOCKOPT, static_cast<int>(descriptor),
-                                   SOL_SOCKET, SO_PEERCRED, &ask->cred, sizeof(ask->cred));
-        } else {
-            io_uring_prep_cmd_getsockname(sqe, static_cast<int>(descriptor),
-                                          reinterpret_cast<struct sockaddr *>(&ask->addr),
-                                          &ask->len, 1);
-        }
-        sqe->flags |= IOSQE_FIXED_FILE;
-        io_uring_sqe_set_data64(sqe, arm(ask->op, nullptr, detail::kPeerName));
-        ask.release();
-    }
-
-    struct PeerNameReturned {
-        Ring *ring;
-        std::unique_ptr<PeerName> *ask;
-        ~PeerNameReturned()
-        {
-            ring->peer_asks_free_.push_back(std::move(*ask));
-        }
-    };
-
-    void on_peer_name(Op &op, struct io_uring_cqe *completion)
-    {
-        std::unique_ptr<PeerName> ask(reinterpret_cast<PeerName *>(&op));
-        const PeerNameReturned returned{this, &ask};
-        uint32_t worker = nworkers_;
-        if (completion->res < 0) {
-            if (!peer_name_said_) {
-                peer_name_said_ = true;
-                say_server_error(app_.error_log(),
-                                 std::string("the peer's name cannot be read (") +
-                                     (ask->unix_peer ? "SO_PEERCRED: " : "SOCKET_URING_OP_GETSOCKNAME: ") +
-                                     std::strerror(-completion->res) +
-                                     "); peers go to the threads in turn");
-            }
-        } else if (ask->unix_peer) {
-            worker = worker_of_pid(ask->cred.pid, nworkers_);
-        } else {
-            worker = worker_of_address(ask->addr, nworkers_);
-        }
-        if (worker == nworkers_)
-            hand_to_worker(ask->listener_index, ask->descriptor);
-        else
-            hand_to_worker_at(ask->listener_index, ask->descriptor, worker);
     }
 
     void hand_to_worker_at(uint32_t listener_index, uint32_t descriptor, uint32_t worker)
@@ -1183,7 +1088,7 @@ template <class App> class Ring
             return;
         }
         if (nworkers_ != 0) {
-            ask_peer_name(listener_index, static_cast<uint32_t>(completion->res));
+            hand_to_worker(listener_index, static_cast<uint32_t>(completion->res));
             return;
         }
         Conn &c = *conn_new(listener_index, static_cast<uint32_t>(completion->res));
@@ -2075,9 +1980,6 @@ template <class App> class Ring
                 case detail::kPeer:
                     on_peer(*conn, completion);
                     break;
-                case detail::kPeerName:
-                    on_peer_name(op, completion);
-                    break;
                 case detail::kClose:
                     if (mrb_unlikely(completion->res == -ECANCELED && conn != nullptr)) {
                         struct io_uring_sqe *sqe = sqe_or_submit();
@@ -2321,8 +2223,6 @@ template <class App> class Ring
     bool unix_listener_[kMaxListeners] = {};
     bool accept_stalled_[kMaxListeners] = {};
     bool table_full_said_ = false;
-    bool peer_name_said_ = false;
-    std::vector<std::unique_ptr<PeerName>> peer_asks_free_;
     // The note is made where a raise cannot go and read where one can.
     bool accept_retry_owed_ = false;
     static constexpr unsigned kSaidMax = 24;

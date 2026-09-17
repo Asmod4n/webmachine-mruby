@@ -128,7 +128,7 @@ MRuby::Gem::Specification.new('webmachine-mruby') do |spec|
   spec.add_dependency 'mruby-proc-irep-ext'
   spec.add_dependency 'mruby-cbor'
 
-  # test/wm_spread.rb writes the bytes of a pid and of an address with
+  # bintest/h2.rb, bintest/websocket.rb and four others build frames with
   # Array#pack. The server never calls that method, so the gem joins the
   # test build only and stays out of the shipped libmruby.a.
   spec.add_test_dependency 'mruby-pack'

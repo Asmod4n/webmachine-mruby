@@ -42,41 +42,6 @@ unsigned derive_sq_entries(uint64_t memlock_limit, uint32_t rings)
     return answer;
 }
 
-// murmur3's mix, over the name as 32 bit words. Every input this has is a
-// whole number of words - four octets for a pid or an IPv4 address,
-// sixteen for IPv6 - and a tail is folded in rather than refused, so a
-// name of any length still answers.
-uint32_t worker_of_name(std::span<const std::byte> name, uint32_t seed, uint32_t nworkers)
-{
-    uint32_t hash = seed;
-    size_t at = 0;
-    for (; at + sizeof(uint32_t) <= name.size(); at += sizeof(uint32_t)) {
-        uint32_t word = 0;
-        std::memcpy(&word, std::next(name.data(), static_cast<ptrdiff_t>(at)), sizeof word);
-        word *= 0xcc9e2d51u;
-        word = (word << 15) | (word >> 17);
-        word *= 0x1b873593u;
-        hash ^= word;
-        hash = (hash << 13) | (hash >> 19);
-        hash = hash * 5u + 0xe6546b64u;
-    }
-    uint32_t tail = 0;
-    for (size_t i = 0; at + i < name.size(); i++) {
-        tail |= static_cast<uint32_t>(std::to_integer<unsigned char>(name[at + i])) << (8 * i);
-    }
-    if (tail != 0) {
-        tail *= 0xcc9e2d51u;
-        tail = (tail << 15) | (tail >> 17);
-        hash ^= tail * 0x1b873593u;
-    }
-    hash ^= static_cast<uint32_t>(name.size());
-    hash ^= hash >> 16;
-    hash *= 0x85ebca6bu;
-    hash ^= hash >> 13;
-    hash *= 0xc2b2ae35u;
-    hash ^= hash >> 16;
-    return hash % nworkers;
-}
 
 uint32_t derive_max_conns(FdBudget block)
 {

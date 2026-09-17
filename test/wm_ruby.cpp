@@ -291,23 +291,6 @@ mrb_value spec_sniff_known(mrb_state* mrb, mrb_value) {
   return mrb_bool_value(webmachine::sniff::knows_media_type({type, static_cast<size_t>(tlen)}));
 }
 
-// Which answering thread a peer's name picks, for test/wm_spread.rb. The
-// name arrives as the bytes the acceptor would have: a pid, or the
-// octets of an address.
-mrb_value spec_spread_worker_of(mrb_state* mrb, mrb_value) {
-  const char* name = nullptr;
-  mrb_int nlen = 0;
-  mrb_int nworkers = 0;
-  mrb_int seed = 0;
-  mrb_get_args(mrb, "si|i", &name, &nlen, &nworkers, &seed);
-  if (nworkers <= 0) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "nworkers must be positive");
-  }
-  const std::span<const std::byte> octets{reinterpret_cast<const std::byte*>(name),
-                                          static_cast<size_t>(nlen)};
-  return mrb_int_value(mrb, webmachine::worker_of_name(octets, static_cast<uint32_t>(seed),
-                                                       static_cast<uint32_t>(nworkers)));
-}
 
 // The descriptor budget and the body file count, for test/wm_fd.rb.
 mrb_value spec_fd_max_conns(mrb_state* mrb, mrb_value) {
@@ -352,10 +335,6 @@ extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
                                 MRB_ARGS_REQ(2));
   mrb_define_module_function_id(mrb, sn, mrb_intern_lit(mrb, "known?"), spec_sniff_known,
                                 MRB_ARGS_REQ(1));
-
-  struct RClass* sp = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecSpread"));
-  mrb_define_module_function_id(mrb, sp, mrb_intern_lit(mrb, "worker_of"),
-                                spec_spread_worker_of, MRB_ARGS_ARG(2, 1));
 
   struct RClass* fd = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "SpecFd"));
   mrb_define_module_function_id(mrb, fd, mrb_intern_lit(mrb, "max_conns"), spec_fd_max_conns,
