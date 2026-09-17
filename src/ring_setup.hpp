@@ -190,9 +190,7 @@ enum : uint32_t {
     kStName = 5,
     // The unlink of a unix path at the ring exit, so the exit can tell
     // its completion from a listener close ahead of it.
-    kStUnlink = 6,
-    // SO_REUSEPORT, so several server processes may hold one port.
-    kStReuseport = 7
+    kStUnlink = 6
 };
 
 // user_data on a ring that receives connections from an acceptor. The

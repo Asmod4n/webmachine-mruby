@@ -58,12 +58,14 @@ DURATION="${DURATION:-10}"
 TRANSPORT="${TRANSPORT:-unix}"
 PORT="${PORT:-8123}"
 IMPL="${IMPL:-uring}"
-# WORKERS=N: start N server processes on one TCP port, each with its own
-# ring and its own thread, sharing the port through SO_REUSEPORT. The
-# kernel hands each accept to one of them. The server cpu column then
-# sums every worker, so a rate can be read against the cpu it cost.
-# TCP only: SO_REUSEPORT has no AF_UNIX meaning.
-WORKERS="${WORKERS:-1}"
+# WORKERS= is gone. Nothing in this tree forks but logd, and the server
+# is one process with THREADS_ANSWER answering threads. Refused rather
+# than ignored, as THREADS= above: a silently dropped harness knob is
+# how a number ends up describing a run nobody performed.
+[ -z "${WORKERS:-}" ] || {
+  echo "WORKERS= is gone: the server is one process. Use THREADS_ANSWER=N for N answering threads." >&2
+  exit 2
+}
 # CLIENTS=N: N htgen processes, each with CONNS connections of its own.
 # htgen is one ring and one thread, so one of them cannot fill more than
 # one server worker. The counts and the cpu of all N are added up, and
@@ -72,7 +74,8 @@ CLIENTS="${CLIENTS:-1}"
 # THREADS_ANSWER=N: one server with --threads=N. One thread accepts and
 # hands every peer to one of N answering threads through
 # IORING_OP_MSG_RING, which carries a registered descriptor between two
-# rings of one process. The second shape beside WORKERS=.
+# rings of one process. This is the only shape: nothing in this tree
+# forks but logd.
 #
 # Which thread is not a turn. The acceptor reads the peer's name first -
 # SO_PEERCRED for AF_UNIX, SOCKET_URING_OP_GETSOCKNAME for TCP - and
@@ -186,16 +189,8 @@ cpu_ticks() {
   awk '{ n = index($0, ") "); rest = substr($0, n + 2); split(rest, f, " "); print f[12], f[13] }' \
     "/proc/$1/stat" 2>/dev/null || echo "0 0"
 }
-# Every worker's ticks added up, so WORKERS=2 reports the cpu two
-# processes spent and not the cpu one of them did.
 srv_ticks() {
-  local u=0 s=0 pu ps p
-  for p in "${SRVS[@]}"; do
-    read -r pu ps <<<"$(cpu_ticks "$p")"
-    u=$((u + pu))
-    s=$((s + ps))
-  done
-  echo "$u $s"
+  cpu_ticks "$SRV"
 }
 HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # The whole machine's busy ticks, all cores, from /proc/stat's first line.
@@ -326,10 +321,6 @@ if [ "$BROWSER" = 1 ]; then
             --header 'Accept-Language: en-US,en;q=0.9')
 fi
 
-if [ "$WORKERS" != 1 ] && [ "$TRANSPORT" != tcp ]; then
-  echo "WORKERS=$WORKERS needs TRANSPORT=tcp: one port shared by SO_REUSEPORT" >&2
-  exit 2
-fi
 SOCK="$WORK/bench.sock"
 if [ "$TRANSPORT" = unix ]; then
   rm -f "$SOCK"
@@ -351,18 +342,11 @@ fi
 # older build refuses a flag it never had.
 SHAPE_ARGS=()
 [ "$THREADS_ANSWER" = 1 ] || SHAPE_ARGS+=(--threads="$THREADS_ANSWER")
-SRVS=()
-w=0
-while [ "$w" -lt "$WORKERS" ]; do
-    "${SRV_PIN[@]}" "$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
-    "${SHAPE_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
-  SRVS+=($!)
-  w=$((w + 1))
-done
-# SRV names the first worker: the syscall counter reads one process.
-SRV=${SRVS[0]}
+"${SRV_PIN[@]}" "$BIN" "${CONF_ARGS[@]}" "${BIND_ARGS[@]}" "${APP_ARGS[@]}" "${LOG_ARGS[@]}" \
+  "${SHAPE_ARGS[@]}" >>"$WORK/srv.log" 2>&1 &
+SRV=$!
 # wait: back-to-back runs must not race the dying listener for the port.
-trap 'kill ${SRVS[@]} 2>/dev/null; wait ${SRVS[@]} 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- requests per syscall -------------------------------------------
 # The point of a ring server is syscall amortization - one enter
@@ -425,9 +409,7 @@ sysc_read() {
   awk -F, '$3 == "raw_syscalls:sys_enter" && $1 ~ /^[0-9]/ { print $1 }' "$SYSC_OUT" 2>/dev/null
 }
 sleep 0.5
-for p in "${SRVS[@]}"; do
-  kill -0 "$p" 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
-done
+kill -0 "$SRV" 2>/dev/null || { echo "server died:"; cat "$WORK/srv.log"; exit 1; }
 grep -q "select(2) shim" "$WORK/srv.log" 2>/dev/null && {
   echo "REFUSED: the server runs the select shim - a lazy-path number must never enter bench/results/" >&2
   exit 1
@@ -481,7 +463,7 @@ OUT=$(mktemp)
   [ "$PROTO" = h2 ] && CLI_LINE="$CLI_LINE -m$STREAMS"
   [ "$PIPELINE" != 1 ] && CLI_LINE="$CLI_LINE -p$PIPELINE"
   CLI_LINE="$CLI_LINE (one ring, one thread)"
-  echo "harness: $CLI_LINE impl=$IMPL workers=$WORKERS threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
+  echo "harness: $CLI_LINE impl=$IMPL threads=$THREADS_ANSWER clients=$CLIENTS $MEMLOCK_LINE${PIN:+ pin="$PIN"}${FREE_LINE:+ cpus="$FREE_LINE"}$NICE_LINE transport=$TRANSPORT app=${APP:-none} docroot=${DOCROOT:-none} path=$REQPATH browser=$BROWSER WM_BUNDLE=${WM_BUNDLE:-default} cflags=${CFLAGS_LINE:-?} $(uname -mr)"
   # cflags above is what the config asks for; this is what the binary was
   # actually built with and what it will load. A host that updated its
   # packages between two runs changes the second and not the first.
