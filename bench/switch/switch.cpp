@@ -131,6 +131,30 @@ std::string kind_of(int cpu)
     return out;
 }
 
+// Which cpus share this one's L2. On a hybrid part the efficiency
+// cores come in clusters that share an L2, and two cores of one
+// cluster hand a line over without leaving it. The SMT sibling list
+// does not say this: it covers threads of one core only.
+std::string l2_of(int cpu)
+{
+    for (int index = 0; index < 8; index++) {
+        char path[192];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index%d/level", cpu,
+                      index);
+        const std::string level = read_line_of(path);
+        if (level.empty())
+            continue;
+        if (level != "2")
+            continue;
+        std::snprintf(path, sizeof path,
+                      "/sys/devices/system/cpu/cpu%d/cache/index%d/shared_cpu_list", cpu, index);
+        const std::string shared = read_line_of(path);
+        if (!shared.empty())
+            return shared;
+    }
+    return std::string("?");
+}
+
 std::string siblings_of(int cpu)
 {
     char path[160];
@@ -508,9 +532,10 @@ std::string cpu_model()
 // pinned here, and the scheduler may move a thread mid-run.
 void print_where(const char *arm, const Handovers &h)
 {
-    std::printf("%s:  last on cpu %d and cpu %d (siblings of %d: %s; %d is %s, %d is %s)\n", arm,
-                h.cpu_here, h.cpu_peer, h.cpu_here, siblings_of(h.cpu_here).c_str(), h.cpu_here,
-                kind_of(h.cpu_here).c_str(), h.cpu_peer, kind_of(h.cpu_peer).c_str());
+    std::printf("%s:  last on cpu %d [%s, smt %s, l2 %s] and cpu %d [%s, smt %s, l2 %s]\n", arm,
+                h.cpu_here, kind_of(h.cpu_here).c_str(), siblings_of(h.cpu_here).c_str(),
+                l2_of(h.cpu_here).c_str(), h.cpu_peer, kind_of(h.cpu_peer).c_str(),
+                siblings_of(h.cpu_peer).c_str(), l2_of(h.cpu_peer).c_str());
 }
 
 } // namespace
