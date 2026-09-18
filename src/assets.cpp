@@ -1,3 +1,4 @@
+#include <climits>
 #include "webmachine.hpp"
 
 #include <miniz.h>
@@ -468,7 +469,7 @@ AssetEntry *Assets::find(const char *path, size_t path_length)
     if (path_length == 0 || path[path_length - 1] == '/') {
         static constexpr char kIndex[] = "index.html";
         static constexpr size_t kIndexLen = sizeof(kIndex) - 1;
-        char with_index[kMaxHead];
+        char with_index[PATH_MAX];
         if (path_length + kIndexLen > sizeof(with_index))
             return nullptr;
         if (path_length != 0)

@@ -1480,7 +1480,6 @@ struct NamedFieldIndex {
 
   private:
     uint16_t present = 0;
-    // kMaxHeaders is 64, so a byte holds it.
     uint8_t index[static_cast<size_t>(NamedField::kCount)] = {};
 };
 struct ReqValues {
@@ -2598,7 +2597,7 @@ namespace webmachine
 {
 // The names are the TOML keys, the CLI flags and the conf.* setters,
 // verbatim. -1 means nobody said, because 0 is an answer an operator can give.
-inline constexpr size_t kMaxHead = 8192;
+inline constexpr size_t kAllHeaderBytes = 8192;
 
 // 128 KiB and not 64: measured through the real ring, 64 KiB gave +7.5%,
 // inside the harness's own +/-10% spread, and 128 KiB gave +25%. At and

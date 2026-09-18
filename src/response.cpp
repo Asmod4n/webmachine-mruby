@@ -1,3 +1,4 @@
+#include <climits>
 #include "webmachine.hpp"
 #include <mruby/class.h>
 #include <mruby/data.h>
@@ -372,7 +373,7 @@ mrb_value response_use_error_asset(mrb_state *mrb, mrb_value)
                   "data (XDG_DATA_DIRS + /webmachine-mruby/error-assets.zip)");
     }
     const std::string_view asked = std::string_view(RSTRING_PTR(asked_name), static_cast<size_t>(RSTRING_LEN(asked_name)));
-    char name[kMaxHead];
+    char name[PATH_MAX];
     if (asked.empty() || asked.size() + 2 >= sizeof(name)) {
         mrb_raise(mrb, E_WM_ERROR(mrb), "response.error_asset: no such entry");
     }

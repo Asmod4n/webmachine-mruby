@@ -247,15 +247,15 @@ bool Http1::chunk_lines_ok(Conn &conn, const char *data, size_t length)
             static_cast<const char *>(std::memchr(data + i, '\n', length - i));
         if (name_length == nullptr) {
             // The line runs past this buffer. A size line this long is not a
-            // size line; kMaxHead is far more room than the grammar needs.
-            if (conn.chunk_line.size() + (length - i) > kMaxHead)
+            // size line; kAllHeaderBytes is far more room than the grammar needs.
+            if (conn.chunk_line.size() + (length - i) > kAllHeaderBytes)
                 return false;
 
             conn.chunk_line.append(data + i, length - i);
             return true;
         }
         const size_t upto = static_cast<size_t>(name_length - (data + i));
-        if (conn.chunk_line.size() + upto > kMaxHead)
+        if (conn.chunk_line.size() + upto > kAllHeaderBytes)
             return false;
 
         conn.chunk_line.append(data + i, upto);

@@ -12,7 +12,7 @@ namespace webmachine
 {
 namespace
 {
-constexpr size_t kH2FragBudget = kMaxHead * 2;
+constexpr size_t kH2FragBudget = kAllHeaderBytes * 2;
 // RFC 7541 5.2: the bytes one decoded field may take, name and value
 // together, with the decoder's own CRLF. hdrbuf holds a whole block plus
 // one such window, sized once, so nothing that points into it moves
@@ -496,10 +496,10 @@ bool Http1::h2_error_page(const H2ErrorAsk &asset_ask, H2ErrorPage &bytes, H2Ans
 }
 
 size_t Http1::h2_fields_of_parked(const H2Stream &stream,
-                                  std::array<struct phr_header, kH2MaxFields> &header_vector)
+                                  std::array<struct phr_header, kH2FieldSlots> &header_vector)
 {
     const std::string_view blob(stream.field_blob);
-    const size_t name_length = std::min(stream.field_spans.size(), kH2MaxFields);
+    const size_t name_length = std::min(stream.field_spans.size(), kH2FieldSlots);
     for (size_t i = 0; i < name_length; i++) {
         const H2FieldSpan &span = stream.field_spans.at(i);
         const std::string_view name = blob.substr(span.name_at, span.name_len);
@@ -568,7 +568,7 @@ bool Http1::h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, boo
     const int body_fd = stream.spill.fd;
     const size_t body_fd_len = stream.spill.written;
     const bool body_whole = complete;
-    std::array<struct phr_header, kH2MaxFields> header_vector;
+    std::array<struct phr_header, kH2FieldSlots> header_vector;
     const size_t name_length = h2_fields_of_parked(stream, header_vector);
     http::ReqValues pvals;
     values_of_copied_fields({header_vector.data(), name_length}, pvals);
@@ -645,14 +645,14 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
 
     if (h2_state.hdrbuf.size() != kH2HdrBufSize)
         h2_state.hdrbuf.resize(kH2HdrBufSize);
-    std::array<H2DecodedField, kH2MaxFields> &fields = h2_state.decoded_fields;
+    std::array<H2DecodedField, kH2FieldSlots> &fields = h2_state.decoded_fields;
     size_t count = 0;
     size_t used = 0;
     const unsigned char *cursor = headers.block.data();
     const unsigned char *const block_end =
         std::next(cursor, static_cast<std::ptrdiff_t>(headers.block.size()));
     while (cursor != block_end) {
-        if (count == kH2MaxFields)
+        if (count == kH2FieldSlots)
             return h2_error(conn, kH2EnhanceYourCalm, sink);
         // kH2HdrBufSize is kH2FragBudget + kH2FieldWindow, so a window at
         // any used up to the budget lies inside hdrbuf whole.
@@ -723,7 +723,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     ClaimedLength claimed;
     // RFC 9113 8.3: the fields in the shape h1 hands down, so every
     // by-name accessor answers the same way on both protocols.
-    std::array<struct phr_header, kH2MaxFields> header_vector;
+    std::array<struct phr_header, kH2FieldSlots> header_vector;
     size_t name_length = 0;
     // RFC 8441 4: CONNECT is not a method the flow knows, so parse_method
     // answers kOther and the wire bytes are kept.
@@ -836,7 +836,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
         }
         saw_regular = true;
         size_t index = SIZE_MAX;
-        if (name_length < kH2MaxFields) {
+        if (name_length < kH2FieldSlots) {
             *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
                 name, nlen, field_value, vlen};
             index = name_length;
@@ -858,7 +858,7 @@ bool Http1::h2_dispatch(Conn &conn, const H2Headers &headers, std::string &sink)
     // arrival order, and prepending would move every entry. A client that
     // sends a host field keeps it, so the list holds one host field.
     if (authority_val != nullptr && !vals.named.carries(http::NamedField::kHost) &&
-        name_length < kH2MaxFields) {
+        name_length < kH2FieldSlots) {
         constexpr std::string_view kHost = "host";
         *std::next(header_vector.begin(), static_cast<std::ptrdiff_t>(name_length)) = {
             kHost.data(), kHost.size(), authority_val, authority_vlen};

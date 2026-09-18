@@ -281,9 +281,9 @@ struct H2Stream {
     bool streaming = false;
 };
 
-inline constexpr size_t kMaxHeaders = 64;
-static_assert(kMaxHeaders <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
-inline constexpr size_t kH2MaxFields = kMaxHeaders + 8;
+inline constexpr size_t kPhrHeaderSlots = 64;
+static_assert(kPhrHeaderSlots <= 255, "http::NamedFieldIndex::at holds a field's place in one byte");
+inline constexpr size_t kH2FieldSlots = kPhrHeaderSlots + 8;
 
 struct H2DecodedField {
     std::string_view name;
@@ -318,9 +318,9 @@ struct H2State {
     bool frag_active = false;
 
     std::string hdrbuf;
-    // Built once with the connection, so no request constructs kH2MaxFields
+    // Built once with the connection, so no request constructs kH2FieldSlots
     // empty views.
-    std::array<H2DecodedField, kH2MaxFields> decoded_fields;
+    std::array<H2DecodedField, kH2FieldSlots> decoded_fields;
     size_t decoded_count = 0;
 
     std::vector<H2Stream> streams;
@@ -1952,7 +1952,7 @@ class Http1
         const http::ReqValues *vals;
     };
     static size_t h2_fields_of_parked(const H2Stream &stream,
-                               std::array<struct phr_header, kH2MaxFields> &header_vector);
+                               std::array<struct phr_header, kH2FieldSlots> &header_vector);
     bool h2_serve_parked(Conn &conn, H2Stream &stream, std::string &sink, bool complete);
     // True = a run was waiting on it, so the stream must not be served a
     // second time.

@@ -1,3 +1,4 @@
+#include <climits>
 #include "webmachine.hpp"
 
 #include "ring.hpp"
@@ -616,7 +617,7 @@ Http1::Took Http1::answer_from_assets(Round &round, std::string &sink, Plan *pla
     Assets *tier = assets_;
     const char *apath = round.path;
     size_t alen = round.path_len;
-    char abuf[kMaxHead];
+    char abuf[PATH_MAX];
     if (error_assets_ != nullptr && round.path_len > kErrorAssetsPrefixLen &&
         std::memcmp(round.path, kErrorAssetsPrefix, kErrorAssetsPrefixLen) == 0) {
         const size_t rest = round.path_len - kErrorAssetsPrefixLen;
@@ -2064,7 +2065,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
     }
 
     if (mrb_unlikely(conn.asset != nullptr)) {
-        if (mrb_unlikely(conn.carry.size() + length > kMaxHead)) {
+        if (mrb_unlikely(conn.carry.size() + length > kAllHeaderBytes)) {
             conn.carry.clear();
             conn.content_skip = 0;
             conn.asset = nullptr;
@@ -2083,7 +2084,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
     // RFC 9112 9.3.2: a request behind a parked run or an owed file waits in the carry.
     if (mrb_unlikely(conn.run_parked() ||
                      (conn.file != nullptr && conn.file->stage != FileStage::kNone))) {
-        if (mrb_unlikely(conn.carry.size() + length > kMaxHead))
+        if (mrb_unlikely(conn.carry.size() + length > kAllHeaderBytes))
             return connection_fail(conn, 431, sink);
         conn.carry.append(data, length);
         return true;
@@ -2118,13 +2119,13 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         const char *path;
         size_t path_len;
         int minor;
-        struct phr_header headers[kMaxHeaders];
-        size_t num_headers = kMaxHeaders;
+        struct phr_header headers[kPhrHeaderSlots];
+        size_t num_headers = kPhrHeaderSlots;
         const int ret = phr_parse_request(view + offset, viewlen - offset, &method, &method_len,
                                           &path, &path_len, &minor, headers, &num_headers, 0);
         if (mrb_unlikely(ret == -2)) {
             const size_t rest = viewlen - offset;
-            if (mrb_unlikely(rest > kMaxHead))
+            if (mrb_unlikely(rest > kAllHeaderBytes))
                 return connection_fail(conn, 431, sink);
             if (in_place)
                 conn.carry.assign(view + offset, rest);
@@ -2134,7 +2135,7 @@ bool Http1::feed_parse(Conn &conn, std::string_view incoming, Sink out_answer)
         }
         if (mrb_unlikely(ret <= 0))
             return connection_fail(conn, 400, sink);
-        if (mrb_unlikely(static_cast<size_t>(ret) > kMaxHead))
+        if (mrb_unlikely(static_cast<size_t>(ret) > kAllHeaderBytes))
             return connection_fail(conn, 431, sink);
         {
             const uint16_t framing =
