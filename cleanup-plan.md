@@ -832,7 +832,7 @@ struct ProblemDetails { std::string type; uint16_t status; std::string title; st
 }
 ```
 
-### 4.7 `whatwg` (Server-Sent Events, MIME sniffing)
+### 4.7 `sse` and `sniff`: WHATWG Server-Sent Events and MIME Sniffing
 
 ```
 namespace sse {
