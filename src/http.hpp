@@ -1,12 +1,31 @@
 #ifndef WEBMACHINE_HTTP_HPP
 #define WEBMACHINE_HTTP_HPP
 
+#include <array>
 #include <cstddef>
 #include <span>
 #include <string_view>
 
 namespace http
 {
+
+inline constexpr std::array<bool, 256> kTchar = [] {
+    std::array<bool, 256> table{};
+    for (const char letter : std::string_view("!#$%&'*+-.^_`|~"))
+        table[static_cast<unsigned char>(letter)] = true;
+    for (unsigned index = '0'; index <= '9'; index++)
+        table[index] = true;
+    for (unsigned index = 'A'; index <= 'Z'; index++)
+        table[index] = true;
+    for (unsigned index = 'a'; index <= 'z'; index++)
+        table[index] = true;
+    return table;
+}();
+
+constexpr bool is_tchar(const char letter)
+{
+    return kTchar[static_cast<unsigned char>(letter)];
+}
 
 struct Field {
     std::string_view name;

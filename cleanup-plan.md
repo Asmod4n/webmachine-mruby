@@ -120,6 +120,17 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
     `-mavx2` on every compile, which no aarch64 compiler accepts.
     `host` and `pgo` are correct through `-march`.
 
+14. **A name that an RFC gives is the name the code uses.** Where a
+    specification names a rule, a field, a value or a concept, that
+    word goes into the code without translation: `tchar`, `token`,
+    `OWS`, `quoted-string`, `field-name`, `representation`, `origin`.
+    A word that reads better but appears in no specification is not
+    chosen over it. The reason is the one test of this plan: a person
+    reads the RFC, puts the code beside it, and sees the same words.
+    A search for the RFC's word must find the code.
+
+    Where no specification names the thing, rule 1.1 decides.
+
 ### 1.1 Where a name comes from
 
 A name in this tree is a word a reader knows from the HTTP code of a
