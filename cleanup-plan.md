@@ -6,11 +6,13 @@ declarations alone. It was written after a full read of `src/`,
 of the tables of contents of RFC 9110, 9111, 9112, 9113, 6455, 6265,
 7541, 7692, 8441 and 9457.
 
-The plan has four parts. Part 1 states the rules. Part 2 states the
-target: the classes and the methods, in the order of the RFCs. Part 3
-maps the present code onto that target and lists what is thrown away.
-Part 4 states the steps, the order of the steps, and the check that
-closes each step.
+The plan has seven parts. Part 1 states the rules. Part 2 gives the
+numbers before the work. Part 3 states what the audit found, which
+procedures the RFCs give, and where their pieces lie today. Part 4
+states the target: the classes and the methods, in the order of the
+RFCs. Part 5 lists the open decisions. Part 6 states the steps, their
+order, and the loop that closes each step. Part 7 states what no step
+may do.
 
 ## 1. Rules
 
@@ -45,6 +47,27 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
 7. **One Resource takes one Request and gives one Response.** There is
    one Request type and one Response type. Every field of either is
    named as the RFC names it.
+8. **An RFC that describes a procedure gives one method.** Where an
+   RFC states steps, inputs and state for one thing, this tree has one
+   function for it. Its arguments are the inputs the RFC names. Its
+   state is the state the RFC names, passed in as a value. The pieces
+   that are spread over the tree today are collected into that one
+   function. Part 3.9 lists the procedures the RFCs give and where the
+   pieces lie today.
+9. **Every function could run in a functional language as it is.** A
+   function takes values and returns a value. It reads no global. It
+   writes no global. It keeps no static. State that changes is a value
+   that goes in and a new value that comes out. An effect (a syscall, a
+   ring submission, a Ruby call) happens in one place, at the edge,
+   after a pure function decided it. CLAUDE.md's "decide, then do" is
+   this rule. Part 3.8 lists the global state that breaks it today.
+10. **The code is as fast, as hard to attack and as plain as it can be
+    made, by testing and adjusting again and again.** No step is done
+    when it compiles. A step is done when the suite, the conformance
+    runs, the sanitizers, the fuzzer and the instruction count have
+    each run and nothing moved the wrong way. When one of them moves,
+    the code is adjusted and they run again. The loop ends when a
+    round changes nothing.
 
 ## 2. Numbers before the work
 
@@ -65,6 +88,8 @@ These rules add to CLAUDE.md. Where they meet, the stricter one holds.
 | responsibilities in `Ring<App>` (`ring.hpp`, 2290 lines) | 17 |
 | responsibilities in `Http1` (`http1.hpp`, 2117 lines) | 16 |
 | responsibilities in `http2.cpp` (2808 lines) | 16 |
+| file-scope and static mutable variables in `src/` | 41 (Part 3.8) |
+| texts that build the application at boot | 2 (Part 3.11) |
 
 Each number is measured again at the end of each step in Part 4.
 
@@ -196,6 +221,17 @@ gets the plain word.
 | about 90 `std::string_view(RSTRING_PTR(v), RSTRING_LEN(v))` sites and every `mrb_str_new(mrb, p, n)` return | mruby-c-ext-helpers. CLAUDE.md says it is in the build. It is not: `mrbgem.rake` does not name it. It is added in step 1. |
 | `Config.check_whole_number` and `Config.check_text` in Ruby | the same bounds checked again in `application.cpp` |
 | hand pointer arithmetic | `std::string_view`, `std::span`, `std::distance`, `std::next`. Every C++ file breaks CLAUDE.md here. |
+| `passwd.cpp:106` and `webmachine-passwd/main.cpp:160`, two copies of the argon2 context fill | mruby-argon2, a declared dependency nothing uses |
+| the LMDB layer in `passwd.cpp:66-230` and `webmachine-passwd/main.cpp:134` | mruby-lmdb, a declared dependency nothing uses |
+| `text_of`, `flag_of`, `switch_of`, `number_of` in `webmachine-server/main.cpp` | the typed hash typedargs already returned |
+| `setting_take_string`, `setting_take_int`, `section_take` in `config.cpp` | the hash mruby-toml already returned |
+| three month name tables (`date_core`, `read_month_name`, logd `spell_ts`), two hex tables | one of each, or `std::format` |
+| eleven argument bundles that exist because `mrb_protect_error` carries one `void *` (`OpenPack`, `AnswerThreadBoot`, `TomlAsk`, `SectionAsk`, `CrossAsk`, `BuildOne`, `JobBody`, `BlockRun`, `UnknownFlag`, `Tokens`, `Form`) | one lambda trampoline over `mrb_protect_error`, written once |
+| six hand-written `mrb_gc_arena_save`/`restore` pairs in `compute_task.cpp` and `watcher.cpp` | `ArenaGuard`, which four other files already use |
+| the spin wait on `ring_fd` (`server.cpp:486`) | `std::condition_variable`, which `ComputePool` already uses for the same question |
+| `WM_HANDOVER_SEND`/`TAKE`, `slots_lock` and atomics on one handover | one ordering mechanism |
+| three copies of "open a VM and report a gem init raise" (`main.cpp:562`, `open_vm_or_say`, `server.cpp:446`) | one |
+| three copies of "get an sqe, submit when full, retry once" (`sqe_or_raise`, `watcher_free`, `compute_task.cpp:948`) | one |
 
 ### 3.4 Five walkers of one graph
 
@@ -284,13 +320,81 @@ constructor; `Ring::deliver` and with it `finish_round`;
 server does not); the second copy of the ten `ws_*` and `sse_*`
 declarations at `http1.hpp:563`; the three empty namespace blocks in
 `http1_wire.cpp`; `test/conformance` (an empty file); the unused
-`#include <simdutf.h>` in `test/wm_ruby.cpp`.
+`#include <simdutf.h>` in `test/wm_ruby.cpp`; `watcher_slot`,
+`watcher_source_of`, `watcher_block_of`, `close_or_throw`.
 
 `tools/comment-anchors.sh` and its baseline: nothing runs it, its
 baseline is in a format its own reader cannot parse, and after this
 plan it measures an empty set.
 
-### 3.8 Files that hold more than one thing
+### 3.8 Global state
+
+Rule 9 forbids these. Each is a value some function reads without
+taking it as an argument:
+
+| where | what |
+|---|---|
+| `server.cpp:35-166` | `opts_`, `main_inputs_`, `assets_up_`, `log_fd_`, `err_fd_`, `assets_`, `error_assets_`, `error_assets_up_`, `error_assets_note_`, `mime_`, `http_`, `ring_`, `built_`, `entered_`, `answer_threads_`, `answer_ring_fds_` |
+| `application.cpp:34-35` | `registries_lock_`, `registries_` (a map from VM to registry) |
+| `docroot.cpp:28-102` | `docroot_path_`, `docroot_fd_`, `spill_dir_`, `body_file_slots_` |
+| `request.cpp:33-44` | `disp_override_`, `disp_override_set_`, `body_io_` |
+| `compute_task.cpp:147-593` | `reg`, `builds_closed_`, `value`, `pool_lock_`, the one `ComputePool` |
+| `resource.cpp:83` | `thrown`, the process-wide native method table |
+| `passwd.cpp:72` | `lock` |
+| `wsconn.cpp:309` | `scratch`, a static string reused across connections |
+| `http1_class.cpp:62` | `turn`, a static counter that rotates `Retry-After` |
+| `ring.hpp:1810` | `warned` |
+| `webmachine.hpp:1157` | `app_build_hash()`, a function that returns a reference to a static |
+| `request.cpp`, `response.cpp` | `request_bind`, `response_bind`: the current request and resource are set into file scope before a callback and read from there inside it |
+
+The last row is the widest one. Every Ruby accessor of `request` and
+`response` reads the request from a file-scope pointer that the
+caller set a moment before. Under rule 9 the request is a value the
+Ruby object holds, and the accessor reads it from `self`.
+
+Server-wide state that must exist once (the ring, the assets map, the
+error pages, the mime table, the docroot descriptor) becomes one
+`Server` value built in `main` and passed down. A worker VM gets a
+`Worker` value the same way. Nothing is found by reaching up.
+
+### 3.9 Procedures the RFCs give, and where their pieces lie
+
+Rule 8 applied to what the tree does today. Each row is one method in
+the skeleton. The right column is what the method collects.
+
+| RFC and section | the one method | the pieces today |
+|---|---|---|
+| 9110 13.2, evaluation of preconditions: the six ordered steps over If-Match, If-Unmodified-Since, If-None-Match, If-Modified-Since, If-Range | `rfc9110::evaluate_preconditions(fields, validators, method) -> optional<status>` | `header_switch` (`webmachine.hpp:1763`), `eval_request` cases G8 to L17, `kFlow` rows G8 to L17, `run_engine`'s G11/K13/H12/L17 arms (`resource.cpp:1486`), `etag_list_match`, `star_value`, `parse_http_date`, `if_range_matches` |
+| 9110 12.5.1, Accept: media ranges, q-values, specificity, ties | `rfc9110::choose_media_type(offered, accept) -> optional<index>` | `choose_media_type`, `accept_is_exact`, the second parser in `error_assets.cpp:392-474`, the third in `resource.cpp:472-1278`, `sniff::media_type_without_parameters` |
+| 9110 12.5.3, Accept-Encoding: identity, `*`, q=0 | `rfc9110::choose_content_coding(accept_encoding) -> Coding` | `gzip_acceptable`, `answer_step`'s `gzip_ok`, `compressible_media_type` |
+| 9110 14.2 and 14.1.2, Range and byte ranges: the satisfiable test, the last-byte-pos clamp, the 416 | `rfc9110::select_byte_range(range, if_range, etag, complete_length) -> RangeDecision` | `parse_range`, `read_size`, `if_range_matches`, `asset_step`, `RangeAsk`, the 206 and 416 arms in `http1.cpp:698` and `http2.cpp:1163` |
+| 9110 8.8.3.2, entity tag comparison, strong and weak | `rfc9110::entity_tag_matches(tag, list, comparison)` | `etag_list_match`, `EtagMatch`, `star_value` |
+| 9110 5.6.7, HTTP-date: three formats in, IMF-fixdate out | `parse_http_date`, `format_imf_fixdate` | `parse_http_date`, `read_fixed_digits`, `read_month_name`, `epoch_from_civil`, `Civil`, `date_core`, `write_two_digits`, `mtime_spell_imf_date`, `patch_date`, `head_patch_date`, `Listing.stamp` |
+| 9110 10.2.2 and 3986 5.3, Location and reference resolution | `rfc9110::resolve_location(base, reference)` | `uri_join`, `UriRef`, `base_uri`, the `create_path` join in `run_node_n11` |
+| 9110 6.1 and 9112 6.3, message body length: the seven ordered rules | `rfc9112::message_body_length(request_fields) -> BodyLength` | `WireFacts`, `transfer_encoding_fold`, `connection_field_holds_token`, `head_framing_status`, `parse_content_length`, `body_take_status` |
+| 9112 7.1.3, decoding chunked | `rfc9112::decode_chunked(state, bytes) -> (state, decoded, consumed)` | `take_chunked`, `ChunkScan`, `chunk_lines_ok`, `chunk_size_line_ok`, `chunk_tchar`, `chunk_hex`, `hex_digit`, `phr_decode_chunked` |
+| 9112 9.3, persistence: the version, the Connection field, the close | `rfc9112::connection_persists(version, request_fields, response_fields)` | `WireFacts::conn_close`, `persist`, `Variants` (three copies of every head for three Connection lines), `ConnectionOption` |
+| 9112 2.1 and 9110 6.1, serialize a response head | `rfc9112::serialize_head(status, fields) -> string` | `head_spell`, `SpelledHead`, `answer_assemble`, `assemble_dynamic`, `build_one_variant`, `build_open_prefix`, `file_spell`, `spell_error`, `run_append_field`, `header_append_key_value` |
+| 9113 4.1, frame header in and out | `rfc9113::parse_frame_header`, `serialize_frame_header` | `H2FrameHead`, `h2_u32`, `h2_u24`, `h2_u16`, `u32_put`, `control_frame_emit`, `H2Control` |
+| 9113 8.3.1 and 8.2.1, request pseudo-headers and field validity | `rfc9113::validate_request_fields(decoded) -> Request or ErrorCode` | the loop in `h2_dispatch` (`http2.cpp:640-1095`), `h2_field_ok`, `h2_path_ok`, `h2_word_is_path`, `h2_wire_header_ok`, `h2_trailer_name_ok`, `kH2NameOctet` |
+| 9113 5.2 and 6.9, flow control: two windows, WINDOW_UPDATE, the 2^31-1 bound | `rfc9113::apply_window_update(state, increment) -> state or ErrorCode`, `sendable(state, wanted) -> size` | `h2_credit_connection`, `h2_send_step`, `stream`, `h2_advance`, `flow_window`, the arms at `http2.cpp:1844-2022, 2770-2792` |
+| 9113 5.1, stream states | `rfc9113::Stream::transition(event) -> Stream or ErrorCode` | `H2State::open`, `close_stream`, `h2_is_idle`, `h2_reset_stream`, the state checks spread through `h2_feed` |
+| 7541, HPACK | ls-hpack, called from two places: decode a block, encode a field list | every hand-built block (Part 3.3) |
+| 6455 4.2.2, the server opening handshake: the eight checks and the response | `rfc6455::open_handshake(request) -> Response or status` | `ws_upgrade`, `ws_admit`, `WsAdmit`, `accept_key_compute`, `base64_encode_digest`, `ws_version`, `h2_extended_connect`, `H2Connect`, `rfc7692::negotiate` |
+| 6455 5.2 to 5.6, framing: header, masking, fragmentation, control frames | `rfc6455::parse_frame(state, bytes) -> (state, frames, consumed)`, `serialize_frame(frame)` | `read_head`, `header_need`, `header_build`, `unmask_copy`, `ws::Head`, `ws::Frame`, `ws::Mask`, `ws::Message`, `admit`, `frame_begin`, `data_frame_emit`, `message_deliver`, `utf8_prefix_may_still_be_valid` |
+| 6455 7, closing: code, reason, the handshake, the abnormal cases | `rfc6455::close(state, code, reason) -> (state, frame)` | `close_payload_build`, `close_read`, `ws::Close`, `close_code_of_symbol`, `ws_going_away`, `stream_report_close` |
+| 7692 7.1 and 7.2, permessage-deflate parameters and payload transform | `rfc7692::negotiate`, `Codec::compress`, `Codec::decompress` | `wsdeflate::negotiate`, `Negotiated`, `window_bits`, `Params`, `Codec` |
+| 6265 4.1 and 4.2, Set-Cookie out and Cookie in | `rfc6265::serialize_set_cookie(name, value, attributes)`, `parse_cookie(field)` | `response_set_cookie`, `CookieAttribute`, `CookieRules`, `cookie_rules_read`, `cookie_rules_check`, `cookie_same_site_name`, `request_get_cookies`, `cookie_repeats` |
+| 9457 3.1, the problem details object | `rfc9457::ProblemDetails` and its JSON | `ErrorResource.problem_document` in `mrblib/webmachine.rb` |
+| 9110 11.6.2, Authorization: scheme and credentials | `rfc9110::parse_authorization(field) -> (scheme, credentials)` | `request_get_authorization`, `spell_steering`'s scheme cut, `passwd.cpp`'s decode |
+| 9110 15 and 10.2.1, the status line and Allow | `reason_phrase(status)`, `allow_field_value(methods)` | `reason`, `kFaces`, `status_title`, `status_source`, `run_append_allow`, `H2BlockFields::allow`, `kAllow` |
+
+Every row also names an interface of the functional shape. A
+connection is a value, the bytes are a value, and the result is a new
+connection value with what to send. The ring then sends it. That is
+the only place a send happens.
+
+### 3.10 Files that hold more than one thing
 
 - `http1_wire.cpp` holds only WebSocket code.
 - `http1_members.cpp` holds the body spill and the h2 connection
@@ -304,6 +408,53 @@ plan it measures an empty set.
   resource, the compute pool, the watcher, gzip, mime, assets, error
   pages, the application spec, sniff, docroot, server options and
   config. One change recompiles the tree.
+
+### 3.11 The boot is written twice, and one flag is inverted
+
+`server.cpp` builds the application twice, in two texts that must
+agree: once for the acceptor (`server.cpp:652-694`) and once per
+answering thread (`answer_thread_boot`, `server.cpp:366-385`). Both
+call `app_load`, `app_registered_all`, `app_inputs_build`, `new
+Http1`, `serve_docroot`, `open_error_assets` and the two thresholds.
+With `--threads=N` an application's `ready` hook runs N times and
+`conf.url` is written N times.
+
+Other things stated more than once: the "first application that
+names one wins" loop, six times in one function; the config search
+path, three times; the stop signal mask, twice; the privacy
+vocabulary, four times.
+
+The four privacy statements do not agree, and that is a bug in the
+shipped binary. `docs/how-to/logs.md:28`,
+`docs/reference/configuration.md:209`,
+`docs/reference/command-line.md:159` and the generated config file
+(`config.cpp:204`) all say: `full` keeps the address, `anon` drops
+the host part, `none` writes no address. `webmachine-logd`
+(`tools/webmachine-logd/main.cpp:169-204`) does the reverse: `full`
+writes `-`, `none` writes the whole address, and the DNT promotion
+turns `none` into `anon`. The warning in `server.cpp:622` follows the
+daemon, not the documentation. An operator who writes
+`privacy = "none"` to log no address logs every address in full. The
+documentation is the contract, so the daemon is fixed, in step 1,
+with a bintest that reads one line at each level.
+
+Name collisions across files: `Registry` means three things
+(`application.cpp:30`, `compute_task.cpp:134`,
+`Webmachine::Workers::Registry`); `Setting` means two
+(`application.cpp:90`, `config.cpp:64`); `Slot` in
+`compute_task.cpp:74` is a job, and its fields `out_ask` (the answer),
+`deadline` (a duration) and `started` (a tag) say the wrong thing;
+`registry_of_this_vm` returns a process-wide static.
+
+Threads, as they are today, so the `Server` and `Worker` values of
+Part 3.8 are cut along the real crossings:
+
+| thread | owns | talks through |
+|---|---|---|
+| the acceptor | the listeners, one VM, one ring | `MSG_RING` to the answering threads and the compute workers |
+| answering threads (`--threads`) | one VM, one ring, one `Http1` each | `MSG_RING` in; a spin on `ring_fd` at boot |
+| compute workers | one VM, one ring each | `MSG_RING` both ways, a separate control ring for stop |
+| `webmachine-logd`, two processes | a socketpair | `LogRec` and `ErrRec`, a fixed header then the bytes |
 
 ## 4. The target, in the order of the RFCs
 
@@ -566,7 +717,8 @@ with one job. The list follows the boot order.
 
 | class | job | comes from |
 |---|---|---|
-| `Config` | the TOML file, the flags and `conf.*`, merged; absence stays visible | `config.cpp`, `ServerOptions`, `AppSpec` settings |
+| `Invocation` | what the command line and the config file decided, merged once; absence stays visible | `config.cpp`, `ServerOptions`, `Config`, `AppSpec` settings, `Invocation` in `main.cpp` |
+| `boot(const Invocation &, mrb_state *) -> Server` | the one boot: load the app, build the router, open the pack, the docroot and the pages. The acceptor and every answering thread call the same function once. The `ready` hook runs once. | `server_run`, `server_build_ring_config`, `answer_thread_boot`, `app_inputs_build` |
 | `Application` | the routes of one app and its listener | `application.cpp`, `AppSpec` |
 | `Router` | one route table with a resource kind per route | three `RouteTable`s |
 | `Reactor` | the io_uring loop: submit, complete, dispatch | `Ring<App>` minus the eight below |
@@ -624,6 +776,28 @@ instruction count (`bench/instructions.sh`) runs at the end of each
 step and is compared to step 0. A step that raises it by more than
 one percent is discussed before merge.
 
+Rule 10 makes every step a loop, and the loop is the same each time:
+
+1. Write the change.
+2. `tools/syntax-check.sh` on the touched files.
+3. `rake test`. Nothing may fail.
+4. `tools/conformance.sh` when a connection class changed (h2spec,
+   Autobahn).
+5. The sanitizer builds (`build_config_asan.rb`, `build_config_tsan.rb`)
+   when the reactor, the pool or a buffer changed.
+6. `tools/fuzz.sh` for one hour when a parser changed: the head
+   parser, the chunked decoder, the h2 frame walk, the websocket
+   frame walk, the Accept parser, the date parser, the cookie parser.
+   A finding is a test first, then a fix.
+7. `bench/instructions.sh` against step 0.
+8. Read the diff once more with rule 2 and rule 4: does each
+   declaration say what happens, does anything hide.
+9. When 3 to 8 moved something the wrong way, adjust and go to 2.
+   When a full round changes nothing, the step is done.
+
+The rounds are counted in the pull request text, with what each one
+moved.
+
 This container has no liburing and no mruby checkout, so the checks
 run in CI or on the author's machine, not here.
 
@@ -642,6 +816,10 @@ run in CI or on the author's machine, not here.
   stays. `rename-batch.py` gets a check that its input is sorted
   bottom-up per file and refuses otherwise.
 - Add `mruby-c-ext-helpers` to `mrbgem.rake`.
+- Fix `webmachine-logd`'s privacy levels to what the documentation
+  says (Part 3.11), and add the bintest. The `server.cpp:622` warning
+  moves to `full`. This is the one behaviour change in step 1, and it
+  is a fix.
 - Fix every declaration whose parameter name differs from its
   definition by copying the definition's name into the declaration.
   This is a text change with no semantic risk and it removes about a
@@ -656,6 +834,11 @@ run in CI or on the author's machine, not here.
   No bodies. No comments. Each declaration has a one-line
   `static_assert` or test name beside it where an RFC clause used to
   be a comment.
+- Each row of Part 3.9 becomes one declaration whose arguments are
+  the inputs the RFC names and whose state, where the RFC names one,
+  is a value in and a value out. The row's right column is written
+  into the pull request text beside the declaration, so the review
+  sees what the one method will collect.
 - Nothing is called yet. The tree builds as before.
 - This step is the review point. The user reads the headers and says
   what is missing and what is too much. Open decisions 1 to 6 are
@@ -669,6 +852,10 @@ run in CI or on the author's machine, not here.
   `walk_compiled`, `lands_on`, `reaches_a_node_that_reads_the_request`
   and `block_skips_are_the_graphs` go. `shortcut_for` becomes the
   table fill of decision 2.
+- The walker is pure: `walk(graph, resource, request, state) ->
+  (state, decision)`. The decision names the next callback to call or
+  the status to answer. The caller calls Ruby and calls `walk` again
+  with the answer. No Ruby call happens inside `walk`.
 - Check: `test/wm_flow.rb` (the flow oracle), the bintests, the
   instruction count. This step is the one most likely to move the
   count. It is measured alone for that reason.
@@ -682,6 +869,9 @@ run in CI or on the author's machine, not here.
   `SuspendedWalk`.
 - The Ruby accessors keep their names in this step. Decision 1 is
   applied in step 8.
+- `request_bind` and `response_bind` go. The Ruby `request` and
+  `response` objects hold their request as a value, and each accessor
+  reads `self`. `disp_override_` and `body_io_` go with them.
 - Check: suite, smoke, count.
 
 ### Step 5: the pure functions under `rfc9110`, `rfc9111`, `rfc6265`, `rfc9457`
@@ -717,6 +907,14 @@ run in CI or on the author's machine, not here.
   `App::*` calls `ring.hpp` makes today, which is about forty.
 - The four scope guards become one. `Conn` in `ring.hpp` splits along
   the groups already visible in it.
+- The file-scope state of `server.cpp`, `docroot.cpp`,
+  `compute_task.cpp`, `resource.cpp` and `passwd.cpp` (Part 3.8)
+  becomes one `Server` value built in `main` and one `Worker` value
+  built per worker thread. Every function that read a global takes
+  the value it needs as an argument.
+- `boot` is one function, called by the acceptor and by each
+  answering thread. `answer_thread_boot` goes. The spin on `ring_fd`
+  becomes the condition variable the pool already uses.
 - Check: suite, `bintest/threads.rb`, `bintest/watcher.rb`,
   `bintest/zerocopy.rb`, smoke, count, and the sanitizer jobs.
 
