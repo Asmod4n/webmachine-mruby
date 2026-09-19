@@ -56,7 +56,7 @@ MRuby::Build.new('libfuzzer') do |conf|
   tuning.each { |f| conf.cc.flags << f }
   conf.cc.flags << '-O1' << '-g'
   tuning.each { |f| conf.cxx.flags << f }
-  conf.cxx.flags << '-O1' << '-g' << '-std=c++20'
+  conf.cxx.flags << '-O1' << '-g' << '-std=c++23'
   conf.linker.flags << '-no-pie'
 
   conf.cc.defines  << 'MRB_UTF8_STRING' << 'WM_FUZZ_BUILD'

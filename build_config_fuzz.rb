@@ -50,7 +50,7 @@ MRuby::Build.new('fuzz') do |conf|
   tuning.each { |f| conf.cc.flags << f }
   conf.cc.flags << '-O1' << '-g3'
   tuning.each { |f| conf.cxx.flags << f }
-  conf.cxx.flags << '-O1' << '-g3' << '-std=c++20'
+  conf.cxx.flags << '-O1' << '-g3' << '-std=c++23'
 
   conf.cc.defines  << 'MRB_UTF8_STRING'
   conf.cxx.defines << 'MRB_UTF8_STRING'

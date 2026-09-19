@@ -42,7 +42,7 @@ MRuby::Build.new('tsan') do |conf|
   # string as two flags, so the build gets what it asks for.
   san = ['-fno-omit-frame-pointer -fsanitize=thread', '-O1', '-g3', '-ggdb']
   conf.cc.flags.concat(san)
-  conf.cxx.flags.concat(san + %w[-std=c++20])
+  conf.cxx.flags.concat(san + %w[-std=c++23])
   conf.linker.flags.concat(%w[-fsanitize=thread])
 
   conf.cc.defines  << 'MRB_UTF8_STRING'

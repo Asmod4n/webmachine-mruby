@@ -38,7 +38,7 @@ MRuby::Build.new('asan') do |conf|
            -fno-sanitize-recover=all -fsanitize-recover=alignment
            -O1 -g3 -ggdb]
   conf.cc.flags.concat(san)
-  conf.cxx.flags.concat(san + %w[-std=c++20])
+  conf.cxx.flags.concat(san + %w[-std=c++23])
   # The runtime is linked, not just compiled in.
   conf.linker.flags.concat(%w[-fsanitize=address,undefined])
 

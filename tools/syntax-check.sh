@@ -33,7 +33,7 @@ for d in "$root"/mruby/build/repos/debug/*/include "$root"/mruby/build/repos/deb
 done
 fail=0
 for f in "$@"; do
-  g++ -fsyntax-only -std=c++20 -Wall -Wextra -DMRB_DEBUG=1 -DMRB_UTF8_STRING \
+  g++ -fsyntax-only -std=c++23 -Wall -Wextra -DMRB_DEBUG=1 -DMRB_UTF8_STRING \
       -DMRB_USE_CXX_EXCEPTION -DWM_EXAMPLES "${inc[@]}" "$f" || fail=1
 done
 exit $fail

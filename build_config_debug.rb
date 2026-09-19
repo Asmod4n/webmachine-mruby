@@ -39,7 +39,7 @@ MRuby::Build.new('debug') do |conf|
   conf.enable_test
 
   conf.cc.flags << '-Og' << '-mavx2' << '-g3' << '-ggdb'
-  conf.cxx.flags << '-Og' << '-mavx2' << '-g3' << '-ggdb' << '-std=c++20'
+  conf.cxx.flags << '-Og' << '-mavx2' << '-g3' << '-ggdb' << '-std=c++23'
   # WM_PROFILE=1: a frame pointer, which -Og does not keep and
   # CALLGRAPH=fp in bench/profile.sh needs. The line table is already
   # here, so this is all that flag adds to this config.

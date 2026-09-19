@@ -29,7 +29,7 @@ MRuby::Build.new do |conf|
   # a fixed ISA without changing what anybody else builds.
   march = ENV['WM_MARCH'] || 'native'
   conf.cc.flags << '-O3' << "-march=#{march}"
-  conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++20'
+  conf.cxx.flags << '-O3' << "-march=#{march}" << '-std=c++23'
 
   # One section per function and per object, and a link that drops the
   # ones nothing reaches. Without this the linker's unit is the object
