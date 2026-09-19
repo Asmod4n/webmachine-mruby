@@ -33,6 +33,8 @@
  * only it touches the flow.
  *
  */
+#include "http.hpp"
+
 #include "../src/webmachine.hpp"
 #include "../src/ring_setup.hpp"
 
@@ -306,10 +308,8 @@ mrb_value spec_fd_body_files_open(mrb_state* mrb, mrb_value) {
 
 // The gem's one gem_test entry point - mruby calls this once when mrbtest
 // starts, and the oracle's C half is all there is to register.
-void wm_http_gem_test(mrb_state* mrb);
-
 extern "C" void mrb_webmachine_mruby_gem_test(mrb_state* mrb) {
-  wm_http_gem_test(mrb);
+  http_spec(mrb);
   struct RClass* wm = mrb_module_get_id(mrb, mrb_intern_lit(mrb, "Webmachine"));
   struct RClass* dec = mrb_define_module_under_id(mrb, wm, mrb_intern_lit(mrb, "Decision"));
   struct RClass* fsm = mrb_define_class_under_id(mrb, dec, mrb_intern_lit(mrb, "FSM"), mrb->object_class);
